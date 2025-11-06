@@ -9,6 +9,9 @@
 [![GitHub](https://img.shields.io/badge/GitHub-sylphxltd-181717?style=for-the-badge&logo=github)](https://github.com/sylphxltd)
 [![npm](https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm)](https://www.npmjs.com/~sylphx)
 
+[![GitHub Stars](https://img.shields.io/github/stars/sylphxltd?style=for-the-badge&logo=github&label=Total%20Stars&color=yellow)](https://github.com/sylphxltd)
+[![GitHub Followers](https://img.shields.io/github/followers/sylphxltd?style=for-the-badge&logo=github&label=Followers&color=blue)](https://github.com/sylphxltd)
+
 🇬🇧 **London, United Kingdom** | 🌍 **Open Source First** | 💡 **Founded 2025**
 
 </div>
