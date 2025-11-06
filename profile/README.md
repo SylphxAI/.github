@@ -5,9 +5,9 @@
 
 **Pioneering the Model Context Protocol Ecosystem**
 
-[![Website](https://img.shields.io/badge/🌐_Website-Coming_Soon-4A90E2?style=for-the-badge)](https://github.com/sylphxltd)
+[![Website](https://img.shields.io/badge/🌐_Website-sylphx.com-4A90E2?style=for-the-badge)](https://sylphx.com)
 [![GitHub](https://img.shields.io/badge/GitHub-sylphxltd-181717?style=for-the-badge&logo=github)](https://github.com/sylphxltd)
-[![npm](https://img.shields.io/badge/npm-%40sylphlab-CB3837?style=for-the-badge&logo=npm)](https://www.npmjs.com/~sylphlab)
+[![npm](https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm)](https://www.npmjs.com/~sylphx)
 
 🇬🇧 **London, United Kingdom** | 🌍 **Open Source First** | 💡 **Founded 2025**
 
@@ -58,7 +58,7 @@ Production-grade PDF processing server for AI agents using Model Context Protoco
 - **Security:** Validated implementation with comprehensive test suite
 
 ```bash
-npx @sylphlab/pdf-reader-mcp
+npx @sylphx/pdf-reader-mcp
 ```
 
 ---
@@ -74,7 +74,7 @@ Secure, efficient, and **token-saving** filesystem access for AI agents.
 - **Distribution:** Available on npm, Docker Hub, and MCP directories
 
 ```bash
-npx @sylphlab/filesystem-mcp
+npx @sylphx/filesystem-mcp
 ```
 
 📝 [Read our Medium article](https://medium.com/@shtse8/empower-your-ai-agent-introducing-a-secure-efficient-and-token-saving-filesystem-mcp-server-05b325121a7a)
@@ -181,11 +181,11 @@ Recognized the strategic importance of Model Context Protocol immediately after 
 
 ## 📦 Our Packages
 
-### NPM Packages (@sylphlab)
-- **@sylphlab/pdf-reader-mcp** - PDF processing MCP server
-- **@sylphlab/filesystem-mcp** - Filesystem access MCP server
-- **@sylphlab/tools-pdf-mcp** - PDF tools for MCP
-- **@sylphlab/mcp-pdf-core** - Core PDF utilities
+### NPM Packages (@sylphx)
+- **@sylphx/pdf-reader-mcp** - PDF processing MCP server
+- **@sylphx/filesystem-mcp** - Filesystem access MCP server
+- **@sylphx/tools-pdf-mcp** - PDF tools for MCP
+- **@sylphx/mcp-pdf-core** - Core PDF utilities
 
 ### Dart Packages (pub.dev)
 - **firestore_odm** - Type-safe Firestore ODM
@@ -248,7 +248,7 @@ Your data stays yours:
 ### Stay Updated
 - 📝 **Medium** - Technical deep-dives and announcements
 - 🐙 **GitHub** - Watch releases and discussions
-- 📦 **npm** - Follow @sylphlab for package updates
+- 📦 **npm** - Follow @sylphx for package updates
 
 ---
 
@@ -284,10 +284,9 @@ Your data stays yours:
 
 ## 💼 About Sylphx Limited
 
-**Company Number:** 16438428 (UK Companies House)
-**Incorporated:** May 8, 2025
 **Location:** London, United Kingdom
-**Director:** TSE, Siu Hang (Kyle Tse)
+**Founded:** 2025
+**Status:** UK Registered Company
 
 ### Our Vision
 We believe AI agents will revolutionize software development. By building robust, secure, and efficient infrastructure, we're enabling developers worldwide to harness AI's full potential while maintaining control over their data and workflows.
@@ -311,19 +310,19 @@ We believe AI agents will revolutionize software development. By building robust
 #### PDF Reader MCP
 ```bash
 # Via npx (easiest)
-npx @sylphlab/pdf-reader-mcp
+npx @sylphx/pdf-reader-mcp
 
 # Via Docker
-docker run -v /path/to/pdfs:/pdfs sylphlab/pdf-reader-mcp
+docker run -v /path/to/pdfs:/pdfs sylphx/pdf-reader-mcp
 ```
 
 #### Filesystem MCP
 ```bash
 # Via npx
-npx @sylphlab/filesystem-mcp
+npx @sylphx/filesystem-mcp
 
 # Via Bun
-bunx @sylphlab/filesystem-mcp
+bunx @sylphx/filesystem-mcp
 ```
 
 #### RAG Server MCP
@@ -342,11 +341,11 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "pdf-reader": {
       "command": "npx",
-      "args": ["-y", "@sylphlab/pdf-reader-mcp"]
+      "args": ["-y", "@sylphx/pdf-reader-mcp"]
     },
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@sylphlab/filesystem-mcp"]
+      "args": ["-y", "@sylphx/filesystem-mcp"]
     }
   }
 }
