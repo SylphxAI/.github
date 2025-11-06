@@ -11,6 +11,8 @@
 
 [![GitHub Stars](https://img.shields.io/github/stars/sylphxltd?style=for-the-badge&logo=github&label=Total%20Stars&color=yellow)](https://github.com/sylphxltd)
 [![GitHub Followers](https://img.shields.io/github/followers/sylphxltd?style=for-the-badge&logo=github&label=Followers&color=blue)](https://github.com/sylphxltd)
+[![All Contributors](https://img.shields.io/github/all-contributors/sylphxltd/pdf-reader-mcp?style=for-the-badge&logo=github&label=Contributors&color=orange)](https://github.com/sylphxltd)
+[![Commit Activity](https://img.shields.io/github/commit-activity/m/sylphxltd/pdf-reader-mcp?style=for-the-badge&logo=github&label=Commits/Month&color=green)](https://github.com/sylphxltd/pdf-reader-mcp)
 
 🇬🇧 **London, United Kingdom** | 🌍 **Open Source First** | 💡 **Founded 2025**
 
