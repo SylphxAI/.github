@@ -9,11 +9,6 @@
 [![GitHub](https://img.shields.io/badge/GitHub-sylphxltd-181717?style=for-the-badge&logo=github)](https://github.com/sylphxltd)
 [![npm](https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm)](https://www.npmjs.com/~sylphx)
 
-[![GitHub Stars](https://img.shields.io/github/stars/sylphxltd?style=for-the-badge&logo=github&label=Total%20Stars&color=yellow)](https://github.com/sylphxltd)
-[![GitHub Followers](https://img.shields.io/github/followers/sylphxltd?style=for-the-badge&logo=github&label=Followers&color=blue)](https://github.com/sylphxltd)
-[![All Contributors](https://img.shields.io/github/all-contributors/sylphxltd/pdf-reader-mcp?style=for-the-badge&logo=github&label=Contributors&color=orange)](https://github.com/sylphxltd)
-[![Commit Activity](https://img.shields.io/github/commit-activity/m/sylphxltd/pdf-reader-mcp?style=for-the-badge&logo=github&label=Commits/Month&color=green)](https://github.com/sylphxltd/pdf-reader-mcp)
-
 🇬🇧 **London, United Kingdom** | 🌍 **Open Source First** | 💡 **Founded 2025**
 
 </div>
@@ -52,13 +47,14 @@
 ## 🔥 Flagship Projects
 
 ### 🤖 [PDF Reader MCP](https://github.com/sylphxltd/pdf-reader-mcp)
-**⭐ 300 Stars | 📦 4.8K+ Downloads | 🧪 94%+ Test Coverage**
+
+⭐ **300+ Stars** | 📦 **4.8K+ Downloads** | 🧪 **94%+ Test Coverage** | 📊 **~12.9K ops/sec**
 
 Production-grade PDF processing server for AI agents using Model Context Protocol.
 
 - **Performance:** Processes 50-page PDFs in seconds with parallel batch processing
 - **Features:** Text & image extraction, smart content ordering, metadata access
-- **Speed:** 5-10x faster than sequential processing (~12,933 ops/sec)
+- **Speed:** 5-10x faster than sequential processing
 - **Integration:** Works with Claude Desktop, Cline, and all MCP-compatible tools
 - **Security:** Validated implementation with comprehensive test suite
 
@@ -69,7 +65,8 @@ npx @sylphx/pdf-reader-mcp
 ---
 
 ### 🗂️ [Filesystem MCP](https://github.com/sylphxltd/filesystem-mcp)
-**⭐ 6 Stars | 📦 4.1K+ Downloads | 🔐 Security-First**
+
+⭐ **6 Stars** | 📦 **4.1K+ Downloads** | 🔐 **Security-First** | ⚡ **Token-Efficient**
 
 Secure, efficient, and **token-saving** filesystem access for AI agents.
 
@@ -87,7 +84,8 @@ npx @sylphx/filesystem-mcp
 ---
 
 ### 🧠 [RAG Server MCP](https://github.com/sylphxltd/rag-server-mcp)
-**⭐ 18 Stars | 🔒 Privacy-First | 🎯 Semantic Search**
+
+⭐ **18 Stars** | 🔒 **Privacy-First** | 🎯 **Semantic Search** | 🗄️ **ChromaDB + Ollama**
 
 Retrieval-Augmented Generation server with local vector database and embeddings.
 
@@ -101,7 +99,8 @@ Enable AI agents to access project-specific knowledge while maintaining full dat
 ---
 
 ### 🔥 [Firestore ODM](https://github.com/sylphxltd/firestore_odm)
-**📚 Complete Documentation | 🎯 Type-Safe | ⚡ Zero Reflection**
+
+📚 **Complete Docs** | 🎯 **Type-Safe** | ⚡ **Zero Reflection** | 🚀 **Code Generation**
 
 Type-safe, annotation-based Firestore ODM for Dart/Flutter with code generation.
 
@@ -113,7 +112,8 @@ Type-safe, annotation-based Firestore ODM for Dart/Flutter with code generation.
 ---
 
 ### 💡 [Flow - AI Development Platform](https://github.com/sylphxltd/flow)
-**⭐ 4 Stars | 🚀 Revolutionary MEP Architecture**
+
+⭐ **4 Stars** | 🚀 **MEP Architecture** | ⚡ **90% Time Saved** | 🌐 **70+ Languages**
 
 **MEP (Minimal Effective Prompt)** - A paradigm shift in AI-assisted development.
 
