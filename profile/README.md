@@ -9,6 +9,9 @@
 [![GitHub](https://img.shields.io/badge/GitHub-sylphxltd-181717?style=for-the-badge&logo=github)](https://github.com/sylphxltd)
 [![npm](https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm)](https://www.npmjs.com/~sylphx)
 
+[![GitHub Stars](https://img.shields.io/github/stars/sylphxltd?style=for-the-badge&logo=github&label=Total%20Stars&color=yellow)](https://github.com/sylphxltd)
+[![GitHub Followers](https://img.shields.io/github/followers/sylphxltd?style=for-the-badge&logo=github&label=Followers&color=blue)](https://github.com/sylphxltd)
+
 🇬🇧 **London, United Kingdom** | 🌍 **Open Source First** | 💡 **Founded 2025**
 
 </div>
@@ -48,7 +51,7 @@
 
 ### 🤖 [PDF Reader MCP](https://github.com/sylphxltd/pdf-reader-mcp)
 
-⭐ **300+ Stars** | 📦 **4.8K+ Downloads** | 🧪 **94%+ Test Coverage** | 📊 **~12.9K ops/sec**
+![Stars](https://img.shields.io/github/stars/sylphxltd/pdf-reader-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Downloads](https://img.shields.io/npm/dt/@sylphx/pdf-reader-mcp?style=flat-square&logo=npm&label=Downloads&color=CB3837) ![Coverage](https://img.shields.io/badge/Coverage-94%25-brightgreen?style=flat-square&logo=codecov) ![Performance](https://img.shields.io/badge/Performance-~12.9K%20ops%2Fsec-blue?style=flat-square)
 
 Production-grade PDF processing server for AI agents using Model Context Protocol.
 
@@ -66,7 +69,7 @@ npx @sylphx/pdf-reader-mcp
 
 ### 🗂️ [Filesystem MCP](https://github.com/sylphxltd/filesystem-mcp)
 
-⭐ **6 Stars** | 📦 **4.1K+ Downloads** | 🔐 **Security-First** | ⚡ **Token-Efficient**
+![Stars](https://img.shields.io/github/stars/sylphxltd/filesystem-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Downloads](https://img.shields.io/npm/dt/@sylphx/filesystem-mcp?style=flat-square&logo=npm&label=Downloads&color=CB3837) ![Security](https://img.shields.io/badge/Security-First-red?style=flat-square&logo=security) ![Token](https://img.shields.io/badge/Token-Efficient-green?style=flat-square)
 
 Secure, efficient, and **token-saving** filesystem access for AI agents.
 
@@ -85,7 +88,7 @@ npx @sylphx/filesystem-mcp
 
 ### 🧠 [RAG Server MCP](https://github.com/sylphxltd/rag-server-mcp)
 
-⭐ **18 Stars** | 🔒 **Privacy-First** | 🎯 **Semantic Search** | 🗄️ **ChromaDB + Ollama**
+![Stars](https://img.shields.io/github/stars/sylphxltd/rag-server-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Privacy](https://img.shields.io/badge/Privacy-First-purple?style=flat-square&logo=lock) ![Search](https://img.shields.io/badge/Search-Semantic-blue?style=flat-square) ![Stack](https://img.shields.io/badge/Stack-ChromaDB%20%2B%20Ollama-orange?style=flat-square)
 
 Retrieval-Augmented Generation server with local vector database and embeddings.
 
@@ -100,7 +103,7 @@ Enable AI agents to access project-specific knowledge while maintaining full dat
 
 ### 🔥 [Firestore ODM](https://github.com/sylphxltd/firestore_odm)
 
-📚 **Complete Docs** | 🎯 **Type-Safe** | ⚡ **Zero Reflection** | 🚀 **Code Generation**
+![Stars](https://img.shields.io/github/stars/sylphxltd/firestore_odm?style=flat-square&logo=github&label=Stars&color=yellow) ![Docs](https://img.shields.io/badge/Docs-Complete-blue?style=flat-square&logo=gitbook) ![TypeSafe](https://img.shields.io/badge/Type-Safe-green?style=flat-square&logo=typescript) ![CodeGen](https://img.shields.io/badge/Code-Generation-orange?style=flat-square)
 
 Type-safe, annotation-based Firestore ODM for Dart/Flutter with code generation.
 
@@ -113,7 +116,7 @@ Type-safe, annotation-based Firestore ODM for Dart/Flutter with code generation.
 
 ### 💡 [Flow - AI Development Platform](https://github.com/sylphxltd/flow)
 
-⭐ **4 Stars** | 🚀 **MEP Architecture** | ⚡ **90% Time Saved** | 🌐 **70+ Languages**
+![Stars](https://img.shields.io/github/stars/sylphxltd/flow?style=flat-square&logo=github&label=Stars&color=yellow) ![Architecture](https://img.shields.io/badge/Architecture-MEP-purple?style=flat-square) ![Efficiency](https://img.shields.io/badge/Efficiency-90%25%20Time%20Saved-green?style=flat-square) ![Languages](https://img.shields.io/badge/Languages-70%2B-blue?style=flat-square)
 
 **MEP (Minimal Effective Prompt)** - A paradigm shift in AI-assisted development.
 
