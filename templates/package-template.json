@@ -1,0 +1,51 @@
+{
+  "name": "@sylphx/package-name",
+  "version": "0.0.0",
+  "description": "Brief description of the package",
+  "type": "module",
+  "keywords": [
+    "keyword1",
+    "keyword2",
+    "typescript"
+  ],
+  "author": "Sylphx <hi@sylphx.com> (https://sylphx.com)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SylphxAI/repo-name.git"
+  },
+  "homepage": "https://github.com/SylphxAI/repo-name#readme",
+  "bugs": {
+    "url": "https://github.com/SylphxAI/repo-name/issues"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "test:watch": "vitest --watch",
+    "lint": "biome lint",
+    "lint:fix": "biome lint --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "latest",
+    "typescript": "latest",
+    "tsup": "latest",
+    "vitest": "latest"
+  }
+}

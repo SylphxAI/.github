@@ -192,8 +192,13 @@ Recognized the strategic importance of Model Context Protocol immediately after 
 ### NPM Packages (@sylphx)
 - **@sylphx/pdf-reader-mcp** - PDF processing MCP server
 - **@sylphx/filesystem-mcp** - Filesystem access MCP server
-- **@sylphx/tools-pdf-mcp** - PDF tools for MCP
-- **@sylphx/mcp-pdf-core** - Core PDF utilities
+- **@sylphx/mcp-rag-server** - RAG server with ChromaDB + Ollama
+- **@sylphx/media-curator** - Intelligent media organizer with LSH deduplication
+- **@sylphx/craft** - Fast immutable state library (1.4-35x faster than immer)
+- **@sylphx/zen** - Minimal state management (1.45 KB, 1.7-45x faster)
+- **@sylphx/silk** - Zero-runtime CSS framework (92% smaller than Panda)
+- **@sylphx/ai-sdk-provider-claude-code** - Claude Code provider for Vercel AI SDK
+- **@sylphx/mcp-tools** - Modular MCP tools toolkit
 
 ### Dart Packages (pub.dev)
 - **firestore_odm** - Type-safe Firestore ODM
@@ -201,7 +206,8 @@ Recognized the strategic importance of Model Context Protocol immediately after 
 - **firestore_odm_builder** - Code generator
 
 ### Docker Images
-- **sylphlab/filesystem-mcp** - Containerized filesystem server
+- **sylphx/filesystem-mcp** - Containerized filesystem server
+- **sylphx/pdf-reader-mcp** - PDF processing server
 - More coming soon...
 
 ---
