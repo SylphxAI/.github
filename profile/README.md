@@ -6,11 +6,11 @@
 **Pioneering the Model Context Protocol Ecosystem**
 
 [![Website](https://img.shields.io/badge/🌐_Website-sylphx.com-4A90E2?style=for-the-badge)](https://sylphx.com)
-[![GitHub](https://img.shields.io/badge/GitHub-sylphxltd-181717?style=for-the-badge&logo=github)](https://github.com/sylphxltd)
+[![GitHub](https://img.shields.io/badge/GitHub-SylphxAI-181717?style=for-the-badge&logo=github)](https://github.com/SylphxAI)
 [![npm](https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm)](https://www.npmjs.com/~sylphx)
 
-[![GitHub Stars](https://img.shields.io/github/stars/sylphxltd?style=for-the-badge&logo=github&label=Total%20Stars&color=yellow)](https://github.com/sylphxltd)
-[![GitHub Followers](https://img.shields.io/github/followers/sylphxltd?style=for-the-badge&logo=github&label=Followers&color=blue)](https://github.com/sylphxltd)
+[![GitHub Stars](https://img.shields.io/github/stars/SylphxAI?style=for-the-badge&logo=github&label=Total%20Stars&color=yellow)](https://github.com/SylphxAI)
+[![GitHub Followers](https://img.shields.io/github/followers/SylphxAI?style=for-the-badge&logo=github&label=Followers&color=blue)](https://github.com/SylphxAI)
 
 🇬🇧 **London, United Kingdom** | 🌍 **Open Source First** | 💡 **Founded 2025**
 
@@ -49,9 +49,9 @@
 
 ## 🔥 Flagship Projects
 
-### 🤖 [PDF Reader MCP](https://github.com/sylphxltd/pdf-reader-mcp)
+### 🤖 [PDF Reader MCP](https://github.com/SylphxAI/pdf-reader-mcp)
 
-![Stars](https://img.shields.io/github/stars/sylphxltd/pdf-reader-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Downloads](https://img.shields.io/npm/dt/@sylphx/pdf-reader-mcp?style=flat-square&logo=npm&label=Downloads&color=CB3837) ![Coverage](https://img.shields.io/badge/Coverage-94%25-brightgreen?style=flat-square&logo=codecov) ![Performance](https://img.shields.io/badge/Performance-~12.9K%20ops%2Fsec-blue?style=flat-square)
+![Stars](https://img.shields.io/github/stars/SylphxAI/pdf-reader-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Downloads](https://img.shields.io/npm/dt/@sylphx/pdf-reader-mcp?style=flat-square&logo=npm&label=Downloads&color=CB3837) ![Coverage](https://img.shields.io/badge/Coverage-94%25-brightgreen?style=flat-square&logo=codecov) ![Performance](https://img.shields.io/badge/Performance-~12.9K%20ops%2Fsec-blue?style=flat-square)
 
 Production-grade PDF processing server for AI agents using Model Context Protocol.
 
@@ -67,9 +67,9 @@ npx @sylphx/pdf-reader-mcp
 
 ---
 
-### 🗂️ [Filesystem MCP](https://github.com/sylphxltd/filesystem-mcp)
+### 🗂️ [Filesystem MCP](https://github.com/SylphxAI/filesystem-mcp)
 
-![Stars](https://img.shields.io/github/stars/sylphxltd/filesystem-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Downloads](https://img.shields.io/npm/dt/@sylphx/filesystem-mcp?style=flat-square&logo=npm&label=Downloads&color=CB3837) ![Security](https://img.shields.io/badge/Security-First-red?style=flat-square&logo=security) ![Token](https://img.shields.io/badge/Token-Efficient-green?style=flat-square)
+![Stars](https://img.shields.io/github/stars/SylphxAI/filesystem-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Downloads](https://img.shields.io/npm/dt/@sylphx/filesystem-mcp?style=flat-square&logo=npm&label=Downloads&color=CB3837) ![Security](https://img.shields.io/badge/Security-First-red?style=flat-square&logo=security) ![Token](https://img.shields.io/badge/Token-Efficient-green?style=flat-square)
 
 Secure, efficient, and **token-saving** filesystem access for AI agents.
 
@@ -86,9 +86,9 @@ npx @sylphx/filesystem-mcp
 
 ---
 
-### 🧠 [RAG Server MCP](https://github.com/sylphxltd/rag-server-mcp)
+### 🧠 [RAG Server MCP](https://github.com/SylphxAI/rag-server-mcp)
 
-![Stars](https://img.shields.io/github/stars/sylphxltd/rag-server-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Privacy](https://img.shields.io/badge/Privacy-First-purple?style=flat-square&logo=lock) ![Search](https://img.shields.io/badge/Search-Semantic-blue?style=flat-square) ![Stack](https://img.shields.io/badge/Stack-ChromaDB%20%2B%20Ollama-orange?style=flat-square)
+![Stars](https://img.shields.io/github/stars/SylphxAI/rag-server-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Privacy](https://img.shields.io/badge/Privacy-First-purple?style=flat-square&logo=lock) ![Search](https://img.shields.io/badge/Search-Semantic-blue?style=flat-square) ![Stack](https://img.shields.io/badge/Stack-ChromaDB%20%2B%20Ollama-orange?style=flat-square)
 
 Retrieval-Augmented Generation server with local vector database and embeddings.
 
@@ -101,22 +101,22 @@ Enable AI agents to access project-specific knowledge while maintaining full dat
 
 ---
 
-### 🔥 [Firestore ODM](https://github.com/sylphxltd/firestore_odm)
+### 🔥 [Firestore ODM](https://github.com/SylphxAI/firestore_odm)
 
-![Stars](https://img.shields.io/github/stars/sylphxltd/firestore_odm?style=flat-square&logo=github&label=Stars&color=yellow) ![Docs](https://img.shields.io/badge/Docs-Complete-blue?style=flat-square&logo=gitbook) ![TypeSafe](https://img.shields.io/badge/Type-Safe-green?style=flat-square&logo=typescript) ![CodeGen](https://img.shields.io/badge/Code-Generation-orange?style=flat-square)
+![Stars](https://img.shields.io/github/stars/SylphxAI/firestore_odm?style=flat-square&logo=github&label=Stars&color=yellow) ![Docs](https://img.shields.io/badge/Docs-Complete-blue?style=flat-square&logo=gitbook) ![TypeSafe](https://img.shields.io/badge/Type-Safe-green?style=flat-square&logo=typescript) ![CodeGen](https://img.shields.io/badge/Code-Generation-orange?style=flat-square)
 
 Type-safe, annotation-based Firestore ODM for Dart/Flutter with code generation.
 
 - **Architecture:** Clean architecture with zero runtime reflection
 - **Performance:** Lightning-fast code generation using callables
 - **Features:** Full type safety, pagination, streaming, bulk operations
-- **Documentation:** Comprehensive docs site at [sylphxltd.github.io/firestore_odm](https://sylphxltd.github.io/firestore_odm)
+- **Documentation:** Comprehensive docs site at [SylphxAI.github.io/firestore_odm](https://SylphxAI.github.io/firestore_odm)
 
 ---
 
-### 💡 [Flow - AI Development Platform](https://github.com/sylphxltd/flow)
+### 💡 [Flow - AI Development Platform](https://github.com/SylphxAI/flow)
 
-![Stars](https://img.shields.io/github/stars/sylphxltd/flow?style=flat-square&logo=github&label=Stars&color=yellow) ![Architecture](https://img.shields.io/badge/Architecture-MEP-purple?style=flat-square) ![Efficiency](https://img.shields.io/badge/Efficiency-90%25%20Time%20Saved-green?style=flat-square) ![Languages](https://img.shields.io/badge/Languages-70%2B-blue?style=flat-square)
+![Stars](https://img.shields.io/github/stars/SylphxAI/flow?style=flat-square&logo=github&label=Stars&color=yellow) ![Architecture](https://img.shields.io/badge/Architecture-MEP-purple?style=flat-square) ![Efficiency](https://img.shields.io/badge/Efficiency-90%25%20Time%20Saved-green?style=flat-square) ![Languages](https://img.shields.io/badge/Languages-70%2B-blue?style=flat-square)
 
 **MEP (Minimal Effective Prompt)** - A paradigm shift in AI-assisted development.
 
@@ -280,7 +280,7 @@ Your data stays yours:
 ## 🎓 Learn More
 
 ### Documentation
-- 📚 [Firestore ODM Docs](https://sylphxltd.github.io/firestore_odm)
+- 📚 [Firestore ODM Docs](https://SylphxAI.github.io/firestore_odm)
 - 📝 [Medium Articles](https://medium.com/@shtse8)
 - 🔧 Individual project READMEs
 
@@ -336,7 +336,7 @@ bunx @sylphx/filesystem-mcp
 #### RAG Server MCP
 ```bash
 # Clone and run
-git clone https://github.com/sylphxltd/rag-server-mcp
+git clone https://github.com/SylphxAI/rag-server-mcp
 cd rag-server-mcp
 npm install
 npm start
@@ -389,8 +389,8 @@ Add to your `claude_desktop_config.json`:
 
 **Let's shape the future of development together.** 🚀
 
-[![Star our repos](https://img.shields.io/badge/⭐_Star_Our_Repos-Help_Us_Grow-yellow?style=for-the-badge)](https://github.com/sylphxltd)
-[![Follow on GitHub](https://img.shields.io/badge/👁️_Follow-Stay_Updated-blue?style=for-the-badge)](https://github.com/sylphxltd)
+[![Star our repos](https://img.shields.io/badge/⭐_Star_Our_Repos-Help_Us_Grow-yellow?style=for-the-badge)](https://github.com/SylphxAI)
+[![Follow on GitHub](https://img.shields.io/badge/👁️_Follow-Stay_Updated-blue?style=for-the-badge)](https://github.com/SylphxAI)
 [![Read on Medium](https://img.shields.io/badge/📝_Medium-Read_Articles-black?style=for-the-badge)](https://medium.com/@shtse8)
 
 ---
