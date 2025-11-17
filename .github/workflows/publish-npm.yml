@@ -1,0 +1,58 @@
+name: Publish to NPM
+
+on:
+  workflow_call:
+    inputs:
+      build-command:
+        description: 'Command to build packages (default: bun run build)'
+        type: string
+        default: 'bun run build'
+      publish-command:
+        description: 'Command to publish packages (default: bun run release)'
+        type: string
+        default: 'bun run release'
+      bun-version:
+        description: 'Bun version to use (default: latest)'
+        type: string
+        default: 'latest'
+    secrets:
+      NPM_TOKEN:
+        required: true
+      GITHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      - name: Install Dependencies
+        run: bun install
+
+      - name: Build Packages
+        run: ${{ inputs.build-command }}
+
+      - name: Setup NPM Authentication
+        run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+
+      - name: Create Release Pull Request or Publish to npm
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          publish: ${{ inputs.publish-command }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
