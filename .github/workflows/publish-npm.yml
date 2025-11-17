@@ -7,10 +7,18 @@ on:
         description: 'Command to build packages (default: bun run build)'
         type: string
         default: 'bun run build'
+      version-command:
+        description: 'Command to update package versions (default: bun run version-packages)'
+        type: string
+        default: 'bun run version-packages'
       publish-command:
         description: 'Command to publish packages (default: bun run release)'
         type: string
         default: 'bun run release'
+      skip-build:
+        description: 'Skip the build step (default: false)'
+        type: boolean
+        default: false
       bun-version:
         description: 'Bun version to use (default: latest)'
         type: string
@@ -42,6 +50,7 @@ jobs:
         run: bun install
 
       - name: Build Packages
+        if: ${{ !inputs.skip-build }}
         run: ${{ inputs.build-command }}
 
       - name: Setup NPM Authentication
@@ -51,6 +60,9 @@ jobs:
         id: changesets
         uses: changesets/action@v1
         with:
+          version: ${{ inputs.version-command }}
           publish: ${{ inputs.publish-command }}
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
