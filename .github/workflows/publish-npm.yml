@@ -58,7 +58,6 @@ jobs:
           node -e "
           const fs = require('fs');
           const path = require('path');
-          const { glob } = require('glob');
 
           // Read workspace config from root package.json
           const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
@@ -76,13 +75,34 @@ jobs:
 
           console.log('Workspace patterns:', workspacePatterns);
 
-          // Find all package.json files in workspace
-          const packagePaths = [];
-          workspacePatterns.forEach(pattern => {
-            const matches = glob.sync(path.join(pattern, 'package.json'));
-            packagePaths.push(...matches);
-          });
+          // Simple glob implementation for packages/*
+          function findPackages(patterns) {
+            const results = [];
+            patterns.forEach(pattern => {
+              // Handle patterns like 'packages/*'
+              const parts = pattern.split('/');
+              if (parts[parts.length - 1] === '*') {
+                const dir = parts.slice(0, -1).join('/');
+                if (fs.existsSync(dir)) {
+                  fs.readdirSync(dir).forEach(entry => {
+                    const pkgPath = path.join(dir, entry, 'package.json');
+                    if (fs.existsSync(pkgPath)) {
+                      results.push(pkgPath);
+                    }
+                  });
+                }
+              } else {
+                // Direct path like 'docs'
+                const pkgPath = path.join(pattern, 'package.json');
+                if (fs.existsSync(pkgPath)) {
+                  results.push(pkgPath);
+                }
+              }
+            });
+            return results;
+          }
 
+          const packagePaths = findPackages(workspacePatterns);
           console.log('Found', packagePaths.length, 'packages');
 
           // Build version map
