@@ -58,29 +58,46 @@ jobs:
           node -e "
           const fs = require('fs');
           const path = require('path');
+          const { glob } = require('glob');
 
-          // Find all packages and their versions
-          const packages = new Map();
-          const packagesDir = 'packages';
+          // Read workspace config from root package.json
+          const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          let workspacePatterns = rootPkg.workspaces || [];
 
-          if (fs.existsSync(packagesDir)) {
-            fs.readdirSync(packagesDir).forEach(dir => {
-              const pkgPath = path.join(packagesDir, dir, 'package.json');
-              if (fs.existsSync(pkgPath)) {
-                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-                if (pkg.name) packages.set(pkg.name, pkg.version);
-              }
-            });
+          // Handle both array and object formats
+          if (typeof workspacePatterns === 'object' && !Array.isArray(workspacePatterns)) {
+            workspacePatterns = workspacePatterns.packages || [];
           }
 
-          console.log('Found packages:', Array.from(packages.entries()));
+          if (workspacePatterns.length === 0) {
+            console.log('No workspaces configured, skipping...');
+            process.exit(0);
+          }
+
+          console.log('Workspace patterns:', workspacePatterns);
+
+          // Find all package.json files in workspace
+          const packagePaths = [];
+          workspacePatterns.forEach(pattern => {
+            const matches = glob.sync(path.join(pattern, 'package.json'));
+            packagePaths.push(...matches);
+          });
+
+          console.log('Found', packagePaths.length, 'packages');
+
+          // Build version map
+          const packages = new Map();
+          packagePaths.forEach(pkgPath => {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            if (pkg.name && pkg.version) {
+              packages.set(pkg.name, pkg.version);
+              console.log(' -', pkg.name + '@' + pkg.version);
+            }
+          });
 
           // Resolve workspace deps
           let modified = 0;
-          fs.readdirSync(packagesDir).forEach(dir => {
-            const pkgPath = path.join(packagesDir, dir, 'package.json');
-            if (!fs.existsSync(pkgPath)) return;
-
+          packagePaths.forEach(pkgPath => {
             const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
             let changed = false;
 
@@ -95,7 +112,7 @@ jobs:
                                    version === 'workspace:^' ? '^' + targetVer :
                                    version === 'workspace:~' ? '~' + targetVer :
                                    version.replace('workspace:', '');
-                    console.log('Resolving', name + ':', version, '->', newVer);
+                    console.log('Resolving', name + ':', version, '->', newVer, 'in', pkgPath);
                     pkg[type][name] = newVer;
                     changed = true;
                   }
@@ -110,7 +127,7 @@ jobs:
             }
           });
 
-          console.log('Resolved workspace dependencies in', modified, 'package(s)');
+          console.log('\\nResolved workspace dependencies in', modified, 'package(s)');
           "
         shell: bash
 
