@@ -53,7 +53,10 @@ jobs:
         if: ${{ !inputs.skip-build }}
         run: ${{ inputs.build-command }}
 
-      - name: Resolve workspace dependencies
+      - name: Update lockfile after version bump
+        run: bun install --no-save
+
+      - name: Resolve workspace dependencies (fallback for changesets)
         run: |
           node -e "
           const fs = require('fs');
