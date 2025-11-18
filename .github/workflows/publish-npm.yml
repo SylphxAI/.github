@@ -53,6 +53,67 @@ jobs:
         if: ${{ !inputs.skip-build }}
         run: ${{ inputs.build-command }}
 
+      - name: Resolve workspace dependencies
+        run: |
+          node -e "
+          const fs = require('fs');
+          const path = require('path');
+
+          // Find all packages and their versions
+          const packages = new Map();
+          const packagesDir = 'packages';
+
+          if (fs.existsSync(packagesDir)) {
+            fs.readdirSync(packagesDir).forEach(dir => {
+              const pkgPath = path.join(packagesDir, dir, 'package.json');
+              if (fs.existsSync(pkgPath)) {
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                if (pkg.name) packages.set(pkg.name, pkg.version);
+              }
+            });
+          }
+
+          console.log('Found packages:', Array.from(packages.entries()));
+
+          // Resolve workspace deps
+          let modified = 0;
+          fs.readdirSync(packagesDir).forEach(dir => {
+            const pkgPath = path.join(packagesDir, dir, 'package.json');
+            if (!fs.existsSync(pkgPath)) return;
+
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            let changed = false;
+
+            ['dependencies', 'devDependencies', 'peerDependencies'].forEach(type => {
+              if (!pkg[type]) return;
+
+              Object.entries(pkg[type]).forEach(([name, version]) => {
+                if (version.startsWith('workspace:')) {
+                  const targetVer = packages.get(name);
+                  if (targetVer) {
+                    const newVer = version === 'workspace:*' ? targetVer :
+                                   version === 'workspace:^' ? '^' + targetVer :
+                                   version === 'workspace:~' ? '~' + targetVer :
+                                   version.replace('workspace:', '');
+                    console.log('Resolving', name + ':', version, '->', newVer);
+                    pkg[type][name] = newVer;
+                    changed = true;
+                  }
+                }
+              });
+            });
+
+            if (changed) {
+              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+              modified++;
+              console.log('✓ Updated', pkgPath);
+            }
+          });
+
+          console.log('Resolved workspace dependencies in', modified, 'package(s)');
+          "
+        shell: bash
+
       - name: Setup Node.js for npm publish
         uses: actions/setup-node@v4
         with:
