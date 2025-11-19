@@ -3,10 +3,21 @@ name: Publish to NPM
 on:
   workflow_call:
     inputs:
+      # ========== Build Configuration ==========
       build-command:
         description: 'Command to build packages (default: bun run build)'
         type: string
         default: 'bun run build'
+      skip-build:
+        description: 'Skip the build step (default: false)'
+        type: boolean
+        default: false
+      test-command:
+        description: 'Command to run tests before publishing (optional)'
+        type: string
+        default: ''
+
+      # ========== Version & Publish Configuration ==========
       version-command:
         description: 'Command to update package versions (default: bun run version-packages)'
         type: string
@@ -15,14 +26,8 @@ on:
         description: 'Command to publish packages (default: bun run release)'
         type: string
         default: 'bun run release'
-      skip-build:
-        description: 'Skip the build step (default: false)'
-        type: boolean
-        default: false
-      bun-version:
-        description: 'Bun version to use (default: latest)'
-        type: string
-        default: 'latest'
+
+      # ========== Multi-platform Support ==========
       download-artifacts:
         description: 'Download build artifacts before publishing (default: false)'
         type: boolean
@@ -35,9 +40,44 @@ on:
         description: 'Command to run before @changesets/action (e.g., create platform packages)'
         type: string
         default: ''
+      post-publish-command:
+        description: 'Command to run after successful publish'
+        type: string
+        default: ''
+
+      # ========== Runtime Configuration ==========
+      bun-version:
+        description: 'Bun version to use (default: latest)'
+        type: string
+        default: 'latest'
+      node-version:
+        description: 'Node.js version to use (default: 20)'
+        type: string
+        default: '20'
+
+      # ========== Registry Configuration ==========
+      npm-registry:
+        description: 'NPM registry URL (default: https://registry.npmjs.org)'
+        type: string
+        default: 'https://registry.npmjs.org'
+
+      # ========== Release Configuration ==========
+      create-github-releases:
+        description: 'Create GitHub releases (default: true)'
+        type: boolean
+        default: true
+
+      # ========== Advanced Options ==========
+      working-directory:
+        description: 'Working directory for commands (default: .)'
+        type: string
+        default: '.'
+
     secrets:
       NPM_TOKEN:
         required: true
+      SLACK_WEBHOOK:
+        required: false
 
 permissions:
   contents: write
@@ -60,6 +100,7 @@ jobs:
 
       - name: Install Dependencies
         run: bun install
+        working-directory: ${{ inputs.working-directory }}
 
       - name: Download build artifacts
         if: ${{ inputs.download-artifacts }}
@@ -70,19 +111,27 @@ jobs:
       - name: Build Packages
         if: ${{ !inputs.skip-build }}
         run: ${{ inputs.build-command }}
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Run Tests
+        if: ${{ inputs.test-command != '' }}
+        run: ${{ inputs.test-command }}
+        working-directory: ${{ inputs.working-directory }}
 
       - name: Pre-publish setup
         if: ${{ inputs.pre-publish-command != '' }}
         run: ${{ inputs.pre-publish-command }}
+        working-directory: ${{ inputs.working-directory }}
 
       - name: Update lockfile for workspace resolution
         run: bun install --no-save
+        working-directory: ${{ inputs.working-directory }}
 
       - name: Setup Node.js for npm publish
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: ${{ inputs.node-version }}
+          registry-url: ${{ inputs.npm-registry }}
 
       - name: Create Release Pull Request or Publish to npm
         id: changesets
@@ -92,7 +141,27 @@ jobs:
           publish: ${{ inputs.publish-command }}
           commit: "chore(release): version packages"
           title: "chore(release): version packages"
+          createGithubReleases: ${{ inputs.create-github-releases }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Post-publish actions
+        if: ${{ inputs.post-publish-command != '' && steps.changesets.outputs.published == 'true' }}
+        run: ${{ inputs.post-publish-command }}
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Notify Slack on publish
+        if: ${{ secrets.SLACK_WEBHOOK != '' && steps.changesets.outputs.published == 'true' }}
+        run: |
+          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"📦 Published: ${{ steps.changesets.outputs.publishedPackages }}\"}"
+
+      - name: Notify Slack on failure
+        if: ${{ failure() && secrets.SLACK_WEBHOOK != '' }}
+        run: |
+          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"❌ Publish workflow failed: ${{ github.repository }}\"}"
