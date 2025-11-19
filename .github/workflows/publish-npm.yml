@@ -23,6 +23,18 @@ on:
         description: 'Bun version to use (default: latest)'
         type: string
         default: 'latest'
+      download-artifacts:
+        description: 'Download build artifacts before publishing (default: false)'
+        type: boolean
+        default: false
+      artifacts-path:
+        description: 'Path to download artifacts to (default: artifacts)'
+        type: string
+        default: 'artifacts'
+      pre-publish-command:
+        description: 'Command to run before @changesets/action (e.g., create platform packages)'
+        type: string
+        default: ''
     secrets:
       NPM_TOKEN:
         required: true
@@ -49,9 +61,19 @@ jobs:
       - name: Install Dependencies
         run: bun install
 
+      - name: Download build artifacts
+        if: ${{ inputs.download-artifacts }}
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ inputs.artifacts-path }}
+
       - name: Build Packages
         if: ${{ !inputs.skip-build }}
         run: ${{ inputs.build-command }}
+
+      - name: Pre-publish setup
+        if: ${{ inputs.pre-publish-command != '' }}
+        run: ${{ inputs.pre-publish-command }}
 
       - name: Update lockfile for workspace resolution
         run: bun install --no-save
