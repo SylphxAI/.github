@@ -72,12 +72,14 @@ on:
         description: 'Working directory for commands (default: .)'
         type: string
         default: '.'
+      slack-webhook:
+        description: 'Slack webhook URL for notifications (optional)'
+        type: string
+        default: ''
 
     secrets:
       NPM_TOKEN:
         required: true
-      SLACK_WEBHOOK:
-        required: false
 
 permissions:
   contents: write
@@ -153,15 +155,15 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
 
       - name: Notify Slack on publish
-        if: ${{ secrets.SLACK_WEBHOOK != '' && steps.changesets.outputs.published == 'true' }}
+        if: ${{ inputs.slack-webhook != '' && steps.changesets.outputs.published == 'true' }}
         run: |
-          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          curl -X POST "${{ inputs.slack-webhook }}" \
             -H 'Content-Type: application/json' \
             -d "{\"text\":\"📦 Published: ${{ steps.changesets.outputs.publishedPackages }}\"}"
 
       - name: Notify Slack on failure
-        if: ${{ failure() && secrets.SLACK_WEBHOOK != '' }}
+        if: ${{ failure() && inputs.slack-webhook != '' }}
         run: |
-          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          curl -X POST "${{ inputs.slack-webhook }}" \
             -H 'Content-Type: application/json' \
             -d "{\"text\":\"❌ Publish workflow failed: ${{ github.repository }}\"}"
