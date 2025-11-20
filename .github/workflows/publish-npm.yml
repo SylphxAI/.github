@@ -152,12 +152,12 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Post-publish actions
-        if: ${{ inputs.post-publish-command != '' && steps.changesets.outputs.published == 'true' }}
+        if: ${{ inputs.post-publish-command != '' && (steps.changesets.outputs.published == 'true' || steps.changesets.conclusion == 'success') }}
         run: ${{ inputs.post-publish-command }}
         working-directory: ${{ inputs.working-directory }}
 
       - name: Notify Slack on publish
-        if: ${{ steps.changesets.outputs.published == 'true' }}
+        if: ${{ steps.changesets.conclusion == 'success' }}
         run: |
           WEBHOOK="${{ inputs.slack-webhook }}"
           if [ -z "$WEBHOOK" ]; then
@@ -165,9 +165,10 @@ jobs:
           fi
 
           if [ -n "$WEBHOOK" ]; then
+            VERSION=$(node -p "try { require('./package.json').version } catch { 'unknown' }" 2>/dev/null || echo "unknown")
             curl -X POST "$WEBHOOK" \
               -H 'Content-Type: application/json' \
-              -d '{"text":"📦 Published: ${{ steps.changesets.outputs.publishedPackages }}"}'
+              -d "{\"text\":\"📦 Published to npm successfully! (v$VERSION)\"}"
           fi
 
       - name: Notify Slack on failure
