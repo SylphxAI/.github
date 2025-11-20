@@ -179,8 +179,8 @@ jobs:
 
             # Check if changesets provided published packages info
             if [ -n "$PUBLISHED_PACKAGES" ] && [ "$PUBLISHED_PACKAGES" != "[]" ] && [ "$PUBLISHED_PACKAGES" != '""' ]; then
-              # Parse the JSON array from changesets - use toJSON to preserve quotes
-              PACKAGES=$(node -e "console.log(JSON.parse(process.argv[1]).map(p=>\`• <https://www.npmjs.com/package/\${p.name}/v/\${p.version}|\\\`\${p.name}@\${p.version}\\\`>\`).join('\\n'))" "$PUBLISHED_PACKAGES" 2>&1 || echo "")
+              # Parse the JSON array from changesets - toJSON wraps in extra quotes, need double parse
+              PACKAGES=$(node -e "const data = JSON.parse(JSON.parse(process.argv[1])); console.log(data.map(p=>\`• <https://www.npmjs.com/package/\${p.name}/v/\${p.version}|\\\`\${p.name}@\${p.version}\\\`>\`).join('\\n'))" "$PUBLISHED_PACKAGES" 2>&1 || echo "")
 
 
               if [ -n "$PACKAGES" ]; then
