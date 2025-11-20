@@ -181,7 +181,7 @@ jobs:
             if [ -n "$PUBLISHED_PACKAGES" ] && [ "$PUBLISHED_PACKAGES" != "[]" ]; then
               # Parse the JSON array from changesets - write to temp file to preserve JSON structure
               echo "$PUBLISHED_PACKAGES" > /tmp/packages.json
-              PACKAGES=$(node -e 'JSON.parse(require("fs").readFileSync("/tmp/packages.json","utf8")).forEach(p=>console.log("• <https://www.npmjs.com/package/"+p.name+"/v/"+p.version+"|"+"`"+p.name+"@"+p.version+"`"+">"))' 2>&1 || echo "")
+              PACKAGES=$(node -e 'JSON.parse(require("fs").readFileSync("/tmp/packages.json","utf8")).map(p=>"• <https://www.npmjs.com/package/"+p.name+"/v/"+p.version+"|"+"`"+p.name+"@"+p.version+"`"+">").join("\n")' 2>&1 || echo "")
               rm -f /tmp/packages.json
 
               if [ -n "$PACKAGES" ]; then
