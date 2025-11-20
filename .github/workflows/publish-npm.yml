@@ -169,13 +169,57 @@ jobs:
             VERSION=$(node -p "try { require('./package.json').version } catch { 'unknown' }" 2>/dev/null || echo "unknown")
             REPO="${{ github.repository }}"
             RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            NPM_URL="https://www.npmjs.com/package/${PACKAGE_NAME}/v/${VERSION}"
+
+            # Try to extract published packages from changesets output
+            PUBLISHED_PACKAGES="${{ steps.changesets.outputs.publishedPackages }}"
 
             MESSAGE="📦 *Published to npm*\n"
-            MESSAGE="${MESSAGE}Package: \`${PACKAGE_NAME}@${VERSION}\`\n"
             MESSAGE="${MESSAGE}Repository: ${REPO}\n"
-            MESSAGE="${MESSAGE}NPM: ${NPM_URL}\n"
-            MESSAGE="${MESSAGE}Workflow: ${RUN_URL}"
+            MESSAGE="${MESSAGE}\n"
+
+            # Check if changesets provided published packages info
+            if [ -n "$PUBLISHED_PACKAGES" ] && [ "$PUBLISHED_PACKAGES" != "[]" ]; then
+              # Parse the JSON array from changesets
+              PACKAGES=$(echo "$PUBLISHED_PACKAGES" | node -e "
+                try {
+                  const packages = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
+                  packages.forEach(pkg => {
+                    console.log(\`• <https://www.npmjs.com/package/\${pkg.name}/v/\${pkg.version}|\\\`\${pkg.name}@\${pkg.version}\\\`>\`);
+                  });
+                } catch (e) {
+                  // Fallback if parsing fails
+                  process.exit(1);
+                }
+              " 2>/dev/null)
+
+              if [ $? -eq 0 ] && [ -n "$PACKAGES" ]; then
+                MESSAGE="${MESSAGE}${PACKAGES}\n"
+              else
+                # Fallback to main package
+                MESSAGE="${MESSAGE}• <https://www.npmjs.com/package/${PACKAGE_NAME}/v/${VERSION}|\`${PACKAGE_NAME}@${VERSION}\`>\n"
+              fi
+            else
+              # No changesets output - try to detect from workspace or just use main package
+              # Check if there are npm/ directories (platform packages pattern)
+              if [ -d "npm" ] && [ "$(find npm -maxdepth 1 -type d | wc -l)" -gt 1 ]; then
+                # Found platform packages
+                MESSAGE="${MESSAGE}• <https://www.npmjs.com/package/${PACKAGE_NAME}/v/${VERSION}|\`${PACKAGE_NAME}@${VERSION}\`> (main)\n"
+                for dir in npm/*/; do
+                  if [ -f "${dir}package.json" ]; then
+                    PKG_NAME=$(node -p "require('./${dir}package.json').name" 2>/dev/null || echo "")
+                    if [ -n "$PKG_NAME" ]; then
+                      MESSAGE="${MESSAGE}• <https://www.npmjs.com/package/${PKG_NAME}/v/${VERSION}|\`${PKG_NAME}@${VERSION}\`>\n"
+                    fi
+                  fi
+                done
+              else
+                # Just main package
+                MESSAGE="${MESSAGE}• <https://www.npmjs.com/package/${PACKAGE_NAME}/v/${VERSION}|\`${PACKAGE_NAME}@${VERSION}\`>\n"
+              fi
+            fi
+
+            MESSAGE="${MESSAGE}\n"
+            MESSAGE="${MESSAGE}<${RUN_URL}|View Workflow>"
 
             curl -X POST "$WEBHOOK" \
               -H 'Content-Type: application/json' \
