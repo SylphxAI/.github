@@ -189,9 +189,9 @@ jobs:
                 } catch (e) {
                   process.exit(1);
                 }
-              ' 2>/dev/null)
+              ' 2>/dev/null || true)
 
-              if [ $? -eq 0 ] && [ -n "$PACKAGES" ]; then
+              if [ -n "$PACKAGES" ]; then
                 MESSAGE="${MESSAGE}${PACKAGES}\n"
               else
                 # Fallback to main package
