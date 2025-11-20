@@ -184,12 +184,13 @@ jobs:
                 try {
                   const packages = JSON.parse(process.env.PKGS);
                   packages.forEach(pkg => {
-                    console.log(`• <https://www.npmjs.com/package/${pkg.name}/v/${pkg.version}|\`${pkg.name}@${pkg.version}\`>`);
+                    console.log("• <https://www.npmjs.com/package/" + pkg.name + "/v/" + pkg.version + "|" + "`" + pkg.name + "@" + pkg.version + "`" + ">");
                   });
                 } catch (e) {
+                  console.error("Parse error:", e.message);
                   process.exit(1);
                 }
-              ' 2>/dev/null || true)
+              ' 2>&1 || true)
 
               if [ -n "$PACKAGES" ]; then
                 MESSAGE="${MESSAGE}${PACKAGES}\n"
