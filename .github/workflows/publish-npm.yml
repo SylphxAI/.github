@@ -171,18 +171,17 @@ jobs:
             RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
             # Try to extract published packages from changesets output
-            PUBLISHED_PACKAGES="${{ steps.changesets.outputs.publishedPackages }}"
+            PUBLISHED_PACKAGES='${{ toJSON(steps.changesets.outputs.publishedPackages) }}'
 
             MESSAGE="📦 *Published to npm*\n"
             MESSAGE="${MESSAGE}Repository: ${REPO}\n"
             MESSAGE="${MESSAGE}\n"
 
             # Check if changesets provided published packages info
-            if [ -n "$PUBLISHED_PACKAGES" ] && [ "$PUBLISHED_PACKAGES" != "[]" ]; then
-              # Parse the JSON array from changesets - write to temp file to preserve JSON structure
-              echo "$PUBLISHED_PACKAGES" > /tmp/packages.json
-              PACKAGES=$(node -e 'JSON.parse(require("fs").readFileSync("/tmp/packages.json","utf8")).map(p=>"• <https://www.npmjs.com/package/"+p.name+"/v/"+p.version+"|"+"`"+p.name+"@"+p.version+"`"+">").join("\n")' 2>&1 || echo "")
-              rm -f /tmp/packages.json
+            if [ -n "$PUBLISHED_PACKAGES" ] && [ "$PUBLISHED_PACKAGES" != "[]" ] && [ "$PUBLISHED_PACKAGES" != '""' ]; then
+              # Parse the JSON array from changesets - use toJSON to preserve quotes
+              PACKAGES=$(node -e "console.log(JSON.parse(process.argv[1]).map(p=>\`• <https://www.npmjs.com/package/\${p.name}/v/\${p.version}|\\\`\${p.name}@\${p.version}\\\`>\`).join('\\n'))" "$PUBLISHED_PACKAGES" 2>&1 || echo "")
+
 
               if [ -n "$PACKAGES" ]; then
                 MESSAGE="${MESSAGE}${PACKAGES}\n"
