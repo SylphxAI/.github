@@ -179,18 +179,17 @@ jobs:
 
             # Check if changesets provided published packages info
             if [ -n "$PUBLISHED_PACKAGES" ] && [ "$PUBLISHED_PACKAGES" != "[]" ]; then
-              # Parse the JSON array from changesets - embed JSON directly to avoid stdin issues
-              PACKAGES=$(node -e "
+              # Parse the JSON array from changesets - use env var to avoid shell escaping issues
+              PACKAGES=$(PKGS="$PUBLISHED_PACKAGES" node -e '
                 try {
-                  const packages = JSON.parse(process.argv[1]);
+                  const packages = JSON.parse(process.env.PKGS);
                   packages.forEach(pkg => {
-                    console.log(\`• <https://www.npmjs.com/package/\${pkg.name}/v/\${pkg.version}|\\\`\${pkg.name}@\${pkg.version}\\\`>\`);
+                    console.log(`• <https://www.npmjs.com/package/${pkg.name}/v/${pkg.version}|\`${pkg.name}@${pkg.version}\`>`);
                   });
                 } catch (e) {
-                  // Fallback if parsing fails
                   process.exit(1);
                 }
-              " "$PUBLISHED_PACKAGES" 2>/dev/null)
+              ' 2>/dev/null)
 
               if [ $? -eq 0 ] && [ -n "$PACKAGES" ]; then
                 MESSAGE="${MESSAGE}${PACKAGES}\n"
