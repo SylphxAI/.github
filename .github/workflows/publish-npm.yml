@@ -72,10 +72,10 @@ on:
         description: 'Working directory for commands (default: .)'
         type: string
         default: '.'
-      enable-slack-notifications:
-        description: 'Enable Slack notifications (requires SLACK_WEBHOOK secret at org/repo level)'
-        type: boolean
-        default: false
+      slack-webhook:
+        description: 'Slack webhook URL for notifications. If not provided, falls back to SLACK_WEBHOOK secret. Leave empty to disable notifications.'
+        type: string
+        default: ''
 
     secrets:
       NPM_TOKEN:
@@ -157,15 +157,29 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
 
       - name: Notify Slack on publish
-        if: ${{ inputs.enable-slack-notifications && steps.changesets.outputs.published == 'true' }}
+        if: ${{ steps.changesets.outputs.published == 'true' }}
         run: |
-          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
-            -H 'Content-Type: application/json' \
-            -d "{\"text\":\"📦 Published: ${{ steps.changesets.outputs.publishedPackages }}\"}"
+          WEBHOOK="${{ inputs.slack-webhook }}"
+          if [ -z "$WEBHOOK" ]; then
+            WEBHOOK="${{ secrets.SLACK_WEBHOOK }}"
+          fi
+
+          if [ -n "$WEBHOOK" ]; then
+            curl -X POST "$WEBHOOK" \
+              -H 'Content-Type: application/json' \
+              -d '{"text":"📦 Published: ${{ steps.changesets.outputs.publishedPackages }}"}'
+          fi
 
       - name: Notify Slack on failure
-        if: ${{ failure() && inputs.enable-slack-notifications }}
+        if: ${{ failure() }}
         run: |
-          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
-            -H 'Content-Type: application/json' \
-            -d "{\"text\":\"❌ Publish workflow failed: ${{ github.repository }}\"}"
+          WEBHOOK="${{ inputs.slack-webhook }}"
+          if [ -z "$WEBHOOK" ]; then
+            WEBHOOK="${{ secrets.SLACK_WEBHOOK }}"
+          fi
+
+          if [ -n "$WEBHOOK" ]; then
+            curl -X POST "$WEBHOOK" \
+              -H 'Content-Type: application/json' \
+              -d '{"text":"❌ Publish workflow failed: ${{ github.repository }}"}'
+          fi
