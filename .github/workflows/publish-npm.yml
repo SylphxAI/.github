@@ -72,14 +72,16 @@ on:
         description: 'Working directory for commands (default: .)'
         type: string
         default: '.'
-      slack-webhook:
-        description: 'Slack webhook URL for notifications (optional)'
-        type: string
-        default: ''
+      enable-slack-notifications:
+        description: 'Enable Slack notifications (requires SLACK_WEBHOOK secret at org/repo level)'
+        type: boolean
+        default: false
 
     secrets:
       NPM_TOKEN:
         required: true
+      SLACK_WEBHOOK:
+        required: false
 
 permissions:
   contents: write
@@ -155,15 +157,15 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
 
       - name: Notify Slack on publish
-        if: ${{ inputs.slack-webhook != '' && steps.changesets.outputs.published == 'true' }}
+        if: ${{ inputs.enable-slack-notifications && steps.changesets.outputs.published == 'true' }}
         run: |
-          curl -X POST "${{ inputs.slack-webhook }}" \
+          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
             -H 'Content-Type: application/json' \
             -d "{\"text\":\"📦 Published: ${{ steps.changesets.outputs.publishedPackages }}\"}"
 
       - name: Notify Slack on failure
-        if: ${{ failure() && inputs.slack-webhook != '' }}
+        if: ${{ failure() && inputs.enable-slack-notifications }}
         run: |
-          curl -X POST "${{ inputs.slack-webhook }}" \
+          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
             -H 'Content-Type: application/json' \
             -d "{\"text\":\"❌ Publish workflow failed: ${{ github.repository }}\"}"
