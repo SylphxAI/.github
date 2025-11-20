@@ -174,7 +174,7 @@ jobs:
             PUBLISHED_PACKAGES='${{ toJSON(steps.changesets.outputs.publishedPackages) }}'
 
             MESSAGE="📦 *Published to npm*\n"
-            MESSAGE="${MESSAGE}Repository: ${REPO}\n"
+            MESSAGE="${MESSAGE}Repository: <https://github.com/${REPO}|${REPO}>\n"
             MESSAGE="${MESSAGE}\n"
 
             # Check if changesets provided published packages info
