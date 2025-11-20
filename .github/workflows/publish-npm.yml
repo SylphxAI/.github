@@ -179,8 +179,10 @@ jobs:
 
             # Check if changesets provided published packages info
             if [ -n "$PUBLISHED_PACKAGES" ] && [ "$PUBLISHED_PACKAGES" != "[]" ]; then
-              # Parse the JSON array from changesets - use env var to avoid shell escaping issues
-              PACKAGES=$(PKGS="$PUBLISHED_PACKAGES" node -e 'JSON.parse(process.env.PKGS).forEach(p=>console.log("• <https://www.npmjs.com/package/"+p.name+"/v/"+p.version+"|"+"`"+p.name+"@"+p.version+"`"+">"))' 2>&1 || echo "")
+              # Parse the JSON array from changesets - write to temp file to preserve JSON structure
+              echo "$PUBLISHED_PACKAGES" > /tmp/packages.json
+              PACKAGES=$(node -e 'JSON.parse(require("fs").readFileSync("/tmp/packages.json","utf8")).forEach(p=>console.log("• <https://www.npmjs.com/package/"+p.name+"/v/"+p.version+"|"+"`"+p.name+"@"+p.version+"`"+">"))' 2>&1 || echo "")
+              rm -f /tmp/packages.json
 
               if [ -n "$PACKAGES" ]; then
                 MESSAGE="${MESSAGE}${PACKAGES}\n"
