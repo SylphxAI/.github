@@ -127,8 +127,78 @@ jobs:
         run: ${{ inputs.pre-publish-command }}
         working-directory: ${{ inputs.working-directory }}
 
-      - name: Update lockfile for workspace resolution
-        run: bun install --no-save
+      # ========== CRITICAL: Resolve workspace:^ protocol ==========
+      # Changesets uses npm publish internally, which doesn't understand workspace:^ protocol.
+      # This step converts workspace:^ to actual version numbers before publishing.
+      # See: https://github.com/changesets/changesets/issues/1011
+      - name: Resolve workspace protocol in package.json files
+        run: |
+          echo "🔧 Resolving workspace:^ protocol to actual versions..."
+
+          # Find all package.json files (excluding node_modules)
+          find . -name "package.json" -not -path "*/node_modules/*" | while read -r pkg_file; do
+            if grep -q '"workspace:\*"\|"workspace:\^"\|"workspace:~"' "$pkg_file" 2>/dev/null; then
+              echo "  Processing: $pkg_file"
+
+              # Use bun to resolve workspace versions
+              bun -e "
+                const fs = require('fs');
+                const path = require('path');
+
+                const pkgPath = '$pkg_file';
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                let modified = false;
+
+                // Get all workspace package versions
+                const workspaceVersions = new Map();
+                const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+                const workspaces = rootPkg.workspaces || [];
+
+                for (const pattern of workspaces) {
+                  const glob = require('path').join(pattern, 'package.json');
+                  try {
+                    const matches = require('fs').readdirSync(pattern.replace('/*', ''));
+                    for (const dir of matches) {
+                      const wpkgPath = require('path').join(pattern.replace('/*', ''), dir, 'package.json');
+                      if (require('fs').existsSync(wpkgPath)) {
+                        const wpkg = JSON.parse(require('fs').readFileSync(wpkgPath, 'utf8'));
+                        if (wpkg.name && wpkg.version) {
+                          workspaceVersions.set(wpkg.name, wpkg.version);
+                        }
+                      }
+                    }
+                  } catch (e) {}
+                }
+
+                // Resolve workspace:* dependencies
+                const resolveWorkspace = (deps) => {
+                  if (!deps) return;
+                  for (const [name, version] of Object.entries(deps)) {
+                    if (typeof version === 'string' && version.startsWith('workspace:')) {
+                      const actualVersion = workspaceVersions.get(name);
+                      if (actualVersion) {
+                        const prefix = version.replace('workspace:', '').replace('*', '^');
+                        deps[name] = prefix === '^' || prefix === '' ? '^' + actualVersion : prefix + actualVersion;
+                        modified = true;
+                      }
+                    }
+                  }
+                };
+
+                resolveWorkspace(pkg.dependencies);
+                resolveWorkspace(pkg.devDependencies);
+                resolveWorkspace(pkg.peerDependencies);
+                resolveWorkspace(pkg.optionalDependencies);
+
+                if (modified) {
+                  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+                  console.log('    ✅ Resolved workspace versions');
+                }
+              "
+            fi
+          done
+
+          echo "✅ Workspace protocol resolution complete"
         working-directory: ${{ inputs.working-directory }}
 
       - name: Setup Node.js for npm publish
