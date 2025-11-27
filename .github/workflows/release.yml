@@ -36,7 +36,6 @@ jobs:
         if: steps.bump.outputs.published == 'true'
         shell: bash
         env:
-          VERSION: ${{ steps.bump.outputs.version }}
           VERSIONS: ${{ steps.bump.outputs.versions }}
           REPO: ${{ github.repository }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -46,31 +45,32 @@ jobs:
           REPO_NAME="${REPO#*/}"
           NL=$'\n'
 
-          if [ -n "$VERSION" ]; then
-            # Single package release
-            PKG_NAME=$(jq -r '.name // ""' package.json 2>/dev/null || echo "")
-            NPM_URL="https://www.npmjs.com/package/${PKG_NAME}/v/${VERSION}"
-            RELEASE_URL="${REPO_URL}/releases/tag/v${VERSION}"
-
-            MSG="📦 *${REPO_NAME}* released${NL}${NL}"
-            MSG="${MSG}<${NPM_URL}|\`${PKG_NAME}@${VERSION}\`>${NL}${NL}"
-            MSG="${MSG}<${RELEASE_URL}|GitHub Release> · <${REPO_URL}|Repository>"
-
-          elif [ -n "$VERSIONS" ] && [ "$VERSIONS" != "{}" ]; then
-            # Monorepo release
+          if [ -n "$VERSIONS" ] && [ "$VERSIONS" != "{}" ] && [ "$VERSIONS" != "null" ]; then
             PKG_COUNT=$(echo "$VERSIONS" | jq 'keys | length' 2>/dev/null || echo "0")
-            MSG="📦 *${REPO_NAME}* released ${PKG_COUNT} packages${NL}${NL}"
 
-            for pkg in $(echo "$VERSIONS" | jq -r 'keys[]' 2>/dev/null); do
-              ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]' 2>/dev/null)
+            if [ "$PKG_COUNT" = "1" ]; then
+              # Single package
+              pkg=$(echo "$VERSIONS" | jq -r 'keys[0]')
+              ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]')
               NPM_URL="https://www.npmjs.com/package/${pkg}/v/${ver}"
-              # URL encode @ for GitHub release tag
-              TAG=$(echo "${pkg}@${ver}" | sed 's/@/%40/g')
-              RELEASE_URL="${REPO_URL}/releases/tag/${pkg}@${ver}"
-              MSG="${MSG}<${NPM_URL}|\`${pkg}@${ver}\`>  ·  <${RELEASE_URL}|release>${NL}"
-            done
+              RELEASE_URL="${REPO_URL}/releases/tag/v${ver}"
 
-            MSG="${MSG}${NL}<${REPO_URL}|View Repository>"
+              MSG="📦 *${REPO_NAME}* released${NL}${NL}"
+              MSG="${MSG}<${NPM_URL}|\`${pkg}@${ver}\`>${NL}${NL}"
+              MSG="${MSG}<${RELEASE_URL}|GitHub Release> · <${REPO_URL}|Repository>"
+            else
+              # Multiple packages
+              MSG="📦 *${REPO_NAME}* released ${PKG_COUNT} packages${NL}${NL}"
+
+              for pkg in $(echo "$VERSIONS" | jq -r 'keys[]'); do
+                ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]')
+                NPM_URL="https://www.npmjs.com/package/${pkg}/v/${ver}"
+                RELEASE_URL="${REPO_URL}/releases/tag/${pkg}@${ver}"
+                MSG="${MSG}<${NPM_URL}|\`${pkg}@${ver}\`>  ·  <${RELEASE_URL}|release>${NL}"
+              done
+
+              MSG="${MSG}${NL}<${REPO_URL}|View Repository>"
+            fi
           else
             MSG="📦 *${REPO_NAME}* released${NL}${NL}<${REPO_URL}|View Repository>"
           fi
