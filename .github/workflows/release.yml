@@ -31,38 +31,16 @@ jobs:
           npm-token: ${{ secrets.NPM_TOKEN }}
           working-directory: ${{ inputs.working-directory }}
 
-      - name: Slack notification (success)
+      - uses: SylphxAI/actions/slack-notify@v1
         if: steps.bump.outputs.published == 'true' && secrets.SLACK_WEBHOOK != ''
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          VERSION: ${{ steps.bump.outputs.version }}
-          VERSIONS: ${{ steps.bump.outputs.versions }}
-        run: |
-          REPO="${{ github.repository }}"
-          REPO_URL="https://github.com/$REPO"
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK }}
+          status: success
+          version: ${{ steps.bump.outputs.version }}
+          versions: ${{ steps.bump.outputs.versions }}
 
-          if [ -n "$VERSION" ]; then
-            MESSAGE="📦 *${REPO}* \`v${VERSION}\` published\n<${REPO_URL}/releases/tag/v${VERSION}|View Release>"
-          elif [ -n "$VERSIONS" ] && [ "$VERSIONS" != "{}" ]; then
-            MESSAGE="📦 *Packages published*\n"
-            for pkg in $(echo "$VERSIONS" | jq -r 'keys[]' 2>/dev/null); do
-              ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]' 2>/dev/null)
-              MESSAGE="${MESSAGE}• ${pkg}@${ver}\n"
-            done
-            MESSAGE="${MESSAGE}<${REPO_URL}|View Repository>"
-          else
-            MESSAGE="📦 Release published from *${REPO}*\n<${REPO_URL}|View Repository>"
-          fi
-
-          curl -s -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "{\"text\": \"${MESSAGE}\"}"
-
-      - name: Slack notification (failure)
+      - uses: SylphxAI/actions/slack-notify@v1
         if: failure() && secrets.SLACK_WEBHOOK != ''
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-        run: |
-          curl -s -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "{\"text\": \"❌ *Publish failed*\nRepository: ${{ github.repository }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>\"}"
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK }}
+          status: failure
