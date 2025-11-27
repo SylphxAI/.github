@@ -3,10 +3,6 @@ name: Release
 on:
   workflow_call:
     inputs:
-      build-command:
-        description: 'Build command to run before publish'
-        type: string
-        default: ''
       working-directory:
         description: 'Working directory'
         type: string
@@ -33,5 +29,4 @@ jobs:
           npm-token: ${{ secrets.NPM_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           slack-webhook: ${{ secrets.SLACK_WEBHOOK }}
-          build-command: ${{ inputs.build-command }}
           working-directory: ${{ inputs.working-directory }}
