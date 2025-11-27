@@ -43,19 +43,22 @@ jobs:
         run: |
           [ -z "$SLACK_WEBHOOK" ] && exit 0
           REPO_URL="https://github.com/$REPO"
+          NL=$'\n'
           if [ -n "$VERSION" ]; then
-            MSG="📦 *${REPO}* \`v${VERSION}\` published\n<${REPO_URL}/releases/tag/v${VERSION}|View Release>"
+            MSG="📦 *${REPO}* \`v${VERSION}\` published${NL}<${REPO_URL}/releases/tag/v${VERSION}|View Release>"
           elif [ -n "$VERSIONS" ] && [ "$VERSIONS" != "{}" ]; then
-            MSG="📦 *Packages published*\n"
+            MSG="📦 *Packages published*${NL}"
             for pkg in $(echo "$VERSIONS" | jq -r 'keys[]' 2>/dev/null); do
               ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]' 2>/dev/null)
-              MSG="${MSG}• ${pkg}@${ver}\n"
+              MSG="${MSG}• ${pkg}@${ver}${NL}"
             done
             MSG="${MSG}<${REPO_URL}|View Repository>"
           else
-            MSG="📦 Release published from *${REPO}*\n<${REPO_URL}|View Repository>"
+            MSG="📦 Release published from *${REPO}*${NL}<${REPO_URL}|View Repository>"
           fi
-          echo "text=$MSG" >> $GITHUB_OUTPUT
+          echo "text<<EOF" >> $GITHUB_OUTPUT
+          echo "$MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Send Slack notification on success
         if: steps.bump.outputs.published == 'true'
@@ -79,7 +82,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           [ -z "$SLACK_WEBHOOK" ] && exit 0
-          MESSAGE="❌ *Release failed*\nRepository: ${REPO}\n<${RUN_URL}|View Workflow>"
+          NL=$'\n'
+          MESSAGE="❌ *Release failed*${NL}Repository: ${REPO}${NL}<${RUN_URL}|View Workflow>"
           curl -s -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$(jq -n --arg text "$MESSAGE" '{text: $text}')"
