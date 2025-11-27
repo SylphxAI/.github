@@ -33,13 +33,15 @@ jobs:
 
       - name: Format release message
         id: message
-        if: steps.bump.outputs.published == 'true' && secrets.SLACK_WEBHOOK != ''
+        if: steps.bump.outputs.published == 'true'
         shell: bash
         env:
           VERSION: ${{ steps.bump.outputs.version }}
           VERSIONS: ${{ steps.bump.outputs.versions }}
           REPO: ${{ github.repository }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
+          [ -z "$SLACK_WEBHOOK" ] && exit 0
           REPO_URL="https://github.com/$REPO"
           if [ -n "$VERSION" ]; then
             MSG="📦 *${REPO}* \`v${VERSION}\` published\n<${REPO_URL}/releases/tag/v${VERSION}|View Release>"
@@ -55,14 +57,29 @@ jobs:
           fi
           echo "text=$MSG" >> $GITHUB_OUTPUT
 
-      - uses: SylphxAI/actions/slack-notify@v1
-        if: steps.bump.outputs.published == 'true' && secrets.SLACK_WEBHOOK != ''
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK }}
-          message: ${{ steps.message.outputs.text }}
+      - name: Send Slack notification on success
+        if: steps.bump.outputs.published == 'true'
+        shell: bash
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          MESSAGE: ${{ steps.message.outputs.text }}
+        run: |
+          [ -z "$SLACK_WEBHOOK" ] && exit 0
+          [ -z "$MESSAGE" ] && exit 0
+          curl -s -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg text "$MESSAGE" '{text: $text}')"
 
-      - uses: SylphxAI/actions/slack-notify@v1
-        if: failure() && secrets.SLACK_WEBHOOK != ''
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK }}
-          message: "❌ *Release failed*\nRepository: ${{ github.repository }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
+      - name: Send Slack notification on failure
+        if: failure()
+        shell: bash
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$SLACK_WEBHOOK" ] && exit 0
+          MESSAGE="❌ *Release failed*\nRepository: ${REPO}\n<${RUN_URL}|View Workflow>"
+          curl -s -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg text "$MESSAGE" '{text: $text}')"
