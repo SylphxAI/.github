@@ -31,16 +31,38 @@ jobs:
           npm-token: ${{ secrets.NPM_TOKEN }}
           working-directory: ${{ inputs.working-directory }}
 
+      - name: Format release message
+        id: message
+        if: steps.bump.outputs.published == 'true' && secrets.SLACK_WEBHOOK != ''
+        shell: bash
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          VERSIONS: ${{ steps.bump.outputs.versions }}
+          REPO: ${{ github.repository }}
+        run: |
+          REPO_URL="https://github.com/$REPO"
+          if [ -n "$VERSION" ]; then
+            MSG="📦 *${REPO}* \`v${VERSION}\` published\n<${REPO_URL}/releases/tag/v${VERSION}|View Release>"
+          elif [ -n "$VERSIONS" ] && [ "$VERSIONS" != "{}" ]; then
+            MSG="📦 *Packages published*\n"
+            for pkg in $(echo "$VERSIONS" | jq -r 'keys[]' 2>/dev/null); do
+              ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]' 2>/dev/null)
+              MSG="${MSG}• ${pkg}@${ver}\n"
+            done
+            MSG="${MSG}<${REPO_URL}|View Repository>"
+          else
+            MSG="📦 Release published from *${REPO}*\n<${REPO_URL}|View Repository>"
+          fi
+          echo "text=$MSG" >> $GITHUB_OUTPUT
+
       - uses: SylphxAI/actions/slack-notify@v1
         if: steps.bump.outputs.published == 'true' && secrets.SLACK_WEBHOOK != ''
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
-          status: success
-          version: ${{ steps.bump.outputs.version }}
-          versions: ${{ steps.bump.outputs.versions }}
+          message: ${{ steps.message.outputs.text }}
 
       - uses: SylphxAI/actions/slack-notify@v1
         if: failure() && secrets.SLACK_WEBHOOK != ''
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
-          status: failure
+          message: "❌ *Release failed*\nRepository: ${{ github.repository }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
