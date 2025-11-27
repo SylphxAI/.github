@@ -9,7 +9,7 @@ on:
         default: '.'
     secrets:
       NPM_TOKEN:
-        required: true
+        required: false
       SLACK_WEBHOOK:
         required: false
 
