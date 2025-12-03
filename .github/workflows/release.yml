@@ -11,6 +11,10 @@ on:
         description: 'Command to run before publishing (e.g., "bun run build")'
         type: string
         required: false
+      postpublish:
+        description: 'Command to run after successful publishing'
+        type: string
+        required: false
     secrets:
       NPM_TOKEN:
         required: false
@@ -48,6 +52,12 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           npm-token: ${{ secrets.NPM_TOKEN }}
           working-directory: ${{ inputs.working-directory }}
+
+      - name: Post-publish
+        if: steps.bump.outputs.published == 'true' && inputs.postpublish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ${{ inputs.postpublish }}
 
       - name: Format release message
         id: message
