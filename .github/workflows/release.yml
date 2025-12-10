@@ -12,7 +12,11 @@ on:
         type: string
         default: 'bun run build'
       artifact:
-        description: 'Download pre-built artifact instead of building'
+        description: 'Download pre-built artifact pattern (supports glob like bindings-*)'
+        type: string
+        default: ''
+      prepublish:
+        description: 'Command to run before publishing (e.g., reorganize artifacts)'
         type: string
         default: ''
       postpublish:
@@ -51,12 +55,17 @@ jobs:
         if: inputs.artifact != ''
         uses: actions/download-artifact@v4
         with:
-          name: ${{ inputs.artifact }}
-          path: ${{ inputs.working-directory }}
+          pattern: ${{ inputs.artifact }}
+          path: ${{ inputs.working-directory }}/artifacts
+          merge-multiple: true
 
       - name: Build
         if: inputs.artifact == ''
         run: ${{ inputs.build }}
+
+      - name: Pre-publish
+        if: inputs.prepublish != ''
+        run: ${{ inputs.prepublish }}
 
       - uses: SylphxAI/bump@main
         id: bump
