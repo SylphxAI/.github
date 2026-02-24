@@ -1,408 +1,87 @@
 <div align="center">
 
-# 🚀 Sylphx Limited
-### Building AI Agent Infrastructure for the Future of Development
+# Sylphx
 
-**Pioneering the Model Context Protocol Ecosystem**
+### AI Platform as a Service
 
-[![Website](https://img.shields.io/badge/🌐_Website-sylphx.com-4A90E2?style=for-the-badge)](https://sylphx.com)
-[![GitHub](https://img.shields.io/badge/GitHub-SylphxAI-181717?style=for-the-badge&logo=github)](https://github.com/SylphxAI)
-[![npm](https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm)](https://www.npmjs.com/~sylphx)
+One SDK. 19 production services. Deploy included.
 
-[![GitHub Stars](https://img.shields.io/github/stars/SylphxAI?style=for-the-badge&logo=github&label=Total%20Stars&color=yellow)](https://github.com/SylphxAI)
-[![GitHub Followers](https://img.shields.io/github/followers/SylphxAI?style=for-the-badge&logo=github&label=Followers&color=blue)](https://github.com/SylphxAI)
-
-🇬🇧 **London, United Kingdom** | 🌍 **Open Source First** | 💡 **Founded 2025**
+[![Website](https://img.shields.io/badge/sylphx.com-4A90E2?style=flat-square&logo=google-chrome&logoColor=white)](https://sylphx.com)
+[![npm](https://img.shields.io/badge/npm-%40sylphx-CB3837?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/~sylphx)
+[![Location](https://img.shields.io/badge/London%2C%20UK-🇬🇧-lightgrey?style=flat-square)](https://sylphx.com)
 
 </div>
 
 ---
 
-## 💫 Our Mission
+## What We Build
 
-> **Democratizing AI capabilities through open-source infrastructure.**
->
-> We build production-ready tools that empower developers to create the next generation of AI-powered applications. From document processing to knowledge retrieval, we're making advanced AI accessible to everyone.
-
----
-
-## 🏆 Impact & Achievements
-
-<div align="center">
-
-| ⭐ GitHub Stars | 📦 NPM Downloads | 🔧 Repositories | 🌍 MCP Directories | 🧪 Test Coverage |
-|:---------------:|:----------------:|:---------------:|:------------------:|:----------------:|
-| **300+** | **8K+** | **27** | **3+** | **94%+** |
-
-</div>
-
-### What We've Built
-
-- 🤖 **300+ stars** on flagship PDF Reader MCP server
-- 📦 **8,000+ combined downloads** across npm packages
-- 🎯 **Featured** on mcpservers.org, lobehub.com, pulsemcp.com
-- ✅ **94%+ test coverage** on production systems
-- 🔐 **Security validated** by mseep.ai
-- 🚀 **5-10x performance** improvements in document processing
-
----
-
-## 🔥 Flagship Projects
-
-### 🤖 [PDF Reader MCP](https://github.com/SylphxAI/pdf-reader-mcp)
-
-![Stars](https://img.shields.io/github/stars/SylphxAI/pdf-reader-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Downloads](https://img.shields.io/npm/dt/@sylphx/pdf-reader-mcp?style=flat-square&logo=npm&label=Downloads&color=CB3837) ![Coverage](https://img.shields.io/badge/Coverage-94%25-brightgreen?style=flat-square&logo=codecov) ![Performance](https://img.shields.io/badge/Performance-~12.9K%20ops%2Fsec-blue?style=flat-square)
-
-Production-grade PDF processing server for AI agents using Model Context Protocol.
-
-- **Performance:** Processes 50-page PDFs in seconds with parallel batch processing
-- **Features:** Text & image extraction, smart content ordering, metadata access
-- **Speed:** 5-10x faster than sequential processing
-- **Integration:** Works with Claude Desktop, Cline, and all MCP-compatible tools
-- **Security:** Validated implementation with comprehensive test suite
+Sylphx is an AI-native platform for developers who want to ship without managing infrastructure. Install the SDK, connect GitHub, push code — everything else is handled.
 
 ```bash
-npx @sylphx/pdf-reader-mcp
+npm install @sylphx/sdk
 ```
+
+One key. Everything works.
 
 ---
 
-### 🗂️ [Filesystem MCP](https://github.com/SylphxAI/filesystem-mcp)
+## The Platform
 
-![Stars](https://img.shields.io/github/stars/SylphxAI/filesystem-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Downloads](https://img.shields.io/npm/dt/@sylphx/filesystem-mcp?style=flat-square&logo=npm&label=Downloads&color=CB3837) ![Security](https://img.shields.io/badge/Security-First-red?style=flat-square&logo=security) ![Token](https://img.shields.io/badge/Token-Efficient-green?style=flat-square)
+19 production-ready services, fully unified:
 
-Secure, efficient, and **token-saving** filesystem access for AI agents.
+| Category | Services |
+|----------|---------|
+| **Build** | AI Gateway (200+ models), Database, Storage, Jobs, KV, Realtime |
+| **Users** | Auth, Email, Push, Consent |
+| **Grow** | Analytics, Feature Flags, Referrals, Engagement, Search |
+| **Operate** | Monitoring, Webhooks, Billing, Deploy |
 
-- **Token Efficiency:** Batch operations reducing AI-server round trips
-- **Security:** Root directory confinement with permission controls
-- **Features:** Multi-file operations, recursive processing, surgical editing
-- **Distribution:** Available on npm, Docker Hub, and MCP directories
+No Vercel dashboard. No Supabase project. No Clerk account. One `SYLPHX_SECRET_KEY`.
 
-```bash
-npx @sylphx/filesystem-mcp
-```
-
-📝 [Read our Medium article](https://medium.com/@shtse8/empower-your-ai-agent-introducing-a-secure-efficient-and-token-saving-filesystem-mcp-server-05b325121a7a)
+Deploy is built in — Git push to production, zero config. Apps run at `{app}.sylphx.app`.
 
 ---
 
-### 🧠 [RAG Server MCP](https://github.com/SylphxAI/rag-server-mcp)
+## We Run It All On Our Own Platform
 
-![Stars](https://img.shields.io/github/stars/SylphxAI/rag-server-mcp?style=flat-square&logo=github&label=Stars&color=yellow) ![Privacy](https://img.shields.io/badge/Privacy-First-purple?style=flat-square&logo=lock) ![Search](https://img.shields.io/badge/Search-Semantic-blue?style=flat-square) ![Stack](https://img.shields.io/badge/Stack-ChromaDB%20%2B%20Ollama-orange?style=flat-square)
+We don't just build Sylphx. We run on it.
 
-Retrieval-Augmented Generation server with local vector database and embeddings.
+**[Anima](https://anima.sylphx.com)** — our AI agent infrastructure system — is built entirely on the Sylphx Platform. It runs persistent AI teams with Docker-isolated agents, 4-stage semantic memory, and zero credential leakage. Every one of our production products is a customer of our own platform.
 
-- **Privacy:** Local ChromaDB storage with Ollama embeddings
-- **Performance:** Fast semantic search across project documentation
-- **Integration:** Built with Google Genkit framework
-- **Features:** Document indexing, query, removal, and listing
-
-Enable AI agents to access project-specific knowledge while maintaining full data control.
+**Customer Zero.** If it can run Anima, it can run your product.
 
 ---
 
-### 🔥 [Firestore ODM](https://github.com/SylphxAI/firestore_odm)
+## Open Source
 
-![Stars](https://img.shields.io/github/stars/SylphxAI/firestore_odm?style=flat-square&logo=github&label=Stars&color=yellow) ![Docs](https://img.shields.io/badge/Docs-Complete-blue?style=flat-square&logo=gitbook) ![TypeSafe](https://img.shields.io/badge/Type-Safe-green?style=flat-square&logo=typescript) ![CodeGen](https://img.shields.io/badge/Code-Generation-orange?style=flat-square)
+Performance-obsessed TypeScript and Dart tools, MIT licensed:
 
-Type-safe, annotation-based Firestore ODM for Dart/Flutter with code generation.
-
-- **Architecture:** Clean architecture with zero runtime reflection
-- **Performance:** Lightning-fast code generation using callables
-- **Features:** Full type safety, pagination, streaming, bulk operations
-- **Documentation:** Comprehensive docs site at [SylphxAI.github.io/firestore_odm](https://SylphxAI.github.io/firestore_odm)
-
----
-
-### 💡 [Flow - AI Development Platform](https://github.com/SylphxAI/flow)
-
-![Stars](https://img.shields.io/github/stars/SylphxAI/flow?style=flat-square&logo=github&label=Stars&color=yellow) ![Architecture](https://img.shields.io/badge/Architecture-MEP-purple?style=flat-square) ![Efficiency](https://img.shields.io/badge/Efficiency-90%25%20Time%20Saved-green?style=flat-square) ![Languages](https://img.shields.io/badge/Languages-70%2B-blue?style=flat-square)
-
-**MEP (Minimal Effective Prompt)** - A paradigm shift in AI-assisted development.
-
-- **Innovation:** ~90% reduction in prompt composition time
-- **Technology:** StarCoder2 tokenization for 70+ languages
-- **Features:** Automatic context gathering, semantic codebase search
-- **Value:** Faster onboarding, consistent quality, multi-language support
-
-Stop spending time crafting prompts. Let Flow gather context automatically.
+| Project | What it does | Stars |
+|---------|-------------|-------|
+| [pdf-reader-mcp](https://github.com/SylphxAI/pdf-reader-mcp) | Production MCP server for PDF processing — 5-10x faster, 94%+ test coverage | ⭐ 518 |
+| [firestore_odm](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore ODM for Dart/Flutter with code generation | ⭐ 12 |
+| [coderag](https://github.com/SylphxAI/coderag) | Semantic code search with AST chunking — 15+ languages, MCP-ready | ⭐ 7 |
+| [silk](https://github.com/SylphxAI/silk) | Zero-runtime CSS-in-TypeScript — 92% smaller than Panda CSS | ⭐ 5 |
+| [media-curator](https://github.com/SylphxAI/media-curator) | Intelligent media deduplication via perceptual hashing + LSH | ⭐ 5 |
+| [rapid](https://github.com/SylphxAI/rapid) | State management — 1.7–45x faster than competitors, 1.45 kB gzipped | ⭐ 4 |
+| [craft](https://github.com/SylphxAI/craft) | Immutable state library — 1.4–35x faster than immer | ⭐ 4 |
 
 ---
 
-## 🛠️ Technology Stack
+## Stack
 
-### Core Technologies
 ```
-TypeScript • Node.js • Dart • Bun • Docker
+TypeScript · Rust · Bun · Docker · PostgreSQL · Redis
+React · Next.js · Dart · Flutter
 ```
-
-### AI & ML Infrastructure
-```
-Model Context Protocol (MCP) • ChromaDB • Ollama
-Vector Databases • RAG Systems • LLM Integration
-```
-
-### Development Tools
-```
-ESLint Flat Configs • Strict TypeScript • Prettier
-Code Generation • Build Automation • CI/CD
-```
-
-### Frameworks & Platforms
-```
-React • Next.js • Flutter • Vue.js • Google Genkit
-Firebase • Firestore • GitHub Actions
-```
-
----
-
-## 🎯 What Makes Us Different
-
-### 🚀 **Early MCP Ecosystem Leader**
-Recognized the strategic importance of Model Context Protocol immediately after Anthropic's announcement (Nov 2024) and became a major contributor within months.
-
-### 💎 **Production-Ready Quality**
-- ✅ 94%+ test coverage on flagship projects
-- 🔐 Security validation and best practices
-- 📚 Comprehensive documentation for every project
-- 🤖 Automated CI/CD pipelines
-
-### ⚡ **Performance Obsessed**
-- 5-10x faster PDF processing
-- Token-efficient batch operations
-- Smart caching and optimization
-- ~12,933 ops/sec throughput
-
-### 🌍 **Open Source First**
-- MIT licensing for community benefit
-- Active issue tracking and support
-- Knowledge sharing via Medium articles
-- Contributing to MCP ecosystem growth
-
-### 🎓 **Developer Experience Focus**
-- Type-safe code generation
-- Zero-dependency utilities
-- Clear, actionable documentation
-- Easy integration (npx/bunx)
-
----
-
-## 📦 Our Packages
-
-### NPM Packages (@sylphx)
-- **@sylphx/pdf-reader-mcp** - PDF processing MCP server
-- **@sylphx/filesystem-mcp** - Filesystem access MCP server
-- **@sylphx/mcp-rag-server** - RAG server with ChromaDB + Ollama
-- **@sylphx/media-curator** - Intelligent media organizer with LSH deduplication
-- **@sylphx/craft** - Fast immutable state library (1.4-35x faster than immer)
-- **@sylphx/zen** - Minimal state management (1.45 KB, 1.7-45x faster)
-- **@sylphx/silk** - Zero-runtime CSS framework (92% smaller than Panda)
-- **@sylphx/ai-sdk-provider-claude-code** - Claude Code provider for Vercel AI SDK
-- **@sylphx/mcp-tools** - Modular MCP tools toolkit
-
-### Dart Packages (pub.dev)
-- **firestore_odm** - Type-safe Firestore ODM
-- **firestore_odm_annotation** - ODM annotations
-- **firestore_odm_builder** - Code generator
-
-### Docker Images
-- **sylphx/filesystem-mcp** - Containerized filesystem server
-- **sylphx/pdf-reader-mcp** - PDF processing server
-- More coming soon...
-
----
-
-## 🌟 Featured On
-
-<div align="center">
-
-| Directory | Status |
-|-----------|--------|
-| [mcpservers.org](https://mcpservers.org) | ✅ Featured |
-| [lobehub.com MCP Index](https://lobehub.com/discover/assistants?category=mcp) | ✅ Listed |
-| [pulsemcp.com](https://pulsemcp.com) | ✅ Verified |
-
-</div>
-
----
-
-## 🏗️ Architecture Principles
-
-### MEP (Minimal Effective Prompt)
-Revolutionary approach to AI-assisted development:
-- 🎯 **Focus:** Minimal input, maximum context
-- 🤖 **Automation:** Semantic codebase analysis
-- 🧠 **Intelligence:** Pattern recognition across languages
-- ⚡ **Efficiency:** 90% reduction in prompt engineering time
-
-### Type-Safe Code Generation
-Catch errors at compile-time, not runtime:
-- 🔒 **Safety:** Full type inference and checking
-- 🚀 **Speed:** Reduced boilerplate, faster development
-- 🌐 **Multi-Platform:** TypeScript, Dart, C# support
-- 💡 **DX:** Excellent developer experience
-
-### Privacy-First Infrastructure
-Your data stays yours:
-- 🔐 **Local Processing:** ChromaDB + Ollama
-- 🏠 **On-Premises:** No cloud dependencies
-- 🛡️ **Security:** Sandboxing and permission controls
-- 📊 **Transparency:** Open-source, auditable code
-
----
-
-## 🤝 Community & Support
-
-### Get Involved
-- 🌟 **Star our repos** - Help others discover our tools
-- 🐛 **Report issues** - Help us improve quality
-- 💡 **Suggest features** - Shape the future of MCP
-- 🤝 **Contribute** - Pull requests welcome!
-
-### Stay Updated
-- 📝 **Medium** - Technical deep-dives and announcements
-- 🐙 **GitHub** - Watch releases and discussions
-- 📦 **npm** - Follow @sylphx for package updates
-
----
-
-## 📊 GitHub Activity
-
-<div align="center">
-
-### 🔥 Organization Stats
-**27 Repositories** • **300+ Stars** • **8K+ Downloads** • **Active Development**
-
-### 🌱 Recent Achievements
-- 🎉 PDF Reader MCP reached 300 stars
-- 📦 Combined 8K+ npm downloads milestone
-- 🌍 Featured on 3+ MCP directories
-- ✅ Achieved 94%+ test coverage
-
-</div>
-
----
-
-## 🎓 Learn More
-
-### Documentation
-- 📚 [Firestore ODM Docs](https://SylphxAI.github.io/firestore_odm)
-- 📝 [Medium Articles](https://medium.com/@shtse8)
-- 🔧 Individual project READMEs
-
-### Key Articles
-- [Stop Fighting Firestore Schemas](https://medium.com/@shtse8/stop-fighting-firestore-schemas-generate-type-safe-code-in-minutes-with-fireschema-5a2d9b521c02)
-- [Empower Your AI Agent with Filesystem MCP](https://medium.com/@shtse8/empower-your-ai-agent-introducing-a-secure-efficient-and-token-saving-filesystem-mcp-server-05b325121a7a)
-
----
-
-## 💼 About Sylphx Limited
-
-**Location:** London, United Kingdom
-**Founded:** 2025
-**Status:** UK Registered Company
-
-### Our Vision
-We believe AI agents will revolutionize software development. By building robust, secure, and efficient infrastructure, we're enabling developers worldwide to harness AI's full potential while maintaining control over their data and workflows.
-
-### Our Values
-```
-🎯 Production-Ready Quality → Ship code you're proud of
-🌍 Open Source First → Community over competition
-⚡ Performance Matters → Every millisecond counts
-🔐 Security by Design → Trust through transparency
-💡 Developer Experience → Tools that developers love
-🤝 Knowledge Sharing → Learn together, grow together
-```
-
----
-
-## 🚀 Getting Started
-
-### Quick Start with MCP Servers
-
-#### PDF Reader MCP
-```bash
-# Via npx (easiest)
-npx @sylphx/pdf-reader-mcp
-
-# Via Docker
-docker run -v /path/to/pdfs:/pdfs sylphx/pdf-reader-mcp
-```
-
-#### Filesystem MCP
-```bash
-# Via npx
-npx @sylphx/filesystem-mcp
-
-# Via Bun
-bunx @sylphx/filesystem-mcp
-```
-
-#### RAG Server MCP
-```bash
-# Clone and run
-git clone https://github.com/SylphxAI/rag-server-mcp
-cd rag-server-mcp
-npm install
-npm start
-```
-
-### Integration with Claude Desktop
-Add to your `claude_desktop_config.json`:
-```json
-{
-  "mcpServers": {
-    "pdf-reader": {
-      "command": "npx",
-      "args": ["-y", "@sylphx/pdf-reader-mcp"]
-    },
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@sylphx/filesystem-mcp"]
-    }
-  }
-}
-```
-
----
-
-## 📈 Roadmap
-
-### 🎯 Current Focus (Q2 2025)
-- 📄 Enhance PDF Reader with more extraction features
-- 🗂️ Filesystem MCP v2 with improved performance
-- 🧠 RAG Server optimization and new embedding models
-- 📚 Comprehensive documentation expansion
-
-### 🔮 Coming Soon
-- 🔗 More MCP servers (Slack, Jira, Linear integrations)
-- 🎓 Developer tutorials and workshops
-- 💼 Enterprise offerings and support
-- 🌐 Community Discord server
-
-### 🌟 Long-Term Vision
-- 🏢 Complete AI development platform
-- 🎓 MCP certification programs
-- 🤝 Enterprise consulting services
-- 🌍 Global developer community
 
 ---
 
 <div align="center">
 
-### 💫 "Empowering developers to build the future with AI"
+**[sylphx.com](https://sylphx.com)** · London, United Kingdom · Founded 2025
 
-**Let's shape the future of development together.** 🚀
-
-[![Star our repos](https://img.shields.io/badge/⭐_Star_Our_Repos-Help_Us_Grow-yellow?style=for-the-badge)](https://github.com/SylphxAI)
-[![Follow on GitHub](https://img.shields.io/badge/👁️_Follow-Stay_Updated-blue?style=for-the-badge)](https://github.com/SylphxAI)
-[![Read on Medium](https://img.shields.io/badge/📝_Medium-Read_Articles-black?style=for-the-badge)](https://medium.com/@shtse8)
-
----
-
-*Built with ❤️ and lots of ☕ by the Sylphx team*
-
-**© 2025 Sylphx Limited. All rights reserved.**
+*Built on our own platform. Proven in production.*
 
 </div>
