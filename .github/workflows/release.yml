@@ -31,7 +31,7 @@ on:
 
 jobs:
   release:
-    runs-on: [self-hosted, sylphx, linux, standard]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
@@ -98,7 +98,6 @@ jobs:
             PKG_COUNT=$(echo "$VERSIONS" | jq 'keys | length' 2>/dev/null || echo "0")
 
             if [ "$PKG_COUNT" = "1" ]; then
-              # Single package
               pkg=$(echo "$VERSIONS" | jq -r 'keys[0]')
               ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]')
               NPM_URL="https://www.npmjs.com/package/${pkg}/v/${ver}"
@@ -108,7 +107,6 @@ jobs:
               MSG="${MSG}<${NPM_URL}|\`${pkg}@${ver}\`>${NL}${NL}"
               MSG="${MSG}<${RELEASE_URL}|GitHub Release> · <${REPO_URL}|Repository>"
             else
-              # Multiple packages
               MSG="📦 *${REPO_NAME}* released ${PKG_COUNT} packages${NL}${NL}"
 
               for pkg in $(echo "$VERSIONS" | jq -r 'keys[]'); do
