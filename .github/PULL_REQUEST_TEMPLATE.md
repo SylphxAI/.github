@@ -21,6 +21,27 @@
 - [ ] ✅ Test update
 - [ ] 🔧 Build/tooling change
 
+
+## 🤖 Agent-first Delivery Gate Evidence
+
+<!-- Required for Agent-first workflow PRs. Mark N/A only when the repo owner agrees the gate does not apply. -->
+
+### pr-metadata/pass
+- [ ] Linked issue, ADR, spec, or manager instruction is referenced above
+- [ ] Project boundary/source of truth read (`PROJECT_BOUNDARY`, `AGENT_GUIDE`, `README`, ADR/spec where present)
+- [ ] Change scope is separated by repo/project boundary
+- [ ] Required checks expected for this repo are listed or linked
+
+### risk-classification/pass
+- [ ] Risk tier selected: `low` / `normal` / `high` / `strict`
+- [ ] High/strict risk evidence path documented before merge
+- [ ] No direct default-branch push, force-push, destructive settings change, or secret exposure
+
+### ai-review/pass
+- [ ] AI/self review completed and summarized
+- [ ] Independent review requested when risk or policy requires it
+- [ ] Open AI review findings are linked or explicitly marked none
+
 ## 🧪 Testing
 
 <!-- Describe how you tested your changes -->
