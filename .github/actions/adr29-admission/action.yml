@@ -13,6 +13,22 @@ inputs:
     description: JSON from toJSON(needs) for fan-in mode.
     required: false
     default: '{}'
+  required-status-contexts:
+    description: Comma or newline separated commit status contexts to require in fan-in mode.
+    required: false
+    default: ''
+  status-timeout-seconds:
+    description: Seconds to wait for required status contexts in fan-in mode.
+    required: false
+    default: '0'
+  status-poll-seconds:
+    description: Seconds between required status context polls.
+    required: false
+    default: '15'
+  github-token:
+    description: GitHub token used to read commit statuses.
+    required: false
+    default: ''
   manifest-path:
     description: Output manifest path.
     required: false
@@ -58,6 +74,10 @@ runs:
         ADR29_MODE: ${{ inputs.mode }}
         ADR29_POLICY_MODE: ${{ inputs.policy-mode }}
         ADR29_UPSTREAM_RESULTS_JSON: ${{ inputs.upstream-results-json }}
+        ADR29_REQUIRED_STATUS_CONTEXTS: ${{ inputs.required-status-contexts }}
+        ADR29_STATUS_TIMEOUT_SECONDS: ${{ inputs.status-timeout-seconds }}
+        ADR29_STATUS_POLL_SECONDS: ${{ inputs.status-poll-seconds }}
+        ADR29_GITHUB_TOKEN: ${{ inputs.github-token }}
         ADR29_MANIFEST_PATH: ${{ inputs.manifest-path }}
         ADR29_BASE_REF: ${{ inputs.base-ref }}
         ADR29_BASE_SHA: ${{ inputs.base-sha }}
@@ -70,6 +90,9 @@ runs:
         import os
         import subprocess
         import sys
+        import time
+        import urllib.error
+        import urllib.request
         from datetime import datetime, timezone
         from pathlib import Path
 
@@ -77,7 +100,12 @@ runs:
         POLICY_MODE = os.environ.get("ADR29_POLICY_MODE", "observe")
         MANIFEST_PATH = Path(os.environ.get("ADR29_MANIFEST_PATH", "adr29-admission-manifest.json"))
         UPSTREAM = os.environ.get("ADR29_UPSTREAM_RESULTS_JSON", "{}")
+        REQUIRED_STATUS_CONTEXTS = os.environ.get("ADR29_REQUIRED_STATUS_CONTEXTS", "")
+        STATUS_TIMEOUT_SECONDS = int(os.environ.get("ADR29_STATUS_TIMEOUT_SECONDS", "0") or "0")
+        STATUS_POLL_SECONDS = max(1, int(os.environ.get("ADR29_STATUS_POLL_SECONDS", "15") or "15"))
+        GITHUB_TOKEN = os.environ.get("ADR29_GITHUB_TOKEN", "")
         REPO = os.environ.get("GITHUB_REPOSITORY", "")
+        SHA = os.environ.get("GITHUB_SHA", "")
         EVENT = os.environ.get("GITHUB_EVENT_NAME", "")
         REF = os.environ.get("GITHUB_REF", "")
         RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
@@ -100,6 +128,63 @@ runs:
               seen.add(value)
               out.append(value)
           return out
+
+        def parse_contexts(raw):
+          return unique(
+            part.strip()
+            for chunk in raw.splitlines()
+            for part in chunk.split(",")
+          )
+
+        def github_api_json(path):
+          url = f"{SERVER_URL}/api/v3/{path}" if "github.com" not in SERVER_URL else f"https://api.github.com/{path}"
+          request = urllib.request.Request(url)
+          request.add_header("Accept", "application/vnd.github+json")
+          request.add_header("X-GitHub-Api-Version", "2022-11-28")
+          if GITHUB_TOKEN:
+            request.add_header("Authorization", f"Bearer {GITHUB_TOKEN}")
+          try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+              return json.loads(response.read().decode("utf-8"))
+          except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise SystemExit(f"GitHub API request failed for {path}: HTTP {exc.code}: {detail}")
+
+        def latest_commit_statuses():
+          if not REPO or not SHA:
+            return {}
+          data = github_api_json(f"repos/{REPO}/commits/{SHA}/status")
+          statuses = data.get("statuses", []) if isinstance(data, dict) else []
+          latest = {}
+          for item in statuses:
+            context = item.get("context") if isinstance(item, dict) else None
+            state = item.get("state") if isinstance(item, dict) else None
+            if isinstance(context, str) and context and context not in latest:
+              latest[context] = state
+          return latest
+
+        def wait_required_status_contexts(required):
+          if not required:
+            return [], {}
+
+          deadline = time.monotonic() + STATUS_TIMEOUT_SECONDS
+          last_statuses = {}
+          while True:
+            last_statuses = latest_commit_statuses()
+            blocked = [
+              context
+              for context in required
+              if last_statuses.get(context) != "success"
+            ]
+            if not blocked:
+              return [], last_statuses
+            if STATUS_TIMEOUT_SECONDS <= 0 or time.monotonic() >= deadline:
+              return blocked, last_statuses
+            print(
+              "::notice::ADR-29 waiting for status contexts: "
+              + ", ".join(f"{context}={last_statuses.get(context, 'missing')}" for context in blocked)
+            )
+            time.sleep(STATUS_POLL_SECONDS)
 
         def detect_base():
           base_sha = os.environ.get("ADR29_BASE_SHA", "").strip()
@@ -332,6 +417,8 @@ runs:
             if result:
               lanes.append({"name": name, "result": result})
 
+          required_status_contexts = parse_contexts(REQUIRED_STATUS_CONTEXTS)
+          blocked_status_contexts, observed_status_contexts = wait_required_status_contexts(required_status_contexts)
           blocked = [lane["name"] for lane in lanes if lane["result"] != "success"]
           manifest = {
             "schemaVersion": 1,
@@ -352,14 +439,25 @@ runs:
             "enforcedControls": ["blocking-lane-fan-in"],
             "blockingLanes": [lane["name"] for lane in lanes],
             "blockedUpstreamLanes": blocked,
+            "requiredStatusContexts": required_status_contexts,
+            "blockedStatusContexts": blocked_status_contexts,
+            "observedStatusContexts": observed_status_contexts,
             "postsubmitLanes": ["postsubmit-proof/pass"],
             "recoveryClass": "source-revertable",
             "rolloutStrategy": "none",
           }
           MANIFEST_PATH.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           write_outputs(manifest)
-          if blocked:
-            raise SystemExit("ADR-29 trunk admission blocked by upstream lanes: " + ", ".join(blocked))
+          if blocked or blocked_status_contexts:
+            reasons = []
+            if blocked:
+              reasons.append("upstream lanes: " + ", ".join(blocked))
+            if blocked_status_contexts:
+              reasons.append(
+                "status contexts: "
+                + ", ".join(f"{context}={observed_status_contexts.get(context, 'missing')}" for context in blocked_status_contexts)
+              )
+            raise SystemExit("ADR-29 trunk admission blocked by " + "; ".join(reasons))
           if not lanes:
             print("::warning::ADR-29 fan-in received no upstream lane results")
 
