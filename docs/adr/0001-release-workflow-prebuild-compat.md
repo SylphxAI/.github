@@ -29,5 +29,7 @@ The public contract is documented in `docs/specs/release-workflow.md`.
 
 - Existing consumers using `prebuild` stop failing at workflow startup.
 - New consumers have one canonical input, `build`.
+- Consumers must still grant the reusable workflow sufficient job permissions;
+  GitHub does not allow the callee to raise caller token scope.
 - The organization can later remove `prebuild` only through an audited migration
   that proves no callers still use it.
