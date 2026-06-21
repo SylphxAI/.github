@@ -41,6 +41,10 @@ inputs:
     description: Target URL for the published commit status. Defaults to the workflow run URL.
     required: false
     default: ''
+  status-sha:
+    description: Commit SHA used for required status reads and status publication. Defaults to the PR head SHA, merge-group head SHA, or GITHUB_SHA.
+    required: false
+    default: ''
   manifest-path:
     description: Output manifest path.
     required: false
@@ -93,6 +97,7 @@ runs:
         ADR29_PUBLISH_STATUS: ${{ inputs.publish-status }}
         ADR29_STATUS_CONTEXT: ${{ inputs.status-context }}
         ADR29_STATUS_TARGET_URL: ${{ inputs.status-target-url }}
+        ADR29_STATUS_SHA: ${{ inputs.status-sha }}
         ADR29_MANIFEST_PATH: ${{ inputs.manifest-path }}
         ADR29_BASE_REF: ${{ inputs.base-ref }}
         ADR29_BASE_SHA: ${{ inputs.base-sha }}
@@ -122,6 +127,7 @@ runs:
         PUBLISH_STATUS = os.environ.get("ADR29_PUBLISH_STATUS", "false").lower() == "true"
         STATUS_CONTEXT = os.environ.get("ADR29_STATUS_CONTEXT", "").strip()
         STATUS_TARGET_URL = os.environ.get("ADR29_STATUS_TARGET_URL", "").strip()
+        STATUS_SHA_INPUT = os.environ.get("ADR29_STATUS_SHA", "").strip()
         REPO = os.environ.get("GITHUB_REPOSITORY", "")
         SHA = os.environ.get("GITHUB_SHA", "")
         EVENT = os.environ.get("GITHUB_EVENT_NAME", "")
@@ -137,6 +143,32 @@ runs:
 
         def git(*args, check=True):
           return sh(["git", *args], check=check)
+
+        def load_event():
+          event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+          if not event_path or not Path(event_path).exists():
+            return {}
+          try:
+            return json.loads(Path(event_path).read_text())
+          except Exception:
+            return {}
+
+        EVENT_PAYLOAD = load_event()
+
+        def resolve_status_sha():
+          if STATUS_SHA_INPUT:
+            return STATUS_SHA_INPUT
+          pull = EVENT_PAYLOAD.get("pull_request") if isinstance(EVENT_PAYLOAD, dict) else None
+          if isinstance(pull, dict):
+            head = pull.get("head")
+            if isinstance(head, dict) and isinstance(head.get("sha"), str) and head["sha"]:
+              return head["sha"]
+          merge_group = EVENT_PAYLOAD.get("merge_group") if isinstance(EVENT_PAYLOAD, dict) else None
+          if isinstance(merge_group, dict) and isinstance(merge_group.get("head_sha"), str) and merge_group["head_sha"]:
+            return merge_group["head_sha"]
+          return SHA
+
+        STATUS_SHA = resolve_status_sha()
 
         def unique(values):
           seen = set()
@@ -183,12 +215,12 @@ runs:
             return
           if not GITHUB_TOKEN:
             raise SystemExit("github-token is required when publish-status is true")
-          if not REPO or not SHA:
-            raise SystemExit("GITHUB_REPOSITORY and GITHUB_SHA are required when publish-status is true")
+          if not REPO or not STATUS_SHA:
+            raise SystemExit("GITHUB_REPOSITORY and a status SHA are required when publish-status is true")
           if not STATUS_CONTEXT:
             raise SystemExit("status-context is required when publish-status is true")
           github_api_json(
-            f"repos/{REPO}/statuses/{SHA}",
+            f"repos/{REPO}/statuses/{STATUS_SHA}",
             method="POST",
             payload={
               "state": state,
@@ -199,9 +231,9 @@ runs:
           )
 
         def latest_commit_statuses():
-          if not REPO or not SHA:
+          if not REPO or not STATUS_SHA:
             return {}
-          data = github_api_json(f"repos/{REPO}/commits/{SHA}/status")
+          data = github_api_json(f"repos/{REPO}/commits/{STATUS_SHA}/status")
           statuses = data.get("statuses", []) if isinstance(data, dict) else []
           latest = {}
           for item in statuses:
@@ -427,6 +459,7 @@ runs:
             "ref": REF,
             "base": base,
             "head": head,
+            "statusSha": STATUS_SHA,
             "run": {
               "id": RUN_ID,
               "attempt": RUN_ATTEMPT,
@@ -476,6 +509,7 @@ runs:
             "repository": REPO,
             "event": EVENT,
             "ref": REF,
+            "statusSha": STATUS_SHA,
             "run": {
               "id": RUN_ID,
               "attempt": RUN_ATTEMPT,

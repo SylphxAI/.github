@@ -24,6 +24,9 @@ Rollout rules:
 - when using embedded status publication, grant `statuses: write` only to the
   workflow that publishes the admission contexts and keep `checks: read` off
   unless a repo has a separate documented check-run fan-in requirement;
+- the action publishes and reads commit statuses against the pull-request head
+  SHA, merge-group head SHA, or `GITHUB_SHA` by default; set `status-sha` only
+  for non-standard status producers with a documented SHA binding;
 - do not switch branch protection from raw contexts to `trunk-admission/pass`
   until the repo has a working postsubmit backstop plan;
 - migrations must have expand/contract proof, side effects must have
