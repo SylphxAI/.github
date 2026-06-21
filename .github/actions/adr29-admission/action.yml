@@ -1,0 +1,382 @@
+name: ADR-29 Admission
+description: Generate ADR-29 risk manifests and fan in blocking CI lanes.
+
+inputs:
+  mode:
+    description: classify or fan-in
+    required: true
+  policy-mode:
+    description: observe or enforce
+    required: false
+    default: observe
+  upstream-results-json:
+    description: JSON from toJSON(needs) for fan-in mode.
+    required: false
+    default: '{}'
+  manifest-path:
+    description: Output manifest path.
+    required: false
+    default: adr29-admission-manifest.json
+  base-ref:
+    description: Base ref for diff calculation.
+    required: false
+    default: ''
+  base-sha:
+    description: Base SHA for diff calculation.
+    required: false
+    default: ''
+  head-sha:
+    description: Head SHA for diff calculation.
+    required: false
+    default: ''
+  upload-artifact:
+    description: Upload the generated manifest artifact.
+    required: false
+    default: 'true'
+
+outputs:
+  manifest-path:
+    description: Path to the generated admission manifest.
+    value: ${{ steps.admission.outputs.manifest_path }}
+  risk-level:
+    description: Highest detected ADR-29 risk level.
+    value: ${{ steps.admission.outputs.risk_level }}
+  recovery-class:
+    description: Required recovery class.
+    value: ${{ steps.admission.outputs.recovery_class }}
+  rollout-strategy:
+    description: Required rollout strategy.
+    value: ${{ steps.admission.outputs.rollout_strategy }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run ADR-29 admission
+      id: admission
+      shell: bash
+      env:
+        ADR29_MODE: ${{ inputs.mode }}
+        ADR29_POLICY_MODE: ${{ inputs.policy-mode }}
+        ADR29_UPSTREAM_RESULTS_JSON: ${{ inputs.upstream-results-json }}
+        ADR29_MANIFEST_PATH: ${{ inputs.manifest-path }}
+        ADR29_BASE_REF: ${{ inputs.base-ref }}
+        ADR29_BASE_SHA: ${{ inputs.base-sha }}
+        ADR29_HEAD_SHA: ${{ inputs.head-sha }}
+      run: |
+        set -euo pipefail
+
+        python3 - <<'PY'
+        import json
+        import os
+        import subprocess
+        import sys
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        MODE = os.environ.get("ADR29_MODE", "")
+        POLICY_MODE = os.environ.get("ADR29_POLICY_MODE", "observe")
+        MANIFEST_PATH = Path(os.environ.get("ADR29_MANIFEST_PATH", "adr29-admission-manifest.json"))
+        UPSTREAM = os.environ.get("ADR29_UPSTREAM_RESULTS_JSON", "{}")
+        REPO = os.environ.get("GITHUB_REPOSITORY", "")
+        EVENT = os.environ.get("GITHUB_EVENT_NAME", "")
+        REF = os.environ.get("GITHUB_REF", "")
+        RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
+        RUN_ATTEMPT = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+        SERVER_URL = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+
+        RISK_ORDER = {"L0": 0, "L1": 1, "L2": 2, "L3": 3, "L4": 4, "L5": 5}
+
+        def sh(args, check=True):
+          return subprocess.run(args, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def git(*args, check=True):
+          return sh(["git", *args], check=check)
+
+        def unique(values):
+          seen = set()
+          out = []
+          for value in values:
+            if value and value not in seen:
+              seen.add(value)
+              out.append(value)
+          return out
+
+        def detect_base():
+          base_sha = os.environ.get("ADR29_BASE_SHA", "").strip()
+          head_sha = os.environ.get("ADR29_HEAD_SHA", "").strip() or os.environ.get("GITHUB_SHA", "HEAD")
+          base_ref = os.environ.get("ADR29_BASE_REF", "").strip()
+
+          if base_sha:
+            return base_sha, head_sha
+
+          event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+          if event_path and Path(event_path).exists():
+            try:
+              event = json.loads(Path(event_path).read_text())
+              pull = event.get("pull_request") or {}
+              if pull.get("base", {}).get("sha"):
+                return pull["base"]["sha"], head_sha
+              if event.get("merge_group", {}).get("base_sha"):
+                return event["merge_group"]["base_sha"], head_sha
+              if event.get("before") and event["before"] != "0000000000000000000000000000000000000000":
+                return event["before"], head_sha
+            except Exception:
+              pass
+
+          if base_ref:
+            git("fetch", "--no-tags", "--depth=1", "origin", base_ref, check=False)
+            parsed = git("rev-parse", f"origin/{base_ref}", check=False)
+            if parsed.returncode == 0:
+              return parsed.stdout.strip(), head_sha
+
+          upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False)
+          if upstream.returncode == 0:
+            return upstream.stdout.strip(), head_sha
+
+          previous = git("rev-parse", "HEAD^", check=False)
+          if previous.returncode == 0:
+            return previous.stdout.strip(), head_sha
+
+          return "", head_sha
+
+        def changed_files():
+          base, head = detect_base()
+          if not base:
+            return [], base, head
+
+          # Best effort fetch for shallow checkouts.
+          git("fetch", "--no-tags", "--deepen=50", "origin", check=False)
+          diff = git("diff", "--name-only", f"{base}...{head}", check=False)
+          if diff.returncode != 0:
+            diff = git("diff", "--name-only", base, head, check=False)
+          if diff.returncode != 0:
+            return [], base, head
+          return [line for line in diff.stdout.splitlines() if line.strip()], base, head
+
+        def classify_path(path):
+          p = path.lower()
+          if p.startswith(("docs/", "readme", "changelog", ".github/issue_template/")) or p.endswith((".md", ".mdx")):
+            return {
+              "level": "L0",
+              "class": "documentation",
+              "controls": ["doc-freshness"],
+              "recovery": "source-revertable",
+              "rollout": "none",
+              "postsubmit": ["documentation-link-check"],
+            }
+          if p.startswith((".github/workflows/", ".github/actions/", "scripts/ci", "ci/", ".buildkite/", ".circleci/")):
+            return {
+              "level": "L5",
+              "class": "ci-governance",
+              "controls": ["workflow-sanity", "least-privilege-token-proof", "merge-group-self-test"],
+              "recovery": "forward-fix-only",
+              "rollout": "environment-ring",
+              "postsubmit": ["workflow-sanity", "merge-group-self-test"],
+            }
+          if any(token in p for token in ("migration", "migrations", "schema.sql", "atlas.hcl", "drizzle", "/db/")):
+            return {
+              "level": "L3",
+              "class": "persistence",
+              "controls": ["expand-contract", "backward-compatible-read-write", "migration-readback"],
+              "recovery": "runtime-rollback-only",
+              "rollout": "environment-ring",
+              "postsubmit": ["migration-replay", "old-new-compatibility"],
+            }
+          if p.startswith(("infra/", "deploy/", "k8s/", "helm/", "charts/", "terraform/", "talos/", "argocd/")) or p.endswith((".tf", ".tfvars")):
+            return {
+              "level": "L4",
+              "class": "infrastructure",
+              "controls": ["progressive-rollout", "kill-switch", "live-smoke", "rollback-plan"],
+              "recovery": "forward-fix-only",
+              "rollout": "environment-ring",
+              "postsubmit": ["infra-drift-check", "runtime-readback"],
+            }
+          if any(token in p for token in ("package.json", "bun.lock", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "go.mod", "cargo.toml")):
+            return {
+              "level": "L2",
+              "class": "dependency-or-package",
+              "controls": ["supply-chain-audit", "lockfile-consistency"],
+              "recovery": "source-revertable",
+              "rollout": "canary",
+              "postsubmit": ["dependency-audit"],
+            }
+          if any(token in p for token in ("api/", "sdk", "contract", "proto", "openapi", "graphql", "routes/", "controllers/")):
+            return {
+              "level": "L2",
+              "class": "shared-or-runtime-contract",
+              "controls": ["backward-compatible-contract", "generated-client-freshness"],
+              "recovery": "source-revertable",
+              "rollout": "canary",
+              "postsubmit": ["contract-suite", "targeted-e2e"],
+            }
+          if any(token in p for token in ("worker", "queue", "cron", "outbox", "webhook", "billing", "payment", "email", "notification")):
+            return {
+              "level": "L4",
+              "class": "external-side-effect",
+              "controls": ["idempotency-key", "dedupe-or-replay", "bounded-retry", "feature-flag", "kill-switch"],
+              "recovery": "forward-fix-only",
+              "rollout": "progressive",
+              "postsubmit": ["replay-safety", "side-effect-smoke"],
+            }
+          if p.startswith(("src/", "apps/", "packages/", "lib/")):
+            return {
+              "level": "L1",
+              "class": "application-code",
+              "controls": ["affected-tests"],
+              "recovery": "source-revertable",
+              "rollout": "none",
+              "postsubmit": ["exhaustive-affected"],
+            }
+          return {
+            "level": "L1",
+            "class": "general",
+            "controls": ["affected-tests"],
+            "recovery": "source-revertable",
+            "rollout": "none",
+            "postsubmit": ["exhaustive-affected"],
+          }
+
+        def max_risk(classifications):
+          if not classifications:
+            return "L0"
+          return max((item["level"] for item in classifications), key=lambda level: RISK_ORDER[level])
+
+        def strongest_recovery(classifications):
+          recoveries = {item["recovery"] for item in classifications}
+          if "forward-fix-only" in recoveries:
+            return "forward-fix-only"
+          if "runtime-rollback-only" in recoveries:
+            return "runtime-rollback-only"
+          return "source-revertable"
+
+        def strongest_rollout(classifications):
+          order = {"none": 0, "dark": 1, "canary": 2, "progressive": 3, "environment-ring": 4}
+          if not classifications:
+            return "none"
+          return max((item["rollout"] for item in classifications), key=lambda value: order[value])
+
+        def write_outputs(manifest):
+          out = os.environ.get("GITHUB_OUTPUT")
+          if out:
+            with open(out, "a", encoding="utf-8") as handle:
+              handle.write(f"manifest_path={MANIFEST_PATH}\n")
+              handle.write(f"risk_level={manifest.get('riskLevel', 'L0')}\n")
+              handle.write(f"recovery_class={manifest.get('recoveryClass', 'source-revertable')}\n")
+              handle.write(f"rollout_strategy={manifest.get('rolloutStrategy', 'none')}\n")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+            with open(summary, "a", encoding="utf-8") as handle:
+              handle.write("## ADR-29 admission\n\n")
+              handle.write(f"- mode: `{MODE}`\n")
+              handle.write(f"- policy mode: `{POLICY_MODE}`\n")
+              handle.write(f"- risk level: `{manifest.get('riskLevel', 'L0')}`\n")
+              handle.write(f"- recovery class: `{manifest.get('recoveryClass', 'source-revertable')}`\n")
+              handle.write(f"- rollout strategy: `{manifest.get('rolloutStrategy', 'none')}`\n")
+              controls = manifest.get("enforcedControls", [])
+              if controls:
+                handle.write("- enforced controls: " + ", ".join(f"`{item}`" for item in controls) + "\n")
+              blocked = manifest.get("blockedUpstreamLanes", [])
+              if blocked:
+                handle.write("- blocked upstream lanes: " + ", ".join(f"`{item}`" for item in blocked) + "\n")
+
+        def classify():
+          files, base, head = changed_files()
+          classifications = [classify_path(path) | {"path": path} for path in files]
+          risk = max_risk(classifications)
+          manifest = {
+            "schemaVersion": 1,
+            "policy": "ADR-29",
+            "policyMode": POLICY_MODE,
+            "mode": "classify",
+            "repository": REPO,
+            "event": EVENT,
+            "ref": REF,
+            "base": base,
+            "head": head,
+            "run": {
+              "id": RUN_ID,
+              "attempt": RUN_ATTEMPT,
+              "url": f"{SERVER_URL}/{REPO}/actions/runs/{RUN_ID}" if REPO and RUN_ID else "",
+            },
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "riskLevel": risk,
+            "changeClasses": unique(item["class"] for item in classifications),
+            "changedFiles": files,
+            "enforcedControls": unique(control for item in classifications for control in item["controls"]),
+            "blockingLanes": ["repo-required-checks"],
+            "postsubmitLanes": unique(lane for item in classifications for lane in item["postsubmit"]),
+            "recoveryClass": strongest_recovery(classifications),
+            "rolloutStrategy": strongest_rollout(classifications),
+            "classifications": classifications,
+          }
+          MANIFEST_PATH.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          write_outputs(manifest)
+
+        def fan_in():
+          try:
+            raw = json.loads(UPSTREAM or "{}")
+          except json.JSONDecodeError as exc:
+            raise SystemExit(f"upstream-results-json is not valid JSON: {exc}")
+
+          lanes = []
+          if isinstance(raw, dict):
+            iterable = raw.items()
+          elif isinstance(raw, list):
+            iterable = [(str(index), value) for index, value in enumerate(raw)]
+          else:
+            iterable = []
+
+          for name, value in iterable:
+            result = value.get("result") if isinstance(value, dict) else None
+            if result:
+              lanes.append({"name": name, "result": result})
+
+          blocked = [lane["name"] for lane in lanes if lane["result"] != "success"]
+          manifest = {
+            "schemaVersion": 1,
+            "policy": "ADR-29",
+            "policyMode": POLICY_MODE,
+            "mode": "fan-in",
+            "repository": REPO,
+            "event": EVENT,
+            "ref": REF,
+            "run": {
+              "id": RUN_ID,
+              "attempt": RUN_ATTEMPT,
+              "url": f"{SERVER_URL}/{REPO}/actions/runs/{RUN_ID}" if REPO and RUN_ID else "",
+            },
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "riskLevel": "L0",
+            "changeClasses": ["ci-admission"],
+            "enforcedControls": ["blocking-lane-fan-in"],
+            "blockingLanes": [lane["name"] for lane in lanes],
+            "blockedUpstreamLanes": blocked,
+            "postsubmitLanes": ["postsubmit-proof/pass"],
+            "recoveryClass": "source-revertable",
+            "rolloutStrategy": "none",
+          }
+          MANIFEST_PATH.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          write_outputs(manifest)
+          if blocked:
+            raise SystemExit("ADR-29 trunk admission blocked by upstream lanes: " + ", ".join(blocked))
+          if not lanes:
+            print("::warning::ADR-29 fan-in received no upstream lane results")
+
+        if POLICY_MODE not in {"observe", "enforce"}:
+          raise SystemExit("policy-mode must be observe or enforce")
+        if MODE == "classify":
+          classify()
+        elif MODE == "fan-in":
+          fan_in()
+        else:
+          raise SystemExit("mode must be classify or fan-in")
+        PY
+
+    - name: Upload ADR-29 manifest
+      if: ${{ inputs.upload-artifact == 'true' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: adr29-admission-manifest-${{ inputs.mode }}
+        path: ${{ inputs.manifest-path }}
+        if-no-files-found: error
