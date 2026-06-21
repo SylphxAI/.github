@@ -1,0 +1,80 @@
+name: ADR-29 Admission
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: classify or fan-in
+        type: string
+        required: true
+      check-name:
+        description: Check-run name to publish.
+        type: string
+        required: false
+        default: adr29-admission/pass
+      policy-mode:
+        description: observe or enforce
+        type: string
+        required: false
+        default: observe
+      upstream-results-json:
+        description: JSON from toJSON(needs) for fan-in mode.
+        type: string
+        required: false
+        default: '{}'
+      manifest-path:
+        description: Output manifest path.
+        type: string
+        required: false
+        default: adr29-admission-manifest.json
+      runs-on:
+        description: Runner label for the admission job.
+        type: string
+        required: false
+        default: ubuntu-latest
+      base-ref:
+        description: Base ref for diff calculation.
+        type: string
+        required: false
+        default: ''
+      base-sha:
+        description: Base SHA for diff calculation.
+        type: string
+        required: false
+        default: ''
+      head-sha:
+        description: Head SHA for diff calculation.
+        type: string
+        required: false
+        default: ''
+      upload-artifact:
+        description: Upload the generated manifest artifact.
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  admission:
+    name: ${{ inputs.check-name }}
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 2
+
+      - name: ADR-29 admission
+        uses: SylphxAI/.github/.github/actions/adr29-admission@main
+        with:
+          mode: ${{ inputs.mode }}
+          policy-mode: ${{ inputs.policy-mode }}
+          upstream-results-json: ${{ inputs.upstream-results-json }}
+          manifest-path: ${{ inputs.manifest-path }}
+          base-ref: ${{ inputs.base-ref }}
+          base-sha: ${{ inputs.base-sha }}
+          head-sha: ${{ inputs.head-sha }}
+          upload-artifact: ${{ inputs.upload-artifact && 'true' || 'false' }}

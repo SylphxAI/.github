@@ -1,0 +1,41 @@
+name: ADR-29 Admission
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  risk-classification:
+    name: risk-classification/pass
+    uses: SylphxAI/.github/.github/workflows/adr29-admission.yml@main
+    with:
+      mode: classify
+      check-name: risk-classification/pass
+      policy-mode: observe
+      # Set to the repo's standard self-hosted label when GitHub-hosted runners
+      # are not allowed.
+      runs-on: ubuntu-latest
+
+  # Add this job's `needs` list to the repo's existing blocking lanes before
+  # switching branch protection from raw contexts to `trunk-admission/pass`.
+  trunk-admission:
+    name: trunk-admission/pass
+    needs:
+      - risk-classification
+    if: ${{ !cancelled() }}
+    uses: SylphxAI/.github/.github/workflows/adr29-admission.yml@main
+    with:
+      mode: fan-in
+      check-name: trunk-admission/pass
+      policy-mode: observe
+      upstream-results-json: ${{ toJSON(needs) }}
+      # Set to the repo's standard self-hosted label when GitHub-hosted runners
+      # are not allowed.
+      runs-on: ubuntu-latest
