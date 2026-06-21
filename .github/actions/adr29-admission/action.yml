@@ -1,16 +1,16 @@
 name: ADR-29 Admission
-description: Generate ADR-29 risk manifests and fan in blocking CI lanes.
+description: Generate ADR-29 manifests and fan in admission, postsubmit, and recovery lanes.
 
 inputs:
   mode:
-    description: classify or fan-in
+    description: classify, fan-in, postsubmit-proof, or recovery-decision
     required: true
   policy-mode:
     description: observe or enforce
     required: false
     default: observe
   upstream-results-json:
-    description: JSON from toJSON(needs) for fan-in mode.
+    description: JSON from toJSON(needs) for fan-in, postsubmit-proof, and recovery-decision modes.
     required: false
     default: '{}'
   required-status-contexts:
@@ -79,6 +79,12 @@ outputs:
   rollout-strategy:
     description: Required rollout strategy.
     value: ${{ steps.admission.outputs.rollout_strategy }}
+  postsubmit-state:
+    description: Postsubmit proof state when mode is postsubmit-proof.
+    value: ${{ steps.admission.outputs.postsubmit_state }}
+  recovery-path:
+    description: Selected recovery path when mode is recovery-decision.
+    value: ${{ steps.admission.outputs.recovery_path }}
 
 runs:
   using: composite
@@ -266,6 +272,57 @@ runs:
             )
             time.sleep(STATUS_POLL_SECONDS)
 
+        def upstream_lanes():
+          try:
+            raw = json.loads(UPSTREAM or "{}")
+          except json.JSONDecodeError as exc:
+            raise SystemExit(f"upstream-results-json is not valid JSON: {exc}")
+
+          lanes = []
+          if isinstance(raw, dict):
+            iterable = raw.items()
+          elif isinstance(raw, list):
+            iterable = [(str(index), value) for index, value in enumerate(raw)]
+          else:
+            iterable = []
+
+          for name, value in iterable:
+            result = value.get("result") if isinstance(value, dict) else None
+            if result:
+              lanes.append({"name": name, "result": result})
+          return lanes
+
+        def blocked_lanes(lanes):
+          return [lane["name"] for lane in lanes if lane["result"] != "success"]
+
+        def recovery_path_for_class(recovery_class):
+          if recovery_class == "source-revertable":
+            return "source-revert"
+          if recovery_class == "runtime-rollback-only":
+            return "runtime-rollback"
+          return "forward-fix"
+
+        def run_identity():
+          return {
+            "id": RUN_ID,
+            "attempt": RUN_ATTEMPT,
+            "url": f"{SERVER_URL}/{REPO}/actions/runs/{RUN_ID}" if REPO and RUN_ID else "",
+          }
+
+        def base_manifest(mode):
+          return {
+            "schemaVersion": 1,
+            "policy": "ADR-29",
+            "policyMode": POLICY_MODE,
+            "mode": mode,
+            "repository": REPO,
+            "event": EVENT,
+            "ref": REF,
+            "statusSha": STATUS_SHA,
+            "run": run_identity(),
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+          }
+
         def detect_base():
           base_sha = os.environ.get("ADR29_BASE_SHA", "").strip()
           head_sha = os.environ.get("ADR29_HEAD_SHA", "").strip() or os.environ.get("GITHUB_SHA", "HEAD")
@@ -428,6 +485,12 @@ runs:
               handle.write(f"risk_level={manifest.get('riskLevel', 'L0')}\n")
               handle.write(f"recovery_class={manifest.get('recoveryClass', 'source-revertable')}\n")
               handle.write(f"rollout_strategy={manifest.get('rolloutStrategy', 'none')}\n")
+              proof = manifest.get("postsubmitProof")
+              recovery = manifest.get("recoveryDecision")
+              if isinstance(proof, dict):
+                handle.write(f"postsubmit_state={proof.get('state', '')}\n")
+              if isinstance(recovery, dict):
+                handle.write(f"recovery_path={recovery.get('path', '')}\n")
 
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary:
@@ -444,6 +507,12 @@ runs:
               blocked = manifest.get("blockedUpstreamLanes", [])
               if blocked:
                 handle.write("- blocked upstream lanes: " + ", ".join(f"`{item}`" for item in blocked) + "\n")
+              proof = manifest.get("postsubmitProof")
+              if isinstance(proof, dict):
+                handle.write(f"- postsubmit proof: `{proof.get('state', 'unknown')}`\n")
+              recovery = manifest.get("recoveryDecision")
+              if isinstance(recovery, dict):
+                handle.write(f"- recovery decision: `{recovery.get('path', 'unknown')}`\n")
 
         def classify():
           files, base, head = changed_files()
@@ -480,42 +549,11 @@ runs:
           write_outputs(manifest)
 
         def fan_in():
-          try:
-            raw = json.loads(UPSTREAM or "{}")
-          except json.JSONDecodeError as exc:
-            raise SystemExit(f"upstream-results-json is not valid JSON: {exc}")
-
-          lanes = []
-          if isinstance(raw, dict):
-            iterable = raw.items()
-          elif isinstance(raw, list):
-            iterable = [(str(index), value) for index, value in enumerate(raw)]
-          else:
-            iterable = []
-
-          for name, value in iterable:
-            result = value.get("result") if isinstance(value, dict) else None
-            if result:
-              lanes.append({"name": name, "result": result})
-
+          lanes = upstream_lanes()
           required_status_contexts = parse_contexts(REQUIRED_STATUS_CONTEXTS)
           blocked_status_contexts, observed_status_contexts = wait_required_status_contexts(required_status_contexts)
-          blocked = [lane["name"] for lane in lanes if lane["result"] != "success"]
-          manifest = {
-            "schemaVersion": 1,
-            "policy": "ADR-29",
-            "policyMode": POLICY_MODE,
-            "mode": "fan-in",
-            "repository": REPO,
-            "event": EVENT,
-            "ref": REF,
-            "statusSha": STATUS_SHA,
-            "run": {
-              "id": RUN_ID,
-              "attempt": RUN_ATTEMPT,
-              "url": f"{SERVER_URL}/{REPO}/actions/runs/{RUN_ID}" if REPO and RUN_ID else "",
-            },
-            "generatedAt": datetime.now(timezone.utc).isoformat(),
+          blocked = blocked_lanes(lanes)
+          manifest = base_manifest("fan-in") | {
             "riskLevel": "L0",
             "changeClasses": ["ci-admission"],
             "enforcedControls": ["blocking-lane-fan-in"],
@@ -543,6 +581,92 @@ runs:
           if not lanes:
             print("::warning::ADR-29 fan-in received no upstream lane results")
 
+        def postsubmit_proof():
+          lanes = upstream_lanes()
+          required_status_contexts = parse_contexts(REQUIRED_STATUS_CONTEXTS)
+          blocked_status_contexts, observed_status_contexts = wait_required_status_contexts(required_status_contexts)
+          blocked = blocked_lanes(lanes)
+          has_declared_proof = bool(lanes or required_status_contexts)
+          proof_state = "passed" if has_declared_proof and not blocked and not blocked_status_contexts else "failed"
+          if not has_declared_proof and POLICY_MODE == "observe":
+            proof_state = "observed-empty"
+
+          manifest = base_manifest("postsubmit-proof") | {
+            "riskLevel": "L0",
+            "changeClasses": ["postsubmit-proof"],
+            "enforcedControls": ["postsubmit-backstop"],
+            "blockingLanes": [],
+            "postsubmitLanes": [lane["name"] for lane in lanes],
+            "blockedUpstreamLanes": blocked,
+            "requiredStatusContexts": required_status_contexts,
+            "blockedStatusContexts": blocked_status_contexts,
+            "observedStatusContexts": observed_status_contexts,
+            "recoveryClass": "source-revertable",
+            "rolloutStrategy": "none",
+            "postsubmitProof": {
+              "state": proof_state,
+              "coverage": "repo-declared-postsubmit-lanes",
+              "emptyDeclaredLaneSet": not has_declared_proof,
+            },
+          }
+          MANIFEST_PATH.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          write_outputs(manifest)
+
+          if not has_declared_proof:
+            message = "ADR-29 postsubmit proof has no declared upstream lanes or required status contexts"
+            if POLICY_MODE == "enforce":
+              raise SystemExit(message)
+            print(f"::warning::{message}")
+          if blocked or blocked_status_contexts:
+            reasons = []
+            if blocked:
+              reasons.append("upstream lanes: " + ", ".join(blocked))
+            if blocked_status_contexts:
+              reasons.append(
+                "status contexts: "
+                + ", ".join(f"{context}={observed_status_contexts.get(context, 'missing')}" for context in blocked_status_contexts)
+              )
+            raise SystemExit("ADR-29 postsubmit proof failed by " + "; ".join(reasons))
+
+        def recovery_decision():
+          files, base, head = changed_files()
+          classifications = [classify_path(path) | {"path": path} for path in files]
+          risk = max_risk(classifications)
+          recovery_class = strongest_recovery(classifications)
+          lanes = upstream_lanes()
+          required_status_contexts = parse_contexts(REQUIRED_STATUS_CONTEXTS)
+          blocked_status_contexts, observed_status_contexts = wait_required_status_contexts(required_status_contexts)
+          blocked = blocked_lanes(lanes)
+          recovery_required = bool(blocked or blocked_status_contexts)
+          path = recovery_path_for_class(recovery_class) if recovery_required else "not-required"
+
+          manifest = base_manifest("recovery-decision") | {
+            "base": base,
+            "head": head,
+            "riskLevel": risk,
+            "changeClasses": unique(item["class"] for item in classifications),
+            "changedFiles": files,
+            "enforcedControls": unique(control for item in classifications for control in item["controls"]),
+            "blockingLanes": [lane["name"] for lane in lanes],
+            "blockedUpstreamLanes": blocked,
+            "requiredStatusContexts": required_status_contexts,
+            "blockedStatusContexts": blocked_status_contexts,
+            "observedStatusContexts": observed_status_contexts,
+            "postsubmitLanes": unique(lane for item in classifications for lane in item["postsubmit"]),
+            "recoveryClass": recovery_class,
+            "rolloutStrategy": strongest_rollout(classifications),
+            "classifications": classifications,
+            "recoveryDecision": {
+              "required": recovery_required,
+              "path": path,
+              "reason": "postsubmit-or-required-status-failure" if recovery_required else "no-blocked-lanes",
+              "issueRequired": recovery_required,
+              "ordinaryQueueFreezeRecommended": recovery_required and path != "source-revert",
+            },
+          }
+          MANIFEST_PATH.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          write_outputs(manifest)
+
         publish_commit_status("pending", f"ADR-29 {MODE} running")
         try:
           if POLICY_MODE not in {"observe", "enforce"}:
@@ -551,8 +675,12 @@ runs:
             classify()
           elif MODE == "fan-in":
             fan_in()
+          elif MODE == "postsubmit-proof":
+            postsubmit_proof()
+          elif MODE == "recovery-decision":
+            recovery_decision()
           else:
-            raise SystemExit("mode must be classify or fan-in")
+            raise SystemExit("mode must be classify, fan-in, postsubmit-proof, or recovery-decision")
         except SystemExit as exc:
           code = exc.code if isinstance(exc.code, int) else 1
           if code != 0:
