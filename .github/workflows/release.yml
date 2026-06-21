@@ -11,6 +11,10 @@ on:
         description: 'Build command (skipped if artifact is set)'
         type: string
         default: 'bun run build'
+      prebuild:
+        description: 'Legacy alias for build; use build for new callers'
+        type: string
+        default: ''
       artifact:
         description: 'Download pre-built artifact pattern (supports glob like bindings-*)'
         type: string
@@ -61,7 +65,7 @@ jobs:
 
       - name: Build
         if: inputs.artifact == ''
-        run: ${{ inputs.build }}
+        run: ${{ inputs.prebuild != '' && inputs.prebuild || inputs.build }}
 
       - name: Pre-publish
         if: inputs.prepublish != ''
@@ -109,12 +113,12 @@ jobs:
             else
               MSG="📦 *${REPO_NAME}* released ${PKG_COUNT} packages${NL}${NL}"
 
-              for pkg in $(echo "$VERSIONS" | jq -r 'keys[]'); do
+              while IFS= read -r pkg; do
                 ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]')
                 NPM_URL="https://www.npmjs.com/package/${pkg}/v/${ver}"
                 RELEASE_URL="${REPO_URL}/releases/tag/${pkg}@${ver}"
                 MSG="${MSG}<${NPM_URL}|\`${pkg}@${ver}\`>  ·  <${RELEASE_URL}|release>${NL}"
-              done
+              done < <(echo "$VERSIONS" | jq -r 'keys[]')
 
               MSG="${MSG}${NL}<${REPO_URL}|View Repository>"
             fi
@@ -122,9 +126,11 @@ jobs:
             MSG="📦 *${REPO_NAME}* released${NL}${NL}<${REPO_URL}|View Repository>"
           fi
 
-          echo "text<<EOF" >> $GITHUB_OUTPUT
-          echo "$MSG" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "text<<EOF"
+            echo "$MSG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Send Slack notification on success
         if: steps.bump.outputs.published == 'true'
