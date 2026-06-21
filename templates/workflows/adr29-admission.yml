@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
   actions: read
+  statuses: read
 
 jobs:
   risk-classification:
@@ -46,3 +47,7 @@ jobs:
           mode: fan-in
           policy-mode: observe
           upstream-results-json: ${{ toJSON(needs) }}
+          # Add external required commit statuses here, for example:
+          # required-status-contexts: sylphx/preview
+          status-timeout-seconds: '0'
+          github-token: ${{ github.token }}

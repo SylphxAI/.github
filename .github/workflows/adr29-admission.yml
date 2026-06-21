@@ -22,6 +22,21 @@ on:
         type: string
         required: false
         default: '{}'
+      required-status-contexts:
+        description: Comma or newline separated commit status contexts to require in fan-in mode.
+        type: string
+        required: false
+        default: ''
+      status-timeout-seconds:
+        description: Seconds to wait for required status contexts in fan-in mode.
+        type: string
+        required: false
+        default: '0'
+      status-poll-seconds:
+        description: Seconds between required status context polls.
+        type: string
+        required: false
+        default: '15'
       manifest-path:
         description: Output manifest path.
         type: string
@@ -56,6 +71,7 @@ on:
 permissions:
   contents: read
   actions: read
+  statuses: read
 
 jobs:
   admission:
@@ -73,6 +89,10 @@ jobs:
           mode: ${{ inputs.mode }}
           policy-mode: ${{ inputs.policy-mode }}
           upstream-results-json: ${{ inputs.upstream-results-json }}
+          required-status-contexts: ${{ inputs.required-status-contexts }}
+          status-timeout-seconds: ${{ inputs.status-timeout-seconds }}
+          status-poll-seconds: ${{ inputs.status-poll-seconds }}
+          github-token: ${{ github.token }}
           manifest-path: ${{ inputs.manifest-path }}
           base-ref: ${{ inputs.base-ref }}
           base-sha: ${{ inputs.base-sha }}

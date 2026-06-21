@@ -11,6 +11,9 @@ Rollout rules:
 - keep `policy-mode: observe` until the repo has branch and `merge_group`
   evidence for `risk-classification/pass` and `trunk-admission/pass`;
 - add the repo's existing required CI lanes to `trunk-admission.needs`;
+- add non-GitHub-Actions required commit statuses, such as `sylphx/preview`,
+  to `required-status-contexts` so `trunk-admission/pass` can eventually replace
+  raw branch-protection contexts without dropping runtime preview proof;
 - set `runs-on` to the repo's standard self-hosted runner label when
   GitHub-hosted runners are not allowed;
 - do not switch branch protection from raw contexts to `trunk-admission/pass`
