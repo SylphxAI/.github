@@ -51,3 +51,47 @@ jobs:
           # required-status-contexts: sylphx/preview
           status-timeout-seconds: '0'
           github-token: ${{ github.token }}
+
+  # Add the repo's exhaustive main/postsubmit lanes to `needs` before switching
+  # this job to `policy-mode: enforce`. Empty observe mode is a wiring signal,
+  # not a sufficient backstop.
+  postsubmit-proof:
+    name: postsubmit-proof/pass
+    # Set to the repo's standard self-hosted label when GitHub-hosted runners
+    # are not allowed.
+    runs-on: ubuntu-latest
+    # Add the repo's exhaustive main/postsubmit lanes here, for example:
+    # needs:
+    #   - ci
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !cancelled() }}
+    steps:
+      - name: ADR-29 postsubmit proof
+        uses: SylphxAI/.github/.github/actions/adr29-admission@main
+        with:
+          mode: postsubmit-proof
+          policy-mode: observe
+          # Change to `${{ toJSON(needs) }}` after adding real postsubmit lanes.
+          upstream-results-json: '{}'
+          github-token: ${{ github.token }}
+
+  recovery-decision:
+    name: recovery-decision/pass
+    # Set to the repo's standard self-hosted label when GitHub-hosted runners
+    # are not allowed.
+    runs-on: ubuntu-latest
+    needs:
+      - postsubmit-proof
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.postsubmit-proof.result != 'success' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 2
+
+      - name: ADR-29 recovery decision
+        uses: SylphxAI/.github/.github/actions/adr29-admission@main
+        with:
+          mode: recovery-decision
+          policy-mode: observe
+          upstream-results-json: ${{ toJSON(needs) }}
+          github-token: ${{ github.token }}

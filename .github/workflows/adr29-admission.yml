@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       mode:
-        description: classify or fan-in
+        description: classify, fan-in, postsubmit-proof, or recovery-decision
         type: string
         required: true
       check-name:
@@ -18,7 +18,7 @@ on:
         required: false
         default: observe
       upstream-results-json:
-        description: JSON from toJSON(needs) for fan-in mode.
+        description: JSON from toJSON(needs) for fan-in, postsubmit-proof, and recovery-decision modes.
         type: string
         required: false
         default: '{}'
