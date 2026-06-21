@@ -14,28 +14,35 @@ permissions:
 jobs:
   risk-classification:
     name: risk-classification/pass
-    uses: SylphxAI/.github/.github/workflows/adr29-admission.yml@main
-    with:
-      mode: classify
-      check-name: risk-classification/pass
-      policy-mode: observe
-      # Set to the repo's standard self-hosted label when GitHub-hosted runners
-      # are not allowed.
-      runs-on: ubuntu-latest
+    # Set to the repo's standard self-hosted label when GitHub-hosted runners
+    # are not allowed.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 2
+
+      - name: ADR-29 risk classification
+        uses: SylphxAI/.github/.github/actions/adr29-admission@main
+        with:
+          mode: classify
+          policy-mode: observe
 
   # Add this job's `needs` list to the repo's existing blocking lanes before
   # switching branch protection from raw contexts to `trunk-admission/pass`.
   trunk-admission:
     name: trunk-admission/pass
+    # Set to the repo's standard self-hosted label when GitHub-hosted runners
+    # are not allowed.
+    runs-on: ubuntu-latest
     needs:
       - risk-classification
     if: ${{ !cancelled() }}
-    uses: SylphxAI/.github/.github/workflows/adr29-admission.yml@main
-    with:
-      mode: fan-in
-      check-name: trunk-admission/pass
-      policy-mode: observe
-      upstream-results-json: ${{ toJSON(needs) }}
-      # Set to the repo's standard self-hosted label when GitHub-hosted runners
-      # are not allowed.
-      runs-on: ubuntu-latest
+    steps:
+      - name: ADR-29 trunk admission
+        uses: SylphxAI/.github/.github/actions/adr29-admission@main
+        with:
+          mode: fan-in
+          policy-mode: observe
+          upstream-results-json: ${{ toJSON(needs) }}

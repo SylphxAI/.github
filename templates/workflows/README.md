@@ -5,6 +5,9 @@ ADR-29 admission workflow.
 
 Rollout rules:
 
+- use the direct composite action template when the check may later become a
+  required branch-protection context; reusable workflows report nested check
+  names such as `caller / callee`;
 - keep `policy-mode: observe` until the repo has branch and `merge_group`
   evidence for `risk-classification/pass` and `trunk-admission/pass`;
 - add the repo's existing required CI lanes to `trunk-admission.needs`;
