@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "repo": "SylphxAI/.github",
+    "name": "SylphxAI GitHub Organization Configuration",
+    "lifecycle": "production",
+    "layer": "tooling",
+    "summary": "Organization-level GitHub configuration, community health files, reusable workflows, workflow templates, and shared GitHub Actions for SylphxAI repositories.",
+    "goals": [
+      "Provide default community health files, profile documentation, issue templates, pull request templates, brand/company references, and repository templates for the SylphxAI GitHub organization.",
+      "Provide reusable GitHub workflows and shared actions that repositories can call through documented public workflow/action surfaces.",
+      "Keep organization-level GitHub conventions centralized so individual repositories do not copy or fork shared process."
+    ],
+    "nonGoals": [
+      "Own product-specific code, package source, runtime behavior, deployment manifests, or project-specific documentation for individual repositories.",
+      "Own repo-local project goals, lifecycle states, boundaries, or delivery evidence; those facts belong in each repository's .doctrine/project.json.",
+      "Bypass repository branch protection, merge queues, or required status checks in consuming repositories."
+    ]
+  },
+  "boundaries": {
+    "owns": [
+      {
+        "name": "organization-community-health",
+        "description": "Default code of conduct, contributing guide, security policy, issue templates, pull request template, and organization profile documentation."
+      },
+      {
+        "name": "shared-github-automation",
+        "description": "Reusable GitHub workflows, workflow templates, and composite actions used by SylphxAI repositories through GitHub public workflow/action references."
+      },
+      {
+        "name": "organization-brand-and-templates",
+        "description": "Company information, brand guidance, license template, README template, package metadata template, and workflow rollout templates."
+      }
+    ],
+    "doesNotOwn": [
+      "Repo-local project manifests, repository goals, product boundaries, package APIs, or runtime behavior.",
+      "Branch-protection state, required checks, merge queues, deployments, releases, or production proof for individual repositories.",
+      "Customer-specific or product-specific behavior that belongs in product repositories, adapters, or tenant configuration."
+    ],
+    "publicSurfaces": [
+      {
+        "type": "documentation",
+        "name": "Organization profile",
+        "location": "profile/README.md"
+      },
+      {
+        "type": "documentation",
+        "name": "Community health files",
+        "location": ".github/"
+      },
+      {
+        "type": "documentation",
+        "name": "Company and brand reference",
+        "location": "COMPANY.md and brand/"
+      },
+      {
+        "type": "workflow",
+        "name": "ADR-29 reusable admission workflow",
+        "location": ".github/workflows/adr29-admission.yml"
+      },
+      {
+        "type": "workflow",
+        "name": "Release reusable workflow",
+        "location": ".github/workflows/release.yml"
+      },
+      {
+        "type": "workflow",
+        "name": "Publish to NPM reusable workflow",
+        "location": ".github/workflows/publish-npm.yml"
+      },
+      {
+        "type": "workflow",
+        "name": "ADR-29 workflow template",
+        "location": "templates/workflows/adr29-admission.yml"
+      },
+      {
+        "type": "api",
+        "name": "ADR-29 admission composite action",
+        "location": ".github/actions/adr29-admission/action.yml"
+      },
+      {
+        "type": "documentation",
+        "name": "Repository bootstrap templates",
+        "location": "templates/"
+      }
+    ],
+    "allowedDependencies": [
+      {
+        "repo": "SylphxAI/doctrine",
+        "surface": "engineering doctrine, ADR-29 model, and project manifest schema",
+        "direction": "peer-public"
+      },
+      {
+        "repo": "SylphxAI/bump",
+        "surface": "public GitHub Action used by the release reusable workflow",
+        "direction": "peer-public"
+      }
+    ],
+    "forbiddenCouplings": [
+      "Do not encode one repository's product-specific process as an organization default.",
+      "Do not make this repository the source of truth for another repository's project goal, lifecycle, boundary, release proof, or adoption gaps.",
+      "Do not weaken consumer repository gates by replacing required checks, merge queues, or production proof with advisory templates."
+    ]
+  },
+  "documentation": {
+    "adr": {
+      "path": "docs/adr/",
+      "status": "planned"
+    },
+    "specs": {
+      "path": "docs/specs/",
+      "status": "planned"
+    },
+    "catalog": {
+      "path": ".doctrine/project.json",
+      "status": "present"
+    },
+    "runbooks": {
+      "path": "templates/workflows/README.md",
+      "status": "present"
+    },
+    "generatedReferences": {
+      "path": ".github/actions/adr29-admission/action.yml",
+      "status": "present"
+    }
+  },
+  "delivery": {
+    "ciModel": "none",
+    "requiredContexts": [],
+    "deployPath": "Merged changes to main are consumed directly by GitHub as organization defaults, reusable workflows, workflow templates, and composite actions. There is no separate runtime deploy for this repository.",
+    "productionProof": "Proof is GitHub main readback plus successful consumer use of the relevant reusable workflow, workflow template, community-health file, or composite action.",
+    "recoveryClass": "source-revertable"
+  },
+  "adoption": {
+    "status": "baseline",
+    "gaps": [
+      {
+        "id": "adr-spec-doc-tree",
+        "description": "Repo has organization docs, templates, and workflow README but no docs/adr or docs/specs tree yet; add ADRs/specs before the next material workflow/action contract change.",
+        "owner": "SylphxAI/.github",
+        "target": "next material workflow or action contract change"
+      },
+      {
+        "id": "repo-local-ci",
+        "description": "Repository has no required local CI for its own changes; add a lightweight workflow/action sanity check before making future high-risk workflow/action contract changes.",
+        "owner": "SylphxAI/.github",
+        "target": "before next high-risk workflow or action contract change"
+      }
+    ]
+  }
+}
