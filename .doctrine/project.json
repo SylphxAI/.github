@@ -5,6 +5,7 @@
     "name": "SylphxAI GitHub Organization Configuration",
     "lifecycle": "production",
     "layer": "tooling",
+    "policyPool": "infrastructure",
     "summary": "Organization-level GitHub configuration, community health files, reusable workflows, workflow templates, and shared GitHub Actions for SylphxAI repositories.",
     "goals": [
       "Provide default community health files, profile documentation, issue templates, pull request templates, brand/company references, and repository templates for the SylphxAI GitHub organization.",
@@ -126,6 +127,7 @@
   },
   "delivery": {
     "ciModel": "none",
+    "deployable": false,
     "requiredContexts": [],
     "deployPath": "Merged changes to main are consumed directly by GitHub as organization defaults, reusable workflows, workflow templates, and composite actions. There is no separate runtime deploy for this repository.",
     "productionProof": "Proof is GitHub main readback plus successful consumer use of the relevant reusable workflow, workflow template, community-health file, or composite action.",
