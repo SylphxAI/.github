@@ -1,0 +1,65 @@
+name: Secret Scan
+description: >
+  Blocking secret-detection gate for the ADR-6 `security:secrets` required
+  context. Runs the gitleaks CLI over ONLY the commits this push / pull request
+  / merge group adds, so a pre-existing historical leak (a separate rotation
+  track) never makes the gate red on arrival, while any newly introduced secret
+  fails the job. Uses the MIT-licensed gitleaks binary directly (no
+  GITLEAKS_LICENSE, free for orgs).
+
+  The calling job MUST check out with `fetch-depth: 0` so the commit range is
+  resolvable.
+
+inputs:
+  gitleaks-version:
+    description: gitleaks release version to install.
+    required: false
+    default: "8.30.1"
+  config-path:
+    description: Optional path to a gitleaks config (e.g. .gitleaks.toml). Empty uses gitleaks defaults.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install gitleaks (MIT binary)
+      shell: bash
+      env:
+        GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/bin"
+        curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+          | tar -xz -C "$HOME/bin" gitleaks
+        echo "$HOME/bin" >> "$GITHUB_PATH"
+        "$HOME/bin/gitleaks" version
+
+    - name: Secret detection (gitleaks — blocking, new commits only)
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        GIT_SHA: ${{ github.sha }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+      run: |
+        set -euo pipefail
+        if [ "$EVENT_NAME" = "pull_request" ]; then
+          RANGE="${PR_BASE_SHA}..${PR_HEAD_SHA}"
+        elif [ "$EVENT_NAME" = "merge_group" ]; then
+          RANGE="${MG_BASE_SHA}..${MG_HEAD_SHA}"
+        else
+          if [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="-1 ${GIT_SHA}"
+          else
+            RANGE="${PUSH_BEFORE}..${GIT_SHA}"
+          fi
+        fi
+        echo "Scanning git log range: $RANGE"
+        CONFIG_ARG=()
+        if [ -n "$CONFIG_PATH" ]; then CONFIG_ARG=(--config="$CONFIG_PATH"); fi
+        gitleaks git . --log-opts="$RANGE" --redact --no-banner --verbose "${CONFIG_ARG[@]}"
