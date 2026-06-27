@@ -43,7 +43,7 @@ on:
 
 jobs:
   release:
-    uses: ./.github/workflows/publish-npm.yml
+    uses: SylphxAI/.github/.github/workflows/publish-npm.yml@main
     with:
       working-directory: ${{ inputs.working-directory }}
       build-command: ${{ inputs.prebuild != '' && inputs.prebuild || inputs.build }}
