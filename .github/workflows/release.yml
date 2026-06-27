@@ -1,5 +1,13 @@
 name: Release
 
+# Compatibility shim: the legacy bump-based release pipeline now delegates to the
+# Changesets-based `publish-npm.yml`. Consumers keep calling this workflow
+# unchanged (`uses: SylphxAI/.github/.github/workflows/release.yml@main`) and are
+# transparently migrated off @sylphx/bump onto changesets/action. All repos
+# already ship `.changeset/config.json` + write changeset files, so there is no
+# per-repo or developer-workflow change. The `version`/`publish` commands run
+# changesets via bunx, so a repo does not need @changesets/cli as a devDependency.
+
 on:
   workflow_call:
     inputs:
@@ -8,25 +16,25 @@ on:
         type: string
         default: '.'
       build:
-        description: 'Build command (skipped if artifact is set)'
+        description: 'Build command (skipped when `artifact` is set)'
         type: string
         default: 'bun run build'
       prebuild:
-        description: 'Legacy alias for build; use build for new callers'
+        description: 'Legacy alias for `build`'
         type: string
         default: ''
       artifact:
-        description: 'Download pre-built artifact pattern (supports glob like bindings-*)'
+        description: 'When set, download prebuilt artifacts instead of building (e.g. bindings-*)'
         type: string
         default: ''
       prepublish:
-        description: 'Command to run before publishing (e.g., reorganize artifacts)'
+        description: 'Command to run before publishing (e.g. reorganize artifacts into npm/*)'
         type: string
         default: ''
       postpublish:
-        description: 'Command to run after successful publishing'
+        description: 'Command to run after a successful publish'
         type: string
-        required: false
+        default: ''
     secrets:
       NPM_TOKEN:
         required: false
@@ -35,127 +43,14 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      actions: write
-    defaults:
-      run:
-        working-directory: ${{ inputs.working-directory }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Download artifact
-        if: inputs.artifact != ''
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ${{ inputs.artifact }}
-          path: ${{ inputs.working-directory }}/artifacts
-          merge-multiple: true
-
-      - name: Build
-        if: inputs.artifact == ''
-        run: ${{ inputs.prebuild != '' && inputs.prebuild || inputs.build }}
-
-      - name: Pre-publish
-        if: inputs.prepublish != ''
-        run: ${{ inputs.prepublish }}
-
-      - uses: SylphxAI/bump@main
-        id: bump
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          npm-token: ${{ secrets.NPM_TOKEN }}
-          working-directory: ${{ inputs.working-directory }}
-
-      - name: Post-publish
-        if: steps.bump.outputs.published == 'true' && inputs.postpublish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ${{ inputs.postpublish }}
-
-      - name: Format release message
-        id: message
-        if: steps.bump.outputs.published == 'true'
-        shell: bash
-        env:
-          VERSIONS: ${{ steps.bump.outputs.versions }}
-          REPO: ${{ github.repository }}
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-        run: |
-          [ -z "$SLACK_WEBHOOK" ] && exit 0
-          REPO_URL="https://github.com/$REPO"
-          REPO_NAME="${REPO#*/}"
-          NL=$'\n'
-
-          if [ -n "$VERSIONS" ] && [ "$VERSIONS" != "{}" ] && [ "$VERSIONS" != "null" ]; then
-            PKG_COUNT=$(echo "$VERSIONS" | jq 'keys | length' 2>/dev/null || echo "0")
-
-            if [ "$PKG_COUNT" = "1" ]; then
-              pkg=$(echo "$VERSIONS" | jq -r 'keys[0]')
-              ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]')
-              NPM_URL="https://www.npmjs.com/package/${pkg}/v/${ver}"
-              RELEASE_URL="${REPO_URL}/releases/tag/v${ver}"
-
-              MSG="📦 *${REPO_NAME}* released${NL}${NL}"
-              MSG="${MSG}<${NPM_URL}|\`${pkg}@${ver}\`>${NL}${NL}"
-              MSG="${MSG}<${RELEASE_URL}|GitHub Release> · <${REPO_URL}|Repository>"
-            else
-              MSG="📦 *${REPO_NAME}* released ${PKG_COUNT} packages${NL}${NL}"
-
-              while IFS= read -r pkg; do
-                ver=$(echo "$VERSIONS" | jq -r --arg p "$pkg" '.[$p]')
-                NPM_URL="https://www.npmjs.com/package/${pkg}/v/${ver}"
-                RELEASE_URL="${REPO_URL}/releases/tag/${pkg}@${ver}"
-                MSG="${MSG}<${NPM_URL}|\`${pkg}@${ver}\`>  ·  <${RELEASE_URL}|release>${NL}"
-              done < <(echo "$VERSIONS" | jq -r 'keys[]')
-
-              MSG="${MSG}${NL}<${REPO_URL}|View Repository>"
-            fi
-          else
-            MSG="📦 *${REPO_NAME}* released${NL}${NL}<${REPO_URL}|View Repository>"
-          fi
-
-          {
-            echo "text<<EOF"
-            echo "$MSG"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Send Slack notification on success
-        if: steps.bump.outputs.published == 'true'
-        shell: bash
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          MESSAGE: ${{ steps.message.outputs.text }}
-        run: |
-          [ -z "$SLACK_WEBHOOK" ] && exit 0
-          [ -z "$MESSAGE" ] && exit 0
-          curl -s -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg text "$MESSAGE" '{text: $text}')"
-
-      - name: Send Slack notification on failure
-        if: failure()
-        shell: bash
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          REPO: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          [ -z "$SLACK_WEBHOOK" ] && exit 0
-          NL=$'\n'
-          MESSAGE="❌ *Release failed*${NL}Repository: ${REPO}${NL}<${RUN_URL}|View Workflow>"
-          curl -s -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg text "$MESSAGE" '{text: $text}')"
+    uses: ./.github/workflows/publish-npm.yml
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      build-command: ${{ inputs.prebuild != '' && inputs.prebuild || inputs.build }}
+      skip-build: ${{ inputs.artifact != '' }}
+      download-artifacts: ${{ inputs.artifact != '' }}
+      pre-publish-command: ${{ inputs.prepublish }}
+      post-publish-command: ${{ inputs.postpublish }}
+      version-command: 'bunx @changesets/cli version'
+      publish-command: 'bunx @changesets/cli publish'
+    secrets: inherit
