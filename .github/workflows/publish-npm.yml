@@ -114,7 +114,16 @@ jobs:
 
       - name: Build Packages
         if: ${{ !inputs.skip-build }}
-        run: ${{ inputs.build-command }}
+        shell: bash
+        run: |
+          CMD='${{ inputs.build-command }}'
+          # The default build command is `bun run build`; skip gracefully when a
+          # repo has no `build` script rather than hard-failing "Script not found".
+          if [ "$CMD" = "bun run build" ] && ! jq -e '.scripts.build' package.json >/dev/null 2>&1; then
+            echo "::notice::No \"build\" script in package.json — skipping build."
+            exit 0
+          fi
+          eval "$CMD"
         working-directory: ${{ inputs.working-directory }}
 
       - name: Run Tests
