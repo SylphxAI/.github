@@ -92,9 +92,14 @@
         "direction": "peer-public"
       },
       {
-        "repo": "SylphxAI/bump",
-        "surface": "public GitHub Action used by the release reusable workflow",
-        "direction": "peer-public"
+        "repo": "changesets/action",
+        "surface": "Changesets GitHub Action used for release intent detection, version PR generation, changelog handling, and GitHub Release creation.",
+        "direction": "tool-public"
+      },
+      {
+        "repo": "oven-sh/setup-bun",
+        "surface": "Bun setup action used by reusable npm release workflows before install, build, pack audit, and Bun-native publication.",
+        "direction": "tool-public"
       }
     ],
     "forbiddenCouplings": [
@@ -106,11 +111,11 @@
   "documentation": {
     "adr": {
       "path": "docs/adr/",
-      "status": "planned"
+      "status": "present"
     },
     "specs": {
       "path": "docs/specs/",
-      "status": "planned"
+      "status": "present"
     },
     "catalog": {
       "path": ".doctrine/project.json",

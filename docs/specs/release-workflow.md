@@ -4,8 +4,17 @@
 
 `SylphxAI/.github/.github/workflows/release.yml@main`
 
-This reusable workflow publishes package releases through the organization
+This reusable workflow publishes npm package releases through the organization
 release path. Consumer repositories call it from a thin repo-local workflow.
+
+## Release Model
+
+Changesets owns release intent, version PR generation, changelog updates, and
+GitHub Release creation. The default publish command is
+`sylphx-changesets-publish`, a manager-aware publisher installed by the shared
+`setup-changesets-publisher` action.
+
+`@sylphx/bump` is retired and must not be used by callers.
 
 ## Inputs
 
@@ -22,9 +31,19 @@ release path. Consumer repositories call it from a thin repo-local workflow.
   before publishing.
 - `postpublish`: optional command to run after a successful publish.
 
-## Secrets
+`publish-npm.yml` also accepts advanced inputs for direct callers:
 
-- `NPM_TOKEN`: optional npm publish token consumed by `SylphxAI/bump`.
+- `version-command`: defaults to the caller-provided Changesets version command.
+- `publish-command`: defaults to `auto`, which runs
+  `sylphx-changesets-publish`. Override only for a repo-owned publisher that
+  performs an equivalent package-manager-aware pack audit.
+- `npm-registry`: defaults to `https://registry.npmjs.org`.
+- `create-github-releases`: defaults to `true`.
+
+## Secrets and Authentication
+
+- `NPM_TOKEN`: optional npm publish token. Prefer npm trusted publishing through
+  GitHub Actions OIDC where package configuration supports it.
 - `SLACK_WEBHOOK`: optional release notification webhook.
 
 ## Caller Permissions
@@ -39,22 +58,45 @@ jobs:
       actions: write
       contents: write
       pull-requests: write
+      id-token: write
     uses: SylphxAI/.github/.github/workflows/release.yml@main
 ```
 
 GitHub does not let a reusable workflow raise permissions above the caller's
 token scope. Missing caller permissions fail during workflow startup before any
-job log exists.
+job log exists. `id-token: write` is required for trusted publishing and harmless
+for token-based fallback publishes.
+
+## Workspace Publish Safety
+
+The default publisher must pack every unpublished package before publication and
+inspect the packed `package/package.json`. If any dependency field still contains
+`workspace:`, the workflow must fail before `npm publish`, `bun publish`, or
+`pnpm publish` is allowed to mutate the registry.
+
+Expected behavior by package manager:
+
+- Bun workspaces: publish with `bun publish`; `bun pm pack` must materialize
+  workspace ranges in the artifact.
+- pnpm workspaces: publish with `pnpm publish`; `pnpm pack` must materialize
+  workspace ranges in the artifact.
+- npm workspaces: fail if packed metadata still contains `workspace:` because
+  npm does not materialize those ranges.
+- Yarn workspaces: publish with `yarn npm publish` and require the same packed
+  artifact audit.
 
 ## Contract Rules
 
 - Unknown inputs must not be introduced in repo-local callers.
 - New callers must use `build`, not `prebuild`.
-- Backwards-compatible aliases may be added centrally when they prevent
-  startup failures across existing consumers.
-- Callers must grant `actions: write`, `contents: write`, and
-  `pull-requests: write` unless this workflow's publish implementation is
-  changed to need less.
+- Backwards-compatible aliases may be added centrally when they prevent startup
+  failures across existing consumers.
+- Callers must grant `actions: write`, `contents: write`, `pull-requests: write`,
+  and `id-token: write` unless this workflow's publish implementation is changed
+  to need less.
 - Removing an input requires an org audit proving no repository still uses it.
 - Repo-specific release behavior belongs in the consumer repository or a
   dedicated adapter, not in this shared workflow.
+- Repositories must not use `@sylphx/bump`, `SylphxAI/bump`, or direct
+  `changeset publish`/`npm publish` in a Bun or Yarn workspace unless an
+  equivalent pack audit proves no `workspace:` range can be published.

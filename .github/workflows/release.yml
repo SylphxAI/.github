@@ -1,12 +1,11 @@
 name: Release
 
-# Compatibility shim: the legacy bump-based release pipeline now delegates to the
+# Compatibility shim: the legacy bump-based release pipeline delegates to the
 # Changesets-based `publish-npm.yml`. Consumers keep calling this workflow
-# unchanged (`uses: SylphxAI/.github/.github/workflows/release.yml@main`) and are
-# transparently migrated off @sylphx/bump onto changesets/action. All repos
-# already ship `.changeset/config.json` + write changeset files, so there is no
-# per-repo or developer-workflow change. The `version`/`publish` commands run
-# changesets via bunx, so a repo does not need @changesets/cli as a devDependency.
+# unchanged (`uses: SylphxAI/.github/.github/workflows/release.yml@main`) while
+# release intent/version PRs stay on Changesets and publishing is handled by the
+# Sylphx manager-aware publisher. Bun workspaces publish with `bun publish` and
+# every package is tarball-audited so `workspace:` ranges cannot reach npm.
 
 on:
   workflow_call:
@@ -52,5 +51,5 @@ jobs:
       pre-publish-command: ${{ inputs.prepublish }}
       post-publish-command: ${{ inputs.postpublish }}
       version-command: 'bunx @changesets/cli version'
-      publish-command: 'bunx @changesets/cli publish'
+      publish-command: 'auto'
     secrets: inherit
