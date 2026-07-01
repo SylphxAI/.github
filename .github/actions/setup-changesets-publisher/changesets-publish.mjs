@@ -409,20 +409,18 @@ function assertMaterializedManifest(pkg) {
   }
 }
 
-function auditPackage(manager, rootDir, pkg) {
+function preparePackageArtifact(manager, rootDir, pkg, artifactRoot) {
   assertMaterializedManifest(pkg);
-  const packDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylphx-pack-'));
-  try {
-    const tarballPath = packPackage(manager, rootDir, pkg, packDir);
-    const packedManifest = readPackedManifest(tarballPath);
-    const leaks = workspaceProtocolEntries(packedManifest);
-    if (leaks.length > 0) {
-      fail(`${pkg.name}@${pkg.version} packed artifact still contains workspace: dependencies: ${leaks.join(', ')}`);
-    }
-    log(`Packed artifact OK: ${pkg.name}@${pkg.version}`);
-  } finally {
-    fs.rmSync(packDir, { recursive: true, force: true });
+  const packDir = path.join(artifactRoot, sanitizeForFileName(`${pkg.name}-${pkg.version}`));
+  fs.mkdirSync(packDir, { recursive: true });
+  const tarballPath = packPackage(manager, rootDir, pkg, packDir);
+  const packedManifest = readPackedManifest(tarballPath);
+  const leaks = workspaceProtocolEntries(packedManifest);
+  if (leaks.length > 0) {
+    fail(`${pkg.name}@${pkg.version} packed artifact still contains workspace: dependencies: ${leaks.join(', ')}`);
   }
+  log(`Packed artifact OK: ${pkg.name}@${pkg.version}`);
+  return tarballPath;
 }
 
 function accessArgs(pkg) {
@@ -448,30 +446,14 @@ function publishEnv() {
   return env;
 }
 
-function publishPackage(manager, rootDir, pkg) {
+function publishPackage(pkg, tarballPath) {
   const commonArgs = [...accessArgs(pkg), ...tagArgs()];
   const env = publishEnv();
-  switch (manager.type) {
-    case 'bun':
-      run('bun', ['publish', ...commonArgs], { cwd: pkg.dir, env });
-      break;
-    case 'pnpm': {
-      const isRoot = path.resolve(pkg.dir) === path.resolve(rootDir);
-      if (isRoot) {
-        run('pnpm', ['publish', '--no-git-checks', ...commonArgs], { cwd: pkg.dir, env });
-      } else {
-        run('pnpm', ['--filter', pkg.name, 'publish', '--no-git-checks', ...commonArgs], { cwd: rootDir, env });
-      }
-      break;
-    }
-    case 'yarn':
-      run('yarn', ['npm', 'publish', ...commonArgs], { cwd: pkg.dir, env });
-      break;
-    case 'npm':
-    default:
-      run('npm', ['publish', ...commonArgs], { cwd: pkg.dir, env });
-      break;
-  }
+  // Publish the exact artifact that passed the workspace-protocol audit. The
+  // package manager owns packing/materialization; npm is only the registry
+  // upload client here, which keeps auth behavior stable in GitHub Actions and
+  // prevents a second publish-time pack from diverging from the audited tarball.
+  run('npm', ['publish', tarballPath, ...commonArgs, ...registryArgs()], { cwd: pkg.dir, env });
 }
 
 function selfCheck() {
@@ -590,10 +572,14 @@ function main() {
   }
 
   const restoreManifests = materializeWorkspaceManifests(unpublished, localVersions);
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sylphx-artifacts-'));
   try {
+    const artifacts = new Map();
     if (unpublished.length > 0) {
       log(`Unpublished packages: ${unpublished.map((pkg) => `${pkg.name}@${pkg.version}`).join(', ')}`);
-      for (const pkg of unpublished) auditPackage(manager, rootDir, pkg);
+      for (const pkg of unpublished) {
+        artifacts.set(pkg.name, preparePackageArtifact(manager, rootDir, pkg, artifactRoot));
+      }
     }
 
     if (tagRecovery.length > 0) {
@@ -606,7 +592,7 @@ function main() {
     }
 
     for (const pkg of unpublished) {
-      publishPackage(manager, rootDir, pkg);
+      publishPackage(pkg, artifacts.get(pkg.name));
       emitNewTag(pkg);
     }
 
@@ -615,6 +601,7 @@ function main() {
     }
   } finally {
     restoreManifests();
+    fs.rmSync(artifactRoot, { recursive: true, force: true });
   }
 }
 
