@@ -84,6 +84,7 @@ on:
         required: false
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
   id-token: write
