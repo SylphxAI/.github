@@ -98,7 +98,7 @@
       },
       {
         "repo": "oven-sh/setup-bun",
-        "surface": "Bun setup action used by reusable npm release workflows before install, build, pack audit, and Bun-native publication.",
+        "surface": "Bun setup action used by reusable npm release workflows before install, build, package-manager packing, tarball audit, and audited tarball publication.",
         "direction": "tool-public"
       }
     ],

@@ -4,8 +4,9 @@ name: Release
 # Changesets-based `publish-npm.yml`. Consumers keep calling this workflow
 # unchanged (`uses: SylphxAI/.github/.github/workflows/release.yml@main`) while
 # release intent/version PRs stay on Changesets and publishing is handled by the
-# Sylphx manager-aware publisher. Bun workspaces publish with `bun publish` and
-# every package is tarball-audited so `workspace:` ranges cannot reach npm.
+# Sylphx manager-aware publisher. Workspace packages are packed with the
+# detected package manager, audited, and published with
+# `npm publish <tarball>` so `workspace:` ranges cannot reach npm.
 
 on:
   workflow_call:
