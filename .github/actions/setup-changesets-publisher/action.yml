@@ -1,0 +1,29 @@
+name: Setup Sylphx Changesets Publisher
+description: Install the Sylphx manager-aware Changesets publish command on PATH for reusable release workflows.
+inputs:
+  self-check:
+    description: Run the publisher self-check before installing the command.
+    required: false
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Install sylphx-changesets-publish
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ "${{ inputs.self-check }}" = "true" ]; then
+          node "$GITHUB_ACTION_PATH/changesets-publish.mjs" --self-check
+        fi
+
+        BIN_DIR="$RUNNER_TEMP/sylphx-release-bin"
+        mkdir -p "$BIN_DIR"
+        cat > "$BIN_DIR/sylphx-changesets-publish" <<EOF
+        #!/usr/bin/env bash
+        set -euo pipefail
+        exec node "$GITHUB_ACTION_PATH/changesets-publish.mjs" "\$@"
+        EOF
+        sed -i 's/^        //' "$BIN_DIR/sylphx-changesets-publish"
+        chmod +x "$BIN_DIR/sylphx-changesets-publish"
+        echo "$BIN_DIR" >> "$GITHUB_PATH"
