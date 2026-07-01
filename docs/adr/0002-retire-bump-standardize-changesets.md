@@ -2,86 +2,58 @@
 
 - Status: Accepted
 - Date: 2026-06-27
+- Updated: 2026-07-01
 - Owner: platform / release engineering
 
 ## Context
 
-The org ran two release mechanisms in parallel:
+The org previously ran multiple release mechanisms in parallel:
 
-1. `@sylphx/bump` — a homegrown changelog/release runner (`SylphxAI/bump`,
-   `#!/usr/bin/env node`), consumed two ways:
-   - as a **composite action** inside the reusable workflow
-     `SylphxAI/.github/.github/workflows/release.yml@main` (most repos call this);
-   - **directly** on a self-hosted runner (only `synth`).
-2. `changesets/action@v1` — used by a few repos via a standalone, self-contained
-   `release.yml` (e.g. `pdf-reader-mcp`), plus a reusable
-   `publish-npm.yml@main` that already wrapped it.
+1. `@sylphx/bump` — a homegrown semantic-commit release runner and GitHub Action.
+2. Repo-local `changesets/action@v1` workflows, sometimes publishing directly with `changeset publish`, `bun publish`, or `npm publish`.
+3. Custom package publish workflows for repos with generated package artifacts.
 
-bump is a 0-star tool we no longer want to maintain. The decision is to retire it
-and standardize the whole org on **Changesets**, the off-the-shelf standard.
+The Bump model created two strategic problems:
 
-Two latent failures surfaced during the migration and are the reason this ADR
-exists (so new repos don't repeat them):
+- Release intent was inferred from commits instead of explicit package release notes.
+- Workspace publishing behavior was owned inconsistently by repo-local scripts, so some immutable npm versions leaked `workspace:*` dependency ranges into registry metadata.
 
-- **`startup_failure` on every reusable-workflow caller.** The org default
-  `default_workflow_permissions` is **`read`**. The reusable release job requests
-  `contents: write` + `pull-requests: write` (Changesets must commit version
-  bumps and open the "Version Packages" PR). A reusable workflow can never hold
-  more permission than its caller grants, so callers that omit a `permissions:`
-  block fail **at workflow load time** — before any step runs.
-- **`There is no .changeset directory in this project`.** Many repos never had
-  `.changeset/config.json`. Once the reusable workflow runs Changesets, that file
-  is mandatory.
+A `workspace:*` dependency in source manifests is valid monorepo intent. A `workspace:*` dependency in a published npm package is consumer-breaking.
 
 ## Decision
 
-1. **Reusable workflow delegates to Changesets.** `release.yml@main` becomes a
-   thin compatibility shim that maps the legacy bump inputs
-   (`working-directory`, `build`/`prebuild`, `artifact`, `prepublish`,
-   `postpublish`, …) onto `publish-npm.yml@main`, with
-   `version-command: bunx @changesets/cli version` and
-   `publish-command: bunx @changesets/cli publish`. Existing callers keep their
-   `uses:` line unchanged and are transparently migrated off bump.
+1. **Bump is retired.** Do not add new `@sylphx/bump` package dependencies, `SylphxAI/bump` action references, or semantic-commit auto-bump release paths. The Bump repository is archived, the npm package is deprecated, and the action fails fast with a retirement message.
 
-2. **Every caller grants release permissions.** The `release` job that calls the
-   reusable workflow must declare:
+2. **Changesets is the canonical release-intent and version-PR layer.** A package version changes only when a changeset file or an explicit repo-owned release process asks for it. No changeset means no package bump.
+
+3. **The central reusable release workflow is the canonical Sylphx publish path.** Repos should call:
 
    ```yaml
    jobs:
      release:
        permissions:
-         actions: write          # only needed if postpublish triggers a workflow
+         actions: write
          contents: write
          pull-requests: write
+         id-token: write
        uses: SylphxAI/.github/.github/workflows/release.yml@main
        secrets: inherit
    ```
 
-   (We keep the org default at `read` — least privilege — rather than flipping
-   the org to `write`. The grant is scoped to the single release job.)
+   `release.yml@main` delegates to `publish-npm.yml@main`, which uses `changesets/action@v1` for version PRs / GitHub Releases and the Sylphx manager-aware publisher for actual npm publication.
 
-3. **Every package repo carries `.changeset/config.json`** (org standard:
-   `access: public`, `baseBranch` = the repo's default branch).
+4. **Publication must audit the exact packed artifact.** The Sylphx publisher detects the workspace package manager, materializes internal `workspace:*`, `workspace:^`, and `workspace:~` ranges from local package versions, packs each package, reads `package/package.json` inside the tarball, fails if any dependency field still contains `workspace:`, then publishes the same audited tarball with `npm publish <tarball>`.
 
-4. **`synth` (self-hosted, Rust/wasm) gets a self-contained Changesets
-   `release.yml`** — keeps the Rust/wasm toolchain + build, adds `setup-node`
-   (the self-hosted runner ships bun but no node), swaps the bump step for
-   `changesets/action@v1`, preserves the Slack notifications (now reading
-   `steps.changesets.outputs.publishedPackages`).
+5. **Repo-local direct publish shortcuts are not the org standard for workspace repos.** Do not use direct `changeset publish`, `bun publish`, `npm publish`, or `pnpm publish` for Bun/Yarn/npm workspaces unless the repo owns an equivalent tarball materialization/audit path. Fail-closed scripts that point contributors to the central workflow are acceptable.
 
-5. **Retire `@sylphx/bump`** once it has no remaining consumers: deprecate on npm
-   and archive the repo.
+6. **Every Changesets package repo carries `.changeset/config.json`.** The org default is public packages with the repo default branch as `baseBranch`, unless the repo documents a narrower package policy.
+
+7. **Custom generated-package workflows must meet the same artifact rule.** A repo with generated npm directories may keep a repo-owned workflow only if it proves the packed/generated artifact contains no `workspace:` metadata and does not mask publish failures without a registry readback.
 
 ## Consequences
 
-- Release cadence is now changeset-driven: a release happens only when a
-  `.changeset/*.md` file lands and the generated "Version Packages" PR merges.
-  Contributors must add changesets. No spurious releases when there are none.
-- New repos using the reusable workflow MUST include the `permissions:` block and
-  a `.changeset/config.json`, or they hit the two failures above. This ADR is the
-  reference; consider encoding both as a repo-template / CI lint.
-- `changeset publish` publishes any public package whose local version is not yet
-  on npm. For repos already published this is a no-op; a repo whose version ran
-  ahead of npm gets a catch-up publish (intended). A **never-published** repo
-  would get a first-time public release — treat that as a deliberate product
-  decision, not an automatic side effect.
+- Release cadence is explicit and contributor-visible: changeset files drive version PRs, changelogs, tags, and GitHub Releases.
+- Caller workflows must grant write permissions to the release job because org-level default workflow permissions stay read-only.
+- Published registry metadata is the production boundary. Bad immutable versions require a forward-fix release or explicit npm deprecation; archiving the source repo is not remediation.
+- Final delivery proof must separate version PR merge, release workflow success, packed artifact audit, npm registry readback, consumer install smoke, and any external runner or npm permission blockers.
+- New agents should use the `sylphx-release-publish` Codex skill and its audit script before changing package release automation.
