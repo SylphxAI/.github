@@ -35,6 +35,11 @@ publisher now derives `workspace:*`, `workspace:^`, and `workspace:~` from the
 workspace package versions in the checked-out version PR before `bun publish` or
 any other manager publish command runs.
 
+The same follow-up release rehearsal exposed a separate Bun authentication
+boundary: `actions/setup-node` provides `NODE_AUTH_TOKEN`, while `bun publish`
+expects `NPM_CONFIG_TOKEN` in automation. The shared publisher now bridges the
+workflow-scoped token for Bun without adding a second secret.
+
 ## Fleet Findings
 
 | Finding | Count |

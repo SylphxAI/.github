@@ -43,6 +43,8 @@ The publisher:
 - packs each candidate first and reads `package/package.json` from the tarball;
 - fails before publication if any packed dependency field still contains a
   `workspace:` protocol;
+- bridges the workflow-scoped `NODE_AUTH_TOKEN` to `NPM_CONFIG_TOKEN` for Bun
+  publication when `NPM_CONFIG_TOKEN` is not already set;
 - prints `New tag: <name>@<version>` after each successful publish so
   `changesets/action` continues to create the expected tags and GitHub
   releases.
@@ -56,7 +58,7 @@ publishing remains a fallback for packages not yet migrated.
 - Changesets remains the compatible release intent and version PR interface.
 - Bun workspaces publish through Bun, but no longer rely on Bun alone to choose
   internal package versions; the shared publisher materializes local workspace
-  versions first.
+  versions first and supplies Bun's expected automation token environment.
 - pnpm workspaces remain package-manager-native and gain the same local-version
   materialization plus tarball gate.
 - npm workspaces that still contain `workspace:` fail safely before immutable

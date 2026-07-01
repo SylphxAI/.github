@@ -44,6 +44,11 @@ GitHub Release creation. The default publish command is
 
 - `NPM_TOKEN`: optional npm publish token. Prefer npm trusted publishing through
   GitHub Actions OIDC where package configuration supports it.
+
+The shared publisher bridges the workflow-scoped `NODE_AUTH_TOKEN` provided by
+`actions/setup-node` to `NPM_CONFIG_TOKEN` when the latter is absent. This is
+required for Bun publication because `bun publish` reads `NPM_CONFIG_TOKEN` in
+automation.
 - `SLACK_WEBHOOK`: optional release notification webhook.
 
 ## Caller Permissions
