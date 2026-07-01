@@ -30,6 +30,9 @@ GitHub Release creation. The default publish command is
 - `prepublish`: optional command to run after build or artifact download and
   before publishing.
 - `postpublish`: optional command to run after a successful publish.
+  Postpublish commands receive `GH_TOKEN` / `GITHUB_TOKEN` scoped to the
+  workflow token so repo-owned follow-up workflows can be triggered through
+  `gh workflow run` without adding another secret.
 
 `publish-npm.yml` also accepts advanced inputs for direct callers:
 
