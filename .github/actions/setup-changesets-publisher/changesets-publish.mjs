@@ -442,6 +442,8 @@ function publishEnv() {
     // clients. Bun publish reads NPM_CONFIG_TOKEN instead, so bridge the same
     // workflow-scoped token without introducing another secret surface.
     env.NPM_CONFIG_TOKEN = process.env.NODE_AUTH_TOKEN;
+    env.npm_config_token = process.env.NODE_AUTH_TOKEN;
+    log('Using NODE_AUTH_TOKEN as NPM_CONFIG_TOKEN for publish command authentication.');
   }
   return env;
 }
@@ -525,7 +527,8 @@ function selfCheck() {
       process.env.NODE_AUTH_TOKEN = 'self-check-token';
       delete process.env.NPM_CONFIG_TOKEN;
       delete process.env.npm_config_token;
-      if (publishEnv().NPM_CONFIG_TOKEN !== 'self-check-token') {
+      const bridgedEnv = publishEnv();
+      if (bridgedEnv.NPM_CONFIG_TOKEN !== 'self-check-token' || bridgedEnv.npm_config_token !== 'self-check-token') {
         fail('self-check did not bridge NODE_AUTH_TOKEN to NPM_CONFIG_TOKEN');
       }
       process.env.NPM_CONFIG_TOKEN = 'explicit-token';

@@ -43,8 +43,9 @@ The publisher:
 - packs each candidate first and reads `package/package.json` from the tarball;
 - fails before publication if any packed dependency field still contains a
   `workspace:` protocol;
-- bridges the workflow-scoped `NODE_AUTH_TOKEN` to `NPM_CONFIG_TOKEN` for Bun
-  publication when `NPM_CONFIG_TOKEN` is not already set;
+- bridges the workflow-scoped `NODE_AUTH_TOKEN` to `NPM_CONFIG_TOKEN` /
+  `npm_config_token` for Bun publication when no npm config token is already
+  set;
 - prints `New tag: <name>@<version>` after each successful publish so
   `changesets/action` continues to create the expected tags and GitHub
   releases.
