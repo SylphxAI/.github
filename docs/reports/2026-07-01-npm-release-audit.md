@@ -23,9 +23,17 @@ metadata that npm consumers cannot install.
 to the manager-aware `sylphx-changesets-publish` command installed by
 `setup-changesets-publisher`.
 
-The command packs every unpublished package and fails before registry mutation
-if the packed `package/package.json` still contains `workspace:` in dependency
-metadata.
+The command temporarily materializes `workspace:` ranges from current local
+workspace package versions, packs every unpublished package, and fails before
+registry mutation if the packed `package/package.json` still contains
+`workspace:` in dependency metadata.
+
+Follow-up validation on `code`/`codec` showed why this must be owned by the
+shared publisher rather than by Bun alone: Bun removed the `workspace:` protocol
+but selected stale registry versions for some internal dependencies. The
+publisher now derives `workspace:*`, `workspace:^`, and `workspace:~` from the
+workspace package versions in the checked-out version PR before `bun publish` or
+any other manager publish command runs.
 
 ## Fleet Findings
 

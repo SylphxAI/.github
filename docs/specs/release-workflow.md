@@ -69,17 +69,31 @@ for token-based fallback publishes.
 
 ## Workspace Publish Safety
 
-The default publisher must pack every unpublished package before publication and
-inspect the packed `package/package.json`. If any dependency field still contains
-`workspace:`, the workflow must fail before `npm publish`, `bun publish`, or
-`pnpm publish` is allowed to mutate the registry.
+The default publisher must materialize workspace protocol ranges from the
+current local workspace manifest versions, then pack every unpublished package
+before publication and inspect the packed `package/package.json`. If any
+dependency field still contains `workspace:`, the workflow must fail before
+`npm publish`, `bun publish`, or `pnpm publish` is allowed to mutate the
+registry.
+
+Workspace range materialization is source-tree temporary and restored in a
+`finally` path after audit/publish. The durable source of truth remains the
+Changesets version PR plus workspace manifests; the registry receives only
+consumer-installable package metadata:
+
+- `workspace:*` -> the exact current local package version.
+- `workspace:^` -> `^<current local package version>`.
+- `workspace:~` -> `~<current local package version>`.
+- `workspace:<explicit range>` -> `<explicit range>` with the protocol removed.
+- Unsupported path-style workspace specs fail closed before publication.
 
 Expected behavior by package manager:
 
-- Bun workspaces: publish with `bun publish`; `bun pm pack` must materialize
-  workspace ranges in the artifact.
-- pnpm workspaces: publish with `pnpm publish`; `pnpm pack` must materialize
-  workspace ranges in the artifact.
+- Bun workspaces: publish with `bun publish` after the shared publisher
+  materializes workspace ranges from local manifests and the artifact audit
+  passes.
+- pnpm workspaces: publish with `pnpm publish` after the same shared
+  materialization and artifact audit passes.
 - npm workspaces: fail if packed metadata still contains `workspace:` because
   npm does not materialize those ranges.
 - Yarn workspaces: publish with `yarn npm publish` and require the same packed
