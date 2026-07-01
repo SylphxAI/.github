@@ -435,27 +435,39 @@ function tagArgs() {
   return tag ? ['--tag', tag] : [];
 }
 
+function publishEnv() {
+  const env = {};
+  if (process.env.NODE_AUTH_TOKEN && !process.env.NPM_CONFIG_TOKEN && !process.env.npm_config_token) {
+    // GitHub's setup-node writes NODE_AUTH_TOKEN/.npmrc for npm-compatible
+    // clients. Bun publish reads NPM_CONFIG_TOKEN instead, so bridge the same
+    // workflow-scoped token without introducing another secret surface.
+    env.NPM_CONFIG_TOKEN = process.env.NODE_AUTH_TOKEN;
+  }
+  return env;
+}
+
 function publishPackage(manager, rootDir, pkg) {
   const commonArgs = [...accessArgs(pkg), ...tagArgs()];
+  const env = publishEnv();
   switch (manager.type) {
     case 'bun':
-      run('bun', ['publish', ...commonArgs], { cwd: pkg.dir });
+      run('bun', ['publish', ...commonArgs], { cwd: pkg.dir, env });
       break;
     case 'pnpm': {
       const isRoot = path.resolve(pkg.dir) === path.resolve(rootDir);
       if (isRoot) {
-        run('pnpm', ['publish', '--no-git-checks', ...commonArgs], { cwd: pkg.dir });
+        run('pnpm', ['publish', '--no-git-checks', ...commonArgs], { cwd: pkg.dir, env });
       } else {
-        run('pnpm', ['--filter', pkg.name, 'publish', '--no-git-checks', ...commonArgs], { cwd: rootDir });
+        run('pnpm', ['--filter', pkg.name, 'publish', '--no-git-checks', ...commonArgs], { cwd: rootDir, env });
       }
       break;
     }
     case 'yarn':
-      run('yarn', ['npm', 'publish', ...commonArgs], { cwd: pkg.dir });
+      run('yarn', ['npm', 'publish', ...commonArgs], { cwd: pkg.dir, env });
       break;
     case 'npm':
     default:
-      run('npm', ['publish', ...commonArgs], { cwd: pkg.dir });
+      run('npm', ['publish', ...commonArgs], { cwd: pkg.dir, env });
       break;
   }
 }
@@ -505,6 +517,30 @@ function selfCheck() {
     if (workspaceProtocolEntries(readJson(path.join(tempRoot, 'packages', 'b', 'package.json'))).length !== 4) {
       fail('self-check did not restore source manifests after materialization');
     }
+
+    const previousNodeAuthToken = process.env.NODE_AUTH_TOKEN;
+    const previousNpmConfigToken = process.env.NPM_CONFIG_TOKEN;
+    const previousLowercaseNpmConfigToken = process.env.npm_config_token;
+    try {
+      process.env.NODE_AUTH_TOKEN = 'self-check-token';
+      delete process.env.NPM_CONFIG_TOKEN;
+      delete process.env.npm_config_token;
+      if (publishEnv().NPM_CONFIG_TOKEN !== 'self-check-token') {
+        fail('self-check did not bridge NODE_AUTH_TOKEN to NPM_CONFIG_TOKEN');
+      }
+      process.env.NPM_CONFIG_TOKEN = 'explicit-token';
+      if (publishEnv().NPM_CONFIG_TOKEN) {
+        fail('self-check should not override an explicit NPM_CONFIG_TOKEN');
+      }
+    } finally {
+      if (previousNodeAuthToken === undefined) delete process.env.NODE_AUTH_TOKEN;
+      else process.env.NODE_AUTH_TOKEN = previousNodeAuthToken;
+      if (previousNpmConfigToken === undefined) delete process.env.NPM_CONFIG_TOKEN;
+      else process.env.NPM_CONFIG_TOKEN = previousNpmConfigToken;
+      if (previousLowercaseNpmConfigToken === undefined) delete process.env.npm_config_token;
+      else process.env.npm_config_token = previousLowercaseNpmConfigToken;
+    }
+
     log('self-check passed');
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
