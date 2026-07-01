@@ -36,16 +36,15 @@ The publisher:
 - discovers public root and workspace packages;
 - skips versions that already exist on npm;
 - temporarily materializes `workspace:` dependency ranges from current local
-  workspace package versions before packing or publishing, then restores the
-  source manifests;
-- publishes unpublished packages with the matching package manager (`bun
-  publish` for Bun workspaces, `pnpm publish` for pnpm workspaces, etc.);
-- packs each candidate first and reads `package/package.json` from the tarball;
+  workspace package versions before packing, then restores the source manifests;
+- packs each candidate with the matching package manager (`bun pm pack` for Bun
+  workspaces, `pnpm pack` for pnpm workspaces, etc.);
+- reads `package/package.json` from the tarball and publishes that exact audited
+  tarball with `npm publish <tarball>`;
 - fails before publication if any packed dependency field still contains a
   `workspace:` protocol;
 - bridges the workflow-scoped `NODE_AUTH_TOKEN` to `NPM_CONFIG_TOKEN` /
-  `npm_config_token` for Bun publication when no npm config token is already
-  set;
+  `npm_config_token` when no npm config token is already set;
 - prints `New tag: <name>@<version>` after each successful publish so
   `changesets/action` continues to create the expected tags and GitHub
   releases.
@@ -57,11 +56,11 @@ publishing remains a fallback for packages not yet migrated.
 ## Consequences
 
 - Changesets remains the compatible release intent and version PR interface.
-- Bun workspaces publish through Bun, but no longer rely on Bun alone to choose
-  internal package versions; the shared publisher materializes local workspace
-  versions first and supplies Bun's expected automation token environment.
-- pnpm workspaces remain package-manager-native and gain the same local-version
-  materialization plus tarball gate.
+- Bun workspaces pack through Bun, but no longer rely on Bun's publish command
+  for registry mutation; the shared publisher materializes local workspace
+  versions first and uploads the audited tarball through npm.
+- pnpm workspaces remain package-manager-native for packing and gain the same
+  local-version materialization plus tarball gate.
 - npm workspaces that still contain `workspace:` fail safely before immutable
   broken package versions reach npm.
 - Bump is not part of the organization release path; consumers should not add

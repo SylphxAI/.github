@@ -36,7 +36,8 @@ GitHub Release creation. The default publish command is
 - `version-command`: defaults to the caller-provided Changesets version command.
 - `publish-command`: defaults to `auto`, which runs
   `sylphx-changesets-publish`. Override only for a repo-owned publisher that
-  performs an equivalent package-manager-aware pack audit.
+  performs equivalent package-manager-aware packing, tarball audit, and tarball
+  publication.
 - `npm-registry`: defaults to `https://registry.npmjs.org`.
 - `create-github-releases`: defaults to `true`.
 
@@ -45,10 +46,11 @@ GitHub Release creation. The default publish command is
 - `NPM_TOKEN`: optional npm publish token. Prefer npm trusted publishing through
   GitHub Actions OIDC where package configuration supports it.
 
-The shared publisher bridges the workflow-scoped `NODE_AUTH_TOKEN` provided by
+The shared publisher publishes audited tarballs with `npm publish <tarball>`.
+It still bridges the workflow-scoped `NODE_AUTH_TOKEN` provided by
 `actions/setup-node` to `NPM_CONFIG_TOKEN` / `npm_config_token` when neither is
-set. This is required for Bun publication because `bun publish` reads
-`NPM_CONFIG_TOKEN` in automation.
+set, but npm is the registry upload client so the artifact that passed audit is
+the artifact that reaches npm.
 - `SLACK_WEBHOOK`: optional release notification webhook.
 
 ## Caller Permissions
@@ -78,8 +80,9 @@ The default publisher must materialize workspace protocol ranges from the
 current local workspace manifest versions, then pack every unpublished package
 before publication and inspect the packed `package/package.json`. If any
 dependency field still contains `workspace:`, the workflow must fail before
-`npm publish`, `bun publish`, or `pnpm publish` is allowed to mutate the
-registry.
+`npm publish` is allowed to mutate the registry. Publication must use the exact
+tarball that passed the audit; no package manager may perform a second implicit
+pack during registry upload.
 
 Workspace range materialization is source-tree temporary and restored in a
 `finally` path after audit/publish. The durable source of truth remains the
@@ -94,15 +97,14 @@ consumer-installable package metadata:
 
 Expected behavior by package manager:
 
-- Bun workspaces: publish with `bun publish` after the shared publisher
-  materializes workspace ranges from local manifests and the artifact audit
-  passes.
-- pnpm workspaces: publish with `pnpm publish` after the same shared
-  materialization and artifact audit passes.
+- Bun workspaces: pack with `bun pm pack`, then publish the audited tarball with
+  `npm publish <tarball>`.
+- pnpm workspaces: pack with `pnpm pack`, then publish the audited tarball with
+  `npm publish <tarball>`.
 - npm workspaces: fail if packed metadata still contains `workspace:` because
   npm does not materialize those ranges.
-- Yarn workspaces: publish with `yarn npm publish` and require the same packed
-  artifact audit.
+- Yarn workspaces: pack with `yarn pack`, then publish the audited tarball with
+  `npm publish <tarball>`.
 
 ## Contract Rules
 
@@ -117,5 +119,6 @@ Expected behavior by package manager:
 - Repo-specific release behavior belongs in the consumer repository or a
   dedicated adapter, not in this shared workflow.
 - Repositories must not use `@sylphx/bump`, `SylphxAI/bump`, or direct
-  `changeset publish`/`npm publish` in a Bun or Yarn workspace unless an
-  equivalent pack audit proves no `workspace:` range can be published.
+  `changeset publish`/`bun publish`/`npm publish` from a workspace package
+  unless an equivalent pack audit proves the exact tarball being uploaded
+  cannot contain `workspace:` ranges.

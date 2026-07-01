@@ -24,21 +24,23 @@ to the manager-aware `sylphx-changesets-publish` command installed by
 `setup-changesets-publisher`.
 
 The command temporarily materializes `workspace:` ranges from current local
-workspace package versions, packs every unpublished package, and fails before
-registry mutation if the packed `package/package.json` still contains
-`workspace:` in dependency metadata.
+workspace package versions, packs every unpublished package with the workspace
+package manager, and fails before registry mutation if the packed
+`package/package.json` still contains `workspace:` in dependency metadata. The
+same tarball that passed audit is then uploaded with `npm publish <tarball>`.
 
 Follow-up validation on `code`/`codec` showed why this must be owned by the
 shared publisher rather than by Bun alone: Bun removed the `workspace:` protocol
 but selected stale registry versions for some internal dependencies. The
 publisher now derives `workspace:*`, `workspace:^`, and `workspace:~` from the
-workspace package versions in the checked-out version PR before `bun publish` or
-any other manager publish command runs.
+workspace package versions in the checked-out version PR before any registry
+mutation can run.
 
 The same follow-up release rehearsal exposed a separate Bun authentication
-boundary: `actions/setup-node` provides `NODE_AUTH_TOKEN`, while `bun publish`
-expects `NPM_CONFIG_TOKEN` in automation. The shared publisher now bridges the
-workflow-scoped token for Bun without adding a second secret.
+and workspace-publish boundary: `bun publish` did not reliably use the same
+auth/configuration path as npm and re-packed during registry upload. The shared
+publisher therefore keeps Bun as the packer for Bun workspaces but uses npm only
+as the tarball upload client.
 
 ## Fleet Findings
 
