@@ -133,12 +133,11 @@ function isPublishable(packageJson) {
   return true;
 }
 
-function discoverPackages(rootDir) {
-  const rootPackageJson = readJson(path.join(rootDir, 'package.json'));
+function collectWorkspacePackageDirs(rootDir, rootPackageJson) {
   const patterns = workspacePatterns(rootPackageJson);
   const packageDirs = new Set();
 
-  if (isPublishable(rootPackageJson)) packageDirs.add(rootDir);
+  packageDirs.add(path.resolve(rootDir));
 
   for (const pattern of patterns) {
     for (const dir of expandWorkspacePattern(rootDir, pattern)) {
@@ -146,6 +145,12 @@ function discoverPackages(rootDir) {
     }
   }
 
+  return packageDirs;
+}
+
+function discoverPackages(rootDir) {
+  const rootPackageJson = readJson(path.join(rootDir, 'package.json'));
+  const packageDirs = collectWorkspacePackageDirs(rootDir, rootPackageJson);
   const packages = [];
   for (const dir of packageDirs) {
     const packageJson = readJson(path.join(dir, 'package.json'));
@@ -162,13 +167,35 @@ function discoverPackages(rootDir) {
   return topologicalSort(packages);
 }
 
+function localPackageVersionMap(rootDir) {
+  const rootPackageJson = readJson(path.join(rootDir, 'package.json'));
+  const versions = new Map();
+
+  for (const dir of collectWorkspacePackageDirs(rootDir, rootPackageJson)) {
+    const packageJsonPath = path.join(dir, 'package.json');
+    if (!fileExists(packageJsonPath)) continue;
+    const packageJson = readJson(packageJsonPath);
+    if (!packageJson.name || !packageJson.version) continue;
+    if (versions.has(packageJson.name)) {
+      fail(`Duplicate workspace package name ${packageJson.name}; cannot materialize workspace: ranges safely.`);
+    }
+    versions.set(packageJson.name, packageJson.version);
+  }
+
+  return versions;
+}
+
 function localDependencyNames(pkg, localNames) {
   const deps = new Set();
   for (const section of DEPENDENCY_SECTIONS) {
     const values = pkg.packageJson[section];
     if (!values || typeof values !== 'object' || Array.isArray(values)) continue;
-    for (const name of Object.keys(values)) {
+    for (const [name, spec] of Object.entries(values)) {
       if (localNames.has(name)) deps.add(name);
+      if (typeof spec === 'string' && spec.startsWith('workspace:')) {
+        const alias = parseWorkspaceAlias(spec.slice('workspace:'.length));
+        if (alias && localNames.has(alias.packageName)) deps.add(alias.packageName);
+      }
     }
   }
   return deps;
@@ -303,7 +330,87 @@ function workspaceProtocolEntries(packageJson) {
   return entries;
 }
 
+function materializeWorkspaceRange(range, version) {
+  if (range === '' || range === '*') return version;
+  if (range === '^') return `^${version}`;
+  if (range === '~') return `~${version}`;
+  return range;
+}
+
+function parseWorkspaceAlias(range) {
+  const match = range.match(/^(@[^/\s]+\/[^@\s]+|[^@/\s][^@\s]*)@(.+)$/);
+  if (!match) return null;
+  return { packageName: match[1], range: match[2] };
+}
+
+function materializeWorkspaceSpec(dependencyName, spec, localVersions) {
+  const protocol = 'workspace:';
+  const range = spec.slice(protocol.length);
+
+  if (range.startsWith('.') || range.startsWith('/')) {
+    fail(`${dependencyName} uses path-based ${spec}; publish metadata needs a named workspace package range.`);
+  }
+
+  if (localVersions.has(dependencyName)) {
+    return materializeWorkspaceRange(range, localVersions.get(dependencyName));
+  }
+
+  const alias = parseWorkspaceAlias(range);
+  if (alias && localVersions.has(alias.packageName)) {
+    const materializedRange = materializeWorkspaceRange(alias.range, localVersions.get(alias.packageName));
+    return `npm:${alias.packageName}@${materializedRange}`;
+  }
+
+  fail(`${dependencyName} uses ${spec}, but no matching local workspace package was found.`);
+}
+
+function materializePackageManifest(pkg, localVersions) {
+  const packageJsonPath = path.join(pkg.dir, 'package.json');
+  const originalText = fs.readFileSync(packageJsonPath, 'utf8');
+  const packageJson = JSON.parse(originalText);
+  const materialized = [];
+
+  for (const section of DEPENDENCY_SECTIONS) {
+    const values = packageJson[section];
+    if (!values || typeof values !== 'object' || Array.isArray(values)) continue;
+    for (const [name, spec] of Object.entries(values)) {
+      if (typeof spec !== 'string' || !spec.startsWith('workspace:')) continue;
+      const replacement = materializeWorkspaceSpec(name, spec, localVersions);
+      values[name] = replacement;
+      materialized.push(`${section}.${name}: ${spec} -> ${replacement}`);
+    }
+  }
+
+  if (materialized.length === 0) return null;
+
+  fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+  log(`Materialized ${pkg.name}@${pkg.version}: ${materialized.join(', ')}`);
+
+  return () => {
+    fs.writeFileSync(packageJsonPath, originalText);
+  };
+}
+
+function materializeWorkspaceManifests(packages, localVersions) {
+  const restorers = [];
+  for (const pkg of packages) {
+    const restore = materializePackageManifest(pkg, localVersions);
+    if (restore) restorers.push(restore);
+  }
+  return () => {
+    for (const restore of restorers.reverse()) restore();
+  };
+}
+
+function assertMaterializedManifest(pkg) {
+  const leaks = workspaceProtocolEntries(readJson(path.join(pkg.dir, 'package.json')));
+  if (leaks.length > 0) {
+    fail(`${pkg.name}@${pkg.version} source manifest still contains workspace: dependencies after materialization: ${leaks.join(', ')}`);
+  }
+}
+
 function auditPackage(manager, rootDir, pkg) {
+  assertMaterializedManifest(pkg);
   const packDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylphx-pack-'));
   try {
     const tarballPath = packPackage(manager, rootDir, pkg, packDir);
@@ -365,23 +472,39 @@ function selfCheck() {
     }, null, 2));
     fs.writeFileSync(path.join(tempRoot, 'packages', 'a', 'package.json'), JSON.stringify({
       name: '@self-check/a',
-      version: '1.0.0',
+      version: '1.2.3',
     }, null, 2));
     fs.writeFileSync(path.join(tempRoot, 'packages', 'b', 'package.json'), JSON.stringify({
       name: '@self-check/b',
       version: '1.0.0',
       dependencies: { '@self-check/a': 'workspace:*' },
+      peerDependencies: { '@self-check/a': 'workspace:^' },
+      optionalDependencies: { '@self-check/a': 'workspace:~' },
+      devDependencies: { '@self-check/a': 'workspace:^1.0.0' },
     }, null, 2));
 
     const rootPackageJson = readJson(path.join(tempRoot, 'package.json'));
     const manager = detectPackageManager(tempRoot, rootPackageJson);
     const packages = discoverPackages(tempRoot);
+    const localVersions = localPackageVersionMap(tempRoot);
     if (manager.type !== 'bun') fail(`self-check expected bun manager, got ${manager.type}`);
     if (packages.map((pkg) => pkg.name).join(',') !== '@self-check/a,@self-check/b') {
       fail(`self-check publish order was ${packages.map((pkg) => pkg.name).join(',')}`);
     }
     const leaks = workspaceProtocolEntries(readJson(path.join(tempRoot, 'packages', 'b', 'package.json')));
-    if (leaks.length !== 1) fail('self-check expected one workspace protocol entry');
+    if (leaks.length !== 4) fail(`self-check expected four workspace protocol entries, got ${leaks.length}`);
+
+    const restore = materializeWorkspaceManifests(packages, localVersions);
+    const materialized = readJson(path.join(tempRoot, 'packages', 'b', 'package.json'));
+    if (materialized.dependencies['@self-check/a'] !== '1.2.3') fail('self-check did not materialize workspace:* to the local version');
+    if (materialized.peerDependencies['@self-check/a'] !== '^1.2.3') fail('self-check did not materialize workspace:^ to the local version');
+    if (materialized.optionalDependencies['@self-check/a'] !== '~1.2.3') fail('self-check did not materialize workspace:~ to the local version');
+    if (materialized.devDependencies['@self-check/a'] !== '^1.0.0') fail('self-check did not strip explicit workspace ranges');
+    if (workspaceProtocolEntries(materialized).length !== 0) fail('self-check materialized manifest still contains workspace: ranges');
+    restore();
+    if (workspaceProtocolEntries(readJson(path.join(tempRoot, 'packages', 'b', 'package.json'))).length !== 4) {
+      fail('self-check did not restore source manifests after materialization');
+    }
     log('self-check passed');
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -401,6 +524,7 @@ function main() {
   const rootPackageJson = readJson(rootPackagePath);
   const manager = detectPackageManager(rootDir, rootPackageJson);
   const packages = discoverPackages(rootDir);
+  const localVersions = localPackageVersionMap(rootDir);
 
   log(`Detected package manager: ${manager.packageManager || manager.type}`);
   log(`Publishable packages: ${packages.map((pkg) => `${pkg.name}@${pkg.version} (${pkg.relativeDir})`).join(', ') || 'none'}`);
@@ -426,27 +550,32 @@ function main() {
     return;
   }
 
-  if (unpublished.length > 0) {
-    log(`Unpublished packages: ${unpublished.map((pkg) => `${pkg.name}@${pkg.version}`).join(', ')}`);
-    for (const pkg of unpublished) auditPackage(manager, rootDir, pkg);
-  }
+  const restoreManifests = materializeWorkspaceManifests(unpublished, localVersions);
+  try {
+    if (unpublished.length > 0) {
+      log(`Unpublished packages: ${unpublished.map((pkg) => `${pkg.name}@${pkg.version}`).join(', ')}`);
+      for (const pkg of unpublished) auditPackage(manager, rootDir, pkg);
+    }
 
-  if (tagRecovery.length > 0) {
-    log(`Published packages missing remote release tags: ${tagRecovery.map((pkg) => tagNameForPackage(pkg)).join(', ')}`);
-  }
+    if (tagRecovery.length > 0) {
+      log(`Published packages missing remote release tags: ${tagRecovery.map((pkg) => tagNameForPackage(pkg)).join(', ')}`);
+    }
 
-  if (isDryRun) {
-    log('--dry-run set; not publishing or creating tags.');
-    return;
-  }
+    if (isDryRun) {
+      log('--dry-run set; not publishing or creating tags.');
+      return;
+    }
 
-  for (const pkg of unpublished) {
-    publishPackage(manager, rootDir, pkg);
-    emitNewTag(pkg);
-  }
+    for (const pkg of unpublished) {
+      publishPackage(manager, rootDir, pkg);
+      emitNewTag(pkg);
+    }
 
-  for (const pkg of tagRecovery) {
-    emitNewTag(pkg);
+    for (const pkg of tagRecovery) {
+      emitNewTag(pkg);
+    }
+  } finally {
+    restoreManifests();
   }
 }
 

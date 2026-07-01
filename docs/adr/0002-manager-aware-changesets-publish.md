@@ -35,6 +35,9 @@ The publisher:
 - detects the repository package manager from `packageManager` and lockfiles;
 - discovers public root and workspace packages;
 - skips versions that already exist on npm;
+- temporarily materializes `workspace:` dependency ranges from current local
+  workspace package versions before packing or publishing, then restores the
+  source manifests;
 - publishes unpublished packages with the matching package manager (`bun
   publish` for Bun workspaces, `pnpm publish` for pnpm workspaces, etc.);
 - packs each candidate first and reads `package/package.json` from the tarball;
@@ -51,9 +54,11 @@ publishing remains a fallback for packages not yet migrated.
 ## Consequences
 
 - Changesets remains the compatible release intent and version PR interface.
-- Bun workspaces publish through Bun, so workspace ranges are materialized at
-  publish time instead of being source-rewritten.
-- pnpm workspaces remain package-manager-native and gain the same tarball gate.
+- Bun workspaces publish through Bun, but no longer rely on Bun alone to choose
+  internal package versions; the shared publisher materializes local workspace
+  versions first.
+- pnpm workspaces remain package-manager-native and gain the same local-version
+  materialization plus tarball gate.
 - npm workspaces that still contain `workspace:` fail safely before immutable
   broken package versions reach npm.
 - Bump is not part of the organization release path; consumers should not add
