@@ -216,6 +216,39 @@ function packageVersionExists(name, version) {
   fail(`Could not check npm registry for ${name}@${version}:\n${output}`);
 }
 
+
+function tagNameForPackage(pkg) {
+  return `${pkg.name}@${pkg.version}`;
+}
+
+function remoteTagExists(tagName) {
+  const result = run('git', ['ls-remote', '--exit-code', '--tags', 'origin', `refs/tags/${tagName}`], {
+    capture: true,
+    allowFailure: true,
+  });
+  if (result.status === 0) return true;
+  if (result.status === 2) return false;
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  fail(`Could not check remote tag ${tagName}:\n${output}`);
+}
+
+function ensureLocalTag(tagName) {
+  const existing = run('git', ['rev-parse', '--quiet', '--verify', `refs/tags/${tagName}`], {
+    capture: true,
+    allowFailure: true,
+  });
+  if (existing.status === 0) return;
+  run('git', ['tag', tagName]);
+}
+
+function emitNewTag(pkg) {
+  const tagName = tagNameForPackage(pkg);
+  ensureLocalTag(tagName);
+  // changesets/action parses this exact line to decide which Git tags and
+  // GitHub releases to create for a custom publish command.
+  console.log(`New tag: ${tagName}`);
+}
+
 function findPackedTarball(packDir, packageName) {
   const files = fs.readdirSync(packDir)
     .filter((file) => file.endsWith('.tgz'))
@@ -372,25 +405,48 @@ function main() {
   log(`Detected package manager: ${manager.packageManager || manager.type}`);
   log(`Publishable packages: ${packages.map((pkg) => `${pkg.name}@${pkg.version} (${pkg.relativeDir})`).join(', ') || 'none'}`);
 
-  const unpublished = packages.filter((pkg) => !packageVersionExists(pkg.name, pkg.version));
-  if (unpublished.length === 0) {
-    log('No unpublished package versions found. Nothing to publish.');
+  const unpublished = [];
+  const tagRecovery = [];
+
+  for (const pkg of packages) {
+    const exists = packageVersionExists(pkg.name, pkg.version);
+    if (!exists) {
+      unpublished.push(pkg);
+      continue;
+    }
+
+    const tagName = tagNameForPackage(pkg);
+    if (!remoteTagExists(tagName)) {
+      tagRecovery.push(pkg);
+    }
+  }
+
+  if (unpublished.length === 0 && tagRecovery.length === 0) {
+    log('No unpublished package versions or missing release tags found. Nothing to publish.');
     return;
   }
 
-  log(`Unpublished packages: ${unpublished.map((pkg) => `${pkg.name}@${pkg.version}`).join(', ')}`);
-  for (const pkg of unpublished) auditPackage(manager, rootDir, pkg);
+  if (unpublished.length > 0) {
+    log(`Unpublished packages: ${unpublished.map((pkg) => `${pkg.name}@${pkg.version}`).join(', ')}`);
+    for (const pkg of unpublished) auditPackage(manager, rootDir, pkg);
+  }
+
+  if (tagRecovery.length > 0) {
+    log(`Published packages missing remote release tags: ${tagRecovery.map((pkg) => tagNameForPackage(pkg)).join(', ')}`);
+  }
 
   if (isDryRun) {
-    log('--dry-run set; not publishing.');
+    log('--dry-run set; not publishing or creating tags.');
     return;
   }
 
   for (const pkg of unpublished) {
     publishPackage(manager, rootDir, pkg);
-    // changesets/action parses this exact line to decide which Git tags and
-    // GitHub releases to create for a custom publish command.
-    console.log(`New tag: ${pkg.name}@${pkg.version}`);
+    emitNewTag(pkg);
+  }
+
+  for (const pkg of tagRecovery) {
+    emitNewTag(pkg);
   }
 }
 
