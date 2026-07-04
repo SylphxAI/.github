@@ -14,6 +14,10 @@ GitHub Release creation. The default publish command is
 `sylphx-changesets-publish`, a manager-aware publisher installed by the shared
 `setup-changesets-publisher` action.
 
+The publisher mirrors Changesets tag naming when it reports published packages
+back to `changesets/action`: a single publishable root-package repository uses
+`v<version>`; multi-package/workspace repositories use `<name>@<version>`.
+
 `@sylphx/bump` is retired and must not be used by callers.
 
 ## Inputs
@@ -98,6 +102,11 @@ consumer-installable package metadata:
 - `workspace:~` -> `~<current local package version>`.
 - `workspace:<explicit range>` -> `<explicit range>` with the protocol removed.
 - Unsupported path-style workspace specs fail closed before publication.
+
+When a package version already exists on npm, the publisher may perform release
+tag recovery only if the Changesets-compatible remote tag is missing. That
+recovery must be idempotent: existing single-package `v*` releases must not be
+re-emitted as workspace-style `<name>@<version>` tags.
 
 Expected behavior by package manager:
 

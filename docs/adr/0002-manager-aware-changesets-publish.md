@@ -45,9 +45,11 @@ The publisher:
   `workspace:` protocol;
 - bridges the workflow-scoped `NODE_AUTH_TOKEN` to `NPM_CONFIG_TOKEN` /
   `npm_config_token` when no npm config token is already set;
-- prints `New tag: <name>@<version>` after each successful publish so
-  `changesets/action` continues to create the expected tags and GitHub
-  releases.
+- prints `New tag: <changesets-compatible tag>` after each successful publish
+  so `changesets/action` continues to create the expected tags and GitHub
+  releases. Single publishable root-package repositories use the standard
+  `v<version>` tag shape; multi-package/workspace repositories use
+  `<name>@<version>`.
 
 `NPM_TOKEN` is optional in the reusable workflow. Repositories should prefer npm
 trusted publishing through GitHub Actions OIDC when configured; token-based
@@ -65,3 +67,11 @@ publishing remains a fallback for packages not yet migrated.
   broken package versions reach npm.
 - Bump is not part of the organization release path; consumers should not add
   `@sylphx/bump` or `SylphxAI/bump` to new workflows.
+
+## Amendment — 2026-07-04
+
+The publisher's release-tag recovery path now mirrors Changesets tag naming
+instead of assuming every repository is a workspace. A single publishable root
+package checks and emits `v<version>`; workspace packages continue to check and
+emit `<name>@<version>`. This keeps no-op release runs idempotent for legacy
+single-package repositories that already have `v*` tags and GitHub Releases.
