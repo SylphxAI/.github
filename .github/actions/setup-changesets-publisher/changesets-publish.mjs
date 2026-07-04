@@ -244,7 +244,10 @@ function packageVersionExists(name, version) {
 }
 
 
-function tagNameForPackage(pkg) {
+function tagNameForPackage(pkg, packages) {
+  if (packages.length === 1 && pkg.relativeDir === '.') {
+    return `v${pkg.version}`;
+  }
   return `${pkg.name}@${pkg.version}`;
 }
 
@@ -268,8 +271,8 @@ function ensureLocalTag(tagName) {
   run('git', ['tag', tagName]);
 }
 
-function emitNewTag(pkg) {
-  const tagName = tagNameForPackage(pkg);
+function emitNewTag(pkg, packages) {
+  const tagName = tagNameForPackage(pkg, packages);
   ensureLocalTag(tagName);
   // changesets/action parses this exact line to decide which Git tags and
   // GitHub releases to create for a custom publish command.
@@ -487,8 +490,21 @@ function selfCheck() {
     if (packages.map((pkg) => pkg.name).join(',') !== '@self-check/a,@self-check/b') {
       fail(`self-check publish order was ${packages.map((pkg) => pkg.name).join(',')}`);
     }
+    if (tagNameForPackage(packages[0], packages) !== '@self-check/a@1.2.3') {
+      fail('self-check expected multi-package release tags to include package name and version');
+    }
     const leaks = workspaceProtocolEntries(readJson(path.join(tempRoot, 'packages', 'b', 'package.json')));
     if (leaks.length !== 4) fail(`self-check expected four workspace protocol entries, got ${leaks.length}`);
+
+    const singleRootPackages = [{
+      ...readJson(path.join(tempRoot, 'packages', 'a', 'package.json')),
+      dir: path.join(tempRoot, 'packages', 'a'),
+      relativeDir: '.',
+      packageJson: readJson(path.join(tempRoot, 'packages', 'a', 'package.json')),
+    }];
+    if (tagNameForPackage(singleRootPackages[0], singleRootPackages) !== 'v1.2.3') {
+      fail('self-check expected single root package release tags to use v<version>');
+    }
 
     const restore = materializeWorkspaceManifests(packages, localVersions);
     const materialized = readJson(path.join(tempRoot, 'packages', 'b', 'package.json'));
@@ -560,7 +576,7 @@ function main() {
       continue;
     }
 
-    const tagName = tagNameForPackage(pkg);
+    const tagName = tagNameForPackage(pkg, packages);
     if (!remoteTagExists(tagName)) {
       tagRecovery.push(pkg);
     }
@@ -583,7 +599,7 @@ function main() {
     }
 
     if (tagRecovery.length > 0) {
-      log(`Published packages missing remote release tags: ${tagRecovery.map((pkg) => tagNameForPackage(pkg)).join(', ')}`);
+      log(`Published packages missing remote release tags: ${tagRecovery.map((pkg) => tagNameForPackage(pkg, packages)).join(', ')}`);
     }
 
     if (isDryRun) {
@@ -593,11 +609,11 @@ function main() {
 
     for (const pkg of unpublished) {
       publishPackage(pkg, artifacts.get(pkg.name));
-      emitNewTag(pkg);
+      emitNewTag(pkg, packages);
     }
 
     for (const pkg of tagRecovery) {
-      emitNewTag(pkg);
+      emitNewTag(pkg, packages);
     }
   } finally {
     restoreManifests();
