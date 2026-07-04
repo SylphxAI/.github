@@ -10,6 +10,8 @@ workflow templates, and shared GitHub Actions.
 - State: `production`
 - Layer: `tooling`
 - Machine manifest: [`.doctrine/project.json`](./.doctrine/project.json)
+- Vendor-neutral project manifest:
+  [`project.manifest.json`](./project.manifest.json)
 
 ## Goals
 
@@ -45,14 +47,23 @@ tenant/product adapter.
 - `.github/workflows/adr29-admission.yml`
 - `.github/workflows/release.yml`
 - `.github/workflows/publish-npm.yml`
+- `.github/workflows/groundatlas.yml`
 - `.github/actions/adr29-admission/action.yml`
+- `.github/actions/setup-changesets-publisher/action.yml`
 - `templates/`
 - `brand/`
 - `COMPANY.md`
 
 ## Delivery
 
-This repository currently has no required local CI contexts. Changes merged to
-`main` are consumed directly by GitHub as organization defaults, reusable
-workflows, workflow templates, and composite actions. Production proof is
-GitHub main readback plus successful consumer use of the changed public surface.
+This repository has a lightweight local GroundAtlas project-control workflow.
+It validates `project.manifest.json`, keeps `.doctrine/project.json` as a
+Sylphx Doctrine adapter, uploads GroundAtlas reports as evidence only, and runs
+a non-mutating syntax check for the shared Changesets publisher.
+
+Changes merged to `main` are consumed directly by GitHub as organization
+defaults, reusable workflows, workflow templates, and composite actions. There
+is no separate runtime deploy for this repository. Production proof is GitHub
+main readback plus successful local project-control CI. When a reusable
+workflow or shared action public contract changes, proof must also include
+successful consumer use of the changed public surface.

@@ -83,6 +83,21 @@
         "type": "documentation",
         "name": "Repository bootstrap templates",
         "location": "templates/"
+      },
+      {
+        "type": "manifest",
+        "name": "Vendor-neutral project manifest",
+        "location": "project.manifest.json"
+      },
+      {
+        "type": "workflow",
+        "name": "GroundAtlas local project-control workflow",
+        "location": ".github/workflows/groundatlas.yml"
+      },
+      {
+        "type": "api",
+        "name": "Changesets publisher setup action",
+        "location": ".github/actions/setup-changesets-publisher/action.yml"
       }
     ],
     "allowedDependencies": [
@@ -100,6 +115,11 @@
         "repo": "oven-sh/setup-bun",
         "surface": "Bun setup action used by reusable npm release workflows before install, build, package-manager packing, tarball audit, and audited tarball publication.",
         "direction": "tool-public"
+      },
+      {
+        "repo": "SylphxAI/groundatlas",
+        "surface": "Released GroundAtlas package/action for vendor-neutral project manifest validation and fleet dogfooding.",
+        "direction": "peer-public"
       }
     ],
     "forbiddenCouplings": [
@@ -131,27 +151,24 @@
     }
   },
   "delivery": {
-    "ciModel": "none",
+    "ciModel": "groundatlas-project-control",
     "deployable": false,
     "requiredContexts": [],
+    "localContexts": [
+      "groundatlas"
+    ],
     "deployPath": "Merged changes to main are consumed directly by GitHub as organization defaults, reusable workflows, workflow templates, and composite actions. There is no separate runtime deploy for this repository.",
-    "productionProof": "Proof is GitHub main readback plus successful consumer use of the relevant reusable workflow, workflow template, community-health file, or composite action.",
+    "productionProof": "Proof is GitHub main readback plus successful local GroundAtlas project-control CI. Public reusable workflow/action contract changes still require successful consumer use of the changed public surface.",
     "recoveryClass": "source-revertable"
   },
   "adoption": {
-    "status": "baseline",
+    "status": "adopted",
     "gaps": [
       {
-        "id": "adr-spec-doc-tree",
-        "description": "Repo has organization docs, templates, and workflow README but no docs/adr or docs/specs tree yet; add ADRs/specs before the next material workflow/action contract change.",
+        "id": "branch-protection-required-contexts",
+        "description": "Repository now has local GroundAtlas CI, but main branch protection does not require it yet. Organization ruleset adoption remains a separate infrastructure decision.",
         "owner": "SylphxAI/.github",
-        "target": "next material workflow or action contract change"
-      },
-      {
-        "id": "repo-local-ci",
-        "description": "Repository has no required local CI for its own changes; add a lightweight workflow/action sanity check before making future high-risk workflow/action contract changes.",
-        "owner": "SylphxAI/.github",
-        "target": "before next high-risk workflow or action contract change"
+        "target": "org ruleset rollout decision"
       }
     ]
   }

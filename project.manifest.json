@@ -1,0 +1,140 @@
+{
+  "$schema": "https://raw.githubusercontent.com/SylphxAI/groundatlas/main/schemas/project.manifest.schema.json",
+  "schemaVersion": 1,
+  "project": {
+    "id": "sylphxai-github",
+    "name": "SylphxAI GitHub Organization Configuration",
+    "summary": "Organization-level GitHub configuration, community health files, reusable workflows, workflow templates, shared GitHub Actions, brand references, and repository bootstrap templates.",
+    "lifecycle": "production",
+    "visibility": "open-source",
+    "repository": "https://github.com/SylphxAI/.github",
+    "homepage": "https://github.com/SylphxAI",
+    "tags": [
+      "github-organization",
+      "community-health",
+      "reusable-workflows",
+      "shared-actions",
+      "control-plane"
+    ]
+  },
+  "truth": {
+    "humanProjectFile": "PROJECT.md",
+    "agentAdapter": "AGENTS.md",
+    "specs": [
+      "docs/specs/",
+      "templates/workflows/README.md"
+    ],
+    "adrs": [
+      "docs/adr/"
+    ],
+    "source": [
+      ".github/workflows/",
+      ".github/actions/",
+      ".github/ISSUE_TEMPLATE/",
+      "templates/",
+      "profile/",
+      "brand/",
+      "COMPANY.md"
+    ],
+    "tests": [
+      "tests/",
+      ".github/workflows/groundatlas.yml"
+    ],
+    "runbooks": [
+      "PROJECT.md",
+      "SECURITY.md",
+      ".github/SECURITY.md",
+      ".github/CONTRIBUTING.md",
+      "templates/workflows/README.md"
+    ]
+  },
+  "surfaces": [
+    {
+      "type": "docs",
+      "name": "Organization profile",
+      "path": "profile/README.md",
+      "description": "Public GitHub organization profile."
+    },
+    {
+      "type": "docs",
+      "name": "Community health files",
+      "path": ".github/",
+      "description": "Organization-wide code of conduct, contributing, security, issue, and pull-request templates."
+    },
+    {
+      "type": "workflow",
+      "name": "ADR-29 reusable admission workflow",
+      "path": ".github/workflows/adr29-admission.yml",
+      "description": "Reusable admission workflow consumed by SylphxAI repositories."
+    },
+    {
+      "type": "workflow",
+      "name": "Release reusable workflow",
+      "path": ".github/workflows/release.yml",
+      "description": "Reusable release workflow for package release automation."
+    },
+    {
+      "type": "workflow",
+      "name": "Publish to NPM reusable workflow",
+      "path": ".github/workflows/publish-npm.yml",
+      "description": "Reusable npm publish workflow with Changesets integration."
+    },
+    {
+      "type": "github-action",
+      "name": "ADR-29 admission composite action",
+      "path": ".github/actions/adr29-admission/action.yml",
+      "description": "Shared composite action implementing ADR-29 admission logic."
+    },
+    {
+      "type": "github-action",
+      "name": "Changesets publisher setup action",
+      "path": ".github/actions/setup-changesets-publisher/action.yml",
+      "description": "Installs the manager-aware Changesets publisher used by release workflows."
+    },
+    {
+      "type": "workflow",
+      "name": "GroundAtlas local control-plane gate",
+      "path": ".github/workflows/groundatlas.yml",
+      "description": "Repository-local GroundAtlas package dogfood and project-control validation."
+    },
+    {
+      "type": "docs",
+      "name": "Repository entry point",
+      "path": "README.md",
+      "description": "Start-here guide linking human and machine project-control surfaces."
+    },
+    {
+      "type": "docs",
+      "name": "Project control plane",
+      "path": "PROJECT.md",
+      "description": "Human project identity, lifecycle, boundary, delivery, and validation entry point."
+    },
+    {
+      "type": "docs",
+      "name": "Doctrine adapter manifest",
+      "path": ".doctrine/project.json",
+      "description": "Sylphx Doctrine adapter and org-local governance catalog; not the vendor-neutral GroundAtlas default."
+    }
+  ],
+  "commands": [
+    {
+      "name": "check:changesets-publisher",
+      "command": "node --check .github/actions/setup-changesets-publisher/changesets-publish.mjs",
+      "purpose": "Syntax-check the manager-aware Changesets publisher without mutating release state."
+    },
+    {
+      "name": "test:groundatlas-boundary",
+      "command": "node --test tests/groundatlas-boundary.test.mjs",
+      "purpose": "Verify the neutral manifest, Doctrine adapter, and released GroundAtlas workflow boundary."
+    },
+    {
+      "name": "groundatlas:fleet",
+      "command": "npm exec --yes --package groundatlas@0.1.2 -- ga fleet . --out .groundatlas-pilot --require-atlas --strict --json",
+      "purpose": "Prove the vendor-neutral manifest is selected and generated GroundAtlas files are navigation-only."
+    }
+  ],
+  "adoption": {
+    "status": "adopted",
+    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth."
+  }
+}
