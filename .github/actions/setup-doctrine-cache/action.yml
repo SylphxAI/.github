@@ -1,0 +1,70 @@
+name: Setup doctrine cache
+description: >-
+  Sparse checkout of SylphxAI/doctrine audit scripts via a least-privilege GitHub
+  App installation token. Consumers set DOCTRINE_ROOT to the checkout path.
+
+inputs:
+  repository:
+    description: Doctrine repository (org/repo)
+    required: false
+    default: SylphxAI/doctrine
+  ref:
+    description: Git ref or SHA to checkout (pin audit semantics explicitly)
+    required: true
+  path:
+    description: Checkout directory relative to the workspace
+    required: false
+    default: .doctrine-cache
+  app-id:
+    description: GitHub App id with contents:read on the doctrine repo
+    required: false
+    default: ''
+  app-private-key:
+    description: GitHub App private key PEM
+    required: false
+    default: ''
+  app-client-id:
+    description: GitHub App client id (alternative to app-id for create-github-app-token@v3)
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Mint doctrine read token
+      id: doctrine-token
+      uses: actions/create-github-app-token@v3
+      with:
+        app-id: ${{ inputs.app-id }}
+        client-id: ${{ inputs.app-client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        owner: SylphxAI
+        repositories: doctrine
+        permission-contents: read
+
+    - name: Checkout doctrine (sparse)
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        path: ${{ inputs.path }}
+        token: ${{ steps.doctrine-token.outputs.token }}
+        sparse-checkout: |
+          scripts
+          schemas
+          standards
+          templates
+          PRINCIPLES.md
+          ADR.md
+          AGENTS.md
+        sparse-checkout-cone-mode: false
+
+    - name: Verify audit scripts
+      shell: bash
+      run: |
+        set -euo pipefail
+        root="${{ github.workspace }}/${{ inputs.path }}"
+        test -f "${root}/scripts/project-control-plane-audit.py"
+        test -f "${root}/scripts/doctrine-restatement-audit.py"
+        test -f "${root}/scripts/agent-skill-installer-conformance-audit.py"
+        echo "Doctrine audit scripts ready at ${root} (ref ${{ inputs.ref }})"
