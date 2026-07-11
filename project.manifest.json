@@ -107,7 +107,7 @@
       "description": "Target-scoped organization required workflow that validates the public skills candidate from source-owned policy bytes."
     },
     {
-      "type": "manifest",
+      "type": "other",
       "name": "Public skills external admission policy",
       "path": "policies/public-skills-admission.json",
       "description": "Exact repository identity, approved commit/tree/parent and ref graph, dynamic event-HEAD, eight-skill, provenance, content-boundary, and full-tree digest contract."
