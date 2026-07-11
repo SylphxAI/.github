@@ -1,0 +1,64 @@
+name: public-skills-external-admission
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  admission:
+    name: public-skills-external-admission/pass
+    if: ${{ github.repository_id == 1297721845 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout the exact candidate with complete reachable history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+      - name: Checkout the source-owned policy at the workflow commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: policy-source
+      - name: Validate candidate as inert Git data
+        env:
+          CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          CANDIDATE_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          POLICY_PATH: ${{ github.workspace }}/policy-source/policies/public-skills-admission.json
+          REPORT_PATH: ${{ runner.temp }}/public-skills-external-admission.json
+          SOURCE_ROOT: ${{ github.workspace }}/policy-source
+          SOURCE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_REPOSITORY_ID: ${{ github.repository_id }}
+          TARGET_REPOSITORY_NODE_ID: ${{ github.event.repository.node_id }}
+        run: |
+          node "$SOURCE_ROOT/scripts/public-skills-admission.mjs" \
+            --policy "$POLICY_PATH" \
+            --candidate "$CANDIDATE_ROOT" \
+            --repository "$TARGET_REPOSITORY" \
+            --repository-id "$TARGET_REPOSITORY_ID" \
+            --repository-node-id "$TARGET_REPOSITORY_NODE_ID" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --event-name "$EVENT_NAME" \
+            --source-root "$SOURCE_ROOT" \
+            --source-sha "$SOURCE_WORKFLOW_SHA" \
+            --report "$REPORT_PATH"
+      - name: Preserve external admission evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: public-skills-external-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/public-skills-external-admission.json
+          if-no-files-found: error
+          retention-days: 90

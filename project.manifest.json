@@ -30,7 +30,10 @@
     "source": [
       ".github/workflows/",
       ".github/actions/",
+      ".github/actionlint.yaml",
       ".github/ISSUE_TEMPLATE/",
+      "policies/",
+      "scripts/public-skills-admission.mjs",
       "templates/",
       "profile/",
       "brand/",
@@ -98,6 +101,30 @@
       "description": "Repository-local GroundAtlas package dogfood and project-control validation."
     },
     {
+      "type": "workflow",
+      "name": "Public skills external admission",
+      "path": ".github/workflows/public-skills-admission.yml",
+      "description": "Target-scoped organization required workflow that validates the public skills candidate from source-owned policy bytes."
+    },
+    {
+      "type": "manifest",
+      "name": "Public skills external admission policy",
+      "path": "policies/public-skills-admission.json",
+      "description": "Exact repository identity, approved commit/tree/parent and ref graph, dynamic event-HEAD, eight-skill, provenance, content-boundary, and full-tree digest contract."
+    },
+    {
+      "type": "cli",
+      "name": "Public skills zero-dependency admission validator",
+      "path": "scripts/public-skills-admission.mjs",
+      "description": "Source-owned Git-object validator that never executes candidate code."
+    },
+    {
+      "type": "docs",
+      "name": "Public skills external admission specification",
+      "path": "docs/specs/public-skills-external-admission.md",
+      "description": "Required-workflow identity, trust boundary, scan mechanics, evidence, and source-first ratchet contract."
+    },
+    {
       "type": "docs",
       "name": "Repository entry point",
       "path": "README.md",
@@ -128,6 +155,16 @@
       "purpose": "Verify the neutral manifest, Doctrine adapter, and released GroundAtlas workflow boundary."
     },
     {
+      "name": "test:public-skills-admission",
+      "command": "node --test tests/public-skills-admission.test.mjs",
+      "purpose": "Verify source ownership, immutable workflow wiring, target selection, policy shape, and adversarial external-admission behavior when a candidate checkout is available."
+    },
+    {
+      "name": "lint:github-actions",
+      "command": "actionlint .github/workflows/*.yml",
+      "purpose": "Validate every organization workflow, including target required-workflow syntax and immutable action references."
+    },
+    {
       "name": "groundatlas:fleet",
       "command": "npm exec --yes --package groundatlas@0.1.2 -- ga fleet . --out .groundatlas-pilot --require-atlas --strict --json",
       "purpose": "Prove the vendor-neutral manifest is selected and generated GroundAtlas files are navigation-only."
@@ -135,6 +172,6 @@
   ],
   "adoption": {
     "status": "adopted",
-    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth."
+    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth. Public-skills external admission becomes enforced only after its merged source SHA is ratcheted into the organization ruleset and proven on target pull_request plus merge_group events."
   }
 }
