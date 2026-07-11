@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (PR #34)
 
 ## Decision record
 
