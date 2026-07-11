@@ -1,7 +1,7 @@
 # Public Skills External Admission Specification
 
 Decision record:
-[`ADR-DRAFT-public-skills-external-admission.md`](../adr/ADR-DRAFT-public-skills-external-admission.md).
+[`ADR-34-public-skills-external-admission.md`](../adr/ADR-34-public-skills-external-admission.md).
 
 ## Contract identity
 

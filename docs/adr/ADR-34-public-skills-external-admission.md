@@ -1,4 +1,4 @@
-# ADR DRAFT: Public Skills External Admission
+# ADR-34: Public Skills External Admission
 
 ## Status
 
@@ -8,7 +8,8 @@ Proposed
 
 - Date: 2026-07-11
 - Decision owner: SylphxAI
-- Work item: `SylphxAI/skills#115`
+- Pull request: <https://github.com/SylphxAI/.github/pull/34>
+- Work item: `SylphxAI/skills-private#115`
 - Specification: [`../specs/public-skills-external-admission.md`](../specs/public-skills-external-admission.md)
 
 ## Context

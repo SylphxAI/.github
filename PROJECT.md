@@ -65,7 +65,7 @@ The public-skills surface emits the stable target context
 source-first SHA ratchet are documented in
 [`docs/specs/public-skills-external-admission.md`](./docs/specs/public-skills-external-admission.md)
 and the current decision record is
-[`docs/adr/ADR-DRAFT-public-skills-external-admission.md`](./docs/adr/ADR-DRAFT-public-skills-external-admission.md).
+[`docs/adr/ADR-34-public-skills-external-admission.md`](./docs/adr/ADR-34-public-skills-external-admission.md).
 
 ## Delivery
 
