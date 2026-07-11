@@ -29,6 +29,10 @@
         "description": "Reusable GitHub workflows, workflow templates, and composite actions used by SylphxAI repositories through GitHub public workflow/action references."
       },
       {
+        "name": "externally-owned-repository-admission",
+        "description": "Source-pinned organization required workflows and policy-as-code used when a target repository must not control its own admission judge."
+      },
+      {
         "name": "organization-brand-and-templates",
         "description": "Company information, brand guidance, license template, README template, package metadata template, and workflow rollout templates."
       }
@@ -95,6 +99,26 @@
         "location": ".github/workflows/groundatlas.yml"
       },
       {
+        "type": "workflow",
+        "name": "Public skills external admission workflow",
+        "location": ".github/workflows/public-skills-admission.yml"
+      },
+      {
+        "type": "manifest",
+        "name": "Public skills external admission policy",
+        "location": "policies/public-skills-admission.json"
+      },
+      {
+        "type": "api",
+        "name": "Public skills zero-dependency admission validator",
+        "location": "scripts/public-skills-admission.mjs"
+      },
+      {
+        "type": "documentation",
+        "name": "Public skills external admission specification",
+        "location": "docs/specs/public-skills-external-admission.md"
+      },
+      {
         "type": "api",
         "name": "Changesets publisher setup action",
         "location": ".github/actions/setup-changesets-publisher/action.yml"
@@ -120,6 +144,11 @@
         "repo": "SylphxAI/groundatlas",
         "surface": "Released GroundAtlas package/action for vendor-neutral project manifest validation and fleet dogfooding.",
         "direction": "peer-public"
+      },
+      {
+        "repo": "SylphxAI/skills",
+        "surface": "Inert candidate Git history and tree consumed by the externally owned public-skills required workflow for repository ID 1297721845.",
+        "direction": "governed-public"
       }
     ],
     "forbiddenCouplings": [
@@ -158,7 +187,7 @@
       "groundatlas"
     ],
     "deployPath": "Merged changes to main are consumed directly by GitHub as organization defaults, reusable workflows, workflow templates, and composite actions. There is no separate runtime deploy for this repository.",
-    "productionProof": "Proof is GitHub main readback plus successful local GroundAtlas project-control CI. Public reusable workflow/action contract changes still require successful consumer use of the changed public surface.",
+    "productionProof": "Proof is GitHub main readback plus successful local GroundAtlas project-control CI. Public reusable workflow/action contract changes still require successful consumer use of the changed public surface. The public-skills gate additionally requires an exact source-SHA organization-ruleset binding and successful pull-request plus merge-group readback on target repository ID 1297721845.",
     "recoveryClass": "source-revertable"
   },
   "adoption": {
@@ -169,6 +198,12 @@
         "description": "Repository now has local GroundAtlas CI, but main branch protection does not require it yet. Organization ruleset adoption remains a separate infrastructure decision.",
         "owner": "SylphxAI/.github",
         "target": "org ruleset rollout decision"
+      },
+      {
+        "id": "public-skills-required-workflow-ratchet",
+        "description": "The public-skills external admission source must merge before the organization ruleset can bind its exact source SHA and target repository ID.",
+        "owner": "SylphxAI/.github",
+        "target": "post-merge GitOps reconcile and target pull-request plus merge-group canary"
       }
     ]
   }

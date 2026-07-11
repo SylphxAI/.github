@@ -18,6 +18,8 @@ workflow templates, and shared GitHub Actions.
 - Centralize GitHub organization defaults and repository bootstrap templates.
 - Provide reusable workflows and shared actions that repositories consume
   through documented GitHub workflow/action references.
+- Own source-pinned organization required workflows where a repository must
+  not control the check that judges its own supply-chain boundary.
 - Keep shared process in one place so repositories do not copy or fork it.
 
 ## Non-Goals
@@ -33,8 +35,9 @@ workflow templates, and shared GitHub Actions.
 
 This repository owns organization-level GitHub surfaces only. Consumer
 repositories use those surfaces through GitHub's public workflow/action/template
-mechanisms. Repo-specific behavior belongs in the consuming repository or in a
-tenant/product adapter.
+and organization-ruleset mechanisms. A narrowly target-scoped required workflow
+may live here when external ownership is the security property; product facts
+and delivery evidence still belong to the consuming repository.
 
 ## Public Surfaces
 
@@ -48,11 +51,21 @@ tenant/product adapter.
 - `.github/workflows/release.yml`
 - `.github/workflows/publish-npm.yml`
 - `.github/workflows/groundatlas.yml`
+- `.github/workflows/public-skills-admission.yml`
 - `.github/actions/adr29-admission/action.yml`
 - `.github/actions/setup-changesets-publisher/action.yml`
 - `templates/`
 - `brand/`
 - `COMPANY.md`
+- `policies/public-skills-admission.json`
+- `scripts/public-skills-admission.mjs`
+
+The public-skills surface emits the stable target context
+`public-skills-external-admission/pass`. Its executable contract and
+source-first SHA ratchet are documented in
+[`docs/specs/public-skills-external-admission.md`](./docs/specs/public-skills-external-admission.md)
+and the current decision record is
+[`docs/adr/ADR-34-public-skills-external-admission.md`](./docs/adr/ADR-34-public-skills-external-admission.md).
 
 ## Delivery
 
@@ -67,3 +80,10 @@ is no separate runtime deploy for this repository. Production proof is GitHub
 main readback plus successful local project-control CI. When a reusable
 workflow or shared action public contract changes, proof must also include
 successful consumer use of the changed public surface.
+
+For the public-skills required workflow, production proof additionally needs
+the merged source SHA bound in the organization ruleset, successful target PR
+and `merge_group` runs for repository ID `1297721845`, and an uploaded JSON
+admission report. Exact commit/tree/ref graph and full-tree pinning mean target
+history, identity, or content edits must follow a source-policy update and
+ruleset-SHA ratchet first.

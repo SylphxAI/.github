@@ -16,20 +16,24 @@ permissions:
 
 jobs:
   groundatlas:
-    runs-on: [self-hosted, sylphx-linux-standard]
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22.14.0"
       - name: Check Changesets publisher syntax
         run: node --check .github/actions/setup-changesets-publisher/changesets-publish.mjs
       - name: Test GroundAtlas boundary
         run: node --test tests/groundatlas-boundary.test.mjs
+      - name: Test public-skills external admission control
+        run: node --test tests/public-skills-admission.test.mjs
       - name: GroundAtlas package dogfood
         id: groundatlas
-        uses: SylphxAI/groundatlas@v0.1.2
+        uses: SylphxAI/groundatlas@38ce903733901cd2954a01aa4d31d7968de00ead # v0.1.2
         with:
           package-spec: groundatlas@0.1.2
           output-dir: .groundatlas-pilot
@@ -59,7 +63,7 @@ jobs:
           NODE
       - name: Upload GroundAtlas reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: groundatlas-package-dogfood
           path: |

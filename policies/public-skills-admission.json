@@ -1,0 +1,372 @@
+{
+  "schemaVersion": 1,
+  "kind": "sylphx-public-skills-external-admission",
+  "source": {
+    "repository": "SylphxAI/.github",
+    "repositoryId": 1091169653,
+    "workflowPath": ".github/workflows/public-skills-admission.yml",
+    "validatorPath": "scripts/public-skills-admission.mjs",
+    "policyPath": "policies/public-skills-admission.json"
+  },
+  "target": {
+    "repositoryId": 1297721845,
+    "repositoryNodeId": "R_kgDOTVmp9Q",
+    "allowedRepositories": [
+      "SylphxAI/skills",
+      "SylphxAI/skills-public-staging"
+    ],
+    "baseline": {
+      "commit": "711e41cdfc2ee48eb91c5222b4265aa4d16d169d",
+      "tree": "1f2b6c41e66344443a93d203b0edc6a09a492cc5"
+    },
+    "approvedCommits": [
+      {
+        "commit": "73c6eecc13e056fcd363b2366be1448d0bb0dc4a",
+        "tree": "34e604ee3b19cbc8ce2e3d4c9dbe690d6fbaa58d",
+        "parents": []
+      },
+      {
+        "commit": "e6bdd5af8e1d1a5b3c3fb4afe97513d885ac5109",
+        "tree": "029c5dc001daef8601aaae0653407e1e8e08966c",
+        "parents": [
+          "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
+        ]
+      },
+      {
+        "commit": "8f2e6bf9be773301fdbc10d07ad943a1f621b4ad",
+        "tree": "399a8379e15709ba3a98e7bcbc3cc635d03b0c2d",
+        "parents": [
+          "e6bdd5af8e1d1a5b3c3fb4afe97513d885ac5109"
+        ]
+      },
+      {
+        "commit": "1f584419f96fd0fd93d1de79e817d744b02ecf5d",
+        "tree": "bea31f3f049d51113bb3f57f9faca6fb3428aece",
+        "parents": [
+          "8f2e6bf9be773301fdbc10d07ad943a1f621b4ad"
+        ]
+      },
+      {
+        "commit": "711e41cdfc2ee48eb91c5222b4265aa4d16d169d",
+        "tree": "1f2b6c41e66344443a93d203b0edc6a09a492cc5",
+        "parents": [
+          "1f584419f96fd0fd93d1de79e817d744b02ecf5d"
+        ]
+      }
+    ],
+    "approvedRefs": [
+      {
+        "name": "refs/heads/codex/launch-public-skills",
+        "commits": [
+          "711e41cdfc2ee48eb91c5222b4265aa4d16d169d"
+        ]
+      },
+      {
+        "name": "refs/heads/main",
+        "commits": [
+          "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
+        ]
+      },
+      {
+        "name": "refs/remotes/origin/HEAD",
+        "commits": [
+          "711e41cdfc2ee48eb91c5222b4265aa4d16d169d",
+          "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
+        ]
+      },
+      {
+        "name": "refs/remotes/origin/codex/launch-public-skills",
+        "commits": [
+          "711e41cdfc2ee48eb91c5222b4265aa4d16d169d"
+        ]
+      },
+      {
+        "name": "refs/remotes/origin/main",
+        "commits": [
+          "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
+        ]
+      }
+    ],
+    "dynamicEventHead": {
+      "eventParentSets": [
+        {
+          "event": "merge_group",
+          "parentSets": [
+            [
+              "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
+            ],
+            [
+              "73c6eecc13e056fcd363b2366be1448d0bb0dc4a",
+              "711e41cdfc2ee48eb91c5222b4265aa4d16d169d"
+            ]
+          ]
+        },
+        {
+          "event": "pull_request",
+          "parentSets": [
+            [
+              "73c6eecc13e056fcd363b2366be1448d0bb0dc4a",
+              "711e41cdfc2ee48eb91c5222b4265aa4d16d169d"
+            ]
+          ]
+        }
+      ],
+      "tree": "1f2b6c41e66344443a93d203b0edc6a09a492cc5",
+      "allowedRefPatterns": [
+        "^refs/remotes/origin/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$",
+        "^refs/remotes/pull/[1-9][0-9]*/merge$"
+      ]
+    },
+    "forbiddenReachableCommits": [
+      "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "f640fde75418406c6932d414621494bfb357f677"
+    ]
+  },
+  "history": {
+    "maximumBlobBytes": 1048576,
+    "maximumCommitCount": 256,
+    "allowedModes": [
+      "100644",
+      "100755"
+    ],
+    "allowedExecutableFiles": [
+      "skills/fleet-migration-factory/scripts/test_validate_fleet_ledger.py",
+      "skills/fleet-migration-factory/scripts/validate_fleet_ledger.py"
+    ],
+    "rejectSymlinks": true,
+    "rejectSubmodules": true,
+    "rejectBinaryBlobs": true,
+    "requireAsciiPaths": true,
+    "requireSingleFreshRoot": true
+  },
+  "content": {
+    "forbiddenPathSegments": [
+      ".aws",
+      ".env",
+      ".git",
+      ".gnupg",
+      ".secrets",
+      "backup",
+      "backups",
+      "incubator",
+      "node_modules",
+      "private",
+      "tombstone",
+      "tombstones"
+    ],
+    "forbiddenLiterals": [
+      "1285275370",
+      "R_kgDOTJu-6g",
+      "SylphxAI/skills-private",
+      "accessibility-conformance-program-review",
+      "ad-monetization-review",
+      "app-design-blueprint",
+      "app-store-distribution-readiness",
+      "backup-restore-design",
+      "board-metrics-operating-review",
+      "codex/skills-slug-swap-prep",
+      "daily-reward-and-streak-review",
+      "design-system-extractor",
+      "developer-quota-credit-abuse-review",
+      "game-design-blueprint",
+      "game-economy-review",
+      "game-soft-launch-review",
+      "governance/slug-swap.json",
+      "launch-readiness-review",
+      "marketing-automation-blueprint",
+      "marketplace-payouts-review",
+      "marketplace-seller-performance-review",
+      "notification-strategy-review",
+      "offline-sync-conflict-review",
+      "payment-platform-readiness",
+      "product-analytics-instrumentation-review",
+      "product-lifecycle-architect",
+      "promotion-campaign-review",
+      "referral-loop-review",
+      "refund-and-support-flow-review",
+      "retention-cohort-review",
+      "review-solicitation-and-feedback-loop",
+      "saas-subscription-pricing",
+      "skill-marketplace-creator",
+      "store-listing-optimization",
+      "subscription-price-increase-retention-review",
+      "voice-preserving-editor"
+    ],
+    "secretPatterns": [
+      {
+        "name": "private-key",
+        "source": "-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----",
+        "flags": "g"
+      },
+      {
+        "name": "github-token",
+        "source": "\\bgh[pousr]_[A-Za-z0-9]{36,}\\b",
+        "flags": "g"
+      },
+      {
+        "name": "github-fine-grained-token",
+        "source": "\\bgithub_pat_[A-Za-z0-9_]{80,}\\b",
+        "flags": "g"
+      },
+      {
+        "name": "aws-access-key",
+        "source": "\\b(?:AKIA|ASIA)[A-Z0-9]{16}\\b",
+        "flags": "g"
+      },
+      {
+        "name": "google-api-key",
+        "source": "\\bAIza[0-9A-Za-z_-]{35}\\b",
+        "flags": "g"
+      },
+      {
+        "name": "npm-token",
+        "source": "\\bnpm_[A-Za-z0-9]{30,}\\b",
+        "flags": "g"
+      },
+      {
+        "name": "slack-token",
+        "source": "\\bxox[baprs]-[A-Za-z0-9-]{20,}\\b",
+        "flags": "g"
+      },
+      {
+        "name": "stripe-secret",
+        "source": "\\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\\b",
+        "flags": "g"
+      },
+      {
+        "name": "credentialed-uri",
+        "source": "\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s@]+@",
+        "flags": "gi"
+      },
+      {
+        "name": "assigned-secret",
+        "source": "\\b(?:api[_-]?key|client[_-]?secret|access[_-]?token|password)\\s*[:=]\\s*[\"'][^\"'\\s]{12,}[\"']",
+        "flags": "gi"
+      }
+    ]
+  },
+  "skills": [
+    {
+      "id": "customer-support-operations",
+      "provenanceClass": "historical-public-import",
+      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourcePath": "skills/customer-support-operations"
+    },
+    {
+      "id": "decision-memo-writer",
+      "provenanceClass": "historical-public-import",
+      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourcePath": "skills/decision-memo-writer"
+    },
+    {
+      "id": "fleet-migration-factory",
+      "provenanceClass": "historical-public-import",
+      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourcePath": "skills/fleet-migration-factory"
+    },
+    {
+      "id": "interface-craft",
+      "provenanceClass": "historical-public-import",
+      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourcePath": "skills/interface-craft"
+    },
+    {
+      "id": "market-research-synthesis",
+      "provenanceClass": "historical-public-import",
+      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourcePath": "skills/market-research-synthesis"
+    },
+    {
+      "id": "public-skill-repository-governance",
+      "provenanceClass": "public-original",
+      "sourceCommit": null,
+      "sourcePath": "skills/public-skill-repository-governance"
+    },
+    {
+      "id": "skill-eval-designer",
+      "provenanceClass": "historical-public-import",
+      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourcePath": "skills/skill-eval-designer"
+    },
+    {
+      "id": "source-to-skill-distiller",
+      "provenanceClass": "historical-public-import",
+      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourcePath": "skills/source-to-skill-distiller"
+    }
+  ],
+  "expectedFiles": {
+    ".doctrine/project.json": "4262984bb79d064588dcb6835ba68755f198f436a0c7ff5b3154900453e36f9b",
+    ".github/dependabot.yml": "1e07f0b945d146deb6b2e52f97690feefd3ae1c02e35bf41cc7503b9fd0fdf08",
+    ".github/workflows/admission.yml": "e04568cc5662361fe8cdd65d128fc715a8647879ecb64573a7bbfb6f2ca569cc",
+    ".github/workflows/postsubmit.yml": "99f469245767a2e041a7e8788bee2a6b5dbbfa8bd39c2a4ca487981d1863eed4",
+    ".github/workflows/release.yml": "e45b4c0d80b0bc3bd4ceb9426433ead88a651cff7c7adebe95ec45ea187d0010",
+    ".gitignore": "029dd005b52803feda961c039facf78bb06489478e77aa777160c850c8d1997a",
+    ".npmrc": "96d19369660161cd9f954962769ef7bf7a7022acaaee7ac605612201c2924479",
+    "AGENTS.md": "4ef6891cadcc6cfe56c969fd2feeff60b5f45817d157bd76cebd7745c3e7a00d",
+    "CONTRIBUTING.md": "c6bb82142128944cee3a6c04600a78715599f6bd866890ed757979a4e0d2c6ac",
+    "LICENSE": "a244cb3ddaedaa41ab5404226c1142437ee290f4b625681e431ce42383925433",
+    "NOTICE": "5b12b6bf9204ff66c4e95ffe96d9667c282c443bf6b3ad6e11dd659048b29259",
+    "PROJECT.md": "dcf094c1a60c9299be03bb10c248b8d7f1194fae9f3de063ba8cd6471b3827f1",
+    "README.md": "be020773cc60d2c473c448cb67a855f9067f8aedf9abad334e2dadb498b4f2b8",
+    "SECURITY.md": "8bba7f6754337e23d275d82e69e26094257d1b2c9943eb7ac34c179ab7d5c29a",
+    "admissions/public-skills.json": "669f34cec8faf3594fdf2745d1fbc94400b9c749a169b8e95003963b4872f3df",
+    "docs/adr/ADR-0001-public-foundation.md": "a9da52143514771b123d95aa006f05b249f3fa76f11a1f6c9387cd16ed100792",
+    "docs/specs/public-skill-supply-chain.md": "5ce122d68263847e49d569783a111304b7543e374d2424a8a96ba1d62b93f4e6",
+    "evals/customer-support-operations.eval.yaml": "8c5d1aa289734b13531133354233017538081e2a5e6510fb8f250ea2e221ecd1",
+    "evals/decision-memo-writer.eval.yaml": "1dd5ee14d20c38d6c0ac90e8e61e233513858705ad1d65f6b44bf4116a850bd7",
+    "evals/fleet-migration-factory.eval.yaml": "dc6cac5555d1b51f07dddbf42311f58ac5484f3be1a83b872f784e1770ac279f",
+    "evals/interface-craft.eval.yaml": "a37bc1ab12fd6b010f70eafcaa97ba7455c3f6c23fdfe594380a04d287f5110b",
+    "evals/market-research-synthesis.eval.yaml": "ae3da13c618679d95ba112bd60fa2b9b2327c99733954de1461d5545b7174531",
+    "evals/public-skill-repository-governance.eval.yaml": "c3198bd25bc011346de2468d0936ce60efdb946a14f4fc27c75a6c067497623c",
+    "evals/skill-eval-designer.eval.yaml": "93f744f083835d4a32dde5b6e83589ac535642fa8cbaee57bac570f25908be23",
+    "evals/source-to-skill-distiller.eval.yaml": "77391433c7c89391d9dcc244e03b2dc49b4fe64d889764cd22d041f1ae987e16",
+    "package-lock.json": "76bdb6667467979d4ece5ac5130cf357c6319dd73526d3a031c42285438d5a98",
+    "package.json": "7f2f46939b348f4ed853052fd0834afefbc7ab6cafbcb409eb223ee1955d1050",
+    "project.manifest.json": "6e574825435baf280d8c36f6b5c2e3b4c897b34e7026f7d009d228db6089a93a",
+    "registry/catalog.json": "3f33a8b6ab122696d0cd8bf474e0ae6f1bed9c363398f18cc3be8f6e5fc65a29",
+    "registry/catalog.sha256": "5e3cf41f8e3cd18ccda9d06831358b81c8adacdacead3ce08263806b8cd458d0",
+    "schemas/admissions.schema.json": "2647a18391e5bccf5d84cb4403dceb6583ae08080c3ff083333e0ea623ae90db",
+    "schemas/catalog.schema.json": "c3cbd9a5d477b362af4b287bb3636a7d2cc7536194d5442a9e66d83a64c45ca5",
+    "schemas/eval.schema.json": "e234471760c66befe7ede1961977e26ad243d6f511f7c0e83272a013059e7c15",
+    "schemas/project-manifest.schema.json": "b85ab4e792427f958eec49669be09c9547082f3134f6a5ea7da6327185fa4266",
+    "schemas/release-manifest.schema.json": "b49b663e2781f94142d11d3d0f0a2985bf5852ccb3e7b5a4106f4d2782cf4855",
+    "scripts/classify-changes.mjs": "3d720cfd846c0b0a940e5986d14fc488aa4cdbebca6d8c7f0c9c980576d6a5ea",
+    "scripts/create-release-archive.sh": "049bcb13d6dff7966d40671e4515c2bdc573af85a74171e17a564b5a9067abbb",
+    "scripts/create-release-manifest.mjs": "1d099b3b20695cbd988cfdbe3e75ded132e02320e4e971f179c35cedc47705c5",
+    "scripts/generate-catalog.mjs": "4f8b2e5884560a451f92bc76b3ee4d06bac15f80cae8eb51460c837ae9543ab8",
+    "scripts/lib/core.mjs": "4cf1ae287775984df0c8b258ddcbc6b439066b07dc19fec416260ec102e6dc4b",
+    "scripts/quick-validate.mjs": "de99e86285e77d623e02696a07f4fc89f43e3074de7ae36c99a69f9f0b0af134",
+    "scripts/validate-history.mjs": "4cdb995b5e9eed859032902a42e8bcf0245f4a5693a2271c82828353645dc047",
+    "scripts/validate-release-manifest.mjs": "f97c0322bfd0321c743ed7ad541d4a8d40c469746ee8dbc104fbdd55c9643463",
+    "scripts/validate-repository.mjs": "fbf1bee3fbc0e6e3a16d4f1604abe374202f111fb066bf8f091ebfe7b1a89873",
+    "scripts/verify-install.mjs": "d3073b3d5ed73a5490f36fc10a4fe88a84bfc7b6f9fa98c9ecd88d7686853ba8",
+    "skills/customer-support-operations/SKILL.md": "f5625d1a51e71335a14eb087b76c04b76035d84bb79d7665e0fdd3318a43b348",
+    "skills/customer-support-operations/agents/openai.yaml": "0b7b753e8493e440f6eda3fbd03c737d9d73465ff1402919bd19c3771ef056fd",
+    "skills/customer-support-operations/references/support-ops-patterns.md": "6b5d1f86752e72a17a291c51f1b2f055a49f01066f97ea70822c4f8a1b38917a",
+    "skills/decision-memo-writer/SKILL.md": "15178edc28bfb545487205d2aa64d514147f65e1f489b8dc217a393dc61aa1fc",
+    "skills/decision-memo-writer/agents/openai.yaml": "2798a541b997065256d578c8a3a7ffd14ac2ce858dcdce030f474efd532ef7d2",
+    "skills/decision-memo-writer/references/decision-memo-systems.md": "2a9932c391fc3f7620a8aec2290dd460186d4f403df71f7992affd9af438eba2",
+    "skills/fleet-migration-factory/SKILL.md": "2424262ab7fcb40e2a13393293c73c86e62d5248404ded0e39f5715d2c37f747",
+    "skills/fleet-migration-factory/agents/openai.yaml": "c339a162f19525f506fef29b4c30e38ece40948c2c97d53ec008e1402e462f8e",
+    "skills/fleet-migration-factory/references/fleet-migration-patterns.md": "c89a2711fa002e6d3f2a65defba99d3a8d09baa24b88733bb29b759dc932da25",
+    "skills/fleet-migration-factory/scripts/test_validate_fleet_ledger.py": "0162250c8e2a7fafcf8946b2a3fddd90b044842b421b8c587ee8d03295e62c85",
+    "skills/fleet-migration-factory/scripts/validate_fleet_ledger.py": "fae7f5f67dfc67e1503ed13d737a594df3222bf136670ea6c7aa1715ad7919cb",
+    "skills/interface-craft/SKILL.md": "9ab45e4830b560bddc6a68c07e610640ad3a62854ed252bd6325e72c8a7db658",
+    "skills/interface-craft/agents/openai.yaml": "ffe629733e5c56a1563156258309cc7ab14a61c560065ff911142d85c68ccf7b",
+    "skills/interface-craft/references/interface-craft-rules.md": "0c3e288d7085fcf9c5525c860e1ba49db9f93abcd2c98dfbbfc6d7d7bc67cfb1",
+    "skills/market-research-synthesis/SKILL.md": "7a04359db4dd0faf1399c19698a5d375f0ecb19b66a0fc632c6c15faf1633f47",
+    "skills/market-research-synthesis/agents/openai.yaml": "6b543e1d0de023ce241134d4c234a7ae403b16cc09ea98c009cab79b63e7f0e8",
+    "skills/market-research-synthesis/references/research-synthesis-method.md": "13d773a7683f9770780ee14635197b90abe745067ec2121386f193687580240e",
+    "skills/public-skill-repository-governance/SKILL.md": "7d09b24beb7383ab35bdfbd1322271efde1fd1174ab3425bb1e1f83c7f9576de",
+    "skills/public-skill-repository-governance/agents/openai.yaml": "6e5f3a3ae50bd8eaadd50147b7a49a5c258666dac25d073047455869997ced8b",
+    "skills/public-skill-repository-governance/references/public-repository-controls.md": "6669029238f133628f7739f744af227c435b531618c416ca293f1308d3793037",
+    "skills/skill-eval-designer/SKILL.md": "bfcce14555ae401c3197a70fd1d1c71a9171b3c3172a4ddcf26f8a44b71cbcf7",
+    "skills/skill-eval-designer/agents/openai.yaml": "4b84ce93f6793b4d9e9279bbc707c3783793d8511a7e339569b989bad4934ddd",
+    "skills/skill-eval-designer/references/skill-eval-systems.md": "78170145e37a3abd1266d92068ad1f507726e79b8d42dede0b3481512fec3f9d",
+    "skills/source-to-skill-distiller/SKILL.md": "4516c3450884f35ce8bd82e3642f99518cb4ad5849c7a6d48247ba98ac6d6730",
+    "skills/source-to-skill-distiller/agents/openai.yaml": "010e6496ebc7372e7e5de3402dfe50c67e50b99cef802aaf54b084dd3174100d",
+    "skills/source-to-skill-distiller/references/source-to-skill-patterns.md": "e81f4ef076104fe60f161d785956a129c979ecf0f84553aa17338314566d480a",
+    "tests/adversarial.test.mjs": "68d7363015375c1d18bf4f89c501b5e64df875145efbfadbcc497d1ee48e32b1"
+  }
+}
