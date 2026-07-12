@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "kind": "sylphx-public-skills-external-admission",
   "bundleDigestAlgorithm": "git-tree-manifest-sha256-v1",
   "source": {
@@ -7,7 +7,11 @@
     "repositoryId": 1091169653,
     "workflowPath": ".github/workflows/public-skills-admission.yml",
     "validatorPath": "scripts/public-skills-admission.mjs",
-    "policyPath": "policies/public-skills-admission.json"
+    "policyPath": "policies/public-skills-admission.json",
+    "protectedSourceBundle": {
+      "relation": "same-protected-source-commit",
+      "runtimeRevisionInput": "github.workflow_sha"
+    }
   },
   "target": {
     "repositoryId": 1297840366,
@@ -94,8 +98,21 @@
         "mergeGroupAllowed": true
       }
     },
+    "sameTreeCanaryClasses": [
+      {
+        "id": "post-launch",
+        "headRefPattern": "^canary/public-skills/post-launch/(?:barrier-pass-through|post-merge-source|release-readback)-[0-9a-f]{12}$",
+        "tree": "2741f0883bf636568d375974c98301ed16a633fb"
+      },
+      {
+        "id": "pre-launch",
+        "headRefPattern": "^canary/public-skills/pre-launch/(?:barrier-pull-request|barrier-evaluate-merge-group|barrier-active-removal|external-pull-request|external-merge-group|evaluate-rule-suite)-[0-9a-f]{12}$",
+        "tree": "e14830463796e0bea1c7cc9c6490bbb3e395a4db"
+      }
+    ],
     "postMergeCanonicalization": {
       "parentCommit": "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+      "preLaunchTree": "e14830463796e0bea1c7cc9c6490bbb3e395a4db",
       "tree": "2741f0883bf636568d375974c98301ed16a633fb",
       "mainRefs": [
         "refs/heads/main",
@@ -109,7 +126,9 @@
       "releaseTagRefs": [
         "refs/tags/v1.0.0"
       ],
-      "maximumNoOpBranchCommits": 1
+      "maximumNoOpBranchCommits": 1,
+      "maximumPreLaunchMainCommits": 8,
+      "maximumPostLaunchMainCommits": 8
     },
     "dynamicEventHead": {
       "eventParentSets": [

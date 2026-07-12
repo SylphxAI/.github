@@ -35,8 +35,11 @@ MERGE_SHA = "6" * 40
 LOCAL_BYTES = SCRIPT.read_bytes()
 ATTESTATION_POLICY_BYTES = (ROOT / module.ATTESTATION_POLICY_PATH).read_bytes()
 FIXED_TIME = datetime(2026, 7, 11, 22, 0, tzinfo=timezone.utc)
+V4_FIXED_TIME = datetime(2026, 7, 10, 16, 5, tzinfo=timezone.utc)
+EXTERNAL_V4_TIME = datetime(2026, 7, 11, 21, 5, tzinfo=timezone.utc)
 PROVIDER_REQUEST_ID = "2F54:271FFE:842947:988994:6A52E19C"
 ACTIVE_DOCTRINE_HEAD = "d" * 40
+FINAL_DOCTRINE_HEAD = "e" * 40
 ATTESTATION_RULESET_ID = 654
 
 
@@ -68,10 +71,28 @@ def live_attestation_ruleset() -> dict:
     }
 
 
-def base_record(*, phase: str = "expand", ruleset_id: int | None = None, enforcement: str = "evaluate") -> dict:
+def base_record(
+    *,
+    phase: str = "expand",
+    ruleset_id: int | None = None,
+    enforcement: str = "evaluate",
+    schema_version: int = 2,
+) -> dict:
+    evidence = {
+        "evaluateReadback": None,
+        "pullRequestCanary": None,
+        "mergeGroupCanary": None,
+        "negativeControl": None,
+        (
+            "evaluateRuleSuiteReadback"
+            if schema_version == 3
+            else "effectiveRulesReadback"
+        ): None,
+        "activationTransition": None,
+    }
     return {
         "$schema": module.DOCTRINE_SCHEMA_REF,
-        "schemaVersion": 2,
+        "schemaVersion": schema_version,
         "kind": "organization-required-workflow-ruleset",
         "id": module.DOCTRINE_RECORD_ID,
         "owner": module.DOCTRINE_REPOSITORY,
@@ -122,16 +143,362 @@ def base_record(*, phase: str = "expand", ruleset_id: int | None = None, enforce
             "compatibility": {"oldAcceptedUntil": None, "newRequiredAfter": None},
             "recoveryPlan": "Keep the same numeric ruleset and downgrade only through a protected Git ratchet.",
         },
+        "activationEvidence": evidence,
+        "recovery": None,
+    }
+
+
+def v4_source_envelope(runtime_sha: str = EXECUTOR_HEAD) -> dict:
+    record = base_record(
+        phase="reconcile",
+        ruleset_id=18831380,
+        enforcement="evaluate",
+        schema_version=3,
+    )
+    record["schemaVersion"] = 4
+    record["workflowSource"]["commitSha"] = runtime_sha
+    record["queueBarrier"] = {
+        "kind": "public-skills-merge-queue-barrier",
+        "ruleset": {
+            "rulesetId": None,
+            "name": module.BARRIER_RULESET_NAME,
+            "target": "branch",
+            "enforcement": "evaluate",
+            "bypassActors": [],
+            "targetRepositories": copy.deepcopy(record["ruleset"]["targetRepositories"]),
+            "refInclude": ["~DEFAULT_BRANCH"],
+            "refExclude": [],
+            "doNotEnforceOnCreate": False,
+        },
+        "workflowSource": {
+            "repositoryId": module.EXECUTOR_REPOSITORY_ID,
+            "repository": module.EXECUTOR_REPOSITORY,
+            "workflowPath": module.BARRIER_WORKFLOW_PATH,
+            "workflowName": module.BARRIER_WORKFLOW_NAME,
+            "requiredCheck": module.BARRIER_REQUIRED_CHECK,
+            "controllerPath": module.BARRIER_CONTROLLER_PATH,
+            "policyPath": module.BARRIER_POLICY_PATH,
+            "ref": module.EXECUTOR_BRANCH,
+            "commitSha": runtime_sha,
+        },
+        "runtimeContract": {
+            "guardedRulesetId": 18831380,
+            "guardedRequiredCheck": module.REQUIRED_CHECK,
+            "pullRequestDecision": "identity-check-and-pass",
+            "mergeGroupDecision": "pass-only-when-external-active-effective-and-check-success",
+            "credentialMutationAuthority": "none",
+            "queueRemovalOwner": "github-provider",
+            "externalCheckObservation": {
+                "attempts": 120,
+                "intervalMilliseconds": 5000,
+                "terminalConclusions": ["failure", "success"],
+                "requiredConclusion": "success",
+                "timeoutDisposition": "failure",
+            },
+            "admissionCanaryContract": {
+                "sourcePolicyPath": module.POLICY_PATH,
+                "canaryClass": "strict-same-tree-no-diff",
+                "launchBaseAdvance": "authorized-empty-ancestry-with-unchanged-fixture-tree",
+            },
+            "permissions": {
+                "actions": "read",
+                "checks": "read",
+                "contents": "read",
+                "pullRequests": "read",
+            },
+        },
+        "migration": {
+            "packetId": "public-skills-merge-queue-barrier@2026-07-12.4f8c6dbef794",
+            "class": "required-immediate",
+            "phase": "expand",
+            "tracker": "https://github.com/SylphxAI/.github/issues/1",
+            "compatibility": {"oldAcceptedUntil": None, "newRequiredAfter": None},
+            "recoveryPlan": "Create evaluate first, then bind its numeric ID before any activation.",
+        },
         "activationEvidence": {
             "evaluateReadback": None,
-            "pullRequestCanary": None,
-            "mergeGroupCanary": None,
-            "negativeControl": None,
-            "effectiveRulesReadback": None,
+            "pullRequestNoMutationCanary": None,
+            "evaluateMergeGroupFailureCanary": None,
             "activationTransition": None,
+            "effectiveRulesReadback": None,
+            "activeProviderRemovalCanary": None,
+            "activePassThroughCanary": None,
+            "activeExternalFailureCanary": None,
         },
         "recovery": None,
     }
+    record["activationSequencing"] = {
+        "kind": "public-skills-ruleset-activation-sequence",
+        "protectedSourceBundle": {
+            "relation": module.PROTECTED_SOURCE_RELATION,
+            "repositoryId": module.EXECUTOR_REPOSITORY_ID,
+            "repository": module.EXECUTOR_REPOSITORY,
+            "ref": module.EXECUTOR_BRANCH,
+            "commitSha": runtime_sha,
+            "runtimeRevisionInput": module.PROTECTED_SOURCE_RUNTIME_REVISION_INPUT,
+            "members": [
+                {"role": "external-admission-workflow", "path": module.WORKFLOW_PATH},
+                {"role": "merge-queue-barrier-workflow", "path": module.BARRIER_WORKFLOW_PATH},
+                {"role": "organization-ruleset-executor", "path": module.EXECUTOR_PATH},
+            ],
+        },
+        "executor": {
+            "repositoryId": module.EXECUTOR_REPOSITORY_ID,
+            "repository": module.EXECUTOR_REPOSITORY,
+            "path": module.EXECUTOR_PATH,
+            "ref": module.EXECUTOR_BRANCH,
+            "commitSha": runtime_sha,
+            "exactBytesDigest": module.exact_digest(LOCAL_BYTES),
+        },
+        "applyLock": {
+            "repositoryId": module.EXECUTOR_REPOSITORY_ID,
+            "ref": module.APPLY_LOCK_REF,
+            "fencing": "annotated-tag-claim",
+        },
+        "activationOrder": [
+            "public-skills-merge-queue-barrier-active-effective",
+            "public-skills-external-admission-active-effective",
+        ],
+        "recoveryOrder": [
+            "public-skills-external-admission-non-active-effective",
+            "public-skills-merge-queue-barrier-downgrade",
+        ],
+        "externalActivationPrecondition": None,
+    }
+    return record
+
+
+def seal_v4_queue_evidence(item: dict) -> None:
+    provider = item["providerVerdicts"]
+    if provider is not None and provider["terminalAggregate"] is not None:
+        terminal = provider["terminalAggregate"]
+        terminal["subjectDigest"] = module.canonical_digest(
+            module._v4_terminal_subject(provider, terminal)
+        )
+    item["subjectDigest"] = module.canonical_digest(
+        module._v4_queue_canary_subject(item)
+    )
+
+
+def v4_queue_evidence(payload: dict, field: str, ordinal: int) -> dict:
+    barrier = payload["queueBarrier"]
+    ruleset_id = barrier["ruleset"]["rulesetId"]
+    source_sha = barrier["workflowSource"]["commitSha"]
+    head_sha = f"{9000 + ordinal:040x}"
+    rule_suite_id = 10000 + ordinal
+    run_id = 11000 + ordinal
+    check_run_id = 12000 + ordinal
+    pull_request_number = 200 + ordinal
+    is_readback = field in {"evaluateReadback", "effectiveRulesReadback"}
+    item = {
+        "kind": module.QUEUE_BARRIER_EVIDENCE_KINDS[field],
+        "locator": (
+            f"https://github.com/organizations/{module.ORGANIZATION}/settings/rules/{ruleset_id}"
+            if is_readback
+            else f"https://github.com/{module.TARGET_REPOSITORY_NAMES[0]}/actions/runs/{run_id}"
+        ),
+        "observedAt": f"2026-07-10T16:{ordinal:02d}:00Z",
+        "subjectDigest": module.canonical_digest({"field": field, "ordinal": ordinal}),
+        "bindings": {
+            "barrierRulesetId": ruleset_id,
+            "guardedRulesetId": payload["ruleset"]["rulesetId"],
+            "targetRepositoryId": module.TARGET_REPOSITORY_ID,
+            "sourceRepositoryId": module.EXECUTOR_REPOSITORY_ID,
+            "sourceCommitSha": source_sha,
+            "headSha": None if is_readback else head_sha,
+            "ruleSuiteId": None if is_readback else rule_suite_id,
+            "runId": None if is_readback else run_id,
+            "checkRunId": None if is_readback else check_run_id,
+            "pullRequestNumber": None if is_readback else pull_request_number,
+        },
+        "providerVerdicts": None,
+        "report": None,
+        "queueOutcome": None,
+        "failureProof": None,
+    }
+    if is_readback:
+        return item
+
+    barrier_enforcement = "active" if field.startswith("active") else "evaluate"
+    external_enforcement = (
+        "active"
+        if field in {"activePassThroughCanary", "activeExternalFailureCanary"}
+        else "evaluate"
+    )
+    barrier_result = (
+        "fail"
+        if field
+        in {
+            "evaluateMergeGroupFailureCanary",
+            "activeProviderRemovalCanary",
+            "activeExternalFailureCanary",
+        }
+        else "pass"
+    )
+    external_result = "fail" if field == "activeExternalFailureCanary" else "pass"
+    terminal_result = (
+        "pass" if barrier_result == external_result == "pass" else "fail"
+    )
+    item["providerVerdicts"] = {
+        "id": rule_suite_id,
+        "repositoryId": module.TARGET_REPOSITORY_ID,
+        "beforeSha": f"{14000 + ordinal:040x}",
+        "afterSha": head_sha,
+        "ref": "refs/heads/main",
+        "pushedAt": item["observedAt"],
+        "barrierEnforcement": barrier_enforcement,
+        "aggregateResult": None,
+        "externalRuleEvaluation": {
+            "ruleSource": {
+                "id": payload["ruleset"]["rulesetId"],
+                "name": module.RULESET_NAME,
+                "type": "ruleset",
+            },
+            "ruleType": "workflows",
+            "enforcement": external_enforcement,
+            "result": external_result,
+        },
+        "terminalAggregate": {
+            "result": terminal_result,
+            "observedAt": f"2026-07-10T16:{ordinal:02d}:45Z",
+            "subjectDigest": module.canonical_digest(
+                {"terminalAggregate": terminal_result, "ordinal": ordinal}
+            ),
+        },
+    }
+    event, decision, conclusion = {
+        "pullRequestNoMutationCanary": (
+            "pull_request",
+            "pass-pull-request-identity",
+            "success",
+        ),
+        "evaluateMergeGroupFailureCanary": (
+            "merge_group",
+            "reject-merge-group",
+            "failure",
+        ),
+        "activeProviderRemovalCanary": (
+            "merge_group",
+            "reject-merge-group",
+            "failure",
+        ),
+        "activePassThroughCanary": (
+            "merge_group",
+            "pass-active-admission",
+            "success",
+        ),
+        "activeExternalFailureCanary": (
+            "merge_group",
+            "reject-merge-group",
+            "failure",
+        ),
+    }[field]
+    item["report"] = {
+        "event": event,
+        "decision": decision,
+        "conclusion": conclusion,
+        "mutationAuthority": "none",
+        "mutationCount": 0,
+        "queueMutation": {"owner": "github-provider", "attempted": False},
+        "permissions": {
+            "actions": "read",
+            "checks": "read",
+            "contents": "read",
+            "pullRequests": "read",
+        },
+        "runAttempt": 1,
+        "candidateSha": head_sha,
+        "artifactDigest": module.canonical_digest(
+            {"report": field, "ordinal": ordinal}
+        ),
+    }
+    if field == "pullRequestNoMutationCanary":
+        item["bindings"]["ruleSuiteId"] = None
+        item["providerVerdicts"] = None
+        seal_v4_queue_evidence(item)
+        return item
+
+    provider_removed = field in {
+        "activeProviderRemovalCanary",
+        "activeExternalFailureCanary",
+    }
+    pull_request_head_sha = f"{13000 + ordinal:040x}"
+    pull_request_base_sha = f"{14000 + ordinal:040x}"
+    base_tree = f"{15000 + ordinal:040x}"
+    candidate_tree = (
+        f"{16000 + ordinal:040x}"
+        if field == "activeExternalFailureCanary"
+        else base_tree
+    )
+    item["queueOutcome"] = {
+        "owner": "github-provider",
+        "cause": (
+            "required-check-failure"
+            if provider_removed
+            else "required-check-success"
+            if field == "activePassThroughCanary"
+            else "evaluate-mode-observation"
+        ),
+        "outcome": "provider-removed" if provider_removed else "merged",
+        "targetVisibility": "private",
+        "preQueueEntryId": f"MQE_{ordinal}",
+        "postQueueEntry": None,
+        "pullRequestMerged": not provider_removed,
+        "pullRequestHeadSha": pull_request_head_sha,
+        "pullRequestHeadShaAfter": pull_request_head_sha,
+        "pullRequestHeadTree": candidate_tree,
+        "pullRequestBaseSha": pull_request_base_sha,
+        "pullRequestBaseTree": base_tree,
+        "candidateSha": head_sha,
+        "candidateTree": candidate_tree,
+        "defaultBranchBeforeSha": pull_request_base_sha,
+        "defaultBranchAfterSha": (
+            pull_request_base_sha if provider_removed else head_sha
+        ),
+        "defaultBranchBeforeTree": base_tree,
+        "defaultBranchAfterTree": base_tree,
+        "observedAt": f"2026-07-10T16:{ordinal:02d}:30Z",
+    }
+    rejecting = [module.BARRIER_REQUIRED_CHECK]
+    external_check = "success"
+    if field == "activeExternalFailureCanary":
+        rejecting.append(module.REQUIRED_CHECK)
+        external_check = "failure"
+    item["failureProof"] = {
+        "barrierCheck": "failure",
+        "externalCheck": external_check,
+        "failingChecks": rejecting,
+        "otherRequiredChecksAllPass": True,
+    }
+    if field == "activePassThroughCanary":
+        item["failureProof"] = None
+    seal_v4_queue_evidence(item)
+    return item
+
+
+def v4_barrier_ratchet_state() -> dict:
+    record = v4_source_envelope()
+    barrier = record["queueBarrier"]
+    barrier["ruleset"]["rulesetId"] = 444
+    barrier["ruleset"]["enforcement"] = "active"
+    barrier["migration"]["phase"] = "ratchet"
+    barrier["activationEvidence"]["evaluateReadback"] = v4_queue_evidence(
+        record, "evaluateReadback", 1
+    )
+    barrier["activationEvidence"]["pullRequestNoMutationCanary"] = (
+        v4_queue_evidence(record, "pullRequestNoMutationCanary", 3)
+    )
+    barrier["activationEvidence"]["evaluateMergeGroupFailureCanary"] = (
+        v4_queue_evidence(record, "evaluateMergeGroupFailureCanary", 4)
+    )
+    barrier["activationEvidence"]["evaluateReadback"]["subjectDigest"] = (
+        module.canonical_digest(
+            module.expected_v4_ruleset(
+                record, "queueBarrier", enforcement="evaluate"
+            )
+        )
+    )
+    return record
 
 
 class FakeAPI:
@@ -149,6 +516,7 @@ class FakeAPI:
         self.get_optional_overrides: dict[str, object] = {}
         self.delete_overrides: dict[str, object] = {}
         self.post_readback_override: dict | None = None
+        self.mutation_updated_at = "2026-07-11T22:00:00Z"
 
     @staticmethod
     def override(value: object) -> object:
@@ -179,13 +547,16 @@ class FakeAPI:
         self.events.append(("PAGES", endpoint))
         if endpoint not in self.page_values:
             raise module.ForgeError(f"unexpected pages {endpoint}")
-        return copy.deepcopy(self.page_values[endpoint])
+        value = self.page_values[endpoint]
+        if callable(value):
+            value = value()
+        return copy.deepcopy(value)
 
     def post(self, endpoint: str, payload: dict) -> dict:
         self.events.append(("POST", endpoint))
         self.mutations.append(("POST", endpoint, copy.deepcopy(payload)))
         ruleset_id = 321
-        post = {**copy.deepcopy(payload), "id": ruleset_id, "source_type": "Organization", "updated_at": "2026-07-11T22:00:00Z"}
+        post = {**copy.deepcopy(payload), "id": ruleset_id, "source_type": "Organization", "updated_at": self.mutation_updated_at}
         self.gets[f"/orgs/{module.ORGANIZATION}/rulesets/{ruleset_id}"] = self.post_readback_override or post
         return {"id": ruleset_id}
 
@@ -197,7 +568,7 @@ class FakeAPI:
             **copy.deepcopy(payload),
             "id": ruleset_id,
             "source_type": "Organization",
-            "updated_at": "2026-07-11T22:00:00Z",
+            "updated_at": self.mutation_updated_at,
         }
         self.gets[endpoint] = self.post_readback_override or post
         return {"id": ruleset_id}
@@ -313,6 +684,24 @@ def base_api(record: dict, *, live: dict | None = None, effective: bool = True) 
         module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.VALIDATOR_PATH, SOURCE_SHA): encoded(module.VALIDATOR_PATH, validator),
         module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.POLICY_PATH, SOURCE_SHA): encoded(module.POLICY_PATH, source_policy),
     })
+    if record.get("schemaVersion") == 4:
+        source_sha = record["activationSequencing"]["protectedSourceBundle"][
+            "commitSha"
+        ]
+        if source_sha is not None:
+            api.gets[
+                f"/repositories/{module.EXECUTOR_REPOSITORY_ID}/commits/{source_sha}"
+            ] = {"sha": source_sha}
+            api.gets[
+                f"/repositories/{module.EXECUTOR_REPOSITORY_ID}/compare/{source_sha}...main"
+            ] = {"status": "ahead", "base_commit": {"sha": source_sha}}
+            for path in module.V4_SOURCE_PATHS:
+                raw = LOCAL_BYTES if path == module.EXECUTOR_PATH else (ROOT / path).read_bytes()
+                api.gets[
+                    module._content_endpoint(
+                        module.EXECUTOR_REPOSITORY_ID, path, source_sha
+                    )
+                ] = encoded(path, raw)
     ruleset_summaries = [{"id": ATTESTATION_RULESET_ID, "name": module.ATTESTATION_RULESET_NAME}]
     if live is not None:
         ruleset_summaries.insert(0, {"id": live["id"], "name": live["name"]})
@@ -339,12 +728,45 @@ def live_ruleset(record: dict, *, enforcement: str | None = None) -> dict:
     return {**payload, "id": record["ruleset"]["rulesetId"], "source_type": "Organization", "updated_at": "2026-07-11T21:00:00Z"}
 
 
+def v4_barrier_fixture() -> tuple[dict, FakeAPI]:
+    record = v4_barrier_ratchet_state()
+    external = {
+        **module.expected_v4_ruleset(record, "externalAdmission"),
+        "id": record["ruleset"]["rulesetId"],
+        "source_type": "Organization",
+        "updated_at": "2026-07-10T16:00:00Z",
+    }
+    barrier = {
+        **module.expected_v4_ruleset(
+            record, "queueBarrier", enforcement="evaluate"
+        ),
+        "id": record["queueBarrier"]["ruleset"]["rulesetId"],
+        "source_type": "Organization",
+        "updated_at": "2026-07-10T16:01:00Z",
+    }
+    api = base_api(record, live=external, effective=False)
+    api.page_values[f"/orgs/{module.ORGANIZATION}/rulesets"] = [
+        {"id": external["id"], "name": module.RULESET_NAME},
+        {"id": barrier["id"], "name": module.BARRIER_RULESET_NAME},
+        {"id": ATTESTATION_RULESET_ID, "name": module.ATTESTATION_RULESET_NAME},
+    ]
+    api.gets[f"/orgs/{module.ORGANIZATION}/rulesets/{barrier['id']}"] = barrier
+    effective_endpoint = (
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+    )
+    api.page_values[effective_endpoint] = lambda: (
+        [{"id": barrier["id"]}] if api.mutations else []
+    )
+    api.mutation_updated_at = "2026-07-10T16:05:00Z"
+    return record, api
+
+
 def bindings(record: dict, head: str | None = None, suite: int | None = None) -> dict:
     return {
         "rulesetId": record["ruleset"]["rulesetId"],
         "targetRepositoryId": module.TARGET_REPOSITORY_ID,
         "sourceRepositoryId": module.EXECUTOR_REPOSITORY_ID,
-        "sourceCommitSha": SOURCE_SHA,
+        "sourceCommitSha": record["workflowSource"]["commitSha"],
         "headSha": head,
         "ruleSuiteId": suite,
     }
@@ -388,7 +810,7 @@ def configure_workflow_evidence(
         "head_sha": head_sha,
     }
     evaluation = {
-        "rule_source": {"type": "Organization", "id": record["ruleset"]["rulesetId"], "name": module.RULESET_NAME},
+        "rule_source": {"type": "ruleset", "id": record["ruleset"]["rulesetId"], "name": module.RULESET_NAME},
         "rule_type": "workflows",
         "enforcement": "evaluate",
         "result": result,
@@ -396,9 +818,10 @@ def configure_workflow_evidence(
     suite = {
         "id": suite_id,
         "repository_id": module.TARGET_REPOSITORY_ID,
+        "before_sha": "1" * 40,
         "after_sha": head_sha,
         "ref": "refs/heads/main",
-        "evaluation_result": result,
+        "result": result,
         "pushed_at": observed_at,
         "rule_evaluations": [evaluation],
     }
@@ -419,9 +842,10 @@ def configure_workflow_evidence(
     suite_observation = {
         "id": suite_id,
         "repositoryId": module.TARGET_REPOSITORY_ID,
+        "beforeSha": "1" * 40,
         "afterSha": head_sha,
         "ref": "refs/heads/main",
-        "evaluationResult": result,
+        "aggregateResult": result,
         "pushedAt": observed_at,
         "ruleEvaluation": evaluation,
     }
@@ -558,6 +982,65 @@ def active_fixture() -> tuple[dict, FakeAPI]:
     return record, api
 
 
+def v3_active_fixture() -> tuple[dict, FakeAPI]:
+    """Return a v3 ratchet where evaluate coverage is false until mutation."""
+
+    record, api = active_fixture()
+    record["schemaVersion"] = 3
+    record["activationEvidence"].pop("effectiveRulesReadback")
+    suite_id = 204
+    head_sha = "f" * 40
+    pushed_at = "2026-07-11T21:04:00Z"
+    evaluation = {
+        "rule_source": {
+            "id": record["ruleset"]["rulesetId"],
+            "type": "ruleset",
+            "name": module.RULESET_NAME,
+        },
+        "rule_type": "workflows",
+        "enforcement": "evaluate",
+        "result": "pass",
+        "details": "Required workflow evaluated successfully",
+    }
+    suite = {
+        "id": suite_id,
+        "repository_id": module.TARGET_REPOSITORY_ID,
+        "before_sha": "1" * 40,
+        "after_sha": head_sha,
+        "ref": "refs/heads/main",
+        "result": "pass",
+        "pushed_at": pushed_at,
+        "rule_evaluations": [evaluation],
+    }
+    observation = module._normalized_evaluate_rule_suite(suite, evaluation)
+    record["activationEvidence"]["evaluateRuleSuiteReadback"] = {
+        "kind": module.EVIDENCE_KINDS["evaluateRuleSuiteReadback"],
+        "locator": (
+            f"https://github.com/{module.TARGET_REPOSITORY_NAMES[0]}"
+            f"/rules/rule-suites/{suite_id}"
+        ),
+        "observedAt": pushed_at,
+        "subjectDigest": module.canonical_digest(observation),
+        "bindings": bindings(record, head_sha, suite_id),
+        "negativeControl": None,
+    }
+    api.gets[
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets/rule-suites/{suite_id}"
+    ] = suite
+    effective_endpoint = (
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+    )
+    api.page_values[effective_endpoint] = lambda: (
+        [{"id": record["ruleset"]["rulesetId"]}] if api.mutations else []
+    )
+    api.gets[module._content_endpoint(
+        module.DOCTRINE_REPOSITORY_ID,
+        module.DOCTRINE_RECORD_PATH,
+        DOCTRINE_HEAD,
+    )] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(record))
+    return record, api
+
+
 def configure_historical_authority(api: FakeAPI, report: dict, record: dict) -> None:
     desired_commit = report["desiredState"]["commitSha"]
     executor_commit = report["executor"]["commitSha"]
@@ -616,6 +1099,357 @@ def write_report(report: dict) -> tempfile.NamedTemporaryFile:
     return handle
 
 
+def collected_v4_barrier_fixture() -> tuple[dict, dict, dict, FakeAPI]:
+    record, api = v4_barrier_fixture()
+    executor = module.RulesetExecutor(
+        api,
+        LOCAL_BYTES,
+        clock=lambda: V4_FIXED_TIME,
+        nonce_factory=lambda: "e" * 64,
+        sleeper=lambda _seconds: None,
+    )
+    report = executor.run("apply")
+    configure_historical_authority(api, report, record)
+    api.gets[module._audit_endpoint(1)] = [
+        provider_audit_event(
+            report,
+            created_at=int(V4_FIXED_TIME.timestamp() * 1000),
+            ruleset_name=module.BARRIER_RULESET_NAME,
+        )
+    ]
+    handle = write_report(report)
+    try:
+        artifact = executor.collect_transition(Path(handle.name))
+    finally:
+        os.unlink(handle.name)
+    return record, report, artifact, api
+
+
+def v4_barrier_active_fixture() -> tuple[dict, dict, dict, FakeAPI]:
+    historical, report, artifact, api = collected_v4_barrier_fixture()
+    artifact_raw = canonical_file(artifact)
+    artifact_blob_sha = module.git_blob_sha(artifact_raw)
+    transition = module.activation_transition_from_artifact(
+        artifact,
+        artifact_raw=artifact_raw,
+        artifact_blob_sha=artifact_blob_sha,
+        historical_record=historical,
+    )
+    active = copy.deepcopy(historical)
+    barrier = active["queueBarrier"]
+    barrier["migration"]["phase"] = "active"
+    barrier["activationEvidence"]["activationTransition"] = transition
+    barrier["activationEvidence"]["effectiveRulesReadback"] = copy.deepcopy(
+        transition["effectiveRulesReadback"]
+    )
+    barrier["activationEvidence"]["activeProviderRemovalCanary"] = (
+        v4_queue_evidence(active, "activeProviderRemovalCanary", 6)
+    )
+    module.validate_v4_record(
+        active, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+    )
+    api.gets[f"/repositories/{module.DOCTRINE_REPOSITORY_ID}/commits/main"] = {
+        "sha": ACTIVE_DOCTRINE_HEAD
+    }
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            ACTIVE_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(active))
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH,
+            ACTIVE_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH, artifact_raw)
+    effective_endpoint = (
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+    )
+    api.page_values[effective_endpoint] = [
+        {"id": active["queueBarrier"]["ruleset"]["rulesetId"]}
+    ]
+    api.mutations.clear()
+    api.lock_mutations.clear()
+    return active, report, artifact, api
+
+
+def v4_external_ratchet_fixture() -> tuple[dict, FakeAPI, dict]:
+    record, _barrier_report, barrier_artifact, api = v4_barrier_active_fixture()
+    external_fixture, external_api = v3_active_fixture()
+    record["migration"]["phase"] = "ratchet"
+    record["ruleset"]["enforcement"] = "active"
+    record["activationEvidence"] = copy.deepcopy(
+        external_fixture["activationEvidence"]
+    )
+    for item in record["activationEvidence"].values():
+        if isinstance(item, dict) and isinstance(item.get("bindings"), dict):
+            item["bindings"]["sourceCommitSha"] = EXECUTOR_HEAD
+            item["bindings"]["rulesetId"] = record["ruleset"]["rulesetId"]
+    record["activationEvidence"]["evaluateReadback"]["subjectDigest"] = (
+        module.canonical_digest(
+            module.expected_v4_ruleset(
+                record, "externalAdmission", enforcement="evaluate"
+            )
+        )
+    )
+    record["activationEvidence"]["evaluateReadback"]["locator"] = (
+        f"https://github.com/organizations/{module.ORGANIZATION}/settings/rules/"
+        f"{record['ruleset']['rulesetId']}"
+    )
+
+    external_merge = record["activationEvidence"]["mergeGroupCanary"]
+    removal = record["queueBarrier"]["activationEvidence"][
+        "activeProviderRemovalCanary"
+    ]
+    removal["bindings"]["headSha"] = external_merge["bindings"]["headSha"]
+    removal["bindings"]["ruleSuiteId"] = external_merge["bindings"][
+        "ruleSuiteId"
+    ]
+    removal["providerVerdicts"]["id"] = external_merge["bindings"]["ruleSuiteId"]
+    removal["providerVerdicts"]["afterSha"] = external_merge["bindings"]["headSha"]
+    removal["report"]["candidateSha"] = external_merge["bindings"]["headSha"]
+    removal["queueOutcome"]["candidateSha"] = external_merge["bindings"]["headSha"]
+    seal_v4_queue_evidence(removal)
+
+    barrier_transition = record["queueBarrier"]["activationEvidence"][
+        "activationTransition"
+    ]
+    barrier_effective = record["queueBarrier"]["activationEvidence"][
+        "effectiveRulesReadback"
+    ]
+    record["activationSequencing"]["externalActivationPrecondition"] = {
+        "barrierRulesetId": record["queueBarrier"]["ruleset"]["rulesetId"],
+        "barrierSourceCommitSha": EXECUTOR_HEAD,
+        "barrierActivationTransitionDigest": module.canonical_digest(
+            barrier_transition
+        ),
+        "barrierEffectiveRulesDigest": barrier_effective["subjectDigest"],
+        "barrierProviderRemovalDigest": removal["subjectDigest"],
+        "barrierAttestationClaimDigest": barrier_transition["mutation"][
+            "activationAttestation"
+        ]["claimDigest"],
+        "executorCommitSha": EXECUTOR_HEAD,
+        "applyLockRef": module.APPLY_LOCK_REF,
+        "observedAt": "2026-07-11T21:05:00Z",
+    }
+    for endpoint, value in external_api.gets.items():
+        if endpoint.startswith(f"/repositories/{module.TARGET_REPOSITORY_ID}/"):
+            api.gets[endpoint] = copy.deepcopy(value)
+    for endpoint, value in external_api.page_values.items():
+        if endpoint.startswith(f"/repositories/{module.TARGET_REPOSITORY_ID}/"):
+            api.page_values[endpoint] = copy.deepcopy(value)
+    external_live = {
+        **module.expected_v4_ruleset(
+            record, "externalAdmission", enforcement="evaluate"
+        ),
+        "id": record["ruleset"]["rulesetId"],
+        "source_type": "Organization",
+        "updated_at": record["activationEvidence"]["evaluateReadback"][
+            "observedAt"
+        ],
+    }
+    api.gets[
+        f"/orgs/{module.ORGANIZATION}/rulesets/{record['ruleset']['rulesetId']}"
+    ] = external_live
+    barrier_id = record["queueBarrier"]["ruleset"]["rulesetId"]
+    external_id = record["ruleset"]["rulesetId"]
+    effective_endpoint = (
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+    )
+    api.page_values[effective_endpoint] = lambda: [
+        {"id": barrier_id},
+        *([{"id": external_id}] if api.mutations else []),
+    ]
+    api.mutation_updated_at = "2026-07-11T21:05:00Z"
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            ACTIVE_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(record))
+
+    verifier = module.RulesetExecutor(
+        api,
+        LOCAL_BYTES,
+        clock=lambda: EXTERNAL_V4_TIME,
+        sleeper=lambda _seconds: None,
+    )
+    target = {
+        "id": module.TARGET_REPOSITORY_ID,
+        "name": module.TARGET_REPOSITORY_NAMES[0],
+        "defaultBranch": module.TARGET_DEFAULT_BRANCH,
+    }
+    for field in ["pullRequestCanary", "mergeGroupCanary", "negativeControl"]:
+        evidence = record["activationEvidence"][field]
+        run_id = int(evidence["locator"].rstrip("/").rsplit("/", 1)[1])
+        suite_id = evidence["bindings"]["ruleSuiteId"]
+        run = api.gets[
+            f"/repositories/{module.TARGET_REPOSITORY_ID}/actions/runs/{run_id}"
+        ]
+        jobs = api.gets[
+            f"/repositories/{module.TARGET_REPOSITORY_ID}/actions/runs/{run_id}/jobs"
+            "?filter=latest&per_page=100&page=1"
+        ]
+        job = jobs["jobs"][0]
+        suite_endpoint = (
+            f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets/rule-suites/{suite_id}"
+        )
+        suite = copy.deepcopy(api.gets[suite_endpoint])
+        suite["rule_evaluations"][0]["rule_source"]["id"] = record["ruleset"][
+            "rulesetId"
+        ]
+        api.gets[suite_endpoint] = suite
+        suite_observation = {
+            "id": suite["id"],
+            "repositoryId": suite["repository_id"],
+            "beforeSha": suite["before_sha"],
+            "afterSha": suite["after_sha"],
+            "ref": suite["ref"],
+            "aggregateResult": suite["result"],
+            "pushedAt": suite["pushed_at"],
+            "ruleEvaluation": suite["rule_evaluations"][0],
+        }
+        observation = module._run_observation(run, job, suite_observation)
+        if field == "negativeControl":
+            observation["negativeControl"] = verifier._verify_negative(
+                record, target, run_id, run, evidence
+            )
+        evidence["subjectDigest"] = module.canonical_digest(observation)
+
+    suite_evidence = record["activationEvidence"]["evaluateRuleSuiteReadback"]
+    suite_id = suite_evidence["bindings"]["ruleSuiteId"]
+    suite_endpoint = (
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets/rule-suites/{suite_id}"
+    )
+    suite = copy.deepcopy(api.gets[suite_endpoint])
+    suite["rule_evaluations"][0]["rule_source"]["id"] = record["ruleset"][
+        "rulesetId"
+    ]
+    api.gets[suite_endpoint] = suite
+    suite_evidence["subjectDigest"] = module.canonical_digest(
+        module._normalized_evaluate_rule_suite(
+            suite, suite["rule_evaluations"][0]
+        )
+    )
+    module.validate_v4_record(
+        record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+    )
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            ACTIVE_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(record))
+    return record, api, barrier_artifact
+
+
+def retime_v4_queue_evidence(item: dict, minute: int) -> None:
+    item["observedAt"] = f"2026-07-11T21:{minute:02d}:00Z"
+    if item["providerVerdicts"] is not None:
+        item["providerVerdicts"]["pushedAt"] = item["observedAt"]
+        item["providerVerdicts"]["terminalAggregate"]["observedAt"] = (
+            f"2026-07-11T21:{minute:02d}:45Z"
+        )
+    if item["queueOutcome"] is not None:
+        item["queueOutcome"]["observedAt"] = (
+            f"2026-07-11T21:{minute:02d}:30Z"
+        )
+    seal_v4_queue_evidence(item)
+
+
+def collected_v4_external_fixture() -> tuple[dict, dict, dict, dict, FakeAPI]:
+    record, api, barrier_artifact = v4_external_ratchet_fixture()
+    executor = module.RulesetExecutor(
+        api,
+        LOCAL_BYTES,
+        clock=lambda: EXTERNAL_V4_TIME,
+        nonce_factory=lambda: "f" * 64,
+        sleeper=lambda _seconds: None,
+    )
+    report = executor.run("apply")
+    configure_historical_authority(api, report, record)
+    api.gets[module._audit_endpoint(1)] = [
+        provider_audit_event(
+            report,
+            created_at=int(EXTERNAL_V4_TIME.timestamp() * 1000),
+        )
+    ]
+    handle = write_report(report)
+    try:
+        artifact = executor.collect_transition(Path(handle.name))
+    finally:
+        os.unlink(handle.name)
+    return record, report, artifact, barrier_artifact, api
+
+
+def v4_final_active_fixture() -> tuple[dict, FakeAPI]:
+    historical, report, artifact, barrier_artifact, api = (
+        collected_v4_external_fixture()
+    )
+    artifact_raw = canonical_file(artifact)
+    transition = module.activation_transition_from_artifact(
+        artifact,
+        artifact_raw=artifact_raw,
+        artifact_blob_sha=module.git_blob_sha(artifact_raw),
+        historical_record=historical,
+    )
+    active = copy.deepcopy(historical)
+    active["migration"]["phase"] = "active"
+    active["activationEvidence"]["activationTransition"] = transition
+    pass_canary = v4_queue_evidence(active, "activePassThroughCanary", 7)
+    failure_canary = v4_queue_evidence(active, "activeExternalFailureCanary", 8)
+    retime_v4_queue_evidence(pass_canary, 6)
+    retime_v4_queue_evidence(failure_canary, 7)
+    active["queueBarrier"]["activationEvidence"][
+        "activePassThroughCanary"
+    ] = pass_canary
+    active["queueBarrier"]["activationEvidence"][
+        "activeExternalFailureCanary"
+    ] = failure_canary
+    module.validate_v4_record(
+        active, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+    )
+    api.gets[f"/repositories/{module.DOCTRINE_REPOSITORY_ID}/commits/main"] = {
+        "sha": FINAL_DOCTRINE_HEAD
+    }
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            FINAL_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(active))
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.ACTIVATION_EVIDENCE_PATH,
+            FINAL_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.ACTIVATION_EVIDENCE_PATH, artifact_raw)
+    barrier_raw = canonical_file(barrier_artifact)
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH,
+            FINAL_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH, barrier_raw)
+    api.page_values[
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+    ] = [
+        {"id": active["queueBarrier"]["ruleset"]["rulesetId"]},
+        {"id": active["ruleset"]["rulesetId"]},
+    ]
+    api.mutations.clear()
+    api.lock_mutations.clear()
+    return active, api
+
+
 def collected_fixture() -> tuple[dict, dict, dict, FakeAPI]:
     record, api = active_fixture()
     executor = module.RulesetExecutor(
@@ -643,8 +1477,55 @@ def collected_fixture() -> tuple[dict, dict, dict, FakeAPI]:
     return record, report, artifact, api
 
 
+def collected_v3_fixture() -> tuple[dict, dict, dict, FakeAPI]:
+    record, api = v3_active_fixture()
+    executor = module.RulesetExecutor(
+        api,
+        LOCAL_BYTES,
+        clock=lambda: FIXED_TIME,
+        nonce_factory=lambda: "d" * 64,
+        sleeper=lambda _seconds: None,
+    )
+    report = executor.run("apply")
+    configure_historical_authority(api, report, record)
+    api.gets[module._audit_endpoint(1)] = [provider_audit_event(report)]
+    handle = write_report(report)
+    try:
+        artifact = executor.collect_transition(Path(handle.name))
+    finally:
+        os.unlink(handle.name)
+    return record, report, artifact, api
+
+
 def sealed_active_fixture() -> tuple[dict, dict, dict, FakeAPI]:
     historical, report, artifact, api = collected_fixture()
+    artifact_raw = canonical_file(artifact)
+    transition = module.activation_transition_from_artifact(
+        artifact,
+        artifact_raw=artifact_raw,
+        artifact_blob_sha=module.git_blob_sha(artifact_raw),
+    )
+    active = copy.deepcopy(historical)
+    active["migration"]["phase"] = "active"
+    active["activationEvidence"]["activationTransition"] = transition
+    api.gets[f"/repositories/{module.DOCTRINE_REPOSITORY_ID}/commits/main"] = {
+        "sha": ACTIVE_DOCTRINE_HEAD,
+    }
+    api.gets[module._content_endpoint(
+        module.DOCTRINE_REPOSITORY_ID,
+        module.DOCTRINE_RECORD_PATH,
+        ACTIVE_DOCTRINE_HEAD,
+    )] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(active))
+    api.gets[module._content_endpoint(
+        module.DOCTRINE_REPOSITORY_ID,
+        module.ACTIVATION_EVIDENCE_PATH,
+        ACTIVE_DOCTRINE_HEAD,
+    )] = encoded(module.ACTIVATION_EVIDENCE_PATH, artifact_raw)
+    return active, report, artifact, api
+
+
+def sealed_active_v3_fixture() -> tuple[dict, dict, dict, FakeAPI]:
+    historical, report, artifact, api = collected_v3_fixture()
     artifact_raw = canonical_file(artifact)
     transition = module.activation_transition_from_artifact(
         artifact,
@@ -1114,7 +1995,7 @@ class ExecutionTests(unittest.TestCase):
         record, api = active_fixture()
         new_source_sha = "d" * 40
         record["workflowSource"]["commitSha"] = new_source_sha
-        for field in module.EVIDENCE_KINDS:
+        for field in module._evidence_kinds(record):
             record["activationEvidence"][field]["bindings"]["sourceCommitSha"] = new_source_sha
         evaluate = record["activationEvidence"]["evaluateReadback"]
         evaluate["observedAt"] = "2026-07-11T21:01:30Z"
@@ -1910,6 +2791,713 @@ class ActivationEvidenceTests(unittest.TestCase):
         # Provider-tag verification itself is independent of the active record.
         with self.assertRaisesRegex(module.ForgeError, "does not bind the exact transition"):
             self.executor(api_two)._verify_attestation_tag(report_two, tag_sha)
+
+
+class V4SourceEnvelopeTests(unittest.TestCase):
+    def test_v4_source_envelope_binds_all_members_to_runtime_workflow_sha(self) -> None:
+        record = v4_source_envelope()
+        normalized = module.validate_v4_protected_source_envelope(record, EXECUTOR_HEAD)
+        self.assertEqual(normalized["relation"], "same-protected-source-commit")
+        self.assertEqual(normalized["runtimeRevisionInput"], "github.workflow_sha")
+        self.assertEqual(normalized["commitSha"], EXECUTOR_HEAD)
+        self.assertEqual(
+            [item["path"] for item in normalized["members"]],
+            [module.WORKFLOW_PATH, module.BARRIER_WORKFLOW_PATH, module.EXECUTOR_PATH],
+        )
+
+        attacks = {
+            "relation": lambda value: value["activationSequencing"]["protectedSourceBundle"].update({"relation": "same-branch-name"}),
+            "runtime-input": lambda value: value["activationSequencing"]["protectedSourceBundle"].update({"runtimeRevisionInput": "github.sha"}),
+            "bundle-commit": lambda value: value["activationSequencing"]["protectedSourceBundle"].update({"commitSha": "f" * 40}),
+            "member-path": lambda value: value["activationSequencing"]["protectedSourceBundle"]["members"][1].update({"path": ".github/workflows/spoof.yml"}),
+            "external-commit": lambda value: value["workflowSource"].update({"commitSha": "f" * 40}),
+            "barrier-commit": lambda value: value["queueBarrier"]["workflowSource"].update({"commitSha": "f" * 40}),
+            "executor-commit": lambda value: value["activationSequencing"]["executor"].update({"commitSha": "f" * 40}),
+        }
+        for name, mutate in attacks.items():
+            with self.subTest(name=name):
+                attacked = v4_source_envelope()
+                mutate(attacked)
+                with self.assertRaises(module.ContractError):
+                    module.validate_v4_protected_source_envelope(attacked, EXECUTOR_HEAD)
+
+        for missing in ["localRequiredChecks", "negativeControlPolicy"]:
+            attacked = v4_source_envelope()
+            del attacked["workflowSource"][missing]
+            with self.subTest(missing=missing), self.assertRaisesRegex(
+                module.ContractError, f"requires {missing}"
+            ):
+                module.validate_v4_record(
+                    attacked, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+                )
+
+    def test_v4_source_envelope_loads_full_two_ruleset_contract_without_writes(self) -> None:
+        record = v4_source_envelope()
+        api = FakeAPI()
+        endpoint = module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            DOCTRINE_HEAD,
+        )
+        api.gets[endpoint] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(record))
+        executor = module.RulesetExecutor(api, LOCAL_BYTES)
+        executor.executor_head = EXECUTOR_HEAD
+        loaded, metadata = executor._load_doctrine_at(DOCTRINE_HEAD)
+        self.assertEqual(loaded["schemaVersion"], 4)
+        self.assertEqual(metadata["commitSha"], DOCTRINE_HEAD)
+        self.assertFalse(api.mutations)
+        self.assertFalse(api.lock_mutations)
+
+
+class V4ExecutionContractTests(unittest.TestCase):
+    def executor(self, api: FakeAPI) -> module.RulesetExecutor:
+        return module.RulesetExecutor(
+            api,
+            LOCAL_BYTES,
+            clock=lambda: V4_FIXED_TIME,
+            nonce_factory=lambda: "e" * 64,
+            sleeper=lambda _seconds: None,
+        )
+
+    def test_v4_barrier_apply_collect_and_active_replay_are_exact(self) -> None:
+        historical, report, artifact, api = collected_v4_barrier_fixture()
+        self.assertEqual(report["status"], "APPLIED_PENDING_EVIDENCE")
+        self.assertEqual(report["plannedMutation"]["subject"], "queueBarrier")
+        self.assertEqual(len(api.mutations), 1)
+        self.assertEqual(api.mutations[0][0], "PUT")
+        self.assertEqual(artifact["schemaVersion"], 4)
+        self.assertEqual(artifact["kind"], module.ACTIVATION_REPORT_KIND)
+        self.assertEqual(
+            module.validate_activation_artifact(artifact, historical), artifact
+        )
+        artifact_raw = canonical_file(artifact)
+        transition = module.activation_transition_from_artifact(
+            artifact,
+            artifact_raw=artifact_raw,
+            artifact_blob_sha=module.git_blob_sha(artifact_raw),
+            historical_record=historical,
+        )
+        self.assertEqual(
+            transition["kind"], "queue-barrier-ruleset-activation-transition"
+        )
+        self.assertEqual(transition["schemaVersion"], 1)
+        self.assertEqual(
+            transition["mutation"]["subjectRuleset"],
+            {
+                "rulesetId": 444,
+                "name": module.BARRIER_RULESET_NAME,
+                "sourceCommitSha": EXECUTOR_HEAD,
+            },
+        )
+        self.assertEqual(
+            transition["effectiveRulesReadback"]["subjectDigest"],
+            report["postReadback"]["effectiveRulesDigest"],
+        )
+
+        active, _, _, active_api = v4_barrier_active_fixture()
+        readback = self.executor(active_api).run("readback")
+        self.assertEqual(readback["status"], "PASS")
+        self.assertEqual(
+            readback["activationReadback"]["queueBarrier"]["transitionDigest"],
+            module.canonical_digest(
+                active["queueBarrier"]["activationEvidence"]["activationTransition"]
+            ),
+        )
+        self.assertFalse(active_api.mutations)
+        self.assertFalse(active_api.lock_mutations)
+
+    def test_v4_unresolved_bundle_blocks_before_provider_reconciliation(self) -> None:
+        record = v4_source_envelope()
+        record["workflowSource"]["commitSha"] = module.LEGACY_SOURCE_COMMIT_SHA
+        record["queueBarrier"]["workflowSource"]["commitSha"] = None
+        record["activationSequencing"]["protectedSourceBundle"]["commitSha"] = None
+        record["activationSequencing"]["executor"]["commitSha"] = None
+        record["activationSequencing"]["executor"]["exactBytesDigest"] = None
+        module.validate_v4_record(
+            record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+        )
+        api = base_api(record)
+        report = self.executor(api).run("apply")
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("protected source bundle is unresolved", report["findings"][0])
+        self.assertIsNone(report["subjects"])
+        self.assertFalse(api.mutations)
+        self.assertFalse(api.lock_mutations)
+
+    def test_v4_resolved_expand_creates_one_evaluate_barrier_then_requires_id_binding(self) -> None:
+        record = v4_source_envelope()
+        external = {
+            **module.expected_v4_ruleset(record, "externalAdmission"),
+            "id": record["ruleset"]["rulesetId"],
+            "source_type": "Organization",
+            "updated_at": "2026-07-10T16:00:00Z",
+        }
+        api = base_api(record, live=external, effective=False)
+        report = self.executor(api).run("apply")
+        self.assertEqual(report["status"], "DRIFT")
+        self.assertEqual(report["plannedMutation"]["subject"], "queueBarrier")
+        self.assertEqual(report["plannedMutation"]["action"], "create")
+        self.assertEqual(len(api.mutations), 1)
+        method, endpoint, payload = api.mutations[0]
+        self.assertEqual((method, endpoint), ("POST", f"/orgs/{module.ORGANIZATION}/rulesets"))
+        self.assertEqual(payload["enforcement"], "evaluate")
+        self.assertEqual(payload["bypass_actors"], [])
+        self.assertEqual(
+            payload["rules"][0]["parameters"]["workflows"][0]["path"],
+            module.BARRIER_WORKFLOW_PATH,
+        )
+        api.page_values[f"/orgs/{module.ORGANIZATION}/rulesets"].insert(
+            1, {"id": 321, "name": module.BARRIER_RULESET_NAME}
+        )
+        with self.assertRaisesRegex(module.ForgeError, "before Doctrine binds its ID"):
+            self.executor(api).run("apply")
+        self.assertEqual(len(api.mutations), 1)
+
+    def test_v4_exact_reconcile_is_noop(self) -> None:
+        record = v4_source_envelope()
+        barrier = record["queueBarrier"]
+        barrier["ruleset"]["rulesetId"] = 444
+        barrier["migration"]["phase"] = "reconcile"
+        external_live = {
+            **module.expected_v4_ruleset(record, "externalAdmission"),
+            "id": record["ruleset"]["rulesetId"],
+            "source_type": "Organization",
+            "updated_at": "2026-07-10T16:00:00Z",
+        }
+        barrier_live = {
+            **module.expected_v4_ruleset(record, "queueBarrier"),
+            "id": 444,
+            "source_type": "Organization",
+            "updated_at": "2026-07-10T16:01:00Z",
+        }
+        api = base_api(record, live=external_live, effective=False)
+        api.page_values[f"/orgs/{module.ORGANIZATION}/rulesets"] = [
+            {"id": external_live["id"], "name": module.RULESET_NAME},
+            {"id": 444, "name": module.BARRIER_RULESET_NAME},
+            {"id": ATTESTATION_RULESET_ID, "name": module.ATTESTATION_RULESET_NAME},
+        ]
+        api.gets[f"/orgs/{module.ORGANIZATION}/rulesets/444"] = barrier_live
+        report = self.executor(api).run("apply")
+        self.assertEqual(report["status"], "PASS")
+        self.assertIsNone(report["plannedMutation"])
+        self.assertFalse(api.mutations)
+        self.assertFalse(api.lock_mutations)
+
+    def test_v4_planner_blocks_ambiguous_or_active_phase_repair_writes(self) -> None:
+        record = v4_source_envelope()
+        record["queueBarrier"]["ruleset"]["rulesetId"] = 444
+        record["queueBarrier"]["migration"]["phase"] = "reconcile"
+        external = module.expected_v4_ruleset(record, "externalAdmission")
+        barrier = module.expected_v4_ruleset(record, "queueBarrier")
+        external["conditions"]["ref_name"]["exclude"] = ["refs/heads/foreign"]
+        barrier["conditions"]["ref_name"]["exclude"] = ["refs/heads/foreign"]
+        with self.assertRaisesRegex(module.ContractError, "simultaneous unsequenced"):
+            module.plan_v4_ruleset_actions(
+                record,
+                {
+                    "externalAdmission": {"live": external, "effective": False},
+                    "queueBarrier": {"live": barrier, "effective": False},
+                },
+            )
+
+        record["queueBarrier"]["migration"]["phase"] = "active"
+        record["queueBarrier"]["ruleset"]["enforcement"] = "active"
+        with self.assertRaisesRegex(module.ContractError, "active phase"):
+            module.plan_v4_ruleset_actions(
+                record,
+                {
+                    "externalAdmission": {
+                        "live": module.expected_v4_ruleset(
+                            record, "externalAdmission"
+                        ),
+                        "effective": False,
+                    },
+                    "queueBarrier": {
+                        "live": module.expected_v4_ruleset(
+                            record, "queueBarrier", enforcement="evaluate"
+                        ),
+                        "effective": False,
+                    },
+                },
+            )
+
+    def test_v4_report_and_nested_surfaces_reject_unknown_fields(self) -> None:
+        record, report, _artifact, _api = collected_v4_barrier_fixture()
+        attacks = {
+            "report": lambda value: value.update({"forged": True}),
+            "executor": lambda value: value["executor"].update({"ref": "main"}),
+            "source": lambda value: value["source"].update({"branch": "main"}),
+            "planned": lambda value: value["plannedMutation"].update({"force": True}),
+            "mutation": lambda value: value["mutation"].update({"retry": 1}),
+            "post": lambda value: value["postReadback"].update({"provider": {}}),
+            "lock": lambda value: value["applyLock"].update({"expiresAt": None}),
+            "subject": lambda value: value["subjects"]["externalAdmission"].update(
+                {"borrowed": True}
+            ),
+        }
+        for label, attack in attacks.items():
+            attacked = copy.deepcopy(report)
+            attack(attacked)
+            attacked = module.seal_report(attacked)
+            with self.subTest(label=label), self.assertRaises(module.ContractError):
+                module.validate_v4_apply_report(attacked, record)
+
+    def test_v4_external_evidence_requires_explicit_negative_control_members(self) -> None:
+        record, _api, _barrier_artifact = v4_external_ratchet_fixture()
+        for field in [
+            "evaluateReadback",
+            "pullRequestCanary",
+            "mergeGroupCanary",
+            "negativeControl",
+            "evaluateRuleSuiteReadback",
+        ]:
+            attacked = copy.deepcopy(record)
+            del attacked["activationEvidence"][field]["negativeControl"]
+            with self.subTest(field=field), self.assertRaises(module.ContractError):
+                module.validate_v4_record(
+                    attacked, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+                )
+
+    def test_v4_other_subject_snapshot_is_in_durable_claim_and_replay(self) -> None:
+        record, report, _artifact, api = collected_v4_barrier_fixture()
+        authorization = module.apply_lock_authorization_from_report(report)
+        self.assertEqual(
+            authorization["subjectsDigest"], module.canonical_digest(report["subjects"])
+        )
+        attacked = copy.deepcopy(report)
+        attacked["subjects"]["externalAdmission"]["preReadback"]["updatedAt"] = (
+            "2026-07-10T16:00:01Z"
+        )
+        attacked = module.seal_report(attacked)
+        with self.assertRaisesRegex(module.ContractError, "attestation claim"):
+            module.validate_v4_apply_report(attacked, record)
+
+        external_endpoint = (
+            f"/orgs/{module.ORGANIZATION}/rulesets/{record['ruleset']['rulesetId']}"
+        )
+        drifted = copy.deepcopy(api.gets[external_endpoint])
+        drifted["updated_at"] = "2026-07-10T16:00:01Z"
+        api.gets[external_endpoint] = drifted
+        replay_executor = self.executor(api)
+        replay_executor._verify_executor()
+        with self.assertRaisesRegex(module.ForgeError, "externalAdmission changed"):
+            replay_executor._v4_collector_state(
+                report,
+                record,
+                report["target"],
+                stage="during adversarial replay",
+            )
+
+    def test_v4_other_subject_drift_across_attestation_creation_is_rejected(self) -> None:
+        record, report, _artifact, api = collected_v4_barrier_fixture()
+        external_endpoint = (
+            f"/orgs/{module.ORGANIZATION}/rulesets/{record['ruleset']['rulesetId']}"
+        )
+        exact = copy.deepcopy(api.gets[external_endpoint])
+        drifted = copy.deepcopy(exact)
+        drifted["updated_at"] = "2026-07-10T16:00:01Z"
+        reads = iter([exact, drifted])
+        api.gets[external_endpoint] = lambda: next(reads)
+        with self.assertRaisesRegex(module.ForgeError, "across attestation creation"):
+            self.executor(api)._finalize_v4_report_attestation(report)
+
+    def test_v4_completed_barrier_ratchet_blocks_without_second_write_or_lock(self) -> None:
+        record, api = v4_barrier_fixture()
+        executor = self.executor(api)
+        first = executor.run("apply")
+        self.assertEqual(first["status"], "APPLIED_PENDING_EVIDENCE")
+        mutation_count = len(api.mutations)
+        lock_count = len(api.lock_mutations)
+        second = executor.run("apply")
+        self.assertEqual(second["status"], "BLOCKED")
+        self.assertEqual(
+            second["findings"],
+            ["BLOCKED_PENDING_TRANSITION_EVIDENCE:queueBarrier"],
+        )
+        self.assertEqual(len(api.mutations), mutation_count)
+        self.assertEqual(len(api.lock_mutations), lock_count)
+
+    def test_v4_completed_external_ratchet_blocks_without_second_write_or_lock(self) -> None:
+        _record, api, _barrier_artifact = v4_external_ratchet_fixture()
+        executor = module.RulesetExecutor(
+            api,
+            LOCAL_BYTES,
+            clock=lambda: EXTERNAL_V4_TIME,
+            nonce_factory=lambda: "f" * 64,
+            sleeper=lambda _seconds: None,
+        )
+        first = executor.run("apply")
+        self.assertEqual(first["status"], "APPLIED_PENDING_EVIDENCE")
+        mutation_count = len(api.mutations)
+        lock_count = len(api.lock_mutations)
+        second = executor.run("apply")
+        self.assertEqual(second["status"], "BLOCKED")
+        self.assertEqual(
+            second["findings"],
+            ["BLOCKED_PENDING_TRANSITION_EVIDENCE:externalAdmission"],
+        )
+        self.assertEqual(len(api.mutations), mutation_count)
+        self.assertEqual(len(api.lock_mutations), lock_count)
+
+    def test_v4_active_replay_missing_artifact_or_attestation_fails_before_write(self) -> None:
+        for attack in ["artifact", "attestation"]:
+            active, report, _artifact, api = v4_barrier_active_fixture()
+            if attack == "artifact":
+                del api.gets[
+                    module._content_endpoint(
+                        module.DOCTRINE_REPOSITORY_ID,
+                        module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH,
+                        ACTIVE_DOCTRINE_HEAD,
+                    )
+                ]
+            else:
+                api.git_refs.pop(report["activationAttestation"]["ref"])
+            with self.subTest(attack=attack), self.assertRaises(module.ForgeError):
+                self.executor(api).run("apply")
+            self.assertFalse(api.mutations)
+            self.assertFalse(api.lock_mutations)
+
+    def test_v4_external_activation_collects_legacy_transition_only_after_barrier_replay(self) -> None:
+        historical, report, artifact, _barrier_artifact, api = (
+            collected_v4_external_fixture()
+        )
+        self.assertEqual(report["status"], "APPLIED_PENDING_EVIDENCE")
+        self.assertEqual(
+            report["plannedMutation"]["subject"], "externalAdmission"
+        )
+        self.assertEqual(len(api.mutations), 1)
+        self.assertEqual(api.mutations[0][0], "PUT")
+        self.assertEqual(
+            module.validate_activation_artifact(artifact, historical), artifact
+        )
+        raw = canonical_file(artifact)
+        transition = module.activation_transition_from_artifact(
+            artifact,
+            artifact_raw=raw,
+            artifact_blob_sha=module.git_blob_sha(raw),
+            historical_record=historical,
+        )
+        self.assertEqual(transition["kind"], module.TRANSITION_KIND)
+        self.assertEqual(transition["schemaVersion"], 2)
+        self.assertEqual(
+            transition["executorReport"]["path"], module.ACTIVATION_EVIDENCE_PATH
+        )
+        self.assertNotIn("subjectRuleset", transition["mutation"])
+        self.assertNotIn("effectiveRulesReadback", transition)
+
+    def test_v4_final_active_replays_both_subject_artifacts_without_writes(self) -> None:
+        active, api = v4_final_active_fixture()
+        report = self.executor(api).run("apply")
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(
+            set(report["activationReadback"]),
+            {"queueBarrier", "externalAdmission"},
+        )
+        self.assertEqual(
+            report["activationReadback"]["externalAdmission"]["transitionDigest"],
+            module.canonical_digest(
+                active["activationEvidence"]["activationTransition"]
+            ),
+        )
+        self.assertFalse(api.mutations)
+        self.assertFalse(api.lock_mutations)
+
+    def test_v4_recovery_downgrades_external_then_barrier_even_if_active_proof_is_broken(self) -> None:
+        record, api = v4_final_active_fixture()
+        record["migration"]["phase"] = "recovery"
+        record["ruleset"]["enforcement"] = "evaluate"
+        record["activationEvidence"]["activationTransition"] = None
+        record["recovery"] = {
+            "reason": "Emergency enforcement downgrade after provider incident.",
+            "tracker": "https://github.com/SylphxAI/.github/issues/1",
+            "initiatedAt": "2026-07-11T21:06:00Z",
+        }
+        record["activationSequencing"]["externalActivationPrecondition"] = None
+        record["queueBarrier"]["activationEvidence"][
+            "activePassThroughCanary"
+        ] = None
+        record["queueBarrier"]["activationEvidence"][
+            "activeExternalFailureCanary"
+        ] = None
+        module.validate_v4_record(
+            record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+        )
+        external_id = record["ruleset"]["rulesetId"]
+        barrier_id = record["queueBarrier"]["ruleset"]["rulesetId"]
+        api.gets[f"/orgs/{module.ORGANIZATION}/rulesets/{external_id}"] = {
+            **module.expected_v4_ruleset(
+                record, "externalAdmission", enforcement="active"
+            ),
+            "id": external_id,
+            "source_type": "Organization",
+            "updated_at": "2026-07-11T21:05:00Z",
+        }
+        effective_endpoint = (
+            f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+        )
+        api.page_values[effective_endpoint] = [
+            {"id": barrier_id},
+            {"id": external_id},
+        ]
+        api.gets[
+            module._content_endpoint(
+                module.DOCTRINE_REPOSITORY_ID,
+                module.DOCTRINE_RECORD_PATH,
+                FINAL_DOCTRINE_HEAD,
+            )
+        ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(record))
+        api.gets.pop(
+            module._content_endpoint(
+                module.DOCTRINE_REPOSITORY_ID,
+                module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH,
+                FINAL_DOCTRINE_HEAD,
+            ),
+            None,
+        )
+        barrier_attestation_ref = record["queueBarrier"]["activationEvidence"][
+            "activationTransition"
+        ]["mutation"]["activationAttestation"]["ref"]
+        api.git_refs.pop(barrier_attestation_ref, None)
+        api.mutations.clear()
+        api.lock_mutations.clear()
+        executor = module.RulesetExecutor(
+            api,
+            LOCAL_BYTES,
+            clock=lambda: EXTERNAL_V4_TIME,
+            nonce_factory=lambda: "1" * 64,
+            sleeper=lambda _seconds: None,
+        )
+        external_report = executor.run("apply")
+        self.assertEqual(external_report["status"], "PASS")
+        self.assertEqual(
+            external_report["plannedMutation"]["subject"], "externalAdmission"
+        )
+        self.assertEqual(len(api.mutations), 1)
+        self.assertEqual(api.mutations[0][0], "PUT")
+        self.assertEqual(api.mutations[0][2]["enforcement"], "evaluate")
+        self.assertEqual(api.mutations[0][2]["bypass_actors"], [])
+
+        barrier_recovery = copy.deepcopy(record)
+        barrier = barrier_recovery["queueBarrier"]
+        barrier["migration"]["phase"] = "recovery"
+        barrier["ruleset"]["enforcement"] = "evaluate"
+        barrier["recovery"] = {
+            "reason": "Ordered barrier downgrade after external recovery.",
+            "tracker": "https://github.com/SylphxAI/.github/issues/1",
+            "initiatedAt": "2026-07-11T21:07:00Z",
+        }
+        barrier["activationEvidence"]["activationTransition"] = None
+        module.validate_v4_record(
+            barrier_recovery, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+        )
+        api.gets[
+            module._content_endpoint(
+                module.DOCTRINE_REPOSITORY_ID,
+                module.DOCTRINE_RECORD_PATH,
+                FINAL_DOCTRINE_HEAD,
+            )
+        ] = encoded(
+            module.DOCTRINE_RECORD_PATH, canonical_file(barrier_recovery)
+        )
+        api.page_values[effective_endpoint] = [{"id": barrier_id}]
+        api.mutations.clear()
+        api.lock_mutations.clear()
+        barrier_report = executor.run("apply")
+        self.assertEqual(barrier_report["status"], "PASS")
+        self.assertEqual(
+            barrier_report["plannedMutation"]["subject"], "queueBarrier"
+        )
+        self.assertEqual(len(api.mutations), 1)
+        self.assertEqual(api.mutations[0][0], "PUT")
+        self.assertEqual(api.mutations[0][2]["enforcement"], "evaluate")
+        self.assertEqual(api.mutations[0][2]["bypass_actors"], [])
+
+
+class V3CompatibilityTests(unittest.TestCase):
+    def executor(self, api: FakeAPI) -> module.RulesetExecutor:
+        return module.RulesetExecutor(
+            api,
+            LOCAL_BYTES,
+            clock=lambda: FIXED_TIME,
+            nonce_factory=lambda: "d" * 64,
+            sleeper=lambda _seconds: None,
+        )
+
+    def test_v3_ratchet_accepts_absent_precoverage_and_proves_active_postcoverage(self) -> None:
+        record, api = v3_active_fixture()
+        report = self.executor(api).run("apply")
+        self.assertEqual(report["schemaVersion"], 2)
+        self.assertEqual(report["status"], "APPLIED_PENDING_EVIDENCE")
+        self.assertEqual(
+            report["preReadback"]["effectiveRules"],
+            [{
+                "repositoryId": module.TARGET_REPOSITORY_ID,
+                "rulesetId": 321,
+                "rulesetPresent": False,
+            }],
+        )
+        self.assertEqual(
+            report["postReadback"]["effectiveRules"],
+            [{
+                "repositoryId": module.TARGET_REPOSITORY_ID,
+                "rulesetId": 321,
+                "rulesetPresent": True,
+            }],
+        )
+        evidence = record["activationEvidence"]["evaluateRuleSuiteReadback"]
+        self.assertEqual(report["activationReadback"]["evaluateRuleSuiteEvidence"], {
+            "ruleSuiteId": evidence["bindings"]["ruleSuiteId"],
+            "ruleSuitePushedAt": evidence["observedAt"],
+            "observationDigest": evidence["subjectDigest"],
+        })
+        self.assertNotIn("effectiveRulesDigest", report["activationReadback"])
+        self.assertEqual(module.validate_apply_report(report, record), report)
+
+        lock_claim = json.loads(
+            api.git_tags[report["applyLock"]["tagObjectSha"]]["message"]
+        )
+        self.assertEqual(lock_claim["schemaVersion"], 2)
+        attestation_claim = json.loads(
+            api.git_tags[
+                report["activationAttestation"]["tagObjectSha"]
+            ]["message"]
+        )
+        self.assertEqual(attestation_claim["schemaVersion"], 2)
+        self.assertEqual(attestation_claim["applyLock"]["claim"]["schemaVersion"], 2)
+
+    def test_v3_artifact_transition_and_attestation_authority_use_version_two(self) -> None:
+        record, report, artifact, _ = collected_v3_fixture()
+        self.assertEqual(artifact["schemaVersion"], 2)
+        self.assertEqual(artifact["applyReport"]["schemaVersion"], 2)
+        self.assertEqual(module.validate_activation_artifact(artifact), artifact)
+        raw = canonical_file(artifact)
+        transition = module.activation_transition_from_artifact(
+            artifact,
+            artifact_raw=raw,
+            artifact_blob_sha=module.git_blob_sha(raw),
+        )
+        self.assertEqual(transition["schemaVersion"], 2)
+        self.assertNotEqual(
+            transition["pre"]["effectiveRulesDigest"],
+            transition["post"]["effectiveRulesDigest"],
+        )
+        active = copy.deepcopy(record)
+        active["migration"]["phase"] = "active"
+        active["activationEvidence"]["activationTransition"] = transition
+        self.assertEqual(module.validate_record(active), active)
+        claim = module.activation_attestation_claim(report)
+        self.assertEqual(claim["schemaVersion"], 2)
+        self.assertEqual(claim["applyLock"]["claim"]["schemaVersion"], 2)
+
+    def test_v3_active_state_replays_sealed_authority_without_mutation(self) -> None:
+        _, _, artifact, api = sealed_active_v3_fixture()
+        before = (len(api.mutations), len(api.lock_mutations))
+        report = self.executor(api).run("apply")
+        self.assertEqual(report["schemaVersion"], 2)
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(
+            report["activationReadback"]["artifactEvidenceDigest"],
+            artifact["evidenceDigest"],
+        )
+        self.assertEqual(before, (len(api.mutations), len(api.lock_mutations)))
+
+    def test_v3_dedicated_synthetic_suite_cannot_borrow_canary_identity(self) -> None:
+        for member, source_field, message in [
+            ("headSha", "mergeGroupCanary", "dedicated synthetic head"),
+            ("ruleSuiteId", "pullRequestCanary", "dedicated rule suite"),
+        ]:
+            with self.subTest(member=member):
+                record, _ = v3_active_fixture()
+                record["activationEvidence"]["evaluateRuleSuiteReadback"]["bindings"][member] = (
+                    record["activationEvidence"][source_field]["bindings"][member]
+                )
+                with self.assertRaisesRegex(module.ContractError, message):
+                    module.validate_record(record)
+
+    def test_v3_rule_suite_readback_fails_closed_on_every_bound_dimension(self) -> None:
+        def set_suite(field: str, value: object):
+            return lambda _record, suite: suite.__setitem__(field, value)
+
+        def set_evaluation(field: str, value: object):
+            return lambda _record, suite: suite["rule_evaluations"][0].__setitem__(field, value)
+
+        def set_source(field: str, value: object):
+            return lambda _record, suite: suite["rule_evaluations"][0]["rule_source"].__setitem__(field, value)
+
+        cases = {
+            "suite-id": set_suite("id", 999),
+            "repository-id": set_suite("repository_id", 999),
+            "synthetic-head": set_suite("after_sha", "0" * 40),
+            "default-ref": set_suite("ref", "refs/heads/foreign"),
+            "aggregate-result": set_suite("result", "fail"),
+            "pushed-at": set_suite("pushed_at", "2026-07-11T21:04:01Z"),
+            "source-id": set_source("id", 999),
+            "source-type": set_source("type", "Organization"),
+            "source-name": set_source("name", "foreign"),
+            "rule-type": set_evaluation("rule_type", "pull_request"),
+            "enforcement": set_evaluation("enforcement", "active"),
+            "verdict": set_evaluation("result", "fail"),
+            "details-digest": set_evaluation("details", "tampered"),
+            "duplicate-source": lambda _record, suite: suite["rule_evaluations"].append(
+                copy.deepcopy(suite["rule_evaluations"][0])
+            ),
+            "subject-digest": lambda record, _suite: record["activationEvidence"][
+                "evaluateRuleSuiteReadback"
+            ].__setitem__("subjectDigest", "sha256:" + "0" * 64),
+            "locator": lambda record, _suite: record["activationEvidence"][
+                "evaluateRuleSuiteReadback"
+            ].__setitem__(
+                "locator",
+                "https://github.com/SylphxAI/foreign/rules/rule-suites/204",
+            ),
+        }
+        endpoint = (
+            f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets/rule-suites/204"
+        )
+        doctrine_endpoint = module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            DOCTRINE_HEAD,
+        )
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                record, api = v3_active_fixture()
+                suite = api.gets[endpoint]
+                assert isinstance(suite, dict)
+                mutate(record, suite)
+                api.gets[doctrine_endpoint] = encoded(
+                    module.DOCTRINE_RECORD_PATH,
+                    canonical_file(record),
+                )
+                with self.assertRaises((module.ContractError, module.ForgeError)):
+                    self.executor(api).run("dry-run")
+                self.assertFalse(api.mutations)
+                self.assertFalse(api.lock_mutations)
+
+    def test_v2_authority_versions_and_effective_coverage_remain_immutable(self) -> None:
+        record, api = active_fixture()
+        report = self.executor(api).run("apply")
+        self.assertEqual(report["schemaVersion"], 1)
+        self.assertEqual(
+            json.loads(api.git_tags[report["applyLock"]["tagObjectSha"]]["message"])[
+                "schemaVersion"
+            ],
+            1,
+        )
+        self.assertEqual(module.activation_attestation_claim(report)["schemaVersion"], 1)
+        self.assertEqual(module.validate_apply_report(report, record), report)
+
+        replay = copy.deepcopy(report)
+        replay["preReadback"]["effectiveRules"][0]["rulesetPresent"] = False
+        replay["preReadback"]["effectiveRulesDigest"] = module.canonical_digest(
+            replay["preReadback"]["effectiveRules"]
+        )
+        replay["activationReadback"]["effectiveRulesDigest"] = replay[
+            "preReadback"
+        ]["effectiveRulesDigest"]
+        replay = module.seal_report(replay)
+        with self.assertRaisesRegex(module.ContractError, "active target coverage"):
+            module.validate_apply_report(replay, record)
 
 
 class TransportTests(unittest.TestCase):

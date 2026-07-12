@@ -34,6 +34,7 @@
       ".github/ISSUE_TEMPLATE/",
       "policies/",
       "scripts/public-skills-admission.mjs",
+      "scripts/public-skills-merge-queue-barrier.mjs",
       "scripts/public-skills-ruleset-executor.py",
       "templates/",
       "profile/",
@@ -108,10 +109,22 @@
       "description": "Target-scoped organization required workflow that validates the public skills candidate from source-owned policy bytes."
     },
     {
+      "type": "workflow",
+      "name": "Public skills merge-queue barrier",
+      "path": ".github/workflows/public-skills-merge-queue-barrier.yml",
+      "description": "Target-scoped read-only organization required workflow that passes only for exact external success plus confirmed active/effective policy and leaves queue removal to GitHub."
+    },
+    {
       "type": "other",
       "name": "Public skills external admission policy",
       "path": "policies/public-skills-admission.json",
       "description": "Exact repository identity, approved commit/tree/parent and ref graph, dynamic event-HEAD, eight-skill, provenance, content-boundary, and full-tree digest contract."
+    },
+    {
+      "type": "other",
+      "name": "Public skills merge-queue barrier runtime policy",
+      "path": "policies/public-skills-merge-queue-barrier.json",
+      "description": "Exact source, target, guarded-ruleset, workflow-check, zero-bypass barrier and bounded polling invariants for safe merge-queue activation."
     },
     {
       "type": "other",
@@ -127,6 +140,12 @@
     },
     {
       "type": "cli",
+      "name": "Public skills merge-queue barrier controller",
+      "path": "scripts/public-skills-merge-queue-barrier.mjs",
+      "description": "Source-owned fixed-host read-only controller that observes the exact external check/ruleset and fails every merge group that lacks both required predicates."
+    },
+    {
+      "type": "cli",
       "name": "Public skills organization-ruleset executor",
       "path": "scripts/public-skills-ruleset-executor.py",
       "description": "Protected stdlib-only executor that consumes canonical Doctrine-main data, reconciles the required-workflow rule under an authorization-bound lock, creates durable provider attestations, and collects privacy-safe transition evidence."
@@ -136,6 +155,12 @@
       "name": "Public skills external admission specification",
       "path": "docs/specs/public-skills-external-admission.md",
       "description": "Required-workflow identity, trust boundary, scan mechanics, evidence, and source-first ratchet contract."
+    },
+    {
+      "type": "docs",
+      "name": "Public skills merge-queue barrier specification",
+      "path": "docs/specs/public-skills-merge-queue-barrier.md",
+      "description": "Required barrier identity, evaluate-to-active lifecycle, read-only conjunctive gate, provider-owned rejection/dequeue evidence, recovery, and source-first rollout contract."
     },
     {
       "type": "docs",
@@ -173,6 +198,11 @@
       "purpose": "Verify source ownership, immutable workflow wiring, target selection, policy shape, and adversarial external-admission behavior when a candidate checkout is available."
     },
     {
+      "name": "test:public-skills-merge-queue-barrier",
+      "command": "node --test tests/public-skills-merge-queue-barrier.test.mjs",
+      "purpose": "Verify target/event/provider identity, evaluate-to-active lifecycle, exact conjunctive pass, conservative failure, zero mutation surface and GitHub-owned queue semantics without network mutation."
+    },
+    {
       "name": "test:public-skills-ruleset-executor",
       "command": "python3 -B tests/test_public_skills_ruleset_executor.py",
       "purpose": "Verify fixed identities, independent Doctrine parsing, live ratchet canaries, authorization-bound fencing, durable immutable attestations, privacy-safe collection, retention-independent active readback, and canonical evidence without network access."
@@ -190,6 +220,6 @@
   ],
   "adoption": {
     "status": "adopted",
-    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth. Public-skills external admission becomes active only after the independently protected executor reconstructs ratchet evidence, completes exact post/effective readback, creates the immutable provider attestation, and seals the privacy-safe Doctrine transition artifact."
+    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth. The barrier organization rule is not yet Git-owned: no manual console or OAuth/API writer is authorized, and launch remains blocked until a canonical Doctrine sibling contract is reconciled by the existing protected executor and fixed lock with exact provider readback. The read-only barrier must prove a controlled evaluate-canary merge, active required failure with GitHub-owned rejection/dequeue, then final active/active pass. Public-skills external admission becomes active only after the independently protected executor reconstructs ratchet evidence, completes exact post/effective readback, creates the immutable provider attestation, and seals the privacy-safe Doctrine transition artifact."
   }
 }
