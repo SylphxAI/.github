@@ -2059,7 +2059,11 @@ class RulesetExecutor:
                     raise ForgeError("workflow source is not UTF-8") from exc
                 expected_selector = f"if: ${{{{ github.repository_id == {TARGET_REPOSITORY_ID} }}}}"
                 stripped_lines = [line.strip() for line in text.splitlines()]
-                selector_lines = [line for line in stripped_lines if "github.repository_id" in line]
+                selector_lines = [
+                    line
+                    for line in stripped_lines
+                    if line.startswith("if:") and "github.repository_id" in line
+                ]
                 if (
                     stripped_lines.count(f"name: {WORKFLOW_NAME}") != 1
                     or stripped_lines.count(f"name: {REQUIRED_CHECK}") != 1

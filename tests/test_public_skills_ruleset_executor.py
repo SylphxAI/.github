@@ -1184,6 +1184,19 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaisesRegex(module.ForgeError, "workflow source"):
             self.executor(api).run("dry-run")
 
+    def test_current_workflow_identity_probe_allows_runtime_repository_id_inputs(self) -> None:
+        record = base_record()
+        api = base_api(record)
+        path = module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.WORKFLOW_PATH, SOURCE_SHA)
+        raw = (ROOT / module.WORKFLOW_PATH).read_bytes()
+        api.gets[path] = encoded(module.WORKFLOW_PATH, raw)
+
+        report = self.executor(api).run("dry-run")
+
+        self.assertEqual(report["status"], "DRIFT")
+        self.assertEqual(report["plannedMutation"]["action"], "create")
+        self.assertFalse(report["mutation"]["attempted"])
+
     def test_foreign_target_default_branch_blocks(self) -> None:
         record = base_record()
         api = base_api(record)
