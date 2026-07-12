@@ -10,6 +10,7 @@ const MAX_GIT_OUTPUT_BYTES = 128 * 1024 * 1024;
 const REQUIRED_POLICY_KEYS = [
   "schemaVersion",
   "kind",
+  "bundleDigestAlgorithm",
   "source",
   "target",
   "history",
@@ -95,6 +96,11 @@ function validatePolicy(policy) {
     policy.kind === "sylphx-public-skills-external-admission",
     "POLICY_SHAPE",
     "policy.kind is not supported.",
+  );
+  requireCondition(
+    policy.bundleDigestAlgorithm === "git-tree-manifest-sha256-v1",
+    "POLICY_SHAPE",
+    "policy.bundleDigestAlgorithm is not supported.",
   );
 
   requireExactKeys(policy.source, ["repository", "repositoryId", "workflowPath", "validatorPath", "policyPath"], "policy.source");
@@ -223,9 +229,11 @@ function validatePolicy(policy) {
   requireCondition(JSON.stringify(skillIds) === JSON.stringify(sorted(new Set(skillIds))), "POLICY_SHAPE", "Skill IDs must be sorted and unique.");
   let originalCount = 0;
   for (const skill of policy.skills) {
-    requireExactKeys(skill, ["id", "provenanceClass", "sourceCommit", "sourcePath"], `skill ${skill.id ?? "unknown"}`);
+    requireExactKeys(skill, ["id", "provenanceClass", "sourceCommit", "sourcePath", "targetFileCount", "targetBundleDigest"], `skill ${skill.id ?? "unknown"}`);
     requireCondition(/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skill.id), "POLICY_SHAPE", `Skill ID ${skill.id} is invalid.`);
     requireCondition(skill.sourcePath === `skills/${skill.id}`, "POLICY_SHAPE", `Skill ${skill.id} has the wrong source path.`);
+    requireCondition(Number.isSafeInteger(skill.targetFileCount) && skill.targetFileCount > 0, "POLICY_SHAPE", `Skill ${skill.id} targetFileCount is invalid.`);
+    requireCondition(/^[0-9a-f]{64}$/.test(skill.targetBundleDigest), "POLICY_SHAPE", `Skill ${skill.id} targetBundleDigest is invalid.`);
     if (skill.provenanceClass === "public-original") {
       originalCount += 1;
       requireCondition(skill.sourceCommit === null, "POLICY_SHAPE", `Public-original skill ${skill.id} must not claim an import commit.`);
@@ -280,6 +288,26 @@ function git(candidateRoot, args, { text = true } = {}) {
     const stderr = Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : String(error.stderr ?? "");
     reject("GIT_FAILURE", `Git inspection failed for ${args[0]}: ${stderr.trim() || error.message}`);
   }
+}
+
+function transferBundleAtCommit(candidateRoot, head, sourcePath) {
+  const prefix = `${sourcePath}/`;
+  const raw = git(candidateRoot, ["ls-tree", "-rz", head, "--", `:(literal)${sourcePath}`], { text: false });
+  const entries = raw.toString("utf8").split("\0").filter(Boolean).map((entry) => {
+    const match = /^([0-7]{6}) ([a-z]+) ([0-9a-f]+)\t([\s\S]+)$/.exec(entry);
+    requireCondition(match !== null, "BUNDLE_CONTRACT", `Cannot parse Git tree entry for ${sourcePath}.`);
+    const [, mode, type, oid, file] = match;
+    requireCondition(file.startsWith(prefix), "BUNDLE_CONTRACT", `Git path escaped approved source ${sourcePath}.`);
+    requireCondition(type === "blob" && ["100644", "100755"].includes(mode), "BUNDLE_CONTRACT", `Unsupported Git object ${mode} ${type} at ${file}.`);
+    return {
+      path: file.slice(prefix.length),
+      mode,
+      type,
+      sha256: sha256(git(candidateRoot, ["cat-file", "blob", oid], { text: false })),
+    };
+  }).sort((left, right) => Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8")));
+  requireCondition(entries.length > 0, "BUNDLE_CONTRACT", `Skill source ${sourcePath} is empty.`);
+  return { fileCount: entries.length, bundleDigest: sha256(Buffer.from(JSON.stringify(entries))) };
 }
 
 function parseTree(candidateRoot, commit) {
@@ -374,6 +402,10 @@ function validateAdmissions(candidateRoot, head, policy) {
   requireCondition(JSON.stringify(catalog.skills.map((skill) => skill.name)) === JSON.stringify(expectedIds), "CATALOG_CONTRACT", "Catalog must contain the exact ordered eight-skill allowlist.");
 
   for (const id of expectedIds) {
+    const expected = expectedById.get(id);
+    const transfer = transferBundleAtCommit(candidateRoot, head, `skills/${id}`);
+    requireCondition(transfer.fileCount === expected.targetFileCount, "BUNDLE_CONTRACT", `Skill ${id} target file count differs from source policy.`);
+    requireCondition(transfer.bundleDigest === expected.targetBundleDigest, "BUNDLE_CONTRACT", `Skill ${id} target bundle digest differs from source policy.`);
     const bytes = git(candidateRoot, ["show", `${head}:skills/${id}/SKILL.md`], { text: false });
     const text = decodeText(bytes, `${head}:skills/${id}/SKILL.md`, policy);
     const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(text);

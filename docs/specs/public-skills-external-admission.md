@@ -176,7 +176,18 @@ For all reachable refs plus detached HEAD in the checkout it must verify:
     file; and
 12. admissions, catalog, physical skill directories, eval files, and SKILL.md
     names agree on the exact eight IDs, MIT ownership, candidate channel,
-    unverified state, and approved provenance.
+    unverified state, and approved provenance; and
+13. each skill's Git-tree manifest is recomputed as
+    `git-tree-manifest-sha256-v1` and must match the source-owned file count and
+    transfer-bundle digest. The manifest is a compact, whitespace-free UTF-8
+    JSON array sorted by relative-path UTF-8 bytes. Every element has the exact
+    property order `{path,mode,type,sha256}`: `path` is relative to the skill
+    root, `mode` is `100644` or `100755`, `type` is `blob`, and `sha256` is the
+    lowercase 64-hex SHA-256 of the raw blob bytes with no prefix. The bundle
+    digest is the lowercase 64-hex SHA-256 of those serialized manifest bytes.
+    This recursive projection lets downstream private authorization cross-bind
+    exact public package bytes to the independently protected source policy
+    without granting cross-private repository access.
 
 A benign text commit followed by a restore to the approved HEAD tree is still
 rejected because its commit/tree graph is not source-approved. Empty commits

@@ -103,6 +103,7 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
     validatorPath: "scripts/public-skills-admission.mjs",
     policyPath: "policies/public-skills-admission.json",
   });
+  assert.equal(policy.bundleDigestAlgorithm, "git-tree-manifest-sha256-v1");
   assert.equal(policy.target.repositoryId, 1297840366);
   assert.equal(policy.target.repositoryNodeId, "R_kgDOTVt47g");
   assert.deepEqual(policy.target.allowedRepositories, ["SylphxAI/skills", "SylphxAI/skills-public-cleanroom"]);
@@ -128,7 +129,7 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
       "source-to-skill-distiller",
     ],
   );
-  assert.equal(jsonDigest(policy.skills), "4fa08969280ed584cad8b77345ef65ed0b195bd6606af2a54efd61ba51bdaf22");
+  assert.equal(jsonDigest(policy.skills), "9c3d84efdb8065027da048362bc240d8f9fb025c8e290911dbc6101f16f976b7");
   assert.deepEqual(
     Object.fromEntries([...new Set(policy.skills.map((skill) => skill.provenanceClass))].sort().map((name) => [name, policy.skills.filter((skill) => skill.provenanceClass === name).length])),
     {
@@ -139,6 +140,22 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
     },
   );
   assert.ok(policy.skills.every((skill) => skill.provenanceClass === "public-original" ? skill.sourceCommit === null : skill.sourceCommit === "4350900a59faeee7903937a52c24909aaba538ca"));
+  assert.deepEqual(
+    Object.fromEntries(policy.skills.map((skill) => [skill.id, {
+      fileCount: skill.targetFileCount,
+      bundleDigest: skill.targetBundleDigest,
+    }])),
+    {
+      "customer-support-operations": { fileCount: 3, bundleDigest: "83177e56018859709cb6625652ed3621c0e90a8ae4f1eb3dab29e2c57bf6a271" },
+      "decision-memo-writer": { fileCount: 3, bundleDigest: "03362bf5450680e6222ce2bce0999df47047d1b527191c357ee59ba1a3547dc8" },
+      "fleet-migration-factory": { fileCount: 5, bundleDigest: "7a20138ba7be3f94e66c7388d88d1e58baf18a5fad6e8676af4386f0f5c70cb8" },
+      "interface-craft": { fileCount: 3, bundleDigest: "395d8ee12dafff939ca48463f5c2d5a1fe6fb1c8a63ca98008e2494f518173c3" },
+      "market-research-synthesis": { fileCount: 3, bundleDigest: "fdd52260add450d6c04ceb4fdeb7cca2ac0947a5bfdfa686ec7fef8d0c35d7aa" },
+      "public-skill-repository-governance": { fileCount: 3, bundleDigest: "6f1612a8548cfbef01d36c202de431ffb3af3f8d04b8934181a4846762517023" },
+      "skill-eval-designer": { fileCount: 3, bundleDigest: "46a7fc4b918b17992b3ca1096672eb6de087df2c3974d730e2476bbab63236ac" },
+      "source-to-skill-distiller": { fileCount: 3, bundleDigest: "737c9988d8019a5badd252664f054937b8ca2dbbf2ebf6eabc0ff0a9dd9fd0b9" },
+    },
+  );
   assert.deepEqual(policy.content.forbiddenLiterals, ["DO-NOT-PUBLISH", "INTERNAL-ONLY", "PRIVATE-BOUNDARY-MARKER"]);
   assert.equal(Object.keys(policy.expectedFiles).length, 73);
   assert.equal(jsonDigest(policy.expectedFiles), "e94342916c55138f9fc15ceaadace9d6c6dff080a733fafe0067140dde3ff701");
@@ -184,6 +201,20 @@ test("policy drift cannot silently change the eight-skill contract or a pinned d
   expectAdmissionError(
     () => validateCandidate({ candidateRoot: candidateSource, policy: wrongDigestPolicy, runtimeIdentity: runtimeIdentity(candidateSource) }),
     "FILE_DIGEST",
+  );
+
+  const wrongTransferPolicy = structuredClone(policy);
+  wrongTransferPolicy.skills[0].targetBundleDigest = "0".repeat(64);
+  expectAdmissionError(
+    () => validateCandidate({ candidateRoot: candidateSource, policy: wrongTransferPolicy, runtimeIdentity: runtimeIdentity(candidateSource) }),
+    "BUNDLE_CONTRACT",
+  );
+
+  const wrongTransferCountPolicy = structuredClone(policy);
+  wrongTransferCountPolicy.skills[0].targetFileCount += 1;
+  expectAdmissionError(
+    () => validateCandidate({ candidateRoot: candidateSource, policy: wrongTransferCountPolicy, runtimeIdentity: runtimeIdentity(candidateSource) }),
+    "BUNDLE_CONTRACT",
   );
 });
 

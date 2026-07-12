@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "sylphx-public-skills-external-admission",
+  "bundleDigestAlgorithm": "git-tree-manifest-sha256-v1",
   "source": {
     "repository": "SylphxAI/.github",
     "repositoryId": 1091169653,
@@ -192,49 +193,65 @@
       "id": "customer-support-operations",
       "provenanceClass": "historical-public-derived",
       "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
-      "sourcePath": "skills/customer-support-operations"
+      "sourcePath": "skills/customer-support-operations",
+      "targetFileCount": 3,
+      "targetBundleDigest": "83177e56018859709cb6625652ed3621c0e90a8ae4f1eb3dab29e2c57bf6a271"
     },
     {
       "id": "decision-memo-writer",
       "provenanceClass": "historical-public-import",
       "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
-      "sourcePath": "skills/decision-memo-writer"
+      "sourcePath": "skills/decision-memo-writer",
+      "targetFileCount": 3,
+      "targetBundleDigest": "03362bf5450680e6222ce2bce0999df47047d1b527191c357ee59ba1a3547dc8"
     },
     {
       "id": "fleet-migration-factory",
       "provenanceClass": "historical-public-import",
       "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
-      "sourcePath": "skills/fleet-migration-factory"
+      "sourcePath": "skills/fleet-migration-factory",
+      "targetFileCount": 5,
+      "targetBundleDigest": "7a20138ba7be3f94e66c7388d88d1e58baf18a5fad6e8676af4386f0f5c70cb8"
     },
     {
       "id": "interface-craft",
       "provenanceClass": "historical-public-import",
       "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
-      "sourcePath": "skills/interface-craft"
+      "sourcePath": "skills/interface-craft",
+      "targetFileCount": 3,
+      "targetBundleDigest": "395d8ee12dafff939ca48463f5c2d5a1fe6fb1c8a63ca98008e2494f518173c3"
     },
     {
       "id": "market-research-synthesis",
       "provenanceClass": "historical-public-import",
       "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
-      "sourcePath": "skills/market-research-synthesis"
+      "sourcePath": "skills/market-research-synthesis",
+      "targetFileCount": 3,
+      "targetBundleDigest": "fdd52260add450d6c04ceb4fdeb7cca2ac0947a5bfdfa686ec7fef8d0c35d7aa"
     },
     {
       "id": "public-skill-repository-governance",
       "provenanceClass": "public-original",
       "sourceCommit": null,
-      "sourcePath": "skills/public-skill-repository-governance"
+      "sourcePath": "skills/public-skill-repository-governance",
+      "targetFileCount": 3,
+      "targetBundleDigest": "6f1612a8548cfbef01d36c202de431ffb3af3f8d04b8934181a4846762517023"
     },
     {
       "id": "skill-eval-designer",
       "provenanceClass": "public-declassified-derivative",
       "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
-      "sourcePath": "skills/skill-eval-designer"
+      "sourcePath": "skills/skill-eval-designer",
+      "targetFileCount": 3,
+      "targetBundleDigest": "46a7fc4b918b17992b3ca1096672eb6de087df2c3974d730e2476bbab63236ac"
     },
     {
       "id": "source-to-skill-distiller",
       "provenanceClass": "historical-public-derived",
       "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
-      "sourcePath": "skills/source-to-skill-distiller"
+      "sourcePath": "skills/source-to-skill-distiller",
+      "targetFileCount": 3,
+      "targetBundleDigest": "737c9988d8019a5badd252664f054937b8ca2dbbf2ebf6eabc0ff0a9dd9fd0b9"
     }
   ],
   "expectedFiles": {
