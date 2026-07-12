@@ -1644,6 +1644,23 @@ class ActivationEvidenceTests(unittest.TestCase):
                 self.assertFalse(api.mutations)
                 self.assertFalse(api.lock_mutations)
 
+    def test_attestation_ruleset_rule_order_is_canonicalized_without_weakening_membership(self) -> None:
+        record, api = active_fixture()
+        organization_endpoint = f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"
+        actor_endpoint = (
+            f"/repos/{module.EXECUTOR_REPOSITORY}/rulesets/"
+            f"{ATTESTATION_RULESET_ID}?includes_parents=true"
+        )
+        api.gets[organization_endpoint]["rules"].reverse()
+        api.gets[actor_endpoint]["rules"].reverse()
+        report = self.executor(api).run("apply")
+        self.assertEqual(report["status"], "APPLIED_PENDING_EVIDENCE")
+        self.assertEqual(
+            [item["type"] for item in report["attestationRuleset"]["normalized"]["rules"]],
+            ["deletion", "non_fast_forward", "update"],
+        )
+        self.assertEqual(module.validate_apply_report(report, record), report)
+
     def test_attestation_ruleset_drift_in_final_under_lock_guard_blocks_activation_write(self) -> None:
         _, api = active_fixture()
         endpoint = f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"

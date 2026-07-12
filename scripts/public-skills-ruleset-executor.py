@@ -1159,7 +1159,7 @@ def expected_attestation_ruleset(policy: dict[str, Any]) -> dict[str, Any]:
                 "exclude": copy.deepcopy(desired["refExclude"]),
             },
         },
-        "rules": [{"type": rule_type} for rule_type in desired["rules"]],
+        "rules": [{"type": rule_type} for rule_type in sorted(desired["rules"])],
     }
 
 
@@ -1187,6 +1187,7 @@ def normalize_attestation_ruleset(
         if not isinstance(item, dict) or set(item) != {"type"} or not isinstance(item["type"], str):
             raise ForgeError(f"attestation ruleset rule {index} differs")
         normalized_rules.append({"type": item["type"]})
+    normalized_rules.sort(key=lambda item: item["type"])
     observed_actor_bypass = value.get("current_user_can_bypass")
     actor_bypass = observed_actor_bypass if actor_bypass is None else actor_bypass
     if actor_bypass != "never" or observed_actor_bypass not in {None, actor_bypass}:
