@@ -64,7 +64,7 @@ def live_attestation_ruleset() -> dict:
         "id": ATTESTATION_RULESET_ID,
         "source_type": "Organization",
         "source": module.ORGANIZATION,
-        "current_user_can_bypass": False,
+        "current_user_can_bypass": "never",
     }
 
 
@@ -325,7 +325,13 @@ def base_api(record: dict, *, live: dict | None = None, effective: bool = True) 
     if live is not None:
         ruleset_summaries.insert(0, {"id": live["id"], "name": live["name"]})
     api.page_values[f"/orgs/{module.ORGANIZATION}/rulesets"] = ruleset_summaries
-    api.gets[f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"] = live_attestation_ruleset()
+    attestation_ruleset = live_attestation_ruleset()
+    organization_attestation_ruleset = copy.deepcopy(attestation_ruleset)
+    organization_attestation_ruleset.pop("current_user_can_bypass")
+    api.gets[f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"] = organization_attestation_ruleset
+    api.gets[
+        f"/repos/{module.EXECUTOR_REPOSITORY}/rulesets/{ATTESTATION_RULESET_ID}?includes_parents=true"
+    ] = copy.deepcopy(attestation_ruleset)
     if live is not None:
         ruleset_id = live["id"]
         api.gets[f"/orgs/{module.ORGANIZATION}/rulesets/{ruleset_id}"] = live
@@ -859,6 +865,11 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(report["applyLock"]["acquireOutcome"], "acquired")
         self.assertEqual(report["applyLock"]["releaseOutcome"], "released")
         self.assertEqual(report["applyLock"]["finalRefAbsentAt"], "2026-07-11T22:00:00Z")
+        lock_claim = json.loads(api.git_tags[report["applyLock"]["tagObjectSha"]]["message"])
+        self.assertEqual(
+            lock_claim["authorization"]["attestationRuleset"],
+            report["attestationRuleset"],
+        )
         self.assertNotIn(module.APPLY_LOCK_REF, api.git_refs)
 
     def test_apply_lock_orders_authority_before_doctrine_and_holds_through_post_readback(self) -> None:
@@ -871,8 +882,8 @@ class ExecutionTests(unittest.TestCase):
             for index, event in enumerate(api.events)
             if event == ("GET", f"/repositories/{module.DOCTRINE_REPOSITORY_ID}")
         ]
-        self.assertEqual(len(doctrine_reads), 3)
-        phase_probe, doctrine_read, finalizer_read = doctrine_reads
+        self.assertEqual(len(doctrine_reads), 4)
+        phase_probe, doctrine_read, finalizer_pre_read, finalizer_post_read = doctrine_reads
         ruleset_put = api.events.index(("PUT", f"/orgs/{module.ORGANIZATION}/rulesets/321"))
         release = api.events.index(("DELETE", module.APPLY_LOCK_REF_DELETE_ENDPOINT))
         post_readback = max(
@@ -888,7 +899,8 @@ class ExecutionTests(unittest.TestCase):
         self.assertLess(doctrine_read, ruleset_put)
         self.assertLess(ruleset_put, post_readback)
         self.assertLess(post_readback, release)
-        self.assertLess(release, finalizer_read)
+        self.assertLess(release, finalizer_pre_read)
+        self.assertLess(finalizer_pre_read, finalizer_post_read)
 
     def test_two_logical_executors_contend_with_distinct_fencing_tokens(self) -> None:
         record, api = active_fixture()
@@ -1375,6 +1387,23 @@ class ActivationEvidenceTests(unittest.TestCase):
             report["mutation"]["requestId"],
         )
 
+    def test_collector_rechecks_live_state_after_audit_before_sealing(self) -> None:
+        _, report, api = self.pending_fixture()
+        live_endpoint = f"/orgs/{module.ORGANIZATION}/rulesets/{report['mutation']['rulesetId']}"
+
+        def drift_during_audit() -> list:
+            drifted = copy.deepcopy(api.gets[live_endpoint])
+            drifted["enforcement"] = "evaluate"
+            api.gets[live_endpoint] = drifted
+            return [provider_audit_event(report)]
+
+        api.gets[module._audit_endpoint(1)] = drift_during_audit
+        with self.assertRaisesRegex(
+            module.ForgeError,
+            "live ruleset changed immediately before activation artifact sealing",
+        ):
+            self.collect(self.executor(api), report)
+
     def test_collector_rejects_multiple_or_foreign_exact_request_events(self) -> None:
         for events, message in [
             (
@@ -1426,7 +1455,7 @@ class ActivationEvidenceTests(unittest.TestCase):
         self.assertEqual(before, (len(api.mutations), len(api.lock_mutations)))
 
     def test_active_phase_survives_historical_actions_and_negative_fixture_retention_expiry(self) -> None:
-        _, _, artifact, api = sealed_active_fixture()
+        _, report, artifact, api = sealed_active_fixture()
         expired_get_markers = (
             "/actions/runs/",
             "/rulesets/rule-suites/",
@@ -1443,6 +1472,8 @@ class ActivationEvidenceTests(unittest.TestCase):
         for endpoint in list(api.page_values):
             if "/pulls/77/files" in endpoint:
                 del api.page_values[endpoint]
+        expired_lock_tag_sha = report["applyLock"]["tagObjectSha"]
+        del api.git_tags[expired_lock_tag_sha]
         api.get_calls.clear()
         api.page_calls.clear()
         before = (len(api.mutations), len(api.lock_mutations))
@@ -1457,6 +1488,10 @@ class ActivationEvidenceTests(unittest.TestCase):
             any(marker in endpoint for marker in expired_get_markers)
             for endpoint in api.get_calls
         ))
+        self.assertNotIn(
+            f"{module.APPLY_LOCK_TAGS_ENDPOINT}/{expired_lock_tag_sha}",
+            api.get_calls,
+        )
 
     def test_historical_workflow_summary_cross_binding_rejects_resealed_replay(self) -> None:
         historical, report, _, _ = collected_fixture()
@@ -1591,8 +1626,8 @@ class ActivationEvidenceTests(unittest.TestCase):
                 f"/orgs/{module.ORGANIZATION}/rulesets"
             ].pop(),
             "bypass": lambda api: api.gets[
-                f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"
-            ].__setitem__("current_user_can_bypass", True),
+                f"/repos/{module.EXECUTOR_REPOSITORY}/rulesets/{ATTESTATION_RULESET_ID}?includes_parents=true"
+            ].__setitem__("current_user_can_bypass", "always"),
             "creation-rule": lambda api: api.gets[
                 f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"
             ]["rules"].append({"type": "creation"}),
@@ -1608,6 +1643,48 @@ class ActivationEvidenceTests(unittest.TestCase):
                     self.executor(api).run("apply")
                 self.assertFalse(api.mutations)
                 self.assertFalse(api.lock_mutations)
+
+    def test_attestation_ruleset_drift_in_final_under_lock_guard_blocks_activation_write(self) -> None:
+        _, api = active_fixture()
+        endpoint = f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"
+        stable = copy.deepcopy(api.gets[endpoint])
+        drifted = copy.deepcopy(stable)
+        drifted["enforcement"] = "evaluate"
+        reads = 0
+
+        def read_attestation_ruleset() -> dict:
+            nonlocal reads
+            reads += 1
+            return drifted if reads == 3 else stable
+
+        api.gets[endpoint] = read_attestation_ruleset
+        with self.assertRaises(module.ForgeError):
+            self.executor(api).run("apply")
+        self.assertEqual(reads, 3)
+        self.assertFalse(api.mutations)
+
+    def test_attestation_ruleset_drift_after_ref_creation_cannot_report_evidence_ready(self) -> None:
+        _, api = active_fixture()
+        original = api.post_created
+        ruleset_endpoint = f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"
+
+        def drift_after_attestation_ref(endpoint: str, payload: dict) -> dict:
+            response = original(endpoint, payload)
+            if (
+                endpoint == module.APPLY_LOCK_REFS_ENDPOINT
+                and payload.get("ref", "").startswith(module.ATTESTATION_REF_PREFIX)
+            ):
+                drifted = copy.deepcopy(api.gets[ruleset_endpoint])
+                drifted["enforcement"] = "evaluate"
+                api.gets[ruleset_endpoint] = drifted
+            return response
+
+        api.post_created = drift_after_attestation_ref  # type: ignore[method-assign]
+        report = self.executor(api).run("apply")
+        self.assertEqual(report["status"], "APPLIED_PENDING_ATTESTATION")
+        self.assertIsNone(report["activationAttestation"])
+        self.assertEqual(len(api.mutations), 1)
+        self.assertIn(module._attestation_ref(report["applyLock"]["nonce"]), api.git_refs)
 
     def test_equal_provider_updated_at_still_proves_distinct_evaluate_to_active_states(self) -> None:
         record, api = active_fixture()
@@ -1662,6 +1739,7 @@ class ActivationEvidenceTests(unittest.TestCase):
         self.assertIsNone(pending["activationAttestation"])
         self.assertEqual(len(api.mutations), 1)
         configure_historical_authority(api, pending, record)
+        del api.git_tags[pending["applyLock"]["tagObjectSha"]]
 
         api.post_created = original  # type: ignore[method-assign]
         finalized = executor._finalize_report_attestation(pending)

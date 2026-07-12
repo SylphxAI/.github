@@ -1163,7 +1163,11 @@ def expected_attestation_ruleset(policy: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_attestation_ruleset(value: Any) -> dict[str, Any]:
+def normalize_attestation_ruleset(
+    value: Any,
+    *,
+    actor_bypass: str | None = None,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ForgeError("attestation ruleset readback is not an object")
     conditions = value.get("conditions")
@@ -1183,7 +1187,9 @@ def normalize_attestation_ruleset(value: Any) -> dict[str, Any]:
         if not isinstance(item, dict) or set(item) != {"type"} or not isinstance(item["type"], str):
             raise ForgeError(f"attestation ruleset rule {index} differs")
         normalized_rules.append({"type": item["type"]})
-    if value.get("current_user_can_bypass") is not False:
+    observed_actor_bypass = value.get("current_user_can_bypass")
+    actor_bypass = observed_actor_bypass if actor_bypass is None else actor_bypass
+    if actor_bypass != "never" or observed_actor_bypass not in {None, actor_bypass}:
         raise ForgeError("attestation ruleset permits or ambiguously reports current-user bypass")
     return {
         "name": value.get("name"),
@@ -1195,12 +1201,12 @@ def normalize_attestation_ruleset(value: Any) -> dict[str, Any]:
             "ref_name": {"include": ref.get("include"), "exclude": ref.get("exclude")},
         },
         "rules": normalized_rules,
-        "current_user_can_bypass": False,
+        "current_user_can_bypass": actor_bypass,
     }
 
 
 def expected_attestation_ruleset_readback(policy: dict[str, Any]) -> dict[str, Any]:
-    return {**expected_attestation_ruleset(policy), "current_user_can_bypass": False}
+    return {**expected_attestation_ruleset(policy), "current_user_can_bypass": "never"}
 
 
 def _validated_normalized_ruleset(value: Any, label: str) -> dict[str, Any]:
@@ -1797,6 +1803,7 @@ def apply_lock_authorization_from_report(report: dict[str, Any]) -> dict[str, An
         "desiredPayloadDigest": planned.get("payloadDigest"),
         "plannedAction": planned.get("action"),
         "preReadback": pre_revision,
+        "attestationRuleset": copy.deepcopy(report.get("attestationRuleset")),
     }
 
 
@@ -2400,10 +2407,8 @@ class RulesetExecutor:
         message = canonical_bytes(claim).decode("utf-8")
         if exact_digest(message.encode("utf-8")) != public_lock["tagMessageDigest"]:
             raise ForgeError("apply report lock claim digest differs")
-        lock = {**copy.deepcopy(public_lock), "tagMessage": message}
-        self._verify_lock_tag(lock)
         if self._read_lock_ref_sha() is not None:
-            raise ForgeError("apply lock ref exists during transition evidence collection")
+            raise ForgeError("apply lock ref exists during post-release evidence verification")
         return historical_record, historical_metadata
 
     def _collect_audit_event(self, report: dict[str, Any]) -> dict[str, Any]:
@@ -2516,7 +2521,24 @@ class RulesetExecutor:
             or live.get("target") != "tag"
         ):
             raise ForgeError("activation-attestation ruleset identity/ownership differs")
-        normalized = normalize_attestation_ruleset(live)
+        actor_live = _require_api_object(
+            self.api.get(
+                f"/repos/{EXECUTOR_REPOSITORY}/rulesets/{ruleset_id}?includes_parents=true"
+            ),
+            "actor-effective activation-attestation ruleset",
+        )
+        if (
+            actor_live.get("id") != ruleset_id
+            or actor_live.get("name") != ATTESTATION_RULESET_NAME
+            or actor_live.get("source_type") != "Organization"
+            or actor_live.get("source") != ORGANIZATION
+            or actor_live.get("target") != "tag"
+        ):
+            raise ForgeError("actor-effective activation-attestation ruleset identity differs")
+        actor_bypass = actor_live.get("current_user_can_bypass")
+        normalized = normalize_attestation_ruleset(live, actor_bypass=actor_bypass)
+        if normalize_attestation_ruleset(actor_live, actor_bypass=actor_bypass) != normalized:
+            raise ForgeError("actor-effective activation-attestation ruleset state differs")
         if normalized != expected_attestation_ruleset_readback(policy):
             raise ForgeError("activation-attestation ruleset differs from canonical source policy")
         return {
@@ -2807,46 +2829,30 @@ class RulesetExecutor:
             validate_apply_report(report)
         except ContractError as exc:
             raise ForgeError(str(exc)) from exc
-        current_executor = self._verify_executor()
-        if current_executor != report["executor"]:
-            raise ForgeError("executor changed before activation attestation finalization")
-        if self._verify_actor() != report["actor"]:
-            raise ForgeError("actor changed before activation attestation finalization")
-        self._verify_organization()
-        target = self._verify_target()
-        if target != report["target"]:
-            raise ForgeError("target changed before activation attestation finalization")
-        current_record, current_metadata = self._load_doctrine()
-        if current_metadata != report["desiredState"]:
-            raise ForgeError("Doctrine changed before activation attestation finalization")
-        try:
-            validate_apply_report(report, current_record)
-        except ContractError as exc:
-            raise ForgeError(str(exc)) from exc
-        if self._live_attestation_ruleset() != report["attestationRuleset"]:
-            raise ForgeError("attestation ruleset changed before activation attestation finalization")
-        live = self._live_ruleset(current_record)
-        if (
-            live is None
-            or live.get("id") != report["postReadback"]["rulesetId"]
-            or live.get("updated_at") != report["postReadback"]["updatedAt"]
-            or normalize_ruleset(live) != report["postReadback"]["normalized"]
-        ):
-            raise ForgeError("live ruleset changed before activation attestation finalization")
-        effective = self._effective(target, current_record["ruleset"]["rulesetId"])
-        if effective != report["postReadback"]["effectiveRules"]:
-            raise ForgeError("effective rules changed before activation attestation finalization")
-        if self._read_lock_ref_sha() is not None:
-            raise ForgeError("apply lock ref reappeared before activation attestation finalization")
+
+        current_record, target, _live, _effective = self._attestation_finalization_state(
+            report,
+            stage="before activation attestation creation",
+        )
 
         public_lock = report["applyLock"]
         lock_claim = activation_attestation_claim(report)["applyLock"]["claim"]
         lock_message = canonical_bytes(lock_claim).decode("utf-8")
         if exact_digest(lock_message.encode("utf-8")) != public_lock["tagMessageDigest"]:
             raise ForgeError("apply lock authorization claim differs before attestation")
-        self._verify_lock_tag({**copy.deepcopy(public_lock), "tagMessage": lock_message})
 
         projection = self._create_or_verify_attestation(report)
+        post_record, post_target, _post_live, _post_effective = self._attestation_finalization_state(
+            report,
+            stage="after activation attestation creation",
+        )
+        if post_record != current_record or post_target != target:
+            raise ForgeError("authority changed across activation attestation creation")
+        tag_sha = self._read_attestation_ref_sha(report["applyLock"]["nonce"])
+        if tag_sha is None or tag_sha != projection["tagObjectSha"]:
+            raise ForgeError("activation-attestation ref changed after creation")
+        if self._verify_attestation_tag(report, tag_sha) != projection:
+            raise ForgeError("activation-attestation tag changed after creation")
         existing = report.get("activationAttestation")
         if existing is not None and existing != projection:
             raise ForgeError("sealed activation-attestation projection differs from provider ref")
@@ -2859,6 +2865,46 @@ class RulesetExecutor:
             return validate_apply_report(finalized, current_record)
         except ContractError as exc:
             raise ForgeError(str(exc)) from exc
+
+    def _attestation_finalization_state(
+        self,
+        report: dict[str, Any],
+        *,
+        stage: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        current_executor = self._verify_executor()
+        if current_executor != report["executor"]:
+            raise ForgeError(f"executor changed {stage}")
+        if self._verify_actor() != report["actor"]:
+            raise ForgeError(f"actor changed {stage}")
+        self._verify_organization()
+        target = self._verify_target()
+        if target != report["target"]:
+            raise ForgeError(f"target changed {stage}")
+        current_record, current_metadata = self._load_doctrine()
+        if current_metadata != report["desiredState"]:
+            raise ForgeError(f"Doctrine changed {stage}")
+        try:
+            validate_apply_report(report, current_record)
+        except ContractError as exc:
+            raise ForgeError(str(exc)) from exc
+        policy, policy_evidence = self._attestation_policy_at(report["executor"]["commitSha"])
+        if self._live_attestation_ruleset(policy, policy_evidence) != report["attestationRuleset"]:
+            raise ForgeError(f"attestation ruleset changed {stage}")
+        live = self._live_ruleset(current_record)
+        if (
+            live is None
+            or live.get("id") != report["postReadback"]["rulesetId"]
+            or live.get("updated_at") != report["postReadback"]["updatedAt"]
+            or normalize_ruleset(live) != report["postReadback"]["normalized"]
+        ):
+            raise ForgeError(f"live ruleset changed {stage}")
+        effective = self._effective(target, current_record["ruleset"]["rulesetId"])
+        if effective != report["postReadback"]["effectiveRules"]:
+            raise ForgeError(f"effective rules changed {stage}")
+        if self._read_lock_ref_sha() is not None:
+            raise ForgeError(f"apply lock ref reappeared {stage}")
+        return current_record, target, live, effective
 
     def _verify_active_transition(
         self,
@@ -2950,6 +2996,18 @@ class RulesetExecutor:
             raise ForgeError("collector effective-rules readback differs from the apply report")
         report = self._finalize_report_attestation(report)
         audit_event = self._collect_audit_event(report)
+        final_record, final_target, live, effective = self._attestation_finalization_state(
+            report,
+            stage="immediately before activation artifact sealing",
+        )
+        if final_record != historical_record or final_target != target:
+            raise ForgeError("authority changed before activation artifact sealing")
+        attestation = report["activationAttestation"]
+        tag_sha = self._read_attestation_ref_sha(report["applyLock"]["nonce"])
+        if tag_sha is None or tag_sha != attestation["tagObjectSha"]:
+            raise ForgeError("durable activation-attestation ref changed before artifact sealing")
+        if self._verify_attestation_tag(report, tag_sha) != attestation:
+            raise ForgeError("durable activation-attestation tag changed before artifact sealing")
         captured_at = self.clock().astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         live_capture = {
             "capturedAt": captured_at,
@@ -3124,6 +3182,13 @@ class RulesetExecutor:
         self._assert_heads_unchanged()
         self._assert_live_precondition_unchanged(record, target, live)
         self._verify_apply_lock(lock)
+        if phase == "ratchet":
+            final_attestation_ruleset = self._live_attestation_ruleset()
+            if (
+                final_attestation_ruleset != report["attestationRuleset"]
+                or final_attestation_ruleset != lock["authorization"].get("attestationRuleset")
+            ):
+                raise ForgeError("immutable attestation ruleset changed before activation mutation")
         report["mutation"] = {"attempted": True, "action": action, "outcome": "request-sent"}
         if action == "create":
             try:

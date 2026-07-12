@@ -150,25 +150,26 @@ function validatePolicy(policy) {
   );
 
   const expectedEventContexts = {
-    launch: { pullRequestNumber: 1, headRef: "codex/launch-public-cleanroom", mergeGroupAllowed: true },
-    negativeControl: { pullRequestNumber: 2, headRef: "canary/negative", mergeGroupAllowed: false },
-    postMergeCanary: { pullRequestNumber: 3, headRef: "codex/post-merge-source-canary", mergeGroupAllowed: true },
+    launch: { pullRequestNumber: 1, headRef: "codex/launch-public-cleanroom", headRepositoryId: 1297840366, mergeGroupAllowed: true },
+    negativeControl: { pullRequestNumber: 2, headRef: "canary/negative", headRepositoryId: 1297840366, mergeGroupAllowed: false },
+    postMergeCanary: { pullRequestNumber: 3, headRef: "codex/post-merge-source-canary", headRepositoryId: 1297840366, mergeGroupAllowed: true },
   };
   requireExactKeys(policy.target.eventContexts, Object.keys(expectedEventContexts), "policy.target.eventContexts");
   for (const [name, expected] of Object.entries(expectedEventContexts)) {
     const context = policy.target.eventContexts[name];
-    requireExactKeys(context, ["pullRequestNumber", "headRef", "mergeGroupAllowed"], `policy.target.eventContexts.${name}`);
+    requireExactKeys(context, ["pullRequestNumber", "headRef", "headRepositoryId", "mergeGroupAllowed"], `policy.target.eventContexts.${name}`);
     requireCondition(JSON.stringify(context) === JSON.stringify(expected), "POLICY_SHAPE", `Event context ${name} differs from the immutable source contract.`);
   }
 
   const approvedRoot = policy.target.approvedCommits.find((record) => record.parents.length === 0);
   const postMerge = policy.target.postMergeCanonicalization;
-  requireExactKeys(postMerge, ["parentCommit", "tree", "mainRefs", "noOpBranchRefs", "maximumNoOpBranchCommits"], "policy.target.postMergeCanonicalization");
+  requireExactKeys(postMerge, ["parentCommit", "tree", "mainRefs", "noOpBranchRefs", "releaseTagRefs", "maximumNoOpBranchCommits"], "policy.target.postMergeCanonicalization");
   requireCondition(postMerge.parentCommit === approvedRoot.commit, "POLICY_SHAPE", "Post-merge canonicalization must descend from the approved fresh root.");
   requireCondition(postMerge.tree === policy.target.baseline.tree, "POLICY_SHAPE", "Post-merge canonicalization must preserve the exact baseline tree.");
   requireCondition(postMerge.maximumNoOpBranchCommits === 1, "POLICY_SHAPE", "Post-merge canonicalization permits exactly one no-op branch commit.");
   requireSortedUniqueStrings(postMerge.mainRefs, "policy.target.postMergeCanonicalization.mainRefs");
   requireSortedUniqueStrings(postMerge.noOpBranchRefs, "policy.target.postMergeCanonicalization.noOpBranchRefs");
+  requireSortedUniqueStrings(postMerge.releaseTagRefs, "policy.target.postMergeCanonicalization.releaseTagRefs");
   requireCondition(
     JSON.stringify(postMerge.mainRefs) === JSON.stringify(["refs/heads/main", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]),
     "POLICY_SHAPE",
@@ -178,6 +179,11 @@ function validatePolicy(policy) {
     JSON.stringify(postMerge.noOpBranchRefs) === JSON.stringify(["refs/heads/codex/post-merge-source-canary", "refs/remotes/origin/codex/post-merge-source-canary"]),
     "POLICY_SHAPE",
     "Post-merge no-op branch refs differ from the immutable source contract.",
+  );
+  requireCondition(
+    JSON.stringify(postMerge.releaseTagRefs) === JSON.stringify(["refs/tags/v1.0.0"]),
+    "POLICY_SHAPE",
+    "Post-merge release tag refs differ from the immutable source contract.",
   );
 
   requireCondition(Array.isArray(policy.target.approvedRefs) && policy.target.approvedRefs.length > 0, "POLICY_SHAPE", "Approved refs are required.");
@@ -463,7 +469,7 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
   const gitDirectory = git(root, ["rev-parse", "--absolute-git-dir"]).trim();
   requireCondition(gitDirectory.length > 0, "NOT_GIT_REPOSITORY", "Candidate root is not a Git repository.");
 
-  requireExactKeys(runtimeIdentity, ["repository", "repositoryId", "repositoryNodeId", "candidateSha", "eventName", "eventRef", "baseRef", "headRef", "headRepositoryId"], "runtime identity");
+  requireExactKeys(runtimeIdentity, ["repository", "repositoryId", "repositoryNodeId", "candidateSha", "eventName", "eventRef", "baseRef", "headRef", "eventRepositoryId", "pullRequestHeadRepositoryId"], "runtime identity");
   requireCondition(policy.target.allowedRepositories.includes(runtimeIdentity.repository), "REPOSITORY_IDENTITY", "Runtime repository slug is not allowed.");
   requireCondition(String(policy.target.repositoryId) === String(runtimeIdentity.repositoryId), "REPOSITORY_IDENTITY", "Runtime repository numeric ID does not match policy.");
   requireCondition(policy.target.repositoryNodeId === runtimeIdentity.repositoryNodeId, "REPOSITORY_IDENTITY", "Runtime repository node ID does not match policy.");
@@ -472,7 +478,8 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
   for (const field of ["eventRef", "baseRef", "headRef"]) {
     requireCondition(typeof runtimeIdentity[field] === "string", "REPOSITORY_IDENTITY", `Runtime ${field} must be a string.`);
   }
-  requireCondition(String(runtimeIdentity.headRepositoryId) === String(policy.target.repositoryId), "REPOSITORY_IDENTITY", "Runtime event head repository differs from the target repository.");
+  requireCondition(String(runtimeIdentity.eventRepositoryId) === String(policy.target.repositoryId), "REPOSITORY_IDENTITY", "Runtime event repository differs from the target repository.");
+  requireCondition(typeof runtimeIdentity.pullRequestHeadRepositoryId === "string", "REPOSITORY_IDENTITY", "Runtime pull-request head repository ID must be a string.");
 
   let eventContext = null;
   if (runtimeIdentity.eventName === "pull_request") {
@@ -480,12 +487,14 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
     const matches = Object.entries(policy.target.eventContexts).filter(([, context]) => (
       runtimeIdentity.eventRef === `refs/pull/${context.pullRequestNumber}/merge`
       && runtimeIdentity.headRef === context.headRef
+      && String(context.headRepositoryId) === runtimeIdentity.pullRequestHeadRepositoryId
     ));
     requireCondition(matches.length === 1, "REPOSITORY_IDENTITY", "Pull-request number/head ref does not bind one admitted event context.");
     eventContext = matches[0][0];
   } else if (runtimeIdentity.eventName === "merge_group") {
     requireCondition(runtimeIdentity.baseRef === "refs/heads/main", "REPOSITORY_IDENTITY", "Merge-group base ref must be refs/heads/main.");
     requireCondition(runtimeIdentity.headRef === runtimeIdentity.eventRef, "REPOSITORY_IDENTITY", "Merge-group head ref must equal the trusted event ref.");
+    requireCondition(runtimeIdentity.pullRequestHeadRepositoryId === "", "REPOSITORY_IDENTITY", "Merge-group payload must not claim direct pull-request head-repository evidence.");
     const matches = Object.entries(policy.target.eventContexts).filter(([, context]) => (
       context.mergeGroupAllowed
       && new RegExp(`^refs/heads/gh-readonly-queue/main/pr-${context.pullRequestNumber}-[0-9a-f]+$`).test(runtimeIdentity.eventRef)
@@ -493,7 +502,7 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
     requireCondition(matches.length === 1, "REPOSITORY_IDENTITY", "Merge-group ref does not bind one admitted pull request.");
     eventContext = matches[0][0];
   } else {
-    requireCondition(runtimeIdentity.eventRef === "" && runtimeIdentity.baseRef === "" && runtimeIdentity.headRef === "", "REPOSITORY_IDENTITY", "Non-event baseline identity must not claim pull-request refs.");
+    requireCondition(runtimeIdentity.eventRef === "" && runtimeIdentity.baseRef === "" && runtimeIdentity.headRef === "" && runtimeIdentity.pullRequestHeadRepositoryId === "", "REPOSITORY_IDENTITY", "Non-event baseline identity must not claim pull-request refs or head-repository evidence.");
   }
 
   const head = git(root, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
@@ -663,6 +672,14 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
     }
   }
 
+  if (["pull_request", "merge_group"].includes(runtimeIdentity.eventName)) {
+    requireCondition(
+      usesDynamicEventHead,
+      "UNAPPROVED_COMMIT",
+      "A pull-request or merge-group event must check out its exact provider-generated dynamic HEAD.",
+    );
+  }
+
   const approvedRefMap = new Map(policy.target.approvedRefs.map((record) => [record.name, new Set(record.commits)]));
   const eventPullRequestNumber = eventContext === null
     ? null
@@ -690,6 +707,7 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
         noOpBranchRefCount += 1;
         continue;
       }
+      if (postMerge.releaseTagRefs.includes(ref) && oid === canonicalMainCommit) continue;
       if (usesDynamicEventHead && oid === head && dynamicRefPatterns.some((pattern) => pattern.test(ref))) continue;
     }
     reject("UNAPPROVED_REF", `Ref ${ref} is not bound to an approved commit or permitted dynamic event HEAD.`);
@@ -735,7 +753,13 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
       eventRef: runtimeIdentity.eventRef,
       baseRef: runtimeIdentity.baseRef,
       headRef: runtimeIdentity.headRef,
-      headRepositoryId: Number(runtimeIdentity.headRepositoryId),
+      eventRepositoryId: Number(runtimeIdentity.eventRepositoryId),
+      pullRequestHeadRepositoryId: runtimeIdentity.pullRequestHeadRepositoryId === ""
+        ? null
+        : Number(runtimeIdentity.pullRequestHeadRepositoryId),
+      preboundHeadRepositoryId: eventContext === null
+        ? null
+        : policy.target.eventContexts[eventContext].headRepositoryId,
       commit: head,
       tree: headTree,
       rootCommit: roots[0],
@@ -764,8 +788,11 @@ function parseArguments(argv) {
     requireCondition(!Object.hasOwn(values, flag.slice(2)), "CLI_ARGUMENT", `Duplicate argument ${flag}.`);
     values[flag.slice(2)] = value;
   }
-  const required = ["policy", "candidate", "repository", "repository-id", "repository-node-id", "candidate-sha", "event-name", "event-ref", "base-ref", "head-ref", "head-repository-id", "source-root", "source-sha", "report"];
-  for (const name of required) requireCondition(typeof values[name] === "string" && values[name].length > 0, "CLI_ARGUMENT", `Missing --${name}.`);
+  const required = ["policy", "candidate", "repository", "repository-id", "repository-node-id", "candidate-sha", "event-name", "event-ref", "base-ref", "head-ref", "event-repository-id", "pull-request-head-repository-id", "source-root", "source-sha", "report"];
+  for (const name of required) requireCondition(typeof values[name] === "string", "CLI_ARGUMENT", `Missing --${name}.`);
+  for (const name of required.filter((name) => name !== "pull-request-head-repository-id")) {
+    requireCondition(values[name].length > 0, "CLI_ARGUMENT", `Missing --${name}.`);
+  }
   return values;
 }
 
@@ -796,7 +823,8 @@ export function runCli(argv) {
         eventRef: args["event-ref"],
         baseRef: args["base-ref"],
         headRef: args["head-ref"],
-        headRepositoryId: args["head-repository-id"],
+        eventRepositoryId: args["event-repository-id"],
+        pullRequestHeadRepositoryId: args["pull-request-head-repository-id"],
       },
     });
     report.source = { repository: policy.source.repository, commit: sourceHead };

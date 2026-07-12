@@ -78,16 +78,19 @@
       "launch": {
         "pullRequestNumber": 1,
         "headRef": "codex/launch-public-cleanroom",
+        "headRepositoryId": 1297840366,
         "mergeGroupAllowed": true
       },
       "negativeControl": {
         "pullRequestNumber": 2,
         "headRef": "canary/negative",
+        "headRepositoryId": 1297840366,
         "mergeGroupAllowed": false
       },
       "postMergeCanary": {
         "pullRequestNumber": 3,
         "headRef": "codex/post-merge-source-canary",
+        "headRepositoryId": 1297840366,
         "mergeGroupAllowed": true
       }
     },
@@ -102,6 +105,9 @@
       "noOpBranchRefs": [
         "refs/heads/codex/post-merge-source-canary",
         "refs/remotes/origin/codex/post-merge-source-canary"
+      ],
+      "releaseTagRefs": [
+        "refs/tags/v1.0.0"
       ],
       "maximumNoOpBranchCommits": 1
     },

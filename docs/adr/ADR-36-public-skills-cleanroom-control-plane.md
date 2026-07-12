@@ -79,7 +79,8 @@ active, zero-bypass organization tag ruleset over repository ID `1091169653`
 and the exact nonce-scoped prefix. It forbids update, deletion, and
 non-fast-forward changes but deliberately permits first creation. The
 provider-assigned ruleset ID is discovered and bound in evidence rather than
-hard-coded.
+hard-coded. Organization policy bytes are cross-checked with the pinned
+actor's repository-effective `current_user_can_bypass: never` observation.
 
 The executor rechecks executor, Doctrine, target, live/effective state, and
 that immutable tag ruleset, then creates the deterministic annotated tag/ref
@@ -91,6 +92,10 @@ and live attestation-ruleset ID/digest. An exact existing ref is idempotent;
 foreign, mutable, overwritten, reused, or missing evidence fails closed.
 Attestation failure produces a sealed pending-attestation report that a narrow
 finalizer may reconcile without another organization-ruleset write.
+The lock authorization itself binds this exact attestation-ruleset evidence;
+the executor rechecks it immediately before activation and again after
+permanent-ref creation. Post-release recovery reconstructs the lock claim and
+digest but never assumes the deleted ephemeral tag object survives Git GC.
 
 Apply re-reads executor main, Doctrine main, target identity, live ruleset, and
 activation evidence immediately before writing. Every write requires exact
@@ -99,11 +104,14 @@ Canonical reports bind actor, executor, desired-state, source, target,
 precondition, request, and postcondition digests without emitting credentials
 or desired-state bytes. A bounded collector persists only a privacy-safe audit
 allowlist, combines it with current live/effective readback and the permanent
-attestation, and seals the fixed Doctrine activation artifact. `active` is a
+attestation, then recaptures all current provider state after audit lookup and
+immediately before sealing the fixed Doctrine activation artifact. `active` is a
 readback-only steady state and re-verifies the exact historical record,
 executor, sealed canary-summary cross-bindings, artifact, provider attestation,
 immutable tag ruleset, and current state without mutation. It deliberately
-does not depend on retention-limited historical Actions or pull-request APIs.
+does not depend on retention-limited historical Actions or pull-request APIs,
+or on the deleted ephemeral lock tag object after its claim has been
+live-verified and durably sealed into the immutable provider attestation.
 
 ## Consequences
 
