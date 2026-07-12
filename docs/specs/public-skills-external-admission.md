@@ -15,8 +15,10 @@ Decision records:
 | Workflow | `.github/workflows/public-skills-admission.yml` |
 | Validator | `scripts/public-skills-admission.mjs` |
 | Policy | `policies/public-skills-admission.json` |
+| Activation-attestation policy | `policies/public-skills-activation-attestation-ruleset.json` |
 | Required job | `public-skills-external-admission/pass` |
 | Evidence file | `public-skills-external-admission.json` |
+| Activation evidence | `control-plane/evidence/public-skills-ruleset-activation.json` in Doctrine |
 
 The policy manifest is the current snapshot source of truth. This document
 defines mechanics and update order; it does not duplicate file digests.
@@ -99,7 +101,20 @@ The lifecycle is closed:
    control, rule-suite identities, source-policy baseline, chronology, and
    target effective-rules coverage. Doctrine evidence supplies locators and
    claims; it is never accepted without live reconstruction.
-4. `recovery` preserves the same rule identity and permits only an enforcement
+4. A successful ratchet first returns `APPLIED_PENDING_ATTESTATION`, then
+   creates or idempotently verifies the nonce-scoped immutable provider
+   attestation. With that ref present it returns
+   `APPLIED_PENDING_EVIDENCE`. A ratchet record that already reads live active
+   is blocked from another ruleset write and can only continue through the
+   attestation/evidence finalizer.
+5. `active` is permanent readback-only state. It requires the fixed Doctrine
+   artifact, exact historical ratchet record and executor bytes, sealed canary
+   summaries cross-bound to the historical evidence, audit projection, durable
+   attestation tag/ref, immutable attestation ruleset, and current
+   live/effective state. It does not re-fetch retention-limited historical
+   Actions, jobs, rule suites, or negative-control PR data. Even `--apply`
+   performs no write.
+6. `recovery` preserves the same rule identity and permits only an enforcement
    downgrade to `evaluate` or `disabled`. It never deletes, adds a bypass, or
    repairs unrelated structural drift under recovery authority.
 
@@ -110,15 +125,19 @@ from the existing `github.com` GitHub CLI keyring. Token/host/config environment
 overrides are stripped, redirects are rejected, and all REST calls use fixed
 `https://api.github.com` endpoints.
 
-Every canonical mutation is serialized by one source-owned lock. After exact
-executor and actor verification, apply creates a unique annotated tag object at
-the verified executor commit and atomically creates the fixed ref
+Every canonical mutation starts with a fully read-only preflight. It resolves
+the exact Doctrine commit/blob/bytes/semantic identity, desired payload digest,
+planned action, and pre-readback ruleset revision. Apply then creates a unique
+annotated tag object at the verified executor commit and atomically creates the
+fixed ref
 `refs/tags/sylph-locks/public-skills-ruleset-executor` in repository ID
-`1091169653`. The tag claim binds the repository, ref, executor commit, actor,
-64-hex cryptographic nonce, and acquisition time as canonical JSON. The unique
-tag-object SHA is the fencing identity even when consecutive runs share the
-same executor commit. A foreign or malformed ref, ambiguous acquisition,
-ownership loss, or release uncertainty fails closed.
+`1091169653`. The canonical claim binds that full preflight authorization in
+addition to repository, ref, executor commit, actor, 64-hex cryptographic
+nonce, and acquisition time. The unique tag-object SHA is the fencing identity
+even when consecutive runs share the same executor commit. After acquisition,
+Doctrine and live state are rebuilt and must equal the bound authorization
+before any write. A foreign or malformed ref, ambiguous acquisition,
+ownership loss, replay, or release uncertainty fails closed.
 
 The lock remains held across Doctrine/live reads, the ruleset request, and all
 post/effective readbacks. Release first proves that the ref and annotated tag
@@ -127,6 +146,35 @@ provider `404` readback. There is no TTL, force update, expiry, steal, or
 automatic stale-lock recovery. A crash may halt future mutation until a
 separately authorized incident recovery; safety wins over availability.
 Dry-run and readback make no lock mutation.
+
+Activation additionally requires a permanent provider witness. The canonical
+source-owned policy
+`policies/public-skills-activation-attestation-ruleset.json` declares the
+unique organization ruleset
+`immutable-public-skills-activation-attestations`: target `tag`, enforcement
+`active`, repository ID `1091169653`, no bypass, exact include
+`refs/tags/sylph-attestations/public-skills-ruleset/*`, and only `update`,
+`deletion`, and `non_fast_forward` restrictions. Absence, duplication,
+`current_user_can_bypass`, a `creation` restriction, or any payload drift
+blocks before the activation write. The live provider-assigned ruleset ID and
+normalized digest are evidence; the ID is never hard-coded.
+
+After the update's exact post/effective readback, apply releases the lock and
+confirms provider absence. It then rechecks executor, Doctrine, target, live
+state, and the attestation ruleset before creating
+`refs/tags/sylph-attestations/public-skills-ruleset/<lock-nonce>`. The annotated
+tag targets the executor commit and binds the complete lock claim/tag SHA,
+released/absent lifecycle, executor bytes, actor, Doctrine revision, desired
+payload, ruleset ID, pre/post revision and state/effective digests, mutation
+outcome, real `X-GitHub-Request-Id`, attestation policy, live immutable-ruleset
+ID/digest, and the deterministic evidence cutoff. `evidenceCutoffAt` is the
+provider-confirmed fixed-lock absence observation, not a claim about tag/ref
+creation time. The tagger date deliberately reuses that cutoff so retries
+produce the same Git object.
+Existing exact refs are idempotent success; foreign refs, force update,
+overwrite, reuse, or deletion are forbidden. If creation is unavailable or
+uncertain, the sealed `APPLIED_PENDING_ATTESTATION` report is the only finalizer
+input and the ruleset update is never retried.
 
 Before a write, the executor re-reads both protected executor `main` and
 Doctrine `main`; either moving since the initial read blocks the mutation.
@@ -145,9 +193,20 @@ lock repository/ref/tag-object/message digest/executor commit/nonce/actor and
 acquire/release outcomes,
 Doctrine commit/blob/exact/semantic digests, source SHA and file blobs, target
 identity, normalized pre-readback, exact request digest, mutation outcome, and
-normalized post-readback. The top-level `evidenceDigest` covers the entire
-report except itself. Credentials, headers, and desired-state bytes are never
-emitted.
+normalized post-readback, immutable attestation policy/live ruleset, and
+durable attestation ref/tag/claim digests. The top-level `evidenceDigest`
+covers the entire report except itself. Credentials, headers, and desired-state
+bytes are never emitted.
+
+`--collect-transition SEALED_APPLY_REPORT` reads only a caller-owned,
+non-symlink, non-group/world-writable bounded file. It may idempotently complete
+the exact attestation ref but never mutates the organization ruleset. It reads a
+bounded audit window by action and actor, then locally correlates the exact
+provider request, ruleset, organization, actor, and time. Raw audit objects are
+never persisted or logged: only the fixed 13-field provider projection and its
+normalized digests enter the sealed artifact. The artifact has independent
+`bodyDigest` and `evidenceDigest` seals and is the fixed-path source for the
+Doctrine `active` transition.
 
 ## Validator contract
 

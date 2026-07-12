@@ -113,6 +113,11 @@
         "location": "policies/public-skills-admission.json"
       },
       {
+        "type": "manifest",
+        "name": "Public skills activation-attestation ruleset policy",
+        "location": "policies/public-skills-activation-attestation-ruleset.json"
+      },
+      {
         "type": "api",
         "name": "Public skills zero-dependency admission validator",
         "location": "scripts/public-skills-admission.mjs"
@@ -196,7 +201,7 @@
       "groundatlas"
     ],
     "deployPath": "Merged changes to main are consumed directly by GitHub as organization defaults, reusable workflows, workflow templates, and composite actions. There is no separate runtime deploy for this repository.",
-    "productionProof": "Proof is GitHub main readback plus successful local GroundAtlas project-control CI. Public reusable workflow/action contract changes still require successful consumer use of the changed public surface. The public-skills gate additionally requires an exact source-SHA organization-ruleset binding, successful pull-request plus merge-group readback on target repository ID 1297840366, independent fenced-lock executor evidence, and exact post-mutation plus effective-rules readback.",
+    "productionProof": "Proof is GitHub main readback plus successful local GroundAtlas project-control CI. Public reusable workflow/action contract changes still require successful consumer use of the changed public surface. The public-skills gate additionally requires an exact source-SHA organization-ruleset binding, successful pull-request plus merge-group readback on target repository ID 1297840366, authorization-bound fenced-lock evidence, exact post/effective readback, a durable immutable provider attestation, and the sealed privacy-safe Doctrine transition artifact.",
     "recoveryClass": "source-revertable"
   },
   "adoption": {
