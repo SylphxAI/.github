@@ -1167,15 +1167,23 @@ def normalize_attestation_ruleset(
     value: Any,
     *,
     actor_bypass: str | None = None,
+    include_repository_selector: bool = True,
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ForgeError("attestation ruleset readback is not an object")
     conditions = value.get("conditions")
-    if not isinstance(conditions, dict) or set(conditions) != {"repository_id", "ref_name"}:
+    expected_condition_keys = (
+        {"repository_id", "ref_name"}
+        if include_repository_selector
+        else {"ref_name"}
+    )
+    if not isinstance(conditions, dict) or set(conditions) != expected_condition_keys:
         raise ForgeError("attestation ruleset conditions differ")
-    repository = conditions["repository_id"]
+    repository = conditions.get("repository_id")
     ref = conditions["ref_name"]
-    if not isinstance(repository, dict) or set(repository) != {"repository_ids"}:
+    if include_repository_selector and (
+        not isinstance(repository, dict) or set(repository) != {"repository_ids"}
+    ):
         raise ForgeError("attestation ruleset repository selector differs")
     if not isinstance(ref, dict) or set(ref) != {"include", "exclude"}:
         raise ForgeError("attestation ruleset ref selector differs")
@@ -1192,15 +1200,20 @@ def normalize_attestation_ruleset(
     actor_bypass = observed_actor_bypass if actor_bypass is None else actor_bypass
     if actor_bypass != "never" or observed_actor_bypass not in {None, actor_bypass}:
         raise ForgeError("attestation ruleset permits or ambiguously reports current-user bypass")
+    normalized_conditions = {
+        "ref_name": {"include": ref.get("include"), "exclude": ref.get("exclude")},
+    }
+    if include_repository_selector:
+        assert isinstance(repository, dict)
+        normalized_conditions["repository_id"] = {
+            "repository_ids": repository.get("repository_ids"),
+        }
     return {
         "name": value.get("name"),
         "target": value.get("target"),
         "enforcement": value.get("enforcement"),
         "bypass_actors": value.get("bypass_actors"),
-        "conditions": {
-            "repository_id": {"repository_ids": repository.get("repository_ids")},
-            "ref_name": {"include": ref.get("include"), "exclude": ref.get("exclude")},
-        },
+        "conditions": normalized_conditions,
         "rules": normalized_rules,
         "current_user_can_bypass": actor_bypass,
     }
@@ -2538,7 +2551,14 @@ class RulesetExecutor:
             raise ForgeError("actor-effective activation-attestation ruleset identity differs")
         actor_bypass = actor_live.get("current_user_can_bypass")
         normalized = normalize_attestation_ruleset(live, actor_bypass=actor_bypass)
-        if normalize_attestation_ruleset(actor_live, actor_bypass=actor_bypass) != normalized:
+        actor_normalized = normalize_attestation_ruleset(
+            actor_live,
+            actor_bypass=actor_bypass,
+            include_repository_selector=False,
+        )
+        actor_expected = copy.deepcopy(normalized)
+        actor_expected["conditions"].pop("repository_id")
+        if actor_normalized != actor_expected:
             raise ForgeError("actor-effective activation-attestation ruleset state differs")
         if normalized != expected_attestation_ruleset_readback(policy):
             raise ForgeError("activation-attestation ruleset differs from canonical source policy")
