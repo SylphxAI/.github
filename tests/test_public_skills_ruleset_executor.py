@@ -26,8 +26,8 @@ SPEC.loader.exec_module(module)
 EXECUTOR_HEAD = "a" * 40
 DOCTRINE_HEAD = "b" * 40
 SOURCE_SHA = "c" * 40
-FIXTURE_BASE = "1" * 40
-FIXTURE_BASE_TREE = "2" * 40
+FIXTURE_BASE = "580791895d660755ca78c5e6f8233d1437f709fa"
+FIXTURE_BASE_TREE = "2741f0883bf636568d375974c98301ed16a633fb"
 FIXTURE_HEAD = "3" * 40
 FIXTURE_HEAD_TREE = "4" * 40
 PR_BASE = "5" * 40
@@ -268,12 +268,8 @@ class FakeAPI:
 def base_api(record: dict, *, live: dict | None = None, effective: bool = True) -> FakeAPI:
     api = FakeAPI()
     workflow = (ROOT / module.WORKFLOW_PATH).read_bytes()
-    source_policy = {
-        "target": {
-            "repositoryId": module.TARGET_REPOSITORY_ID,
-            "baseline": {"commit": FIXTURE_BASE, "tree": FIXTURE_BASE_TREE},
-        }
-    }
+    validator = (ROOT / module.VALIDATOR_PATH).read_bytes()
+    source_policy = (ROOT / module.POLICY_PATH).read_bytes()
     api.gets.update({
         "/user": {
             "id": module.GITHUB_ACTOR_ID,
@@ -314,8 +310,8 @@ def base_api(record: dict, *, live: dict | None = None, effective: bool = True) 
             "base_commit": {"sha": SOURCE_SHA},
         },
         module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.WORKFLOW_PATH, SOURCE_SHA): encoded(module.WORKFLOW_PATH, workflow),
-        module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.VALIDATOR_PATH, SOURCE_SHA): encoded(module.VALIDATOR_PATH, b"export {};\n"),
-        module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.POLICY_PATH, SOURCE_SHA): encoded(module.POLICY_PATH, canonical_file(source_policy)),
+        module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.VALIDATOR_PATH, SOURCE_SHA): encoded(module.VALIDATOR_PATH, validator),
+        module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.POLICY_PATH, SOURCE_SHA): encoded(module.POLICY_PATH, source_policy),
     })
     ruleset_summaries = [{"id": ATTESTATION_RULESET_ID, "name": module.ATTESTATION_RULESET_NAME}]
     if live is not None:
@@ -1171,108 +1167,66 @@ class ExecutionTests(unittest.TestCase):
                 self.executor(api).run("apply")
             self.assertFalse(api.mutations)
 
-    def test_foreign_target_selector_in_source_workflow_blocks(self) -> None:
-        record = base_record()
-        api = base_api(record)
-        path = module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.WORKFLOW_PATH, SOURCE_SHA)
-        raw = f"name: {module.WORKFLOW_NAME}\nname: {module.REQUIRED_CHECK}\nif: github.repository_id == 999999999\n".encode()
-        api.gets[path] = encoded(module.WORKFLOW_PATH, raw)
-        with self.assertRaisesRegex(module.ForgeError, "workflow source"):
-            self.executor(api).run("dry-run")
+    def test_source_files_match_executor_owned_exact_identities(self) -> None:
+        for path, expected in module.SOURCE_IDENTITIES.items():
+            raw = (ROOT / path).read_bytes()
+            with self.subTest(path=path):
+                self.assertEqual(module.git_blob_sha(raw), expected["gitBlobSha"])
+                self.assertEqual(module.exact_digest(raw), expected["exactBytesDigest"])
 
-    def test_current_workflow_identity_probe_allows_runtime_repository_id_inputs(self) -> None:
-        record = base_record()
-        api = base_api(record)
-        path = module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.WORKFLOW_PATH, SOURCE_SHA)
-        raw = (ROOT / module.WORKFLOW_PATH).read_bytes()
-        api.gets[path] = encoded(module.WORKFLOW_PATH, raw)
-
-        report = self.executor(api).run("dry-run")
+        report = self.executor(base_api(base_record())).run("dry-run")
 
         self.assertEqual(report["status"], "DRIFT")
         self.assertEqual(report["plannedMutation"]["action"], "create")
         self.assertFalse(report["mutation"]["attempted"])
 
-    def test_step_level_selector_cannot_mask_unguarded_admission_job(self) -> None:
-        record = base_record()
-        api = base_api(record)
-        path = module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.WORKFLOW_PATH, SOURCE_SHA)
-        workflow = (ROOT / module.WORKFLOW_PATH).read_text()
-        job_selector = f"    if: ${{{{ github.repository_id == {module.TARGET_REPOSITORY_ID} }}}}"
-        step_selector = "        if: ${{ always() }}"
-        self.assertEqual(workflow.count(job_selector), 1)
-        self.assertEqual(workflow.count(step_selector), 1)
-        raw = workflow.replace(job_selector, "    if: ${{ always() }}").replace(
-            step_selector,
-            f"        if: ${{{{ github.repository_id == {module.TARGET_REPOSITORY_ID} }}}}",
-        ).encode()
-        api.gets[path] = encoded(module.WORKFLOW_PATH, raw)
+    def test_every_source_file_is_exactly_bound_before_mutation(self) -> None:
+        for path in module.SOURCE_PATHS:
+            api = base_api(base_record())
+            endpoint = module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, path, SOURCE_SHA)
+            api.gets[endpoint] = encoded(path, (ROOT / path).read_bytes() + b"\n")
 
-        with self.assertRaisesRegex(
-            module.ForgeError,
-            "does not bind the immutable check, selector, runner, and timeout",
-        ):
-            self.executor(api).run("dry-run")
-        self.assertFalse(api.mutations)
+            with self.subTest(path=path), self.assertRaisesRegex(
+                module.ForgeError,
+                "differs from the executor-owned exact identity",
+            ):
+                self.executor(api).run("apply")
+            self.assertFalse(api.mutations)
 
-    def test_decoy_job_cannot_mask_unguarded_required_check_job(self) -> None:
-        record = base_record()
-        api = base_api(record)
-        path = module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.WORKFLOW_PATH, SOURCE_SHA)
-        workflow = (ROOT / module.WORKFLOW_PATH).read_text()
-        admission = "jobs:\n  admission:"
-        self.assertEqual(workflow.count(admission), 1)
-        decoy = f"""jobs:
-  selector-decoy:
-    name: decoy
+    def test_yaml_semantic_decoy_is_rejected_by_exact_bytes_before_mutation(self) -> None:
+        api = base_api(base_record())
+        endpoint = module._content_endpoint(
+            module.EXECUTOR_REPOSITORY_ID,
+            module.WORKFLOW_PATH,
+            SOURCE_SHA,
+        )
+        malicious_workflow = f"""name: {module.WORKFLOW_NAME}
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  admission:
+   name: attacker-controlled-check
+   if: ${{{{ always() }}}}
+   runs-on: ubuntu-24.04
+   timeout-minutes: 10
+   steps:
+     - name: semantic-decoy
+       env:
+         DECOY: "
+    name: {module.REQUIRED_CHECK}
     if: ${{{{ github.repository_id == {module.TARGET_REPOSITORY_ID} }}}}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - run: true
-  admission:"""
-        raw = workflow.replace(admission, decoy).encode()
-        api.gets[path] = encoded(module.WORKFLOW_PATH, raw)
+         "
+       run: echo ok
+""".encode()
+        api.gets[endpoint] = encoded(module.WORKFLOW_PATH, malicious_workflow)
 
-        with self.assertRaisesRegex(module.ForgeError, "exactly one admission job"):
-            self.executor(api).run("dry-run")
-        self.assertFalse(api.mutations)
-
-    def test_duplicate_conflicting_job_selector_is_rejected(self) -> None:
-        record = base_record()
-        api = base_api(record)
-        path = module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.WORKFLOW_PATH, SOURCE_SHA)
-        workflow = (ROOT / module.WORKFLOW_PATH).read_text()
-        selector = f"    if: ${{{{ github.repository_id == {module.TARGET_REPOSITORY_ID} }}}}"
-        self.assertEqual(workflow.count(selector), 1)
-        raw = workflow.replace(selector, f"{selector}\n    if: ${{{{ always() }}}}").encode()
-        api.gets[path] = encoded(module.WORKFLOW_PATH, raw)
-
-        with self.assertRaisesRegex(module.ForgeError, "duplicates property if"):
-            self.executor(api).run("dry-run")
-        self.assertFalse(api.mutations)
-
-    def test_duplicate_top_level_jobs_block_is_rejected(self) -> None:
-        record = base_record()
-        api = base_api(record)
-        path = module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.WORKFLOW_PATH, SOURCE_SHA)
-        workflow = (ROOT / module.WORKFLOW_PATH).read_text()
-        raw = (
-            workflow
-            + f"""
-jobs:
-  admission:
-    name: {module.REQUIRED_CHECK}
-    if: ${{{{ always() }}}}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps: []
-"""
-        ).encode()
-        api.gets[path] = encoded(module.WORKFLOW_PATH, raw)
-
-        with self.assertRaisesRegex(module.ForgeError, "duplicates top-level property jobs"):
-            self.executor(api).run("dry-run")
+        with self.assertRaisesRegex(module.ForgeError, "executor-owned exact identity"):
+            self.executor(api).run("apply")
         self.assertFalse(api.mutations)
 
     def test_foreign_target_default_branch_blocks(self) -> None:

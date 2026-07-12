@@ -83,7 +83,21 @@ VALIDATOR_PATH = "scripts/public-skills-admission.mjs"
 POLICY_PATH = "policies/public-skills-admission.json"
 REQUIRED_CHECK = "public-skills-external-admission/pass"
 LOCAL_REQUIRED_CHECKS = ("risk-classification/pass", "trunk-admission/pass")
-SOURCE_PATHS = (WORKFLOW_PATH, VALIDATOR_PATH, POLICY_PATH)
+SOURCE_IDENTITIES = {
+    WORKFLOW_PATH: {
+        "gitBlobSha": "7032d81fc0625360ef4650ed5f326efd6dc7ca3d",
+        "exactBytesDigest": "sha256:d4551484eadcb9a0dedb88b64109d80e8f5fe867800bc969656fa016af5c4952",
+    },
+    VALIDATOR_PATH: {
+        "gitBlobSha": "e60b17e3b5e521d9a68db7f2d197f0bd97687eb8",
+        "exactBytesDigest": "sha256:9ddced29fe6b4e323113d3343dd4938cd56d5dbdabebb9b0427469aa5ca8b89c",
+    },
+    POLICY_PATH: {
+        "gitBlobSha": "6f4d12f62f1c2130aefebdc5a6021d8c6f9c9e85",
+        "exactBytesDigest": "sha256:0db4a6a94717f58f78bd628591db16b518155a3d7071cae8fa6295f8f844f743",
+    },
+}
+SOURCE_PATHS = tuple(SOURCE_IDENTITIES)
 
 MAX_RECORD_BYTES = 512 * 1024
 MAX_JSON_DEPTH = 64
@@ -987,91 +1001,6 @@ def _decode_content(item: Any, expected_path: str, label: str) -> bytes:
     if value.get("size") != len(raw) or value.get("sha") != git_blob_sha(raw):
         raise ForgeError(f"{label} byte identity differs from GitHub blob metadata")
     return raw
-
-
-def validate_workflow_identity(text: str) -> None:
-    """Bind the required check and selector to the sole workflow job.
-
-    This intentionally parses only the narrow, source-owned YAML shape used by
-    the required workflow.  A general YAML loader would add mutable runtime
-    dependencies to the protected executor; a global text search loses YAML
-    scope and lets step-level or decoy-job selectors satisfy the probe.
-    """
-
-    lines = text.splitlines()
-    significant: list[tuple[int, int, str]] = []
-    for index, line in enumerate(lines):
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        leading = line[: len(line) - len(line.lstrip())]
-        if "\t" in leading:
-            raise ForgeError("workflow source uses unsupported tab indentation")
-        significant.append((index, len(leading), line.strip()))
-
-    top_level: dict[str, tuple[str, int]] = {}
-    for index, indent, value in significant:
-        if indent != 0:
-            continue
-        match = re.fullmatch(r"([A-Za-z0-9_-]+):(.*)", value)
-        if match is None:
-            raise ForgeError("workflow source uses unsupported top-level syntax")
-        key = match.group(1)
-        if key in top_level:
-            raise ForgeError(f"workflow source duplicates top-level property {key}")
-        top_level[key] = (match.group(2).strip(), index)
-    if set(top_level) != {"name", "on", "permissions", "jobs"}:
-        raise ForgeError("workflow top-level property surface differs")
-    if (
-        top_level["name"][0] != WORKFLOW_NAME
-        or top_level["on"][0] != ""
-        or top_level["permissions"][0] != ""
-        or top_level["jobs"][0] != ""
-    ):
-        raise ForgeError("workflow source does not expose one immutable workflow identity")
-
-    jobs_start = top_level["jobs"][1]
-    jobs_end = len(lines)
-    for index, indent, _value in significant:
-        if index > jobs_start and indent == 0:
-            jobs_end = index
-            break
-
-    job_rows: list[tuple[str, int]] = []
-    for index, indent, value in significant:
-        if index <= jobs_start or index >= jobs_end or indent != 2:
-            continue
-        match = re.fullmatch(r"([A-Za-z0-9_-]+):", value)
-        if match is None:
-            raise ForgeError("workflow jobs block uses unsupported job declaration syntax")
-        job_rows.append((match.group(1), index))
-    if len(job_rows) != 1 or job_rows[0][0] != "admission":
-        raise ForgeError("workflow source must expose exactly one admission job")
-
-    properties: dict[str, str] = {}
-    admission_start = job_rows[0][1]
-    for index, indent, value in significant:
-        if index <= admission_start or index >= jobs_end or indent != 4:
-            continue
-        match = re.fullmatch(r"([A-Za-z0-9_-]+):(.*)", value)
-        if match is None:
-            raise ForgeError("workflow admission job uses unsupported property syntax")
-        key = match.group(1)
-        if key in properties:
-            raise ForgeError(f"workflow admission job duplicates property {key}")
-        properties[key] = match.group(2).strip()
-
-    expected_selector = f"${{{{ github.repository_id == {TARGET_REPOSITORY_ID} }}}}"
-    expected_properties = {"name", "if", "runs-on", "timeout-minutes", "steps"}
-    if set(properties) != expected_properties:
-        raise ForgeError("workflow admission job property surface differs")
-    if (
-        properties["name"] != REQUIRED_CHECK
-        or properties["if"] != expected_selector
-        or properties["runs-on"] != "ubuntu-24.04"
-        or properties["timeout-minutes"] != "10"
-        or properties["steps"] != ""
-    ):
-        raise ForgeError("workflow source does not bind the immutable check, selector, runner, and timeout")
 
 
 def _content_endpoint(repository_id: int, path: str, ref: str) -> str:
@@ -2136,13 +2065,14 @@ class RulesetExecutor:
             item = self.api.get(_content_endpoint(EXECUTOR_REPOSITORY_ID, path, source_sha))
             raw = _decode_content(item, path, f"workflow source {path}")
             metadata = _require_api_object(item, f"workflow source {path}")
-            files.append({"path": path, "gitBlobSha": metadata.get("sha"), "exactBytesDigest": exact_digest(raw)})
-            if path == WORKFLOW_PATH:
-                try:
-                    text = raw.decode("utf-8")
-                except UnicodeDecodeError as exc:
-                    raise ForgeError("workflow source is not UTF-8") from exc
-                validate_workflow_identity(text)
+            evidence = {
+                "path": path,
+                "gitBlobSha": metadata.get("sha"),
+                "exactBytesDigest": exact_digest(raw),
+            }
+            if evidence != {"path": path, **SOURCE_IDENTITIES[path]}:
+                raise ForgeError(f"workflow source {path} differs from the executor-owned exact identity")
+            files.append(evidence)
         return {"repositoryId": EXECUTOR_REPOSITORY_ID, "commitSha": source_sha, "files": files}
 
     def _verify_target(self) -> dict[str, Any]:
