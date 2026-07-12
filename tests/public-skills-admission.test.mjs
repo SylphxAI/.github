@@ -44,13 +44,21 @@ function runtimeIdentity(root, overrides = {}) {
   };
 }
 
-function cloneCandidate(t) {
+function cloneCandidate(t, source = candidateSource) {
   const parent = mkdtempSync(resolve(tmpdir(), "public-skills-admission-"));
   const clone = resolve(parent, "candidate");
-  execFileSync("git", ["clone", "--local", "--no-hardlinks", candidateSource, clone], {
+  execFileSync("git", ["clone", "--local", "--no-hardlinks", source, clone], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const sourceRemoteRefs = git(source, ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)", "refs/remotes/origin"])
+    .split("\n")
+    .filter(Boolean)
+    .map((record) => record.split("\t"));
+  for (const [ref, oid, symbolicTarget] of sourceRemoteRefs) {
+    if (symbolicTarget) git(clone, ["symbolic-ref", ref, symbolicTarget]);
+    else git(clone, ["update-ref", "--no-deref", ref, oid]);
+  }
   git(clone, ["config", "user.name", "Admission Adversary"]);
   git(clone, ["config", "user.email", "adversary@example.invalid"]);
   t.after(() => rmSync(parent, { force: true, recursive: true }));
@@ -225,6 +233,26 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
   assert.equal(Object.keys(policy.expectedFiles).length, 73);
   assert.equal(jsonDigest(policy.expectedFiles), "66f60f83fbbb107da9b3f74be88724692ee2673c2f223237ad77274e7680987a");
   assert.ok(Object.values(policy.expectedFiles).every((digest) => /^[0-9a-f]{64}$/.test(digest)));
+});
+
+test("adversarial fixtures preserve Actions-style remote refs from a detached source checkout", { skip: !hasCandidate }, (t) => {
+  const parent = mkdtempSync(resolve(tmpdir(), "public-skills-detached-source-"));
+  const detached = resolve(parent, "candidate");
+  execFileSync("git", ["clone", "--local", "--no-hardlinks", candidateSource, detached], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  git(detached, ["checkout", "--detach", policy.target.baseline.commit]);
+  for (const ref of git(detached, ["for-each-ref", "--format=%(refname)", "refs/heads"]).split("\n").filter(Boolean)) {
+    git(detached, ["update-ref", "-d", ref]);
+  }
+  t.after(() => rmSync(parent, { force: true, recursive: true }));
+
+  const clone = cloneCandidate(t, detached);
+  assert.equal(
+    git(clone, ["rev-parse", "refs/remotes/origin/codex/launch-public-cleanroom"]),
+    policy.target.baseline.commit,
+  );
 });
 
 test("the exact source-approved candidate passes full-history admission", { skip: !hasCandidate }, () => {
