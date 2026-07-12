@@ -114,6 +114,12 @@
       "description": "Exact repository identity, approved commit/tree/parent and ref graph, dynamic event-HEAD, eight-skill, provenance, content-boundary, and full-tree digest contract."
     },
     {
+      "type": "other",
+      "name": "Public skills activation-attestation ruleset policy",
+      "path": "policies/public-skills-activation-attestation-ruleset.json",
+      "description": "Canonical source identity and exact immutable zero-bypass tag-ruleset payload for durable nonce-scoped activation attestations."
+    },
+    {
       "type": "cli",
       "name": "Public skills zero-dependency admission validator",
       "path": "scripts/public-skills-admission.mjs",
@@ -123,7 +129,7 @@
       "type": "cli",
       "name": "Public skills organization-ruleset executor",
       "path": "scripts/public-skills-ruleset-executor.py",
-      "description": "Protected stdlib-only executor that consumes the canonical Doctrine-main record as inert JSON and reconciles the exact organization required-workflow rule under one unique fenced apply lock."
+      "description": "Protected stdlib-only executor that consumes canonical Doctrine-main data, reconciles the required-workflow rule under an authorization-bound lock, creates durable provider attestations, and collects privacy-safe transition evidence."
     },
     {
       "type": "docs",
@@ -169,7 +175,7 @@
     {
       "name": "test:public-skills-ruleset-executor",
       "command": "python3 -B tests/test_public_skills_ruleset_executor.py",
-      "purpose": "Verify fixed numeric identities, independent Doctrine-main parsing, fail-closed phase transitions, live canary reconstruction, fenced single-writer serialization, TOCTOU protection, and canonical mutation evidence without network access."
+      "purpose": "Verify fixed identities, independent Doctrine parsing, live ratchet canaries, authorization-bound fencing, durable immutable attestations, privacy-safe collection, retention-independent active readback, and canonical evidence without network access."
     },
     {
       "name": "lint:github-actions",
@@ -184,6 +190,6 @@
   ],
   "adoption": {
     "status": "adopted",
-    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth. Public-skills external admission becomes enforced only after its merged source SHA is ratcheted into Doctrine, the independently protected executor reconstructs all live evidence, and exact post-mutation plus effective-rules readback succeeds."
+    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth. Public-skills external admission becomes active only after the independently protected executor reconstructs ratchet evidence, completes exact post/effective readback, creates the immutable provider attestation, and seals the privacy-safe Doctrine transition artifact."
   }
 }

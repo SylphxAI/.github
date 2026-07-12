@@ -34,7 +34,12 @@ jobs:
         env:
           CANDIDATE_ROOT: ${{ github.workspace }}/candidate
           CANDIDATE_SHA: ${{ github.sha }}
+          EVENT_BASE_REF: ${{ github.event.merge_group.base_ref || github.base_ref }}
+          EVENT_HEAD_REF: ${{ github.event.merge_group.head_ref || github.head_ref }}
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_REPOSITORY_ID: ${{ github.repository_id }}
+          PULL_REQUEST_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id || '' }}
           POLICY_PATH: ${{ github.workspace }}/policy-source/policies/public-skills-admission.json
           REPORT_PATH: ${{ runner.temp }}/public-skills-external-admission.json
           SOURCE_ROOT: ${{ github.workspace }}/policy-source
@@ -51,6 +56,11 @@ jobs:
             --repository-node-id "$TARGET_REPOSITORY_NODE_ID" \
             --candidate-sha "$CANDIDATE_SHA" \
             --event-name "$EVENT_NAME" \
+            --event-ref "$EVENT_REF" \
+            --base-ref "$EVENT_BASE_REF" \
+            --head-ref "$EVENT_HEAD_REF" \
+            --event-repository-id "$EVENT_REPOSITORY_ID" \
+            --pull-request-head-repository-id "$PULL_REQUEST_HEAD_REPOSITORY_ID" \
             --source-root "$SOURCE_ROOT" \
             --source-sha "$SOURCE_WORKFLOW_SHA" \
             --report "$REPORT_PATH"

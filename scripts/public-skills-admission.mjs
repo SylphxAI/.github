@@ -10,6 +10,7 @@ const MAX_GIT_OUTPUT_BYTES = 128 * 1024 * 1024;
 const REQUIRED_POLICY_KEYS = [
   "schemaVersion",
   "kind",
+  "bundleDigestAlgorithm",
   "source",
   "target",
   "history",
@@ -96,6 +97,11 @@ function validatePolicy(policy) {
     "POLICY_SHAPE",
     "policy.kind is not supported.",
   );
+  requireCondition(
+    policy.bundleDigestAlgorithm === "git-tree-manifest-sha256-v1",
+    "POLICY_SHAPE",
+    "policy.bundleDigestAlgorithm is not supported.",
+  );
 
   requireExactKeys(policy.source, ["repository", "repositoryId", "workflowPath", "validatorPath", "policyPath"], "policy.source");
   requireCondition(policy.source.repository === "SylphxAI/.github", "POLICY_SHAPE", "Source repository must be SylphxAI/.github.");
@@ -104,7 +110,7 @@ function validatePolicy(policy) {
 
   requireExactKeys(
     policy.target,
-    ["repositoryId", "repositoryNodeId", "allowedRepositories", "baseline", "approvedCommits", "approvedRefs", "dynamicEventHead"],
+    ["repositoryId", "repositoryNodeId", "allowedRepositories", "baseline", "approvedCommits", "approvedRefs", "eventContexts", "postMergeCanonicalization", "dynamicEventHead"],
     "policy.target",
   );
   requireCondition(Number.isSafeInteger(policy.target.repositoryId), "POLICY_SHAPE", "Target repository ID must be an integer.");
@@ -143,6 +149,43 @@ function validatePolicy(policy) {
     "Baseline commit and tree must match one approved commit record.",
   );
 
+  const expectedEventContexts = {
+    launch: { pullRequestNumber: 1, headRef: "codex/launch-public-cleanroom", headRepositoryId: 1297840366, mergeGroupAllowed: true },
+    negativeControl: { pullRequestNumber: 2, headRef: "canary/negative", headRepositoryId: 1297840366, mergeGroupAllowed: false },
+    postMergeCanary: { pullRequestNumber: 3, headRef: "codex/post-merge-source-canary", headRepositoryId: 1297840366, mergeGroupAllowed: true },
+  };
+  requireExactKeys(policy.target.eventContexts, Object.keys(expectedEventContexts), "policy.target.eventContexts");
+  for (const [name, expected] of Object.entries(expectedEventContexts)) {
+    const context = policy.target.eventContexts[name];
+    requireExactKeys(context, ["pullRequestNumber", "headRef", "headRepositoryId", "mergeGroupAllowed"], `policy.target.eventContexts.${name}`);
+    requireCondition(JSON.stringify(context) === JSON.stringify(expected), "POLICY_SHAPE", `Event context ${name} differs from the immutable source contract.`);
+  }
+
+  const approvedRoot = policy.target.approvedCommits.find((record) => record.parents.length === 0);
+  const postMerge = policy.target.postMergeCanonicalization;
+  requireExactKeys(postMerge, ["parentCommit", "tree", "mainRefs", "noOpBranchRefs", "releaseTagRefs", "maximumNoOpBranchCommits"], "policy.target.postMergeCanonicalization");
+  requireCondition(postMerge.parentCommit === approvedRoot.commit, "POLICY_SHAPE", "Post-merge canonicalization must descend from the approved fresh root.");
+  requireCondition(postMerge.tree === policy.target.baseline.tree, "POLICY_SHAPE", "Post-merge canonicalization must preserve the exact baseline tree.");
+  requireCondition(postMerge.maximumNoOpBranchCommits === 1, "POLICY_SHAPE", "Post-merge canonicalization permits exactly one no-op branch commit.");
+  requireSortedUniqueStrings(postMerge.mainRefs, "policy.target.postMergeCanonicalization.mainRefs");
+  requireSortedUniqueStrings(postMerge.noOpBranchRefs, "policy.target.postMergeCanonicalization.noOpBranchRefs");
+  requireSortedUniqueStrings(postMerge.releaseTagRefs, "policy.target.postMergeCanonicalization.releaseTagRefs");
+  requireCondition(
+    JSON.stringify(postMerge.mainRefs) === JSON.stringify(["refs/heads/main", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]),
+    "POLICY_SHAPE",
+    "Post-merge canonical main refs differ from the immutable source contract.",
+  );
+  requireCondition(
+    JSON.stringify(postMerge.noOpBranchRefs) === JSON.stringify(["refs/heads/codex/post-merge-source-canary", "refs/remotes/origin/codex/post-merge-source-canary"]),
+    "POLICY_SHAPE",
+    "Post-merge no-op branch refs differ from the immutable source contract.",
+  );
+  requireCondition(
+    JSON.stringify(postMerge.releaseTagRefs) === JSON.stringify(["refs/tags/v1.0.0"]),
+    "POLICY_SHAPE",
+    "Post-merge release tag refs differ from the immutable source contract.",
+  );
+
   requireCondition(Array.isArray(policy.target.approvedRefs) && policy.target.approvedRefs.length > 0, "POLICY_SHAPE", "Approved refs are required.");
   const approvedRefNames = [];
   for (const record of policy.target.approvedRefs) {
@@ -158,13 +201,33 @@ function validatePolicy(policy) {
     "Approved refs must be sorted and unique by name.",
   );
 
-  requireExactKeys(policy.target.dynamicEventHead, ["eventParentSets", "tree", "allowedRefPatterns"], "policy.target.dynamicEventHead");
+  requireExactKeys(policy.target.dynamicEventHead, ["eventParentSets", "tree"], "policy.target.dynamicEventHead");
   requireCondition(policy.target.dynamicEventHead.tree === policy.target.baseline.tree, "POLICY_SHAPE", "Dynamic HEAD tree must equal the pinned baseline tree.");
   requireCondition(Array.isArray(policy.target.dynamicEventHead.eventParentSets) && policy.target.dynamicEventHead.eventParentSets.length === 2, "POLICY_SHAPE", "Dynamic HEAD must define pull_request and merge_group parent sets.");
   const dynamicEvents = [];
+  const expectedDynamicRefs = {
+    merge_group: {
+      runtimeRefPattern: "^refs/heads/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$",
+      gitRefPatterns: ["^refs/remotes/origin/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$"],
+    },
+    pull_request: {
+      runtimeRefPattern: "^refs/pull/[1-9][0-9]*/merge$",
+      gitRefPatterns: ["^refs/remotes/pull/[1-9][0-9]*/merge$"],
+    },
+  };
   for (const eventRule of policy.target.dynamicEventHead.eventParentSets) {
-    requireExactKeys(eventRule, ["event", "parentSets"], "dynamic event rule");
+    requireExactKeys(eventRule, ["event", "runtimeRefPattern", "gitRefPatterns", "parentSets"], "dynamic event rule");
     requireCondition(eventRule.event === "pull_request" || eventRule.event === "merge_group", "POLICY_SHAPE", "Dynamic HEAD events may only be pull_request or merge_group.");
+    requireCondition(eventRule.runtimeRefPattern === expectedDynamicRefs[eventRule.event].runtimeRefPattern, "POLICY_SHAPE", `Dynamic ${eventRule.event} runtime ref pattern differs from the immutable source contract.`);
+    requireCondition(JSON.stringify(eventRule.gitRefPatterns) === JSON.stringify(expectedDynamicRefs[eventRule.event].gitRefPatterns), "POLICY_SHAPE", `Dynamic ${eventRule.event} Git ref patterns differ from the immutable source contract.`);
+    for (const source of [eventRule.runtimeRefPattern, ...eventRule.gitRefPatterns]) {
+      requireCondition(source.startsWith("^") && source.endsWith("$"), "POLICY_SHAPE", "Dynamic ref patterns must be anchored.");
+      try {
+        new RegExp(source);
+      } catch {
+        reject("POLICY_SHAPE", "Dynamic ref pattern does not compile.");
+      }
+    }
     requireCondition(Array.isArray(eventRule.parentSets) && eventRule.parentSets.length > 0, "POLICY_SHAPE", `Dynamic HEAD ${eventRule.event} parent sets are required.`);
     const parentSetKeys = [];
     for (const parents of eventRule.parentSets) {
@@ -176,15 +239,6 @@ function validatePolicy(policy) {
     dynamicEvents.push(eventRule.event);
   }
   requireCondition(JSON.stringify(dynamicEvents) === JSON.stringify(["merge_group", "pull_request"]), "POLICY_SHAPE", "Dynamic HEAD event rules must be sorted and complete.");
-  requireSortedUniqueStrings(policy.target.dynamicEventHead.allowedRefPatterns, "policy.target.dynamicEventHead.allowedRefPatterns", { allowEmpty: true });
-  for (const source of policy.target.dynamicEventHead.allowedRefPatterns) {
-    requireCondition(source.startsWith("^") && source.endsWith("$"), "POLICY_SHAPE", "Dynamic ref patterns must be anchored.");
-    try {
-      new RegExp(source);
-    } catch {
-      reject("POLICY_SHAPE", "Dynamic ref pattern does not compile.");
-    }
-  }
   requireExactKeys(
     policy.history,
     ["maximumBlobBytes", "maximumCommitCount", "allowedModes", "allowedExecutableFiles", "rejectSymlinks", "rejectSubmodules", "rejectBinaryBlobs", "requireAsciiPaths", "requireSingleFreshRoot"],
@@ -223,9 +277,11 @@ function validatePolicy(policy) {
   requireCondition(JSON.stringify(skillIds) === JSON.stringify(sorted(new Set(skillIds))), "POLICY_SHAPE", "Skill IDs must be sorted and unique.");
   let originalCount = 0;
   for (const skill of policy.skills) {
-    requireExactKeys(skill, ["id", "provenanceClass", "sourceCommit", "sourcePath"], `skill ${skill.id ?? "unknown"}`);
+    requireExactKeys(skill, ["id", "provenanceClass", "sourceCommit", "sourcePath", "targetFileCount", "targetBundleDigest"], `skill ${skill.id ?? "unknown"}`);
     requireCondition(/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skill.id), "POLICY_SHAPE", `Skill ID ${skill.id} is invalid.`);
     requireCondition(skill.sourcePath === `skills/${skill.id}`, "POLICY_SHAPE", `Skill ${skill.id} has the wrong source path.`);
+    requireCondition(Number.isSafeInteger(skill.targetFileCount) && skill.targetFileCount > 0, "POLICY_SHAPE", `Skill ${skill.id} targetFileCount is invalid.`);
+    requireCondition(/^[0-9a-f]{64}$/.test(skill.targetBundleDigest), "POLICY_SHAPE", `Skill ${skill.id} targetBundleDigest is invalid.`);
     if (skill.provenanceClass === "public-original") {
       originalCount += 1;
       requireCondition(skill.sourceCommit === null, "POLICY_SHAPE", `Public-original skill ${skill.id} must not claim an import commit.`);
@@ -280,6 +336,26 @@ function git(candidateRoot, args, { text = true } = {}) {
     const stderr = Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : String(error.stderr ?? "");
     reject("GIT_FAILURE", `Git inspection failed for ${args[0]}: ${stderr.trim() || error.message}`);
   }
+}
+
+function transferBundleAtCommit(candidateRoot, head, sourcePath) {
+  const prefix = `${sourcePath}/`;
+  const raw = git(candidateRoot, ["ls-tree", "-rz", head, "--", `:(literal)${sourcePath}`], { text: false });
+  const entries = raw.toString("utf8").split("\0").filter(Boolean).map((entry) => {
+    const match = /^([0-7]{6}) ([a-z]+) ([0-9a-f]+)\t([\s\S]+)$/.exec(entry);
+    requireCondition(match !== null, "BUNDLE_CONTRACT", `Cannot parse Git tree entry for ${sourcePath}.`);
+    const [, mode, type, oid, file] = match;
+    requireCondition(file.startsWith(prefix), "BUNDLE_CONTRACT", `Git path escaped approved source ${sourcePath}.`);
+    requireCondition(type === "blob" && ["100644", "100755"].includes(mode), "BUNDLE_CONTRACT", `Unsupported Git object ${mode} ${type} at ${file}.`);
+    return {
+      path: file.slice(prefix.length),
+      mode,
+      type,
+      sha256: sha256(git(candidateRoot, ["cat-file", "blob", oid], { text: false })),
+    };
+  }).sort((left, right) => Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8")));
+  requireCondition(entries.length > 0, "BUNDLE_CONTRACT", `Skill source ${sourcePath} is empty.`);
+  return { fileCount: entries.length, bundleDigest: sha256(Buffer.from(JSON.stringify(entries))) };
 }
 
 function parseTree(candidateRoot, commit) {
@@ -374,6 +450,10 @@ function validateAdmissions(candidateRoot, head, policy) {
   requireCondition(JSON.stringify(catalog.skills.map((skill) => skill.name)) === JSON.stringify(expectedIds), "CATALOG_CONTRACT", "Catalog must contain the exact ordered eight-skill allowlist.");
 
   for (const id of expectedIds) {
+    const expected = expectedById.get(id);
+    const transfer = transferBundleAtCommit(candidateRoot, head, `skills/${id}`);
+    requireCondition(transfer.fileCount === expected.targetFileCount, "BUNDLE_CONTRACT", `Skill ${id} target file count differs from source policy.`);
+    requireCondition(transfer.bundleDigest === expected.targetBundleDigest, "BUNDLE_CONTRACT", `Skill ${id} target bundle digest differs from source policy.`);
     const bytes = git(candidateRoot, ["show", `${head}:skills/${id}/SKILL.md`], { text: false });
     const text = decodeText(bytes, `${head}:skills/${id}/SKILL.md`, policy);
     const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(text);
@@ -389,12 +469,41 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
   const gitDirectory = git(root, ["rev-parse", "--absolute-git-dir"]).trim();
   requireCondition(gitDirectory.length > 0, "NOT_GIT_REPOSITORY", "Candidate root is not a Git repository.");
 
-  requireExactKeys(runtimeIdentity, ["repository", "repositoryId", "repositoryNodeId", "candidateSha", "eventName"], "runtime identity");
+  requireExactKeys(runtimeIdentity, ["repository", "repositoryId", "repositoryNodeId", "candidateSha", "eventName", "eventRef", "baseRef", "headRef", "eventRepositoryId", "pullRequestHeadRepositoryId"], "runtime identity");
   requireCondition(policy.target.allowedRepositories.includes(runtimeIdentity.repository), "REPOSITORY_IDENTITY", "Runtime repository slug is not allowed.");
   requireCondition(String(policy.target.repositoryId) === String(runtimeIdentity.repositoryId), "REPOSITORY_IDENTITY", "Runtime repository numeric ID does not match policy.");
   requireCondition(policy.target.repositoryNodeId === runtimeIdentity.repositoryNodeId, "REPOSITORY_IDENTITY", "Runtime repository node ID does not match policy.");
   requireCondition(/^[0-9a-f]{40}$/.test(runtimeIdentity.candidateSha), "REPOSITORY_IDENTITY", "Runtime candidate SHA must be a full commit ID.");
   requireCondition(typeof runtimeIdentity.eventName === "string" && runtimeIdentity.eventName.length > 0, "REPOSITORY_IDENTITY", "Runtime event name is required.");
+  for (const field of ["eventRef", "baseRef", "headRef"]) {
+    requireCondition(typeof runtimeIdentity[field] === "string", "REPOSITORY_IDENTITY", `Runtime ${field} must be a string.`);
+  }
+  requireCondition(String(runtimeIdentity.eventRepositoryId) === String(policy.target.repositoryId), "REPOSITORY_IDENTITY", "Runtime event repository differs from the target repository.");
+  requireCondition(typeof runtimeIdentity.pullRequestHeadRepositoryId === "string", "REPOSITORY_IDENTITY", "Runtime pull-request head repository ID must be a string.");
+
+  let eventContext = null;
+  if (runtimeIdentity.eventName === "pull_request") {
+    requireCondition(runtimeIdentity.baseRef === "main", "REPOSITORY_IDENTITY", "Pull-request base ref must be main.");
+    const matches = Object.entries(policy.target.eventContexts).filter(([, context]) => (
+      runtimeIdentity.eventRef === `refs/pull/${context.pullRequestNumber}/merge`
+      && runtimeIdentity.headRef === context.headRef
+      && String(context.headRepositoryId) === runtimeIdentity.pullRequestHeadRepositoryId
+    ));
+    requireCondition(matches.length === 1, "REPOSITORY_IDENTITY", "Pull-request number/head ref does not bind one admitted event context.");
+    eventContext = matches[0][0];
+  } else if (runtimeIdentity.eventName === "merge_group") {
+    requireCondition(runtimeIdentity.baseRef === "refs/heads/main", "REPOSITORY_IDENTITY", "Merge-group base ref must be refs/heads/main.");
+    requireCondition(runtimeIdentity.headRef === runtimeIdentity.eventRef, "REPOSITORY_IDENTITY", "Merge-group head ref must equal the trusted event ref.");
+    requireCondition(runtimeIdentity.pullRequestHeadRepositoryId === "", "REPOSITORY_IDENTITY", "Merge-group payload must not claim direct pull-request head-repository evidence.");
+    const matches = Object.entries(policy.target.eventContexts).filter(([, context]) => (
+      context.mergeGroupAllowed
+      && new RegExp(`^refs/heads/gh-readonly-queue/main/pr-${context.pullRequestNumber}-[0-9a-f]+$`).test(runtimeIdentity.eventRef)
+    ));
+    requireCondition(matches.length === 1, "REPOSITORY_IDENTITY", "Merge-group ref does not bind one admitted pull request.");
+    eventContext = matches[0][0];
+  } else {
+    requireCondition(runtimeIdentity.eventRef === "" && runtimeIdentity.baseRef === "" && runtimeIdentity.headRef === "" && runtimeIdentity.pullRequestHeadRepositoryId === "", "REPOSITORY_IDENTITY", "Non-event baseline identity must not claim pull-request refs or head-repository evidence.");
+  }
 
   const head = git(root, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
   requireCondition(head === runtimeIdentity.candidateSha, "CANDIDATE_SHA", "Checked-out HEAD does not match the event candidate SHA.");
@@ -484,40 +593,130 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
   }
 
   const approvedCommitMap = new Map(policy.target.approvedCommits.map((record) => [record.commit, record]));
-  for (const record of policy.target.approvedCommits) {
-    requireCondition(commitSet.has(record.commit), "MISSING_APPROVED_COMMIT", `Approved commit ${record.commit} is not reachable.`);
-    const actual = commitMetadata.get(record.commit);
-    requireCondition(actual?.tree === record.tree, "APPROVED_COMMIT_DRIFT", `Approved commit ${record.commit} has the wrong tree.`);
-    requireCondition(JSON.stringify(actual.parents) === JSON.stringify(record.parents), "APPROVED_COMMIT_DRIFT", `Approved commit ${record.commit} has the wrong parent graph.`);
+  const reachableApproved = policy.target.approvedCommits.filter((record) => commitSet.has(record.commit));
+  const allApprovedReachable = reachableApproved.length === policy.target.approvedCommits.length;
+  const postMerge = policy.target.postMergeCanonicalization;
+  let graphVariant;
+  let canonicalMainCommit = null;
+  let noOpBranchCommit = null;
+  let usesDynamicEventHead = false;
+  if (allApprovedReachable) {
+    graphVariant = "launch";
+    for (const record of policy.target.approvedCommits) {
+      const actual = commitMetadata.get(record.commit);
+      requireCondition(actual?.tree === record.tree, "APPROVED_COMMIT_DRIFT", `Approved commit ${record.commit} has the wrong tree.`);
+      requireCondition(JSON.stringify(actual.parents) === JSON.stringify(record.parents), "APPROVED_COMMIT_DRIFT", `Approved commit ${record.commit} has the wrong parent graph.`);
+    }
+    const unknownCommits = commits.filter((commit) => !approvedCommitMap.has(commit));
+    if (unknownCommits.length > 0) {
+      requireCondition(unknownCommits.length === 1 && unknownCommits[0] === head, "UNAPPROVED_COMMIT", "Reachable launch history contains a non-approved commit outside the event HEAD exception.");
+      const eventRule = policy.target.dynamicEventHead.eventParentSets.find((rule) => rule.event === runtimeIdentity.eventName);
+      requireCondition(eventRule, "UNAPPROVED_COMMIT", `Event ${runtimeIdentity.eventName} cannot use a dynamic candidate HEAD.`);
+      requireCondition(eventContext === "launch", "REPOSITORY_IDENTITY", "Launch graph is bound only to the admitted launch pull request.");
+      const actual = commitMetadata.get(head);
+      requireCondition(actual.tree === policy.target.dynamicEventHead.tree, "UNAPPROVED_COMMIT", "Dynamic event HEAD has an unapproved tree.");
+      requireCondition(
+        eventRule.parentSets.some((parents) => JSON.stringify(parents) === JSON.stringify(actual.parents)),
+        "UNAPPROVED_COMMIT",
+        `Dynamic ${runtimeIdentity.eventName} HEAD has an unapproved parent graph.`,
+      );
+      usesDynamicEventHead = true;
+    } else {
+      requireCondition(approvedCommitMap.has(head), "UNAPPROVED_COMMIT", "Candidate HEAD is not approved.");
+    }
+  } else {
+    graphVariant = "post-merge-canonical";
+    requireCondition(
+      reachableApproved.length === 1 && reachableApproved[0].commit === approvedRoot.commit,
+      "MIXED_HISTORY_VARIANT",
+      "Post-merge history must contain the fresh root and no partial launch-only commit graph.",
+    );
+    const canonicalCandidates = commits.filter((commit) => {
+      if (commit === approvedRoot.commit) return false;
+      const actual = commitMetadata.get(commit);
+      return actual?.tree === postMerge.tree
+        && JSON.stringify(actual.parents) === JSON.stringify([postMerge.parentCommit]);
+    });
+    requireCondition(canonicalCandidates.length === 1, "CANONICAL_MAIN", "Post-merge history must contain exactly one same-tree squash commit over the fresh root.");
+    [canonicalMainCommit] = canonicalCandidates;
+    const remaining = commits.filter((commit) => commit !== approvedRoot.commit && commit !== canonicalMainCommit);
+    if (remaining.length === 0) {
+      requireCondition(head === canonicalMainCommit, "CANONICAL_MAIN", "Post-merge baseline HEAD must be the canonical squash commit.");
+      requireCondition(!["pull_request", "merge_group"].includes(runtimeIdentity.eventName), "CANONICAL_MAIN", "A pull-request or merge-group event must contain its exact dynamic event HEAD.");
+    } else {
+      requireCondition(["pull_request", "merge_group"].includes(runtimeIdentity.eventName), "UNAPPROVED_COMMIT", "Post-merge history extensions are allowed only for pull-request or merge-group events.");
+      requireCondition(eventContext === "postMergeCanary", "REPOSITORY_IDENTITY", "Post-merge graph is bound only to the admitted no-op canary pull request.");
+      requireCondition(remaining.includes(head), "UNAPPROVED_COMMIT", "Post-merge dynamic event HEAD is not the checked-out commit.");
+      const eventHead = commitMetadata.get(head);
+      requireCondition(eventHead?.tree === postMerge.tree, "UNAPPROVED_COMMIT", "Post-merge dynamic event HEAD changed the canonical tree.");
+      requireCondition(remaining.length === postMerge.maximumNoOpBranchCommits + 1, "UNAPPROVED_COMMIT", "Post-merge event history must contain the exact no-op source branch and one event HEAD.");
+      const branchCandidates = remaining.filter((commit) => commit !== head);
+      requireCondition(branchCandidates.length === 1, "UNAPPROVED_COMMIT", "Post-merge event must contain exactly one no-op branch commit.");
+      [noOpBranchCommit] = branchCandidates;
+      const branch = commitMetadata.get(noOpBranchCommit);
+      requireCondition(
+        branch?.tree === postMerge.tree
+          && JSON.stringify(branch.parents) === JSON.stringify([canonicalMainCommit]),
+        "UNAPPROVED_COMMIT",
+        "Post-merge branch commit is not an exact same-tree child of canonical main.",
+      );
+      const approvedEventParents = runtimeIdentity.eventName === "merge_group"
+        ? [[canonicalMainCommit], [canonicalMainCommit, noOpBranchCommit]]
+        : [[canonicalMainCommit, noOpBranchCommit]];
+      requireCondition(
+        approvedEventParents.some((parents) => JSON.stringify(eventHead.parents) === JSON.stringify(parents)),
+        "UNAPPROVED_COMMIT",
+        "Post-merge dynamic event HEAD has an unapproved parent graph.",
+      );
+      usesDynamicEventHead = true;
+    }
   }
 
-  const unknownCommits = commits.filter((commit) => !approvedCommitMap.has(commit));
-  let usesDynamicEventHead = false;
-  if (unknownCommits.length > 0) {
-    requireCondition(unknownCommits.length === 1 && unknownCommits[0] === head, "UNAPPROVED_COMMIT", "Reachable history contains a non-approved commit outside the event HEAD exception.");
-    const eventRule = policy.target.dynamicEventHead.eventParentSets.find((rule) => rule.event === runtimeIdentity.eventName);
-    requireCondition(eventRule, "UNAPPROVED_COMMIT", `Event ${runtimeIdentity.eventName} cannot use a dynamic candidate HEAD.`);
-    const actual = commitMetadata.get(head);
-    requireCondition(actual.tree === policy.target.dynamicEventHead.tree, "UNAPPROVED_COMMIT", "Dynamic event HEAD has an unapproved tree.");
+  if (["pull_request", "merge_group"].includes(runtimeIdentity.eventName)) {
     requireCondition(
-      eventRule.parentSets.some((parents) => JSON.stringify(parents) === JSON.stringify(actual.parents)),
+      usesDynamicEventHead,
       "UNAPPROVED_COMMIT",
-      `Dynamic ${runtimeIdentity.eventName} HEAD has an unapproved parent graph.`,
+      "A pull-request or merge-group event must check out its exact provider-generated dynamic HEAD.",
     );
-    usesDynamicEventHead = true;
-  } else {
-    requireCondition(approvedCommitMap.has(head), "UNAPPROVED_COMMIT", "Candidate HEAD is not approved.");
   }
 
   const approvedRefMap = new Map(policy.target.approvedRefs.map((record) => [record.name, new Set(record.commits)]));
-  const dynamicRefPatterns = policy.target.dynamicEventHead.allowedRefPatterns.map((source) => new RegExp(source));
+  const eventPullRequestNumber = eventContext === null
+    ? null
+    : policy.target.eventContexts[eventContext].pullRequestNumber;
+  const dynamicRefPatterns = !usesDynamicEventHead
+    ? []
+    : runtimeIdentity.eventName === "pull_request"
+      ? [new RegExp(`^refs/remotes/pull/${eventPullRequestNumber}/merge$`)]
+      : [new RegExp(`^refs/remotes/origin/gh-readonly-queue/main/pr-${eventPullRequestNumber}-[0-9a-f]+$`)];
+  let canonicalMainRefCount = 0;
+  let noOpBranchRefCount = 0;
   for (const [ref, oid, type] of refs) {
     requireCondition(type !== "tag", "UNAPPROVED_TAG", `Annotated tag ${ref} is not approved.`);
     requireCondition(type === "commit", "NON_COMMIT_REF", `Ref ${ref} points to unsupported object type ${type}.`);
-    const approvedTargets = approvedRefMap.get(ref);
-    if (approvedTargets?.has(oid)) continue;
-    if (usesDynamicEventHead && oid === head && dynamicRefPatterns.some((pattern) => pattern.test(ref))) continue;
+    if (graphVariant === "launch") {
+      const approvedTargets = approvedRefMap.get(ref);
+      if (approvedTargets?.has(oid)) continue;
+      if (usesDynamicEventHead && oid === head && dynamicRefPatterns.some((pattern) => pattern.test(ref))) continue;
+    } else {
+      if (postMerge.mainRefs.includes(ref) && oid === canonicalMainCommit) {
+        canonicalMainRefCount += 1;
+        continue;
+      }
+      if (noOpBranchCommit !== null && postMerge.noOpBranchRefs.includes(ref) && oid === noOpBranchCommit) {
+        noOpBranchRefCount += 1;
+        continue;
+      }
+      if (postMerge.releaseTagRefs.includes(ref) && oid === canonicalMainCommit) continue;
+      if (usesDynamicEventHead && oid === head && dynamicRefPatterns.some((pattern) => pattern.test(ref))) continue;
+    }
     reject("UNAPPROVED_REF", `Ref ${ref} is not bound to an approved commit or permitted dynamic event HEAD.`);
+  }
+  if (graphVariant === "post-merge-canonical") {
+    requireCondition(canonicalMainRefCount > 0, "CANONICAL_MAIN", "Post-merge history has no approved main ref bound to the canonical squash commit.");
+    if (usesDynamicEventHead) {
+      requireCondition(noOpBranchRefCount > 0, "UNAPPROVED_REF", "Post-merge event has no exact target-owned no-op branch ref bound to its branch commit.");
+    }
   }
 
   const headEntries = parseTree(root, head);
@@ -550,9 +749,22 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
       repositoryId: Number(runtimeIdentity.repositoryId),
       repositoryNodeId: runtimeIdentity.repositoryNodeId,
       eventName: runtimeIdentity.eventName,
+      eventContext,
+      eventRef: runtimeIdentity.eventRef,
+      baseRef: runtimeIdentity.baseRef,
+      headRef: runtimeIdentity.headRef,
+      eventRepositoryId: Number(runtimeIdentity.eventRepositoryId),
+      pullRequestHeadRepositoryId: runtimeIdentity.pullRequestHeadRepositoryId === ""
+        ? null
+        : Number(runtimeIdentity.pullRequestHeadRepositoryId),
+      preboundHeadRepositoryId: eventContext === null
+        ? null
+        : policy.target.eventContexts[eventContext].headRepositoryId,
       commit: head,
       tree: headTree,
       rootCommit: roots[0],
+      graphVariant,
+      canonicalMainCommit,
       dynamicEventHead: usesDynamicEventHead,
     },
     inventory: {
@@ -576,8 +788,11 @@ function parseArguments(argv) {
     requireCondition(!Object.hasOwn(values, flag.slice(2)), "CLI_ARGUMENT", `Duplicate argument ${flag}.`);
     values[flag.slice(2)] = value;
   }
-  const required = ["policy", "candidate", "repository", "repository-id", "repository-node-id", "candidate-sha", "event-name", "source-root", "source-sha", "report"];
-  for (const name of required) requireCondition(typeof values[name] === "string" && values[name].length > 0, "CLI_ARGUMENT", `Missing --${name}.`);
+  const required = ["policy", "candidate", "repository", "repository-id", "repository-node-id", "candidate-sha", "event-name", "event-ref", "base-ref", "head-ref", "event-repository-id", "pull-request-head-repository-id", "source-root", "source-sha", "report"];
+  for (const name of required) requireCondition(typeof values[name] === "string", "CLI_ARGUMENT", `Missing --${name}.`);
+  for (const name of required.filter((name) => name !== "pull-request-head-repository-id")) {
+    requireCondition(values[name].length > 0, "CLI_ARGUMENT", `Missing --${name}.`);
+  }
   return values;
 }
 
@@ -605,6 +820,11 @@ export function runCli(argv) {
         repositoryNodeId: args["repository-node-id"],
         candidateSha: args["candidate-sha"],
         eventName: args["event-name"],
+        eventRef: args["event-ref"],
+        baseRef: args["base-ref"],
+        headRef: args["head-ref"],
+        eventRepositoryId: args["event-repository-id"],
+        pullRequestHeadRepositoryId: args["pull-request-head-repository-id"],
       },
     });
     report.source = { repository: policy.source.repository, commit: sourceHead };

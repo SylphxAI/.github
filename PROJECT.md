@@ -60,6 +60,7 @@ and delivery evidence still belong to the consuming repository.
 - `brand/`
 - `COMPANY.md`
 - `policies/public-skills-admission.json`
+- `policies/public-skills-activation-attestation-ruleset.json`
 - `scripts/public-skills-admission.mjs`
 - `scripts/public-skills-ruleset-executor.py`
 
@@ -95,6 +96,13 @@ history, identity, or content edits must follow a source-policy update and
 ruleset-SHA ratchet first. Organization-rule mutations additionally require a
 canonical Doctrine-main record, protected executor-main byte identity, a
 unique source-owned fenced apply lock, repeated pre-mutation head/live
-readback, and exact post-mutation/effective-rules readback. Out-of-band ruleset
-mutation is an incident: GitHub exposes no conditional ruleset PUT, so every
-supported writer must share the one durable lock.
+readback, exact post-mutation/effective-rules readback, and a permanent
+provider-hosted activation-attestation ref. The lock claim binds the exact
+Doctrine revision, desired payload, planned action, and pre-readback revision.
+After the lock is released and absence is confirmed, a deterministic annotated
+tag binds the full lock lifecycle, real provider request ID, pre/post state,
+and canonical source-owned attestation-ruleset policy. The separate active
+zero-bypass tag ruleset makes those nonce-scoped refs immutable. Out-of-band
+ruleset mutation is an incident: GitHub exposes no conditional ruleset PUT, so
+every supported writer must share the one durable lock and attestation
+protocol.

@@ -63,19 +63,55 @@ and rejects redirects.
 Every authorized `--apply` first creates a unique annotated Git tag object in
 repository ID `1091169653`, then atomically acquires the single fixed ref
 `refs/tags/sylph-locks/public-skills-ruleset-executor`. The cryptographic nonce
-and unique tag-object SHA form the fencing identity. The executor verifies
-exact ownership before a ruleset request, holds the ref through post-readback,
-and deletes it only after proving it still points to that acquisition. Lock
-contention blocks. Dry-run and readback never touch the lock. A crashed owner
-may leave a fail-closed stale lock; expiry, stealing, force-update, and automatic
-recovery do not exist.
+and unique tag-object SHA form the fencing identity. A read-only preflight binds
+the exact Doctrine revision, desired payload digest, planned action, and
+pre-readback revision into that immutable claim. The executor verifies exact
+ownership and rebuilds the same authorization before a ruleset request, holds
+the ref through post-readback, and deletes it only after proving it still
+points to that acquisition. Lock contention blocks. Dry-run and readback never
+touch the lock. A crashed owner may leave a fail-closed stale lock; expiry,
+stealing, force-update, and automatic recovery do not exist.
+
+Successful activation also creates a durable provider witness after lock
+release and confirmed absence. Source-owned policy
+`policies/public-skills-activation-attestation-ruleset.json` declares one
+active, zero-bypass organization tag ruleset over repository ID `1091169653`
+and the exact nonce-scoped prefix. It forbids update, deletion, and
+non-fast-forward changes but deliberately permits first creation. The
+provider-assigned ruleset ID is discovered and bound in evidence rather than
+hard-coded. Organization policy bytes are cross-checked with the pinned
+actor's repository-effective `current_user_can_bypass: never` observation.
+
+The executor rechecks executor, Doctrine, target, live/effective state, and
+that immutable tag ruleset, then creates the deterministic annotated tag/ref
+`refs/tags/sylph-attestations/public-skills-ruleset/<lock-nonce>`. Its claim
+binds the full lock claim/tag SHA and released/absent lifecycle, executor bytes,
+actor, pre-ratchet Doctrine record, desired payload, ruleset ID, exact pre/post
+state and effective digests, real provider request ID, source policy identity,
+and live attestation-ruleset ID/digest. An exact existing ref is idempotent;
+foreign, mutable, overwritten, reused, or missing evidence fails closed.
+Attestation failure produces a sealed pending-attestation report that a narrow
+finalizer may reconcile without another organization-ruleset write.
+The lock authorization itself binds this exact attestation-ruleset evidence;
+the executor rechecks it immediately before activation and again after
+permanent-ref creation. Post-release recovery reconstructs the lock claim and
+digest but never assumes the deleted ephemeral tag object survives Git GC.
 
 Apply re-reads executor main, Doctrine main, target identity, live ruleset, and
 activation evidence immediately before writing. Every write requires exact
 post-readback; active state additionally requires effective-rules readback.
 Canonical reports bind actor, executor, desired-state, source, target,
 precondition, request, and postcondition digests without emitting credentials
-or desired-state bytes.
+or desired-state bytes. A bounded collector persists only a privacy-safe audit
+allowlist, combines it with current live/effective readback and the permanent
+attestation, then recaptures all current provider state after audit lookup and
+immediately before sealing the fixed Doctrine activation artifact. `active` is a
+readback-only steady state and re-verifies the exact historical record,
+executor, sealed canary-summary cross-bindings, artifact, provider attestation,
+immutable tag ruleset, and current state without mutation. It deliberately
+does not depend on retention-limited historical Actions or pull-request APIs,
+or on the deleted ephemeral lock tag object after its claim has been
+live-verified and durably sealed into the immutable provider attestation.
 
 ## Consequences
 
@@ -88,6 +124,9 @@ or desired-state bytes.
   committed to Doctrine.
 - Every canonical writer shares one durable lock; an out-of-band administrator
   mutation is a policy violation and an incident, not a second supported writer.
+- A protected Doctrine commit plus an internally hashed JSON report is not
+  sufficient activation proof; the provider-hosted immutable attestation ref
+  is the durable transition witness.
 - GitHub exposes no conditional organization-ruleset PUT. The lock serializes
   cooperating authorized writers, while exact live readbacks detect but cannot
   cryptographically fence a provider administrator acting outside the contract.
@@ -96,6 +135,9 @@ or desired-state bytes.
   and live rule must all ratchet to repository ID `1297840366`.
 - Uncertain post-write readback is an error requiring live reconciliation, not
   success.
+- Attestation unavailability never permits a second active mutation. The exact
+  pending report is finalized idempotently, while ratchet/live-active remains
+  blocked pending transition evidence.
 
 ## Alternatives considered
 

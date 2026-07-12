@@ -15,8 +15,10 @@ Decision records:
 | Workflow | `.github/workflows/public-skills-admission.yml` |
 | Validator | `scripts/public-skills-admission.mjs` |
 | Policy | `policies/public-skills-admission.json` |
+| Activation-attestation policy | `policies/public-skills-activation-attestation-ruleset.json` |
 | Required job | `public-skills-external-admission/pass` |
 | Evidence file | `public-skills-external-admission.json` |
+| Activation evidence | `control-plane/evidence/public-skills-ruleset-activation.json` in Doctrine |
 
 The policy manifest is the current snapshot source of truth. This document
 defines mechanics and update order; it does not duplicate file digests.
@@ -36,8 +38,21 @@ The workflow must:
   `persist-credentials: false`;
 - checkout `SylphxAI/.github` at `github.workflow_sha`, separately from the
   candidate; and
-- pass `github.event_name` as an explicit validator input and run only the
-  validator from that source checkout.
+- pass the provider-owned event name, event ref, base ref, head ref, event
+  repository ID, and pull-request head repository ID as explicit validator
+  inputs and run only the validator from that source checkout.
+
+The source policy binds the launch, negative-control, and post-merge canary to
+their exact pull-request numbers and same-repository head refs. Pull-request
+events must use the matching `refs/pull/<number>/merge` ref and `main` base.
+For pull-request events, the provider head-repository ID must equal the exact
+source-policy prebinding. Merge-group payloads do not contain that field, so
+they must not claim direct head-repository evidence; their same-repository
+identity comes from the immutable prebinding of the reserved PR number and
+head ref. Merge-group events must use the matching
+`refs/heads/gh-readonly-queue/main/pr-<number>-<hex>` ref as both provider event
+and head ref, with `refs/heads/main` as base. A fork head repository, renamed
+branch, different pull request, or mismatched queue ref fails closed.
 
 The organization ruleset must bind the source repository, workflow path, and
 exact merged source SHA. Workflow presence in this repository alone is not
@@ -90,7 +105,23 @@ The lifecycle is closed:
    control, rule-suite identities, source-policy baseline, chronology, and
    target effective-rules coverage. Doctrine evidence supplies locators and
    claims; it is never accepted without live reconstruction.
-4. `recovery` preserves the same rule identity and permits only an enforcement
+4. A successful ratchet first returns `APPLIED_PENDING_ATTESTATION`, then
+   creates or idempotently verifies the nonce-scoped immutable provider
+   attestation. With that ref present it returns
+   `APPLIED_PENDING_EVIDENCE`. A ratchet record that already reads live active
+   is blocked from another ruleset write and can only continue through the
+   attestation/evidence finalizer.
+5. `active` is permanent readback-only state. It requires the fixed Doctrine
+   artifact, exact historical ratchet record and executor bytes, sealed canary
+   summaries cross-bound to the historical evidence, audit projection, durable
+   attestation tag/ref, immutable attestation ruleset, and current
+   live/effective state. It does not re-fetch retention-limited historical
+   Actions, jobs, rule suites, negative-control PR data, or the deleted
+   ephemeral lock tag object. The active verifier reconstructs the exact lock
+   claim and digest from sealed evidence and verifies the durable protected
+   attestation that was created only after the live lock-object check and
+   confirmed lock-ref absence. Even `--apply` performs no write.
+6. `recovery` preserves the same rule identity and permits only an enforcement
    downgrade to `evaluate` or `disabled`. It never deletes, adds a bypass, or
    repairs unrelated structural drift under recovery authority.
 
@@ -101,15 +132,21 @@ from the existing `github.com` GitHub CLI keyring. Token/host/config environment
 overrides are stripped, redirects are rejected, and all REST calls use fixed
 `https://api.github.com` endpoints.
 
-Every canonical mutation is serialized by one source-owned lock. After exact
-executor and actor verification, apply creates a unique annotated tag object at
-the verified executor commit and atomically creates the fixed ref
+Every canonical mutation starts with a fully read-only preflight. It resolves
+the exact Doctrine commit/blob/bytes/semantic identity, desired payload digest,
+planned action, and pre-readback ruleset revision. Apply then creates a unique
+annotated tag object at the verified executor commit and atomically creates the
+fixed ref
 `refs/tags/sylph-locks/public-skills-ruleset-executor` in repository ID
-`1091169653`. The tag claim binds the repository, ref, executor commit, actor,
-64-hex cryptographic nonce, and acquisition time as canonical JSON. The unique
-tag-object SHA is the fencing identity even when consecutive runs share the
-same executor commit. A foreign or malformed ref, ambiguous acquisition,
-ownership loss, or release uncertainty fails closed.
+`1091169653`. The canonical claim binds that full preflight authorization in
+addition to repository, ref, executor commit, actor, 64-hex cryptographic
+nonce, and acquisition time. The unique tag-object SHA is the fencing identity
+even when consecutive runs share the same executor commit. After acquisition,
+Doctrine, live state, and the exact immutable-attestation ruleset evidence are
+rebuilt and must equal the bound authorization before any write. The
+attestation ruleset is read once more after the final lock/heads/live guard and
+immediately before the activation request. A foreign or malformed ref, ambiguous acquisition,
+ownership loss, replay, or release uncertainty fails closed.
 
 The lock remains held across Doctrine/live reads, the ruleset request, and all
 post/effective readbacks. Release first proves that the ref and annotated tag
@@ -119,11 +156,53 @@ automatic stale-lock recovery. A crash may halt future mutation until a
 separately authorized incident recovery; safety wins over availability.
 Dry-run and readback make no lock mutation.
 
+Activation additionally requires a permanent provider witness. The canonical
+source-owned policy
+`policies/public-skills-activation-attestation-ruleset.json` declares the
+unique organization ruleset
+`immutable-public-skills-activation-attestations`: target `tag`, enforcement
+`active`, repository ID `1091169653`, no bypass, exact include
+`refs/tags/sylph-attestations/public-skills-ruleset/*`, and only `update`,
+`deletion`, and `non_fast_forward` restrictions. Absence, duplication,
+an actor-effective repository readback other than
+`current_user_can_bypass: never`, a `creation` restriction, or any payload
+drift blocks before the activation write. The organization policy readback and
+the pinned actor's repository-effective readback are cross-checked; the live
+provider-assigned ruleset ID and normalized digest are evidence, and the ID is
+never hard-coded.
+
+After the update's exact post/effective readback, apply releases the lock and
+confirms provider absence. It then rechecks executor, Doctrine, target, live
+state, and the attestation ruleset before creating
+`refs/tags/sylph-attestations/public-skills-ruleset/<lock-nonce>`. The annotated
+tag targets the executor commit and binds the complete lock claim/tag SHA,
+released/absent lifecycle, executor bytes, actor, Doctrine revision, desired
+payload, ruleset ID, pre/post revision and state/effective digests, mutation
+outcome, real `X-GitHub-Request-Id`, attestation policy, live immutable-ruleset
+ID/digest, and the deterministic evidence cutoff. `evidenceCutoffAt` is the
+provider-confirmed fixed-lock absence observation, not a claim about tag/ref
+creation time. The tagger date deliberately reuses that cutoff so retries
+produce the same Git object.
+Existing exact refs are idempotent success; foreign refs, force update,
+overwrite, reuse, or deletion are forbidden. If creation is unavailable or
+uncertain, the sealed `APPLIED_PENDING_ATTESTATION` report is the only finalizer
+input and the ruleset update is never retried. Finalization reconstructs and
+digest-binds the released lock claim but does not depend on indefinite provider
+retention of the now-unreferenced ephemeral lock tag object. After tag/ref
+creation it re-reads the actor-effective immutable ruleset, executor, Doctrine,
+target, active/effective state, fixed-lock absence, and exact permanent ref/tag
+before it may report `APPLIED_PENDING_EVIDENCE`.
+
 Before a write, the executor re-reads both protected executor `main` and
 Doctrine `main`; either moving since the initial read blocks the mutation.
 Every write is followed by exact ruleset readback, and active enforcement also
 requires effective-rules readback. A sent request followed by mismatching or
 unavailable readback is an error, never reported as success.
+
+The collector performs the bounded audit lookup only after durable attestation,
+then re-reads those same current authorities and active/effective state again
+immediately before capturing and sealing the Doctrine artifact. Audit retry
+latency can therefore never seal a stale pre-audit live snapshot.
 
 GitHub does not expose a conditional organization-ruleset PUT. The fixed lock
 is therefore mandatory for every supported writer. Direct administrator or
@@ -136,9 +215,20 @@ lock repository/ref/tag-object/message digest/executor commit/nonce/actor and
 acquire/release outcomes,
 Doctrine commit/blob/exact/semantic digests, source SHA and file blobs, target
 identity, normalized pre-readback, exact request digest, mutation outcome, and
-normalized post-readback. The top-level `evidenceDigest` covers the entire
-report except itself. Credentials, headers, and desired-state bytes are never
-emitted.
+normalized post-readback, immutable attestation policy/live ruleset, and
+durable attestation ref/tag/claim digests. The top-level `evidenceDigest`
+covers the entire report except itself. Credentials, headers, and desired-state
+bytes are never emitted.
+
+`--collect-transition SEALED_APPLY_REPORT` reads only a caller-owned,
+non-symlink, non-group/world-writable bounded file. It may idempotently complete
+the exact attestation ref but never mutates the organization ruleset. It reads a
+bounded audit window by action and actor, then locally correlates the exact
+provider request, ruleset, organization, actor, and time. Raw audit objects are
+never persisted or logged: only the fixed 13-field provider projection and its
+normalized digests enter the sealed artifact. The artifact has independent
+`bodyDigest` and `evidenceDigest` seals and is the fixed-path source for the
+Doctrine `active` transition.
 
 ## Validator contract
 
@@ -155,13 +245,19 @@ For all reachable refs plus detached HEAD in the checkout it must verify:
 2. all approved commits are reachable and exactly one approved fresh root
    exists;
 3. the only permitted unknown commit is one GitHub-generated event HEAD with
-   the pinned baseline tree and the exact ordered parent set selected by the
-   explicit `pull_request` or `merge_group` event name;
+   the pinned baseline tree, exact ordered parent set, and exact provider event
+   identity selected by the explicit `pull_request` or `merge_group` event;
+   either event must check out that dynamic HEAD and cannot relabel an ordinary
+   approved baseline commit as an event candidate;
 4. pull-request dynamic HEAD uses `[base main, approved PR head]`; merge-group
    additionally permits the `[base main]` squash-queue shape;
 5. every ref name and target is explicitly approved, except narrow dynamic
-   pull/queue refs pointing to the permitted event HEAD; annotated tags,
-   unknown branches, detached tag blobs, and other ref types are rejected;
+   pull/queue refs pointing to the permitted event HEAD; the post-merge graph
+   additionally requires at least one exact target-owned canary branch ref to
+   point to its sole no-op commit; after canonicalization only the explicitly
+   enumerated lightweight `v1.0.0` release tag may point at canonical main;
+   annotated tags, unknown branches/tags, detached tag blobs, and other ref
+   types are rejected;
 6. every reachable commit belongs to the exact approved graph, and commit/blob
    counts remain bounded;
 7. every historical path belongs to the approved physical allowlist;
@@ -176,12 +272,32 @@ For all reachable refs plus detached HEAD in the checkout it must verify:
     file; and
 12. admissions, catalog, physical skill directories, eval files, and SKILL.md
     names agree on the exact eight IDs, MIT ownership, candidate channel,
-    unverified state, and approved provenance.
+    unverified state, and approved provenance; and
+13. each skill's Git-tree manifest is recomputed as
+    `git-tree-manifest-sha256-v1` and must match the source-owned file count and
+    transfer-bundle digest. The manifest is a compact, whitespace-free UTF-8
+    JSON array sorted by relative-path UTF-8 bytes. Every element has the exact
+    property order `{path,mode,type,sha256}`: `path` is relative to the skill
+    root, `mode` is `100644` or `100755`, `type` is `blob`, and `sha256` is the
+    lowercase 64-hex SHA-256 of the raw blob bytes with no prefix. The bundle
+    digest is the lowercase 64-hex SHA-256 of those serialized manifest bytes.
+    This recursive projection lets downstream private authorization cross-bind
+    exact public package bytes to the independently protected source policy
+    without granting cross-private repository access; and
+14. the launch graph may canonicalize through exactly one squash commit whose
+    parent is the fresh root and whose tree is the exact approved launch tree.
+    After that canonicalization, only one same-tree no-op canary commit plus
+    its exact pull-request or merge-group event HEAD is admissible. This finite
+    graph contract survives the merge queue without a source-policy rotation;
+    the exact lightweight release tag remains admissible afterward, while any
+    changed tree, partial launch graph, extra commit, or unapproved ref is
+    rejected.
 
 A benign text commit followed by a restore to the approved HEAD tree is still
 rejected because its commit/tree graph is not source-approved. Empty commits
-with the same tree are also rejected. Denylist cleanliness is never treated as
-provenance.
+with the same tree are also rejected unless they are one of the explicitly
+bounded, event-identity-bound post-merge canary shapes. Denylist cleanliness is
+never treated as provenance.
 
 Failures are fail-closed and produce a redacted error code and message. Secret
 matches are never included in the report. The report binds source commit,

@@ -36,17 +36,30 @@ function runtimeIdentity(root, overrides = {}) {
     repositoryNodeId: "R_kgDOTVt47g",
     candidateSha: git(root, ["rev-parse", "HEAD"]),
     eventName: "policy-baseline",
+    eventRef: "",
+    baseRef: "",
+    headRef: "",
+    eventRepositoryId: 1297840366,
+    pullRequestHeadRepositoryId: "",
     ...overrides,
   };
 }
 
-function cloneCandidate(t) {
+function cloneCandidate(t, source = candidateSource) {
   const parent = mkdtempSync(resolve(tmpdir(), "public-skills-admission-"));
   const clone = resolve(parent, "candidate");
-  execFileSync("git", ["clone", "--local", "--no-hardlinks", candidateSource, clone], {
+  execFileSync("git", ["clone", "--local", "--no-hardlinks", source, clone], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const sourceRemoteRefs = git(source, ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)", "refs/remotes/origin"])
+    .split("\n")
+    .filter(Boolean)
+    .map((record) => record.split("\t"));
+  for (const [ref, oid, symbolicTarget] of sourceRemoteRefs) {
+    if (symbolicTarget) git(clone, ["symbolic-ref", ref, symbolicTarget]);
+    else git(clone, ["update-ref", "--no-deref", ref, oid]);
+  }
   git(clone, ["config", "user.name", "Admission Adversary"]);
   git(clone, ["config", "user.email", "adversary@example.invalid"]);
   t.after(() => rmSync(parent, { force: true, recursive: true }));
@@ -61,6 +74,31 @@ function commitAll(root, subject) {
 function restoreFile(root, baseline, path, subject) {
   git(root, ["checkout", baseline, "--", path]);
   commitAll(root, subject);
+}
+
+function postMergeCandidate(t) {
+  const clone = cloneCandidate(t);
+  const rootCommit = policy.target.postMergeCanonicalization.parentCommit;
+  const tree = policy.target.postMergeCanonicalization.tree;
+  const canonicalMain = git(clone, [
+    "commit-tree",
+    tree,
+    "-p",
+    rootCommit,
+    "-m",
+    "canonical squash merge",
+  ]);
+  git(clone, ["checkout", "--detach", canonicalMain]);
+  const refs = git(clone, ["for-each-ref", "--format=%(refname)%09%(symref)"])
+    .split("\n")
+    .filter(Boolean)
+    .map((value) => value.split("\t"));
+  for (const [ref, symbolicTarget] of refs) {
+    if (symbolicTarget) git(clone, ["symbolic-ref", "--delete", ref]);
+    else git(clone, ["update-ref", "-d", ref]);
+  }
+  git(clone, ["update-ref", "refs/heads/main", canonicalMain]);
+  return { clone, canonicalMain, rootCommit, tree };
 }
 
 function expectAdmissionError(callback, code) {
@@ -84,8 +122,18 @@ test("external workflow is target-only, source-owned, immutable-action-pinned, a
   assert.match(workflow, /^          repository: SylphxAI\/\.github$/m);
   assert.match(workflow, /^          ref: \$\{\{ github\.workflow_sha \}\}$/m);
   assert.match(workflow, /^          persist-credentials: false$/m);
+  assert.match(workflow, /^          EVENT_BASE_REF: \$\{\{ github\.event\.merge_group\.base_ref \|\| github\.base_ref \}\}$/m);
+  assert.match(workflow, /^          EVENT_HEAD_REF: \$\{\{ github\.event\.merge_group\.head_ref \|\| github\.head_ref \}\}$/m);
   assert.match(workflow, /^          EVENT_NAME: \$\{\{ github\.event_name \}\}$/m);
+  assert.match(workflow, /^          EVENT_REF: \$\{\{ github\.ref \}\}$/m);
+  assert.match(workflow, /^          EVENT_REPOSITORY_ID: \$\{\{ github\.repository_id \}\}$/m);
+  assert.match(workflow, /^          PULL_REQUEST_HEAD_REPOSITORY_ID: \$\{\{ github\.event\.pull_request\.head\.repo\.id \|\| '' \}\}$/m);
   assert.match(workflow, /^            --event-name "\$EVENT_NAME" \\$/m);
+  assert.match(workflow, /^            --event-ref "\$EVENT_REF" \\$/m);
+  assert.match(workflow, /^            --base-ref "\$EVENT_BASE_REF" \\$/m);
+  assert.match(workflow, /^            --head-ref "\$EVENT_HEAD_REF" \\$/m);
+  assert.match(workflow, /^            --event-repository-id "\$EVENT_REPOSITORY_ID" \\$/m);
+  assert.match(workflow, /^            --pull-request-head-repository-id "\$PULL_REQUEST_HEAD_REPOSITORY_ID" \\$/m);
   assert.doesNotMatch(workflow, /pull_request_target|secrets\.|cancel-in-progress/);
   assert.doesNotMatch(workflow, /\b(?:npm|npx|pnpm|yarn|bun|python|pip)\b/);
   assert.doesNotMatch(workflow, /candidate\/[^\s"']+\.(?:js|mjs|cjs|py|sh)\b/);
@@ -103,18 +151,48 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
     validatorPath: "scripts/public-skills-admission.mjs",
     policyPath: "policies/public-skills-admission.json",
   });
+  assert.equal(policy.bundleDigestAlgorithm, "git-tree-manifest-sha256-v1");
   assert.equal(policy.target.repositoryId, 1297840366);
   assert.equal(policy.target.repositoryNodeId, "R_kgDOTVt47g");
   assert.deepEqual(policy.target.allowedRepositories, ["SylphxAI/skills", "SylphxAI/skills-public-cleanroom"]);
   assert.deepEqual(policy.target.baseline, {
-    commit: "f74c83d966331193d6a2f325173094c5d5c51762",
-    tree: "04c100fed8c99a72290896a6a825ee68f6617331",
+    commit: "580791895d660755ca78c5e6f8233d1437f709fa",
+    tree: "2741f0883bf636568d375974c98301ed16a633fb",
   });
   assert.equal(policy.target.approvedCommits.find((record) => record.parents.length === 0).commit, "e477aee5c1d93b2bac8619fdc6f15f27483855a3");
-  assert.equal(policy.target.approvedCommits.length, 2);
+  assert.equal(policy.target.approvedCommits.length, 3);
   assert.equal(policy.target.approvedRefs.length, 5);
+  assert.deepEqual(policy.target.eventContexts, {
+    launch: { pullRequestNumber: 1, headRef: "codex/launch-public-cleanroom", headRepositoryId: 1297840366, mergeGroupAllowed: true },
+    negativeControl: { pullRequestNumber: 2, headRef: "canary/negative", headRepositoryId: 1297840366, mergeGroupAllowed: false },
+    postMergeCanary: { pullRequestNumber: 3, headRef: "codex/post-merge-source-canary", headRepositoryId: 1297840366, mergeGroupAllowed: true },
+  });
+  assert.deepEqual(policy.target.postMergeCanonicalization, {
+    parentCommit: "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+    tree: "2741f0883bf636568d375974c98301ed16a633fb",
+    mainRefs: ["refs/heads/main", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+    noOpBranchRefs: ["refs/heads/codex/post-merge-source-canary", "refs/remotes/origin/codex/post-merge-source-canary"],
+    releaseTagRefs: ["refs/tags/v1.0.0"],
+    maximumNoOpBranchCommits: 1,
+  });
   assert.deepEqual(policy.target.dynamicEventHead.eventParentSets.map((rule) => rule.event), ["merge_group", "pull_request"]);
-  assert.equal(jsonDigest(policy.target), "5cb2fb27865333454d4f9a832798995045db2f4ec22637c99257d0f3958fe779");
+  assert.deepEqual(
+    Object.fromEntries(policy.target.dynamicEventHead.eventParentSets.map((rule) => [rule.event, {
+      runtimeRefPattern: rule.runtimeRefPattern,
+      gitRefPatterns: rule.gitRefPatterns,
+    }])),
+    {
+      merge_group: {
+        runtimeRefPattern: "^refs/heads/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$",
+        gitRefPatterns: ["^refs/remotes/origin/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$"],
+      },
+      pull_request: {
+        runtimeRefPattern: "^refs/pull/[1-9][0-9]*/merge$",
+        gitRefPatterns: ["^refs/remotes/pull/[1-9][0-9]*/merge$"],
+      },
+    },
+  );
+  assert.equal(jsonDigest(policy.target), "b5c98f68c0564ea47dc21fa5ab89b81ef527a663a0960fb63a0ba6b9c7a75360");
   assert.deepEqual(
     policy.skills.map((skill) => skill.id),
     [
@@ -128,7 +206,7 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
       "source-to-skill-distiller",
     ],
   );
-  assert.equal(jsonDigest(policy.skills), "4fa08969280ed584cad8b77345ef65ed0b195bd6606af2a54efd61ba51bdaf22");
+  assert.equal(jsonDigest(policy.skills), "9c3d84efdb8065027da048362bc240d8f9fb025c8e290911dbc6101f16f976b7");
   assert.deepEqual(
     Object.fromEntries([...new Set(policy.skills.map((skill) => skill.provenanceClass))].sort().map((name) => [name, policy.skills.filter((skill) => skill.provenanceClass === name).length])),
     {
@@ -139,10 +217,39 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
     },
   );
   assert.ok(policy.skills.every((skill) => skill.provenanceClass === "public-original" ? skill.sourceCommit === null : skill.sourceCommit === "4350900a59faeee7903937a52c24909aaba538ca"));
+  assert.deepEqual(
+    Object.fromEntries(policy.skills.map((skill) => [skill.id, {
+      fileCount: skill.targetFileCount,
+      bundleDigest: skill.targetBundleDigest,
+    }])),
+    {
+      "customer-support-operations": { fileCount: 3, bundleDigest: "83177e56018859709cb6625652ed3621c0e90a8ae4f1eb3dab29e2c57bf6a271" },
+      "decision-memo-writer": { fileCount: 3, bundleDigest: "03362bf5450680e6222ce2bce0999df47047d1b527191c357ee59ba1a3547dc8" },
+      "fleet-migration-factory": { fileCount: 5, bundleDigest: "7a20138ba7be3f94e66c7388d88d1e58baf18a5fad6e8676af4386f0f5c70cb8" },
+      "interface-craft": { fileCount: 3, bundleDigest: "395d8ee12dafff939ca48463f5c2d5a1fe6fb1c8a63ca98008e2494f518173c3" },
+      "market-research-synthesis": { fileCount: 3, bundleDigest: "fdd52260add450d6c04ceb4fdeb7cca2ac0947a5bfdfa686ec7fef8d0c35d7aa" },
+      "public-skill-repository-governance": { fileCount: 3, bundleDigest: "6f1612a8548cfbef01d36c202de431ffb3af3f8d04b8934181a4846762517023" },
+      "skill-eval-designer": { fileCount: 3, bundleDigest: "46a7fc4b918b17992b3ca1096672eb6de087df2c3974d730e2476bbab63236ac" },
+      "source-to-skill-distiller": { fileCount: 3, bundleDigest: "737c9988d8019a5badd252664f054937b8ca2dbbf2ebf6eabc0ff0a9dd9fd0b9" },
+    },
+  );
   assert.deepEqual(policy.content.forbiddenLiterals, ["DO-NOT-PUBLISH", "INTERNAL-ONLY", "PRIVATE-BOUNDARY-MARKER"]);
   assert.equal(Object.keys(policy.expectedFiles).length, 73);
-  assert.equal(jsonDigest(policy.expectedFiles), "e94342916c55138f9fc15ceaadace9d6c6dff080a733fafe0067140dde3ff701");
+  assert.equal(jsonDigest(policy.expectedFiles), "66f60f83fbbb107da9b3f74be88724692ee2673c2f223237ad77274e7680987a");
   assert.ok(Object.values(policy.expectedFiles).every((digest) => /^[0-9a-f]{64}$/.test(digest)));
+});
+
+test("adversarial fixtures preserve Actions-style remote refs from a detached source checkout", { skip: !hasCandidate }, (t) => {
+  const detached = cloneCandidate(t);
+  git(detached, ["checkout", "--detach", policy.target.baseline.commit]);
+  for (const ref of git(detached, ["for-each-ref", "--format=%(refname)", "refs/heads"]).split("\n").filter(Boolean)) {
+    git(detached, ["update-ref", "-d", ref]);
+  }
+  const clone = cloneCandidate(t, detached);
+  assert.equal(
+    git(clone, ["rev-parse", "refs/remotes/origin/codex/launch-public-cleanroom"]),
+    policy.target.baseline.commit,
+  );
 });
 
 test("the exact source-approved candidate passes full-history admission", { skip: !hasCandidate }, () => {
@@ -169,6 +276,10 @@ test("numeric and node repository identity mismatches fail closed", { skip: !has
     () => validateCandidate({ candidateRoot: candidateSource, policy, runtimeIdentity: runtimeIdentity(candidateSource, { repositoryNodeId: "R_attacker" }) }),
     "REPOSITORY_IDENTITY",
   );
+  expectAdmissionError(
+    () => validateCandidate({ candidateRoot: candidateSource, policy, runtimeIdentity: runtimeIdentity(candidateSource, { eventRepositoryId: 999999999 }) }),
+    "REPOSITORY_IDENTITY",
+  );
 });
 
 test("policy drift cannot silently change the eight-skill contract or a pinned digest", { skip: !hasCandidate }, () => {
@@ -184,6 +295,20 @@ test("policy drift cannot silently change the eight-skill contract or a pinned d
   expectAdmissionError(
     () => validateCandidate({ candidateRoot: candidateSource, policy: wrongDigestPolicy, runtimeIdentity: runtimeIdentity(candidateSource) }),
     "FILE_DIGEST",
+  );
+
+  const wrongTransferPolicy = structuredClone(policy);
+  wrongTransferPolicy.skills[0].targetBundleDigest = "0".repeat(64);
+  expectAdmissionError(
+    () => validateCandidate({ candidateRoot: candidateSource, policy: wrongTransferPolicy, runtimeIdentity: runtimeIdentity(candidateSource) }),
+    "BUNDLE_CONTRACT",
+  );
+
+  const wrongTransferCountPolicy = structuredClone(policy);
+  wrongTransferCountPolicy.skills[0].targetFileCount += 1;
+  expectAdmissionError(
+    () => validateCandidate({ candidateRoot: candidateSource, policy: wrongTransferCountPolicy, runtimeIdentity: runtimeIdentity(candidateSource) }),
+    "BUNDLE_CONTRACT",
   );
 });
 
@@ -228,7 +353,13 @@ test("only exact GitHub event HEAD shapes may be dynamic", { skip: !hasCandidate
   const prReport = validateCandidate({
     candidateRoot: pullRequest,
     policy,
-    runtimeIdentity: runtimeIdentity(pullRequest, { eventName: "pull_request" }),
+    runtimeIdentity: runtimeIdentity(pullRequest, {
+      eventName: "pull_request",
+      eventRef: "refs/pull/1/merge",
+      baseRef: "main",
+      headRef: "codex/launch-public-cleanroom",
+      pullRequestHeadRepositoryId: "1297840366",
+    }),
   });
   assert.equal(prReport.candidate.dynamicEventHead, true);
 
@@ -245,9 +376,53 @@ test("only exact GitHub event HEAD shapes may be dynamic", { skip: !hasCandidate
   const queueReport = validateCandidate({
     candidateRoot: mergeGroup,
     policy,
-    runtimeIdentity: runtimeIdentity(mergeGroup, { eventName: "merge_group" }),
+    runtimeIdentity: runtimeIdentity(mergeGroup, {
+      eventName: "merge_group",
+      eventRef: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+      baseRef: "refs/heads/main",
+      headRef: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+    }),
   });
   assert.equal(queueReport.candidate.dynamicEventHead, true);
+  expectAdmissionError(
+    () => validateCandidate({
+      candidateRoot: mergeGroup,
+      policy,
+      runtimeIdentity: runtimeIdentity(mergeGroup, {
+        eventName: "merge_group",
+        eventRef: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+        baseRef: "refs/heads/main",
+        headRef: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+        pullRequestHeadRepositoryId: "1297840366",
+      }),
+    }),
+    "REPOSITORY_IDENTITY",
+  );
+
+  for (const eventIdentity of [
+    {
+      eventName: "pull_request",
+      eventRef: "refs/pull/1/merge",
+      baseRef: "main",
+      headRef: "codex/launch-public-cleanroom",
+      pullRequestHeadRepositoryId: "1297840366",
+    },
+    {
+      eventName: "merge_group",
+      eventRef: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+      baseRef: "refs/heads/main",
+      headRef: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+    },
+  ]) {
+    expectAdmissionError(
+      () => validateCandidate({
+        candidateRoot: candidateSource,
+        policy,
+        runtimeIdentity: runtimeIdentity(candidateSource, eventIdentity),
+      }),
+      "UNAPPROVED_COMMIT",
+    );
+  }
 
   expectAdmissionError(
     () => validateCandidate({
@@ -264,6 +439,191 @@ test("only exact GitHub event HEAD shapes may be dynamic", { skip: !hasCandidate
       runtimeIdentity: runtimeIdentity(pullRequest, { eventName: "" }),
     }),
     "REPOSITORY_IDENTITY",
+  );
+});
+
+test("one exact post-squash main graph survives launch merge without source-policy rotation", { skip: !hasCandidate }, (t) => {
+  const { clone, canonicalMain } = postMergeCandidate(t);
+  const report = validateCandidate({
+    candidateRoot: clone,
+    policy,
+    runtimeIdentity: runtimeIdentity(clone),
+  });
+  assert.equal(report.candidate.commit, canonicalMain);
+  assert.equal(report.candidate.graphVariant, "post-merge-canonical");
+  assert.equal(report.candidate.canonicalMainCommit, canonicalMain);
+  assert.equal(report.candidate.dynamicEventHead, false);
+  assert.equal(report.inventory.commits, 2);
+
+  git(clone, ["update-ref", "refs/tags/v1.0.0", canonicalMain]);
+  const released = validateCandidate({
+    candidateRoot: clone,
+    policy,
+    runtimeIdentity: runtimeIdentity(clone),
+  });
+  assert.equal(released.candidate.canonicalMainCommit, canonicalMain);
+
+  git(clone, ["update-ref", "refs/tags/v1.0.1", canonicalMain]);
+  expectAdmissionError(
+    () => validateCandidate({
+      candidateRoot: clone,
+      policy,
+      runtimeIdentity: runtimeIdentity(clone),
+    }),
+    "UNAPPROVED_REF",
+  );
+});
+
+test("post-merge policy admits only one exact same-tree no-op canary and event HEAD", { skip: !hasCandidate }, (t) => {
+  const { clone, canonicalMain, tree } = postMergeCandidate(t);
+  const branch = git(clone, [
+    "commit-tree",
+    tree,
+    "-p",
+    canonicalMain,
+    "-m",
+    "post-merge no-op source canary",
+  ]);
+  const pullRequestHead = git(clone, [
+    "commit-tree",
+    tree,
+    "-p",
+    canonicalMain,
+    "-p",
+    branch,
+    "-m",
+    "synthetic post-merge pull request",
+  ]);
+  git(clone, ["checkout", "--detach", pullRequestHead]);
+  git(clone, ["update-ref", "refs/heads/codex/post-merge-source-canary", branch]);
+  git(clone, ["update-ref", "refs/remotes/pull/3/merge", pullRequestHead]);
+  const report = validateCandidate({
+    candidateRoot: clone,
+    policy,
+    runtimeIdentity: runtimeIdentity(clone, {
+      eventName: "pull_request",
+      eventRef: "refs/pull/3/merge",
+      baseRef: "main",
+      headRef: "codex/post-merge-source-canary",
+      pullRequestHeadRepositoryId: "1297840366",
+    }),
+  });
+  assert.equal(report.candidate.graphVariant, "post-merge-canonical");
+  assert.equal(report.candidate.canonicalMainCommit, canonicalMain);
+  assert.equal(report.candidate.dynamicEventHead, true);
+  assert.equal(report.inventory.commits, 4);
+  for (const overrides of [
+    { pullRequestHeadRepositoryId: "999999999" },
+    { pullRequestHeadRepositoryId: "" },
+    { headRef: "fork-no-op" },
+    { eventRef: "refs/pull/2/merge", headRef: "canary/negative" },
+    { baseRef: "develop" },
+  ]) {
+    expectAdmissionError(
+      () => validateCandidate({
+        candidateRoot: clone,
+        policy,
+        runtimeIdentity: runtimeIdentity(clone, {
+          eventName: "pull_request",
+          eventRef: "refs/pull/3/merge",
+          baseRef: "main",
+          headRef: "codex/post-merge-source-canary",
+          pullRequestHeadRepositoryId: "1297840366",
+          ...overrides,
+        }),
+      }),
+      "REPOSITORY_IDENTITY",
+    );
+  }
+
+  const mergeGroup = postMergeCandidate(t);
+  const fetchedBranch = git(mergeGroup.clone, [
+    "commit-tree",
+    mergeGroup.tree,
+    "-p",
+    mergeGroup.canonicalMain,
+    "-m",
+    "post-merge no-op source canary",
+  ]);
+  const queueHead = git(mergeGroup.clone, [
+    "commit-tree",
+    mergeGroup.tree,
+    "-p",
+    mergeGroup.canonicalMain,
+    "-m",
+    "synthetic squash merge queue candidate",
+  ]);
+  git(mergeGroup.clone, ["checkout", "--detach", queueHead]);
+  git(mergeGroup.clone, ["update-ref", "refs/remotes/origin/codex/post-merge-source-canary", fetchedBranch]);
+  git(mergeGroup.clone, ["update-ref", "refs/remotes/origin/gh-readonly-queue/main/pr-3-abc", queueHead]);
+  const queueReport = validateCandidate({
+    candidateRoot: mergeGroup.clone,
+    policy,
+    runtimeIdentity: runtimeIdentity(mergeGroup.clone, {
+      eventName: "merge_group",
+      eventRef: "refs/heads/gh-readonly-queue/main/pr-3-abc",
+      baseRef: "refs/heads/main",
+      headRef: "refs/heads/gh-readonly-queue/main/pr-3-abc",
+    }),
+  });
+  assert.equal(queueReport.candidate.graphVariant, "post-merge-canonical");
+  assert.equal(queueReport.candidate.canonicalMainCommit, mergeGroup.canonicalMain);
+  assert.equal(queueReport.candidate.dynamicEventHead, true);
+  assert.equal(queueReport.inventory.commits, 4);
+
+  git(mergeGroup.clone, ["update-ref", "refs/heads/fork-no-op", fetchedBranch]);
+  git(mergeGroup.clone, ["update-ref", "-d", "refs/remotes/origin/codex/post-merge-source-canary"]);
+  expectAdmissionError(
+    () => validateCandidate({
+      candidateRoot: mergeGroup.clone,
+      policy,
+      runtimeIdentity: runtimeIdentity(mergeGroup.clone, {
+        eventName: "merge_group",
+        eventRef: "refs/heads/gh-readonly-queue/main/pr-3-abc",
+        baseRef: "refs/heads/main",
+        headRef: "refs/heads/gh-readonly-queue/main/pr-3-abc",
+      }),
+    }),
+    "UNAPPROVED_REF",
+  );
+});
+
+test("post-merge canonicalization rejects partial launch history and extra same-tree commits", { skip: !hasCandidate }, (t) => {
+  const partial = cloneCandidate(t);
+  const rootCommit = policy.target.postMergeCanonicalization.parentCommit;
+  const launchMiddle = policy.target.approvedCommits.find((record) => record.parents[0] === rootCommit).commit;
+  const canonicalMain = git(partial, [
+    "commit-tree",
+    policy.target.postMergeCanonicalization.tree,
+    "-p",
+    rootCommit,
+    "-m",
+    "canonical squash merge",
+  ]);
+  git(partial, ["checkout", "--detach", canonicalMain]);
+  const partialRefs = git(partial, ["for-each-ref", "--format=%(refname)"]).split("\n").filter(Boolean);
+  for (const ref of partialRefs) git(partial, ["update-ref", "-d", ref]);
+  git(partial, ["update-ref", "refs/heads/main", canonicalMain]);
+  git(partial, ["update-ref", "refs/heads/partial-launch", launchMiddle]);
+  expectAdmissionError(
+    () => validateCandidate({ candidateRoot: partial, policy, runtimeIdentity: runtimeIdentity(partial) }),
+    "MIXED_HISTORY_VARIANT",
+  );
+
+  const extra = postMergeCandidate(t);
+  const extraCommit = git(extra.clone, [
+    "commit-tree",
+    extra.tree,
+    "-p",
+    extra.canonicalMain,
+    "-m",
+    "unapproved same-tree extension",
+  ]);
+  git(extra.clone, ["checkout", "--detach", extraCommit]);
+  git(extra.clone, ["update-ref", "refs/heads/main", extraCommit]);
+  expectAdmissionError(
+    () => validateCandidate({ candidateRoot: extra.clone, policy, runtimeIdentity: runtimeIdentity(extra.clone) }),
+    "UNAPPROVED_COMMIT",
   );
 });
 
