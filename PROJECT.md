@@ -20,6 +20,8 @@ workflow templates, and shared GitHub Actions.
   through documented GitHub workflow/action references.
 - Own source-pinned organization required workflows where a repository must
   not control the check that judges its own supply-chain boundary.
+- Own the protected executor that reconciles the public-skills organization
+  ruleset from Doctrine desired state without executing Doctrine code.
 - Keep shared process in one place so repositories do not copy or fork it.
 
 ## Non-Goals
@@ -59,13 +61,17 @@ and delivery evidence still belong to the consuming repository.
 - `COMPANY.md`
 - `policies/public-skills-admission.json`
 - `scripts/public-skills-admission.mjs`
+- `scripts/public-skills-ruleset-executor.py`
 
 The public-skills surface emits the stable target context
 `public-skills-external-admission/pass`. Its executable contract and
 source-first SHA ratchet are documented in
 [`docs/specs/public-skills-external-admission.md`](./docs/specs/public-skills-external-admission.md)
-and the current decision record is
+and the admission-mechanics decision is
 [`docs/adr/ADR-34-public-skills-external-admission.md`](./docs/adr/ADR-34-public-skills-external-admission.md).
+The replacement target identity, clean snapshot, and independent executor trust
+split are proposed in
+[`docs/adr/ADR-DRAFT-public-skills-cleanroom-control-plane.md`](./docs/adr/ADR-DRAFT-public-skills-cleanroom-control-plane.md).
 
 ## Delivery
 
@@ -83,7 +89,12 @@ successful consumer use of the changed public surface.
 
 For the public-skills required workflow, production proof additionally needs
 the merged source SHA bound in the organization ruleset, successful target PR
-and `merge_group` runs for repository ID `1297721845`, and an uploaded JSON
+and `merge_group` runs for repository ID `1297840366`, and an uploaded JSON
 admission report. Exact commit/tree/ref graph and full-tree pinning mean target
 history, identity, or content edits must follow a source-policy update and
-ruleset-SHA ratchet first.
+ruleset-SHA ratchet first. Organization-rule mutations additionally require a
+canonical Doctrine-main record, protected executor-main byte identity, a
+unique source-owned fenced apply lock, repeated pre-mutation head/live
+readback, and exact post-mutation/effective-rules readback. Out-of-band ruleset
+mutation is an incident: GitHub exposes no conditional ruleset PUT, so every
+supported writer must share the one durable lock.

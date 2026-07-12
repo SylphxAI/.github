@@ -34,6 +34,7 @@
       ".github/ISSUE_TEMPLATE/",
       "policies/",
       "scripts/public-skills-admission.mjs",
+      "scripts/public-skills-ruleset-executor.py",
       "templates/",
       "profile/",
       "brand/",
@@ -119,6 +120,12 @@
       "description": "Source-owned Git-object validator that never executes candidate code."
     },
     {
+      "type": "cli",
+      "name": "Public skills organization-ruleset executor",
+      "path": "scripts/public-skills-ruleset-executor.py",
+      "description": "Protected stdlib-only executor that consumes the canonical Doctrine-main record as inert JSON and reconciles the exact organization required-workflow rule under one unique fenced apply lock."
+    },
+    {
       "type": "docs",
       "name": "Public skills external admission specification",
       "path": "docs/specs/public-skills-external-admission.md",
@@ -160,6 +167,11 @@
       "purpose": "Verify source ownership, immutable workflow wiring, target selection, policy shape, and adversarial external-admission behavior when a candidate checkout is available."
     },
     {
+      "name": "test:public-skills-ruleset-executor",
+      "command": "python3 -B tests/test_public_skills_ruleset_executor.py",
+      "purpose": "Verify fixed numeric identities, independent Doctrine-main parsing, fail-closed phase transitions, live canary reconstruction, fenced single-writer serialization, TOCTOU protection, and canonical mutation evidence without network access."
+    },
+    {
       "name": "lint:github-actions",
       "command": "actionlint .github/workflows/*.yml",
       "purpose": "Validate every organization workflow, including target required-workflow syntax and immutable action references."
@@ -172,6 +184,6 @@
   ],
   "adoption": {
     "status": "adopted",
-    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth. Public-skills external admission becomes enforced only after its merged source SHA is ratcheted into the organization ruleset and proven on target pull_request plus merge_group events."
+    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth. Public-skills external admission becomes enforced only after its merged source SHA is ratcheted into Doctrine, the independently protected executor reconstructs all live evidence, and exact post-mutation plus effective-rules readback succeeds."
   }
 }

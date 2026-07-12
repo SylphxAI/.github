@@ -10,7 +10,7 @@ permissions:
 jobs:
   admission:
     name: public-skills-external-admission/pass
-    if: ${{ github.repository_id == 1297721845 }}
+    if: ${{ github.repository_id == 1297840366 }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

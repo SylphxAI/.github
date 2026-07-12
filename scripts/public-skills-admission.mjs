@@ -104,7 +104,7 @@ function validatePolicy(policy) {
 
   requireExactKeys(
     policy.target,
-    ["repositoryId", "repositoryNodeId", "allowedRepositories", "baseline", "approvedCommits", "approvedRefs", "dynamicEventHead", "forbiddenReachableCommits"],
+    ["repositoryId", "repositoryNodeId", "allowedRepositories", "baseline", "approvedCommits", "approvedRefs", "dynamicEventHead"],
     "policy.target",
   );
   requireCondition(Number.isSafeInteger(policy.target.repositoryId), "POLICY_SHAPE", "Target repository ID must be an integer.");
@@ -185,9 +185,6 @@ function validatePolicy(policy) {
       reject("POLICY_SHAPE", "Dynamic ref pattern does not compile.");
     }
   }
-  requireSortedUniqueStrings(policy.target.forbiddenReachableCommits, "policy.target.forbiddenReachableCommits");
-  requireCondition(policy.target.forbiddenReachableCommits.every((value) => /^[0-9a-f]{40}$/.test(value)), "POLICY_SHAPE", "Forbidden commits must be full SHA-1 IDs.");
-
   requireExactKeys(
     policy.history,
     ["maximumBlobBytes", "maximumCommitCount", "allowedModes", "allowedExecutableFiles", "rejectSymlinks", "rejectSubmodules", "rejectBinaryBlobs", "requireAsciiPaths", "requireSingleFreshRoot"],
@@ -233,8 +230,12 @@ function validatePolicy(policy) {
       originalCount += 1;
       requireCondition(skill.sourceCommit === null, "POLICY_SHAPE", `Public-original skill ${skill.id} must not claim an import commit.`);
     } else {
-      requireCondition(skill.provenanceClass === "historical-public-import", "POLICY_SHAPE", `Skill ${skill.id} has an unsupported provenance class.`);
-      requireCondition(/^[0-9a-f]{40}$/.test(skill.sourceCommit), "POLICY_SHAPE", `Imported skill ${skill.id} needs a full source commit.`);
+      requireCondition(
+        ["historical-public-derived", "historical-public-import", "public-declassified-derivative"].includes(skill.provenanceClass),
+        "POLICY_SHAPE",
+        `Skill ${skill.id} has an unsupported provenance class.`,
+      );
+      requireCondition(/^[0-9a-f]{40}$/.test(skill.sourceCommit), "POLICY_SHAPE", `Source-derived skill ${skill.id} needs a full source commit.`);
     }
   }
   requireCondition(originalCount === 1, "POLICY_SHAPE", "Exactly one skill must be public-original.");
@@ -405,9 +406,6 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
   requireCondition(commits.length <= policy.history.maximumCommitCount, "HISTORY_LIMIT", "Candidate history exceeds the approved commit-count bound.");
   requireCondition(commits.every((commit) => /^[0-9a-f]{40}$/.test(commit)), "MALFORMED_HISTORY", "Candidate history contains a malformed commit ID.");
   const commitSet = new Set(commits);
-  for (const forbidden of policy.target.forbiddenReachableCommits) {
-    requireCondition(!commitSet.has(forbidden), "PRIVATE_HISTORY", `Forbidden private commit ${forbidden} is reachable.`);
-  }
 
   const refs = git(root, ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)"])
     .trim()
