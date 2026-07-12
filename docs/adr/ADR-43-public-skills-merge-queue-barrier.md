@@ -1,13 +1,14 @@
-# ADR-DRAFT: Public Skills provider-owned merge-queue barrier
+# ADR-43: Public Skills provider-owned merge-queue barrier
 
 ## Status
 
-Proposed. Rename to the allocator-assigned pull-request number before merge.
+Accepted in PR #43.
 
 ## Decision record
 
 - Date: 2026-07-12
 - Decision owner: SylphxAI
+- Pull request: <https://github.com/SylphxAI/.github/pull/43>
 - Extends: [`ADR-36-public-skills-cleanroom-control-plane.md`](./ADR-36-public-skills-cleanroom-control-plane.md)
 - Specification: [`../specs/public-skills-merge-queue-barrier.md`](../specs/public-skills-merge-queue-barrier.md)
 

@@ -1,7 +1,7 @@
 # Public Skills provider-owned merge-queue barrier specification
 
 Decision record:
-[`ADR-DRAFT-public-skills-merge-queue-barrier.md`](../adr/ADR-DRAFT-public-skills-merge-queue-barrier.md).
+[`ADR-43-public-skills-merge-queue-barrier.md`](../adr/ADR-43-public-skills-merge-queue-barrier.md).
 The ADR filename must receive its allocator-backed pull-request number before
 merge.
 
