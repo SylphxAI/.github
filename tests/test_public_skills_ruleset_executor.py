@@ -332,6 +332,9 @@ def base_api(record: dict, *, live: dict | None = None, effective: bool = True) 
     api.gets[
         f"/repos/{module.EXECUTOR_REPOSITORY}/rulesets/{ATTESTATION_RULESET_ID}?includes_parents=true"
     ] = copy.deepcopy(attestation_ruleset)
+    api.gets[
+        f"/repos/{module.EXECUTOR_REPOSITORY}/rulesets/{ATTESTATION_RULESET_ID}?includes_parents=true"
+    ]["conditions"].pop("repository_id")
     if live is not None:
         ruleset_id = live["id"]
         api.gets[f"/orgs/{module.ORGANIZATION}/rulesets/{ruleset_id}"] = live
@@ -1663,6 +1666,35 @@ class ActivationEvidenceTests(unittest.TestCase):
             ["deletion", "non_fast_forward", "update"],
         )
         self.assertEqual(module.validate_apply_report(report, record), report)
+
+    def test_attestation_ruleset_provider_projections_are_exact_and_fail_closed(self) -> None:
+        organization_endpoint = f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"
+        actor_endpoint = (
+            f"/repos/{module.EXECUTOR_REPOSITORY}/rulesets/"
+            f"{ATTESTATION_RULESET_ID}?includes_parents=true"
+        )
+        mutations = {
+            "organization-selector-missing": lambda api: api.gets[
+                organization_endpoint
+            ]["conditions"].pop("repository_id"),
+            "actor-selector-unexpectedly-retained": lambda api: api.gets[
+                actor_endpoint
+            ]["conditions"].__setitem__(
+                "repository_id",
+                {"repository_ids": [module.EXECUTOR_REPOSITORY_ID]},
+            ),
+            "actor-ref-selector-missing": lambda api: api.gets[
+                actor_endpoint
+            ]["conditions"].pop("ref_name"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                _, api = active_fixture()
+                mutate(api)
+                with self.assertRaisesRegex(module.ForgeError, "attestation ruleset conditions differ"):
+                    self.executor(api).run("apply")
+                self.assertFalse(api.mutations)
+                self.assertFalse(api.lock_mutations)
 
     def test_attestation_ruleset_drift_in_final_under_lock_guard_blocks_activation_write(self) -> None:
         _, api = active_fixture()
