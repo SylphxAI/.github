@@ -989,6 +989,91 @@ def _decode_content(item: Any, expected_path: str, label: str) -> bytes:
     return raw
 
 
+def validate_workflow_identity(text: str) -> None:
+    """Bind the required check and selector to the sole workflow job.
+
+    This intentionally parses only the narrow, source-owned YAML shape used by
+    the required workflow.  A general YAML loader would add mutable runtime
+    dependencies to the protected executor; a global text search loses YAML
+    scope and lets step-level or decoy-job selectors satisfy the probe.
+    """
+
+    lines = text.splitlines()
+    significant: list[tuple[int, int, str]] = []
+    for index, line in enumerate(lines):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        leading = line[: len(line) - len(line.lstrip())]
+        if "\t" in leading:
+            raise ForgeError("workflow source uses unsupported tab indentation")
+        significant.append((index, len(leading), line.strip()))
+
+    top_level: dict[str, tuple[str, int]] = {}
+    for index, indent, value in significant:
+        if indent != 0:
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_-]+):(.*)", value)
+        if match is None:
+            raise ForgeError("workflow source uses unsupported top-level syntax")
+        key = match.group(1)
+        if key in top_level:
+            raise ForgeError(f"workflow source duplicates top-level property {key}")
+        top_level[key] = (match.group(2).strip(), index)
+    if set(top_level) != {"name", "on", "permissions", "jobs"}:
+        raise ForgeError("workflow top-level property surface differs")
+    if (
+        top_level["name"][0] != WORKFLOW_NAME
+        or top_level["on"][0] != ""
+        or top_level["permissions"][0] != ""
+        or top_level["jobs"][0] != ""
+    ):
+        raise ForgeError("workflow source does not expose one immutable workflow identity")
+
+    jobs_start = top_level["jobs"][1]
+    jobs_end = len(lines)
+    for index, indent, _value in significant:
+        if index > jobs_start and indent == 0:
+            jobs_end = index
+            break
+
+    job_rows: list[tuple[str, int]] = []
+    for index, indent, value in significant:
+        if index <= jobs_start or index >= jobs_end or indent != 2:
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_-]+):", value)
+        if match is None:
+            raise ForgeError("workflow jobs block uses unsupported job declaration syntax")
+        job_rows.append((match.group(1), index))
+    if len(job_rows) != 1 or job_rows[0][0] != "admission":
+        raise ForgeError("workflow source must expose exactly one admission job")
+
+    properties: dict[str, str] = {}
+    admission_start = job_rows[0][1]
+    for index, indent, value in significant:
+        if index <= admission_start or index >= jobs_end or indent != 4:
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_-]+):(.*)", value)
+        if match is None:
+            raise ForgeError("workflow admission job uses unsupported property syntax")
+        key = match.group(1)
+        if key in properties:
+            raise ForgeError(f"workflow admission job duplicates property {key}")
+        properties[key] = match.group(2).strip()
+
+    expected_selector = f"${{{{ github.repository_id == {TARGET_REPOSITORY_ID} }}}}"
+    expected_properties = {"name", "if", "runs-on", "timeout-minutes", "steps"}
+    if set(properties) != expected_properties:
+        raise ForgeError("workflow admission job property surface differs")
+    if (
+        properties["name"] != REQUIRED_CHECK
+        or properties["if"] != expected_selector
+        or properties["runs-on"] != "ubuntu-24.04"
+        or properties["timeout-minutes"] != "10"
+        or properties["steps"] != ""
+    ):
+        raise ForgeError("workflow source does not bind the immutable check, selector, runner, and timeout")
+
+
 def _content_endpoint(repository_id: int, path: str, ref: str) -> str:
     quoted_path = urllib.parse.quote(path, safe="/")
     return f"/repositories/{repository_id}/contents/{quoted_path}?ref={ref}"
@@ -2057,19 +2142,7 @@ class RulesetExecutor:
                     text = raw.decode("utf-8")
                 except UnicodeDecodeError as exc:
                     raise ForgeError("workflow source is not UTF-8") from exc
-                expected_selector = f"if: ${{{{ github.repository_id == {TARGET_REPOSITORY_ID} }}}}"
-                stripped_lines = [line.strip() for line in text.splitlines()]
-                selector_lines = [
-                    line
-                    for line in stripped_lines
-                    if line.startswith("if:") and "github.repository_id" in line
-                ]
-                if (
-                    stripped_lines.count(f"name: {WORKFLOW_NAME}") != 1
-                    or stripped_lines.count(f"name: {REQUIRED_CHECK}") != 1
-                    or selector_lines != [expected_selector]
-                ):
-                    raise ForgeError("workflow source does not expose the immutable workflow/check/target identity")
+                validate_workflow_identity(text)
         return {"repositoryId": EXECUTOR_REPOSITORY_ID, "commitSha": source_sha, "files": files}
 
     def _verify_target(self) -> dict[str, Any]:
