@@ -74,6 +74,20 @@
         ]
       }
     ],
+    "postMergeCanonicalization": {
+      "parentCommit": "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+      "tree": "2741f0883bf636568d375974c98301ed16a633fb",
+      "mainRefs": [
+        "refs/heads/main",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main"
+      ],
+      "noOpBranchRefs": [
+        "refs/heads/codex/post-merge-source-canary",
+        "refs/remotes/origin/codex/post-merge-source-canary"
+      ],
+      "maximumNoOpBranchCommits": 1
+    },
     "dynamicEventHead": {
       "eventParentSets": [
         {

@@ -63,6 +63,31 @@ function restoreFile(root, baseline, path, subject) {
   commitAll(root, subject);
 }
 
+function postMergeCandidate(t) {
+  const clone = cloneCandidate(t);
+  const rootCommit = policy.target.postMergeCanonicalization.parentCommit;
+  const tree = policy.target.postMergeCanonicalization.tree;
+  const canonicalMain = git(clone, [
+    "commit-tree",
+    tree,
+    "-p",
+    rootCommit,
+    "-m",
+    "canonical squash merge",
+  ]);
+  git(clone, ["checkout", "--detach", canonicalMain]);
+  const refs = git(clone, ["for-each-ref", "--format=%(refname)%09%(symref)"])
+    .split("\n")
+    .filter(Boolean)
+    .map((value) => value.split("\t"));
+  for (const [ref, symbolicTarget] of refs) {
+    if (symbolicTarget) git(clone, ["symbolic-ref", "--delete", ref]);
+    else git(clone, ["update-ref", "-d", ref]);
+  }
+  git(clone, ["update-ref", "refs/heads/main", canonicalMain]);
+  return { clone, canonicalMain, rootCommit, tree };
+}
+
 function expectAdmissionError(callback, code) {
   assert.throws(callback, (error) => error instanceof AdmissionError && error.code === code);
 }
@@ -114,8 +139,15 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
   assert.equal(policy.target.approvedCommits.find((record) => record.parents.length === 0).commit, "e477aee5c1d93b2bac8619fdc6f15f27483855a3");
   assert.equal(policy.target.approvedCommits.length, 3);
   assert.equal(policy.target.approvedRefs.length, 5);
+  assert.deepEqual(policy.target.postMergeCanonicalization, {
+    parentCommit: "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+    tree: "2741f0883bf636568d375974c98301ed16a633fb",
+    mainRefs: ["refs/heads/main", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+    noOpBranchRefs: ["refs/heads/codex/post-merge-source-canary", "refs/remotes/origin/codex/post-merge-source-canary"],
+    maximumNoOpBranchCommits: 1,
+  });
   assert.deepEqual(policy.target.dynamicEventHead.eventParentSets.map((rule) => rule.event), ["merge_group", "pull_request"]);
-  assert.equal(jsonDigest(policy.target), "1038c61c3e5eedf482b4d64686164bfb87c8223c15f09477e905b78b2c8d7050");
+  assert.equal(jsonDigest(policy.target), "5f35525f9de2d3a9d44c38aa64cdca9036a67688061bc30eefb7c57c3bb473f4");
   assert.deepEqual(
     policy.skills.map((skill) => skill.id),
     [
@@ -295,6 +327,93 @@ test("only exact GitHub event HEAD shapes may be dynamic", { skip: !hasCandidate
       runtimeIdentity: runtimeIdentity(pullRequest, { eventName: "" }),
     }),
     "REPOSITORY_IDENTITY",
+  );
+});
+
+test("one exact post-squash main graph survives launch merge without source-policy rotation", { skip: !hasCandidate }, (t) => {
+  const { clone, canonicalMain } = postMergeCandidate(t);
+  const report = validateCandidate({
+    candidateRoot: clone,
+    policy,
+    runtimeIdentity: runtimeIdentity(clone),
+  });
+  assert.equal(report.candidate.commit, canonicalMain);
+  assert.equal(report.candidate.graphVariant, "post-merge-canonical");
+  assert.equal(report.candidate.canonicalMainCommit, canonicalMain);
+  assert.equal(report.candidate.dynamicEventHead, false);
+  assert.equal(report.inventory.commits, 2);
+});
+
+test("post-merge policy admits only one exact same-tree no-op canary and event HEAD", { skip: !hasCandidate }, (t) => {
+  const { clone, canonicalMain, tree } = postMergeCandidate(t);
+  const branch = git(clone, [
+    "commit-tree",
+    tree,
+    "-p",
+    canonicalMain,
+    "-m",
+    "post-merge no-op source canary",
+  ]);
+  const pullRequestHead = git(clone, [
+    "commit-tree",
+    tree,
+    "-p",
+    canonicalMain,
+    "-p",
+    branch,
+    "-m",
+    "synthetic post-merge pull request",
+  ]);
+  git(clone, ["checkout", "--detach", pullRequestHead]);
+  git(clone, ["update-ref", "refs/heads/codex/post-merge-source-canary", branch]);
+  git(clone, ["update-ref", "refs/remotes/pull/1/merge", pullRequestHead]);
+  const report = validateCandidate({
+    candidateRoot: clone,
+    policy,
+    runtimeIdentity: runtimeIdentity(clone, { eventName: "pull_request" }),
+  });
+  assert.equal(report.candidate.graphVariant, "post-merge-canonical");
+  assert.equal(report.candidate.canonicalMainCommit, canonicalMain);
+  assert.equal(report.candidate.dynamicEventHead, true);
+  assert.equal(report.inventory.commits, 4);
+});
+
+test("post-merge canonicalization rejects partial launch history and extra same-tree commits", { skip: !hasCandidate }, (t) => {
+  const partial = cloneCandidate(t);
+  const rootCommit = policy.target.postMergeCanonicalization.parentCommit;
+  const launchMiddle = policy.target.approvedCommits.find((record) => record.parents[0] === rootCommit).commit;
+  const canonicalMain = git(partial, [
+    "commit-tree",
+    policy.target.postMergeCanonicalization.tree,
+    "-p",
+    rootCommit,
+    "-m",
+    "canonical squash merge",
+  ]);
+  git(partial, ["checkout", "--detach", canonicalMain]);
+  const partialRefs = git(partial, ["for-each-ref", "--format=%(refname)"]).split("\n").filter(Boolean);
+  for (const ref of partialRefs) git(partial, ["update-ref", "-d", ref]);
+  git(partial, ["update-ref", "refs/heads/main", canonicalMain]);
+  git(partial, ["update-ref", "refs/heads/partial-launch", launchMiddle]);
+  expectAdmissionError(
+    () => validateCandidate({ candidateRoot: partial, policy, runtimeIdentity: runtimeIdentity(partial) }),
+    "MIXED_HISTORY_VARIANT",
+  );
+
+  const extra = postMergeCandidate(t);
+  const extraCommit = git(extra.clone, [
+    "commit-tree",
+    extra.tree,
+    "-p",
+    extra.canonicalMain,
+    "-m",
+    "unapproved same-tree extension",
+  ]);
+  git(extra.clone, ["checkout", "--detach", extraCommit]);
+  git(extra.clone, ["update-ref", "refs/heads/main", extraCommit]);
+  expectAdmissionError(
+    () => validateCandidate({ candidateRoot: extra.clone, policy, runtimeIdentity: runtimeIdentity(extra.clone) }),
+    "UNAPPROVED_COMMIT",
   );
 });
 

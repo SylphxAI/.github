@@ -187,7 +187,14 @@ For all reachable refs plus detached HEAD in the checkout it must verify:
     digest is the lowercase 64-hex SHA-256 of those serialized manifest bytes.
     This recursive projection lets downstream private authorization cross-bind
     exact public package bytes to the independently protected source policy
-    without granting cross-private repository access.
+    without granting cross-private repository access; and
+14. the launch graph may canonicalize through exactly one squash commit whose
+    parent is the fresh root and whose tree is the exact approved launch tree.
+    After that canonicalization, only one same-tree no-op canary commit plus
+    its exact pull-request or merge-group event HEAD is admissible. This finite
+    graph contract survives the merge queue without a source-policy rotation;
+    any changed tree, partial launch graph, extra commit, or unapproved ref is
+    rejected.
 
 A benign text commit followed by a restore to the approved HEAD tree is still
 rejected because its commit/tree graph is not source-approved. Empty commits

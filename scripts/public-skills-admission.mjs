@@ -110,7 +110,7 @@ function validatePolicy(policy) {
 
   requireExactKeys(
     policy.target,
-    ["repositoryId", "repositoryNodeId", "allowedRepositories", "baseline", "approvedCommits", "approvedRefs", "dynamicEventHead"],
+    ["repositoryId", "repositoryNodeId", "allowedRepositories", "baseline", "approvedCommits", "approvedRefs", "postMergeCanonicalization", "dynamicEventHead"],
     "policy.target",
   );
   requireCondition(Number.isSafeInteger(policy.target.repositoryId), "POLICY_SHAPE", "Target repository ID must be an integer.");
@@ -147,6 +147,25 @@ function validatePolicy(policy) {
     approvedTrees.get(policy.target.baseline.commit) === policy.target.baseline.tree,
     "POLICY_SHAPE",
     "Baseline commit and tree must match one approved commit record.",
+  );
+
+  const approvedRoot = policy.target.approvedCommits.find((record) => record.parents.length === 0);
+  const postMerge = policy.target.postMergeCanonicalization;
+  requireExactKeys(postMerge, ["parentCommit", "tree", "mainRefs", "noOpBranchRefs", "maximumNoOpBranchCommits"], "policy.target.postMergeCanonicalization");
+  requireCondition(postMerge.parentCommit === approvedRoot.commit, "POLICY_SHAPE", "Post-merge canonicalization must descend from the approved fresh root.");
+  requireCondition(postMerge.tree === policy.target.baseline.tree, "POLICY_SHAPE", "Post-merge canonicalization must preserve the exact baseline tree.");
+  requireCondition(postMerge.maximumNoOpBranchCommits === 1, "POLICY_SHAPE", "Post-merge canonicalization permits exactly one no-op branch commit.");
+  requireSortedUniqueStrings(postMerge.mainRefs, "policy.target.postMergeCanonicalization.mainRefs");
+  requireSortedUniqueStrings(postMerge.noOpBranchRefs, "policy.target.postMergeCanonicalization.noOpBranchRefs");
+  requireCondition(
+    JSON.stringify(postMerge.mainRefs) === JSON.stringify(["refs/heads/main", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]),
+    "POLICY_SHAPE",
+    "Post-merge canonical main refs differ from the immutable source contract.",
+  );
+  requireCondition(
+    JSON.stringify(postMerge.noOpBranchRefs) === JSON.stringify(["refs/heads/codex/post-merge-source-canary", "refs/remotes/origin/codex/post-merge-source-canary"]),
+    "POLICY_SHAPE",
+    "Post-merge no-op branch refs differ from the immutable source contract.",
   );
 
   requireCondition(Array.isArray(policy.target.approvedRefs) && policy.target.approvedRefs.length > 0, "POLICY_SHAPE", "Approved refs are required.");
@@ -516,40 +535,111 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
   }
 
   const approvedCommitMap = new Map(policy.target.approvedCommits.map((record) => [record.commit, record]));
-  for (const record of policy.target.approvedCommits) {
-    requireCondition(commitSet.has(record.commit), "MISSING_APPROVED_COMMIT", `Approved commit ${record.commit} is not reachable.`);
-    const actual = commitMetadata.get(record.commit);
-    requireCondition(actual?.tree === record.tree, "APPROVED_COMMIT_DRIFT", `Approved commit ${record.commit} has the wrong tree.`);
-    requireCondition(JSON.stringify(actual.parents) === JSON.stringify(record.parents), "APPROVED_COMMIT_DRIFT", `Approved commit ${record.commit} has the wrong parent graph.`);
-  }
-
-  const unknownCommits = commits.filter((commit) => !approvedCommitMap.has(commit));
+  const reachableApproved = policy.target.approvedCommits.filter((record) => commitSet.has(record.commit));
+  const allApprovedReachable = reachableApproved.length === policy.target.approvedCommits.length;
+  const postMerge = policy.target.postMergeCanonicalization;
+  let graphVariant;
+  let canonicalMainCommit = null;
+  let noOpBranchCommit = null;
   let usesDynamicEventHead = false;
-  if (unknownCommits.length > 0) {
-    requireCondition(unknownCommits.length === 1 && unknownCommits[0] === head, "UNAPPROVED_COMMIT", "Reachable history contains a non-approved commit outside the event HEAD exception.");
-    const eventRule = policy.target.dynamicEventHead.eventParentSets.find((rule) => rule.event === runtimeIdentity.eventName);
-    requireCondition(eventRule, "UNAPPROVED_COMMIT", `Event ${runtimeIdentity.eventName} cannot use a dynamic candidate HEAD.`);
-    const actual = commitMetadata.get(head);
-    requireCondition(actual.tree === policy.target.dynamicEventHead.tree, "UNAPPROVED_COMMIT", "Dynamic event HEAD has an unapproved tree.");
-    requireCondition(
-      eventRule.parentSets.some((parents) => JSON.stringify(parents) === JSON.stringify(actual.parents)),
-      "UNAPPROVED_COMMIT",
-      `Dynamic ${runtimeIdentity.eventName} HEAD has an unapproved parent graph.`,
-    );
-    usesDynamicEventHead = true;
+  if (allApprovedReachable) {
+    graphVariant = "launch";
+    for (const record of policy.target.approvedCommits) {
+      const actual = commitMetadata.get(record.commit);
+      requireCondition(actual?.tree === record.tree, "APPROVED_COMMIT_DRIFT", `Approved commit ${record.commit} has the wrong tree.`);
+      requireCondition(JSON.stringify(actual.parents) === JSON.stringify(record.parents), "APPROVED_COMMIT_DRIFT", `Approved commit ${record.commit} has the wrong parent graph.`);
+    }
+    const unknownCommits = commits.filter((commit) => !approvedCommitMap.has(commit));
+    if (unknownCommits.length > 0) {
+      requireCondition(unknownCommits.length === 1 && unknownCommits[0] === head, "UNAPPROVED_COMMIT", "Reachable launch history contains a non-approved commit outside the event HEAD exception.");
+      const eventRule = policy.target.dynamicEventHead.eventParentSets.find((rule) => rule.event === runtimeIdentity.eventName);
+      requireCondition(eventRule, "UNAPPROVED_COMMIT", `Event ${runtimeIdentity.eventName} cannot use a dynamic candidate HEAD.`);
+      const actual = commitMetadata.get(head);
+      requireCondition(actual.tree === policy.target.dynamicEventHead.tree, "UNAPPROVED_COMMIT", "Dynamic event HEAD has an unapproved tree.");
+      requireCondition(
+        eventRule.parentSets.some((parents) => JSON.stringify(parents) === JSON.stringify(actual.parents)),
+        "UNAPPROVED_COMMIT",
+        `Dynamic ${runtimeIdentity.eventName} HEAD has an unapproved parent graph.`,
+      );
+      usesDynamicEventHead = true;
+    } else {
+      requireCondition(approvedCommitMap.has(head), "UNAPPROVED_COMMIT", "Candidate HEAD is not approved.");
+    }
   } else {
-    requireCondition(approvedCommitMap.has(head), "UNAPPROVED_COMMIT", "Candidate HEAD is not approved.");
+    graphVariant = "post-merge-canonical";
+    requireCondition(
+      reachableApproved.length === 1 && reachableApproved[0].commit === approvedRoot.commit,
+      "MIXED_HISTORY_VARIANT",
+      "Post-merge history must contain the fresh root and no partial launch-only commit graph.",
+    );
+    const canonicalCandidates = commits.filter((commit) => {
+      if (commit === approvedRoot.commit) return false;
+      const actual = commitMetadata.get(commit);
+      return actual?.tree === postMerge.tree
+        && JSON.stringify(actual.parents) === JSON.stringify([postMerge.parentCommit]);
+    });
+    requireCondition(canonicalCandidates.length === 1, "CANONICAL_MAIN", "Post-merge history must contain exactly one same-tree squash commit over the fresh root.");
+    [canonicalMainCommit] = canonicalCandidates;
+    const remaining = commits.filter((commit) => commit !== approvedRoot.commit && commit !== canonicalMainCommit);
+    if (remaining.length === 0) {
+      requireCondition(head === canonicalMainCommit, "CANONICAL_MAIN", "Post-merge baseline HEAD must be the canonical squash commit.");
+      requireCondition(!["pull_request", "merge_group"].includes(runtimeIdentity.eventName), "CANONICAL_MAIN", "A pull-request or merge-group event must contain its exact dynamic event HEAD.");
+    } else {
+      requireCondition(["pull_request", "merge_group"].includes(runtimeIdentity.eventName), "UNAPPROVED_COMMIT", "Post-merge history extensions are allowed only for pull-request or merge-group events.");
+      requireCondition(remaining.includes(head), "UNAPPROVED_COMMIT", "Post-merge dynamic event HEAD is not the checked-out commit.");
+      const eventHead = commitMetadata.get(head);
+      requireCondition(eventHead?.tree === postMerge.tree, "UNAPPROVED_COMMIT", "Post-merge dynamic event HEAD changed the canonical tree.");
+      if (remaining.length === 1) {
+        requireCondition(runtimeIdentity.eventName === "merge_group", "UNAPPROVED_COMMIT", "A pull-request event requires one exact no-op branch commit.");
+        requireCondition(
+          JSON.stringify(eventHead.parents) === JSON.stringify([canonicalMainCommit]),
+          "UNAPPROVED_COMMIT",
+          "Single-parent merge-group HEAD does not descend directly from canonical main.",
+        );
+      } else {
+        requireCondition(remaining.length === postMerge.maximumNoOpBranchCommits + 1, "UNAPPROVED_COMMIT", "Post-merge event history exceeds the exact no-op branch bound.");
+        const branchCandidates = remaining.filter((commit) => commit !== head);
+        requireCondition(branchCandidates.length === 1, "UNAPPROVED_COMMIT", "Post-merge event must contain exactly one no-op branch commit.");
+        [noOpBranchCommit] = branchCandidates;
+        const branch = commitMetadata.get(noOpBranchCommit);
+        requireCondition(
+          branch?.tree === postMerge.tree
+            && JSON.stringify(branch.parents) === JSON.stringify([canonicalMainCommit]),
+          "UNAPPROVED_COMMIT",
+          "Post-merge branch commit is not an exact same-tree child of canonical main.",
+        );
+        requireCondition(
+          JSON.stringify(eventHead.parents) === JSON.stringify([canonicalMainCommit, noOpBranchCommit]),
+          "UNAPPROVED_COMMIT",
+          "Post-merge dynamic event HEAD has an unapproved parent graph.",
+        );
+      }
+      usesDynamicEventHead = true;
+    }
   }
 
   const approvedRefMap = new Map(policy.target.approvedRefs.map((record) => [record.name, new Set(record.commits)]));
   const dynamicRefPatterns = policy.target.dynamicEventHead.allowedRefPatterns.map((source) => new RegExp(source));
+  let canonicalMainRefCount = 0;
   for (const [ref, oid, type] of refs) {
     requireCondition(type !== "tag", "UNAPPROVED_TAG", `Annotated tag ${ref} is not approved.`);
     requireCondition(type === "commit", "NON_COMMIT_REF", `Ref ${ref} points to unsupported object type ${type}.`);
-    const approvedTargets = approvedRefMap.get(ref);
-    if (approvedTargets?.has(oid)) continue;
-    if (usesDynamicEventHead && oid === head && dynamicRefPatterns.some((pattern) => pattern.test(ref))) continue;
+    if (graphVariant === "launch") {
+      const approvedTargets = approvedRefMap.get(ref);
+      if (approvedTargets?.has(oid)) continue;
+      if (usesDynamicEventHead && oid === head && dynamicRefPatterns.some((pattern) => pattern.test(ref))) continue;
+    } else {
+      if (postMerge.mainRefs.includes(ref) && oid === canonicalMainCommit) {
+        canonicalMainRefCount += 1;
+        continue;
+      }
+      if (noOpBranchCommit !== null && postMerge.noOpBranchRefs.includes(ref) && oid === noOpBranchCommit) continue;
+      if (usesDynamicEventHead && oid === head && dynamicRefPatterns.some((pattern) => pattern.test(ref))) continue;
+    }
     reject("UNAPPROVED_REF", `Ref ${ref} is not bound to an approved commit or permitted dynamic event HEAD.`);
+  }
+  if (graphVariant === "post-merge-canonical") {
+    requireCondition(canonicalMainRefCount > 0, "CANONICAL_MAIN", "Post-merge history has no approved main ref bound to the canonical squash commit.");
   }
 
   const headEntries = parseTree(root, head);
@@ -585,6 +675,8 @@ export function validateCandidate({ candidateRoot, policy, runtimeIdentity }) {
       commit: head,
       tree: headTree,
       rootCommit: roots[0],
+      graphVariant,
+      canonicalMainCommit,
       dynamicEventHead: usesDynamicEventHead,
     },
     inventory: {
