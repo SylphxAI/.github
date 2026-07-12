@@ -44,6 +44,8 @@ test("doctrine adapter remains Sylphx-specific and does not replace the neutral 
 
 test("local workflow dogfoods the released GroundAtlas package and action", () => {
   const workflow = readText(".github/workflows/groundatlas.yml");
+  const admissionValidator = readText("scripts/public-skills-admission.mjs");
+  const admissionTests = readText("tests/public-skills-admission.test.mjs");
 
   assert.ok(workflow.includes("runs-on: ubuntu-24.04"));
   assert.ok(!workflow.includes("self-hosted"));
@@ -53,6 +55,41 @@ test("local workflow dogfoods the released GroundAtlas package and action", () =
   assert.ok(workflow.includes("uses: SylphxAI/groundatlas@38ce903733901cd2954a01aa4d31d7968de00ead"));
   assert.ok(workflow.includes("uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"));
   assert.ok(workflow.includes("node --test tests/public-skills-admission.test.mjs"));
+  assert.ok(workflow.includes("node --test tests/public-skills-merge-queue-barrier.test.mjs"));
+  assert.equal(
+    workflow.match(/node --test tests\/public-skills-merge-queue-barrier\.test\.mjs/g)?.length,
+    1,
+    "the protected workflow must run exactly one merge-queue barrier suite",
+  );
+  assert.ok(admissionValidator.includes("export function authorizeCandidateGraph"));
+  assert.ok(admissionValidator.includes("const graphAuthorization = authorizeCandidateGraph({"));
+  assert.equal(
+    admissionValidator.match(/const graphAuthorization = authorizeCandidateGraph\(\{/g)?.length,
+    1,
+    "production must call the pure graph authority exactly once",
+  );
+  const productionAdapter = admissionValidator.split("export function validateCandidate", 2)[1];
+  assert.ok(productionAdapter, "production checkout adapter is missing");
+  assert.ok(!productionAdapter.includes("GRAPH_AUTHORIZATION_DRIFT"));
+  for (const removedDuplicateMarker of [
+    "let eventContext",
+    "approvedCommitMap",
+    "selectSameTreeCanaryBranch",
+    "usesDynamicEventHead",
+  ]) {
+    assert.ok(!productionAdapter.includes(removedDuplicateMarker), "duplicate graph authority returned: " + removedDuplicateMarker);
+  }
+  assert.ok(productionAdapter.includes("} = graphAuthorization;"));
+  for (const requiredGraphGate of [
+    "pure graph authority admits PR1 after bounded same-tree main advancement",
+    "pure graph authority admits strict pre-launch and post-launch PR and merge-group canaries",
+    "pure graph authority rejects stale provider SHA, parent drift, and foreign refs",
+    "pure graph authority rejects overflow and foreign-root inventories",
+    "pure graph authority admits non-event baseline only without provider event claims",
+    "pure graph authority requires exact provider and canary ref inventories",
+  ]) {
+    assert.ok(admissionTests.includes(requiredGraphGate), "protected CI lost required graph gate: " + requiredGraphGate);
+  }
   assert.ok(workflow.includes("package-spec: groundatlas@0.1.2"));
   assert.ok(workflow.includes('require-atlas: "true"'));
   assert.ok(workflow.includes('strict: "true"'));

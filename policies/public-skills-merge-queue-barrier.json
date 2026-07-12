@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 3,
+  "kind": "sylphx-public-skills-merge-queue-barrier",
+  "source": {
+    "repository": "SylphxAI/.github",
+    "repositoryId": 1091169653,
+    "repositoryNodeId": "R_kgDOQQntdQ",
+    "defaultBranch": "main",
+    "workflowPath": ".github/workflows/public-skills-merge-queue-barrier.yml",
+    "controllerPath": "scripts/public-skills-merge-queue-barrier.mjs",
+    "policyPath": "policies/public-skills-merge-queue-barrier.json",
+    "protectedSourceBundle": {
+      "relation": "same-protected-source-commit",
+      "runtimeRevisionInput": "github.workflow_sha"
+    }
+  },
+  "target": {
+    "organization": "SylphxAI",
+    "repositoryId": 1297840366,
+    "repositoryNodeId": "R_kgDOTVt47g",
+    "allowedRepositories": [
+      "SylphxAI/skills",
+      "SylphxAI/skills-public-cleanroom"
+    ],
+    "defaultBranch": "main"
+  },
+  "externalAdmission": {
+    "rulesetId": 18831380,
+    "rulesetName": "public-skills-external-admission",
+    "rulesetSource": "SylphxAI",
+    "sourceRepositoryId": 1091169653,
+    "sourceWorkflowPath": ".github/workflows/public-skills-admission.yml",
+    "sourceRef": "main",
+    "requiredCheck": "public-skills-external-admission/pass",
+    "terminalConclusions": [
+      "failure",
+      "success"
+    ],
+    "requiredConclusion": "success",
+    "ruleSuiteObservation": {
+      "ref": "refs/heads/main",
+      "ruleSourceType": "ruleset",
+      "ruleType": "workflows",
+      "admittedEnforcementsAtDecision": [
+        "evaluate",
+        "active"
+      ],
+      "admittedResultsAtDecision": [
+        "fail",
+        "pass"
+      ],
+      "requiredEnforcement": "active",
+      "requiredResult": "pass",
+      "admittedAggregateResultsAtDecision": [
+        null,
+        "fail",
+        "pass"
+      ]
+    }
+  },
+  "barrier": {
+    "rulesetName": "public-skills-merge-queue-barrier",
+    "requiredCheck": "public-skills-merge-queue-barrier/pass",
+    "initialEnforcement": "evaluate",
+    "requiredEnforcement": "active",
+    "bypassActors": [],
+    "refInclude": [
+      "~DEFAULT_BRANCH"
+    ],
+    "refExclude": [],
+    "doNotEnforceOnCreate": false
+  },
+  "events": {
+    "mergeGroupRefPattern": "^refs/heads/gh-readonly-queue/main/pr-([1-9][0-9]*)-([0-9a-f]+)$",
+    "pullRequestRefPattern": "^refs/pull/([1-9][0-9]*)/merge$"
+  },
+  "polling": {
+    "externalCheckAttempts": 120,
+    "externalCheckIntervalMilliseconds": 5000,
+    "ruleSuiteAttempts": 30,
+    "ruleSuiteIntervalMilliseconds": 2000
+  }
+}

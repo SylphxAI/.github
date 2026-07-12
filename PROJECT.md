@@ -20,6 +20,8 @@ workflow templates, and shared GitHub Actions.
   through documented GitHub workflow/action references.
 - Own source-pinned organization required workflows where a repository must
   not control the check that judges its own supply-chain boundary.
+- Own the source-pinned merge-queue barrier that makes evaluate-mode public-
+  skills canaries safe without a target-controlled or operator-timed hold.
 - Own the protected executor that reconciles the public-skills organization
   ruleset from Doctrine desired state without executing Doctrine code.
 - Keep shared process in one place so repositories do not copy or fork it.
@@ -54,14 +56,17 @@ and delivery evidence still belong to the consuming repository.
 - `.github/workflows/publish-npm.yml`
 - `.github/workflows/groundatlas.yml`
 - `.github/workflows/public-skills-admission.yml`
+- `.github/workflows/public-skills-merge-queue-barrier.yml`
 - `.github/actions/adr29-admission/action.yml`
 - `.github/actions/setup-changesets-publisher/action.yml`
 - `templates/`
 - `brand/`
 - `COMPANY.md`
 - `policies/public-skills-admission.json`
+- `policies/public-skills-merge-queue-barrier.json`
 - `policies/public-skills-activation-attestation-ruleset.json`
 - `scripts/public-skills-admission.mjs`
+- `scripts/public-skills-merge-queue-barrier.mjs`
 - `scripts/public-skills-ruleset-executor.py`
 
 The public-skills surface emits the stable target context
@@ -73,6 +78,15 @@ and the admission-mechanics decision is
 The replacement target identity, clean snapshot, and independent executor trust
 split are accepted in
 [`docs/adr/ADR-36-public-skills-cleanroom-control-plane.md`](./docs/adr/ADR-36-public-skills-cleanroom-control-plane.md).
+The independent activation hold emits
+`public-skills-merge-queue-barrier/pass`; its source-owned state machine and
+provider-owned queue boundary are specified in
+[`docs/specs/public-skills-merge-queue-barrier.md`](./docs/specs/public-skills-merge-queue-barrier.md).
+Its organization rule is not yet Git-owned: this source slice authorizes no
+manual console or OAuth/API creation, and launch remains blocked until a
+canonical Doctrine sibling contract is reconciled through the existing
+protected executor and fixed lock with exact ID, source-SHA, active/effective
+and recovery evidence.
 
 ## Delivery
 
@@ -106,3 +120,11 @@ zero-bypass tag ruleset makes those nonce-scoped refs immutable. Out-of-band
 ruleset mutation is an incident: GitHub exposes no conditional ruleset PUT, so
 every supported writer must share the one durable lock and attestation
 protocol.
+The merge-queue barrier additionally needs an evaluate-to-active zero-bypass
+organization workflow rule pinned to its exact merged source SHA. Proof needs a
+target pull-request identity run; a controlled empty/same-tree canary that
+merges while the barrier is evaluate-only; a second controlled canary whose
+now-required barrier failure is rejected/dequeued by GitHub before external
+activation; and a final read-only merge-group run that passes only after
+external admission is exact active/effective. The workflow never mutates queue
+state.

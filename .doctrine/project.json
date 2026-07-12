@@ -10,6 +10,7 @@
     "goals": [
       "Provide default community health files, profile documentation, issue templates, pull request templates, brand/company references, and repository templates for the SylphxAI GitHub organization.",
       "Provide reusable GitHub workflows and shared actions that repositories can call through documented public workflow/action surfaces.",
+      "Provide an externally owned merge-queue activation barrier for source-pinned public-skills canaries and permanent recovery defense.",
       "Keep organization-level GitHub conventions centralized so individual repositories do not copy or fork shared process."
     ],
     "nonGoals": [
@@ -31,6 +32,10 @@
       {
         "name": "externally-owned-repository-admission",
         "description": "Source-pinned organization required workflows and policy-as-code used when a target repository must not control its own admission judge."
+      },
+      {
+        "name": "externally-owned-merge-queue-barriers",
+        "description": "Source-pinned read-only organization required workflows that fail until independent admission is exact active/effective and leave rejection/dequeue to GitHub provider state."
       },
       {
         "name": "independent-organization-ruleset-execution",
@@ -108,9 +113,19 @@
         "location": ".github/workflows/public-skills-admission.yml"
       },
       {
+        "type": "workflow",
+        "name": "Public skills merge-queue barrier workflow",
+        "location": ".github/workflows/public-skills-merge-queue-barrier.yml"
+      },
+      {
         "type": "manifest",
         "name": "Public skills external admission policy",
         "location": "policies/public-skills-admission.json"
+      },
+      {
+        "type": "manifest",
+        "name": "Public skills merge-queue barrier runtime policy",
+        "location": "policies/public-skills-merge-queue-barrier.json"
       },
       {
         "type": "manifest",
@@ -124,6 +139,11 @@
       },
       {
         "type": "api",
+        "name": "Public skills merge-queue barrier controller",
+        "location": "scripts/public-skills-merge-queue-barrier.mjs"
+      },
+      {
+        "type": "api",
         "name": "Public skills organization-ruleset executor",
         "location": "scripts/public-skills-ruleset-executor.py"
       },
@@ -131,6 +151,11 @@
         "type": "documentation",
         "name": "Public skills external admission specification",
         "location": "docs/specs/public-skills-external-admission.md"
+      },
+      {
+        "type": "documentation",
+        "name": "Public skills merge-queue barrier specification",
+        "location": "docs/specs/public-skills-merge-queue-barrier.md"
       },
       {
         "type": "api",
@@ -201,7 +226,7 @@
       "groundatlas"
     ],
     "deployPath": "Merged changes to main are consumed directly by GitHub as organization defaults, reusable workflows, workflow templates, and composite actions. There is no separate runtime deploy for this repository.",
-    "productionProof": "Proof is GitHub main readback plus successful local GroundAtlas project-control CI. Public reusable workflow/action contract changes still require successful consumer use of the changed public surface. The public-skills gate additionally requires an exact source-SHA organization-ruleset binding, successful pull-request plus merge-group readback on target repository ID 1297840366, authorization-bound fenced-lock evidence, exact post/effective readback, a durable immutable provider attestation, and the sealed privacy-safe Doctrine transition artifact.",
+    "productionProof": "Proof is GitHub main readback plus successful local GroundAtlas project-control CI. Public reusable workflow/action contract changes still require successful consumer use of the changed public surface. The public-skills gate additionally requires exact source-SHA organization-ruleset bindings for external admission and its evaluate-to-active read-only merge-queue barrier, controlled evaluate-canary merge evidence, active required-failure plus GitHub-owned rejection/dequeue evidence, final active/active pass-through, authorization-bound fenced-lock evidence, exact post/effective readback, a durable immutable provider attestation, and the sealed privacy-safe Doctrine transition artifact.",
     "recoveryClass": "source-revertable"
   },
   "adoption": {
@@ -218,6 +243,12 @@
         "description": "The refreshed cleanroom admission source and independent executor must merge before Doctrine can bind the exact source SHA and the organization ruleset can target repository ID 1297840366.",
         "owner": "SylphxAI/.github",
         "target": "post-merge GitOps reconcile and target pull-request plus merge-group canary"
+      },
+      {
+        "id": "public-skills-merge-queue-barrier-rollout",
+        "description": "BLOCKED: the barrier organization rule is not yet Git-owned. No canonical Doctrine sibling contract exists, so no manual console or OAuth/API creation is authorized. The source must merge, Doctrine must publish the exact rule ID/source-SHA/evaluate-to-active/recovery contract, the existing protected executor must reconcile it under its fixed lock, and target repository ID 1297840366 must then prove an evaluate-only controlled canary merge, an active required failure with GitHub-owned rejection/dequeue, and final active/active read-only pass-through.",
+        "owner": "SylphxAI/.github",
+        "target": "Doctrine follow-on contract, same-executor/same-lock integration, provider readback, and target merge-group canaries"
       }
     ]
   }
