@@ -71,7 +71,7 @@ def live_attestation_ruleset() -> dict:
 def base_record(*, phase: str = "expand", ruleset_id: int | None = None, enforcement: str = "evaluate") -> dict:
     return {
         "$schema": module.DOCTRINE_SCHEMA_REF,
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "kind": "organization-required-workflow-ruleset",
         "id": module.DOCTRINE_RECORD_ID,
         "owner": module.DOCTRINE_REPOSITORY,
@@ -721,6 +721,8 @@ class ContractTests(unittest.TestCase):
 
     def test_immutable_identity_surface_is_closed(self) -> None:
         mutations = [
+            ("schemaVersion", 1),
+            ("schemaVersion", 3),
             ("organization", "Attacker"),
             ("ruleset.bypassActors", [{"actor_id": 1}]),
             ("ruleset.refInclude", ["~ALL"]),
@@ -804,6 +806,15 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual([item[0] for item in api.mutations], ["POST"])
         self.assertEqual(api.mutations[0][2], module.expected_ruleset(record))
         self.assertGreaterEqual(api.get_calls.count(f"/repositories/{module.DOCTRINE_REPOSITORY_ID}/commits/main"), 2)
+
+    def test_doctrine_schema_v1_blocks_before_any_lock_or_ruleset_write(self) -> None:
+        record = base_record()
+        record["schemaVersion"] = 1
+        api = base_api(record)
+        with self.assertRaisesRegex(module.ContractError, "schemaVersion differs"):
+            self.executor(api).run("apply")
+        self.assertFalse(api.mutations)
+        self.assertFalse(api.lock_mutations)
 
     def test_post_create_readback_mismatch_is_not_success(self) -> None:
         api = base_api(base_record())

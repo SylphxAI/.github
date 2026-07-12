@@ -604,7 +604,7 @@ def validate_record(record: Any) -> dict[str, Any]:
     )
     fixed = {
         "$schema": DOCTRINE_SCHEMA_REF,
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "kind": "organization-required-workflow-ruleset",
         "id": DOCTRINE_RECORD_ID,
         "owner": DOCTRINE_REPOSITORY,
