@@ -36,8 +36,17 @@ The workflow must:
   `persist-credentials: false`;
 - checkout `SylphxAI/.github` at `github.workflow_sha`, separately from the
   candidate; and
-- pass `github.event_name` as an explicit validator input and run only the
-  validator from that source checkout.
+- pass the provider-owned event name, event ref, base ref, head ref, and head
+  repository ID as explicit validator inputs and run only the validator from
+  that source checkout.
+
+The source policy binds the launch, negative-control, and post-merge canary to
+their exact pull-request numbers and same-repository head refs. Pull-request
+events must use the matching `refs/pull/<number>/merge` ref and `main` base.
+Merge-group events must use the matching
+`refs/heads/gh-readonly-queue/main/pr-<number>-<hex>` ref as both provider event
+and head ref, with `refs/heads/main` as base. A fork head repository, renamed
+branch, different pull request, or mismatched queue ref fails closed.
 
 The organization ruleset must bind the source repository, workflow path, and
 exact merged source SHA. Workflow presence in this repository alone is not
@@ -155,13 +164,15 @@ For all reachable refs plus detached HEAD in the checkout it must verify:
 2. all approved commits are reachable and exactly one approved fresh root
    exists;
 3. the only permitted unknown commit is one GitHub-generated event HEAD with
-   the pinned baseline tree and the exact ordered parent set selected by the
-   explicit `pull_request` or `merge_group` event name;
+   the pinned baseline tree, exact ordered parent set, and exact provider event
+   identity selected by the explicit `pull_request` or `merge_group` event;
 4. pull-request dynamic HEAD uses `[base main, approved PR head]`; merge-group
    additionally permits the `[base main]` squash-queue shape;
 5. every ref name and target is explicitly approved, except narrow dynamic
-   pull/queue refs pointing to the permitted event HEAD; annotated tags,
-   unknown branches, detached tag blobs, and other ref types are rejected;
+   pull/queue refs pointing to the permitted event HEAD; the post-merge graph
+   additionally requires at least one exact target-owned canary branch ref to
+   point to its sole no-op commit; annotated tags, unknown branches, detached
+   tag blobs, and other ref types are rejected;
 6. every reachable commit belongs to the exact approved graph, and commit/blob
    counts remain bounded;
 7. every historical path belongs to the approved physical allowlist;
@@ -198,8 +209,9 @@ For all reachable refs plus detached HEAD in the checkout it must verify:
 
 A benign text commit followed by a restore to the approved HEAD tree is still
 rejected because its commit/tree graph is not source-approved. Empty commits
-with the same tree are also rejected. Denylist cleanliness is never treated as
-provenance.
+with the same tree are also rejected unless they are one of the explicitly
+bounded, event-identity-bound post-merge canary shapes. Denylist cleanliness is
+never treated as provenance.
 
 Failures are fail-closed and produce a redacted error code and message. Secret
 matches are never included in the report. The report binds source commit,

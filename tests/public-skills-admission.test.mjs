@@ -36,6 +36,10 @@ function runtimeIdentity(root, overrides = {}) {
     repositoryNodeId: "R_kgDOTVt47g",
     candidateSha: git(root, ["rev-parse", "HEAD"]),
     eventName: "policy-baseline",
+    eventRef: "",
+    baseRef: "",
+    headRef: "",
+    headRepositoryId: 1297840366,
     ...overrides,
   };
 }
@@ -109,8 +113,16 @@ test("external workflow is target-only, source-owned, immutable-action-pinned, a
   assert.match(workflow, /^          repository: SylphxAI\/\.github$/m);
   assert.match(workflow, /^          ref: \$\{\{ github\.workflow_sha \}\}$/m);
   assert.match(workflow, /^          persist-credentials: false$/m);
+  assert.match(workflow, /^          EVENT_BASE_REF: \$\{\{ github\.event\.merge_group\.base_ref \|\| github\.base_ref \}\}$/m);
+  assert.match(workflow, /^          EVENT_HEAD_REF: \$\{\{ github\.event\.merge_group\.head_ref \|\| github\.head_ref \}\}$/m);
+  assert.match(workflow, /^          EVENT_HEAD_REPOSITORY_ID: \$\{\{ github\.event\.pull_request\.head\.repo\.id \|\| github\.repository_id \}\}$/m);
   assert.match(workflow, /^          EVENT_NAME: \$\{\{ github\.event_name \}\}$/m);
+  assert.match(workflow, /^          EVENT_REF: \$\{\{ github\.ref \}\}$/m);
   assert.match(workflow, /^            --event-name "\$EVENT_NAME" \\$/m);
+  assert.match(workflow, /^            --event-ref "\$EVENT_REF" \\$/m);
+  assert.match(workflow, /^            --base-ref "\$EVENT_BASE_REF" \\$/m);
+  assert.match(workflow, /^            --head-ref "\$EVENT_HEAD_REF" \\$/m);
+  assert.match(workflow, /^            --head-repository-id "\$EVENT_HEAD_REPOSITORY_ID" \\$/m);
   assert.doesNotMatch(workflow, /pull_request_target|secrets\.|cancel-in-progress/);
   assert.doesNotMatch(workflow, /\b(?:npm|npx|pnpm|yarn|bun|python|pip)\b/);
   assert.doesNotMatch(workflow, /candidate\/[^\s"']+\.(?:js|mjs|cjs|py|sh)\b/);
@@ -139,6 +151,11 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
   assert.equal(policy.target.approvedCommits.find((record) => record.parents.length === 0).commit, "e477aee5c1d93b2bac8619fdc6f15f27483855a3");
   assert.equal(policy.target.approvedCommits.length, 3);
   assert.equal(policy.target.approvedRefs.length, 5);
+  assert.deepEqual(policy.target.eventContexts, {
+    launch: { pullRequestNumber: 1, headRef: "codex/launch-public-cleanroom", mergeGroupAllowed: true },
+    negativeControl: { pullRequestNumber: 2, headRef: "canary/negative", mergeGroupAllowed: false },
+    postMergeCanary: { pullRequestNumber: 3, headRef: "codex/post-merge-source-canary", mergeGroupAllowed: true },
+  });
   assert.deepEqual(policy.target.postMergeCanonicalization, {
     parentCommit: "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
     tree: "2741f0883bf636568d375974c98301ed16a633fb",
@@ -147,7 +164,23 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
     maximumNoOpBranchCommits: 1,
   });
   assert.deepEqual(policy.target.dynamicEventHead.eventParentSets.map((rule) => rule.event), ["merge_group", "pull_request"]);
-  assert.equal(jsonDigest(policy.target), "5f35525f9de2d3a9d44c38aa64cdca9036a67688061bc30eefb7c57c3bb473f4");
+  assert.deepEqual(
+    Object.fromEntries(policy.target.dynamicEventHead.eventParentSets.map((rule) => [rule.event, {
+      runtimeRefPattern: rule.runtimeRefPattern,
+      gitRefPatterns: rule.gitRefPatterns,
+    }])),
+    {
+      merge_group: {
+        runtimeRefPattern: "^refs/heads/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$",
+        gitRefPatterns: ["^refs/remotes/origin/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$"],
+      },
+      pull_request: {
+        runtimeRefPattern: "^refs/pull/[1-9][0-9]*/merge$",
+        gitRefPatterns: ["^refs/remotes/pull/[1-9][0-9]*/merge$"],
+      },
+    },
+  );
+  assert.equal(jsonDigest(policy.target), "950a74b11a0f253895a875d0b7bba217af3265d091dcb7a526435702621e9460");
   assert.deepEqual(
     policy.skills.map((skill) => skill.id),
     [
@@ -291,7 +324,12 @@ test("only exact GitHub event HEAD shapes may be dynamic", { skip: !hasCandidate
   const prReport = validateCandidate({
     candidateRoot: pullRequest,
     policy,
-    runtimeIdentity: runtimeIdentity(pullRequest, { eventName: "pull_request" }),
+    runtimeIdentity: runtimeIdentity(pullRequest, {
+      eventName: "pull_request",
+      eventRef: "refs/pull/1/merge",
+      baseRef: "main",
+      headRef: "codex/launch-public-cleanroom",
+    }),
   });
   assert.equal(prReport.candidate.dynamicEventHead, true);
 
@@ -308,7 +346,12 @@ test("only exact GitHub event HEAD shapes may be dynamic", { skip: !hasCandidate
   const queueReport = validateCandidate({
     candidateRoot: mergeGroup,
     policy,
-    runtimeIdentity: runtimeIdentity(mergeGroup, { eventName: "merge_group" }),
+    runtimeIdentity: runtimeIdentity(mergeGroup, {
+      eventName: "merge_group",
+      eventRef: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+      baseRef: "refs/heads/main",
+      headRef: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+    }),
   });
   assert.equal(queueReport.candidate.dynamicEventHead, true);
 
@@ -366,16 +409,93 @@ test("post-merge policy admits only one exact same-tree no-op canary and event H
   ]);
   git(clone, ["checkout", "--detach", pullRequestHead]);
   git(clone, ["update-ref", "refs/heads/codex/post-merge-source-canary", branch]);
-  git(clone, ["update-ref", "refs/remotes/pull/1/merge", pullRequestHead]);
+  git(clone, ["update-ref", "refs/remotes/pull/3/merge", pullRequestHead]);
   const report = validateCandidate({
     candidateRoot: clone,
     policy,
-    runtimeIdentity: runtimeIdentity(clone, { eventName: "pull_request" }),
+    runtimeIdentity: runtimeIdentity(clone, {
+      eventName: "pull_request",
+      eventRef: "refs/pull/3/merge",
+      baseRef: "main",
+      headRef: "codex/post-merge-source-canary",
+    }),
   });
   assert.equal(report.candidate.graphVariant, "post-merge-canonical");
   assert.equal(report.candidate.canonicalMainCommit, canonicalMain);
   assert.equal(report.candidate.dynamicEventHead, true);
   assert.equal(report.inventory.commits, 4);
+  for (const overrides of [
+    { headRepositoryId: 999999999 },
+    { headRef: "fork-no-op" },
+    { eventRef: "refs/pull/2/merge", headRef: "canary/negative" },
+    { baseRef: "develop" },
+  ]) {
+    expectAdmissionError(
+      () => validateCandidate({
+        candidateRoot: clone,
+        policy,
+        runtimeIdentity: runtimeIdentity(clone, {
+          eventName: "pull_request",
+          eventRef: "refs/pull/3/merge",
+          baseRef: "main",
+          headRef: "codex/post-merge-source-canary",
+          ...overrides,
+        }),
+      }),
+      "REPOSITORY_IDENTITY",
+    );
+  }
+
+  const mergeGroup = postMergeCandidate(t);
+  const fetchedBranch = git(mergeGroup.clone, [
+    "commit-tree",
+    mergeGroup.tree,
+    "-p",
+    mergeGroup.canonicalMain,
+    "-m",
+    "post-merge no-op source canary",
+  ]);
+  const queueHead = git(mergeGroup.clone, [
+    "commit-tree",
+    mergeGroup.tree,
+    "-p",
+    mergeGroup.canonicalMain,
+    "-m",
+    "synthetic squash merge queue candidate",
+  ]);
+  git(mergeGroup.clone, ["checkout", "--detach", queueHead]);
+  git(mergeGroup.clone, ["update-ref", "refs/remotes/origin/codex/post-merge-source-canary", fetchedBranch]);
+  git(mergeGroup.clone, ["update-ref", "refs/remotes/origin/gh-readonly-queue/main/pr-3-abc", queueHead]);
+  const queueReport = validateCandidate({
+    candidateRoot: mergeGroup.clone,
+    policy,
+    runtimeIdentity: runtimeIdentity(mergeGroup.clone, {
+      eventName: "merge_group",
+      eventRef: "refs/heads/gh-readonly-queue/main/pr-3-abc",
+      baseRef: "refs/heads/main",
+      headRef: "refs/heads/gh-readonly-queue/main/pr-3-abc",
+    }),
+  });
+  assert.equal(queueReport.candidate.graphVariant, "post-merge-canonical");
+  assert.equal(queueReport.candidate.canonicalMainCommit, mergeGroup.canonicalMain);
+  assert.equal(queueReport.candidate.dynamicEventHead, true);
+  assert.equal(queueReport.inventory.commits, 4);
+
+  git(mergeGroup.clone, ["update-ref", "refs/heads/fork-no-op", fetchedBranch]);
+  git(mergeGroup.clone, ["update-ref", "-d", "refs/remotes/origin/codex/post-merge-source-canary"]);
+  expectAdmissionError(
+    () => validateCandidate({
+      candidateRoot: mergeGroup.clone,
+      policy,
+      runtimeIdentity: runtimeIdentity(mergeGroup.clone, {
+        eventName: "merge_group",
+        eventRef: "refs/heads/gh-readonly-queue/main/pr-3-abc",
+        baseRef: "refs/heads/main",
+        headRef: "refs/heads/gh-readonly-queue/main/pr-3-abc",
+      }),
+    }),
+    "UNAPPROVED_REF",
+  );
 });
 
 test("post-merge canonicalization rejects partial launch history and extra same-tree commits", { skip: !hasCandidate }, (t) => {

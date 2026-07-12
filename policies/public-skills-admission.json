@@ -74,6 +74,23 @@
         ]
       }
     ],
+    "eventContexts": {
+      "launch": {
+        "pullRequestNumber": 1,
+        "headRef": "codex/launch-public-cleanroom",
+        "mergeGroupAllowed": true
+      },
+      "negativeControl": {
+        "pullRequestNumber": 2,
+        "headRef": "canary/negative",
+        "mergeGroupAllowed": false
+      },
+      "postMergeCanary": {
+        "pullRequestNumber": 3,
+        "headRef": "codex/post-merge-source-canary",
+        "mergeGroupAllowed": true
+      }
+    },
     "postMergeCanonicalization": {
       "parentCommit": "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
       "tree": "2741f0883bf636568d375974c98301ed16a633fb",
@@ -92,6 +109,10 @@
       "eventParentSets": [
         {
           "event": "merge_group",
+          "runtimeRefPattern": "^refs/heads/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$",
+          "gitRefPatterns": [
+            "^refs/remotes/origin/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$"
+          ],
           "parentSets": [
             [
               "e477aee5c1d93b2bac8619fdc6f15f27483855a3"
@@ -104,6 +125,10 @@
         },
         {
           "event": "pull_request",
+          "runtimeRefPattern": "^refs/pull/[1-9][0-9]*/merge$",
+          "gitRefPatterns": [
+            "^refs/remotes/pull/[1-9][0-9]*/merge$"
+          ],
           "parentSets": [
             [
               "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
@@ -112,11 +137,7 @@
           ]
         }
       ],
-      "tree": "2741f0883bf636568d375974c98301ed16a633fb",
-      "allowedRefPatterns": [
-        "^refs/remotes/origin/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$",
-        "^refs/remotes/pull/[1-9][0-9]*/merge$"
-      ]
+      "tree": "2741f0883bf636568d375974c98301ed16a633fb"
     }
   },
   "history": {
