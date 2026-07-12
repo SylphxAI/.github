@@ -70,8 +70,8 @@ source-first SHA ratchet are documented in
 and the admission-mechanics decision is
 [`docs/adr/ADR-34-public-skills-external-admission.md`](./docs/adr/ADR-34-public-skills-external-admission.md).
 The replacement target identity, clean snapshot, and independent executor trust
-split are proposed in
-[`docs/adr/ADR-DRAFT-public-skills-cleanroom-control-plane.md`](./docs/adr/ADR-DRAFT-public-skills-cleanroom-control-plane.md).
+split are accepted in
+[`docs/adr/ADR-36-public-skills-cleanroom-control-plane.md`](./docs/adr/ADR-36-public-skills-cleanroom-control-plane.md).
 
 ## Delivery
 

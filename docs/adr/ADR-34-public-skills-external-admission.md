@@ -10,7 +10,7 @@ superseded by the cleanroom-ratchet ADR introduced with the current change.
 - Date: 2026-07-11
 - Decision owner: SylphxAI
 - Original pull request: <https://github.com/SylphxAI/.github/pull/34>
-- Current amendment: [`ADR-DRAFT-public-skills-cleanroom-control-plane.md`](./ADR-DRAFT-public-skills-cleanroom-control-plane.md)
+- Current amendment: [`ADR-36-public-skills-cleanroom-control-plane.md`](./ADR-36-public-skills-cleanroom-control-plane.md)
 - Specification: [`../specs/public-skills-external-admission.md`](../specs/public-skills-external-admission.md)
 
 ## Context

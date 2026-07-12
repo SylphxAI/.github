@@ -1,8 +1,8 @@
-# ADR-DRAFT: Public Skills cleanroom control plane
+# ADR-36: Public Skills cleanroom control plane
 
 ## Status
 
-Proposed. Rename this file to the introducing pull-request number before merge.
+Accepted in PR #36.
 
 ## Context
 

@@ -3,7 +3,7 @@
 Decision records:
 
 - [`ADR-34-public-skills-external-admission.md`](../adr/ADR-34-public-skills-external-admission.md) establishes the external-admission mechanics.
-- [`ADR-DRAFT-public-skills-cleanroom-control-plane.md`](../adr/ADR-DRAFT-public-skills-cleanroom-control-plane.md) binds the replacement identity, snapshot, and independent mutation boundary.
+- [`ADR-36-public-skills-cleanroom-control-plane.md`](../adr/ADR-36-public-skills-cleanroom-control-plane.md) binds the replacement identity, snapshot, and independent mutation boundary.
 
 ## Contract identity
 
