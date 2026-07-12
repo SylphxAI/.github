@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -11,8 +12,12 @@ const repositoryRoot = resolve(import.meta.dirname, "..");
 const policy = JSON.parse(readFileSync(resolve(repositoryRoot, "policies/public-skills-admission.json"), "utf8"));
 const candidateSource = process.env.PUBLIC_SKILLS_CANDIDATE
   ? resolve(process.env.PUBLIC_SKILLS_CANDIDATE)
-  : resolve(repositoryRoot, "../skills-public-staging");
-const hasCandidate = existsSync(resolve(candidateSource, ".git"));
+  : null;
+const hasCandidate = candidateSource !== null && existsSync(resolve(candidateSource, ".git"));
+
+function jsonDigest(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
 
 function git(root, args, options = {}) {
   return execFileSync("git", args, {
@@ -26,9 +31,9 @@ function git(root, args, options = {}) {
 
 function runtimeIdentity(root, overrides = {}) {
   return {
-    repository: "SylphxAI/skills-public-staging",
-    repositoryId: 1297721845,
-    repositoryNodeId: "R_kgDOTVmp9Q",
+    repository: "SylphxAI/skills-public-cleanroom",
+    repositoryId: 1297840366,
+    repositoryNodeId: "R_kgDOTVt47g",
     candidateSha: git(root, ["rev-parse", "HEAD"]),
     eventName: "policy-baseline",
     ...overrides,
@@ -91,12 +96,25 @@ test("external workflow is target-only, source-owned, immutable-action-pinned, a
 });
 
 test("policy pins one fresh root, the exact eight IDs, target identities, and every candidate file", () => {
-  assert.equal(policy.target.repositoryId, 1297721845);
-  assert.equal(policy.target.repositoryNodeId, "R_kgDOTVmp9Q");
-  assert.equal(policy.target.approvedCommits.find((record) => record.parents.length === 0).commit, "73c6eecc13e056fcd363b2366be1448d0bb0dc4a");
-  assert.equal(policy.target.approvedCommits.length, 5);
-  assert.ok(policy.target.approvedRefs.length >= 5);
+  assert.deepEqual(policy.source, {
+    repository: "SylphxAI/.github",
+    repositoryId: 1091169653,
+    workflowPath: ".github/workflows/public-skills-admission.yml",
+    validatorPath: "scripts/public-skills-admission.mjs",
+    policyPath: "policies/public-skills-admission.json",
+  });
+  assert.equal(policy.target.repositoryId, 1297840366);
+  assert.equal(policy.target.repositoryNodeId, "R_kgDOTVt47g");
+  assert.deepEqual(policy.target.allowedRepositories, ["SylphxAI/skills", "SylphxAI/skills-public-cleanroom"]);
+  assert.deepEqual(policy.target.baseline, {
+    commit: "f74c83d966331193d6a2f325173094c5d5c51762",
+    tree: "04c100fed8c99a72290896a6a825ee68f6617331",
+  });
+  assert.equal(policy.target.approvedCommits.find((record) => record.parents.length === 0).commit, "e477aee5c1d93b2bac8619fdc6f15f27483855a3");
+  assert.equal(policy.target.approvedCommits.length, 2);
+  assert.equal(policy.target.approvedRefs.length, 5);
   assert.deepEqual(policy.target.dynamicEventHead.eventParentSets.map((rule) => rule.event), ["merge_group", "pull_request"]);
+  assert.equal(jsonDigest(policy.target), "5cb2fb27865333454d4f9a832798995045db2f4ec22637c99257d0f3958fe779");
   assert.deepEqual(
     policy.skills.map((skill) => skill.id),
     [
@@ -110,7 +128,20 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
       "source-to-skill-distiller",
     ],
   );
-  assert.ok(Object.keys(policy.expectedFiles).length > 60);
+  assert.equal(jsonDigest(policy.skills), "4fa08969280ed584cad8b77345ef65ed0b195bd6606af2a54efd61ba51bdaf22");
+  assert.deepEqual(
+    Object.fromEntries([...new Set(policy.skills.map((skill) => skill.provenanceClass))].sort().map((name) => [name, policy.skills.filter((skill) => skill.provenanceClass === name).length])),
+    {
+      "historical-public-derived": 2,
+      "historical-public-import": 4,
+      "public-declassified-derivative": 1,
+      "public-original": 1,
+    },
+  );
+  assert.ok(policy.skills.every((skill) => skill.provenanceClass === "public-original" ? skill.sourceCommit === null : skill.sourceCommit === "4350900a59faeee7903937a52c24909aaba538ca"));
+  assert.deepEqual(policy.content.forbiddenLiterals, ["DO-NOT-PUBLISH", "INTERNAL-ONLY", "PRIVATE-BOUNDARY-MARKER"]);
+  assert.equal(Object.keys(policy.expectedFiles).length, 73);
+  assert.equal(jsonDigest(policy.expectedFiles), "e94342916c55138f9fc15ceaadace9d6c6dff080a733fafe0067140dde3ff701");
   assert.ok(Object.values(policy.expectedFiles).every((digest) => /^[0-9a-f]{64}$/.test(digest)));
 });
 
@@ -131,7 +162,7 @@ test("the exact source-approved candidate passes full-history admission", { skip
 
 test("numeric and node repository identity mismatches fail closed", { skip: !hasCandidate }, () => {
   expectAdmissionError(
-    () => validateCandidate({ candidateRoot: candidateSource, policy, runtimeIdentity: runtimeIdentity(candidateSource, { repositoryId: 1285275370 }) }),
+    () => validateCandidate({ candidateRoot: candidateSource, policy, runtimeIdentity: runtimeIdentity(candidateSource, { repositoryId: 999999999 }) }),
     "REPOSITORY_IDENTITY",
   );
   expectAdmissionError(
@@ -240,7 +271,7 @@ test("a private boundary marker remains rejected after it is deleted from HEAD",
   const clone = cloneCandidate(t);
   const baseline = git(clone, ["rev-parse", "HEAD"]);
   const readme = resolve(clone, "README.md");
-  writeFileSync(readme, `${readFileSync(readme, "utf8")}\nSylphxAI/skills-private\n`);
+  writeFileSync(readme, `${readFileSync(readme, "utf8")}\nPRIVATE-BOUNDARY-MARKER\n`);
   commitAll(clone, "test: inject a protected marker");
   restoreFile(clone, baseline, "README.md", "test: hide the protected marker");
   expectAdmissionError(

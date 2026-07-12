@@ -9,81 +9,60 @@
     "policyPath": "policies/public-skills-admission.json"
   },
   "target": {
-    "repositoryId": 1297721845,
-    "repositoryNodeId": "R_kgDOTVmp9Q",
+    "repositoryId": 1297840366,
+    "repositoryNodeId": "R_kgDOTVt47g",
     "allowedRepositories": [
       "SylphxAI/skills",
-      "SylphxAI/skills-public-staging"
+      "SylphxAI/skills-public-cleanroom"
     ],
     "baseline": {
-      "commit": "711e41cdfc2ee48eb91c5222b4265aa4d16d169d",
-      "tree": "1f2b6c41e66344443a93d203b0edc6a09a492cc5"
+      "commit": "f74c83d966331193d6a2f325173094c5d5c51762",
+      "tree": "04c100fed8c99a72290896a6a825ee68f6617331"
     },
     "approvedCommits": [
       {
-        "commit": "73c6eecc13e056fcd363b2366be1448d0bb0dc4a",
-        "tree": "34e604ee3b19cbc8ce2e3d4c9dbe690d6fbaa58d",
+        "commit": "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+        "tree": "e14830463796e0bea1c7cc9c6490bbb3e395a4db",
         "parents": []
       },
       {
-        "commit": "e6bdd5af8e1d1a5b3c3fb4afe97513d885ac5109",
-        "tree": "029c5dc001daef8601aaae0653407e1e8e08966c",
+        "commit": "f74c83d966331193d6a2f325173094c5d5c51762",
+        "tree": "04c100fed8c99a72290896a6a825ee68f6617331",
         "parents": [
-          "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
-        ]
-      },
-      {
-        "commit": "8f2e6bf9be773301fdbc10d07ad943a1f621b4ad",
-        "tree": "399a8379e15709ba3a98e7bcbc3cc635d03b0c2d",
-        "parents": [
-          "e6bdd5af8e1d1a5b3c3fb4afe97513d885ac5109"
-        ]
-      },
-      {
-        "commit": "1f584419f96fd0fd93d1de79e817d744b02ecf5d",
-        "tree": "bea31f3f049d51113bb3f57f9faca6fb3428aece",
-        "parents": [
-          "8f2e6bf9be773301fdbc10d07ad943a1f621b4ad"
-        ]
-      },
-      {
-        "commit": "711e41cdfc2ee48eb91c5222b4265aa4d16d169d",
-        "tree": "1f2b6c41e66344443a93d203b0edc6a09a492cc5",
-        "parents": [
-          "1f584419f96fd0fd93d1de79e817d744b02ecf5d"
+          "e477aee5c1d93b2bac8619fdc6f15f27483855a3"
         ]
       }
     ],
     "approvedRefs": [
       {
-        "name": "refs/heads/codex/launch-public-skills",
+        "name": "refs/heads/codex/launch-public-cleanroom",
         "commits": [
-          "711e41cdfc2ee48eb91c5222b4265aa4d16d169d"
+          "f74c83d966331193d6a2f325173094c5d5c51762"
         ]
       },
       {
         "name": "refs/heads/main",
         "commits": [
-          "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
+          "e477aee5c1d93b2bac8619fdc6f15f27483855a3"
         ]
       },
       {
         "name": "refs/remotes/origin/HEAD",
         "commits": [
-          "711e41cdfc2ee48eb91c5222b4265aa4d16d169d",
-          "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
+          "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+          "f74c83d966331193d6a2f325173094c5d5c51762"
         ]
       },
       {
-        "name": "refs/remotes/origin/codex/launch-public-skills",
+        "name": "refs/remotes/origin/codex/launch-public-cleanroom",
         "commits": [
-          "711e41cdfc2ee48eb91c5222b4265aa4d16d169d"
+          "f74c83d966331193d6a2f325173094c5d5c51762"
         ]
       },
       {
         "name": "refs/remotes/origin/main",
         "commits": [
-          "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
+          "e477aee5c1d93b2bac8619fdc6f15f27483855a3"
         ]
       }
     ],
@@ -93,11 +72,11 @@
           "event": "merge_group",
           "parentSets": [
             [
-              "73c6eecc13e056fcd363b2366be1448d0bb0dc4a"
+              "e477aee5c1d93b2bac8619fdc6f15f27483855a3"
             ],
             [
-              "73c6eecc13e056fcd363b2366be1448d0bb0dc4a",
-              "711e41cdfc2ee48eb91c5222b4265aa4d16d169d"
+              "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+              "f74c83d966331193d6a2f325173094c5d5c51762"
             ]
           ]
         },
@@ -105,22 +84,18 @@
           "event": "pull_request",
           "parentSets": [
             [
-              "73c6eecc13e056fcd363b2366be1448d0bb0dc4a",
-              "711e41cdfc2ee48eb91c5222b4265aa4d16d169d"
+              "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+              "f74c83d966331193d6a2f325173094c5d5c51762"
             ]
           ]
         }
       ],
-      "tree": "1f2b6c41e66344443a93d203b0edc6a09a492cc5",
+      "tree": "04c100fed8c99a72290896a6a825ee68f6617331",
       "allowedRefPatterns": [
         "^refs/remotes/origin/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$",
         "^refs/remotes/pull/[1-9][0-9]*/merge$"
       ]
-    },
-    "forbiddenReachableCommits": [
-      "eeeb36769518a5a62f781b8dfe62c471535d49e9",
-      "f640fde75418406c6932d414621494bfb357f677"
-    ]
+    }
   },
   "history": {
     "maximumBlobBytes": 1048576,
@@ -155,42 +130,9 @@
       "tombstones"
     ],
     "forbiddenLiterals": [
-      "1285275370",
-      "R_kgDOTJu-6g",
-      "SylphxAI/skills-private",
-      "accessibility-conformance-program-review",
-      "ad-monetization-review",
-      "app-design-blueprint",
-      "app-store-distribution-readiness",
-      "backup-restore-design",
-      "board-metrics-operating-review",
-      "codex/skills-slug-swap-prep",
-      "daily-reward-and-streak-review",
-      "design-system-extractor",
-      "developer-quota-credit-abuse-review",
-      "game-design-blueprint",
-      "game-economy-review",
-      "game-soft-launch-review",
-      "governance/slug-swap.json",
-      "launch-readiness-review",
-      "marketing-automation-blueprint",
-      "marketplace-payouts-review",
-      "marketplace-seller-performance-review",
-      "notification-strategy-review",
-      "offline-sync-conflict-review",
-      "payment-platform-readiness",
-      "product-analytics-instrumentation-review",
-      "product-lifecycle-architect",
-      "promotion-campaign-review",
-      "referral-loop-review",
-      "refund-and-support-flow-review",
-      "retention-cohort-review",
-      "review-solicitation-and-feedback-loop",
-      "saas-subscription-pricing",
-      "skill-marketplace-creator",
-      "store-listing-optimization",
-      "subscription-price-increase-retention-review",
-      "voice-preserving-editor"
+      "DO-NOT-PUBLISH",
+      "INTERNAL-ONLY",
+      "PRIVATE-BOUNDARY-MARKER"
     ],
     "secretPatterns": [
       {
@@ -248,32 +190,32 @@
   "skills": [
     {
       "id": "customer-support-operations",
-      "provenanceClass": "historical-public-import",
-      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "provenanceClass": "historical-public-derived",
+      "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
       "sourcePath": "skills/customer-support-operations"
     },
     {
       "id": "decision-memo-writer",
       "provenanceClass": "historical-public-import",
-      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
       "sourcePath": "skills/decision-memo-writer"
     },
     {
       "id": "fleet-migration-factory",
       "provenanceClass": "historical-public-import",
-      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
       "sourcePath": "skills/fleet-migration-factory"
     },
     {
       "id": "interface-craft",
       "provenanceClass": "historical-public-import",
-      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
       "sourcePath": "skills/interface-craft"
     },
     {
       "id": "market-research-synthesis",
       "provenanceClass": "historical-public-import",
-      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
       "sourcePath": "skills/market-research-synthesis"
     },
     {
@@ -284,35 +226,36 @@
     },
     {
       "id": "skill-eval-designer",
-      "provenanceClass": "historical-public-import",
-      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "provenanceClass": "public-declassified-derivative",
+      "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
       "sourcePath": "skills/skill-eval-designer"
     },
     {
       "id": "source-to-skill-distiller",
-      "provenanceClass": "historical-public-import",
-      "sourceCommit": "eeeb36769518a5a62f781b8dfe62c471535d49e9",
+      "provenanceClass": "historical-public-derived",
+      "sourceCommit": "4350900a59faeee7903937a52c24909aaba538ca",
       "sourcePath": "skills/source-to-skill-distiller"
     }
   ],
   "expectedFiles": {
-    ".doctrine/project.json": "4262984bb79d064588dcb6835ba68755f198f436a0c7ff5b3154900453e36f9b",
+    ".doctrine/project.json": "cdc5382f3ed757a4bb8f6e17f3382f8f4e807f395132b426a1ee2438fbd66fa8",
     ".github/dependabot.yml": "1e07f0b945d146deb6b2e52f97690feefd3ae1c02e35bf41cc7503b9fd0fdf08",
     ".github/workflows/admission.yml": "e04568cc5662361fe8cdd65d128fc715a8647879ecb64573a7bbfb6f2ca569cc",
     ".github/workflows/postsubmit.yml": "99f469245767a2e041a7e8788bee2a6b5dbbfa8bd39c2a4ca487981d1863eed4",
-    ".github/workflows/release.yml": "e45b4c0d80b0bc3bd4ceb9426433ead88a651cff7c7adebe95ec45ea187d0010",
+    ".github/workflows/release.yml": "c6ea5de7fda1f5784ad9fd1d6d049f92ea67095ab95a2989c3b53ffad7514f1c",
     ".gitignore": "029dd005b52803feda961c039facf78bb06489478e77aa777160c850c8d1997a",
     ".npmrc": "96d19369660161cd9f954962769ef7bf7a7022acaaee7ac605612201c2924479",
     "AGENTS.md": "4ef6891cadcc6cfe56c969fd2feeff60b5f45817d157bd76cebd7745c3e7a00d",
     "CONTRIBUTING.md": "c6bb82142128944cee3a6c04600a78715599f6bd866890ed757979a4e0d2c6ac",
     "LICENSE": "a244cb3ddaedaa41ab5404226c1142437ee290f4b625681e431ce42383925433",
-    "NOTICE": "5b12b6bf9204ff66c4e95ffe96d9667c282c443bf6b3ad6e11dd659048b29259",
-    "PROJECT.md": "dcf094c1a60c9299be03bb10c248b8d7f1194fae9f3de063ba8cd6471b3827f1",
+    "NOTICE": "eb6cf8b6c0782178c7c3c0098596bf85e3a2fe69fd0fc62bf728dc4f46264957",
+    "PROJECT.md": "90b1c7de3f067ebf4276febbd37b3e40ba01b1142fe2ead0341604edad01d13e",
     "README.md": "be020773cc60d2c473c448cb67a855f9067f8aedf9abad334e2dadb498b4f2b8",
     "SECURITY.md": "8bba7f6754337e23d275d82e69e26094257d1b2c9943eb7ac34c179ab7d5c29a",
-    "admissions/public-skills.json": "669f34cec8faf3594fdf2745d1fbc94400b9c749a169b8e95003963b4872f3df",
-    "docs/adr/ADR-0001-public-foundation.md": "a9da52143514771b123d95aa006f05b249f3fa76f11a1f6c9387cd16ed100792",
-    "docs/specs/public-skill-supply-chain.md": "5ce122d68263847e49d569783a111304b7543e374d2424a8a96ba1d62b93f4e6",
+    "admissions/public-skills.json": "185d37925a8f2aa8643000cfc629f012693ca563e5b2bbbf0d11fb289b38e5fb",
+    "docs/adr/ADR-0001-public-foundation.md": "bafd89d37c7f7e82b7e942155e9aa6023c5a63a1a7228e8017031e0582de51b0",
+    "docs/adr/ADR-0002-skill-eval-public-declassification.md": "02e8cef14bba3b599c7ed4761bbf1635868ccb997500ed2486cab9bff6512691",
+    "docs/specs/public-skill-supply-chain.md": "8213f8f41770ad93a7d7f7c32ac51e33d4bec225d9064045d93451fc3f36afec",
     "evals/customer-support-operations.eval.yaml": "8c5d1aa289734b13531133354233017538081e2a5e6510fb8f250ea2e221ecd1",
     "evals/decision-memo-writer.eval.yaml": "1dd5ee14d20c38d6c0ac90e8e61e233513858705ad1d65f6b44bf4116a850bd7",
     "evals/fleet-migration-factory.eval.yaml": "dc6cac5555d1b51f07dddbf42311f58ac5484f3be1a83b872f784e1770ac279f",
@@ -324,30 +267,30 @@
     "package-lock.json": "76bdb6667467979d4ece5ac5130cf357c6319dd73526d3a031c42285438d5a98",
     "package.json": "7f2f46939b348f4ed853052fd0834afefbc7ab6cafbcb409eb223ee1955d1050",
     "project.manifest.json": "6e574825435baf280d8c36f6b5c2e3b4c897b34e7026f7d009d228db6089a93a",
-    "registry/catalog.json": "3f33a8b6ab122696d0cd8bf474e0ae6f1bed9c363398f18cc3be8f6e5fc65a29",
-    "registry/catalog.sha256": "5e3cf41f8e3cd18ccda9d06831358b81c8adacdacead3ce08263806b8cd458d0",
-    "schemas/admissions.schema.json": "2647a18391e5bccf5d84cb4403dceb6583ae08080c3ff083333e0ea623ae90db",
+    "registry/catalog.json": "6c01a8afd8bfb061916d068c0ee4d98b30a19d750558887e6334ac9521706d2d",
+    "registry/catalog.sha256": "5716a8413766ff0213716732391065038ec07bc618a9ecf76e461f526025df86",
+    "schemas/admissions.schema.json": "1615441c414baaf9f48d236738ec9d47e6d32ceadc6112002b5bafaded1ec2b5",
     "schemas/catalog.schema.json": "c3cbd9a5d477b362af4b287bb3636a7d2cc7536194d5442a9e66d83a64c45ca5",
     "schemas/eval.schema.json": "e234471760c66befe7ede1961977e26ad243d6f511f7c0e83272a013059e7c15",
     "schemas/project-manifest.schema.json": "b85ab4e792427f958eec49669be09c9547082f3134f6a5ea7da6327185fa4266",
-    "schemas/release-manifest.schema.json": "b49b663e2781f94142d11d3d0f0a2985bf5852ccb3e7b5a4106f4d2782cf4855",
+    "schemas/release-manifest.schema.json": "799022831e10c6f91c133b01a6f4f9712e926764e88bd3d03e54ca94e71505a9",
     "scripts/classify-changes.mjs": "3d720cfd846c0b0a940e5986d14fc488aa4cdbebca6d8c7f0c9c980576d6a5ea",
     "scripts/create-release-archive.sh": "049bcb13d6dff7966d40671e4515c2bdc573af85a74171e17a564b5a9067abbb",
-    "scripts/create-release-manifest.mjs": "1d099b3b20695cbd988cfdbe3e75ded132e02320e4e971f179c35cedc47705c5",
+    "scripts/create-release-manifest.mjs": "0b3342f97680ffe70af5dbe16950899018e32db607b3cce91371daa23171a5ba",
     "scripts/generate-catalog.mjs": "4f8b2e5884560a451f92bc76b3ee4d06bac15f80cae8eb51460c837ae9543ab8",
-    "scripts/lib/core.mjs": "4cf1ae287775984df0c8b258ddcbc6b439066b07dc19fec416260ec102e6dc4b",
+    "scripts/lib/core.mjs": "4ee0a24c4e7fe1c91bcc84eb4664b8bb94974c8a037b94082bb5fba21eaf4d76",
     "scripts/quick-validate.mjs": "de99e86285e77d623e02696a07f4fc89f43e3074de7ae36c99a69f9f0b0af134",
-    "scripts/validate-history.mjs": "4cdb995b5e9eed859032902a42e8bcf0245f4a5693a2271c82828353645dc047",
-    "scripts/validate-release-manifest.mjs": "f97c0322bfd0321c743ed7ad541d4a8d40c469746ee8dbc104fbdd55c9643463",
-    "scripts/validate-repository.mjs": "fbf1bee3fbc0e6e3a16d4f1604abe374202f111fb066bf8f091ebfe7b1a89873",
+    "scripts/validate-history.mjs": "0c2845b46d58018c3001481fbd5354eeedba9be8fe5b63ca8204141220671982",
+    "scripts/validate-release-manifest.mjs": "33ac0ca19f7b10271a54988e3a301bc3b46335afa5fa9172f3a5fc659084ed28",
+    "scripts/validate-repository.mjs": "626034230c0ef2e239444bfdf2c4675e73bc5ea99ec0eee3e8ccef9bfed38101",
     "scripts/verify-install.mjs": "d3073b3d5ed73a5490f36fc10a4fe88a84bfc7b6f9fa98c9ecd88d7686853ba8",
     "skills/customer-support-operations/SKILL.md": "f5625d1a51e71335a14eb087b76c04b76035d84bb79d7665e0fdd3318a43b348",
     "skills/customer-support-operations/agents/openai.yaml": "0b7b753e8493e440f6eda3fbd03c737d9d73465ff1402919bd19c3771ef056fd",
-    "skills/customer-support-operations/references/support-ops-patterns.md": "6b5d1f86752e72a17a291c51f1b2f055a49f01066f97ea70822c4f8a1b38917a",
+    "skills/customer-support-operations/references/support-ops-patterns.md": "6d64d9668dff2f654943ce0c9153d98544ef34bc4cfd19ebd57c65e086d22bdc",
     "skills/decision-memo-writer/SKILL.md": "15178edc28bfb545487205d2aa64d514147f65e1f489b8dc217a393dc61aa1fc",
     "skills/decision-memo-writer/agents/openai.yaml": "2798a541b997065256d578c8a3a7ffd14ac2ce858dcdce030f474efd532ef7d2",
     "skills/decision-memo-writer/references/decision-memo-systems.md": "2a9932c391fc3f7620a8aec2290dd460186d4f403df71f7992affd9af438eba2",
-    "skills/fleet-migration-factory/SKILL.md": "2424262ab7fcb40e2a13393293c73c86e62d5248404ded0e39f5715d2c37f747",
+    "skills/fleet-migration-factory/SKILL.md": "edd240bb57d21628a927be12404646de45b8c702e309cc3d05923405a15c925e",
     "skills/fleet-migration-factory/agents/openai.yaml": "c339a162f19525f506fef29b4c30e38ece40948c2c97d53ec008e1402e462f8e",
     "skills/fleet-migration-factory/references/fleet-migration-patterns.md": "c89a2711fa002e6d3f2a65defba99d3a8d09baa24b88733bb29b759dc932da25",
     "skills/fleet-migration-factory/scripts/test_validate_fleet_ledger.py": "0162250c8e2a7fafcf8946b2a3fddd90b044842b421b8c587ee8d03295e62c85",
@@ -367,6 +310,6 @@
     "skills/source-to-skill-distiller/SKILL.md": "4516c3450884f35ce8bd82e3642f99518cb4ad5849c7a6d48247ba98ac6d6730",
     "skills/source-to-skill-distiller/agents/openai.yaml": "010e6496ebc7372e7e5de3402dfe50c67e50b99cef802aaf54b084dd3174100d",
     "skills/source-to-skill-distiller/references/source-to-skill-patterns.md": "e81f4ef076104fe60f161d785956a129c979ecf0f84553aa17338314566d480a",
-    "tests/adversarial.test.mjs": "68d7363015375c1d18bf4f89c501b5e64df875145efbfadbcc497d1ee48e32b1"
+    "tests/adversarial.test.mjs": "94612a52f09ce00307f4187331c46b865305f9771a814593afb35577dabe240e"
   }
 }

@@ -2,102 +2,76 @@
 
 ## Status
 
-Accepted (PR #34)
+Accepted in PR #34. Target-specific identity and snapshot clauses are
+superseded by the cleanroom-ratchet ADR introduced with the current change.
 
 ## Decision record
 
 - Date: 2026-07-11
 - Decision owner: SylphxAI
-- Pull request: <https://github.com/SylphxAI/.github/pull/34>
-- Work item: `SylphxAI/skills-private#115`
+- Original pull request: <https://github.com/SylphxAI/.github/pull/34>
+- Current amendment: [`ADR-36-public-skills-cleanroom-control-plane.md`](./ADR-36-public-skills-cleanroom-control-plane.md)
 - Specification: [`../specs/public-skills-external-admission.md`](../specs/public-skills-external-admission.md)
 
 ## Context
 
-The repository with numeric identity `1297721845` is the fresh-history public
-skills foundation. Its staging slug is `SylphxAI/skills-public-staging`; its
-final slug is `SylphxAI/skills`. The public repository cannot be the only owner
-of the check that decides whether its own history, allowlist, provenance, and
-workflow bytes are acceptable. A candidate that could edit both the payload and
-the only validator would control its own judge.
+PR #34 established that the target repository cannot own the only check that
+decides whether its own history, allowlist, provenance, and workflow bytes are
+acceptable. A candidate that can edit both payload and judge controls its own
+admission.
 
-The old `SylphxAI/skills` repository has a different numeric identity and must
-remain private after becoming `SylphxAI/skills-private`. The public foundation
-must never acquire that repository's history, private skill IDs, operational
-metadata, or protected procedures.
+The first target snapshot was later quarantined. Its historical identifiers are
+not repeated as current desired state. The amendment ADR and source-owned policy
+hold the replacement target facts.
 
 ## Decision
 
-`SylphxAI/.github` owns a target-scoped required workflow, zero-dependency
-validator, and declarative policy:
+`SylphxAI/.github` owns the target-scoped required workflow, inert-data
+validator, and declarative snapshot policy:
 
 - `.github/workflows/public-skills-admission.yml`
 - `scripts/public-skills-admission.mjs`
 - `policies/public-skills-admission.json`
 
 The organization ruleset binds the workflow by source repository ID, path, and
-an exact source commit. The workflow runs for `pull_request` and `merge_group`,
-but its job executes only when `github.repository_id == 1297721845`. Therefore
-ordinary `SylphxAI/.github` pull requests skip the target-only job, while an
-event for the target identity cannot escape it by renaming the repository.
+an exact source commit. The workflow runs for `pull_request` and
+`merge_group`, while a numeric repository selector ensures source-repository
+pull requests skip the target-only job and repository renames cannot escape it.
 
-The workflow checks out the candidate with full reachable history and without
-persisted credentials. It separately checks out `SylphxAI/.github` at
-`github.workflow_sha`. It executes only the source-owned validator. Candidate
-package managers, hooks, scripts, actions, binaries, and interpreters are never
-invoked.
+The workflow checks out complete candidate history without persisted
+credentials, separately checks out the source repository at
+`github.workflow_sha`, and executes only the source-owned validator.
+Candidate package managers, hooks, scripts, actions, binaries, and interpreters
+are never invoked.
 
-The policy pins the target numeric and node IDs; every approved commit ID,
-tree ID, and ordered parent list; every allowed ref and target; the exact eight
-public skill IDs and provenance classes; every allowed HEAD path and SHA-256
-digest; executable-file exceptions; content-boundary markers; and secret
-signatures. Every non-synthetic reachable commit must be an exact approved
-record. Annotated tags and unknown branches are forbidden.
+The policy pins target numeric/node identity; every approved commit, tree,
+ordered parent list, ref and target; the exact eight public skill IDs and
+provenance classes; every HEAD path and SHA-256 digest; executable exceptions;
+generic public-boundary markers; and secret signatures. Every ordinary
+reachable commit must be an exact approved graph record. Annotated tags and
+unknown branches are forbidden.
 
-GitHub-generated candidate commits are the only dynamic exception. At most one
-unknown commit may exist, it must be the event HEAD, `github.event_name` must be
-`pull_request` or `merge_group`, its tree must equal the pinned baseline tree,
-and its ordered parents must equal a source-approved parent set for that exact
-event. The pull-request shape is the two-parent `[base main, approved PR head]`
-merge ref. Merge-group policy also admits the one-parent `[base main]` shape
-used by squash queues. Any dynamic ref must match the narrow pull or
-`gh-readonly-queue` patterns and point to that exact event HEAD.
-
-The validator scans every reachable commit, tree entry, path, ref, tag object,
-and unique blob; rejects graph or ref drift, extra roots, private commits,
-deleted-only files, symlinks, submodules, binary/LFS payloads, unsafe paths,
-unapproved executable modes, secrets, private markers, and semantic
-admissions/catalog drift; and emits `public-skills-external-admission/pass`
-plus a JSON evidence artifact.
+GitHub-generated event commits are the only dynamic exception. At most one
+unknown commit may exist; it must be the event HEAD, carry the pinned baseline
+tree, use the source-approved parent set for the explicit event, and appear only
+through a narrow pull-request or merge-queue ref.
 
 ## Update and ratchet protocol
 
-Exact full-tree pinning is deliberate. A legitimate public-candidate change,
-including the final staging-to-canonical identity edits, follows this order:
+1. Prepare and independently audit a private candidate.
+2. Update the source-owned policy and adversarial fixtures through the protected
+   `SylphxAI/.github` delivery path.
+3. Merge the source change and ratchet the organization rule to that exact
+   source SHA.
+4. Re-run target pull-request, merge-group, and negative canaries.
+5. Merge the target only after active enforcement and effective-rules readback.
 
-1. Prepare the target candidate and compute its exact commit/tree/parent graph,
-   refs, HEAD path set, and SHA-256 file digests without merging it.
-2. Update this source-owned policy and its adversarial fixtures through the
-   normal `SylphxAI/.github` delivery path.
-3. Merge that source change and ratchet the organization required-workflow
-   binding to the resulting immutable source SHA.
-4. Re-run the target pull-request and merge-group candidate against the new
-   source SHA; only then may it merge.
-
-Changing the target first would correctly deadlock on the old snapshot.
-Pointing the ruleset at a branch or mutable tag would let source bytes change
-without a GitOps decision and is forbidden.
+Changing the target first correctly deadlocks on the old snapshot. Mutable
+source refs and manual status forgery are forbidden.
 
 ## Consequences
 
 - A target candidate cannot weaken or execute its own judge.
-- Repository renames do not change the identity gate.
-- Any public byte change is a two-repository, source-first ratchet. This adds a
-  deliberate coordination step in exchange for a fail-closed commercial and
-  supply-chain boundary.
-- The workflow is target-specific organization governance, not the source of
-  truth for the target product. Skills, catalog claims, releases, and runtime
-  delivery evidence remain owned by the target repository.
-- Recovery before a target merge is source-policy/ruleset rollback. Recovery
-  after a bad merge is a source-ratchet plus target forward fix or source
-  revert; manual status forgery is not a recovery path.
+- Exact full-tree pinning makes legitimate public changes source-first.
+- Repository names remain lifecycle labels; numeric identity is authoritative.
+- Recovery is a protected source/desired-state forward ratchet, never a bypass.
