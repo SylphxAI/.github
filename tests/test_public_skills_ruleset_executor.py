@@ -1631,6 +1631,9 @@ class ActivationEvidenceTests(unittest.TestCase):
             "creation-rule": lambda api: api.gets[
                 f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"
             ]["rules"].append({"type": "creation"}),
+            "duplicate-rule": lambda api: api.gets[
+                f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"
+            ]["rules"].append({"type": "update"}),
             "mutable-enforcement": lambda api: api.gets[
                 f"/orgs/{module.ORGANIZATION}/rulesets/{ATTESTATION_RULESET_ID}"
             ].__setitem__("enforcement", "evaluate"),
