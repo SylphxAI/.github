@@ -876,7 +876,11 @@ def _run_observation(run: dict[str, Any], job: dict[str, Any], suite: dict[str, 
         "runId": run.get("id"), "runAttempt": run.get("run_attempt"), "repositoryId": repository.get("id"),
         "event": run.get("event"), "status": run.get("status"), "conclusion": run.get("conclusion"),
         "headSha": run.get("head_sha"), "path": run.get("path"),
-        "requiredCheck": {"name": job.get("name"), "status": job.get("status"), "conclusion": job.get("conclusion")},
+        "createdAt": run.get("created_at"), "updatedAt": run.get("updated_at"),
+        "requiredCheck": {
+            "id": job.get("id"), "name": job.get("name"), "status": job.get("status"),
+            "conclusion": job.get("conclusion"), "headSha": job.get("head_sha"),
+        },
         "ruleSuite": suite,
     }
 
@@ -1226,8 +1230,7 @@ class RulesetExecutor:
         suite_observation = {
             "id": suite.get("id"), "repositoryId": suite.get("repository_id"), "afterSha": suite.get("after_sha"),
             "ref": suite.get("ref"), "evaluationResult": suite.get("evaluation_result"),
-            # Preserve the Doctrine digest key while sourcing it from GitHub's real rule-suite timestamp.
-            "updatedAt": suite.get("pushed_at"), "ruleEvaluation": selected[0],
+            "pushedAt": suite.get("pushed_at"), "ruleEvaluation": selected[0],
         }
         observation = _run_observation(run, job, suite_observation)
         if field == "negativeControl":

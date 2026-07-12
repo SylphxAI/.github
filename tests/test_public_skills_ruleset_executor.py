@@ -380,7 +380,7 @@ def configure_workflow_evidence(
         "afterSha": head_sha,
         "ref": "refs/heads/main",
         "evaluationResult": result,
-        "updatedAt": observed_at,
+        "pushedAt": observed_at,
         "ruleEvaluation": evaluation,
     }
     return evidence, run, job, module._run_observation(run, job, suite_observation)
