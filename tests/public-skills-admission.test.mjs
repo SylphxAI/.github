@@ -108,14 +108,14 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
   assert.equal(policy.target.repositoryNodeId, "R_kgDOTVt47g");
   assert.deepEqual(policy.target.allowedRepositories, ["SylphxAI/skills", "SylphxAI/skills-public-cleanroom"]);
   assert.deepEqual(policy.target.baseline, {
-    commit: "f74c83d966331193d6a2f325173094c5d5c51762",
-    tree: "04c100fed8c99a72290896a6a825ee68f6617331",
+    commit: "580791895d660755ca78c5e6f8233d1437f709fa",
+    tree: "2741f0883bf636568d375974c98301ed16a633fb",
   });
   assert.equal(policy.target.approvedCommits.find((record) => record.parents.length === 0).commit, "e477aee5c1d93b2bac8619fdc6f15f27483855a3");
-  assert.equal(policy.target.approvedCommits.length, 2);
+  assert.equal(policy.target.approvedCommits.length, 3);
   assert.equal(policy.target.approvedRefs.length, 5);
   assert.deepEqual(policy.target.dynamicEventHead.eventParentSets.map((rule) => rule.event), ["merge_group", "pull_request"]);
-  assert.equal(jsonDigest(policy.target), "5cb2fb27865333454d4f9a832798995045db2f4ec22637c99257d0f3958fe779");
+  assert.equal(jsonDigest(policy.target), "1038c61c3e5eedf482b4d64686164bfb87c8223c15f09477e905b78b2c8d7050");
   assert.deepEqual(
     policy.skills.map((skill) => skill.id),
     [
@@ -158,7 +158,7 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
   );
   assert.deepEqual(policy.content.forbiddenLiterals, ["DO-NOT-PUBLISH", "INTERNAL-ONLY", "PRIVATE-BOUNDARY-MARKER"]);
   assert.equal(Object.keys(policy.expectedFiles).length, 73);
-  assert.equal(jsonDigest(policy.expectedFiles), "e94342916c55138f9fc15ceaadace9d6c6dff080a733fafe0067140dde3ff701");
+  assert.equal(jsonDigest(policy.expectedFiles), "66f60f83fbbb107da9b3f74be88724692ee2673c2f223237ad77274e7680987a");
   assert.ok(Object.values(policy.expectedFiles).every((digest) => /^[0-9a-f]{64}$/.test(digest)));
 });
 

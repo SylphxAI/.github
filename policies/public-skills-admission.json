@@ -17,8 +17,8 @@
       "SylphxAI/skills-public-cleanroom"
     ],
     "baseline": {
-      "commit": "f74c83d966331193d6a2f325173094c5d5c51762",
-      "tree": "04c100fed8c99a72290896a6a825ee68f6617331"
+      "commit": "580791895d660755ca78c5e6f8233d1437f709fa",
+      "tree": "2741f0883bf636568d375974c98301ed16a633fb"
     },
     "approvedCommits": [
       {
@@ -32,13 +32,20 @@
         "parents": [
           "e477aee5c1d93b2bac8619fdc6f15f27483855a3"
         ]
+      },
+      {
+        "commit": "580791895d660755ca78c5e6f8233d1437f709fa",
+        "tree": "2741f0883bf636568d375974c98301ed16a633fb",
+        "parents": [
+          "f74c83d966331193d6a2f325173094c5d5c51762"
+        ]
       }
     ],
     "approvedRefs": [
       {
         "name": "refs/heads/codex/launch-public-cleanroom",
         "commits": [
-          "f74c83d966331193d6a2f325173094c5d5c51762"
+          "580791895d660755ca78c5e6f8233d1437f709fa"
         ]
       },
       {
@@ -50,14 +57,14 @@
       {
         "name": "refs/remotes/origin/HEAD",
         "commits": [
-          "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
-          "f74c83d966331193d6a2f325173094c5d5c51762"
+          "580791895d660755ca78c5e6f8233d1437f709fa",
+          "e477aee5c1d93b2bac8619fdc6f15f27483855a3"
         ]
       },
       {
         "name": "refs/remotes/origin/codex/launch-public-cleanroom",
         "commits": [
-          "f74c83d966331193d6a2f325173094c5d5c51762"
+          "580791895d660755ca78c5e6f8233d1437f709fa"
         ]
       },
       {
@@ -77,7 +84,7 @@
             ],
             [
               "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
-              "f74c83d966331193d6a2f325173094c5d5c51762"
+              "580791895d660755ca78c5e6f8233d1437f709fa"
             ]
           ]
         },
@@ -86,12 +93,12 @@
           "parentSets": [
             [
               "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
-              "f74c83d966331193d6a2f325173094c5d5c51762"
+              "580791895d660755ca78c5e6f8233d1437f709fa"
             ]
           ]
         }
       ],
-      "tree": "04c100fed8c99a72290896a6a825ee68f6617331",
+      "tree": "2741f0883bf636568d375974c98301ed16a633fb",
       "allowedRefPatterns": [
         "^refs/remotes/origin/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]+$",
         "^refs/remotes/pull/[1-9][0-9]*/merge$"
@@ -259,7 +266,7 @@
     ".github/dependabot.yml": "1e07f0b945d146deb6b2e52f97690feefd3ae1c02e35bf41cc7503b9fd0fdf08",
     ".github/workflows/admission.yml": "e04568cc5662361fe8cdd65d128fc715a8647879ecb64573a7bbfb6f2ca569cc",
     ".github/workflows/postsubmit.yml": "99f469245767a2e041a7e8788bee2a6b5dbbfa8bd39c2a4ca487981d1863eed4",
-    ".github/workflows/release.yml": "c6ea5de7fda1f5784ad9fd1d6d049f92ea67095ab95a2989c3b53ffad7514f1c",
+    ".github/workflows/release.yml": "80c6143b85ef2aad34d4a7c9b5e6d6f7d54f75820ec6094e44e722018ed96556",
     ".gitignore": "029dd005b52803feda961c039facf78bb06489478e77aa777160c850c8d1997a",
     ".npmrc": "96d19369660161cd9f954962769ef7bf7a7022acaaee7ac605612201c2924479",
     "AGENTS.md": "4ef6891cadcc6cfe56c969fd2feeff60b5f45817d157bd76cebd7745c3e7a00d",
@@ -272,7 +279,7 @@
     "admissions/public-skills.json": "185d37925a8f2aa8643000cfc629f012693ca563e5b2bbbf0d11fb289b38e5fb",
     "docs/adr/ADR-0001-public-foundation.md": "bafd89d37c7f7e82b7e942155e9aa6023c5a63a1a7228e8017031e0582de51b0",
     "docs/adr/ADR-0002-skill-eval-public-declassification.md": "02e8cef14bba3b599c7ed4761bbf1635868ccb997500ed2486cab9bff6512691",
-    "docs/specs/public-skill-supply-chain.md": "8213f8f41770ad93a7d7f7c32ac51e33d4bec225d9064045d93451fc3f36afec",
+    "docs/specs/public-skill-supply-chain.md": "6b1fb680ee9f843355fd03ffd9ac5927b7a886bd911a5528b1b8c14b160fa630",
     "evals/customer-support-operations.eval.yaml": "8c5d1aa289734b13531133354233017538081e2a5e6510fb8f250ea2e221ecd1",
     "evals/decision-memo-writer.eval.yaml": "1dd5ee14d20c38d6c0ac90e8e61e233513858705ad1d65f6b44bf4116a850bd7",
     "evals/fleet-migration-factory.eval.yaml": "dc6cac5555d1b51f07dddbf42311f58ac5484f3be1a83b872f784e1770ac279f",
@@ -299,7 +306,7 @@
     "scripts/quick-validate.mjs": "de99e86285e77d623e02696a07f4fc89f43e3074de7ae36c99a69f9f0b0af134",
     "scripts/validate-history.mjs": "0c2845b46d58018c3001481fbd5354eeedba9be8fe5b63ca8204141220671982",
     "scripts/validate-release-manifest.mjs": "33ac0ca19f7b10271a54988e3a301bc3b46335afa5fa9172f3a5fc659084ed28",
-    "scripts/validate-repository.mjs": "626034230c0ef2e239444bfdf2c4675e73bc5ea99ec0eee3e8ccef9bfed38101",
+    "scripts/validate-repository.mjs": "36bfade049c1c558bf88d3d849f064c3df4400f79fc398ef2f5a8456f9b9905c",
     "scripts/verify-install.mjs": "d3073b3d5ed73a5490f36fc10a4fe88a84bfc7b6f9fa98c9ecd88d7686853ba8",
     "skills/customer-support-operations/SKILL.md": "f5625d1a51e71335a14eb087b76c04b76035d84bb79d7665e0fdd3318a43b348",
     "skills/customer-support-operations/agents/openai.yaml": "0b7b753e8493e440f6eda3fbd03c737d9d73465ff1402919bd19c3771ef056fd",
