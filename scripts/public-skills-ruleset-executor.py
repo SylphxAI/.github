@@ -670,8 +670,19 @@ def _decode_content(item: Any, expected_path: str, label: str) -> bytes:
     content = value.get("content")
     if not isinstance(content, str):
         raise ForgeError(f"{label} lacks base64 content")
+    if (
+        "\r" in content
+        or content.startswith("\n")
+        or "\n\n" in content
+        or any(character.isspace() and character != "\n" for character in content)
+    ):
+        raise ForgeError(f"{label} contains unsupported base64 whitespace")
+    # GitHub's Contents API wraps base64 with LF line breaks.  Remove only
+    # that provider-defined transport formatting; every other character still
+    # passes through the strict RFC 4648 decoder below.
+    normalized_content = content.replace("\n", "")
     try:
-        raw = base64.b64decode(content, validate=True)
+        raw = base64.b64decode(normalized_content, validate=True)
     except (ValueError, base64.binascii.Error) as exc:
         raise ForgeError(f"{label} contains invalid base64") from exc
     if value.get("size") != len(raw) or value.get("sha") != git_blob_sha(raw):

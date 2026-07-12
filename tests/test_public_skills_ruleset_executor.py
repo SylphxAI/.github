@@ -529,6 +529,28 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(module.ContractError):
             module.canonical_bytes(value)
 
+    def test_contents_api_accepts_only_provider_wrapped_base64(self) -> None:
+        raw = (b"GitHub Contents API wrapped base64\n" * 8) + b"end"
+        item = encoded("proof.txt", raw)
+        compact = item["content"]
+        item["content"] = "\n".join(
+            compact[index:index + 60]
+            for index in range(0, len(compact), 60)
+        ) + "\n"
+        self.assertEqual(module._decode_content(item, "proof.txt", "provider file"), raw)
+
+        for bad in (
+            compact[:8] + " " + compact[8:],
+            compact[:8] + "\t" + compact[8:],
+            compact[:8] + "\r\n" + compact[8:],
+            "\n" + compact,
+            compact[:8] + "\n\n" + compact[8:],
+        ):
+            poisoned = copy.deepcopy(item)
+            poisoned["content"] = bad
+            with self.subTest(bad=repr(bad[:20])), self.assertRaises(module.ForgeError):
+                module._decode_content(poisoned, "proof.txt", "provider file")
+
     def test_candidate_authority_and_unknown_fields_are_rejected(self) -> None:
         record = base_record()
         record["applyAuthority"] = {"mode": "candidate-controls-executor"}
