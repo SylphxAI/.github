@@ -476,6 +476,179 @@ def v4_queue_evidence(payload: dict, field: str, ordinal: int) -> dict:
     return item
 
 
+def _provider_time(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _shift_provider_time(value: str, seconds: int) -> str:
+    return _provider_time(
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        + timedelta(seconds=seconds)
+    )
+
+
+def upgrade_v4_queue_evidence_to_v5(
+    payload: dict,
+    field: str,
+    item: dict,
+) -> dict:
+    """Add the v5 sealed revision, current-PR, and exact external-run proof."""
+
+    if field in {"evaluateReadback", "effectiveRulesReadback"}:
+        return copy.deepcopy(item)
+    upgraded = copy.deepcopy(item)
+    observed = datetime.fromisoformat(
+        upgraded["observedAt"].replace("Z", "+00:00")
+    )
+    barrier_enforcement = (
+        "evaluate"
+        if field
+        in {"pullRequestNoMutationCanary", "evaluateMergeGroupFailureCanary"}
+        else "active"
+    )
+    external_enforcement = (
+        "active"
+        if field in {"activePassThroughCanary", "activeExternalFailureCanary"}
+        else "evaluate"
+    )
+    barrier_updated = observed - timedelta(minutes=1)
+    external_updated = observed - timedelta(minutes=2)
+    confirmed = observed + timedelta(seconds=50)
+    report = upgraded["report"]
+    report["runCreatedAt"] = _provider_time(observed + timedelta(seconds=1))
+    report["runUpdatedAt"] = _provider_time(observed + timedelta(seconds=10))
+    report["rulesetRevision"] = {
+        "rulesetId": payload["queueBarrier"]["ruleset"]["rulesetId"],
+        "enforcement": barrier_enforcement,
+        "updatedAt": _provider_time(barrier_updated),
+        "subjectDigest": module.canonical_digest(
+            module.expected_v4_ruleset(
+                payload, "queueBarrier", enforcement=barrier_enforcement
+            )
+        ),
+        "confirmedUnchangedAt": _provider_time(confirmed),
+    }
+    report["externalRulesetRevision"] = {
+        "rulesetId": payload["ruleset"]["rulesetId"],
+        "enforcement": external_enforcement,
+        "updatedAt": _provider_time(external_updated),
+        "subjectDigest": module.canonical_digest(
+            module.expected_v4_ruleset(
+                payload, "externalAdmission", enforcement=external_enforcement
+            )
+        ),
+        "confirmedUnchangedAt": _provider_time(confirmed),
+    }
+    outcome = upgraded["queueOutcome"]
+    base_sha = (
+        outcome["pullRequestBaseSha"]
+        if outcome is not None
+        else f"{17000 + upgraded['bindings']['pullRequestNumber']:040x}"
+    )
+    head_ref = (
+        "canary/public-skills/pre-launch/barrier-pull-request-0123456789ab"
+        if field == "pullRequestNoMutationCanary"
+        else f"canary/v5-{field}-{upgraded['bindings']['pullRequestNumber']}"
+    )
+    pull_request_head_sha = (
+        outcome["pullRequestHeadSha"]
+        if outcome is not None
+        else f"{18000 + upgraded['bindings']['pullRequestNumber']:040x}"
+    )
+    report["pullRequest"] = {
+        "number": upgraded["bindings"]["pullRequestNumber"],
+        "headRef": head_ref,
+        "headSha": pull_request_head_sha,
+        "baseRef": "main",
+        "baseSha": base_sha,
+    }
+    upgraded["bindings"].update(
+        {
+            "pullRequestHeadRef": head_ref,
+            "pullRequestHeadSha": pull_request_head_sha,
+            "pullRequestBaseRef": "main",
+            "pullRequestBaseSha": base_sha,
+        }
+    )
+    if field == "pullRequestNoMutationCanary":
+        report["externalAdmission"] = None
+    else:
+        external_run_id = upgraded["bindings"]["runId"] + 100000
+        external_job_id = upgraded["bindings"]["checkRunId"] + 100000
+        conclusion = (
+            "failure" if field == "activeExternalFailureCanary" else "success"
+        )
+        check = {
+            "id": external_job_id,
+            "name": module.REQUIRED_CHECK,
+            "headSha": upgraded["bindings"]["headSha"],
+            "status": "completed",
+            "conclusion": conclusion,
+            "runId": external_run_id,
+            "detailsUrl": (
+                f"https://github.com/{module.TARGET_FINAL_NAME}"
+                f"/actions/runs/{external_run_id}/job/{external_job_id}"
+            ),
+            "app": copy.deepcopy(module.GITHUB_ACTIONS_APP),
+        }
+        workflow_run = {
+            "id": external_run_id,
+            "runAttempt": 1,
+            "path": module.WORKFLOW_PATH,
+            "event": "merge_group",
+            "headSha": upgraded["bindings"]["headSha"],
+            "status": "completed",
+            "conclusion": conclusion,
+            "createdAt": _provider_time(observed + timedelta(seconds=2)),
+            "updatedAt": _provider_time(observed + timedelta(seconds=10)),
+            "jobId": external_job_id,
+        }
+        report["externalAdmission"] = {
+            "attempt": 1,
+            "check": check,
+            "workflowRun": workflow_run,
+            "digest": module.canonical_digest(
+                {"check": check, "workflowRun": workflow_run}
+            ),
+        }
+        outcome["pullRequestHeadRef"] = head_ref
+        outcome["pullRequestBaseRef"] = "main"
+        outcome["defaultBranchRef"] = "refs/heads/main"
+        outcome["postQueueEntryReadback"] = {
+            "surface": "graphql-v4:repository.pullRequest.mergeQueueEntry",
+            "repositoryId": module.TARGET_REPOSITORY_ID,
+            "repositoryNodeId": module.TARGET_REPOSITORY_NODE_ID,
+            "pullRequestNumber": upgraded["bindings"]["pullRequestNumber"],
+            "pullRequestHeadRef": head_ref,
+            "pullRequestHeadSha": outcome["pullRequestHeadShaAfter"],
+            "mergeQueueEntry": None,
+            "observedAt": outcome["observedAt"],
+        }
+    upgraded["subjectDigest"] = module.canonical_digest(
+        module._v4_queue_canary_subject(upgraded)
+    )
+    return upgraded
+
+
+def v5_barrier_ratchet_state() -> dict:
+    record = v4_barrier_ratchet_state()
+    record["schemaVersion"] = 5
+    evidence = record["queueBarrier"]["activationEvidence"]
+    for field in [
+        "pullRequestNoMutationCanary",
+        "evaluateMergeGroupFailureCanary",
+    ]:
+        evidence[field] = upgrade_v4_queue_evidence_to_v5(
+            record, field, evidence[field]
+        )
+    module.validate_v5_record(
+        record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+    )
+    return record
+
+
 def v4_barrier_ratchet_state() -> dict:
     record = v4_source_envelope()
     barrier = record["queueBarrier"]
@@ -684,7 +857,7 @@ def base_api(record: dict, *, live: dict | None = None, effective: bool = True) 
         module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.VALIDATOR_PATH, SOURCE_SHA): encoded(module.VALIDATOR_PATH, validator),
         module._content_endpoint(module.EXECUTOR_REPOSITORY_ID, module.POLICY_PATH, SOURCE_SHA): encoded(module.POLICY_PATH, source_policy),
     })
-    if record.get("schemaVersion") == 4:
+    if record.get("schemaVersion") in {4, 5}:
         source_sha = record["activationSequencing"]["protectedSourceBundle"][
             "commitSha"
         ]
@@ -1412,6 +1585,474 @@ def v4_final_active_fixture() -> tuple[dict, FakeAPI]:
         "activeExternalFailureCanary"
     ] = failure_canary
     module.validate_v4_record(
+        active, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+    )
+    api.gets[f"/repositories/{module.DOCTRINE_REPOSITORY_ID}/commits/main"] = {
+        "sha": FINAL_DOCTRINE_HEAD
+    }
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            FINAL_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(active))
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.ACTIVATION_EVIDENCE_PATH,
+            FINAL_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.ACTIVATION_EVIDENCE_PATH, artifact_raw)
+    barrier_raw = canonical_file(barrier_artifact)
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH,
+            FINAL_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH, barrier_raw)
+    api.page_values[
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+    ] = [
+        {"id": active["queueBarrier"]["ruleset"]["rulesetId"]},
+        {"id": active["ruleset"]["rulesetId"]},
+    ]
+    api.mutations.clear()
+    api.lock_mutations.clear()
+    return active, api
+
+
+def v5_barrier_fixture() -> tuple[dict, FakeAPI]:
+    record = v5_barrier_ratchet_state()
+    external = {
+        **module.expected_v4_ruleset(record, "externalAdmission"),
+        "id": record["ruleset"]["rulesetId"],
+        "source_type": "Organization",
+        "updated_at": "2026-07-10T16:00:00Z",
+    }
+    barrier = {
+        **module.expected_v4_ruleset(
+            record, "queueBarrier", enforcement="evaluate"
+        ),
+        "id": record["queueBarrier"]["ruleset"]["rulesetId"],
+        "source_type": "Organization",
+        "updated_at": "2026-07-10T16:01:00Z",
+    }
+    api = base_api(record, live=external, effective=False)
+    api.page_values[f"/orgs/{module.ORGANIZATION}/rulesets"] = [
+        {"id": external["id"], "name": module.RULESET_NAME},
+        {"id": barrier["id"], "name": module.BARRIER_RULESET_NAME},
+        {"id": ATTESTATION_RULESET_ID, "name": module.ATTESTATION_RULESET_NAME},
+    ]
+    api.gets[f"/orgs/{module.ORGANIZATION}/rulesets/{barrier['id']}"] = barrier
+    effective_endpoint = (
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+    )
+    api.page_values[effective_endpoint] = lambda: (
+        [{"id": barrier["id"]}] if api.mutations else []
+    )
+    api.mutation_updated_at = "2026-07-10T16:05:00Z"
+    return record, api
+
+
+def collected_v5_barrier_fixture() -> tuple[dict, dict, dict, FakeAPI]:
+    record, api = v5_barrier_fixture()
+    executor = module.RulesetExecutor(
+        api,
+        LOCAL_BYTES,
+        clock=lambda: V4_FIXED_TIME,
+        nonce_factory=lambda: "8" * 64,
+        sleeper=lambda _seconds: None,
+    )
+    report = executor.run("apply")
+    configure_historical_authority(api, report, record)
+    api.gets[module._audit_endpoint(1)] = [
+        provider_audit_event(
+            report,
+            created_at=int(V4_FIXED_TIME.timestamp() * 1000),
+            ruleset_name=module.BARRIER_RULESET_NAME,
+        )
+    ]
+    handle = write_report(report)
+    try:
+        artifact = executor.collect_transition(Path(handle.name))
+    finally:
+        os.unlink(handle.name)
+    return record, report, artifact, api
+
+
+def v5_barrier_active_fixture(
+    *, phase: str = "active"
+) -> tuple[dict, dict, dict, FakeAPI]:
+    historical, report, artifact, api = collected_v5_barrier_fixture()
+    artifact_raw = canonical_file(artifact)
+    transition = module.activation_transition_from_artifact(
+        artifact,
+        artifact_raw=artifact_raw,
+        artifact_blob_sha=module.git_blob_sha(artifact_raw),
+        historical_record=historical,
+    )
+    active = copy.deepcopy(historical)
+    barrier = active["queueBarrier"]
+    barrier["migration"]["phase"] = phase
+    barrier["activationEvidence"]["activationTransition"] = transition
+    barrier["activationEvidence"]["effectiveRulesReadback"] = copy.deepcopy(
+        transition["effectiveRulesReadback"]
+    )
+    removal = v4_queue_evidence(active, "activeProviderRemovalCanary", 6)
+    barrier["activationEvidence"]["activeProviderRemovalCanary"] = (
+        upgrade_v4_queue_evidence_to_v5(
+            active, "activeProviderRemovalCanary", removal
+        )
+    )
+    module.validate_v5_record(
+        active, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+    )
+    api.gets[f"/repositories/{module.DOCTRINE_REPOSITORY_ID}/commits/main"] = {
+        "sha": ACTIVE_DOCTRINE_HEAD
+    }
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            ACTIVE_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(active))
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH,
+            ACTIVE_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.QUEUE_BARRIER_ACTIVATION_EVIDENCE_PATH, artifact_raw)
+    api.page_values[
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+    ] = [{"id": active["queueBarrier"]["ruleset"]["rulesetId"]}]
+    api.mutations.clear()
+    api.lock_mutations.clear()
+    return active, report, artifact, api
+
+
+def _reseal_v5_queue_evidence(item: dict) -> None:
+    provider = item["providerVerdicts"]
+    if provider is not None and provider["terminalAggregate"] is not None:
+        terminal = provider["terminalAggregate"]
+        terminal["subjectDigest"] = module.canonical_digest(
+            module._v4_terminal_subject(provider, terminal)
+        )
+    external = item["report"]["externalAdmission"]
+    if external is not None:
+        external["digest"] = module.canonical_digest(
+            {"check": external["check"], "workflowRun": external["workflowRun"]}
+        )
+    item["subjectDigest"] = module.canonical_digest(
+        module._v4_queue_canary_subject(item)
+    )
+
+
+def _reseal_v5_queue_dependencies(record: dict) -> None:
+    evidence = record["queueBarrier"]["activationEvidence"]
+    transition = evidence["activationTransition"]
+    if transition is not None:
+        transition["authorization"]["activationEvidenceDigest"] = (
+            module.canonical_digest(
+                {
+                    field: evidence[field]
+                    for field in module.QUEUE_BARRIER_PRE_ACTIVATION_EVIDENCE
+                }
+            )
+        )
+    precondition = record["activationSequencing"][
+        "externalActivationPrecondition"
+    ]
+    if precondition is not None:
+        precondition["barrierActivationTransitionDigest"] = (
+            module.canonical_digest(transition)
+        )
+        precondition["barrierProviderRemovalDigest"] = evidence[
+            "activeProviderRemovalCanary"
+        ]["subjectDigest"]
+
+
+def _retime_v5_queue_evidence(item: dict, minute: int) -> None:
+    """Move one sealed capture as a whole while preserving internal bindings."""
+
+    observed = datetime.fromisoformat(
+        f"2026-07-11T21:{minute:02d}:00+00:00"
+    )
+    item["observedAt"] = _provider_time(observed)
+    provider = item["providerVerdicts"]
+    if provider is not None:
+        provider["pushedAt"] = item["observedAt"]
+        provider["terminalAggregate"]["observedAt"] = _provider_time(
+            observed + timedelta(seconds=45)
+        )
+    report = item["report"]
+    report["runCreatedAt"] = _provider_time(observed + timedelta(seconds=1))
+    report["runUpdatedAt"] = _provider_time(observed + timedelta(seconds=10))
+    report["rulesetRevision"]["updatedAt"] = _provider_time(
+        observed - timedelta(minutes=1)
+    )
+    report["externalRulesetRevision"]["updatedAt"] = _provider_time(
+        observed - timedelta(minutes=2)
+    )
+    confirmed = _provider_time(observed + timedelta(seconds=50))
+    report["rulesetRevision"]["confirmedUnchangedAt"] = confirmed
+    report["externalRulesetRevision"]["confirmedUnchangedAt"] = confirmed
+    external = report["externalAdmission"]
+    if external is not None:
+        external["workflowRun"]["createdAt"] = _provider_time(
+            observed + timedelta(seconds=2)
+        )
+        external["workflowRun"]["updatedAt"] = _provider_time(
+            observed + timedelta(seconds=10)
+        )
+    outcome = item["queueOutcome"]
+    if outcome is not None:
+        outcome_at = _provider_time(observed + timedelta(seconds=30))
+        outcome["observedAt"] = outcome_at
+        outcome["postQueueEntryReadback"]["observedAt"] = outcome_at
+    _reseal_v5_queue_evidence(item)
+
+
+def v5_external_ratchet_fixture() -> tuple[dict, FakeAPI, dict]:
+    record, _barrier_report, barrier_artifact, api = v5_barrier_active_fixture()
+    external_fixture, external_api = v3_active_fixture()
+    record["migration"]["phase"] = "ratchet"
+    record["ruleset"]["enforcement"] = "active"
+    record["activationEvidence"] = copy.deepcopy(
+        external_fixture["activationEvidence"]
+    )
+    for item in record["activationEvidence"].values():
+        if isinstance(item, dict) and isinstance(item.get("bindings"), dict):
+            item["bindings"]["sourceCommitSha"] = EXECUTOR_HEAD
+            item["bindings"]["rulesetId"] = record["ruleset"]["rulesetId"]
+    record["activationEvidence"]["evaluateReadback"]["subjectDigest"] = (
+        module.canonical_digest(
+            module.expected_v4_ruleset(
+                record, "externalAdmission", enforcement="evaluate"
+            )
+        )
+    )
+    record["activationEvidence"]["evaluateReadback"]["locator"] = (
+        f"https://github.com/organizations/{module.ORGANIZATION}/settings/rules/"
+        f"{record['ruleset']['rulesetId']}"
+    )
+
+    external_merge = record["activationEvidence"]["mergeGroupCanary"]
+    removal = record["queueBarrier"]["activationEvidence"][
+        "activeProviderRemovalCanary"
+    ]
+    removal["bindings"]["headSha"] = external_merge["bindings"]["headSha"]
+    removal["bindings"]["ruleSuiteId"] = external_merge["bindings"][
+        "ruleSuiteId"
+    ]
+    removal["providerVerdicts"]["id"] = external_merge["bindings"][
+        "ruleSuiteId"
+    ]
+    removal["providerVerdicts"]["afterSha"] = external_merge["bindings"][
+        "headSha"
+    ]
+    removal["report"]["candidateSha"] = external_merge["bindings"]["headSha"]
+    removal["queueOutcome"]["candidateSha"] = external_merge["bindings"][
+        "headSha"
+    ]
+    removal["report"]["externalAdmission"]["check"]["headSha"] = (
+        external_merge["bindings"]["headSha"]
+    )
+    removal["report"]["externalAdmission"]["workflowRun"]["headSha"] = (
+        external_merge["bindings"]["headSha"]
+    )
+    _reseal_v5_queue_evidence(removal)
+
+    barrier_transition = record["queueBarrier"]["activationEvidence"][
+        "activationTransition"
+    ]
+    barrier_effective = record["queueBarrier"]["activationEvidence"][
+        "effectiveRulesReadback"
+    ]
+    record["activationSequencing"]["externalActivationPrecondition"] = {
+        "barrierRulesetId": record["queueBarrier"]["ruleset"]["rulesetId"],
+        "barrierSourceCommitSha": EXECUTOR_HEAD,
+        "barrierActivationTransitionDigest": module.canonical_digest(
+            barrier_transition
+        ),
+        "barrierEffectiveRulesDigest": barrier_effective["subjectDigest"],
+        "barrierProviderRemovalDigest": removal["subjectDigest"],
+        "barrierAttestationClaimDigest": barrier_transition["mutation"][
+            "activationAttestation"
+        ]["claimDigest"],
+        "executorCommitSha": EXECUTOR_HEAD,
+        "applyLockRef": module.APPLY_LOCK_REF,
+        "observedAt": "2026-07-11T21:05:00Z",
+    }
+    for endpoint, value in external_api.gets.items():
+        if endpoint.startswith(f"/repositories/{module.TARGET_REPOSITORY_ID}/"):
+            api.gets[endpoint] = copy.deepcopy(value)
+    for endpoint, value in external_api.page_values.items():
+        if endpoint.startswith(f"/repositories/{module.TARGET_REPOSITORY_ID}/"):
+            api.page_values[endpoint] = copy.deepcopy(value)
+    external_live = {
+        **module.expected_v4_ruleset(
+            record, "externalAdmission", enforcement="evaluate"
+        ),
+        "id": record["ruleset"]["rulesetId"],
+        "source_type": "Organization",
+        "updated_at": record["activationEvidence"]["evaluateReadback"][
+            "observedAt"
+        ],
+    }
+    api.gets[
+        f"/orgs/{module.ORGANIZATION}/rulesets/{record['ruleset']['rulesetId']}"
+    ] = external_live
+    barrier_id = record["queueBarrier"]["ruleset"]["rulesetId"]
+    external_id = record["ruleset"]["rulesetId"]
+    effective_endpoint = (
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"
+    )
+    api.page_values[effective_endpoint] = lambda: [
+        {"id": barrier_id},
+        *([{"id": external_id}] if api.mutations else []),
+    ]
+    api.mutation_updated_at = "2026-07-11T21:05:00Z"
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            ACTIVE_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(record))
+
+    verifier = module.RulesetExecutor(
+        api,
+        LOCAL_BYTES,
+        clock=lambda: EXTERNAL_V4_TIME,
+        sleeper=lambda _seconds: None,
+    )
+    target = {
+        "id": module.TARGET_REPOSITORY_ID,
+        "name": module.TARGET_REPOSITORY_NAMES[0],
+        "defaultBranch": module.TARGET_DEFAULT_BRANCH,
+    }
+    for field in ["pullRequestCanary", "mergeGroupCanary", "negativeControl"]:
+        evidence = record["activationEvidence"][field]
+        run_id = int(evidence["locator"].rstrip("/").rsplit("/", 1)[1])
+        suite_id = evidence["bindings"]["ruleSuiteId"]
+        run = api.gets[
+            f"/repositories/{module.TARGET_REPOSITORY_ID}/actions/runs/{run_id}"
+        ]
+        jobs = api.gets[
+            f"/repositories/{module.TARGET_REPOSITORY_ID}/actions/runs/{run_id}/jobs"
+            "?filter=latest&per_page=100&page=1"
+        ]
+        job = jobs["jobs"][0]
+        suite_endpoint = (
+            f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets/rule-suites/{suite_id}"
+        )
+        suite = copy.deepcopy(api.gets[suite_endpoint])
+        suite["rule_evaluations"][0]["rule_source"]["id"] = record["ruleset"][
+            "rulesetId"
+        ]
+        api.gets[suite_endpoint] = suite
+        suite_observation = {
+            "id": suite["id"],
+            "repositoryId": suite["repository_id"],
+            "beforeSha": suite["before_sha"],
+            "afterSha": suite["after_sha"],
+            "ref": suite["ref"],
+            "aggregateResult": suite["result"],
+            "pushedAt": suite["pushed_at"],
+            "ruleEvaluation": suite["rule_evaluations"][0],
+        }
+        observation = module._run_observation(run, job, suite_observation)
+        if field == "negativeControl":
+            observation["negativeControl"] = verifier._verify_negative(
+                record, target, run_id, run, evidence
+            )
+        evidence["subjectDigest"] = module.canonical_digest(observation)
+
+    suite_evidence = record["activationEvidence"]["evaluateRuleSuiteReadback"]
+    suite_id = suite_evidence["bindings"]["ruleSuiteId"]
+    suite_endpoint = (
+        f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets/rule-suites/{suite_id}"
+    )
+    suite = copy.deepcopy(api.gets[suite_endpoint])
+    suite["rule_evaluations"][0]["rule_source"]["id"] = record["ruleset"][
+        "rulesetId"
+    ]
+    api.gets[suite_endpoint] = suite
+    suite_evidence["subjectDigest"] = module.canonical_digest(
+        module._normalized_evaluate_rule_suite(
+            suite, suite["rule_evaluations"][0]
+        )
+    )
+    module.validate_v5_record(
+        record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+    )
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            ACTIVE_DOCTRINE_HEAD,
+        )
+    ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(record))
+    return record, api, barrier_artifact
+
+
+def collected_v5_external_fixture() -> tuple[dict, dict, dict, dict, FakeAPI]:
+    record, api, barrier_artifact = v5_external_ratchet_fixture()
+    executor = module.RulesetExecutor(
+        api,
+        LOCAL_BYTES,
+        clock=lambda: EXTERNAL_V4_TIME,
+        nonce_factory=lambda: "9" * 64,
+        sleeper=lambda _seconds: None,
+    )
+    report = executor.run("apply")
+    configure_historical_authority(api, report, record)
+    api.gets[module._audit_endpoint(1)] = [
+        provider_audit_event(
+            report,
+            created_at=int(EXTERNAL_V4_TIME.timestamp() * 1000),
+        )
+    ]
+    handle = write_report(report)
+    try:
+        artifact = executor.collect_transition(Path(handle.name))
+    finally:
+        os.unlink(handle.name)
+    return record, report, artifact, barrier_artifact, api
+
+
+def v5_final_fixture(
+    *, phase: str,
+    final_canary_count: int,
+) -> tuple[dict, FakeAPI]:
+    historical, _report, artifact, barrier_artifact, api = (
+        collected_v5_external_fixture()
+    )
+    artifact_raw = canonical_file(artifact)
+    transition = module.activation_transition_from_artifact(
+        artifact,
+        artifact_raw=artifact_raw,
+        artifact_blob_sha=module.git_blob_sha(artifact_raw),
+        historical_record=historical,
+    )
+    active = copy.deepcopy(historical)
+    active["migration"]["phase"] = "active"
+    active["activationEvidence"]["activationTransition"] = transition
+    active["queueBarrier"]["migration"]["phase"] = phase
+    fields = ["activePassThroughCanary", "activeExternalFailureCanary"]
+    for field, ordinal, minute in zip(fields, [7, 8], [6, 7]):
+        if fields.index(field) >= final_canary_count:
+            continue
+        item = v4_queue_evidence(active, field, ordinal)
+        retime_v4_queue_evidence(item, minute)
+        active["queueBarrier"]["activationEvidence"][field] = (
+            upgrade_v4_queue_evidence_to_v5(active, field, item)
+        )
+    module.validate_v5_record(
         active, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
     )
     api.gets[f"/repositories/{module.DOCTRINE_REPOSITORY_ID}/commits/main"] = {
@@ -3311,6 +3952,433 @@ class V4ExecutionContractTests(unittest.TestCase):
         self.assertEqual(api.mutations[0][0], "PUT")
         self.assertEqual(api.mutations[0][2]["enforcement"], "evaluate")
         self.assertEqual(api.mutations[0][2]["bypass_actors"], [])
+
+
+class V5SourceEnvelopeTests(unittest.TestCase):
+    def test_v5_source_bundle_is_the_exact_ordered_seven_member_runtime(self) -> None:
+        record, api = v5_barrier_fixture()
+        executor = module.RulesetExecutor(
+            api,
+            LOCAL_BYTES,
+            clock=lambda: V4_FIXED_TIME,
+            sleeper=lambda _seconds: None,
+        )
+        report = executor.run("dry-run")
+        self.assertEqual(report["schemaVersion"], 5)
+        self.assertEqual(
+            [item["path"] for item in report["source"]["files"]],
+            list(module.V4_SOURCE_PATHS),
+        )
+        self.assertEqual(len(report["source"]["files"]), 7)
+        executor_member = report["source"]["files"][-1]
+        self.assertEqual(executor_member["path"], module.EXECUTOR_PATH)
+        self.assertEqual(executor_member["gitBlobSha"], module.git_blob_sha(LOCAL_BYTES))
+        self.assertEqual(
+            executor_member["exactBytesDigest"], module.exact_digest(LOCAL_BYTES)
+        )
+        self.assertFalse(api.mutations)
+        self.assertFalse(api.lock_mutations)
+
+
+class V5ExecutionContractTests(unittest.TestCase):
+    def executor(self, api: FakeAPI) -> module.RulesetExecutor:
+        return module.RulesetExecutor(
+            api,
+            LOCAL_BYTES,
+            clock=lambda: EXTERNAL_V4_TIME,
+            nonce_factory=lambda: "7" * 64,
+            sleeper=lambda _seconds: None,
+        )
+
+    def test_v5_lifecycle_admits_only_additive_post_and_verified_states(self) -> None:
+        ratchet = v5_barrier_ratchet_state()
+        self.assertEqual(
+            module.validate_v5_record(
+                ratchet, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+            ),
+            ratchet,
+        )
+        active, _, artifact, _ = v5_barrier_active_fixture()
+        self.assertEqual(artifact["schemaVersion"], 5)
+        self.assertEqual(active["queueBarrier"]["migration"]["phase"], "active")
+        for final_count in [0, 1]:
+            post, _ = v5_final_fixture(
+                phase="post-activation", final_canary_count=final_count
+            )
+            self.assertEqual(
+                module.validate_v5_record(
+                    post, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+                ),
+                post,
+            )
+        verified, _ = v5_final_fixture(phase="verified", final_canary_count=2)
+        self.assertEqual(
+            module.validate_v5_record(
+                verified, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+            ),
+            verified,
+        )
+        incomplete, _ = v5_final_fixture(
+            phase="post-activation", final_canary_count=1
+        )
+        incomplete["queueBarrier"]["migration"]["phase"] = "verified"
+        with self.assertRaisesRegex(module.ContractError, "final canaries"):
+            module.validate_v5_record(
+                incomplete, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+            )
+
+    def test_v5_barrier_and_external_apply_collect_emit_v5_artifacts(self) -> None:
+        _historical, barrier_report, barrier_artifact, _api = (
+            collected_v5_barrier_fixture()
+        )
+        self.assertEqual(barrier_report["schemaVersion"], 5)
+        self.assertEqual(barrier_report["status"], "APPLIED_PENDING_EVIDENCE")
+        self.assertEqual(barrier_artifact["schemaVersion"], 5)
+        self.assertEqual(barrier_artifact["applyReport"]["schemaVersion"], 5)
+
+        _historical, external_report, external_artifact, _, _api = (
+            collected_v5_external_fixture()
+        )
+        self.assertEqual(external_report["schemaVersion"], 5)
+        self.assertEqual(external_report["status"], "APPLIED_PENDING_EVIDENCE")
+        self.assertEqual(external_artifact["schemaVersion"], 5)
+        self.assertEqual(external_artifact["applyReport"]["schemaVersion"], 5)
+
+    def test_v5_post_and_verified_exact_replay_are_write_free(self) -> None:
+        for phase, final_count in [("post-activation", 0), ("verified", 2)]:
+            record, api = v5_final_fixture(
+                phase=phase, final_canary_count=final_count
+            )
+            report = self.executor(api).run("apply")
+            with self.subTest(phase=phase):
+                self.assertEqual(report["schemaVersion"], 5)
+                self.assertEqual(report["status"], "PASS")
+                self.assertEqual(
+                    set(report["activationReadback"]),
+                    {"queueBarrier", "externalAdmission"},
+                )
+                self.assertEqual(
+                    report["phase"],
+                    {
+                        "externalAdmission": "active",
+                        "queueBarrier": phase,
+                    },
+                )
+                self.assertFalse(api.mutations)
+                self.assertFalse(api.lock_mutations)
+                self.assertEqual(record["schemaVersion"], 5)
+
+    def test_v5_post_and_verified_drift_cannot_plan_repair_or_write(self) -> None:
+        for phase, final_count in [("post-activation", 0), ("verified", 2)]:
+            _record, api = v5_final_fixture(
+                phase=phase, final_canary_count=final_count
+            )
+            barrier_endpoint = f"/orgs/{module.ORGANIZATION}/rulesets/444"
+            drift = copy.deepcopy(api.gets[barrier_endpoint])
+            drift["enforcement"] = "evaluate"
+            api.gets[barrier_endpoint] = drift
+            with self.subTest(phase=phase), self.assertRaisesRegex(
+                module.ForgeError, "not exact active-effective"
+            ):
+                self.executor(api).run("apply")
+            self.assertFalse(api.mutations)
+            self.assertFalse(api.lock_mutations)
+
+    def test_v5_dual_revision_graphql_and_external_identity_attacks_fail(self) -> None:
+        boundary_equal = v5_barrier_ratchet_state()
+        boundary_item = boundary_equal["queueBarrier"]["activationEvidence"][
+            "evaluateMergeGroupFailureCanary"
+        ]
+        boundary_item["providerVerdicts"]["terminalAggregate"]["observedAt"] = (
+            boundary_item["report"]["rulesetRevision"]["confirmedUnchangedAt"]
+        )
+        _reseal_v5_queue_evidence(boundary_item)
+        self.assertEqual(
+            module.validate_v5_record(
+                boundary_equal, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+            ),
+            boundary_equal,
+        )
+
+        attacks = {
+            "barrier-revision": lambda item: item["report"]["rulesetRevision"].update(
+                {"rulesetId": 999}
+            ),
+            "external-revision": lambda item: item["report"][
+                "externalRulesetRevision"
+            ].update({"subjectDigest": "sha256:" + "0" * 64}),
+            "stale-run": lambda item: item["report"].update(
+                {"runCreatedAt": item["report"]["rulesetRevision"]["updatedAt"]}
+            ),
+            "graphql-current-entry": lambda item: item["queueOutcome"][
+                "postQueueEntryReadback"
+            ].update({"mergeQueueEntry": {"id": "MQE_current"}}),
+            "foreign-app": lambda item: item["report"]["externalAdmission"][
+                "check"
+            ].update({"app": {"id": 1, "slug": "foreign", "name": "Foreign"}}),
+            "foreign-details-repository": lambda item: item["report"][
+                "externalAdmission"
+            ]["check"].update(
+                {
+                    "detailsUrl": (
+                        "https://github.com/foreign/repository/actions/runs/"
+                        f"{item['report']['externalAdmission']['workflowRun']['id']}"
+                        "/job/"
+                        f"{item['report']['externalAdmission']['workflowRun']['jobId']}"
+                    )
+                }
+            ),
+            "foreign-details-run": lambda item: item["report"][
+                "externalAdmission"
+            ]["check"].update(
+                {
+                    "detailsUrl": (
+                        f"https://github.com/{module.TARGET_FINAL_NAME}/actions/runs/1/job/"
+                        f"{item['report']['externalAdmission']['workflowRun']['jobId']}"
+                    )
+                }
+            ),
+            "foreign-details-job": lambda item: item["report"][
+                "externalAdmission"
+            ]["check"].update(
+                {
+                    "detailsUrl": (
+                        f"https://github.com/{module.TARGET_FINAL_NAME}/actions/runs/"
+                        f"{item['report']['externalAdmission']['workflowRun']['id']}/job/1"
+                    )
+                }
+            ),
+            "string-attempts": lambda item: (
+                item["report"]["externalAdmission"].update({"attempt": "1"}),
+                item["report"]["externalAdmission"]["workflowRun"].update(
+                    {"runAttempt": "1"}
+                ),
+            ),
+            "string-check-job-ids": lambda item: (
+                item["report"]["externalAdmission"]["check"].update(
+                    {"id": "123"}
+                ),
+                item["report"]["externalAdmission"]["workflowRun"].update(
+                    {"jobId": "123"}
+                ),
+            ),
+            "string-run-ids": lambda item: (
+                item["report"]["externalAdmission"]["check"].update(
+                    {"runId": "456"}
+                ),
+                item["report"]["externalAdmission"]["workflowRun"].update(
+                    {"id": "456"}
+                ),
+            ),
+            "foreign-default-branch": lambda item: item["queueOutcome"].update(
+                {"defaultBranchRef": "refs/heads/foreign"}
+            ),
+            "external-run-postdates-barrier-run": lambda item: item["report"][
+                "externalAdmission"
+            ]["workflowRun"].update(
+                {
+                    "updatedAt": _provider_time(
+                        datetime.fromisoformat(
+                            item["report"]["runUpdatedAt"].replace("Z", "+00:00")
+                        )
+                        + timedelta(seconds=1)
+                    )
+                }
+            ),
+            "terminal-after-final-reread": lambda item: item[
+                "providerVerdicts"
+            ]["terminalAggregate"].update(
+                {
+                    "observedAt": _provider_time(
+                        datetime.fromisoformat(
+                            item["report"]["rulesetRevision"][
+                                "confirmedUnchangedAt"
+                            ].replace("Z", "+00:00")
+                        )
+                        + timedelta(seconds=1)
+                    )
+                }
+            ),
+        }
+        for name, mutate in attacks.items():
+            record = v5_barrier_ratchet_state()
+            item = record["queueBarrier"]["activationEvidence"][
+                "evaluateMergeGroupFailureCanary"
+            ]
+            mutate(item)
+            _reseal_v5_queue_evidence(item)
+            with self.subTest(name=name), self.assertRaises(module.ContractError):
+                module.validate_v5_record(
+                    record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+                )
+
+        merge_fields = [
+            "evaluateMergeGroupFailureCanary",
+            "activeProviderRemovalCanary",
+            "activePassThroughCanary",
+            "activeExternalFailureCanary",
+        ]
+        causal_base, _ = v5_final_fixture(
+            phase="verified", final_canary_count=2
+        )
+
+        def set_suite_time(item: dict, value: str) -> None:
+            item["observedAt"] = value
+            item["providerVerdicts"]["pushedAt"] = value
+
+        def set_terminal_time(item: dict, value: str) -> None:
+            item["providerVerdicts"]["terminalAggregate"]["observedAt"] = value
+
+        def set_outcome_time(item: dict, value: str) -> None:
+            item["queueOutcome"]["observedAt"] = value
+            item["queueOutcome"]["postQueueEntryReadback"]["observedAt"] = value
+
+        causal_equal = copy.deepcopy(causal_base)
+        for field in merge_fields:
+            item = causal_equal["queueBarrier"]["activationEvidence"][field]
+            suite_at = item["providerVerdicts"]["pushedAt"]
+            item["report"]["runCreatedAt"] = suite_at
+            item["report"]["externalAdmission"]["workflowRun"][
+                "createdAt"
+            ] = suite_at
+            completion_at = item["report"]["runUpdatedAt"]
+            set_terminal_time(item, completion_at)
+            set_outcome_time(item, completion_at)
+            _reseal_v5_queue_evidence(item)
+        _reseal_v5_queue_dependencies(causal_equal)
+        self.assertEqual(
+            module.validate_v5_record(
+                causal_equal, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+            ),
+            causal_equal,
+        )
+
+        terminal_first = copy.deepcopy(causal_base)
+        for field in merge_fields:
+            item = terminal_first["queueBarrier"]["activationEvidence"][field]
+            set_terminal_time(
+                item, _shift_provider_time(item["report"]["runUpdatedAt"], 1)
+            )
+            _reseal_v5_queue_evidence(item)
+        _reseal_v5_queue_dependencies(terminal_first)
+        self.assertEqual(
+            module.validate_v5_record(
+                terminal_first, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+            ),
+            terminal_first,
+        )
+
+        def suite_after_report_creation(item: dict) -> None:
+            set_suite_time(
+                item, _shift_provider_time(item["report"]["runCreatedAt"], 1)
+            )
+
+        def suite_after_external_creation(item: dict) -> None:
+            external_run = item["report"]["externalAdmission"]["workflowRun"]
+            suite_at = _shift_provider_time(external_run["createdAt"], 1)
+            item["report"]["runCreatedAt"] = _shift_provider_time(suite_at, 1)
+            set_suite_time(item, suite_at)
+
+        def report_completion_after_terminal(item: dict) -> None:
+            report_updated = item["report"]["runUpdatedAt"]
+            external_run = item["report"]["externalAdmission"]["workflowRun"]
+            external_run["updatedAt"] = _shift_provider_time(report_updated, -2)
+            set_terminal_time(item, _shift_provider_time(report_updated, -1))
+
+        def external_completion_after_terminal(item: dict) -> None:
+            set_terminal_time(
+                item, _shift_provider_time(item["report"]["runUpdatedAt"], -1)
+            )
+
+        def report_completion_after_outcome(item: dict) -> None:
+            report_updated = item["report"]["runUpdatedAt"]
+            external_run = item["report"]["externalAdmission"]["workflowRun"]
+            external_run["updatedAt"] = _shift_provider_time(report_updated, -2)
+            set_outcome_time(item, _shift_provider_time(report_updated, -1))
+
+        def external_completion_after_outcome(item: dict) -> None:
+            set_outcome_time(
+                item, _shift_provider_time(item["report"]["runUpdatedAt"], -1)
+            )
+
+        causal_attacks = {
+            "suite-after-report-creation": suite_after_report_creation,
+            "suite-after-external-creation": suite_after_external_creation,
+            "report-completion-after-terminal": report_completion_after_terminal,
+            "external-completion-after-terminal": external_completion_after_terminal,
+            "report-completion-after-outcome": report_completion_after_outcome,
+            "external-completion-after-outcome": external_completion_after_outcome,
+        }
+        for field in merge_fields:
+            for name, mutate in causal_attacks.items():
+                record = copy.deepcopy(causal_base)
+                item = record["queueBarrier"]["activationEvidence"][field]
+                mutate(item)
+                _reseal_v5_queue_evidence(item)
+                _reseal_v5_queue_dependencies(record)
+                with self.subTest(field=field, name=name), self.assertRaises(
+                    module.ContractError
+                ):
+                    module.validate_v5_record(
+                        record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+                    )
+
+        pull_attacks = {
+            "foreign-pull-head-sha": lambda item: item["report"][
+                "pullRequest"
+            ].update({"headSha": "f" * 40}),
+            "foreign-pull-head-ref": lambda item: item["report"][
+                "pullRequest"
+            ].update({"headRef": "canary/foreign"}),
+            "foreign-pull-base-sha": lambda item: item["report"][
+                "pullRequest"
+            ].update({"baseSha": "e" * 40}),
+            "resealed-foreign-canonical-head-ref": lambda item: (
+                item["report"]["pullRequest"].update(
+                    {"headRef": "canary/public-skills/pre-launch/foreign-0123456789ab"}
+                ),
+                item["bindings"].update(
+                    {"pullRequestHeadRef": "canary/public-skills/pre-launch/foreign-0123456789ab"}
+                ),
+            ),
+        }
+        for name, mutate in pull_attacks.items():
+            record = v5_barrier_ratchet_state()
+            item = record["queueBarrier"]["activationEvidence"][
+                "pullRequestNoMutationCanary"
+            ]
+            mutate(item)
+            _reseal_v5_queue_evidence(item)
+            with self.subTest(name=name), self.assertRaises(module.ContractError):
+                module.validate_v5_record(
+                    record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+                )
+
+        equal, _ = v5_final_fixture(phase="verified", final_canary_count=2)
+        equal_evidence = equal["queueBarrier"]["activationEvidence"]
+        for field in ["activePassThroughCanary", "activeExternalFailureCanary"]:
+            _retime_v5_queue_evidence(equal_evidence[field], 6)
+        self.assertEqual(
+            module.validate_v5_record(
+                equal, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+            ),
+            equal,
+        )
+
+        reversed_record, _ = v5_final_fixture(
+            phase="verified", final_canary_count=2
+        )
+        reversed_evidence = reversed_record["queueBarrier"]["activationEvidence"]
+        _retime_v5_queue_evidence(
+            reversed_evidence["activePassThroughCanary"], 8
+        )
+        _retime_v5_queue_evidence(
+            reversed_evidence["activeExternalFailureCanary"], 6
+        )
+        with self.assertRaisesRegex(module.ContractError, "chronology moves backward"):
+            module.validate_v5_record(
+                reversed_record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+            )
 
 
 class V3CompatibilityTests(unittest.TestCase):

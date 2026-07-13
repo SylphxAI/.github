@@ -41,6 +41,7 @@ ORGANIZATION_ID = 206448049
 GITHUB_ACTOR_LOGIN = "shtse8"
 GITHUB_ACTOR_ID = 8020099
 GITHUB_ACTOR_TYPE = "User"
+GITHUB_ACTIONS_APP = {"id": 15368, "slug": "github-actions", "name": "GitHub Actions"}
 
 APPLY_LOCK_TAG_NAME = "sylph-locks/public-skills-ruleset-executor"
 APPLY_LOCK_REF = f"refs/tags/{APPLY_LOCK_TAG_NAME}"
@@ -172,6 +173,11 @@ QUEUE_BARRIER_PHASE_ENFORCEMENT = {
     "active": {"active"},
     "recovery": {"evaluate", "disabled"},
 }
+V5_QUEUE_BARRIER_PHASE_ENFORCEMENT = {
+    **QUEUE_BARRIER_PHASE_ENFORCEMENT,
+    "post-activation": {"active"},
+    "verified": {"active"},
+}
 QUEUE_BARRIER_EVIDENCE_KINDS = {
     "evaluateReadback": "queue-barrier-ruleset-readback",
     "pullRequestNoMutationCanary": "queue-barrier-pull-request-no-mutation-canary",
@@ -181,6 +187,15 @@ QUEUE_BARRIER_EVIDENCE_KINDS = {
     "activePassThroughCanary": "queue-barrier-active-pass-through-canary",
     "activeExternalFailureCanary": "queue-barrier-active-external-failure-canary",
 }
+V5_PULL_REQUEST_BINDING_KEYS = (
+    "pullRequestHeadRef",
+    "pullRequestHeadSha",
+    "pullRequestBaseRef",
+    "pullRequestBaseSha",
+)
+V5_PULL_REQUEST_CANARY_HEAD_REF_RE = re.compile(
+    r"^canary/public-skills/pre-launch/barrier-pull-request-[0-9a-f]{12}$"
+)
 QUEUE_BARRIER_PRE_ACTIVATION_EVIDENCE = (
     "evaluateReadback",
     "pullRequestNoMutationCanary",
@@ -881,12 +896,18 @@ def validate_record(record: Any) -> dict[str, Any]:
 def validate_v4_protected_source_envelope(
     record: Any,
     runtime_workflow_sha: str,
+    *,
+    schema_version: int = 4,
 ) -> dict[str, Any]:
-    """Bind schema v4's shared source members to one protected runtime revision."""
+    """Bind an additive v4/v5 shared source envelope to one runtime revision."""
 
-    root = _object(record, "v4 desired state")
-    if root.get("schemaVersion") != 4:
-        raise ContractError("v4 protected-source envelope requires schemaVersion 4")
+    if schema_version not in {4, 5}:
+        raise ContractError("protected-source envelope version is unsupported")
+    root = _object(record, f"v{schema_version} desired state")
+    if root.get("schemaVersion") != schema_version:
+        raise ContractError(
+            f"v{schema_version} protected-source envelope requires schemaVersion {schema_version}"
+        )
     for field, expected in {
         "kind": "organization-required-workflow-ruleset",
         "id": DOCTRINE_RECORD_ID,
@@ -1308,6 +1329,470 @@ def _validate_v4_queue_evidence(
     return observed
 
 
+def _v5_queue_evidence_as_v4(item: dict[str, Any]) -> dict[str, Any]:
+    """Project v5-only sealed detail away for reuse of immutable v4 invariants."""
+
+    legacy = copy.deepcopy(item)
+    if isinstance(legacy.get("bindings"), dict):
+        legacy["bindings"] = {
+            key: copy.deepcopy(legacy["bindings"][key])
+            for key in [
+                "barrierRulesetId",
+                "guardedRulesetId",
+                "targetRepositoryId",
+                "sourceRepositoryId",
+                "sourceCommitSha",
+                "headSha",
+                "ruleSuiteId",
+                "runId",
+                "checkRunId",
+                "pullRequestNumber",
+            ]
+        }
+    if isinstance(legacy.get("report"), dict):
+        legacy["report"] = {
+            key: copy.deepcopy(legacy["report"][key])
+            for key in [
+                "event",
+                "decision",
+                "conclusion",
+                "mutationAuthority",
+                "mutationCount",
+                "queueMutation",
+                "permissions",
+                "runAttempt",
+                "candidateSha",
+                "artifactDigest",
+            ]
+        }
+    if isinstance(legacy.get("queueOutcome"), dict):
+        legacy["queueOutcome"] = {
+            key: copy.deepcopy(legacy["queueOutcome"][key])
+            for key in [
+                "owner",
+                "cause",
+                "outcome",
+                "targetVisibility",
+                "preQueueEntryId",
+                "postQueueEntry",
+                "pullRequestMerged",
+                "pullRequestHeadSha",
+                "pullRequestHeadShaAfter",
+                "pullRequestHeadTree",
+                "pullRequestBaseSha",
+                "pullRequestBaseTree",
+                "candidateSha",
+                "candidateTree",
+                "defaultBranchBeforeSha",
+                "defaultBranchAfterSha",
+                "defaultBranchBeforeTree",
+                "defaultBranchAfterTree",
+                "observedAt",
+            ]
+        }
+    legacy["subjectDigest"] = canonical_digest(_v4_queue_canary_subject(legacy))
+    return legacy
+
+
+def _validate_v5_ruleset_revision(
+    value: Any,
+    *,
+    label: str,
+    ruleset_id: int,
+    enforcement: str,
+    subject_digest: str,
+) -> tuple[datetime, datetime]:
+    revision = _object(value, label)
+    _exact_keys(
+        revision,
+        {
+            "rulesetId",
+            "enforcement",
+            "updatedAt",
+            "subjectDigest",
+            "confirmedUnchangedAt",
+        },
+        label,
+    )
+    if (
+        revision["rulesetId"] != ruleset_id
+        or revision["enforcement"] != enforcement
+        or revision["subjectDigest"] != subject_digest
+    ):
+        raise ContractError(f"{label} does not bind the exact desired revision")
+    updated = _timestamp(revision["updatedAt"], f"{label}.updatedAt")
+    confirmed = _timestamp(
+        revision["confirmedUnchangedAt"], f"{label}.confirmedUnchangedAt"
+    )
+    if confirmed <= updated:
+        raise ContractError(f"{label} unchanged confirmation does not postdate revision")
+    return updated, confirmed
+
+
+def _validate_v5_queue_evidence(
+    record: dict[str, Any],
+    field: str,
+    value: Any,
+) -> datetime | None:
+    """Validate additive v5 revision, PR, external-run, and queue-entry proofs."""
+
+    if value is None:
+        return None
+    if field in {"evaluateReadback", "effectiveRulesReadback"}:
+        return _validate_v4_queue_evidence(record, field, value)
+    item = _object(value, f"queueBarrier.activationEvidence.{field}")
+    observed = _validate_v4_queue_evidence(
+        record,
+        field,
+        _v5_queue_evidence_as_v4(item),
+    )
+    assert observed is not None
+    report = _object(item["report"], f"queueBarrier.activationEvidence.{field}.report")
+    _exact_keys(
+        report,
+        {
+            "event",
+            "decision",
+            "conclusion",
+            "mutationAuthority",
+            "mutationCount",
+            "queueMutation",
+            "permissions",
+            "runAttempt",
+            "runCreatedAt",
+            "runUpdatedAt",
+            "candidateSha",
+            "rulesetRevision",
+            "externalRulesetRevision",
+            "pullRequest",
+            "externalAdmission",
+            "artifactDigest",
+        },
+        f"queueBarrier.activationEvidence.{field}.report",
+    )
+    barrier_enforcement = (
+        "evaluate"
+        if field in {
+            "pullRequestNoMutationCanary",
+            "evaluateMergeGroupFailureCanary",
+        }
+        else "active"
+    )
+    external_enforcement = (
+        "active"
+        if field in {"activePassThroughCanary", "activeExternalFailureCanary"}
+        else "evaluate"
+    )
+    barrier_payload = expected_v4_ruleset(
+        record, "queueBarrier", enforcement=barrier_enforcement
+    )
+    external_payload = expected_v4_ruleset(
+        record, "externalAdmission", enforcement=external_enforcement
+    )
+    barrier_updated, barrier_confirmed = _validate_v5_ruleset_revision(
+        report["rulesetRevision"],
+        label=f"queueBarrier.activationEvidence.{field}.report.rulesetRevision",
+        ruleset_id=record["queueBarrier"]["ruleset"]["rulesetId"],
+        enforcement=barrier_enforcement,
+        subject_digest=canonical_digest(barrier_payload),
+    )
+    external_updated, external_confirmed = _validate_v5_ruleset_revision(
+        report["externalRulesetRevision"],
+        label=f"queueBarrier.activationEvidence.{field}.report.externalRulesetRevision",
+        ruleset_id=record["ruleset"]["rulesetId"],
+        enforcement=external_enforcement,
+        subject_digest=canonical_digest(external_payload),
+    )
+    if barrier_confirmed != external_confirmed:
+        raise ContractError(f"queueBarrier.activationEvidence.{field} dual final reread differs")
+    run_created = _timestamp(
+        report["runCreatedAt"],
+        f"queueBarrier.activationEvidence.{field}.report.runCreatedAt",
+    )
+    run_updated = _timestamp(
+        report["runUpdatedAt"],
+        f"queueBarrier.activationEvidence.{field}.report.runUpdatedAt",
+    )
+    latest_revision = max(barrier_updated, external_updated)
+    if run_created <= latest_revision or run_updated < run_created:
+        raise ContractError(
+            f"queueBarrier.activationEvidence.{field} run does not postdate both revisions"
+        )
+    if barrier_confirmed < run_updated:
+        raise ContractError(
+            f"queueBarrier.activationEvidence.{field} final reread predates run completion"
+        )
+    pull = _object(
+        report["pullRequest"],
+        f"queueBarrier.activationEvidence.{field}.report.pullRequest",
+    )
+    _exact_keys(
+        pull,
+        {"number", "headRef", "headSha", "baseRef", "baseSha"},
+        f"queueBarrier.activationEvidence.{field}.report.pullRequest",
+    )
+    # The executor cannot recreate historical, transient queue state after the
+    # capture window.  Schema v5 therefore accepts only the normalized values
+    # emitted by Doctrine's read-only provider collector and closes every PR
+    # leaf over a separate binding.  The artifact digest remains byte lineage;
+    # it is deliberately not treated as an oracle for unbound PR claims.
+    bindings = _object(
+        item["bindings"], f"queueBarrier.activationEvidence.{field}.bindings"
+    )
+    _exact_keys(
+        bindings,
+        {
+            "barrierRulesetId",
+            "guardedRulesetId",
+            "targetRepositoryId",
+            "sourceRepositoryId",
+            "sourceCommitSha",
+            "headSha",
+            "ruleSuiteId",
+            "runId",
+            "checkRunId",
+            "pullRequestNumber",
+            *V5_PULL_REQUEST_BINDING_KEYS,
+        },
+        f"queueBarrier.activationEvidence.{field}.bindings",
+    )
+    for key in ["pullRequestHeadSha", "pullRequestBaseSha"]:
+        _sha(bindings[key], f"queueBarrier.activationEvidence.{field}.bindings.{key}")
+    for key in ["pullRequestHeadRef", "pullRequestBaseRef"]:
+        _string(
+            bindings[key], f"queueBarrier.activationEvidence.{field}.bindings.{key}"
+        )
+    if (
+        pull["number"] != bindings["pullRequestNumber"]
+        or pull["baseRef"] != "main"
+        or pull["headRef"] != bindings["pullRequestHeadRef"]
+        or pull["headSha"] != bindings["pullRequestHeadSha"]
+        or pull["baseRef"] != bindings["pullRequestBaseRef"]
+        or pull["baseSha"] != bindings["pullRequestBaseSha"]
+    ):
+        raise ContractError(
+            f"queueBarrier.activationEvidence.{field} pull-request identity differs"
+        )
+    for key in ["headSha", "baseSha"]:
+        _sha(pull[key], f"queueBarrier.activationEvidence.{field}.report.pullRequest.{key}")
+    _string(
+        pull["headRef"],
+        f"queueBarrier.activationEvidence.{field}.report.pullRequest.headRef",
+    )
+
+    external_created: datetime | None = None
+    external_updated_at: datetime | None = None
+    external = report["externalAdmission"]
+    if field == "pullRequestNoMutationCanary":
+        if external is not None:
+            raise ContractError("v5 pull-request canary cannot borrow external-run authority")
+        if V5_PULL_REQUEST_CANARY_HEAD_REF_RE.fullmatch(pull["headRef"]) is None:
+            raise ContractError(
+                "v5 pull-request canary head ref is outside the canonical canary target"
+            )
+    else:
+        external = _object(
+            external,
+            f"queueBarrier.activationEvidence.{field}.report.externalAdmission",
+        )
+        _exact_keys(
+            external,
+            {"attempt", "check", "workflowRun", "digest"},
+            f"queueBarrier.activationEvidence.{field}.report.externalAdmission",
+        )
+        check = _object(external["check"], f"{field} external check")
+        workflow_run = _object(external["workflowRun"], f"{field} external workflow run")
+        _exact_keys(
+            check,
+            {"id", "name", "headSha", "status", "conclusion", "runId", "detailsUrl", "app"},
+            f"{field} external check",
+        )
+        _exact_keys(
+            workflow_run,
+            {
+                "id",
+                "runAttempt",
+                "path",
+                "event",
+                "headSha",
+                "status",
+                "conclusion",
+                "createdAt",
+                "updatedAt",
+                "jobId",
+            },
+            f"{field} external workflow run",
+        )
+        expected_conclusion = "failure" if field == "activeExternalFailureCanary" else "success"
+        allowed_paths = {
+            WORKFLOW_PATH,
+            f"{WORKFLOW_PATH}@{record['workflowSource']['commitSha']}",
+        }
+        attempt = _positive_integer(external["attempt"], f"{field} external attempt")
+        check_id = _positive_integer(check["id"], f"{field} external check id")
+        check_run_id = _positive_integer(
+            check["runId"], f"{field} external check runId"
+        )
+        workflow_run_id = _positive_integer(
+            workflow_run["id"], f"{field} external workflow run id"
+        )
+        workflow_attempt = _positive_integer(
+            workflow_run["runAttempt"], f"{field} external workflow run attempt"
+        )
+        workflow_job_id = _positive_integer(
+            workflow_run["jobId"], f"{field} external workflow job id"
+        )
+        expected_details_url = (
+            f"https://github.com/{TARGET_FINAL_NAME}/actions/runs/"
+            f"{workflow_run_id}/job/{workflow_job_id}"
+        )
+        if (
+            attempt != workflow_attempt
+            or check_id != workflow_job_id
+            or check["name"] != REQUIRED_CHECK
+            or check["headSha"] != bindings["headSha"]
+            or check["status"] != "completed"
+            or check["conclusion"] != expected_conclusion
+            or check_run_id != workflow_run_id
+            or check["detailsUrl"] != expected_details_url
+            or check["app"] != GITHUB_ACTIONS_APP
+            or workflow_run["path"] not in allowed_paths
+            or workflow_run["event"] != "merge_group"
+            or workflow_run["headSha"] != bindings["headSha"]
+            or workflow_run["status"] != "completed"
+            or workflow_run["conclusion"] != expected_conclusion
+            or external["digest"]
+            != canonical_digest({"check": check, "workflowRun": workflow_run})
+        ):
+            raise ContractError(
+                f"queueBarrier.activationEvidence.{field} sealed external identity differs"
+            )
+        external_created = _timestamp(workflow_run["createdAt"], f"{field} external createdAt")
+        external_updated_at = _timestamp(workflow_run["updatedAt"], f"{field} external updatedAt")
+        if (
+            external_created <= latest_revision
+            or external_updated_at < external_created
+            or external_updated_at > run_updated
+            or barrier_confirmed < external_updated_at
+        ):
+            raise ContractError(
+                f"queueBarrier.activationEvidence.{field} external run chronology differs"
+            )
+
+    provider = item["providerVerdicts"]
+    merge_completion_at: datetime | None = None
+    if isinstance(provider, dict):
+        if external_created is None or external_updated_at is None:
+            raise ContractError(
+                f"queueBarrier.activationEvidence.{field} lacks external run chronology"
+            )
+        suite_at = _timestamp(provider["pushedAt"], f"{field} provider pushedAt")
+        if (
+            suite_at <= latest_revision
+            or suite_at > run_created
+            or suite_at > external_created
+            or barrier_confirmed < suite_at
+        ):
+            raise ContractError(
+                f"queueBarrier.activationEvidence.{field} rule suite revision chronology differs"
+            )
+        merge_completion_at = max(run_updated, external_updated_at)
+        terminal = _object(
+            provider["terminalAggregate"], f"{field} terminal aggregate"
+        )
+        terminal_at = _timestamp(
+            terminal["observedAt"], f"{field} terminal aggregate observedAt"
+        )
+        if terminal_at < merge_completion_at or terminal_at > barrier_confirmed:
+            raise ContractError(
+                f"queueBarrier.activationEvidence.{field} terminal aggregate chronology differs"
+            )
+    outcome = item["queueOutcome"]
+    if isinstance(outcome, dict):
+        _exact_keys(
+            outcome,
+            {
+                "owner",
+                "cause",
+                "outcome",
+                "targetVisibility",
+                "preQueueEntryId",
+                "postQueueEntry",
+                "postQueueEntryReadback",
+                "pullRequestMerged",
+                "pullRequestHeadRef",
+                "pullRequestHeadSha",
+                "pullRequestHeadShaAfter",
+                "pullRequestHeadTree",
+                "pullRequestBaseRef",
+                "pullRequestBaseSha",
+                "pullRequestBaseTree",
+                "candidateSha",
+                "candidateTree",
+                "defaultBranchBeforeSha",
+                "defaultBranchAfterSha",
+                "defaultBranchBeforeTree",
+                "defaultBranchAfterTree",
+                "defaultBranchRef",
+                "observedAt",
+            },
+            f"queueBarrier.activationEvidence.{field}.queueOutcome",
+        )
+        post_queue = _object(
+            outcome["postQueueEntryReadback"], f"{field} postQueueEntryReadback"
+        )
+        _exact_keys(
+            post_queue,
+            {
+                "surface",
+                "repositoryId",
+                "repositoryNodeId",
+                "pullRequestNumber",
+                "pullRequestHeadRef",
+                "pullRequestHeadSha",
+                "mergeQueueEntry",
+                "observedAt",
+            },
+            f"{field} postQueueEntryReadback",
+        )
+        if (
+            outcome["postQueueEntry"] is not None
+            or post_queue["surface"]
+            != "graphql-v4:repository.pullRequest.mergeQueueEntry"
+            or post_queue["repositoryId"] != TARGET_REPOSITORY_ID
+            or post_queue["repositoryNodeId"] != TARGET_REPOSITORY_NODE_ID
+            or post_queue["pullRequestNumber"] != bindings["pullRequestNumber"]
+            or post_queue["pullRequestHeadRef"] != outcome["pullRequestHeadRef"]
+            or post_queue["pullRequestHeadSha"] != outcome["pullRequestHeadShaAfter"]
+            or post_queue["mergeQueueEntry"] is not None
+            or post_queue["observedAt"] != outcome["observedAt"]
+            or outcome["defaultBranchRef"] != "refs/heads/main"
+            or pull["headRef"] != outcome["pullRequestHeadRef"]
+            or pull["headSha"] != outcome["pullRequestHeadSha"]
+            or pull["baseRef"] != outcome["pullRequestBaseRef"]
+            or pull["baseSha"] != outcome["pullRequestBaseSha"]
+            or outcome["pullRequestHeadRef"] != bindings["pullRequestHeadRef"]
+            or outcome["pullRequestHeadSha"] != bindings["pullRequestHeadSha"]
+            or outcome["pullRequestBaseRef"] != bindings["pullRequestBaseRef"]
+            or outcome["pullRequestBaseSha"] != bindings["pullRequestBaseSha"]
+        ):
+            raise ContractError(
+                f"queueBarrier.activationEvidence.{field} current queue/PR binding differs"
+            )
+        outcome_at = _timestamp(outcome["observedAt"], f"{field} queue outcome observedAt")
+        if merge_completion_at is None or outcome_at < merge_completion_at:
+            raise ContractError(
+                f"queueBarrier.activationEvidence.{field} queue outcome predates run completion"
+            )
+        if barrier_confirmed < outcome_at:
+            raise ContractError(
+                f"queueBarrier.activationEvidence.{field} final reread predates queue outcome"
+            )
+    if item["subjectDigest"] != canonical_digest(_v4_queue_canary_subject(item)):
+        raise ContractError(f"queueBarrier.activationEvidence.{field}.subjectDigest differs")
+    return observed
+
+
 def _validate_v4_queue_transition(record: dict[str, Any], value: Any) -> dict[str, Any]:
     transition = _object(value, "queueBarrier.activationEvidence.activationTransition")
     _exact_keys(
@@ -1441,8 +1926,12 @@ def validate_v4_record(
     record: Any,
     runtime_workflow_sha: str,
     runtime_executor_digest: str,
+    *,
+    schema_version: int = 4,
 ) -> dict[str, Any]:
-    root = _object(record, "v4 desired state")
+    if schema_version not in {4, 5}:
+        raise ContractError("shared queue-barrier schema version is unsupported")
+    root = _object(record, f"v{schema_version} desired state")
     _exact_keys(
         root,
         {
@@ -1450,10 +1939,10 @@ def validate_v4_record(
             "organization", "ruleset", "workflowSource", "migration",
             "activationEvidence", "queueBarrier", "activationSequencing", "recovery",
         },
-        "v4 desired state",
+        f"v{schema_version} desired state",
     )
-    if root["schemaVersion"] != 4:
-        raise ContractError("v4 desired state schemaVersion differs")
+    if root["schemaVersion"] != schema_version:
+        raise ContractError(f"v{schema_version} desired state schemaVersion differs")
     external_source = _object(root["workflowSource"], "workflowSource")
     for required_field in ["localRequiredChecks", "negativeControlPolicy"]:
         if required_field not in external_source:
@@ -1470,7 +1959,11 @@ def validate_v4_record(
                 f"v4 activationEvidence.{field} requires negativeControl member"
             )
     validate_record(_v4_external_projection(root))
-    bundle = validate_v4_protected_source_envelope(root, runtime_workflow_sha)
+    bundle = validate_v4_protected_source_envelope(
+        root,
+        runtime_workflow_sha,
+        schema_version=schema_version,
+    )
     sequencing = _object(root["activationSequencing"], "activationSequencing")
     _exact_keys(sequencing, {"kind", "protectedSourceBundle", "executor", "applyLock", "activationOrder", "recoveryOrder", "externalActivationPrecondition"}, "activationSequencing")
     if (
@@ -1581,7 +2074,12 @@ def validate_v4_record(
     migration = _object(barrier["migration"], "queueBarrier.migration")
     _exact_keys(migration, {"packetId", "class", "phase", "tracker", "compatibility", "recoveryPlan"}, "queueBarrier.migration")
     phase = migration["phase"]
-    if phase not in QUEUE_BARRIER_PHASE_ENFORCEMENT or ruleset["enforcement"] not in QUEUE_BARRIER_PHASE_ENFORCEMENT[phase]:
+    phase_enforcement = (
+        V5_QUEUE_BARRIER_PHASE_ENFORCEMENT
+        if schema_version == 5
+        else QUEUE_BARRIER_PHASE_ENFORCEMENT
+    )
+    if phase not in phase_enforcement or ruleset["enforcement"] not in phase_enforcement[phase]:
         raise ContractError("queueBarrier phase/enforcement differs")
     if re.fullmatch(r"public-skills-merge-queue-barrier@[0-9]{4}-[0-9]{2}-[0-9]{2}\.[0-9a-f]{12}", _string(migration["packetId"], "queueBarrier.migration.packetId")) is None:
         raise ContractError("queueBarrier migration packet differs")
@@ -1608,7 +2106,14 @@ def validate_v4_record(
     observed = {
         field: result
         for field in QUEUE_BARRIER_EVIDENCE_KINDS
-        if (result := _validate_v4_queue_evidence(root, field, evidence[field])) is not None
+        if (
+            result := (
+                _validate_v5_queue_evidence(root, field, evidence[field])
+                if schema_version == 5
+                else _validate_v4_queue_evidence(root, field, evidence[field])
+            )
+        )
+        is not None
     }
     if (
         evidence["evaluateReadback"] is not None
@@ -1627,14 +2132,21 @@ def validate_v4_record(
         if evidence["effectiveRulesReadback"]["subjectDigest"] != canonical_digest(expected_effective):
             raise ContractError("queueBarrier effective-rules readback digest differs")
     transition = evidence["activationTransition"]
-    if phase == "active":
+    activated_phases = (
+        {"active", "post-activation", "verified"}
+        if schema_version == 5
+        else {"active"}
+    )
+    if phase in activated_phases:
         _validate_v4_queue_transition(root, transition)
     elif transition is not None:
-        raise ContractError("queueBarrier activation transition is allowed only in active")
+        raise ContractError(
+            "queueBarrier activation transition is allowed only in activated phases"
+        )
     required: tuple[str, ...] = ()
     if phase in {"canary", "ratchet"}:
         required = QUEUE_BARRIER_PRE_ACTIVATION_EVIDENCE
-    elif phase == "active":
+    elif phase in activated_phases:
         required = QUEUE_BARRIER_ACTIVE_EVIDENCE
     missing = [field for field in required if evidence[field] is None]
     if missing:
@@ -1642,7 +2154,15 @@ def validate_v4_record(
     if source["commitSha"] is None:
         if phase != "expand" or ruleset["rulesetId"] is not None or ruleset["enforcement"] != "evaluate":
             raise ContractError("unresolved queueBarrier source is allowed only in unbound expand")
-    elif phase in {"reconcile", "canary", "ratchet", "active", "recovery"} and ruleset["rulesetId"] is None:
+    elif phase in {
+        "reconcile",
+        "canary",
+        "ratchet",
+        "active",
+        "post-activation",
+        "verified",
+        "recovery",
+    } and ruleset["rulesetId"] is None:
         raise ContractError(f"queueBarrier {phase} requires a ruleset ID")
 
     if phase == "recovery":
@@ -1659,7 +2179,12 @@ def validate_v4_record(
     external_precondition = sequencing["externalActivationPrecondition"]
     active_removal = evidence["activeProviderRemovalCanary"]
     if external_phase in {"ratchet", "active"}:
-        if phase != "active" or transition is None or evidence["effectiveRulesReadback"] is None or active_removal is None:
+        expected_external_barrier_phases = (
+            {"active"}
+            if schema_version == 4 or external_phase == "ratchet"
+            else {"post-activation", "verified"}
+        )
+        if phase not in expected_external_barrier_phases or transition is None or evidence["effectiveRulesReadback"] is None or active_removal is None:
             raise ContractError("external activation lacks active/effective queueBarrier proof")
         precondition = _object(external_precondition, "activationSequencing.externalActivationPrecondition")
         _exact_keys(precondition, {"barrierRulesetId", "barrierSourceCommitSha", "barrierActivationTransitionDigest", "barrierEffectiveRulesDigest", "barrierProviderRemovalDigest", "barrierAttestationClaimDigest", "executorCommitSha", "applyLockRef", "observedAt"}, "activationSequencing.externalActivationPrecondition")
@@ -1724,8 +2249,9 @@ def validate_v4_record(
     if external_phase != "active" and any(evidence[field] is not None for field in final_barrier_fields):
         raise ContractError("queueBarrier final canaries are allowed only after external activation")
     if external_phase == "active":
+        final_required = schema_version == 4 or phase == "verified"
         missing_final = [field for field in final_barrier_fields if evidence[field] is None]
-        if missing_final:
+        if final_required and missing_final:
             raise ContractError(f"active external admission lacks queueBarrier final canaries {missing_final}")
         external_transition = root["activationEvidence"]["activationTransition"]
         if external_transition is None:
@@ -1735,6 +2261,8 @@ def validate_v4_record(
             "external activation transition capturedAt",
         )
         for field in final_barrier_fields:
+            if evidence[field] is None:
+                continue
             final_at = _timestamp(
                 evidence[field]["queueOutcome"]["observedAt"],
                 f"{field} queue outcome",
@@ -1770,7 +2298,11 @@ def validate_v4_record(
         chronology.append(("activationTransition", _timestamp(transition["capturedAt"], "queueBarrier transition capturedAt")))
     if evidence["effectiveRulesReadback"] is not None:
         chronology.append(("effectiveRulesReadback", observed["effectiveRulesReadback"]))
-    for active_field in ["activeProviderRemovalCanary"]:
+    for active_field in [
+        "activeProviderRemovalCanary",
+        "activePassThroughCanary",
+        "activeExternalFailureCanary",
+    ]:
         if evidence[active_field] is not None:
             chronology.append((
                 active_field,
@@ -1785,6 +2317,21 @@ def validate_v4_record(
                 f"queueBarrier evidence chronology moves backward from {left_name} to {right_name}"
             )
     return root
+
+
+def validate_v5_record(
+    record: Any,
+    runtime_workflow_sha: str,
+    runtime_executor_digest: str,
+) -> dict[str, Any]:
+    """Validate additive schema v5 without changing any v1-v4 branch."""
+
+    return validate_v4_record(
+        record,
+        runtime_workflow_sha,
+        runtime_executor_digest,
+        schema_version=5,
+    )
 
 
 def validate_attestation_policy(value: Any) -> dict[str, Any]:
@@ -2416,6 +2963,21 @@ def plan_v4_ruleset_actions(
     return [external_action]
 
 
+def plan_v5_ruleset_actions(
+    record: dict[str, Any],
+    observations: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Reuse v4 ordering while making post-activation/verified write-closed."""
+
+    projected = copy.deepcopy(record)
+    if projected["queueBarrier"]["migration"]["phase"] in {
+        "post-activation",
+        "verified",
+    }:
+        projected["queueBarrier"]["migration"]["phase"] = "active"
+    return plan_v4_ruleset_actions(projected, observations)
+
+
 def _v4_subject_activation_evidence_digest(
     record: dict[str, Any],
     subject: str,
@@ -2716,6 +3278,8 @@ def _validate_activation_readback(
 def validate_v4_apply_report(
     value: Any,
     record: dict[str, Any] | None = None,
+    *,
+    expected_schema_version: int = 4,
 ) -> dict[str, Any]:
     report = _object(value, "schema-v4 apply report")
     _exact_keys(
@@ -2731,7 +3295,7 @@ def validate_v4_apply_report(
         "schema-v4 apply report",
     )
     if (
-        report["schemaVersion"] != 4
+        report["schemaVersion"] != expected_schema_version
         or report["kind"] != EXECUTION_REPORT_KIND
         or report["mode"] != "apply"
         or report["status"] not in {
@@ -3110,6 +3674,12 @@ def validate_v4_apply_report(
 def validate_apply_report(value: Any, record: dict[str, Any] | None = None) -> dict[str, Any]:
     if isinstance(value, dict) and value.get("schemaVersion") == 4:
         return validate_v4_apply_report(value, record)
+    if isinstance(value, dict) and value.get("schemaVersion") == 5:
+        return validate_v4_apply_report(
+            value,
+            record,
+            expected_schema_version=5,
+        )
     """Validate the inert, sealed output of the single admitted ratchet apply."""
 
     report = _object(value, "apply report")
@@ -3434,7 +4004,7 @@ def seal_activation_artifact(
         apply_report.get("schemaVersion"),
         "activation artifact apply-report version",
     )
-    if report_version not in {1, 2, 4}:
+    if report_version not in {1, 2, 4, 5}:
         raise ContractError("activation artifact apply-report version is unsupported")
     body = {
         "schemaVersion": report_version,
@@ -3462,7 +4032,7 @@ def validate_activation_artifact(
         },
         "activation artifact",
     )
-    if artifact["schemaVersion"] not in {1, 2, 4} or artifact["kind"] != ACTIVATION_REPORT_KIND:
+    if artifact["schemaVersion"] not in {1, 2, 4, 5} or artifact["kind"] != ACTIVATION_REPORT_KIND:
         raise ContractError("activation artifact identity is unsupported")
     captured_at = _timestamp(artifact["capturedAt"], "activation artifact.capturedAt")
     body = {field: artifact[field] for field in ["schemaVersion", "kind", "capturedAt", "applyReport", "auditEvent", "liveCapture"]}
@@ -3490,7 +4060,7 @@ def validate_activation_artifact(
     normalized_audit = audit["normalized"]
     subject = (
         report["plannedMutation"]["subject"]
-        if report["schemaVersion"] == 4
+        if report["schemaVersion"] in {4, 5}
         else "externalAdmission"
     )
     expected_ruleset_name = (
@@ -3558,7 +4128,7 @@ def activation_transition_from_artifact(
     pre = report["preReadback"]
     post = report["postReadback"]
     lock = report["applyLock"]
-    is_v4 = artifact["schemaVersion"] == 4
+    is_v4 = artifact["schemaVersion"] in {4, 5}
     subject = (
         report["plannedMutation"]["subject"] if is_v4 else "externalAdmission"
     )
@@ -3658,7 +4228,7 @@ def activation_transition_from_artifact(
 
 def apply_lock_authorization_from_report(report: dict[str, Any]) -> dict[str, Any]:
     planned = _object(report.get("plannedMutation"), "apply preflight plannedMutation")
-    if report.get("schemaVersion") == 4:
+    if report.get("schemaVersion") in {4, 5}:
         subject = planned.get("subject")
         if subject not in {"externalAdmission", "queueBarrier"}:
             raise ContractError("schema-v4 apply preflight lacks one exact subject")
@@ -3754,7 +4324,7 @@ def activation_attestation_claim(report: dict[str, Any]) -> dict[str, Any]:
         },
         "evidenceCutoffAt": lock["finalRefAbsentAt"],
     }
-    if report.get("schemaVersion") == 4:
+    if report.get("schemaVersion") in {4, 5}:
         claim["subject"] = report["plannedMutation"]["subject"]
         claim["mutation"]["subject"] = report["mutation"]["subject"]
         claim["activationSequencingDigest"] = report["activationSequencingDigest"]
@@ -3907,14 +4477,22 @@ class RulesetExecutor:
         item = self.api.get(_content_endpoint(DOCTRINE_REPOSITORY_ID, DOCTRINE_RECORD_PATH, commit_sha))
         raw = _decode_content(item, DOCTRINE_RECORD_PATH, "Doctrine desired-state record")
         parsed = strict_json_loads(raw, label="Doctrine desired-state record")
-        if isinstance(parsed, dict) and parsed.get("schemaVersion") == 4:
+        if isinstance(parsed, dict) and parsed.get("schemaVersion") in {4, 5}:
             if self.executor_head is None:
-                raise ForgeError("schema-v4 execution requires the protected executor runtime SHA")
+                raise ForgeError("schema-v4/v5 execution requires the protected executor runtime SHA")
             try:
-                record = validate_v4_record(
-                    parsed,
-                    self.executor_head,
-                    exact_digest(self.local_executor_bytes),
+                record = (
+                    validate_v5_record(
+                        parsed,
+                        self.executor_head,
+                        exact_digest(self.local_executor_bytes),
+                    )
+                    if parsed["schemaVersion"] == 5
+                    else validate_v4_record(
+                        parsed,
+                        self.executor_head,
+                        exact_digest(self.local_executor_bytes),
+                    )
                 )
             except ContractError as exc:
                 raise ForgeError(str(exc)) from exc
@@ -3928,10 +4506,10 @@ class RulesetExecutor:
         }
 
     def _verify_source(self, record: dict[str, Any]) -> dict[str, Any]:
-        is_v4 = record.get("schemaVersion") == 4
+        is_shared_source = record.get("schemaVersion") in {4, 5}
         source_sha = (
             record["queueBarrier"]["workflowSource"]["commitSha"]
-            if is_v4
+            if is_shared_source
             else record["workflowSource"]["commitSha"]
         )
         if source_sha is None:
@@ -3953,7 +4531,7 @@ class RulesetExecutor:
             if source_sha == LEGACY_SOURCE_COMMIT_SHA
             else SOURCE_IDENTITIES
         )
-        paths = V4_SOURCE_PATHS if is_v4 else SOURCE_PATHS
+        paths = V4_SOURCE_PATHS if is_shared_source else SOURCE_PATHS
         for path in paths:
             item = self.api.get(_content_endpoint(EXECUTOR_REPOSITORY_ID, path, source_sha))
             raw = _decode_content(item, path, f"workflow source {path}")
@@ -3965,7 +4543,7 @@ class RulesetExecutor:
             }
             if path == EXECUTOR_PATH:
                 if raw != self.local_executor_bytes or source_sha != self.executor_head:
-                    raise ForgeError("v4 shared executor bytes differ from the protected runtime source")
+                    raise ForgeError("shared executor bytes differ from the protected runtime source")
             else:
                 expected_identity = (
                     V4_ADDITIONAL_SOURCE_IDENTITIES[path]
@@ -3980,7 +4558,7 @@ class RulesetExecutor:
             "commitSha": source_sha,
             "files": files,
         }
-        if is_v4:
+        if is_shared_source:
             result["relation"] = PROTECTED_SOURCE_RELATION
         return result
 
@@ -4205,7 +4783,7 @@ class RulesetExecutor:
         nonce = self.nonce_factory()
         if not isinstance(nonce, str) or NONCE_RE.fullmatch(nonce) is None:
             raise ForgeError("apply lock nonce source returned an invalid 32-byte hex nonce")
-        if authority_schema_version not in {1, 2, 4}:
+        if authority_schema_version not in {1, 2, 4, 5}:
             raise ForgeError("apply lock authority version is unsupported")
         claim = {
             "schemaVersion": authority_schema_version,
@@ -4355,7 +4933,7 @@ class RulesetExecutor:
         request_id = mutation["requestId"]
         subject = (
             report["plannedMutation"]["subject"]
-            if report.get("schemaVersion") == 4
+            if report.get("schemaVersion") in {4, 5}
             else "externalAdmission"
         )
         expected_ruleset_name = (
@@ -4904,7 +5482,7 @@ class RulesetExecutor:
         except ContractError as exc:
             raise ForgeError(str(exc)) from exc
         if (
-            artifact["schemaVersion"] != 4
+            artifact["schemaVersion"] not in {4, 5}
             or artifact["applyReport"]["plannedMutation"]["subject"] != subject
         ):
             raise ForgeError("schema-v4 activation artifact subject differs")
@@ -4965,8 +5543,14 @@ class RulesetExecutor:
         report_value: dict[str, Any],
     ) -> dict[str, Any]:
         report = seal_report(report_value)
+        schema_version = report.get("schemaVersion")
+        if schema_version not in {4, 5}:
+            raise ForgeError("shared queue-barrier attestation report version differs")
         try:
-            validate_v4_apply_report(report)
+            validate_v4_apply_report(
+                report,
+                expected_schema_version=schema_version,
+            )
         except ContractError as exc:
             raise ForgeError(str(exc)) from exc
         if self._verify_executor() != report["executor"]:
@@ -4977,7 +5561,7 @@ class RulesetExecutor:
         if self._verify_target() != report["target"]:
             raise ForgeError("schema-v4 target changed before attestation")
         record, desired = self._load_doctrine()
-        if record.get("schemaVersion") != 4 or desired != report["desiredState"]:
+        if record.get("schemaVersion") != schema_version or desired != report["desiredState"]:
             raise ForgeError("schema-v4 Doctrine authority changed before attestation")
         if self._verify_source(record) != report["source"]:
             raise ForgeError("schema-v4 source bundle changed before attestation")
@@ -5035,7 +5619,11 @@ class RulesetExecutor:
         report["findings"] = [PENDING_EVIDENCE_FINDING]
         finalized = seal_report(report)
         try:
-            return validate_v4_apply_report(finalized, record)
+            return validate_v4_apply_report(
+                finalized,
+                record,
+                expected_schema_version=schema_version,
+            )
         except ContractError as exc:
             raise ForgeError(str(exc)) from exc
 
@@ -5152,8 +5740,15 @@ class RulesetExecutor:
         dict[str, dict[str, Any]],
         dict[str, dict[str, Any]],
     ]:
+        schema_version = report.get("schemaVersion")
+        if schema_version not in {4, 5}:
+            raise ForgeError("shared queue-barrier collector report version differs")
         try:
-            validate_v4_apply_report(report, record)
+            validate_v4_apply_report(
+                report,
+                record,
+                expected_schema_version=schema_version,
+            )
         except ContractError as exc:
             raise ForgeError(str(exc)) from exc
         if self._verify_target() != target:
@@ -5266,7 +5861,7 @@ class RulesetExecutor:
         self._verify_organization()
         target = self._verify_target()
         report = read_sealed_report(path)
-        if report.get("schemaVersion") == 4:
+        if report.get("schemaVersion") in {4, 5}:
             return self._collect_v4_transition(
                 report,
                 current_executor=current_executor,
@@ -5502,10 +6097,16 @@ class RulesetExecutor:
     ) -> dict[str, Any]:
         if self.doctrine_head is None:
             raise ForgeError("Doctrine head is unavailable for schema-v4 active replay")
+        schema_version = record.get("schemaVersion")
         owner = record if subject == "externalAdmission" else record["queueBarrier"]
         live_readback = subject_evidence[subject]["preReadback"]
+        admitted_active_phases = (
+            {"active", "post-activation", "verified"}
+            if schema_version == 5 and subject == "queueBarrier"
+            else {"active"}
+        )
         if (
-            owner["migration"]["phase"] != "active"
+            owner["migration"]["phase"] not in admitted_active_phases
             or live_readback is None
             or live_readback["normalized"]
             != expected_v4_ruleset(record, subject, enforcement="active")
@@ -5561,7 +6162,7 @@ class RulesetExecutor:
             else owner
         )
         expected_owner = copy.deepcopy(historical_owner)
-        expected_owner["migration"]["phase"] = "active"
+        expected_owner["migration"]["phase"] = owner["migration"]["phase"]
         expected_owner["activationEvidence"]["activationTransition"] = transition
         if subject == "queueBarrier":
             expected_owner["activationEvidence"]["effectiveRulesReadback"] = copy.deepcopy(
@@ -5575,15 +6176,21 @@ class RulesetExecutor:
                     "activePassThroughCanary",
                     "activeExternalFailureCanary",
                 ]:
-                    if (
-                        historical_owner["activationEvidence"][final_field] is not None
-                        or owner["activationEvidence"][final_field] is None
+                    final_value = owner["activationEvidence"][final_field]
+                    final_required = (
+                        schema_version == 4
+                        or owner["migration"]["phase"] == "verified"
+                    )
+                    if historical_owner["activationEvidence"][final_field] is not None or (
+                        final_required and final_value is None
                     ):
                         raise ForgeError(
                             "schema-v4 final barrier canaries do not follow external activation"
                         )
+                    if final_value is None:
+                        continue
                     expected_owner["activationEvidence"][final_field] = copy.deepcopy(
-                        owner["activationEvidence"][final_field]
+                        final_value
                     )
         if current_owner != expected_owner:
             raise ForgeError(
@@ -5596,9 +6203,14 @@ class RulesetExecutor:
                 "activePassThroughCanary",
                 "activeExternalFailureCanary",
             ]:
+                final_value = current_barrier["activationEvidence"][final_field]
+                final_required = (
+                    schema_version == 4
+                    or current_barrier["migration"]["phase"] == "verified"
+                )
                 if (
                     historical_barrier["activationEvidence"][final_field] is not None
-                    or current_barrier["activationEvidence"][final_field] is None
+                    or (final_required and final_value is None)
                 ):
                     raise ForgeError(
                         "schema-v4 final barrier canaries do not follow external activation"
@@ -5635,7 +6247,10 @@ class RulesetExecutor:
         record: dict[str, Any],
         desired: dict[str, Any],
     ) -> dict[str, Any]:
-        report["schemaVersion"] = 4
+        schema_version = record["schemaVersion"]
+        if schema_version not in {4, 5}:
+            raise ForgeError("shared queue-barrier reconciler received unsupported schema")
+        report["schemaVersion"] = schema_version
         report["desiredState"] = desired
         report["phase"] = {
             "externalAdmission": record["migration"]["phase"],
@@ -5665,7 +6280,11 @@ class RulesetExecutor:
                     if active_subject == "externalAdmission"
                     else record["queueBarrier"]
                 )
-                if active_owner["migration"]["phase"] == "active":
+                if active_owner["migration"]["phase"] in {
+                    "active",
+                    "post-activation",
+                    "verified",
+                }:
                     active_replay[active_subject] = self._verify_v4_active_subject(
                         record,
                         active_subject,
@@ -5696,7 +6315,11 @@ class RulesetExecutor:
                 )
                 return report
         try:
-            actions = plan_v4_ruleset_actions(record, observations)
+            actions = (
+                plan_v5_ruleset_actions(record, observations)
+                if schema_version == 5
+                else plan_v4_ruleset_actions(record, observations)
+            )
         except ContractError as exc:
             raise ForgeError(str(exc)) from exc
         if len(actions) > 1:
@@ -5868,7 +6491,7 @@ class RulesetExecutor:
         lock: dict[str, Any] | None,
     ) -> dict[str, Any]:
         record, desired = self._load_doctrine()
-        if record.get("schemaVersion") == 4:
+        if record.get("schemaVersion") in {4, 5}:
             return self._reconcile_v4(mode, report, lock, record, desired)
         report["schemaVersion"] = _authority_schema_version(record)
         report["desiredState"] = desired
@@ -6221,7 +6844,7 @@ class RulesetExecutor:
             try:
                 result = (
                     self._finalize_v4_report_attestation(result)
-                    if result.get("schemaVersion") == 4
+                    if result.get("schemaVersion") in {4, 5}
                     else self._finalize_report_attestation(result)
                 )
             except ForgeError:
