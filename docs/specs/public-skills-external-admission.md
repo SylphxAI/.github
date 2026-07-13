@@ -4,6 +4,7 @@ Decision records:
 
 - [`ADR-34-public-skills-external-admission.md`](../adr/ADR-34-public-skills-external-admission.md) establishes the external-admission mechanics.
 - [`ADR-36-public-skills-cleanroom-control-plane.md`](../adr/ADR-36-public-skills-cleanroom-control-plane.md) binds the replacement identity, snapshot, and independent mutation boundary.
+- [`ADR-45-public-skills-rename-lifecycle-fence.md`](../adr/ADR-45-public-skills-rename-lifecycle-fence.md) defines phase-aware evidence URLs and the shared rename fence.
 
 ## Contract identity
 
@@ -22,6 +23,31 @@ Decision records:
 
 The policy manifest is the current snapshot source of truth. This document
 defines mechanics and update order; it does not duplicate file digests.
+
+## Rename lifecycle and fence routing
+
+The executable contract is canonical. The current graph, refs, paths and file
+digests live only in `policies/public-skills-admission.json`. Phase-aware URL
+admission lives in `validate_v5_target_url_lifecycle`; repeated provider target
+binding lives in `_assert_v4_target_snapshot`; and the exact schema-v5
+organization-ruleset write fence lives in `_verify_v5_apply_target_fence` within
+`scripts/public-skills-ruleset-executor.py`.
+
+Those surfaces require exact job URLs under one homogeneous admitted name,
+immutable provider ID/node/name binding, a stable target snapshot across
+no-write and post-readback boundaries, and the fixed annotated-tag lock around
+every schema-v5 organization-ruleset mutation. The future schema3 repository-rename writer
+must acquire the same lock; public cutover remains blocked until that
+cross-writer contract is implemented and verified.
+
+The mechanical coverage and documentation freshness routes are the exact tests
+`test_v5_details_urls_follow_provider_observed_rename_lifecycle`,
+`test_v5_details_url_phase_and_name_mismatches_fail_closed`,
+`test_v5_details_url_exact_shape_rejects_hostile_variants`,
+`test_v5_target_snapshot_rejects_bidirectional_no_action_rename`,
+`test_v5_target_snapshot_rejects_bidirectional_locked_apply_rename`, and
+`test_v5_apply_requires_exact_fixed_target_lifecycle_fence` in
+`tests/test_public_skills_ruleset_executor.py`.
 
 ## Event and runner contract
 

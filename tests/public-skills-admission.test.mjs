@@ -131,7 +131,8 @@ function graphRuntime(snapshot, overrides = {}) {
 }
 
 function launchGraphFixture(advanceCount = 2) {
-  const [root, middle, launch] = policy.target.approvedCommits.map((record) => record.commit);
+  const root = policy.target.approvedCommits.find((record) => record.parents.length === 0).commit;
+  const launch = policy.target.baseline.commit;
   const metadata = policy.target.approvedCommits.map((record) => ({
     commit: record.commit,
     tree: record.tree,
@@ -185,7 +186,8 @@ function launchGraphFixture(advanceCount = 2) {
 }
 
 function nonEventGraphFixture() {
-  const [root, , launch] = policy.target.approvedCommits.map((record) => record.commit);
+  const root = policy.target.approvedCommits.find((record) => record.parents.length === 0).commit;
+  const launch = policy.target.baseline.commit;
   const snapshot = {
     head: launch,
     headTree: policy.target.baseline.tree,
@@ -549,12 +551,57 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
   assert.equal(policy.target.repositoryNodeId, "R_kgDOTVt47g");
   assert.deepEqual(policy.target.allowedRepositories, ["SylphxAI/skills", "SylphxAI/skills-public-cleanroom"]);
   assert.deepEqual(policy.target.baseline, {
-    commit: "580791895d660755ca78c5e6f8233d1437f709fa",
-    tree: "2741f0883bf636568d375974c98301ed16a633fb",
+    commit: "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99",
+    tree: "82039dd282d77f0a480f80e932e8247c9c9ef7b6",
   });
   assert.equal(policy.target.approvedCommits.find((record) => record.parents.length === 0).commit, "e477aee5c1d93b2bac8619fdc6f15f27483855a3");
-  assert.equal(policy.target.approvedCommits.length, 3);
-  assert.equal(policy.target.approvedRefs.length, 5);
+  assert.deepEqual(policy.target.approvedCommits, [
+    {
+      commit: "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+      tree: "e14830463796e0bea1c7cc9c6490bbb3e395a4db",
+      parents: [],
+    },
+    {
+      commit: "f74c83d966331193d6a2f325173094c5d5c51762",
+      tree: "04c100fed8c99a72290896a6a825ee68f6617331",
+      parents: ["e477aee5c1d93b2bac8619fdc6f15f27483855a3"],
+    },
+    {
+      commit: "580791895d660755ca78c5e6f8233d1437f709fa",
+      tree: "2741f0883bf636568d375974c98301ed16a633fb",
+      parents: ["f74c83d966331193d6a2f325173094c5d5c51762"],
+    },
+    {
+      commit: "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99",
+      tree: "82039dd282d77f0a480f80e932e8247c9c9ef7b6",
+      parents: ["580791895d660755ca78c5e6f8233d1437f709fa"],
+    },
+  ]);
+  assert.deepEqual(policy.target.approvedRefs, [
+    {
+      name: "refs/heads/codex/launch-public-cleanroom",
+      commits: ["4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99"],
+    },
+    {
+      name: "refs/heads/main",
+      commits: ["e477aee5c1d93b2bac8619fdc6f15f27483855a3"],
+    },
+    {
+      name: "refs/remotes/origin/HEAD",
+      commits: [
+        "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99",
+        "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+      ],
+    },
+    {
+      name: "refs/remotes/origin/codex/launch-public-cleanroom",
+      commits: ["4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99"],
+    },
+    {
+      name: "refs/remotes/origin/main",
+      commits: ["e477aee5c1d93b2bac8619fdc6f15f27483855a3"],
+    },
+  ]);
   assert.deepEqual(policy.target.eventContexts, {
     launch: { pullRequestNumber: 1, headRef: "codex/launch-public-cleanroom", headRepositoryId: 1297840366, mergeGroupAllowed: true },
     negativeControl: { pullRequestNumber: 2, headRef: "canary/negative", headRepositoryId: 1297840366, mergeGroupAllowed: false },
@@ -563,7 +610,7 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
   assert.deepEqual(policy.target.postMergeCanonicalization, {
     parentCommit: "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
     preLaunchTree: "e14830463796e0bea1c7cc9c6490bbb3e395a4db",
-    tree: "2741f0883bf636568d375974c98301ed16a633fb",
+    tree: "82039dd282d77f0a480f80e932e8247c9c9ef7b6",
     mainRefs: ["refs/heads/main", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
     noOpBranchRefs: ["refs/heads/codex/post-merge-source-canary", "refs/remotes/origin/codex/post-merge-source-canary"],
     releaseTagRefs: ["refs/tags/v1.0.0"],
@@ -575,7 +622,7 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
     {
       id: "post-launch",
       headRefPattern: "^canary/public-skills/post-launch/(?:barrier-pass-through|post-merge-source|release-readback)-[0-9a-f]{12}$",
-      tree: "2741f0883bf636568d375974c98301ed16a633fb",
+      tree: "82039dd282d77f0a480f80e932e8247c9c9ef7b6",
     },
     {
       id: "pre-launch",
@@ -584,6 +631,23 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
     },
   ]);
   assert.deepEqual(policy.target.dynamicEventHead.eventParentSets.map((rule) => rule.event), ["merge_group", "pull_request"]);
+  assert.deepEqual(
+    Object.fromEntries(policy.target.dynamicEventHead.eventParentSets.map((rule) => [rule.event, rule.parentSets])),
+    {
+      merge_group: [
+        ["e477aee5c1d93b2bac8619fdc6f15f27483855a3"],
+        [
+          "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+          "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99",
+        ],
+      ],
+      pull_request: [[
+        "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
+        "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99",
+      ]],
+    },
+  );
+  assert.equal(policy.target.dynamicEventHead.tree, "82039dd282d77f0a480f80e932e8247c9c9ef7b6");
   assert.deepEqual(
     Object.fromEntries(policy.target.dynamicEventHead.eventParentSets.map((rule) => [rule.event, {
       runtimeRefPattern: rule.runtimeRefPattern,
@@ -600,7 +664,7 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
       },
     },
   );
-  assert.equal(jsonDigest(policy.target), "45b048125a303713908f4f0cad78828f46769769c76efea376e17a6b790736bc");
+  assert.equal(jsonDigest(policy.target), "ecbbcdf18072c7dfabc8d59e8a46218d0b9d9194fd0600ac0e5abb2d0a836703");
   assert.deepEqual(
     policy.skills.map((skill) => skill.id),
     [
@@ -643,7 +707,7 @@ test("policy pins one fresh root, the exact eight IDs, target identities, and ev
   );
   assert.deepEqual(policy.content.forbiddenLiterals, ["DO-NOT-PUBLISH", "INTERNAL-ONLY", "PRIVATE-BOUNDARY-MARKER"]);
   assert.equal(Object.keys(policy.expectedFiles).length, 73);
-  assert.equal(jsonDigest(policy.expectedFiles), "66f60f83fbbb107da9b3f74be88724692ee2673c2f223237ad77274e7680987a");
+  assert.equal(jsonDigest(policy.expectedFiles), "30930f67dde2fd9c87e63f098e38095b3bddf86f5e1d8799110c58254855ccaf");
   assert.ok(Object.values(policy.expectedFiles).every((digest) => /^[0-9a-f]{64}$/.test(digest)));
 });
 

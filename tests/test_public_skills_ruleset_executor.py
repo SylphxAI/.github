@@ -26,8 +26,8 @@ SPEC.loader.exec_module(module)
 EXECUTOR_HEAD = "a" * 40
 DOCTRINE_HEAD = "b" * 40
 SOURCE_SHA = "c" * 40
-FIXTURE_BASE = "580791895d660755ca78c5e6f8233d1437f709fa"
-FIXTURE_BASE_TREE = "2741f0883bf636568d375974c98301ed16a633fb"
+FIXTURE_BASE = "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99"
+FIXTURE_BASE_TREE = "82039dd282d77f0a480f80e932e8247c9c9ef7b6"
 FIXTURE_HEAD = "3" * 40
 FIXTURE_HEAD_TREE = "4" * 40
 PR_BASE = "5" * 40
@@ -493,6 +493,8 @@ def upgrade_v4_queue_evidence_to_v5(
     payload: dict,
     field: str,
     item: dict,
+    *,
+    details_name: str = module.TARGET_STAGING_NAME,
 ) -> dict:
     """Add the v5 sealed revision, current-PR, and exact external-run proof."""
 
@@ -588,7 +590,7 @@ def upgrade_v4_queue_evidence_to_v5(
             "conclusion": conclusion,
             "runId": external_run_id,
             "detailsUrl": (
-                f"https://github.com/{module.TARGET_FINAL_NAME}"
+                f"https://github.com/{details_name}"
                 f"/actions/runs/{external_run_id}/job/{external_job_id}"
             ),
             "app": copy.deepcopy(module.GITHUB_ACTIONS_APP),
@@ -632,7 +634,9 @@ def upgrade_v4_queue_evidence_to_v5(
     return upgraded
 
 
-def v5_barrier_ratchet_state() -> dict:
+def v5_barrier_ratchet_state(
+    *, details_name: str = module.TARGET_STAGING_NAME
+) -> dict:
     record = v4_barrier_ratchet_state()
     record["schemaVersion"] = 5
     evidence = record["queueBarrier"]["activationEvidence"]
@@ -641,7 +645,7 @@ def v5_barrier_ratchet_state() -> dict:
         "evaluateMergeGroupFailureCanary",
     ]:
         evidence[field] = upgrade_v4_queue_evidence_to_v5(
-            record, field, evidence[field]
+            record, field, evidence[field], details_name=details_name
         )
     module.validate_v5_record(
         record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
@@ -894,6 +898,32 @@ def base_api(record: dict, *, live: dict | None = None, effective: bool = True) 
         api.gets[f"/orgs/{module.ORGANIZATION}/rulesets/{ruleset_id}"] = live
         api.page_values[f"/repositories/{module.TARGET_REPOSITORY_ID}/rulesets?includes_parents=true"] = [{"id": ruleset_id}] if effective else []
     return api
+
+
+def configure_target_name_flip(
+    api: FakeAPI,
+    *,
+    before: str,
+    after: str,
+    after_reads: int,
+) -> dict[str, int]:
+    """Flip the provider target name after one exact number of target reads."""
+
+    endpoint = f"/repositories/{module.TARGET_REPOSITORY_ID}"
+    value = copy.deepcopy(api.gets[endpoint])
+    assert isinstance(value, dict)
+    reads = {"count": 0}
+
+    def target() -> dict:
+        reads["count"] += 1
+        current = copy.deepcopy(value)
+        current["full_name"] = (
+            before if reads["count"] <= after_reads else after
+        )
+        return current
+
+    api.gets[endpoint] = target
+    return reads
 
 
 def live_ruleset(record: dict, *, enforcement: str | None = None) -> dict:
@@ -1623,8 +1653,48 @@ def v4_final_active_fixture() -> tuple[dict, FakeAPI]:
     return active, api
 
 
-def v5_barrier_fixture() -> tuple[dict, FakeAPI]:
-    record = v5_barrier_ratchet_state()
+def v5_recovery_fixture(
+    *, live_name: str = module.TARGET_FINAL_NAME
+) -> tuple[dict, FakeAPI]:
+    record, api = v5_final_fixture(phase="verified", final_canary_count=2)
+    record["migration"]["phase"] = "recovery"
+    record["ruleset"]["enforcement"] = "evaluate"
+    record["activationEvidence"]["activationTransition"] = None
+    record["recovery"] = {
+        "reason": "Emergency downgrade after a provider incident.",
+        "tracker": "https://github.com/SylphxAI/.github/issues/1",
+        "initiatedAt": "2026-07-11T21:08:00Z",
+    }
+    record["activationSequencing"]["externalActivationPrecondition"] = None
+    barrier = record["queueBarrier"]
+    barrier["migration"]["phase"] = "recovery"
+    barrier["ruleset"]["enforcement"] = "evaluate"
+    barrier["activationEvidence"]["activationTransition"] = None
+    barrier["activationEvidence"]["activePassThroughCanary"] = None
+    barrier["activationEvidence"]["activeExternalFailureCanary"] = None
+    barrier["recovery"] = {
+        "reason": "Ordered queue-barrier downgrade after external recovery.",
+        "tracker": "https://github.com/SylphxAI/.github/issues/1",
+        "initiatedAt": "2026-07-11T21:09:00Z",
+    }
+    module.validate_v5_record(
+        record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+    )
+    api.gets[f"/repositories/{module.TARGET_REPOSITORY_ID}"][
+        "full_name"
+    ] = live_name
+    publish_doctrine_fixture(api, record)
+    api.mutations.clear()
+    api.lock_mutations.clear()
+    return record, api
+
+
+def v5_barrier_fixture(
+    *,
+    details_name: str = module.TARGET_STAGING_NAME,
+    live_name: str = module.TARGET_STAGING_NAME,
+) -> tuple[dict, FakeAPI]:
+    record = v5_barrier_ratchet_state(details_name=details_name)
     external = {
         **module.expected_v4_ruleset(record, "externalAdmission"),
         "id": record["ruleset"]["rulesetId"],
@@ -1640,6 +1710,7 @@ def v5_barrier_fixture() -> tuple[dict, FakeAPI]:
         "updated_at": "2026-07-10T16:01:00Z",
     }
     api = base_api(record, live=external, effective=False)
+    api.gets[f"/repositories/{module.TARGET_REPOSITORY_ID}"]["full_name"] = live_name
     api.page_values[f"/orgs/{module.ORGANIZATION}/rulesets"] = [
         {"id": external["id"], "name": module.RULESET_NAME},
         {"id": barrier["id"], "name": module.BARRIER_RULESET_NAME},
@@ -1656,8 +1727,14 @@ def v5_barrier_fixture() -> tuple[dict, FakeAPI]:
     return record, api
 
 
-def collected_v5_barrier_fixture() -> tuple[dict, dict, dict, FakeAPI]:
-    record, api = v5_barrier_fixture()
+def collected_v5_barrier_fixture(
+    *,
+    details_name: str = module.TARGET_STAGING_NAME,
+    live_name: str = module.TARGET_STAGING_NAME,
+) -> tuple[dict, dict, dict, FakeAPI]:
+    record, api = v5_barrier_fixture(
+        details_name=details_name, live_name=live_name
+    )
     executor = module.RulesetExecutor(
         api,
         LOCAL_BYTES,
@@ -1683,9 +1760,14 @@ def collected_v5_barrier_fixture() -> tuple[dict, dict, dict, FakeAPI]:
 
 
 def v5_barrier_active_fixture(
-    *, phase: str = "active"
+    *,
+    phase: str = "active",
+    details_name: str = module.TARGET_STAGING_NAME,
+    live_name: str = module.TARGET_STAGING_NAME,
 ) -> tuple[dict, dict, dict, FakeAPI]:
-    historical, report, artifact, api = collected_v5_barrier_fixture()
+    historical, report, artifact, api = collected_v5_barrier_fixture(
+        details_name=details_name, live_name=live_name
+    )
     artifact_raw = canonical_file(artifact)
     transition = module.activation_transition_from_artifact(
         artifact,
@@ -1703,7 +1785,10 @@ def v5_barrier_active_fixture(
     removal = v4_queue_evidence(active, "activeProviderRemovalCanary", 6)
     barrier["activationEvidence"]["activeProviderRemovalCanary"] = (
         upgrade_v4_queue_evidence_to_v5(
-            active, "activeProviderRemovalCanary", removal
+            active,
+            "activeProviderRemovalCanary",
+            removal,
+            details_name=details_name,
         )
     )
     module.validate_v5_record(
@@ -1749,6 +1834,34 @@ def _reseal_v5_queue_evidence(item: dict) -> None:
     item["subjectDigest"] = module.canonical_digest(
         module._v4_queue_canary_subject(item)
     )
+
+
+def set_v5_external_details_name(record: dict, name: str) -> None:
+    evidence = record["queueBarrier"]["activationEvidence"]
+    for field in module.V5_EXTERNAL_DETAILS_FIELDS:
+        item = evidence[field]
+        if item is None:
+            continue
+        external = item["report"]["externalAdmission"]
+        run = external["workflowRun"]
+        external["check"]["detailsUrl"] = (
+            f"https://github.com/{name}/actions/runs/{run['id']}/job/{run['jobId']}"
+        )
+        _reseal_v5_queue_evidence(item)
+    _reseal_v5_queue_dependencies(record)
+
+
+def publish_doctrine_fixture(api: FakeAPI, record: dict) -> None:
+    head = api.gets[f"/repositories/{module.DOCTRINE_REPOSITORY_ID}/commits/main"][
+        "sha"
+    ]
+    api.gets[
+        module._content_endpoint(
+            module.DOCTRINE_REPOSITORY_ID,
+            module.DOCTRINE_RECORD_PATH,
+            head,
+        )
+    ] = encoded(module.DOCTRINE_RECORD_PATH, canonical_file(record))
 
 
 def _reseal_v5_queue_dependencies(record: dict) -> None:
@@ -1816,8 +1929,14 @@ def _retime_v5_queue_evidence(item: dict, minute: int) -> None:
     _reseal_v5_queue_evidence(item)
 
 
-def v5_external_ratchet_fixture() -> tuple[dict, FakeAPI, dict]:
-    record, _barrier_report, barrier_artifact, api = v5_barrier_active_fixture()
+def v5_external_ratchet_fixture(
+    *,
+    details_name: str = module.TARGET_STAGING_NAME,
+    live_name: str = module.TARGET_STAGING_NAME,
+) -> tuple[dict, FakeAPI, dict]:
+    record, _barrier_report, barrier_artifact, api = v5_barrier_active_fixture(
+        details_name=details_name, live_name=live_name
+    )
     external_fixture, external_api = v3_active_fixture()
     record["migration"]["phase"] = "ratchet"
     record["ruleset"]["enforcement"] = "active"
@@ -1893,6 +2012,7 @@ def v5_external_ratchet_fixture() -> tuple[dict, FakeAPI, dict]:
     for endpoint, value in external_api.page_values.items():
         if endpoint.startswith(f"/repositories/{module.TARGET_REPOSITORY_ID}/"):
             api.page_values[endpoint] = copy.deepcopy(value)
+    api.gets[f"/repositories/{module.TARGET_REPOSITORY_ID}"]["full_name"] = live_name
     external_live = {
         **module.expected_v4_ruleset(
             record, "externalAdmission", enforcement="evaluate"
@@ -1932,7 +2052,7 @@ def v5_external_ratchet_fixture() -> tuple[dict, FakeAPI, dict]:
     )
     target = {
         "id": module.TARGET_REPOSITORY_ID,
-        "name": module.TARGET_REPOSITORY_NAMES[0],
+        "name": live_name,
         "defaultBranch": module.TARGET_DEFAULT_BRANCH,
     }
     for field in ["pullRequestCanary", "mergeGroupCanary", "negativeControl"]:
@@ -2000,8 +2120,14 @@ def v5_external_ratchet_fixture() -> tuple[dict, FakeAPI, dict]:
     return record, api, barrier_artifact
 
 
-def collected_v5_external_fixture() -> tuple[dict, dict, dict, dict, FakeAPI]:
-    record, api, barrier_artifact = v5_external_ratchet_fixture()
+def collected_v5_external_fixture(
+    *,
+    details_name: str = module.TARGET_STAGING_NAME,
+    live_name: str = module.TARGET_STAGING_NAME,
+) -> tuple[dict, dict, dict, dict, FakeAPI]:
+    record, api, barrier_artifact = v5_external_ratchet_fixture(
+        details_name=details_name, live_name=live_name
+    )
     executor = module.RulesetExecutor(
         api,
         LOCAL_BYTES,
@@ -2028,9 +2154,13 @@ def collected_v5_external_fixture() -> tuple[dict, dict, dict, dict, FakeAPI]:
 def v5_final_fixture(
     *, phase: str,
     final_canary_count: int,
+    details_name: str = module.TARGET_STAGING_NAME,
+    live_name: str = module.TARGET_STAGING_NAME,
 ) -> tuple[dict, FakeAPI]:
     historical, _report, artifact, barrier_artifact, api = (
-        collected_v5_external_fixture()
+        collected_v5_external_fixture(
+            details_name=details_name, live_name=live_name
+        )
     )
     artifact_raw = canonical_file(artifact)
     transition = module.activation_transition_from_artifact(
@@ -2050,7 +2180,9 @@ def v5_final_fixture(
         item = v4_queue_evidence(active, field, ordinal)
         retime_v4_queue_evidence(item, minute)
         active["queueBarrier"]["activationEvidence"][field] = (
-            upgrade_v4_queue_evidence_to_v5(active, field, item)
+            upgrade_v4_queue_evidence_to_v5(
+                active, field, item, details_name=details_name
+            )
         )
     module.validate_v5_record(
         active, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
@@ -3990,6 +4122,71 @@ class V5ExecutionContractTests(unittest.TestCase):
             sleeper=lambda _seconds: None,
         )
 
+    def test_v5_spec_routes_rename_lifecycle_and_fence_to_code(self) -> None:
+        spec_path = ROOT / "docs/specs/public-skills-external-admission.md"
+        adr_path = (
+            ROOT
+            / "docs/adr/ADR-45-public-skills-rename-lifecycle-fence.md"
+        )
+        spec = spec_path.read_text(encoding="utf-8")
+        adr = adr_path.read_text(encoding="utf-8")
+        self.assertTrue(
+            adr.startswith(
+                "---\nslug: public-skills-rename-lifecycle-fence\n---\n"
+            )
+        )
+        self.assertNotIn("- Slug:", adr)
+        normalized_spec = " ".join(spec.split())
+        normalized_adr = " ".join(adr.split())
+        for document in [normalized_spec, normalized_adr]:
+            self.assertIn("schema-v5 organization-ruleset mutation", document)
+            self.assertNotIn("every schema-v5 provider mutation", document)
+        self.assertIn(
+            "`policies/public-skills-admission.json`",
+            spec,
+        )
+        self.assertIn(
+            "ADR-45-public-skills-rename-lifecycle-fence.md",
+            spec,
+        )
+        for symbol, owner in [
+            ("validate_v5_target_url_lifecycle", module),
+            ("_assert_v4_target_snapshot", module.RulesetExecutor),
+            ("_verify_v5_apply_target_fence", module.RulesetExecutor),
+        ]:
+            with self.subTest(symbol=symbol):
+                self.assertTrue(callable(getattr(owner, symbol, None)))
+                self.assertIn(f"`{symbol}`", spec)
+        routed_tests = [
+            "test_v5_details_urls_follow_provider_observed_rename_lifecycle",
+            "test_v5_details_url_phase_and_name_mismatches_fail_closed",
+            "test_v5_details_url_exact_shape_rejects_hostile_variants",
+            "test_v5_target_snapshot_rejects_bidirectional_no_action_rename",
+            "test_v5_target_snapshot_rejects_bidirectional_locked_apply_rename",
+            "test_v5_apply_requires_exact_fixed_target_lifecycle_fence",
+        ]
+        for test_name in routed_tests:
+            with self.subTest(test_name=test_name):
+                self.assertTrue(callable(getattr(type(self), test_name, None)))
+                self.assertIn(f"`{test_name}`", spec)
+        policy = json.loads(
+            (ROOT / module.POLICY_PATH).read_text(encoding="utf-8")
+        )
+        mutable_snapshot_ids = {
+            policy["target"]["baseline"]["commit"],
+            policy["target"]["baseline"]["tree"],
+            *(
+                value
+                for record in policy["target"]["approvedCommits"]
+                for value in [record["commit"], record["tree"]]
+            ),
+            *policy["expectedFiles"].values(),
+        }
+        self.assertTrue(
+            all(value not in adr for value in mutable_snapshot_ids),
+            "decision record must not duplicate mutable policy snapshot IDs",
+        )
+
     def test_v5_lifecycle_admits_only_additive_post_and_verified_states(self) -> None:
         ratchet = v5_barrier_ratchet_state()
         self.assertEqual(
@@ -4026,6 +4223,201 @@ class V5ExecutionContractTests(unittest.TestCase):
             module.validate_v5_record(
                 incomplete, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
             )
+
+    def test_v5_details_urls_follow_provider_observed_rename_lifecycle(self) -> None:
+        staging, staging_api = v5_final_fixture(
+            phase="verified", final_canary_count=2
+        )
+        staging_report = self.executor(staging_api).run("dry-run")
+        self.assertEqual(staging_report["status"], "PASS")
+        self.assertEqual(staging_report["target"]["name"], module.TARGET_STAGING_NAME)
+
+        historical, historical_api = v5_final_fixture(
+            phase="verified", final_canary_count=2
+        )
+        historical_api.gets[f"/repositories/{module.TARGET_REPOSITORY_ID}"][
+            "full_name"
+        ] = module.TARGET_FINAL_NAME
+        historical_report = self.executor(historical_api).run("dry-run")
+        self.assertEqual(historical_report["status"], "PASS")
+        self.assertEqual(historical_report["target"]["name"], module.TARGET_FINAL_NAME)
+
+        final, _final_api = v5_final_fixture(
+            phase="verified", final_canary_count=2
+        )
+        set_v5_external_details_name(final, module.TARGET_FINAL_NAME)
+        self.assertEqual(
+            module.validate_v5_record(
+                final, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+            ),
+            final,
+        )
+        module.validate_v5_target_url_lifecycle(
+            final,
+            {
+                "id": module.TARGET_REPOSITORY_ID,
+                "nodeId": module.TARGET_REPOSITORY_NODE_ID,
+                "name": module.TARGET_FINAL_NAME,
+            },
+        )
+
+        recovery, _recovery_api = v5_recovery_fixture()
+        module.validate_v5_target_url_lifecycle(
+            recovery,
+            {
+                "id": module.TARGET_REPOSITORY_ID,
+                "nodeId": module.TARGET_REPOSITORY_NODE_ID,
+                "name": module.TARGET_FINAL_NAME,
+            },
+        )
+
+    def test_v5_details_url_phase_and_name_mismatches_fail_closed(self) -> None:
+        final_named, staging_api = v5_final_fixture(
+            phase="verified", final_canary_count=2
+        )
+        set_v5_external_details_name(final_named, module.TARGET_FINAL_NAME)
+        publish_doctrine_fixture(staging_api, final_named)
+        with self.assertRaisesRegex(module.ForgeError, "live target is staging"):
+            self.executor(staging_api).run("dry-run")
+
+        incomplete, final_api = v5_final_fixture(
+            phase="post-activation", final_canary_count=0
+        )
+        final_api.gets[f"/repositories/{module.TARGET_REPOSITORY_ID}"][
+            "full_name"
+        ] = module.TARGET_FINAL_NAME
+        with self.assertRaisesRegex(module.ForgeError, "verified complete"):
+            self.executor(final_api).run("dry-run")
+
+        mixed, mixed_api = v5_final_fixture(
+            phase="verified", final_canary_count=2
+        )
+        item = mixed["queueBarrier"]["activationEvidence"][
+            "activeExternalFailureCanary"
+        ]
+        external = item["report"]["externalAdmission"]
+        run = external["workflowRun"]
+        external["check"]["detailsUrl"] = (
+            f"https://github.com/{module.TARGET_FINAL_NAME}/actions/runs/"
+            f"{run['id']}/job/{run['jobId']}"
+        )
+        _reseal_v5_queue_evidence(item)
+        _reseal_v5_queue_dependencies(mixed)
+        publish_doctrine_fixture(mixed_api, mixed)
+        mixed_api.gets[f"/repositories/{module.TARGET_REPOSITORY_ID}"][
+            "full_name"
+        ] = module.TARGET_FINAL_NAME
+        with self.assertRaisesRegex(module.ForgeError, "mixes staging and final"):
+            self.executor(mixed_api).run("dry-run")
+
+    def test_v5_target_snapshot_rejects_bidirectional_no_action_rename(self) -> None:
+        for before, after in [
+            (module.TARGET_STAGING_NAME, module.TARGET_FINAL_NAME),
+            (module.TARGET_FINAL_NAME, module.TARGET_STAGING_NAME),
+        ]:
+            record, api = v5_final_fixture(
+                phase="verified", final_canary_count=2
+            )
+            api.gets[f"/repositories/{module.TARGET_REPOSITORY_ID}"][
+                "full_name"
+            ] = before
+            reads = configure_target_name_flip(
+                api, before=before, after=after, after_reads=3
+            )
+            with self.subTest(before=before, after=after), self.assertRaisesRegex(
+                module.ForgeError, "target changed before no-action return"
+            ):
+                self.executor(api).run("dry-run")
+            self.assertEqual(reads["count"], 4)
+            self.assertFalse(api.mutations)
+            self.assertFalse(api.lock_mutations)
+
+    def test_v5_target_snapshot_rejects_bidirectional_locked_apply_rename(self) -> None:
+        fixtures = [
+            (
+                module.TARGET_STAGING_NAME,
+                module.TARGET_FINAL_NAME,
+                v5_barrier_fixture,
+            ),
+            (
+                module.TARGET_FINAL_NAME,
+                module.TARGET_STAGING_NAME,
+                v5_recovery_fixture,
+            ),
+        ]
+        for before, after, fixture in fixtures:
+            _record, api = fixture()
+            reads = configure_target_name_flip(
+                api, before=before, after=after, after_reads=9
+            )
+            with self.subTest(before=before, after=after), self.assertRaisesRegex(
+                module.ForgeError, "target changed inside the apply fence"
+            ):
+                self.executor(api).run("apply")
+            self.assertEqual(reads["count"], 10)
+            self.assertFalse(api.mutations)
+            self.assertNotIn(module.APPLY_LOCK_REF, api.git_refs)
+
+    def test_v5_apply_requires_exact_fixed_target_lifecycle_fence(self) -> None:
+        class CorruptFenceExecutor(module.RulesetExecutor):
+            def __init__(self, *args: object, field: str, value: object, **kwargs: object) -> None:
+                super().__init__(*args, **kwargs)
+                self.field = field
+                self.value = value
+
+            def _acquire_apply_lock(self, *args: object, **kwargs: object) -> dict:
+                lock = super()._acquire_apply_lock(*args, **kwargs)
+                lock[self.field] = self.value
+                return lock
+
+        attacks = {
+            "repositoryId": module.EXECUTOR_REPOSITORY_ID + 1,
+            "ref": "refs/tags/sylph-locks/foreign",
+        }
+        for field, value in attacks.items():
+            _record, api = v5_barrier_fixture()
+            executor = CorruptFenceExecutor(
+                api,
+                LOCAL_BYTES,
+                clock=lambda: V4_FIXED_TIME,
+                nonce_factory=lambda: "7" * 64,
+                sleeper=lambda _seconds: None,
+                field=field,
+                value=value,
+            )
+            with self.subTest(field=field), self.assertRaisesRegex(
+                module.ForgeError, "fixed target-lifecycle apply fence"
+            ):
+                executor.run("apply")
+            self.assertFalse(api.mutations)
+            self.assertNotIn(module.APPLY_LOCK_REF, api.git_refs)
+
+    def test_v5_details_url_exact_shape_rejects_hostile_variants(self) -> None:
+        attacks = {
+            "foreign-repository": "https://github.com/foreign/repository/actions/runs/{run}/job/{job}",
+            "run-only": "https://github.com/SylphxAI/skills-public-cleanroom/actions/runs/{run}",
+            "wrong-run": "https://github.com/SylphxAI/skills-public-cleanroom/actions/runs/1/job/{job}",
+            "wrong-job": "https://github.com/SylphxAI/skills-public-cleanroom/actions/runs/{run}/job/1",
+            "redirect-shape": "https://github.com/SylphxAI/skills-public-cleanroom/actions/runs/{run}/job/{job}/",
+            "lookalike-host": "https://github.com.evil/SylphxAI/skills-public-cleanroom/actions/runs/{run}/job/{job}",
+        }
+        for name, template in attacks.items():
+            record = v5_barrier_ratchet_state()
+            item = record["queueBarrier"]["activationEvidence"][
+                "evaluateMergeGroupFailureCanary"
+            ]
+            external = item["report"]["externalAdmission"]
+            run = external["workflowRun"]
+            external["check"]["detailsUrl"] = template.format(
+                run=run["id"], job=run["jobId"]
+            )
+            _reseal_v5_queue_evidence(item)
+            with self.subTest(name=name), self.assertRaisesRegex(
+                module.ContractError, "exact admitted target run/job URL"
+            ):
+                module.validate_v5_record(
+                    record, EXECUTOR_HEAD, module.exact_digest(LOCAL_BYTES)
+                )
 
     def test_v5_barrier_and_external_apply_collect_emit_v5_artifacts(self) -> None:
         _historical, barrier_report, barrier_artifact, _api = (

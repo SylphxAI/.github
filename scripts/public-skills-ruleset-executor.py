@@ -74,8 +74,9 @@ DOCTRINE_RECORD_ID = "SylphxAI/doctrine:public-skills-external-admission"
 
 TARGET_REPOSITORY_ID = 1297840366
 TARGET_REPOSITORY_NODE_ID = "R_kgDOTVt47g"
-TARGET_REPOSITORY_NAMES = ("SylphxAI/skills-public-cleanroom", "SylphxAI/skills")
+TARGET_STAGING_NAME = "SylphxAI/skills-public-cleanroom"
 TARGET_FINAL_NAME = "SylphxAI/skills"
+TARGET_REPOSITORY_NAMES = (TARGET_STAGING_NAME, TARGET_FINAL_NAME)
 TARGET_DEFAULT_BRANCH = "main"
 
 RULESET_NAME = "public-skills-external-admission"
@@ -103,8 +104,8 @@ SOURCE_IDENTITIES = {
         "exactBytesDigest": "sha256:85a6913a9d0144c81c69d992cb3f96528be4b14b38e626e1e557aed765ff5447",
     },
     POLICY_PATH: {
-        "gitBlobSha": "dab3fbd14dc9d51259d8ccde5664e58e0da5858d",
-        "exactBytesDigest": "sha256:2b062b3243ce3e542b5befaf10018ed447abcbb98804695b6af4a0e26de8c162",
+        "gitBlobSha": "55a328efe169b99ab69e11cf3ca1ad36b58eb87b",
+        "exactBytesDigest": "sha256:4f7e22f770346e35d6986757b31544efe571b0a19179c898ce9a64ebe289cd45",
     },
 }
 V4_ADDITIONAL_SOURCE_IDENTITIES = {
@@ -206,6 +207,12 @@ QUEUE_BARRIER_ACTIVE_EVIDENCE = (
     "activationTransition",
     "effectiveRulesReadback",
     "activeProviderRemovalCanary",
+)
+V5_EXTERNAL_DETAILS_FIELDS = (
+    "evaluateMergeGroupFailureCanary",
+    "activeProviderRemovalCanary",
+    "activePassThroughCanary",
+    "activeExternalFailureCanary",
 )
 ENFORCEMENT_RANK = {"disabled": 0, "evaluate": 1, "active": 2}
 LEGACY_EVIDENCE_KINDS = {
@@ -1429,6 +1436,21 @@ def _validate_v5_ruleset_revision(
     return updated, confirmed
 
 
+def _v5_details_url_repository_name(
+    value: Any,
+    *,
+    run_id: int,
+    job_id: int,
+    label: str,
+) -> str:
+    """Return the exact closed-lifecycle repository name in one job URL."""
+
+    for name in TARGET_REPOSITORY_NAMES:
+        if value == f"https://github.com/{name}/actions/runs/{run_id}/job/{job_id}":
+            return name
+    raise ContractError(f"{label} differs from the exact admitted target run/job URL")
+
+
 def _validate_v5_queue_evidence(
     record: dict[str, Any],
     field: str,
@@ -1642,9 +1664,11 @@ def _validate_v5_queue_evidence(
         workflow_job_id = _positive_integer(
             workflow_run["jobId"], f"{field} external workflow job id"
         )
-        expected_details_url = (
-            f"https://github.com/{TARGET_FINAL_NAME}/actions/runs/"
-            f"{workflow_run_id}/job/{workflow_job_id}"
+        _v5_details_url_repository_name(
+            check["detailsUrl"],
+            run_id=workflow_run_id,
+            job_id=workflow_job_id,
+            label=f"{field} external check detailsUrl",
         )
         if (
             attempt != workflow_attempt
@@ -1654,7 +1678,6 @@ def _validate_v5_queue_evidence(
             or check["status"] != "completed"
             or check["conclusion"] != expected_conclusion
             or check_run_id != workflow_run_id
-            or check["detailsUrl"] != expected_details_url
             or check["app"] != GITHUB_ACTIONS_APP
             or workflow_run["path"] not in allowed_paths
             or workflow_run["event"] != "merge_group"
@@ -2332,6 +2355,64 @@ def validate_v5_record(
         runtime_executor_digest,
         schema_version=5,
     )
+
+
+def validate_v5_target_url_lifecycle(
+    record: dict[str, Any],
+    target: dict[str, Any],
+) -> None:
+    """Cross-bind sealed job URLs to the provider-observed rename lifecycle."""
+
+    if (
+        target.get("id") != TARGET_REPOSITORY_ID
+        or target.get("nodeId") != TARGET_REPOSITORY_NODE_ID
+        or target.get("name") not in TARGET_REPOSITORY_NAMES
+    ):
+        raise ContractError("v5 target URL lifecycle lacks the immutable provider repository identity")
+    evidence = record["queueBarrier"]["activationEvidence"]
+    observed_names: set[str] = set()
+    for field in V5_EXTERNAL_DETAILS_FIELDS:
+        item = evidence[field]
+        if item is None:
+            continue
+        external = item["report"]["externalAdmission"]
+        if external is None:
+            raise ContractError(f"v5 {field} lacks sealed external admission identity")
+        workflow_run = external["workflowRun"]
+        observed_names.add(
+            _v5_details_url_repository_name(
+                external["check"]["detailsUrl"],
+                run_id=workflow_run["id"],
+                job_id=workflow_run["jobId"],
+                label=f"v5 {field} external check detailsUrl",
+            )
+        )
+    if len(observed_names) > 1:
+        raise ContractError("v5 external evidence mixes staging and final target names")
+
+    live_name = target["name"]
+    if live_name == TARGET_STAGING_NAME:
+        if observed_names and observed_names != {TARGET_STAGING_NAME}:
+            raise ContractError("v5 final-name evidence is stale while the live target is staging")
+        return
+
+    external_phase = record["migration"]["phase"]
+    barrier_phase = record["queueBarrier"]["migration"]["phase"]
+    if external_phase == "recovery" and barrier_phase == "recovery":
+        return
+    complete = (
+        external_phase == "active"
+        and barrier_phase == "verified"
+        and all(evidence[field] is not None for field in V5_EXTERNAL_DETAILS_FIELDS)
+        and evidence["activationTransition"] is not None
+        and evidence["effectiveRulesReadback"] is not None
+        and record["activationEvidence"]["activationTransition"] is not None
+        and record["activationSequencing"]["externalActivationPrecondition"] is not None
+    )
+    if not complete:
+        raise ContractError(
+            "v5 live final target requires verified complete transition/canary evidence"
+        )
 
 
 def validate_attestation_policy(value: Any) -> dict[str, Any]:
@@ -4572,6 +4653,24 @@ class RulesetExecutor:
             raise ForgeError("target repository default branch differs from the immutable executor contract")
         return {"id": value["id"], "nodeId": value["node_id"], "name": value["full_name"], "defaultBranch": value["default_branch"], "visibility": value.get("visibility")}
 
+    def _assert_v4_target_snapshot(
+        self,
+        record: dict[str, Any],
+        expected: dict[str, Any],
+        stage: str,
+    ) -> dict[str, Any]:
+        """Re-read and cross-bind the exact target/lifecycle snapshot."""
+
+        current = self._verify_target()
+        if current != expected:
+            raise ForgeError(f"schema-v4 target changed {stage}")
+        if record.get("schemaVersion") == 5:
+            try:
+                validate_v5_target_url_lifecycle(record, current)
+            except ContractError as exc:
+                raise ForgeError(str(exc)) from exc
+        return current
+
     def _verify_organization(self) -> None:
         value = _require_api_object(self.api.get(f"/orgs/{ORGANIZATION}"), "organization")
         if value.get("id") != ORGANIZATION_ID or value.get("login") != ORGANIZATION:
@@ -4738,6 +4837,26 @@ class RulesetExecutor:
         if self._read_lock_ref_sha() != lock["tagObjectSha"]:
             raise ForgeError("apply lock ownership was lost")
         self._verify_lock_tag(lock)
+
+    def _verify_v5_apply_target_fence(
+        self,
+        record: dict[str, Any],
+        lock: dict[str, Any] | None,
+    ) -> None:
+        """Require the shared fixed fence around every schema-v5 provider write."""
+
+        if record.get("schemaVersion") != 5:
+            return
+        if (
+            lock is None
+            or lock.get("repositoryId") != EXECUTOR_REPOSITORY_ID
+            or lock.get("ref") != APPLY_LOCK_REF
+            or lock.get("executorCommitSha") != self.executor_head
+            or lock.get("acquireOutcome") != "acquired"
+            or lock.get("releaseOutcome") != "pending"
+        ):
+            raise ForgeError("schema-v5 provider mutation lacks the fixed target-lifecycle apply fence")
+        self._verify_apply_lock(lock)
 
     def _release_apply_lock(self, lock: dict[str, Any]) -> None:
         self._verify_apply_lock(lock)
@@ -5571,7 +5690,9 @@ class RulesetExecutor:
         if self._live_attestation_ruleset(policy, policy_evidence) != report["attestationRuleset"]:
             raise ForgeError("schema-v4 attestation ruleset changed before attestation")
         subject = report["plannedMutation"]["subject"]
-        observations, observation_evidence = self._v4_live_observations(record)
+        observations, observation_evidence = self._v4_live_observations(
+            record, report["target"]
+        )
         selected_readback = observation_evidence[subject]["preReadback"]
         expected_selected_readback = {
             key: copy.deepcopy(report["postReadback"][key])
@@ -5600,7 +5721,7 @@ class RulesetExecutor:
         projection = self._create_or_verify_attestation(report)
         post_record, post_desired = self._load_doctrine()
         post_observations, post_observation_evidence = self._v4_live_observations(
-            post_record
+            post_record, report["target"]
         )
         if (
             post_record != record
@@ -5760,7 +5881,7 @@ class RulesetExecutor:
         )
         if self._live_attestation_ruleset(policy, policy_evidence) != report["attestationRuleset"]:
             raise ForgeError(f"schema-v4 attestation ruleset changed {stage}")
-        observations, evidence = self._v4_live_observations(record)
+        observations, evidence = self._v4_live_observations(record, target)
         subject = report["plannedMutation"]["subject"]
         selected = evidence[subject]["preReadback"]
         expected_selected = {
@@ -5950,7 +6071,11 @@ class RulesetExecutor:
     def _v4_live_observations(
         self,
         record: dict[str, Any],
+        target: dict[str, Any],
     ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        observation_target = self._assert_v4_target_snapshot(
+            record, target, "before live observations"
+        )
         summaries = self.api.pages(f"/orgs/{ORGANIZATION}/rulesets")
         if not isinstance(summaries, list):
             raise ForgeError("schema-v4 organization ruleset summary is not an array")
@@ -5993,7 +6118,7 @@ class RulesetExecutor:
             ):
                 raise ForgeError(f"schema-v4 {subject} ruleset identity differs")
             normalized = normalize_ruleset(raw)
-            effective_rules = self._effective(self._verify_target(), bound)
+            effective_rules = self._effective(observation_target, bound)
             effective = bool(effective_rules) and all(
                 item["rulesetPresent"] for item in effective_rules
             )
@@ -6011,6 +6136,7 @@ class RulesetExecutor:
                 "effectiveRules": effective_rules,
                 "effectiveRulesDigest": canonical_digest(effective_rules),
             }
+        self._assert_v4_target_snapshot(record, target, "across live observations")
         return observations, evidence
 
     def _v4_activation_readback(
@@ -6262,15 +6388,25 @@ class RulesetExecutor:
         self._verify_organization()
         target = self._verify_target()
         report["target"] = target
+        if schema_version == 5:
+            try:
+                validate_v5_target_url_lifecycle(record, target)
+            except ContractError as exc:
+                raise ForgeError(str(exc)) from exc
         if record["queueBarrier"]["workflowSource"]["commitSha"] is None:
             report["status"] = "BLOCKED"
             report["findings"].append(
                 "schema-v4 protected source bundle is unresolved; provider reconciliation is disabled"
             )
             report["subjects"] = None
+            self._assert_v4_target_snapshot(
+                record, target, "before unresolved-source return"
+            )
             return report
         report["source"] = self._verify_source(record)
-        observations, subject_evidence = self._v4_live_observations(record)
+        observations, subject_evidence = self._v4_live_observations(
+            record, target
+        )
         report["subjects"] = subject_evidence
         active_replay: dict[str, Any] = {}
         if record["migration"]["phase"] != "recovery":
@@ -6313,6 +6449,9 @@ class RulesetExecutor:
                 report["findings"].append(
                     f"BLOCKED_PENDING_TRANSITION_EVIDENCE:{pending_subject}"
                 )
+                self._assert_v4_target_snapshot(
+                    record, target, "before pending-transition return"
+                )
                 return report
         try:
             actions = (
@@ -6325,6 +6464,9 @@ class RulesetExecutor:
         if len(actions) > 1:
             raise ForgeError("schema-v4 planner violated the one-ruleset-mutation boundary")
         if not actions:
+            self._assert_v4_target_snapshot(
+                record, target, "before no-action return"
+            )
             return report
         planned = actions[0]
         report["plannedMutation"] = copy.deepcopy(planned)
@@ -6342,9 +6484,15 @@ class RulesetExecutor:
                 f"{planned['subject']} differs; readback mode cannot mutate"
             )
             report["plannedMutation"] = None
+            self._assert_v4_target_snapshot(
+                record, target, "before readback return"
+            )
             return report
         if mode == "dry-run":
             report["status"] = "DRIFT"
+            self._assert_v4_target_snapshot(
+                record, target, "before dry-run return"
+            )
             return report
         if lock is None:
             raise ForgeError("schema-v4 apply reached mutation planning without the fenced lock")
@@ -6354,10 +6502,15 @@ class RulesetExecutor:
         current_record, current_desired = self._load_doctrine()
         if current_record != record or current_desired != desired:
             raise ForgeError("Doctrine changed after schema-v4 lock acquisition")
-        current_observations, _ = self._v4_live_observations(record)
+        current_observations, _ = self._v4_live_observations(record, target)
         if current_observations != observations:
             raise ForgeError("schema-v4 live precondition changed after lock acquisition")
         self._verify_apply_lock(lock)
+        self._verify_v5_apply_target_fence(record, lock)
+        self._assert_v4_target_snapshot(
+            record, target, "inside the apply fence before provider mutation"
+        )
+        self._verify_v5_apply_target_fence(record, lock)
 
         action = planned["action"]
         subject = planned["subject"]
@@ -6408,9 +6561,15 @@ class RulesetExecutor:
             report["findings"].append(str(exc))
             return report
 
+        self._assert_v4_target_snapshot(
+            record, target, "inside the apply fence after provider mutation"
+        )
         post_raw = _require_api_object(
             self.api.get(f"/orgs/{ORGANIZATION}/rulesets/{ruleset_id}"),
             "schema-v4 post-mutation ruleset",
+        )
+        post_target = self._assert_v4_target_snapshot(
+            record, target, "across provider post-readback"
         )
         post_normalized = normalize_ruleset(post_raw)
         if (
@@ -6424,7 +6583,10 @@ class RulesetExecutor:
                 "schema-v4 ruleset differs on immediate post-write readback"
             )
             return report
-        post_effective = self._effective(target, ruleset_id)
+        post_effective = self._effective(post_target, ruleset_id)
+        self._assert_v4_target_snapshot(
+            record, target, "across post-effective readback"
+        )
         if payload["enforcement"] == "active" and (
             not post_effective
             or not all(item["rulesetPresent"] for item in post_effective)

@@ -21,8 +21,8 @@
       "SylphxAI/skills-public-cleanroom"
     ],
     "baseline": {
-      "commit": "580791895d660755ca78c5e6f8233d1437f709fa",
-      "tree": "2741f0883bf636568d375974c98301ed16a633fb"
+      "commit": "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99",
+      "tree": "82039dd282d77f0a480f80e932e8247c9c9ef7b6"
     },
     "approvedCommits": [
       {
@@ -43,13 +43,20 @@
         "parents": [
           "f74c83d966331193d6a2f325173094c5d5c51762"
         ]
+      },
+      {
+        "commit": "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99",
+        "tree": "82039dd282d77f0a480f80e932e8247c9c9ef7b6",
+        "parents": [
+          "580791895d660755ca78c5e6f8233d1437f709fa"
+        ]
       }
     ],
     "approvedRefs": [
       {
         "name": "refs/heads/codex/launch-public-cleanroom",
         "commits": [
-          "580791895d660755ca78c5e6f8233d1437f709fa"
+          "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99"
         ]
       },
       {
@@ -61,14 +68,14 @@
       {
         "name": "refs/remotes/origin/HEAD",
         "commits": [
-          "580791895d660755ca78c5e6f8233d1437f709fa",
+          "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99",
           "e477aee5c1d93b2bac8619fdc6f15f27483855a3"
         ]
       },
       {
         "name": "refs/remotes/origin/codex/launch-public-cleanroom",
         "commits": [
-          "580791895d660755ca78c5e6f8233d1437f709fa"
+          "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99"
         ]
       },
       {
@@ -102,7 +109,7 @@
       {
         "id": "post-launch",
         "headRefPattern": "^canary/public-skills/post-launch/(?:barrier-pass-through|post-merge-source|release-readback)-[0-9a-f]{12}$",
-        "tree": "2741f0883bf636568d375974c98301ed16a633fb"
+        "tree": "82039dd282d77f0a480f80e932e8247c9c9ef7b6"
       },
       {
         "id": "pre-launch",
@@ -113,7 +120,7 @@
     "postMergeCanonicalization": {
       "parentCommit": "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
       "preLaunchTree": "e14830463796e0bea1c7cc9c6490bbb3e395a4db",
-      "tree": "2741f0883bf636568d375974c98301ed16a633fb",
+      "tree": "82039dd282d77f0a480f80e932e8247c9c9ef7b6",
       "mainRefs": [
         "refs/heads/main",
         "refs/remotes/origin/HEAD",
@@ -144,7 +151,7 @@
             ],
             [
               "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
-              "580791895d660755ca78c5e6f8233d1437f709fa"
+              "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99"
             ]
           ]
         },
@@ -157,12 +164,12 @@
           "parentSets": [
             [
               "e477aee5c1d93b2bac8619fdc6f15f27483855a3",
-              "580791895d660755ca78c5e6f8233d1437f709fa"
+              "4a8c5ee1e52e006ad65a05fd8f8d029c241d1e99"
             ]
           ]
         }
       ],
-      "tree": "2741f0883bf636568d375974c98301ed16a633fb"
+      "tree": "82039dd282d77f0a480f80e932e8247c9c9ef7b6"
     }
   },
   "history": {
@@ -362,11 +369,11 @@
     "scripts/create-release-archive.sh": "049bcb13d6dff7966d40671e4515c2bdc573af85a74171e17a564b5a9067abbb",
     "scripts/create-release-manifest.mjs": "0b3342f97680ffe70af5dbe16950899018e32db607b3cce91371daa23171a5ba",
     "scripts/generate-catalog.mjs": "4f8b2e5884560a451f92bc76b3ee4d06bac15f80cae8eb51460c837ae9543ab8",
-    "scripts/lib/core.mjs": "4ee0a24c4e7fe1c91bcc84eb4664b8bb94974c8a037b94082bb5fba21eaf4d76",
+    "scripts/lib/core.mjs": "49db067d6f2b521147b27e3d5e5f54fb2eab8ed5320e7756521a37c861e4a3e1",
     "scripts/quick-validate.mjs": "de99e86285e77d623e02696a07f4fc89f43e3074de7ae36c99a69f9f0b0af134",
-    "scripts/validate-history.mjs": "0c2845b46d58018c3001481fbd5354eeedba9be8fe5b63ca8204141220671982",
+    "scripts/validate-history.mjs": "345c677a04b3c30ed7f5bf7526919f32a2c911432262a2ad531f0fbd9db72f6f",
     "scripts/validate-release-manifest.mjs": "33ac0ca19f7b10271a54988e3a301bc3b46335afa5fa9172f3a5fc659084ed28",
-    "scripts/validate-repository.mjs": "36bfade049c1c558bf88d3d849f064c3df4400f79fc398ef2f5a8456f9b9905c",
+    "scripts/validate-repository.mjs": "754d26106684a821039ad312b4c8f9ccd8590d81ce45d9b41da326113f146ca6",
     "scripts/verify-install.mjs": "d3073b3d5ed73a5490f36fc10a4fe88a84bfc7b6f9fa98c9ecd88d7686853ba8",
     "skills/customer-support-operations/SKILL.md": "f5625d1a51e71335a14eb087b76c04b76035d84bb79d7665e0fdd3318a43b348",
     "skills/customer-support-operations/agents/openai.yaml": "0b7b753e8493e440f6eda3fbd03c737d9d73465ff1402919bd19c3771ef056fd",
@@ -394,6 +401,6 @@
     "skills/source-to-skill-distiller/SKILL.md": "4516c3450884f35ce8bd82e3642f99518cb4ad5849c7a6d48247ba98ac6d6730",
     "skills/source-to-skill-distiller/agents/openai.yaml": "010e6496ebc7372e7e5de3402dfe50c67e50b99cef802aaf54b084dd3174100d",
     "skills/source-to-skill-distiller/references/source-to-skill-patterns.md": "e81f4ef076104fe60f161d785956a129c979ecf0f84553aa17338314566d480a",
-    "tests/adversarial.test.mjs": "94612a52f09ce00307f4187331c46b865305f9771a814593afb35577dabe240e"
+    "tests/adversarial.test.mjs": "26f240b8d51bfd114327cce143e82fb90da584067113f8498393f0892fc83aaf"
   }
 }
