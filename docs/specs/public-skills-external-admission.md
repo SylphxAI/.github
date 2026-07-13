@@ -4,7 +4,7 @@ Decision records:
 
 - [`ADR-34-public-skills-external-admission.md`](../adr/ADR-34-public-skills-external-admission.md) establishes the external-admission mechanics.
 - [`ADR-36-public-skills-cleanroom-control-plane.md`](../adr/ADR-36-public-skills-cleanroom-control-plane.md) binds the replacement identity, snapshot, and independent mutation boundary.
-- [`ADR-DRAFT-public-skills-rename-lifecycle-fence.md`](../adr/ADR-DRAFT-public-skills-rename-lifecycle-fence.md) defines phase-aware evidence URLs and the shared rename fence. Its filename must receive the allocator-backed pull-request number before merge.
+- [`ADR-45-public-skills-rename-lifecycle-fence.md`](../adr/ADR-45-public-skills-rename-lifecycle-fence.md) defines phase-aware evidence URLs and the shared rename fence.
 
 ## Contract identity
 

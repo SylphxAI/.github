@@ -2,17 +2,17 @@
 slug: public-skills-rename-lifecycle-fence
 ---
 
-# ADR-DRAFT: Public Skills rename lifecycle fence
+# ADR-45: Public Skills rename lifecycle fence
 
 ## Status
 
-Draft. The filename and heading must receive the allocator-backed pull-request
-number before merge.
+Accepted in PR #45.
 
 ## Decision record
 
 - Date: 2026-07-13
 - Decision owner: SylphxAI
+- Pull request: <https://github.com/SylphxAI/.github/pull/45>
 - Extends: [`ADR-36-public-skills-cleanroom-control-plane.md`](./ADR-36-public-skills-cleanroom-control-plane.md)
 - References: [`ADR-43-public-skills-merge-queue-barrier.md`](./ADR-43-public-skills-merge-queue-barrier.md)
 - Specification: [`../specs/public-skills-external-admission.md`](../specs/public-skills-external-admission.md)

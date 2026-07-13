@@ -4126,7 +4126,7 @@ class V5ExecutionContractTests(unittest.TestCase):
         spec_path = ROOT / "docs/specs/public-skills-external-admission.md"
         adr_path = (
             ROOT
-            / "docs/adr/ADR-DRAFT-public-skills-rename-lifecycle-fence.md"
+            / "docs/adr/ADR-45-public-skills-rename-lifecycle-fence.md"
         )
         spec = spec_path.read_text(encoding="utf-8")
         adr = adr_path.read_text(encoding="utf-8")
@@ -4146,7 +4146,7 @@ class V5ExecutionContractTests(unittest.TestCase):
             spec,
         )
         self.assertIn(
-            "ADR-DRAFT-public-skills-rename-lifecycle-fence.md",
+            "ADR-45-public-skills-rename-lifecycle-fence.md",
             spec,
         )
         for symbol, owner in [
