@@ -1,16 +1,20 @@
-# Agent Instructions - SylphxAI GitHub Organization Configuration
+# .github — local agent notes only
 
-Start with the upstream doctrine:
+Doctrine and fleet delivery law live in the **host always-on constitution**
+(`~/.grok/AGENTS.md` / Doctrine template). This file must **not** restate,
+weaken, or fork that law (including PR-vs-direct-trunk delivery).
 
-- Doctrine repo: <https://github.com/SylphxAI/doctrine>
-- Local project identity: [PROJECT.md](./PROJECT.md)
-- Machine manifest: [`.doctrine/project.json`](./.doctrine/project.json)
+Local truth: `PROJECT.md`, `.doctrine/project.json` when present.
 
-This repository owns organization-level GitHub defaults, shared templates,
-reusable workflows, and shared GitHub Actions. Do not put product-specific or
-repository-specific behavior here unless it is genuinely an organization-wide
-default.
+## Boundary hazards
 
-Before changing reusable workflows, workflow templates, or composite actions,
-verify the consumer contract and update this repository's ADR/spec surface if
-the public workflow/action contract changes.
+- Never commit secrets, tokens, `.env` files, or credentials.
+
+## Local commands
+
+- `python -m pytest` (narrowest target first)
+
+## Validation notes
+
+- Prefer the **narrowest** affected check before full workspace runs.
+- Report layers honestly: local diff · trunk FF · deploy · prod proof (do not collapse).
