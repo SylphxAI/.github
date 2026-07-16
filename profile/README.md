@@ -3,7 +3,7 @@
   Copy SSOT: https://github.com/SylphxAI/brand/docs/copy
 -->
 
-<img src="https://capsule-render.vercel.app/api?type=blur&height=220&color=0:1A1A2E,100:D87000&text=Sylphx&fontSize=54&fontColor=ffffff&animation=twinkling&desc=Stop%20stitching%20tools%20together.%20Ship%20with%20one%20platform.&descSize=16&descAlignY=62&fontAlignY=42&section=header" width="100%" alt="Sylphx"/>
+<img src="https://mark.sylphx.app/api/v1/banner?type=aurora&theme=sylphx&height=220&text=Sylphx&fontSize=54&animation=twinkling&desc=Stop%20stitching%20tools%20together.%20Ship%20with%20one%20platform.&descSize=16&descAlignY=62&fontAlignY=42" width="100%" alt="Sylphx"/>
 
 <p align="center">
   <b>AI-native platform · OSS toolchain · London</b><br/>
@@ -14,6 +14,7 @@
   <a href="https://sylphx.com"><img src="https://img.shields.io/badge/Website-sylphx.com-4A90E2?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Website"/></a>
   <a href="https://www.npmjs.com/~sylphx"><img src="https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm&logoColor=white" alt="npm"/></a>
   <a href="https://github.com/SylphxAI/brand"><img src="https://img.shields.io/badge/Brand-SSOT-1A1A2E?style=for-the-badge" alt="Brand"/></a>
+  <a href="https://mark.sylphx.app"><img src="https://mark.sylphx.app/api/v1/deploy?service=mark&style=for-the-badge" alt="Mark on Sylphx"/></a>
   <a href="https://status.sylphx.com"><img src="https://img.shields.io/badge/Status-status.sylphx.com-27AE60?style=for-the-badge" alt="Status"/></a>
 </p>
 
