@@ -1,87 +1,98 @@
-<div align="center">
+<!--
+  Org profile: https://github.com/SylphxAI
+  Copy SSOT: https://github.com/SylphxAI/brand/docs/copy
+-->
 
-# Sylphx
+<img src="https://capsule-render.vercel.app/api?type=blur&height=220&color=0:1A1A2E,100:D87000&text=Sylphx&fontSize=54&fontColor=ffffff&animation=twinkling&desc=Stop%20stitching%20tools%20together.%20Ship%20with%20one%20platform.&descSize=16&descAlignY=62&fontAlignY=42&section=header" width="100%" alt="Sylphx"/>
 
-### AI Platform as a Service
+<p align="center">
+  <b>AI-native platform · OSS toolchain · London</b><br/>
+  One SDK. Real isolation. AI first-class. Deploy included.
+</p>
 
-One SDK. 19 production services. Deploy included.
-
-[![Website](https://img.shields.io/badge/sylphx.com-4A90E2?style=flat-square&logo=google-chrome&logoColor=white)](https://sylphx.com)
-[![npm](https://img.shields.io/badge/npm-%40sylphx-CB3837?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/~sylphx)
-[![Location](https://img.shields.io/badge/London%2C%20UK-🇬🇧-lightgrey?style=flat-square)](https://sylphx.com)
-
-</div>
+<p align="center">
+  <a href="https://sylphx.com"><img src="https://img.shields.io/badge/Website-sylphx.com-4A90E2?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Website"/></a>
+  <a href="https://www.npmjs.com/~sylphx"><img src="https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm&logoColor=white" alt="npm"/></a>
+  <a href="https://github.com/SylphxAI/brand"><img src="https://img.shields.io/badge/Brand-SSOT-1A1A2E?style=for-the-badge" alt="Brand"/></a>
+  <a href="https://status.sylphx.com"><img src="https://img.shields.io/badge/Status-status.sylphx.com-27AE60?style=for-the-badge" alt="Status"/></a>
+</p>
 
 ---
 
-## What We Build
+## What we build
 
-Sylphx is an AI-native platform for developers who want to ship without managing infrastructure. Install the SDK, connect GitHub, push code — everything else is handled.
+**Sylphx** replaces the frankenstack — deploy, database, auth, AI gateway, jobs, billing, and more — with **one type-safe SDK** and one operational story.
 
 ```bash
+npx create-sylphx-app my-saas
+# or
 npm install @sylphx/sdk
 ```
 
-One key. Everything works.
+| | |
+|--|--|
+| **Isolation** | Dedicated PostgreSQL + managed cache **per project** |
+| **Economics** | Idle projects **hibernate** — near-zero when unused |
+| **AI** | Gateway as a **first-class service**, not a bolt-on |
+| **Deploy** | CI/CD + hosting in the same platform |
 
 ---
 
-## The Platform
+## Platform map
 
-19 production-ready services, fully unified:
+| Category | Services (examples) |
+|----------|---------------------|
+| **Build** | AI Gateway · Database · Storage · Tasks · Functions · KV · Realtime |
+| **Users** | Auth · Email · Push · Consent |
+| **Grow** | Analytics · Flags · Referrals · Search |
+| **Operate** | Monitoring · Webhooks · Billing · Deploy |
 
-| Category | Services |
-|----------|---------|
-| **Build** | AI Gateway (200+ models), Database, Storage, Jobs, KV, Realtime |
-| **Users** | Auth, Email, Push, Consent |
-| **Grow** | Analytics, Feature Flags, Referrals, Engagement, Search |
-| **Operate** | Monitoring, Webhooks, Billing, Deploy |
-
-No Vercel dashboard. No Supabase project. No Clerk account. One `SYLPHX_SECRET_KEY`.
-
-Deploy is built in — Git push to production, zero config. Apps run at `{app}.sylphx.app`.
+No twelve dashboards. One key.
 
 ---
 
-## We Run It All On Our Own Platform
+## Customer Zero
 
-We don't just build Sylphx. We run on it.
+We run our own agent systems on Sylphx. If the platform can run us, it can run you.
 
-**[Anima](https://anima.sylphx.com)** — our AI agent infrastructure system — is built entirely on the Sylphx Platform. It runs persistent AI teams with Docker-isolated agents, 4-stage semantic memory, and zero credential leakage. Every one of our production products is a customer of our own platform.
-
-**Customer Zero.** If it can run Anima, it can run your product.
+**[Brand & copy SSOT](https://github.com/SylphxAI/brand)** · *Stop stitching tools together. Ship with one platform.*
 
 ---
 
-## Open Source
+## Open source
 
-Performance-obsessed TypeScript and Dart tools, MIT licensed:
+Performance-minded TypeScript / Dart tools and MCP servers (MIT where applicable):
 
-| Project | What it does | Stars |
-|---------|-------------|-------|
-| [pdf-reader-mcp](https://github.com/SylphxAI/pdf-reader-mcp) | Production MCP server for PDF processing — 5-10x faster, 94%+ test coverage | ⭐ 518 |
-| [firestore_odm](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore ODM for Dart/Flutter with code generation | ⭐ 12 |
-| [coderag](https://github.com/SylphxAI/coderag) | Semantic code search with AST chunking — 15+ languages, MCP-ready | ⭐ 7 |
-| [silk](https://github.com/SylphxAI/silk) | Zero-runtime CSS-in-TypeScript — 92% smaller than Panda CSS | ⭐ 5 |
-| [media-curator](https://github.com/SylphxAI/media-curator) | Intelligent media deduplication via perceptual hashing + LSH | ⭐ 5 |
-| [rapid](https://github.com/SylphxAI/rapid) | State management — 1.7–45x faster than competitors, 1.45 kB gzipped | ⭐ 4 |
-| [craft](https://github.com/SylphxAI/craft) | Immutable state library — 1.4–35x faster than immer | ⭐ 4 |
+| Project | Focus |
+|---------|--------|
+| [pdf-reader-mcp](https://github.com/SylphxAI/pdf-reader-mcp) | Production MCP for PDF processing |
+| [filesystem-mcp](https://github.com/SylphxAI/filesystem-mcp) | Agent filesystem primitives |
+| [coderag](https://github.com/SylphxAI/coderag) | Semantic code search + AST chunking |
+| [rapid](https://github.com/SylphxAI/rapid) | Ultra-fast state management |
+| [craft](https://github.com/SylphxAI/craft) | Immutable state, high performance |
+| [mcp-server-sdk](https://github.com/SylphxAI/mcp-server-sdk) | MCP server foundations |
+| [firestore_odm](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore ODM (Dart) |
+
+<p align="center">
+  <img height="160" src="https://github-readme-stats.vercel.app/api?username=SylphxAI&show_icons=true&theme=tokyonight&hide_border=true" alt="org stats"/>
+</p>
 
 ---
 
 ## Stack
 
-```
-TypeScript · Rust · Bun · Docker · PostgreSQL · Redis
-React · Next.js · Dart · Flutter
-```
+<p align="left">
+  <img src="https://skillicons.dev/icons?i=ts,rust,bun,docker,postgres,redis,react,nextjs,nodejs&theme=dark" alt="stack"/>
+</p>
 
 ---
 
 <div align="center">
 
-**[sylphx.com](https://sylphx.com)** · London, United Kingdom · Founded 2025
+**[sylphx.com](https://sylphx.com)** · Sylphx Limited · Founded 2025 · London, UK
 
 *Built on our own platform. Proven in production.*
 
 </div>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:1A1A2E,100:D87000&height=100&section=footer" width="100%" alt="footer"/>
