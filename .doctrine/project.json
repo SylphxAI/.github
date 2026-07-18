@@ -104,8 +104,8 @@
       },
       {
         "type": "workflow",
-        "name": "GroundAtlas local project-control workflow",
-        "location": ".github/workflows/groundatlas.yml"
+        "name": "Local project-control validation workflow",
+        "location": ".github/workflows/project-control.yml"
       },
       {
         "type": "workflow",
@@ -180,11 +180,6 @@
         "direction": "tool-public"
       },
       {
-        "repo": "SylphxAI/groundatlas",
-        "surface": "Released GroundAtlas package/action for vendor-neutral project manifest validation and fleet dogfooding.",
-        "direction": "peer-public"
-      },
-      {
         "repo": "SylphxAI/skills",
         "surface": "Inert candidate Git history and tree consumed by the externally owned public-skills required workflow for repository ID 1297840366.",
         "direction": "governed-public"
@@ -219,14 +214,14 @@
     }
   },
   "delivery": {
-    "ciModel": "groundatlas-project-control",
+    "ciModel": "project-control-local",
     "deployable": false,
     "requiredContexts": [],
     "localContexts": [
-      "groundatlas"
+      "project-control"
     ],
     "deployPath": "Merged changes to main are consumed directly by GitHub as organization defaults, reusable workflows, workflow templates, and composite actions. There is no separate runtime deploy for this repository.",
-    "productionProof": "Proof is GitHub main readback plus successful local GroundAtlas project-control CI. Public reusable workflow/action contract changes still require successful consumer use of the changed public surface. The public-skills gate additionally requires exact source-SHA organization-ruleset bindings for external admission and its evaluate-to-active read-only merge-queue barrier, controlled evaluate-canary merge evidence, active required-failure plus GitHub-owned rejection/dequeue evidence, final active/active pass-through, authorization-bound fenced-lock evidence, exact post/effective readback, a durable immutable provider attestation, and the sealed privacy-safe Doctrine transition artifact.",
+    "productionProof": "Proof is GitHub main readback plus successful local project-control CI (Changesets publisher syntax + public-skills unit controls). GroundAtlas package/action dogfood is retired; repository orientation/scanning belongs to Control Plane Repository Ingestion (ADR-0014). Public reusable workflow/action contract changes still require successful consumer use of the changed public surface. The public-skills gate additionally requires exact source-SHA organization-ruleset bindings for external admission and its evaluate-to-active read-only merge-queue barrier, controlled evaluate-canary merge evidence, active required-failure plus GitHub-owned rejection/dequeue evidence, final active/active pass-through, authorization-bound fenced-lock evidence, exact post/effective readback, a durable immutable provider attestation, and the sealed privacy-safe Doctrine transition artifact.",
     "recoveryClass": "source-revertable"
   },
   "adoption": {
@@ -234,7 +229,7 @@
     "gaps": [
       {
         "id": "branch-protection-required-contexts",
-        "description": "Repository now has local GroundAtlas CI, but main branch protection does not require it yet. Organization ruleset adoption remains a separate infrastructure decision.",
+        "description": "Repository has local project-control CI, but main branch protection does not require it yet. Organization ruleset adoption remains a separate infrastructure decision. GroundAtlas reverse dependency unhooked (workflow uses + package dogfood removed).",
         "owner": "SylphxAI/.github",
         "target": "org ruleset rollout decision"
       },

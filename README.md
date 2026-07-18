@@ -18,6 +18,10 @@ organization-ruleset executor. It consumes only the canonical Doctrine
 default-branch record as inert JSON, never executes Doctrine code or schema,
 and serializes every authorized write with a unique fenced Git-ref lock.
 
-Generated `.groundatlas*` reports are evidence/navigation only. They are not the
-source of truth for organization policy, reusable workflow contracts, or
-consumer repository delivery proof.
+GroundAtlas per-repo package/action dogfood is **retired** for this repository.
+Repository scanning / orientation capability home is Control Plane
+**Repository Ingestion**
+([ADR-0014](https://github.com/SylphxAI/control-plane/blob/main/docs/adr/ADR-0014-groundatlas-product-retirement-cp-ingestion.md)).
+Any residual `.groundatlas*` paths or schema URL lineage are not source of
+truth for organization policy, reusable workflow contracts, or consumer
+delivery proof.

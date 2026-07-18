@@ -54,7 +54,7 @@ and delivery evidence still belong to the consuming repository.
 - `.github/workflows/adr29-admission.yml`
 - `.github/workflows/release.yml`
 - `.github/workflows/publish-npm.yml`
-- `.github/workflows/groundatlas.yml`
+- `.github/workflows/project-control.yml`
 - `.github/workflows/public-skills-admission.yml`
 - `.github/workflows/public-skills-merge-queue-barrier.yml`
 - `.github/actions/adr29-admission/action.yml`
@@ -90,10 +90,16 @@ and recovery evidence.
 
 ## Delivery
 
-This repository has a lightweight local GroundAtlas project-control workflow.
-It validates `project.manifest.json`, keeps `.doctrine/project.json` as a
-Sylphx Doctrine adapter, uploads GroundAtlas reports as evidence only, and runs
-a non-mutating syntax check for the shared Changesets publisher.
+This repository has a lightweight local project-control workflow
+(`.github/workflows/project-control.yml`). It runs a non-mutating syntax check
+for the shared Changesets publisher and the public-skills unit control suites.
+It does **not** dogfood the GroundAtlas package or action.
+
+GroundAtlas independent product thesis is rejected; repository scanning /
+orientation belongs to Control Plane **Repository Ingestion**
+([ADR-0014](https://github.com/SylphxAI/control-plane/blob/main/docs/adr/ADR-0014-groundatlas-product-retirement-cp-ingestion.md)).
+Historical local GA dogfood is recorded as retired in
+[`docs/adr/0003-local-groundatlas-project-control-gate.md`](./docs/adr/0003-local-groundatlas-project-control-gate.md).
 
 Changes merged to `main` are consumed directly by GitHub as organization
 defaults, reusable workflows, workflow templates, and composite actions. There

@@ -43,7 +43,7 @@
     ],
     "tests": [
       "tests/",
-      ".github/workflows/groundatlas.yml"
+      ".github/workflows/project-control.yml"
     ],
     "runbooks": [
       "PROJECT.md",
@@ -98,9 +98,9 @@
     },
     {
       "type": "workflow",
-      "name": "GroundAtlas local control-plane gate",
-      "path": ".github/workflows/groundatlas.yml",
-      "description": "Repository-local GroundAtlas package dogfood and project-control validation."
+      "name": "Local project-control validation",
+      "path": ".github/workflows/project-control.yml",
+      "description": "Repository-local non-mutating validation for shared actions and public-skills controls. GroundAtlas package/action dogfood is retired (ADR-0014)."
     },
     {
       "type": "workflow",
@@ -178,7 +178,7 @@
       "type": "docs",
       "name": "Doctrine adapter manifest",
       "path": ".doctrine/project.json",
-      "description": "Sylphx Doctrine adapter and org-local governance catalog; not the vendor-neutral GroundAtlas default."
+      "description": "Sylphx Doctrine adapter and org-local governance catalog."
     }
   ],
   "commands": [
@@ -186,11 +186,6 @@
       "name": "check:changesets-publisher",
       "command": "node --check .github/actions/setup-changesets-publisher/changesets-publish.mjs",
       "purpose": "Syntax-check the manager-aware Changesets publisher without mutating release state."
-    },
-    {
-      "name": "test:groundatlas-boundary",
-      "command": "node --test tests/groundatlas-boundary.test.mjs",
-      "purpose": "Verify the neutral manifest, Doctrine adapter, and released GroundAtlas workflow boundary."
     },
     {
       "name": "test:public-skills-admission",
@@ -211,15 +206,10 @@
       "name": "lint:github-actions",
       "command": "actionlint .github/workflows/*.yml",
       "purpose": "Validate every organization workflow, including target required-workflow syntax and immutable action references."
-    },
-    {
-      "name": "groundatlas:fleet",
-      "command": "npm exec --yes --package groundatlas@0.1.2 -- ga fleet . --out .groundatlas-pilot --require-atlas --strict --json",
-      "purpose": "Prove the vendor-neutral manifest is selected and generated GroundAtlas files are navigation-only."
     }
   ],
   "adoption": {
     "status": "adopted",
-    "notes": "Vendor-neutral GroundAtlas manifest for package/action dogfooding. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. Generated .groundatlas* reports are evidence/navigation only, not source of truth. The barrier organization rule is not yet Git-owned: no manual console or OAuth/API writer is authorized, and launch remains blocked until a canonical Doctrine sibling contract is reconciled by the existing protected executor and fixed lock with exact provider readback. The read-only barrier must prove a controlled evaluate-canary merge, active required failure with GitHub-owned rejection/dequeue, then final active/active pass. Public-skills external admission becomes active only after the independently protected executor reconstructs ratchet evidence, completes exact post/effective readback, creates the immutable provider attestation, and seals the privacy-safe Doctrine transition artifact."
+    "notes": "GroundAtlas per-repo package/action dogfood is retired for this repository (Control Plane ADR-0014: independent product thesis rejected; scanning becomes Control Plane Repository Ingestion). project.manifest.json remains a local identity surface only; residual $schema URL is format lineage, not a required runtime product. .doctrine/project.json remains the Sylphx Doctrine adapter and local governance catalog. The barrier organization rule is not yet Git-owned: no manual console or OAuth/API writer is authorized, and launch remains blocked until a canonical Doctrine sibling contract is reconciled by the existing protected executor and fixed lock with exact provider readback. The read-only barrier must prove a controlled evaluate-canary merge, active required failure with GitHub-owned rejection/dequeue, then final active/active pass. Public-skills external admission becomes active only after the independently protected executor reconstructs ratchet evidence, completes exact post/effective readback, creates the immutable provider attestation, and seals the privacy-safe Doctrine transition artifact."
   }
 }

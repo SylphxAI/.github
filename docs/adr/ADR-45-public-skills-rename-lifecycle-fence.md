@@ -97,6 +97,5 @@ python3 -B tests/test_public_skills_ruleset_executor.py
 PUBLIC_SKILLS_CANDIDATE=/path/to/fresh-cleanroom-clone \
   node --test tests/public-skills-admission.test.mjs
 node --test tests/public-skills-merge-queue-barrier.test.mjs
-node --test tests/groundatlas-boundary.test.mjs
 git diff --check
 ```
