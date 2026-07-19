@@ -71,7 +71,6 @@ Performance-minded TypeScript / Dart tools and MCP servers (MIT where applicable
 | [coderag](https://github.com/SylphxAI/coderag) | Semantic code search + AST chunking |
 | [rapid](https://github.com/SylphxAI/rapid) | Ultra-fast state management |
 | [craft](https://github.com/SylphxAI/craft) | Immutable state, high performance |
-| [mcp-server-sdk](https://github.com/SylphxAI/mcp-server-sdk) | MCP server foundations |
 | [firestore_odm](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore ODM (Dart) |
 
 <p align="center">
