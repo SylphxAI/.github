@@ -6,7 +6,8 @@ slug: public-skills-rename-lifecycle-fence
 
 ## Status
 
-Accepted in PR #45.
+Superseded. Accepted in PR #45; the rename lifecycle and its external fence are
+complete. This file is historical rationale, not current policy.
 
 ## Decision record
 

@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted in PR #36.
+Superseded. Accepted in PR #36, then retired after the cleanroom became the
+canonical `SylphxAI/skills` repository with repository-local admission.
+This file is historical rationale, not current policy.
 
 ## Context
 

@@ -10,7 +10,6 @@
     "goals": [
       "Provide default community health files, profile documentation, issue templates, pull request templates, brand/company references, and repository templates for the SylphxAI GitHub organization.",
       "Provide reusable GitHub workflows and shared actions that repositories can call through documented public workflow/action surfaces.",
-      "Provide an externally owned merge-queue activation barrier for source-pinned public-skills canaries and permanent recovery defense.",
       "Keep organization-level GitHub conventions centralized so individual repositories do not copy or fork shared process."
     ],
     "nonGoals": [
@@ -28,18 +27,6 @@
       {
         "name": "shared-github-automation",
         "description": "Reusable GitHub workflows, workflow templates, and composite actions used by SylphxAI repositories through GitHub public workflow/action references."
-      },
-      {
-        "name": "externally-owned-repository-admission",
-        "description": "Source-pinned organization required workflows and policy-as-code used when a target repository must not control its own admission judge."
-      },
-      {
-        "name": "externally-owned-merge-queue-barriers",
-        "description": "Source-pinned read-only organization required workflows that fail until independent admission is exact active/effective and leave rejection/dequeue to GitHub provider state."
-      },
-      {
-        "name": "independent-organization-ruleset-execution",
-        "description": "Protected, target-specific executors that consume canonical Doctrine desired state as inert data and independently authorize exact organization-level GitHub mutations."
       },
       {
         "name": "organization-brand-and-templates",
@@ -108,67 +95,12 @@
         "location": ".github/workflows/project-control.yml"
       },
       {
-        "type": "workflow",
-        "name": "Public skills external admission workflow",
-        "location": ".github/workflows/public-skills-admission.yml"
-      },
-      {
-        "type": "workflow",
-        "name": "Public skills merge-queue barrier workflow",
-        "location": ".github/workflows/public-skills-merge-queue-barrier.yml"
-      },
-      {
-        "type": "manifest",
-        "name": "Public skills external admission policy",
-        "location": "policies/public-skills-admission.json"
-      },
-      {
-        "type": "manifest",
-        "name": "Public skills merge-queue barrier runtime policy",
-        "location": "policies/public-skills-merge-queue-barrier.json"
-      },
-      {
-        "type": "manifest",
-        "name": "Public skills activation-attestation ruleset policy",
-        "location": "policies/public-skills-activation-attestation-ruleset.json"
-      },
-      {
-        "type": "api",
-        "name": "Public skills zero-dependency admission validator",
-        "location": "scripts/public-skills-admission.mjs"
-      },
-      {
-        "type": "api",
-        "name": "Public skills merge-queue barrier controller",
-        "location": "scripts/public-skills-merge-queue-barrier.mjs"
-      },
-      {
-        "type": "api",
-        "name": "Public skills organization-ruleset executor",
-        "location": "scripts/public-skills-ruleset-executor.py"
-      },
-      {
-        "type": "documentation",
-        "name": "Public skills external admission specification",
-        "location": "docs/specs/public-skills-external-admission.md"
-      },
-      {
-        "type": "documentation",
-        "name": "Public skills merge-queue barrier specification",
-        "location": "docs/specs/public-skills-merge-queue-barrier.md"
-      },
-      {
         "type": "api",
         "name": "Changesets publisher setup action",
         "location": ".github/actions/setup-changesets-publisher/action.yml"
       }
     ],
     "allowedDependencies": [
-      {
-        "repo": "SylphxAI/doctrine",
-        "surface": "engineering doctrine, project manifest schema, and canonical organization-ruleset desired state consumed as inert protected-main JSON",
-        "direction": "peer-public"
-      },
       {
         "repo": "changesets/action",
         "surface": "Changesets GitHub Action used for release intent detection, version PR generation, changelog handling, and GitHub Release creation.",
@@ -178,11 +110,6 @@
         "repo": "oven-sh/setup-bun",
         "surface": "Bun setup action used by reusable npm release workflows before install, build, package-manager packing, tarball audit, and audited tarball publication.",
         "direction": "tool-public"
-      },
-      {
-        "repo": "SylphxAI/skills",
-        "surface": "Inert candidate Git history and tree consumed by the externally owned public-skills required workflow for repository ID 1297840366.",
-        "direction": "governed-public"
       }
     ],
     "forbiddenCouplings": [
@@ -221,7 +148,7 @@
       "project-control"
     ],
     "deployPath": "Merged changes to main are consumed directly by GitHub as organization defaults, reusable workflows, workflow templates, and composite actions. There is no separate runtime deploy for this repository.",
-    "productionProof": "Proof is GitHub main readback plus successful local project-control CI (Changesets publisher syntax + public-skills unit controls). GroundAtlas package/action dogfood is retired; repository orientation/scanning belongs to Control Plane Repository Ingestion (ADR-0014). Public reusable workflow/action contract changes still require successful consumer use of the changed public surface. The public-skills gate additionally requires exact source-SHA organization-ruleset bindings for external admission and its evaluate-to-active read-only merge-queue barrier, controlled evaluate-canary merge evidence, active required-failure plus GitHub-owned rejection/dequeue evidence, final active/active pass-through, authorization-bound fenced-lock evidence, exact post/effective readback, a durable immutable provider attestation, and the sealed privacy-safe Doctrine transition artifact.",
+    "productionProof": "Proof is GitHub main readback plus successful local project-control CI. Reusable workflow or action changes also require successful consumer use of the changed public surface.",
     "recoveryClass": "source-revertable"
   },
   "adoption": {
@@ -229,21 +156,9 @@
     "gaps": [
       {
         "id": "branch-protection-required-contexts",
-        "description": "Repository has local project-control CI, but main branch protection does not require it yet. Organization ruleset adoption remains a separate infrastructure decision. GroundAtlas reverse dependency unhooked (workflow uses + package dogfood removed).",
+        "description": "Repository has local project-control CI, but main branch protection does not require it yet. Organization ruleset adoption remains a separate infrastructure decision.",
         "owner": "SylphxAI/.github",
         "target": "org ruleset rollout decision"
-      },
-      {
-        "id": "public-skills-required-workflow-ratchet",
-        "description": "The refreshed cleanroom admission source and independent executor must merge before Doctrine can bind the exact source SHA and the organization ruleset can target repository ID 1297840366.",
-        "owner": "SylphxAI/.github",
-        "target": "post-merge GitOps reconcile and target pull-request plus merge-group canary"
-      },
-      {
-        "id": "public-skills-merge-queue-barrier-rollout",
-        "description": "BLOCKED: the barrier organization rule is not yet Git-owned. No canonical Doctrine sibling contract exists, so no manual console or OAuth/API creation is authorized. The source must merge, Doctrine must publish the exact rule ID/source-SHA/evaluate-to-active/recovery contract, the existing protected executor must reconcile it under its fixed lock, and target repository ID 1297840366 must then prove an evaluate-only controlled canary merge, an active required failure with GitHub-owned rejection/dequeue, and final active/active read-only pass-through.",
-        "owner": "SylphxAI/.github",
-        "target": "Doctrine follow-on contract, same-executor/same-lock integration, provider readback, and target merge-group canaries"
       }
     ]
   }

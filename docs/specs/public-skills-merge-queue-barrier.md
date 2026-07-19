@@ -1,5 +1,8 @@
 # Public Skills provider-owned merge-queue barrier specification
 
+> Historical. The target-specific barrier is retired; current Skills admission
+> is owned by `SylphxAI/skills`.
+
 Decision record:
 [`ADR-43-public-skills-merge-queue-barrier.md`](../adr/ADR-43-public-skills-merge-queue-barrier.md).
 The ADR filename must receive its allocator-backed pull-request number before

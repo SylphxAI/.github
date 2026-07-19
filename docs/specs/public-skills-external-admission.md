@@ -1,5 +1,8 @@
 # Public Skills External Admission Specification
 
+> Historical. The external cleanroom admission machinery is retired; current
+> Skills admission is owned by `SylphxAI/skills`.
+
 Decision records:
 
 - [`ADR-34-public-skills-external-admission.md`](../adr/ADR-34-public-skills-external-admission.md) establishes the external-admission mechanics.

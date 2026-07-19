@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted in PR #34. Target-specific identity and snapshot clauses are
-superseded by the cleanroom-ratchet ADR introduced with the current change.
+Superseded. Accepted in PR #34, then retired after `SylphxAI/skills` became
+the public static-instruction authority with repository-local admission.
+This file is historical rationale, not current policy.
 
 ## Decision record
 

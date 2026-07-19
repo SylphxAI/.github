@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted in PR #43.
+Superseded. Accepted in PR #43; the target-specific merge-queue barrier was
+retired when Skills admission moved to the canonical repository. This file is
+historical rationale, not current policy.
 
 ## Decision record
 
