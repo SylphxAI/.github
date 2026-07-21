@@ -5,8 +5,8 @@
 **Retired for GroundAtlas product dogfood** (2026-07-18).
 
 Per-repo GroundAtlas package/action dogfood is no longer required. Capability
-home: Control Plane **Repository Ingestion**
-([ADR-0014](https://github.com/SylphxAI/control-plane/blob/main/docs/adr/ADR-0014-groundatlas-product-retirement-cp-ingestion.md)).
+home: Sylphx Enact **Repository Ingestion**
+([current specification](https://github.com/SylphxAI/enact/blob/main/docs/specs/repository-ingestion.md)).
 
 Residual local validation (non-GA) lives in
 `.github/workflows/project-control.yml`.
@@ -21,14 +21,13 @@ on the GroundAtlas package or action.
 
 The gate validates this repository only:
 
-- local project identity may live in `project.manifest.json` and
-  `.doctrine/project.json`;
+- local project identity lives in `project.manifest.json`;
 - shared workflow/action contracts remain owned by their ADRs and specs;
 - GroundAtlas fleet reports, package pins, and `uses: SylphxAI/groundatlas@…`
   are **not** acceptance criteria.
 
 The gate does not own consumer repository manifests, branch protection,
-deployments, releases, runtime behavior, production proof, or Control Plane
+deployments, releases, runtime behavior, production proof, or Sylphx Enact
 Repository Ingestion implementation.
 
 ## Workflow Contract
@@ -65,5 +64,5 @@ required gate.
 ## Historical note
 
 Earlier revisions of this gate dogfooded `groundatlas@0.1.2` and asserted
-manifest selection via `ga fleet`. That product packaging is rejected under
-Control Plane ADR-0014; do not reintroduce required per-repo GA dogfood.
+manifest selection via `ga fleet`. That product packaging remains retired; do
+not reintroduce required per-repo GA dogfood.

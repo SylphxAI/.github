@@ -13,7 +13,7 @@
       "community-health",
       "reusable-workflows",
       "shared-actions",
-      "control-plane"
+      "enact"
     ]
   },
   "truth": {
@@ -105,15 +105,9 @@
     },
     {
       "type": "docs",
-      "name": "Project control plane",
+      "name": "Project definition",
       "path": "PROJECT.md",
       "description": "Human project identity, lifecycle, boundary, delivery, and validation entry point."
-    },
-    {
-      "type": "docs",
-      "name": "Doctrine adapter manifest",
-      "path": ".doctrine/project.json",
-      "description": "Sylphx Doctrine adapter and org-local governance catalog."
     }
   ],
   "commands": [
@@ -130,6 +124,6 @@
   ],
   "adoption": {
     "status": "adopted",
-    "notes": "Local identity only. Static instructions and admission belong to SylphxAI/skills; live repository ingestion belongs to Control Plane."
+    "notes": "Local identity only. Static instructions and admission belong to SylphxAI/skills; live repository ingestion belongs to Sylphx Enact."
   }
 }
