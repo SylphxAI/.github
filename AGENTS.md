@@ -1,10 +1,11 @@
 # .github — local agent notes only
 
-Doctrine and fleet delivery law live in the **host always-on constitution**
-(`~/.grok/AGENTS.md` / Doctrine template). This file must **not** restate,
-weaken, or fork that law (including PR-vs-direct-trunk delivery).
+Static organization standards live in `SylphxAI/skills` and the installed host
+constitution. Live work, claims, runs, and effects belong to Sylphx Enact when
+its authenticated runtime is available. This file must **not** restate, weaken,
+or fork those authorities (including PR-vs-direct-trunk delivery).
 
-Local truth: `PROJECT.md`, `.doctrine/project.json` when present.
+Local truth: `PROJECT.md` and `project.manifest.json`.
 
 ## Boundary hazards
 

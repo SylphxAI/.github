@@ -9,7 +9,7 @@ Actions.
 
 It owns reusable GitHub surfaces that serve more than one repository. Product
 code, repository-specific policy, runtime state, delivery evidence, Skills
-admission, and Control Plane state stay with their owning repositories.
+admission, and Sylphx Enact state stay with their owning repositories.
 
 Public surfaces:
 
@@ -32,6 +32,7 @@ runtime deploy. `.github/workflows/project-control.yml` validates the shared
 Changesets publisher; reusable workflow or action changes also require a
 successful consumer invocation.
 
-Repository scanning belongs to Control Plane Repository Ingestion. GroundAtlas
-package/action dogfood is retired; the accepted historical decision remains in
-`docs/adr/0003-local-groundatlas-project-control-gate.md`.
+Repository scanning belongs to [Sylphx Enact Repository
+Ingestion](https://github.com/SylphxAI/enact/blob/main/docs/specs/repository-ingestion.md).
+GroundAtlas package/action dogfood is retired; the accepted historical decision
+remains in `docs/adr/0003-local-groundatlas-project-control-gate.md`.
