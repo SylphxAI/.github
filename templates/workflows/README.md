@@ -26,8 +26,9 @@ Rollout rules:
 - add non-GitHub-Actions required commit statuses, such as `sylphx/preview`,
   to `required-status-contexts` so `trunk-admission/pass` can eventually replace
   raw branch-protection contexts without dropping runtime preview proof;
-- set `runs-on` to the repo's standard self-hosted runner label when
-  GitHub-hosted runners are not allowed;
+- keep ADR-29 policy lanes on `sylphx-linux-standard`; use a different
+  approved managed profile only for a documented platform or resource need,
+  never a GitHub-hosted fallback;
 - when using embedded status publication, grant `statuses: write` only to the
   workflow that publishes the admission contexts and keep `checks: read` off
   unless a repo has a separate documented check-run fan-in requirement;

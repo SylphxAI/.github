@@ -15,9 +15,9 @@ permissions:
 jobs:
   risk-classification:
     name: risk-classification/pass
-    # Set to the repo's standard self-hosted label when GitHub-hosted runners
-    # are not allowed.
-    runs-on: ubuntu-latest
+    # ADR-29 policy lanes run on the managed Linux standard profile. Select a
+    # different approved managed profile only for a documented platform need.
+    runs-on: sylphx-linux-standard
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -34,9 +34,9 @@ jobs:
   # switching branch protection from raw contexts to `trunk-admission/pass`.
   trunk-admission:
     name: trunk-admission/pass
-    # Set to the repo's standard self-hosted label when GitHub-hosted runners
-    # are not allowed.
-    runs-on: ubuntu-latest
+    # ADR-29 policy lanes run on the managed Linux standard profile. Select a
+    # different approved managed profile only for a documented platform need.
+    runs-on: sylphx-linux-standard
     needs:
       - risk-classification
     if: ${{ !cancelled() }}
@@ -57,9 +57,9 @@ jobs:
   # not a sufficient backstop.
   postsubmit-proof:
     name: postsubmit-proof/pass
-    # Set to the repo's standard self-hosted label when GitHub-hosted runners
-    # are not allowed.
-    runs-on: ubuntu-latest
+    # ADR-29 policy lanes run on the managed Linux standard profile. Select a
+    # different approved managed profile only for a documented platform need.
+    runs-on: sylphx-linux-standard
     # Add the repo's exhaustive main/postsubmit lanes here, for example:
     # needs:
     #   - ci
@@ -76,9 +76,9 @@ jobs:
 
   recovery-decision:
     name: recovery-decision/pass
-    # Set to the repo's standard self-hosted label when GitHub-hosted runners
-    # are not allowed.
-    runs-on: ubuntu-latest
+    # ADR-29 policy lanes run on the managed Linux standard profile. Select a
+    # different approved managed profile only for a documented platform need.
+    runs-on: sylphx-linux-standard
     needs:
       - postsubmit-proof
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.postsubmit-proof.result != 'success' }}
