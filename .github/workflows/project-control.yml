@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   project-control:
-    runs-on: ubuntu-24.04
+    runs-on: sylphx-linux-standard
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -25,5 +25,20 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22.14.0"
+      - name: Enforce managed runner defaults
+        run: |
+          set -euo pipefail
+          reusable=.github/workflows/adr29-admission.yml
+          template=templates/workflows/adr29-admission.yml
+          project_control=.github/workflows/project-control.yml
+          test "$(grep -Ec '^[[:space:]]*default:[[:space:]]*sylphx-linux-standard$' "$reusable")" -eq 1
+          grep -Eq '^[[:space:]]*runs-on:[[:space:]]*\[self-hosted,[[:space:]]*"[$][{][{][[:space:]]*inputs\.runs-on[[:space:]]*[}][}]"[[:space:]]*\]$' "$reusable"
+          test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$template")" -eq 4
+          grep -Eq '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control"
+          if grep -REn '^[[:space:]]*runs-on:[[:space:]]*(ubuntu|macos|windows)-' "$reusable" "$template" "$project_control"; then
+            echo '::error::GitHub-hosted runner declarations are not allowed in ADR-29 policy surfaces'
+            exit 1
+          fi
       - name: Check Changesets publisher syntax
         run: node --check .github/actions/setup-changesets-publisher/changesets-publish.mjs
