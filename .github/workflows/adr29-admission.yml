@@ -42,11 +42,6 @@ on:
         type: string
         required: false
         default: adr29-admission-manifest.json
-      runs-on:
-        description: Approved Sylphx runner profile for the admission job.
-        type: string
-        required: false
-        default: sylphx-linux-standard
       base-ref:
         description: Base ref for diff calculation.
         type: string
@@ -76,7 +71,7 @@ permissions:
 jobs:
   admission:
     name: ${{ inputs.check-name }}
-    runs-on: [self-hosted, "${{ inputs.runs-on }}"]
+    runs-on: sylphx-linux-standard
     steps:
       - name: Checkout caller repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
