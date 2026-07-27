@@ -31,13 +31,14 @@ jobs:
           reusable=.github/workflows/adr29-admission.yml
           template=templates/workflows/adr29-admission.yml
           project_control=.github/workflows/project-control.yml
-          test "$(grep -Ec '^[[:space:]]*default:[[:space:]]*sylphx-linux-standard$' "$reusable")" -eq 1
-          grep -Eq '^[[:space:]]*runs-on:[[:space:]]*\[self-hosted,[[:space:]]*"[$][{][{][[:space:]]*inputs\.runs-on[[:space:]]*[}][}]"[[:space:]]*\]$' "$reusable"
+          test "$(grep -Ec '^[[:space:]]*runs-on:' "$reusable")" -eq 1
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$reusable")" -eq 1
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$template")" -eq 4
-          grep -Eq '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control"
-          if grep -REn '^[[:space:]]*runs-on:[[:space:]]*(ubuntu|macos|windows)-' "$reusable" "$template" "$project_control"; then
-            echo '::error::GitHub-hosted runner declarations are not allowed in ADR-29 policy surfaces'
+          test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 1
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control")" -eq 1
+          if grep -REn '^[[:space:]]*runs-on:[[:space:]]*.*[$][{][{]' "$reusable" "$template" "$project_control"; then
+            echo '::error::dynamic runner declarations are not allowed in ADR-29 policy surfaces'
             exit 1
           fi
       - name: Check Changesets publisher syntax
