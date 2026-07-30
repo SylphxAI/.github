@@ -1,5 +1,6 @@
-# Verification-only CI template (build once — Platform packages).
-# Copy into product repos as .github/workflows/ci.yml and adjust steps.
+# Verification-only CI — Agent-native Fast Trunk
+# Canonical: platform ADR-01KYTNAGENTFASTTRUNK01
+# Platform packages the deployable digest once. Do not add production packaging here.
 name: CI
 on:
   pull_request:
@@ -7,9 +8,14 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{
+    github.event.pull_request.number || github.ref
+  }}
+  cancel-in-progress: true
 jobs:
   verify:
-    name: Verify
+    name: source-ci/pass
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -21,5 +27,7 @@ jobs:
       - run: bun run lint
       - run: bun run typecheck
       - run: bun run test
-      # Do NOT add production packaging here (next build / cargo --release / docker build).
-      # Platform builds the deployable digest once.
+      # Forbidden residual:
+      # - bun run build / next build (app production)
+      # - cargo build --release (ship binary packaging)
+      # - docker build for deploy images discarded after CI
