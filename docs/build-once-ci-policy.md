@@ -1,38 +1,57 @@
-# Build once, deploy the artifact
+# Agent-native Fast Trunk CI/CD (fleet policy)
 
-**SSOT for Sylphx-owned product repos that deploy on Sylphx Platform.**
+**Canonical ADR (Platform):**  
+[ADR-01KYTNAGENTFASTTRUNK01 — Agent-native Fast Trunk CI/CD](https://github.com/SylphxAI/platform/blob/main/docs/adr/ADR-01KYTNAGENTFASTTRUNK01-agent-native-fast-trunk-cicd.md)
 
-## Rule
+**Auto Deploy product modes:**  
+[docs/features/auto-deploy.md](https://github.com/SylphxAI/platform/blob/main/docs/features/auto-deploy.md)  
+(`On Commit` / `After Verification` / `Off`)
 
-| Plane | Owns | Must not do |
-| --- | --- | --- |
-| **Platform** | Sole production packaging (`source_sha` → immutable `artifact_digest`) | Rebuild between environments |
-| **Repo CI** | Verification only (lint, typecheck, unit, contracts) | Discarded production packaging |
+## One sentence
 
-Production packaging includes:
+Internal agents land small batches on **direct-trunk**. Repository CI verifies **source correctness only**. Platform builds the **production artifact once**. CI and build run **in parallel**. Deploy promotes the **same immutable digest**.
 
-- `next build` / `bun run build` (app production)
-- `cargo build --release` for ship binaries
-- `docker build` / `docker buildx` for deploy images **not** published as the ship artifact
+## Authority
 
-Publish workflows that **are** the distribution authority (npm native packages, CLI release binaries) remain packaging paths for those products — they must still publish the exact artifact they built (not rebuild later).
+| Scope | Authority |
+| --- | --- |
+| Work / claim / progress | Enact |
+| Source history | Git / forge |
+| Source correctness | Repository CI |
+| Production packaging | **Sylphx Platform only** |
+| Deploy / health / rollback | Sylphx Platform |
 
-## Required customer CI shape
+## Repository CI
 
-```text
-lint / typecheck / unit / pure contracts
-  → required check green
-Platform build (parallel under After Verification)
-  → digest D
-deploy D (never rebuild)
+**Do:** lint, typecheck, affected unit/integration (test-profile), schema/proto/migration, contracts.  
+**Do not:** disposable production packaging (`next`/`bun` production app build, `cargo build --release` for ship binaries, validation `docker build` thrown away).
+
+Aggregate deploy-ready check example: `source-ci/pass`.
+
+Prefer native concurrency:
+
+```yaml
+concurrency:
+  group: ci-${{ github.workflow }}-${{
+    github.event.pull_request.number || github.ref
+  }}
+  cancel-in-progress: true
 ```
 
-## Forbidden residual
+Merge Queue: **off by default**.
 
-- Application build job that is not consumed as a deploy artifact
-- Verify prebuild of `gateway-server --release` thrown away after tests
-- CI `docker build` “validation” when Platform builds the same Dockerfile for deploy
+## Platform
 
-## Auto Deploy
+- One production build per SHA → OCI digest  
+- Artifact smoke on that digest  
+- Promote same digest across environments  
+- Never rebuild for “safety” between staging and production  
 
-Prefer production **After Verification**: wait for repo CI green, deploy the **Platform** artifact for that exact SHA.
+## Template
+
+See [workflow-templates/verification-only-ci.yml](../workflow-templates/verification-only-ci.yml).
+
+## Allowed exceptions
+
+- **npm / CLI / native binary publish** workflows that **are** the ship path for that product (build once and publish that artifact).  
+- **Unity / Firebase / non-Platform** ship pipelines — those systems remain packaging authority for those channels.
