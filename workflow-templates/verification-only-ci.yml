@@ -1,6 +1,5 @@
 # Verification-only CI — Agent-native Fast Trunk
 # Canonical: platform ADR-01KYTNAGENTFASTTRUNK01
-# Platform packages the deployable digest once. Do not add production packaging here.
 name: CI
 on:
   pull_request:
@@ -9,9 +8,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.workflow }}-${{
-    github.event.pull_request.number || github.ref
-  }}
+  # PR number || ref — never github.sha (would break tip cancel; no free-runners).
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   verify:
@@ -27,7 +25,3 @@ jobs:
       - run: bun run lint
       - run: bun run typecheck
       - run: bun run test
-      # Forbidden residual:
-      # - bun run build / next build (app production)
-      # - cargo build --release (ship binary packaging)
-      # - docker build for deploy images discarded after CI
