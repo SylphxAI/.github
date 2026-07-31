@@ -1,5 +1,6 @@
 # Verification-only CI — Agent-native Fast Trunk
-# Canonical: platform ADR-01KYTNAGENTFASTTRUNK01
+# Canonical ADR: platform ADR-01KYTNE0B96325DDAD28FD1341
+# https://github.com/SylphxAI/platform/blob/main/docs/adr/ADR-01KYTNE0B96325DDAD28FD1341-agent-native-fast-trunk-cicd.md
 name: CI
 on:
   pull_request:
@@ -10,7 +11,9 @@ permissions:
   contents: read
 concurrency:
   # PR number || ref — never github.sha (no free-runners).
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{
+    github.event.pull_request.number || github.ref
+  }}
   cancel-in-progress: true
 jobs:
   source-ci:
