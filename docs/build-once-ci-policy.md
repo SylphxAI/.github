@@ -43,7 +43,7 @@ concurrency:
 
 `github.ref` on `push` is `refs/heads/main`, so tip supersession is native—no custom free-runners controller.
 
-Merge Queue: **off by default** (do not require `merge_group` triggers unless MQ is intentionally enabled).
+Merge Queue: **off by default**. Do **not** declare `merge_group:` on ordinary CI workflows unless MQ is intentionally enabled for that repository.
 
 ## Platform
 
