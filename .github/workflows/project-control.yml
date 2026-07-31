@@ -1,11 +1,11 @@
 name: Project control
 
 on:
+  # No merge_group — Merge Queue off by default (Fast Trunk).
   push:
     branches:
       - main
   pull_request:
-  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
