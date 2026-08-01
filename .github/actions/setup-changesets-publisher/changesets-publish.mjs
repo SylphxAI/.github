@@ -59,6 +59,28 @@ function run(command, commandArgs, options = {}) {
   return result;
 }
 
+function sleepMs(ms) {
+  const result = spawnSync(process.execPath, ['-e', `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${Number(ms) || 0})`], {
+    encoding: 'utf8',
+    stdio: 'ignore',
+  });
+  if (result.error) {
+    // Fallback busy-wait if worker atoms unavailable
+    const end = Date.now() + (Number(ms) || 0);
+    while (Date.now() < end) {
+      /* spin */
+    }
+  }
+}
+
+function isRetryableNpmPublishFailure(output) {
+  return /E409|Failed to save packument|EINTEGRITY|EAI_AGAIN|ETIMEDOUT|ECONNRESET|socket hang up|503|502|504|EPERM|EPUBLISHCONFLICT|previously published/i.test(output || '');
+}
+
+function isAlreadyPublishedFailure(output) {
+  return /cannot publish over|previously published versions|EPUBLISHCONFLICT|You cannot publish over the previously published versions/i.test(output || '');
+}
+
 function detectPackageManager(rootDir, rootPackageJson) {
   const packageManager = rootPackageJson.packageManager;
   if (typeof packageManager === 'string') {
@@ -456,7 +478,43 @@ function publishPackage(pkg, tarballPath) {
   // package manager owns packing/materialization; npm is only the registry
   // upload client here, which keeps auth behavior stable in GitHub Actions and
   // prevents a second publish-time pack from diverging from the audited tarball.
-  run('npm', ['publish', tarballPath, ...commonArgs, ...registryArgs()], { cwd: pkg.dir, env });
+  //
+  // Multi-package first publishes often hit npm E409 packument races when many
+  // new scoped packages are created in one job. Retry with backoff and treat
+  // "already published" as success so progressive republish is idempotent.
+  const maxAttempts = Math.max(1, Number(process.env.SYLPHX_NPM_PUBLISH_MAX_ATTEMPTS || 8));
+  const baseDelayMs = Math.max(250, Number(process.env.SYLPHX_NPM_PUBLISH_BASE_DELAY_MS || 3000));
+  let lastOutput = '';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (packageVersionExists(pkg.name, pkg.version)) {
+      log(`Registry already has ${pkg.name}@${pkg.version}; skipping publish.`);
+      return;
+    }
+    const result = run('npm', ['publish', tarballPath, ...commonArgs, ...registryArgs()], {
+      cwd: pkg.dir,
+      env,
+      allowFailure: true,
+      capture: true,
+    });
+    if (result.status === 0) {
+      if (result.stdout) process.stdout.write(result.stdout);
+      if (result.stderr) process.stderr.write(result.stderr);
+      return;
+    }
+    lastOutput = `${result.stdout || ''}\n${result.stderr || ''}`;
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (isAlreadyPublishedFailure(lastOutput) || packageVersionExists(pkg.name, pkg.version)) {
+      log(`Treat as published: ${pkg.name}@${pkg.version}`);
+      return;
+    }
+    if (!isRetryableNpmPublishFailure(lastOutput) || attempt === maxAttempts) {
+      fail(`Command failed (${result.status}): npm publish ${tarballPath}${lastOutput ? `\n${lastOutput}` : ''}`);
+    }
+    const delay = Math.min(60_000, baseDelayMs * 2 ** (attempt - 1));
+    log(`Retryable npm publish failure for ${pkg.name}@${pkg.version} (attempt ${attempt}/${maxAttempts}); sleeping ${delay}ms`);
+    sleepMs(delay);
+  }
 }
 
 function selfCheck() {
@@ -607,9 +665,18 @@ function main() {
       return;
     }
 
-    for (const pkg of unpublished) {
+    for (let i = 0; i < unpublished.length; i++) {
+      const pkg = unpublished[i];
       publishPackage(pkg, artifacts.get(pkg.name));
       emitNewTag(pkg, packages);
+      // Brief pause between distinct package first-publishes reduces npm packument E409 storms.
+      if (i < unpublished.length - 1) {
+        const gap = Math.max(0, Number(process.env.SYLPHX_NPM_PUBLISH_INTER_PACKAGE_DELAY_MS || 1500));
+        if (gap > 0) {
+          log(`Inter-package delay ${gap}ms before next publish`);
+          sleepMs(gap);
+        }
+      }
     }
 
     for (const pkg of tagRecovery) {

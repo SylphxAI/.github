@@ -135,3 +135,12 @@ Expected behavior by package manager:
   `changeset publish`/`bun publish`/`npm publish` from a workspace package
   unless an equivalent pack audit proves the exact tarball being uploaded
   cannot contain `workspace:` ranges.
+
+## Multi-package first-publish races
+
+npm may return **HTTP 409** (`Failed to save packument`) when many **new** scoped
+packages are published in one job. The shared `sylphx-changesets-publish`
+command retries with exponential backoff (`SYLPHX_NPM_PUBLISH_MAX_ATTEMPTS`,
+`SYLPHX_NPM_PUBLISH_BASE_DELAY_MS`) and applies a short inter-package delay
+(`SYLPHX_NPM_PUBLISH_INTER_PACKAGE_DELAY_MS`, default 1500ms). Republish is
+idempotent: already-published versions are skipped.
