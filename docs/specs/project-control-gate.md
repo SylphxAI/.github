@@ -21,7 +21,7 @@ on the GroundAtlas package or action.
 
 The gate validates this repository only:
 
-- local project identity lives in `project.manifest.json`;
+- local project identity lives in `PROJECT.md`;
 - shared workflow/action contracts remain owned by their ADRs and specs;
 - GroundAtlas fleet reports, package pins, and `uses: SylphxAI/groundatlas@…`
   are **not** acceptance criteria.

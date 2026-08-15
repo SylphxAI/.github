@@ -5,7 +5,7 @@ constitution. Live work, claims, runs, and effects belong to Sylphx Enact when
 its authenticated runtime is available. This file must **not** restate, weaken,
 or fork those authorities (including PR-vs-direct-trunk delivery).
 
-Local truth: `PROJECT.md` and `project.manifest.json`.
+Local truth: `PROJECT.md`.
 
 ## Boundary hazards
 
