@@ -524,7 +524,7 @@ function selfCheck() {
     fs.mkdirSync(path.join(tempRoot, 'packages', 'b'), { recursive: true });
     fs.writeFileSync(path.join(tempRoot, 'package.json'), JSON.stringify({
       private: true,
-      packageManager: 'bun@1.2.0',
+      packageManager: 'bun@1.4.0',
       workspaces: ['packages/*'],
     }, null, 2));
     fs.writeFileSync(path.join(tempRoot, 'packages', 'a', 'package.json'), JSON.stringify({

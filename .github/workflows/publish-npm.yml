@@ -47,9 +47,9 @@ on:
 
       # ========== Runtime Configuration ==========
       bun-version:
-        description: 'Bun version to use (default: latest)'
+        description: 'Bun version to use (default: 1.4.0)'
         type: string
-        default: 'latest'
+        default: '1.4.0'
       node-version:
         description: 'Node.js version to use (default: 20)'
         type: string
