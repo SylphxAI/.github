@@ -24,7 +24,7 @@ Add one job; its `name:` becomes the required status context:
 ```yaml
   security-secrets:
     name: security:secrets
-    runs-on: [self-hosted, sylphx, linux, standard]
+    runs-on: sylphx-linux-standard
     steps:
       - uses: actions/checkout@v4
         with:
