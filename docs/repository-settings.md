@@ -41,8 +41,8 @@ repository, and prints one line per repository:
 | `FAILED` | API error, or the write did not verify |
 
 It continues past failures and exits non-zero when any repository `FAILED`.
-Run the dry-run first, then `--apply`, then confirm the summary reports
-`would_patch: 0`/no `FAILED` lines.
+Run the dry-run first, then `--apply`; to confirm convergence, re-run the
+dry-run and expect `would_patch: 0` with no `FAILED` lines.
 
 ## New repositories
 
