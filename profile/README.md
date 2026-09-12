@@ -22,7 +22,7 @@
 
 ## What we build
 
-**Sylphx** replaces the frankenstack — deploy, database, auth, AI gateway, jobs, billing, and more — with **one type-safe SDK** and one operational story.
+**Sylphx** replaces the frankenstack — deploy, database, auth, models, jobs, billing, and more — with **one type-safe SDK** and one operational story.
 
 ```bash
 npx create-sylphx-app my-saas
@@ -34,7 +34,7 @@ npm install @sylphx/sdk
 |--|--|
 | **Isolation** | Dedicated PostgreSQL + managed cache **per project** |
 | **Economics** | Idle projects **hibernate** — near-zero when unused |
-| **AI** | Gateway as a **first-class service**, not a bolt-on |
+| **AI** | Sylphx Models as a **first-class service**, not a bolt-on |
 | **Deploy** | CI/CD + hosting in the same platform |
 
 ---
@@ -43,7 +43,7 @@ npm install @sylphx/sdk
 
 | Category | Services (examples) |
 |----------|---------------------|
-| **Build** | AI Gateway · Database · Storage · Tasks · Functions · KV · Realtime |
+| **Build** | Models · Database · Storage · Tasks · Functions · KV · Realtime |
 | **Users** | Auth · Email · Push · Consent |
 | **Grow** | Analytics · Flags · Referrals · Search |
 | **Operate** | Monitoring · Webhooks · Billing · Deploy |
