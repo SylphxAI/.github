@@ -1,0 +1,76 @@
+name: Job-scoped git credentials from a GitHub App
+description: >-
+  Mint one job-scoped GitHub App installation token for private cross-project
+  cargo/git reads and expose it through a job-scoped git credential helper.
+  Isolated CARGO_HOME does not inherit a durable helper, and libgit2 cannot use
+  git credentials, so cargo must fetch through the git CLI
+  (CARGO_NET_GIT_FETCH_WITH_CLI=true).
+
+  The token is written to a 0600 file under RUNNER_TEMP and referenced only by
+  the job's GIT_CONFIG_* environment; nothing is written to a layer, a tag, or
+  the global git config, and the file is removed at the end of the job.
+
+  This is the one admitted path for a private cross-project source read in CI.
+  The caller supplies the App id and key; the credential is scoped by the
+  `repositories` input and lives at most one hour.
+
+inputs:
+  app-id:
+    description: GitHub App id used to mint the installation token.
+    required: true
+  private-key:
+    description: GitHub App private key (PEM) used to mint the installation token.
+    required: true
+  owner:
+    description: Installation owner for the private repositories.
+    required: false
+    default: SylphxAI
+  repositories:
+    description: Comma or newline separated repositories the token may read.
+    required: false
+    default: identity
+
+outputs:
+  credentials-file:
+    description: Path of the job-scoped git credential file.
+    value: ${{ steps.credentials.outputs.credentials_file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Mint installation token
+      id: app-token
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}
+        permission-contents: read
+
+    - name: Configure job-scoped git credentials
+      id: credentials
+      shell: bash
+      env:
+        APP_TOKEN: ${{ steps.app-token.outputs.token }}
+      run: |
+        set -euo pipefail
+        : "${APP_TOKEN:?missing GitHub App installation token}"
+        : "${RUNNER_TEMP:?missing RUNNER_TEMP}"
+        : "${GITHUB_ENV:?missing GITHUB_ENV}"
+        cred_file="${RUNNER_TEMP}/git-app-credentials"
+        umask 077
+        printf 'https://x-access-token:%s@github.com\n' "$APP_TOKEN" >"$cred_file"
+        chmod 600 "$cred_file"
+        {
+          echo "GIT_CONFIG_COUNT=2"
+          echo "GIT_CONFIG_KEY_0=credential.helper"
+          echo "GIT_CONFIG_VALUE_0=store --file=${cred_file}"
+          echo "GIT_CONFIG_KEY_1=credential.https://github.com.helper"
+          echo "GIT_CONFIG_VALUE_1=store --file=${cred_file}"
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true"
+          echo "CARGO_GIT_CREDENTIALS_FILE=${cred_file}"
+          echo "GIT_TERMINAL_PROMPT=0"
+        } >>"$GITHUB_ENV"
+        echo "credentials_file=${cred_file}" >>"$GITHUB_OUTPUT"
+        echo "Configured job-scoped git credentials for App installation ${GITHUB_REPOSITORY:-unknown}"

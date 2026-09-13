@@ -1,0 +1,621 @@
+name: Image lane
+
+# One admitted image build + publish lane for any project.
+#
+# This is the single definition of the image lane. A caller keeps a thin
+# workflow that owns its candidate admission (quality) and its deploy pin;
+# every mechanism below — runner class selection, build engine, immutable OCI
+# transfer, registry identity, evidence packaging, digest capture — exists once,
+# here, in a public repository any project may call.
+#
+# Properties (owner: platform delivery):
+#   * the hot path is NATIVE single-platform. A foreign platform is refused
+#     before the build starts; the lane never emulates another architecture.
+#   * `latest` is never published. Content digests are the only promotion
+#     subjects; workloads pin the immutable `@sha256:` reference.
+#   * the publisher pre-flight mints the real repository credential on the
+#     exclusive publisher lane BEFORE the compile starts, so a missing SPIFFE
+#     projection, a missing repository publish grant, or a grant for a
+#     different repository fails in seconds instead of after a long build.
+#     (If no runner is served for the exclusive class at all, the job queues:
+#     GitHub has no queue timeout, and that is a capacity fault, not this one.)
+#   * the registry credential is minted after the long build, is never stored in
+#     GitHub, is scoped to the minting step's environment only, and is removed
+#     on every terminal path.
+#
+# Trust boundary: `build-command`, `evidence-command` and `verify-command` are
+# caller-owned shell executed in the caller's own checkout on the runners this
+# caller's own demand provisioned. That is the same authority the caller's own
+# workflow would have; the lane grants nothing extra. Caller *inputs* are never
+# spliced into a shell body — they travel through `env:` and are quoted.
+#
+# Journal of record (2026-09-13): introduced for the platform's own products to
+# retire a per-repo copy-pasted pipeline (QEMU builds, `latest` republish,
+# repeated evidence re-verification, long-lived deploy tokens and App keys).
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "Registry host + repository, e.g. registry.sylphx.com/library/sylphx-hands"
+        required: true
+        type: string
+      tag:
+        description: "Content tag. Callers pass the full source SHA; the lane shortens it to 8 characters."
+        required: true
+        type: string
+      lane-ref:
+        description: >-
+          Ref of this lane repository to check out for the lane's own tooling. Callers must pass the same ref
+          they used in `uses:` (production callers pass `main`). There is no reliable context property for
+          the called workflow's own SHA, so this is explicit rather than silently falling back.
+        required: false
+        type: string
+        default: "main"
+      platforms:
+        description: "Comma-separated platforms. Must equal the job runner's native platform."
+        required: false
+        type: string
+        default: "linux/amd64"
+      context:
+        description: "Build context for the default build command."
+        required: false
+        type: string
+        default: "."
+      dockerfile:
+        description: "Dockerfile for the default build command."
+        required: false
+        type: string
+        default: ""
+      build-command:
+        description: >-
+          Optional caller-owned build command (the single home for a repo-specific build). It runs in the
+          caller checkout with OCI_DIR, BUILD_EVIDENCE_DIR, BUILD_EVIDENCE_OCI_DIR, IMAGE, IMAGE_TAG,
+          PLATFORMS, SOURCE_SHA and CARGO_GIT_CREDENTIALS_FILE exported, and must leave an OCI layout in
+          OCI_DIR.
+        required: false
+        type: string
+        default: ""
+      evidence-command:
+        description: >-
+          Optional caller-owned evidence packaging command, run after the build with the same environment
+          plus BUILD_EVIDENCE_TAG. It must leave the evidence bundle in BUILD_EVIDENCE_DIR and its
+          data-only OCI artifact in BUILD_EVIDENCE_OCI_DIR.
+        required: false
+        type: string
+        default: ""
+      evidence-tag-prefix:
+        description: "Prefix for the evidence tag; the lane publishes <prefix>-<sha>-<run>-<attempt>."
+        required: false
+        type: string
+        default: "image-evidence"
+      verify-command:
+        description: >-
+          Optional caller-owned verification command, run ONCE in the publish job after the registry
+          readback with REGISTRY_DIGEST, IMAGE_REGISTRY_MANIFEST, EVIDENCE_REGISTRY_MANIFEST,
+          BUILD_EVIDENCE_TAG, BUILD_EVIDENCE_DIGEST, BUILD_EVIDENCE_DIR, BUILD_EVIDENCE_OCI_DIR, OCI_DIR,
+          IMAGE, IMAGE_TAG, SOURCE_SHA, LANE_ROOT and GH_TOKEN exported. It must leave its receipt in
+          ${LANE_ROOT}/verify; the promotion boundary records that receipt instead of re-verifying. It
+          never receives the registry credential.
+        required: false
+        type: string
+        default: ""
+      builder-app-id:
+        description: "Optional GitHub App id for the private cross-project cargo/git read (pair with the builder-private-key secret)."
+        required: false
+        type: string
+        default: ""
+      builder-repositories:
+        description: "Repositories the optional builder credential may read."
+        required: false
+        type: string
+        default: "cloud,identity"
+      runner-class:
+        description: "Ordinary (unprivileged) runner class for the compile job."
+        required: false
+        type: string
+        default: "sylphx-linux-standard"
+      publisher-label:
+        description: "Exclusive runner class that receives the SPIFFE Workload API projection."
+        required: false
+        type: string
+        default: "sylphx-registry-publisher"
+      preflight-timeout-seconds:
+        description: "Bound for the publisher credential mint during pre-flight."
+        required: false
+        type: number
+        default: 20
+      artifact-retention-days:
+        description: "Retention for the immutable OCI, evidence, and readback transfers."
+        required: false
+        type: number
+        default: 7
+    outputs:
+      image_tag:
+        description: "Content tag published for the image."
+        value: ${{ jobs.publish.outputs.image_tag }}
+      digest:
+        description: "Immutable repository digest of the published image."
+        value: ${{ jobs.publish.outputs.digest }}
+      evidence_tag:
+        description: "Tag the evidence bundle was published under."
+        value: ${{ jobs.publish.outputs.evidence_tag }}
+      evidence_digest:
+        description: "Immutable repository digest of the published evidence bundle."
+        value: ${{ jobs.publish.outputs.evidence_digest }}
+      image_artifact:
+        description: "Workflow artifact holding the immutable image OCI layout."
+        value: ${{ jobs.compile.outputs.image_artifact }}
+      evidence_artifact:
+        description: "Workflow artifact holding the evidence bundle and its OCI artifact."
+        value: ${{ jobs.compile.outputs.evidence_artifact }}
+      readback_artifact:
+        description: "Workflow artifact holding the raw registry readback manifests."
+        value: ${{ jobs.publish.outputs.readback_artifact }}
+      verify_artifact:
+        description: "Workflow artifact holding the caller verification receipt (empty when no verify-command was given)."
+        value: ${{ jobs.publish.outputs.verify_artifact }}
+    secrets:
+      builder-private-key:
+        description: "Optional GitHub App private key for the private cross-project source read (see the recorded gap)."
+        required: false
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ${{ inputs.publisher-label }}
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - name: Check out this lane
+        uses: actions/checkout@v4
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ inputs['lane-ref'] }}
+          path: .image-lane
+          persist-credentials: false
+
+      # Fail in seconds when the runner was minted without the publisher
+      # projection (ordinary Kata profile), when the platform's repository
+      # publish grant does not match this exact demand, or when the token issuer
+      # refuses. The compile job waits on this job, so a refusal costs no build
+      # capacity at all.
+      - name: Publisher credential pre-flight (SPIFFE JWT-SVID -> repository JWT)
+        shell: bash
+        env:
+          LANE_IMAGE: ${{ inputs.image }}
+          LANE_PREFLIGHT_TIMEOUT: ${{ inputs.preflight-timeout-seconds }}
+        run: |
+          set -euo pipefail
+          agent=/opt/spire-from-image/opt/spire/bin/spire-agent
+          socket=/spiffe-workload-api/spire-agent.sock
+          if [[ ! -x "$agent" ]]; then
+            echo "FATAL: SPIRE agent binary missing at ${agent}" >&2
+            echo "The runner for this demand did not receive the trusted-publisher projection." >&2
+            exit 1
+          fi
+          if [[ ! -S "$socket" ]]; then
+            echo "FATAL: SPIFFE Workload API socket missing at ${socket}" >&2
+            echo "The runner for this demand did not receive the trusted-publisher projection." >&2
+            exit 1
+          fi
+          test -f .image-lane/scripts/mint-registry-auth.py || {
+            echo "FATAL: the lane checkout is incomplete (lane ref not resolved)" >&2
+            exit 1
+          }
+          python3 .image-lane/scripts/mint-registry-auth.py \
+            --image "${LANE_IMAGE}" \
+            --probe \
+            --timeout-seconds "${LANE_PREFLIGHT_TIMEOUT}"
+
+  compile:
+    name: compile
+    needs: preflight
+    runs-on: ${{ inputs.runner-class }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      image_artifact: ${{ steps.name.outputs.image_artifact }}
+      evidence_artifact: ${{ steps.name.outputs.evidence_artifact }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check out this lane
+        uses: actions/checkout@v4
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ inputs['lane-ref'] }}
+          path: .image-lane
+          persist-credentials: false
+
+      # A bounded, out-of-checkout runtime home: Buildx counts ignored files when
+      # checking native VCS dirty state, and self-hosted runner images may ship a
+      # HOME that is not writable for the job user.
+      - name: Prepare lane environment
+        id: name
+        shell: bash
+        env:
+          LANE_IMAGE: ${{ inputs.image }}
+          LANE_TAG_INPUT: ${{ inputs.tag }}
+          LANE_PLATFORMS: ${{ inputs.platforms }}
+          LANE_DOCKERFILE: ${{ inputs.dockerfile }}
+          LANE_CONTEXT: ${{ inputs.context }}
+          LANE_SOURCE_SHA: ${{ github.sha }}
+          LANE_RUN_ID: ${{ github.run_id }}
+          LANE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          LANE_EVIDENCE_TAG_PREFIX: ${{ inputs.evidence-tag-prefix }}
+        run: |
+          set -euo pipefail
+          LANE_ROOT="${RUNNER_TEMP}/image-lane"
+          BUILD_HOME="${LANE_ROOT}/home"
+          mkdir -p "$BUILD_HOME/.docker" "$BUILD_HOME/.cargo-home" "$BUILD_HOME/.rustup-home" \
+            "$BUILD_HOME/.cache" "${LANE_ROOT}/image-oci" "${LANE_ROOT}/evidence" "${LANE_ROOT}/evidence-oci"
+          LANE_TAG="${LANE_TAG_INPUT:0:8}"
+          test -n "${LANE_TAG}"
+          case "${LANE_EVIDENCE_TAG_PREFIX}" in
+            ''|*[!a-z0-9.-]*) echo "FATAL: evidence-tag-prefix must be [a-z0-9.-]" >&2; exit 1 ;;
+          esac
+          {
+            printf 'HOME=%s\n' "${BUILD_HOME}"
+            printf 'DOCKER_CONFIG=%s\n' "${BUILD_HOME}/.docker"
+            printf 'XDG_CACHE_HOME=%s\n' "${BUILD_HOME}/.cache"
+            printf 'CARGO_HOME=%s\n' "${BUILD_HOME}/.cargo-home"
+            printf 'RUSTUP_HOME=%s\n' "${BUILD_HOME}/.rustup-home"
+            printf 'PYTHONDONTWRITEBYTECODE=1\n'
+            printf 'LANE_ROOT=%s\n' "${LANE_ROOT}"
+            printf 'IMAGE=%s\n' "${LANE_IMAGE}"
+            printf 'IMAGE_TAG=%s\n' "${LANE_TAG}"
+            printf 'PLATFORMS=%s\n' "${LANE_PLATFORMS}"
+            printf 'DOCKERFILE=%s\n' "${LANE_DOCKERFILE}"
+            printf 'CONTEXT=%s\n' "${LANE_CONTEXT}"
+            printf 'SOURCE_SHA=%s\n' "${LANE_SOURCE_SHA}"
+            printf 'OCI_DIR=%s\n' "${LANE_ROOT}/image-oci"
+            printf 'EVIDENCE_DIR=%s\n' "${LANE_ROOT}/evidence"
+            printf 'BUILD_EVIDENCE_DIR=%s\n' "${LANE_ROOT}/evidence"
+            printf 'BUILD_EVIDENCE_OCI_DIR=%s\n' "${LANE_ROOT}/evidence-oci"
+            printf 'BUILD_EVIDENCE_TAG=%s-%s-%s-%s\n' "${LANE_EVIDENCE_TAG_PREFIX}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
+          } >> "$GITHUB_ENV"
+          {
+            printf 'image_artifact=image-lane-image-%s-%s-%s\n' "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
+            printf 'evidence_artifact=image-lane-evidence-%s-%s-%s\n' "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
+          } >> "$GITHUB_OUTPUT"
+          echo "lane_context image=${LANE_IMAGE} tag=${LANE_TAG} platforms=${LANE_PLATFORMS}"
+
+      # A foreign platform would silently run under emulation (QEMU/binfmt).
+      # Refuse it here, before the build, rather than after the fact.
+      - name: Prove native single-platform build
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64|amd64) native=amd64 ;;
+            aarch64|arm64) native=arm64 ;;
+            *) echo "FATAL: unsupported runner architecture $(uname -m)" >&2; exit 1 ;;
+          esac
+          if [ "${PLATFORMS}" != "linux/${native}" ]; then
+            echo "FATAL: platforms '${PLATFORMS}' is not this runner's native platform 'linux/${native}'" >&2
+            echo "The lane does not emulate foreign architectures; use a native runner class." >&2
+            exit 1
+          fi
+          echo "native_platform_ok platforms=${PLATFORMS} machine=$(uname -m)"
+
+      # A private cross-project cargo/git dependency needs a read credential.
+      # The caller supplies the App id/key; the action mints one job-scoped
+      # installation token, exports it as a git credential file, and never
+      # writes it into a layer, a tag, or the global git config.
+      - name: Authorize private cargo git deps
+        if: ${{ inputs['builder-app-id'] != '' }}
+        uses: ./.image-lane/.github/actions/git-app-credentials
+        with:
+          app-id: ${{ inputs['builder-app-id'] }}
+          private-key: ${{ secrets.builder-private-key }}
+          repositories: ${{ inputs['builder-repositories'] }}
+
+      - name: Remove the job-scoped git credential
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${CARGO_GIT_CREDENTIALS_FILE:-}" && "${CARGO_GIT_CREDENTIALS_FILE}" == "${RUNNER_TEMP}/"* ]]; then
+            rm -f -- "${CARGO_GIT_CREDENTIALS_FILE}"
+          fi
+          echo "git_credential_split_context_cleared"
+
+      - name: Prove native build engine
+        shell: bash
+        env:
+          BUILD_COMMAND: ${{ inputs['build-command'] }}
+        run: |
+          set -euo pipefail
+          if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+            docker version
+          elif [[ -n "${BUILD_COMMAND}" ]]; then
+            echo "no live Docker daemon; the caller build command owns its engine"
+          else
+            echo "FATAL: no live Docker daemon and no caller build command" >&2
+            exit 1
+          fi
+
+      - name: Build image
+        shell: bash
+        env:
+          BUILD_COMMAND: ${{ inputs['build-command'] }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${BUILD_COMMAND}" ]]; then
+            echo "lane_build=custom"
+            bash -lc "${BUILD_COMMAND}"
+            exit 0
+          fi
+          test -n "${DOCKERFILE:?dockerfile input required for the default build}"
+          echo "lane_build=default dockerfile=${DOCKERFILE} context=${CONTEXT}"
+          BUILDX_GIT_INFO=true BUILDX_GIT_CHECK_DIRTY=true docker buildx build \
+            --platform "${PLATFORMS}" \
+            --file "${DOCKERFILE}" \
+            --tag "${IMAGE}:${IMAGE_TAG}" \
+            --output "type=oci,tar=false,dest=${OCI_DIR}" \
+            --metadata-file "${LANE_ROOT}/buildx-metadata.json" \
+            --provenance=false --sbom=false \
+            "${CONTEXT}"
+
+      - name: Prove the OCI layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "${OCI_DIR}"
+          test -f "${OCI_DIR}/index.json"
+          test -f "${OCI_DIR}/oci-layout"
+          test -d "${OCI_DIR}/blobs"
+          python3 - "${OCI_DIR}/index.json" <<'PY'
+          import json, sys
+          index = json.load(open(sys.argv[1]))
+          manifests = index.get("manifests", [])
+          assert manifests, "index has no manifests"
+          images = [m for m in manifests if (m.get("platform") or {}).get("os") != "unknown"]
+          assert len(images) == 1, f"expected exactly one image, found {len(images)}"
+          print(f"oci_layout_ok images=1 attestations={len(manifests) - len(images)}")
+          PY
+
+      # Evidence is packaged once, here. The caller's promotion boundary verifies
+      # it once; this lane never re-verifies its own bytes.
+      - name: Package build evidence
+        shell: bash
+        env:
+          EVIDENCE_COMMAND: ${{ inputs['evidence-command'] }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${BUILD_EVIDENCE_DIR}" "${BUILD_EVIDENCE_OCI_DIR}"
+          if [[ -n "${EVIDENCE_COMMAND}" ]]; then
+            echo "lane_evidence=custom"
+            bash -lc "${EVIDENCE_COMMAND}"
+          else
+            echo "lane_evidence=default"
+            python3 .image-lane/scripts/pack-image-evidence.py
+          fi
+          test -n "$(ls -A "${BUILD_EVIDENCE_DIR}")"
+          echo "evidence_dir_ok files=$(find "${BUILD_EVIDENCE_DIR}" -type f | wc -l)"
+
+      - name: Upload immutable image OCI layout
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.name.outputs.image_artifact }}
+          path: ${{ env.OCI_DIR }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+          compression-level: 0
+
+      - name: Upload evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.name.outputs.evidence_artifact }}
+          path: |
+            ${{ env.BUILD_EVIDENCE_DIR }}
+            ${{ env.BUILD_EVIDENCE_OCI_DIR }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+          compression-level: 0
+
+  publish:
+    name: publish
+    needs: compile
+    runs-on: ${{ inputs.publisher-label }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      image_tag: ${{ steps.readback.outputs.image_tag }}
+      digest: ${{ steps.readback.outputs.digest }}
+      evidence_tag: ${{ steps.readback.outputs.evidence_tag }}
+      evidence_digest: ${{ steps.readback.outputs.evidence_digest }}
+      readback_artifact: ${{ steps.readback.outputs.readback_artifact }}
+      verify_artifact: ${{ steps.verify.outputs.verify_artifact }}
+    steps:
+      - name: Check out this lane
+        uses: actions/checkout@v4
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ inputs['lane-ref'] }}
+          path: .image-lane
+          persist-credentials: false
+
+      - name: Prepare publisher environment
+        shell: bash
+        env:
+          LANE_IMAGE: ${{ inputs.image }}
+          LANE_TAG_INPUT: ${{ inputs.tag }}
+          LANE_SOURCE_SHA: ${{ github.sha }}
+          LANE_EVIDENCE_TAG_PREFIX: ${{ inputs.evidence-tag-prefix }}
+        run: |
+          set -euo pipefail
+          if ! command -v skopeo >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+            sudo -n apt-get update -qq
+            sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq skopeo python3
+          fi
+          LANE_ROOT="${RUNNER_TEMP}/image-lane"
+          mkdir -p "${LANE_ROOT}/home" "${LANE_ROOT}/publisher-transfer" "${LANE_ROOT}/readback"
+          LANE_TAG="${LANE_TAG_INPUT:0:8}"
+          {
+            printf 'HOME=%s\n' "${LANE_ROOT}/home"
+            printf 'LANE_ROOT=%s\n' "${LANE_ROOT}"
+            printf 'IMAGE=%s\n' "${LANE_IMAGE}"
+            printf 'IMAGE_TAG=%s\n' "${LANE_TAG}"
+            printf 'SOURCE_SHA=%s\n' "${LANE_SOURCE_SHA}"
+            printf 'OCI_DIR=%s\n' "${LANE_ROOT}/publisher-transfer/image"
+            printf 'BUILD_EVIDENCE_DIR=%s\n' "${LANE_ROOT}/publisher-transfer/evidence/evidence"
+            printf 'BUILD_EVIDENCE_OCI_DIR=%s\n' "${LANE_ROOT}/publisher-transfer/evidence/evidence-oci"
+            printf 'READBACK_DIR=%s\n' "${LANE_ROOT}/readback"
+            printf 'DOCKER_CONFIG=%s\n' "${LANE_ROOT}/registry-v2-docker"
+            printf 'SKOPEO_AUTH_FILE=%s\n' "${LANE_ROOT}/registry-v2-docker/skopeo-auth.json"
+            printf 'BUILD_EVIDENCE_TAG=%s-%s-%s-%s\n' "${LANE_EVIDENCE_TAG_PREFIX}" "${LANE_SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
+          } >> "$GITHUB_ENV"
+          skopeo --version
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "evidence tooling requires Python 3.11+"'
+
+      - name: Download this attempt's image transfer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image-lane-image-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/image-lane/publisher-transfer/image
+
+      - name: Download this attempt's evidence transfer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image-lane-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/image-lane/publisher-transfer/evidence
+
+      - name: Registry auth (SPIFFE JWT-SVID -> identitytoken)
+        shell: bash
+        env:
+          LANE_IMAGE: ${{ inputs.image }}
+          LANE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${DOCKER_CONFIG}"
+          python3 .image-lane/scripts/mint-registry-auth.py \
+            --image "${LANE_IMAGE}" \
+            --output-dir "${DOCKER_CONFIG}" \
+            --run-id "${LANE_RUN_ID}"
+          test -s "${DOCKER_CONFIG}/config.json"
+          test -s "${SKOPEO_AUTH_FILE}"
+
+      # Build-once / promote-many: the exact locally built OCI bytes are pushed
+      # once under the content tag. `latest` is never published.
+      - name: Push immutable image and evidence bytes
+        shell: bash
+        env:
+          LANE_IMAGE: ${{ inputs.image }}
+          LANE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -n "${IMAGE_TAG:?}"
+          test -d "${OCI_DIR}"
+          test -f "${OCI_DIR}/index.json"
+          test -f "${OCI_DIR}/oci-layout"
+          test -s "${SKOPEO_AUTH_FILE:?}"
+          skopeo copy --authfile "${SKOPEO_AUTH_FILE}" --all --preserve-digests \
+            "oci:${OCI_DIR}" "docker://${LANE_IMAGE}:${IMAGE_TAG}"
+          if [ -f "${BUILD_EVIDENCE_OCI_DIR}/index.json" ]; then
+            skopeo copy --authfile "${SKOPEO_AUTH_FILE}" --preserve-digests \
+              "oci:${BUILD_EVIDENCE_OCI_DIR}" "docker://${LANE_IMAGE}:${BUILD_EVIDENCE_TAG}"
+          fi
+          echo "push_ok image=${LANE_IMAGE}:${IMAGE_TAG} evidence_tag=${BUILD_EVIDENCE_TAG}"
+
+      # Promotion boundary input: the raw registry bytes, read back through the
+      # minted repository credential. The published digest must equal the digest
+      # of the locally built index; nothing is pinned from an unverified readback.
+      - name: Capture registry readback
+        id: readback
+        shell: bash
+        env:
+          LANE_IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${READBACK_DIR}"
+          skopeo inspect --authfile "${SKOPEO_AUTH_FILE}" --raw \
+            "docker://${LANE_IMAGE}:${IMAGE_TAG}" > "${READBACK_DIR}/image.json"
+          DIGEST="sha256:$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "${READBACK_DIR}/image.json")"
+          LOCAL_INDEX="sha256:$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "${OCI_DIR}/index.json")"
+          if [ "${DIGEST}" != "${LOCAL_INDEX}" ]; then
+            echo "FATAL: registry readback ${DIGEST} does not equal the locally built ${LOCAL_INDEX}" >&2
+            exit 1
+          fi
+          EVIDENCE_DIGEST=""
+          if skopeo inspect --authfile "${SKOPEO_AUTH_FILE}" --raw \
+              "docker://${LANE_IMAGE}:${BUILD_EVIDENCE_TAG}" > "${READBACK_DIR}/evidence.json"; then
+            EVIDENCE_DIGEST="sha256:$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "${READBACK_DIR}/evidence.json")"
+          else
+            rm -f -- "${READBACK_DIR}/evidence.json"
+          fi
+          {
+            printf 'image_tag=%s\n' "${IMAGE_TAG}"
+            printf 'digest=%s\n' "${DIGEST}"
+            printf 'evidence_tag=%s\n' "${BUILD_EVIDENCE_TAG}"
+            printf 'evidence_digest=%s\n' "${EVIDENCE_DIGEST}"
+            printf 'readback_artifact=image-lane-readback-%s-%s-%s\n' "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            printf 'REGISTRY_DIGEST=%s\n' "${DIGEST}"
+            printf 'BUILD_EVIDENCE_DIGEST=%s\n' "${EVIDENCE_DIGEST}"
+            printf 'IMAGE_REGISTRY_MANIFEST=%s\n' "${READBACK_DIR}/image.json"
+            printf 'EVIDENCE_REGISTRY_MANIFEST=%s\n' "${READBACK_DIR}/evidence.json"
+          } >> "$GITHUB_ENV"
+          echo "promotion_boundary_ok digest=${DIGEST} evidence_digest=${EVIDENCE_DIGEST:-none}"
+
+      - name: Upload registry readback
+        if: ${{ steps.readback.outputs.readback_artifact != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.readback.outputs.readback_artifact }}
+          path: ${{ env.READBACK_DIR }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+      # Exactly one verification, at the promotion boundary. It runs here, where
+      # the freshly minted credential produced the raw registry readback, and its
+      # receipt travels to the caller's pin job instead of being recomputed. The
+      # registry credential is NOT in this step's environment: the credential
+      # lives in DOCKER_CONFIG and stays with the push/readback steps.
+      - name: Verify promotion evidence
+        id: verify
+        if: ${{ inputs['verify-command'] != '' }}
+        shell: bash
+        env:
+          VERIFY_COMMAND: ${{ inputs['verify-command'] }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${LANE_ROOT}/verify"
+          echo "lane_verify=custom"
+          bash -lc "${VERIFY_COMMAND}"
+          test -n "$(ls -A "${LANE_ROOT}/verify")"
+          printf 'verify_artifact=image-lane-verification-%s-%s-%s\n' "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "verify_dir_ok files=$(find "${LANE_ROOT}/verify" -type f | wc -l)"
+
+      - name: Upload verification receipt
+        if: ${{ steps.verify.outputs.verify_artifact != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.verify.outputs.verify_artifact }}
+          path: ${{ env.LANE_ROOT }}/verify
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+      - name: Remove registry credentials
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The minted JWT is never an artifact or a cache input. Remove the
+          # complete tool-auth directory on every terminal path, including
+          # push/readback failures, without printing credential contents.
+          if [[ -n "${DOCKER_CONFIG:-}" && "${DOCKER_CONFIG}" == "${RUNNER_TEMP}/"* ]]; then
+            rm -rf -- "${DOCKER_CONFIG}"
+          elif [[ -n "${SKOPEO_AUTH_FILE:-}" ]]; then
+            rm -f -- "${SKOPEO_AUTH_FILE}"
+          fi
