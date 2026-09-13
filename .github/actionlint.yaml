@@ -1,4 +1,16 @@
+# `job.workflow_sha` / `job.workflow_ref` are real reusable-workflow contexts
+# (verified live 2026-09-13: `job.workflow_sha` = the called workflow's commit,
+# `github.workflow_sha` = the caller's). actionlint's bundled schema does not
+# know the `job` object properties, so it reports
+# `property "workflow_sha" is not defined in object type ... [expression]` for
+# the image lane's lane-ref fallback. That warning is accepted and documented
+# rather than traded for a property that would check out the wrong tree.
 self-hosted-runner:
   labels:
+    # Pre-existing org labels.
     - standard
     - sylphx
+    # Fleet classes the image lane and its callers request.
+    - sylphx-linux-standard
+    - sylphx-linux-xlarge
+    - sylphx-registry-publisher

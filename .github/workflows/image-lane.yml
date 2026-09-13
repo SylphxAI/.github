@@ -20,7 +20,8 @@ name: Image lane
 #     (If no runner is served for the exclusive class at all, the job queues:
 #     GitHub has no queue timeout, and that is a capacity fault, not this one.)
 #   * the registry credential is minted after the long build, is never stored in
-#     GitHub, is scoped to the minting step's environment only, and is removed
+#     GitHub, is held only by the lane's own tool steps (mint, push, readback),
+#     is deleted before any caller-supplied verifier runs, and is removed again
 #     on every terminal path.
 #
 # Trust boundary: `build-command`, `evidence-command` and `verify-command` are
@@ -579,7 +580,11 @@ jobs:
             printf 'REGISTRY_DIGEST=%s\n' "${DIGEST}"
             printf 'BUILD_EVIDENCE_DIGEST=%s\n' "${EVIDENCE_DIGEST}"
             printf 'IMAGE_REGISTRY_MANIFEST=%s\n' "${READBACK_DIR}/image.json"
-            printf 'EVIDENCE_REGISTRY_MANIFEST=%s\n' "${READBACK_DIR}/evidence.json"
+            # Exported only when the evidence readback actually produced bytes;
+            # a caller verifier must treat a missing path as "no readback".
+            if [ -s "${READBACK_DIR}/evidence.json" ]; then
+              printf 'EVIDENCE_REGISTRY_MANIFEST=%s\n' "${READBACK_DIR}/evidence.json"
+            fi
           } >> "$GITHUB_ENV"
           echo "promotion_boundary_ok digest=${DIGEST} evidence_digest=${EVIDENCE_DIGEST:-none}"
 
