@@ -1,15 +1,17 @@
 <!--
   Org profile: https://github.com/SylphxAI
   Copy SSOT: https://github.com/SylphxAI/brand/docs/copy
-  Status: PROPOSAL draft — post-cut positioning story (owner decision pending;
-  tagline and Sylphx AI family visibility are owner calls). Do not merge before
-  the owner accepts.
+  Status: adopted 2026-09-13 (owner decision) — post-cut positioning story,
+  tagline C primary (short form B where space is tight), Sylphx AI family
+  pointer kept. Product links are declared destinations (locator map), not an
+  availability or launch-status claim.
 -->
 
 <img src="https://mark.sylphx.com/api/v1/banner?type=aurora&theme=sylphx&height=220&text=Sylphx&fontSize=54&animation=twinkling&desc=Independent%20services.%20One%20company.%20Built%20to%20compose.&descSize=16&descAlignY=62&fontAlignY=42" width="100%" alt="Sylphx"/>
 
-<!-- Proposal: tagline shown is candidate C; the owner picks the final line —
-     candidates and tradeoffs in SylphxAI/brand docs/copy/messaging.md (PR #9). -->
+<!-- Adopted tagline C (owner decision 2026-09-13); short form B — "Take what
+     you need. It all fits." — where space is tight. Home and retired
+     alternatives: SylphxAI/brand docs/copy/messaging.md. -->
 
 <p align="center">
   <b>Cloud services, à la carte · OSS toolchain · London</b><br/>
@@ -20,9 +22,8 @@
   <a href="https://sylphx.com"><img src="https://img.shields.io/badge/Website-sylphx.com-4A90E2?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Website"/></a>
   <a href="https://www.npmjs.com/~sylphx"><img src="https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm&logoColor=white" alt="npm"/></a>
   <a href="https://github.com/SylphxAI/brand"><img src="https://img.shields.io/badge/Brand-SSOT-1A1A2E?style=for-the-badge" alt="Brand"/></a>
-  <!-- Proposal (owner call): surfacing the Sylphx AI family. Recommendation:
-       yes, pointer only — hub row in Products below plus this badge. Drop both
-       if the owner prefers no family line on the org profile. -->
+  <!-- Adopted 2026-09-13: Sylphx AI family surfaced as a pointer only — this
+       badge plus the hub row below; no contract or credential claims. -->
   <a href="https://sylphx.ai"><img src="https://img.shields.io/badge/Sylphx%20AI-sylphx.ai-D87000?style=for-the-badge" alt="Sylphx AI"/></a>
   <a href="https://mark.sylphx.com"><img src="https://mark.sylphx.com/api/v1/deploy?service=mark&style=for-the-badge" alt="Mark on Sylphx"/></a>
   <a href="https://status.sylphx.com"><img src="https://img.shields.io/badge/Status-status.sylphx.com-27AE60?style=for-the-badge" alt="Status"/></a>
@@ -72,7 +73,7 @@ Cloud credentials admit Cloud APIs only; Cloud never proxies a peer's API.
 We run our own product and agent systems on Sylphx — through the same public
 contracts and admission as any customer.
 
-<!-- Proposal: candidate C tagline; owner decision pending (SylphxAI/brand#9). -->
+<!-- Tagline: adopted C (owner decision 2026-09-13; SylphxAI/brand#9). -->
 
 **[Brand & copy SSOT](https://github.com/SylphxAI/brand)**
 
