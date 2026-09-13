@@ -1,0 +1,15 @@
+name: Lane context probe (temporary)
+on:
+  workflow_call:
+jobs:
+  probe:
+    name: context-probe
+    runs-on: sylphx-linux-standard
+    steps:
+      - name: Print workflow context candidates
+        run: |
+          echo "candidate github.workflow_sha=[${{ github.workflow_sha }}]"
+          echo "candidate github.workflow_ref=[${{ github.workflow_ref }}]"
+          echo "candidate job.workflow_sha=[${{ job.workflow_sha }}]"
+          echo "candidate job.workflow_ref=[${{ job.workflow_ref }}]"
+          echo "candidate github.job_workflow_sha=[${{ github.job_workflow_sha }}]"
