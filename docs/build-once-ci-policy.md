@@ -1,7 +1,7 @@
 # Agent-native Fast Trunk CI/CD (fleet policy)
 
 **Canonical ADR (Platform):**  
-[ADR-01KYTNE0B96325DDAD28FD1341 — Agent-native Fast Trunk CI/CD](https://github.com/SylphxAI/platform/blob/main/docs/adr/ADR-01KYTNE0B96325DDAD28FD1341-agent-native-fast-trunk-cicd.md)
+[ADR-01KYTNE0B96325DDAD28FD1341 — Agent-native Fast Trunk CI/CD](https://github.com/SylphxAI/cloud/blob/main/docs/adr/ADR-01KYTNE0B96325DDAD28FD1341-agent-native-fast-trunk-cicd.md)
 
 Do not invent alternate ADR filenames (e.g. `ADR-01KYTNAGENTFASTTRUNK01`).
 
