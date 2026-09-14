@@ -75,7 +75,9 @@ on:
           Optional caller-owned build command (the single home for a repo-specific build). It runs in the
           caller checkout with OCI_DIR, BUILD_EVIDENCE_DIR, BUILD_EVIDENCE_OCI_DIR, IMAGE, IMAGE_TAG,
           PLATFORMS, SOURCE_SHA and CARGO_GIT_CREDENTIALS_FILE exported, and must leave an OCI layout in
-          OCI_DIR.
+          OCI_DIR. Buildx derives `-dirty` from ignored files too, so this lane's nested `.image-lane`
+          checkout brands engine builds dirty: callers needing VCS-clean provenance must relocate
+          `.image-lane` outside the checkout for engine execution and restore it after.
         required: false
         type: string
         default: ""
