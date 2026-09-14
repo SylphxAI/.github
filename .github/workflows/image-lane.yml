@@ -367,6 +367,16 @@ jobs:
         shell: bash
         env:
           BUILD_COMMAND: ${{ inputs['build-command'] }}
+          # The `build-command` input's contract (above) promises
+          # "IMAGE, IMAGE_TAG, SOURCE_SHA, LANE_ROOT and GH_TOKEN exported".
+          # A caller-side pre-build step needs the run's read token to record
+          # authenticated provider observations before anything is compiled
+          # (hands: `scripts/record-hands-build-workflow.py`, which
+          # `hands-build-evidence.py begin` refuses CI without). Callers that
+          # must not expose the token to compilers unset it in their own
+          # command before the engine step.
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
           if [[ -n "${BUILD_COMMAND}" ]]; then
