@@ -606,8 +606,8 @@ jobs:
           echo "push_ok image=${LANE_IMAGE}:${IMAGE_TAG} evidence_tag=${BUILD_EVIDENCE_TAG}"
 
       # Promotion boundary input: the raw registry bytes, read back through the
-      # minted repository credential. The published digest must equal the digest
-      # of the locally built index; nothing is pinned from an unverified readback.
+      # minted repository credential. The published content must equal the
+      # locally built content by digest; nothing is pinned from an unverified readback.
       - name: Capture registry readback
         id: readback
         shell: bash
@@ -620,11 +620,54 @@ jobs:
           skopeo inspect --authfile "${SKOPEO_AUTH_FILE}" --raw \
             "docker://${LANE_IMAGE}:${IMAGE_TAG}" > "${READBACK_DIR}/image.json"
           DIGEST="sha256:$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "${READBACK_DIR}/image.json")"
-          LOCAL_INDEX="sha256:$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "${OCI_DIR}/index.json")"
-          if [ "${DIGEST}" != "${LOCAL_INDEX}" ]; then
-            echo "FATAL: registry readback ${DIGEST} does not equal the locally built ${LOCAL_INDEX}" >&2
-            exit 1
-          fi
+          # Content equality, not byte equality: the registry may normalize the
+          # envelope (OCI index vs Docker list, whitespace, key order), and a
+          # single-platform push may be stored as one manifest while the local
+          # layout keeps its index wrapper (live 2026-09-14: byte comparison
+          # refused a correct push, e7f9ee94.. vs 90580359..). Compare the
+          # referenced content digests exactly; the promotion digest stays the
+          # registry's own bytes so nothing is pinned from an unverified read.
+          python3 - "${READBACK_DIR}/image.json" "${OCI_DIR}" <<'PY'
+          import json, sys
+          from pathlib import Path
+          remote = json.loads(Path(sys.argv[1]).read_bytes())
+          local_index = json.loads((Path(sys.argv[2]) / "index.json").read_bytes())
+          def child_digests(doc):
+              manifests = doc.get("manifests")
+              if not isinstance(manifests, list):
+                  return None
+              out = []
+              for m in manifests:
+                  if not isinstance(m, dict) or not isinstance(m.get("digest"), str):
+                      raise SystemExit("FATAL: manifest entry without a digest; refusing to promote")
+                  out.append(m["digest"])
+              return sorted(out)
+          local_children = child_digests(local_index)
+          if local_children is None:
+              raise SystemExit("FATAL: locally built index.json has no manifests list; refusing to promote")
+          remote_children = child_digests(remote)
+          if remote_children is not None:
+              if remote_children != local_children:
+                  print(f"registry manifest digests: {remote_children}", file=sys.stderr)
+                  print(f"local manifest digests: {local_children}", file=sys.stderr)
+                  raise SystemExit(f"FATAL: registry references {len(remote_children)} manifests, locally built {len(local_children)}; refusing to promote")
+              print(f"readback_ok manifests={len(remote_children)}", file=sys.stderr)
+          else:
+              if len(local_children) != 1:
+                  print(f"registry mediaType: {remote.get('mediaType')}", file=sys.stderr)
+                  print(f"local manifest digests: {local_children}", file=sys.stderr)
+                  raise SystemExit("FATAL: registry returned a single manifest for a multi-manifest local index; refusing to promote")
+              blob = (Path(sys.argv[2]) / "blobs" / "sha256" / local_children[0].removeprefix("sha256:")).read_bytes()
+              local_manifest = json.loads(blob)
+              if "config" not in local_manifest or "layers" not in local_manifest or "config" not in remote or "layers" not in remote:
+                  print(f"registry keys: {sorted(remote.keys())}", file=sys.stderr)
+                  raise SystemExit("FATAL: single-manifest readback lacks config/layers; refusing to promote")
+              if remote["config"].get("digest") != local_manifest["config"].get("digest") or [l.get("digest") for l in remote["layers"]] != [l.get("digest") for l in local_manifest["layers"]]:
+                  print(f"registry config/layers: {remote['config'].get('digest')} {[l.get('digest') for l in remote.get('layers', [])]}", file=sys.stderr)
+                  print(f"local config/layers: {local_manifest['config'].get('digest')} {[l.get('digest') for l in local_manifest.get('layers', [])]}", file=sys.stderr)
+                  raise SystemExit("FATAL: registry single-manifest content differs from the locally built image; refusing to promote")
+              print("readback_ok single-manifest", file=sys.stderr)
+          PY
           EVIDENCE_DIGEST=""
           if skopeo inspect --authfile "${SKOPEO_AUTH_FILE}" --raw \
               "docker://${LANE_IMAGE}:${BUILD_EVIDENCE_TAG}" > "${READBACK_DIR}/evidence.json"; then
