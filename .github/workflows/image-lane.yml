@@ -363,6 +363,35 @@ jobs:
             exit 1
           fi
 
+      # The lane exports OCI layouts (`--output type=oci`, in the default build
+      # and in caller probes like hands' native-VCS check), which the default
+      # `docker` driver cannot do. The pre-lane caller workflow created this
+      # builder via setup-buildx-action; the #592 lane migration dropped it and
+      # every lane compile since dies with "OCI exporter is not supported for
+      # the docker driver" (live 2026-09-14, hands run 34857686002). The lane
+      # owns it now: same driver, same network flag and buildkitd entitlements
+      # the proven caller setup used. Single native platform only, so no QEMU.
+      # Host-pack callers without a daemon skip silently.
+      - name: Ensure a docker-container builder for OCI export
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+            echo "no live Docker daemon; caller owns its engine (host-pack)"
+            exit 0
+          fi
+          if docker buildx inspect 2>/dev/null | grep -q 'Driver: *docker-container'; then
+            echo "docker-container builder already active"
+            exit 0
+          fi
+          docker buildx create \
+            --name "lane-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --driver docker-container \
+            --driver-opt network=host \
+            --buildkitd-flags "--allow-insecure-entitlement security.insecure --allow-insecure-entitlement network.host" \
+            --use
+          docker buildx inspect --bootstrap
+
       - name: Build image
         shell: bash
         env:
