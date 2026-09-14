@@ -236,6 +236,28 @@ jobs:
           path: .image-lane
           persist-credentials: false
 
+      # This job runs the caller's own build/evidence commands from the caller
+      # checkout, and this lane checks itself out *inside* that checkout
+      # (`.image-lane`). A caller that proves it built from pristine source
+      # (`git status --porcelain --untracked-files=all`, e.g. hands'
+      # `scripts/hands-build-evidence.py::source_snapshot`) would otherwise fail
+      # on the lane's own scratch directory. Exclude it per clone so no caller
+      # needs a repo change: `.git/info/exclude` is local to this runner's
+      # checkout and cannot hide a tracked file.
+      # Live 2026-09-14: hands run 34835849551 `Build & Deploy / compile` failed
+      # with `build evidence failed: source checkout has changed or untracked
+      # files`.
+      - name: Exclude the lane scratch checkout from caller dirty checks
+        shell: bash
+        run: |
+          # Best effort: a caller that cannot be helped here must still fail on
+          # its own evidence gate (with its own message), not on this step.
+          if exclude="$(git rev-parse --git-path info/exclude 2>/dev/null)"; then
+            mkdir -p "$(dirname "$exclude")" 2>/dev/null || true
+            grep -qxF '.image-lane/' "$exclude" 2>/dev/null ||
+              printf '.image-lane/\n' >> "$exclude" 2>/dev/null || true
+          fi
+
       # A bounded, out-of-checkout runtime home: Buildx counts ignored files when
       # checking native VCS dirty state, and self-hosted runner images may ship a
       # HOME that is not writable for the job user.
