@@ -511,6 +511,34 @@ jobs:
       readback_artifact: ${{ steps.readback.outputs.readback_artifact }}
       verify_artifact: ${{ steps.verify.outputs.verify_artifact }}
     steps:
+      # The caller verifier (`verify-command`) is caller-owned shell that runs
+      # in the caller's own checkout (trust-boundary contract at the top of
+      # this file), using caller-relative paths such as `scripts/...`. Without
+      # this checkout the verify step runs in an empty workspace and every
+      # caller verifier fails (live 2026-09-14: hands publish reached
+      # `promotion_boundary_ok` then died with
+      # `can't open file '.../hands/scripts/hands-build-evidence.py'`).
+      # Pinned to the exact built source SHA, not the moving ref tip.
+      - name: Check out the caller
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Same nested-checkout guard as the compile job: the lane lives at
+      # `.image-lane` inside this checkout, so a caller verifier that proves
+      # pristine source would trip on the lane's own directory without this.
+      # Best effort (same wording as compile): a caller that cannot be helped
+      # here still fails on its own gate, not on this step.
+      - name: Exclude the lane scratch checkout from caller dirty checks
+        shell: bash
+        run: |
+          if exclude="$(git rev-parse --git-path info/exclude 2>/dev/null)"; then
+            mkdir -p "$(dirname "$exclude")" 2>/dev/null || true
+            grep -qxF '.image-lane/' "$exclude" 2>/dev/null ||
+              printf '.image-lane/\n' >> "$exclude" 2>/dev/null || true
+          fi
+
       - name: Check out this lane
         uses: actions/checkout@v4
         with:
