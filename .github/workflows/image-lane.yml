@@ -581,16 +581,50 @@ jobs:
           skopeo --version
           python3 -c 'import sys; assert sys.version_info >= (3, 11), "evidence tooling requires Python 3.11+"'
 
-      - name: Download this attempt's image transfer
+      # The compile leg uploads attempt-scoped artifacts so a re-run can never
+      # merge bytes from two attempts. The publish leg must therefore resolve
+      # what this run actually produced instead of recomputing
+      # `…-<github.run_attempt>`: a partial re-run ("Re-run failed jobs") only
+      # re-runs the publish job, so the newest artifact still carries the
+      # attempt that built it. Live 2026-09-15 (hands run 34986604012): attempt
+      # 2 looked for `…-34986604012-2` while the run only held `…-1` and failed
+      # with `Unable to download artifact(s): Artifact not found`.
+      - name: Resolve this run's image transfer
+        id: image_transfer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact="$(python3 .image-lane/scripts/resolve-lane-artifact.py \
+            --repo "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" \
+            --attempt "${GITHUB_RUN_ATTEMPT}" \
+            --prefix "image-lane-image-${{ github.sha }}-${{ github.run_id }}")"
+          printf 'name=%s\n' "${artifact}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download this run's image transfer
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: image-lane-image-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.image_transfer.outputs.name }}
           path: ${{ runner.temp }}/image-lane/publisher-transfer/image
 
-      - name: Download this attempt's evidence transfer
+      - name: Resolve this run's evidence transfer
+        id: evidence_transfer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact="$(python3 .image-lane/scripts/resolve-lane-artifact.py \
+            --repo "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" \
+            --attempt "${GITHUB_RUN_ATTEMPT}" \
+            --prefix "image-lane-evidence-${{ github.sha }}-${{ github.run_id }}")"
+          printf 'name=%s\n' "${artifact}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download this run's evidence transfer
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: image-lane-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.evidence_transfer.outputs.name }}
           path: ${{ runner.temp }}/image-lane/publisher-transfer/evidence
 
       - name: Registry auth (SPIFFE JWT-SVID -> identitytoken)
