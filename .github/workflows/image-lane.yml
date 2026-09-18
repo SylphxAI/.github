@@ -659,8 +659,31 @@ jobs:
           test -f "${OCI_DIR}/index.json"
           test -f "${OCI_DIR}/oci-layout"
           test -s "${SKOPEO_AUTH_FILE:?}"
+          # The published reference MUST be an OCI index, even when the build
+          # produced a single platform.
+          #
+          # `skopeo copy --all` from a 1-entry OCI layout pushes the child
+          # manifest as the tag and drops the index wrapper: the registry then
+          # serves `application/vnd.oci.image.manifest.v1+json` for a tag whose
+          # local layout had an `index.json`. Any consumer that resolves an index
+          # -- `apps_delivery.resolve_bootstrap_artifact` is one, via the Hands
+          # probe receipt's `indexManifest` -- then has nothing to read, because
+          # the probe only fetches an index when the runtime reports a
+          # per-platform CHILD digest, which only happens if the registry served
+          # one. Measured 2026-09-18: every Hands receipt is a bare manifest while
+          # the api image published by the default path is a 2-descriptor index,
+          # and the bare-manifest shape left the Cubeage promote unable to create
+          # its first Knative Service.
+          #
+          # `--format v2s2` is not enough (it selects a schema, not an index).
+          # Use `--multi-arch index-only` so a one-platform layout still lands as
+          # an index of one descriptor; a genuinely multi-platform layout is
+          # unaffected because it is already an index.
           skopeo copy --authfile "${SKOPEO_AUTH_FILE}" --all --preserve-digests \
+            --multi-arch index-only \
             "oci:${OCI_DIR}" "docker://${LANE_IMAGE}:${IMAGE_TAG}"
+          # The evidence bundle is a payload the verifier reads by digest, not a
+          # reference any runtime resolves, so it keeps the plain copy.
           if [ -f "${BUILD_EVIDENCE_OCI_DIR}/index.json" ]; then
             skopeo copy --authfile "${SKOPEO_AUTH_FILE}" --preserve-digests \
               "oci:${BUILD_EVIDENCE_OCI_DIR}" "docker://${LANE_IMAGE}:${BUILD_EVIDENCE_TAG}"
@@ -715,20 +738,20 @@ jobs:
                   raise SystemExit(f"FATAL: registry references {len(remote_children)} manifests, locally built {len(local_children)}; refusing to promote")
               print(f"readback_ok manifests={len(remote_children)}", file=sys.stderr)
           else:
-              if len(local_children) != 1:
-                  print(f"registry mediaType: {remote.get('mediaType')}", file=sys.stderr)
-                  print(f"local manifest digests: {local_children}", file=sys.stderr)
-                  raise SystemExit("FATAL: registry returned a single manifest for a multi-manifest local index; refusing to promote")
-              blob = (Path(sys.argv[2]) / "blobs" / "sha256" / local_children[0].removeprefix("sha256:")).read_bytes()
-              local_manifest = json.loads(blob)
-              if "config" not in local_manifest or "layers" not in local_manifest or "config" not in remote or "layers" not in remote:
-                  print(f"registry keys: {sorted(remote.keys())}", file=sys.stderr)
-                  raise SystemExit("FATAL: single-manifest readback lacks config/layers; refusing to promote")
-              if remote["config"].get("digest") != local_manifest["config"].get("digest") or [l.get("digest") for l in remote["layers"]] != [l.get("digest") for l in local_manifest["layers"]]:
-                  print(f"registry config/layers: {remote['config'].get('digest')} {[l.get('digest') for l in remote.get('layers', [])]}", file=sys.stderr)
-                  print(f"local config/layers: {local_manifest['config'].get('digest')} {[l.get('digest') for l in local_manifest.get('layers', [])]}", file=sys.stderr)
-                  raise SystemExit("FATAL: registry single-manifest content differs from the locally built image; refusing to promote")
-              print("readback_ok single-manifest", file=sys.stderr)
+              # A bare manifest at the tag is a hard failure, not a tolerated
+              # envelope difference. The lane pushed with
+              # `--multi-arch index-only`, so the registry must serve an index;
+              # anything else means the push flattened the layout, and every
+              # index-resolving consumer (the Hands bootstrap probe receipt is
+              # one) would silently receive no artifact at all. Live 2026-09-18:
+              # this branch tolerated exactly that shape and the Cubeage promote
+              # could not create its first Knative Service.
+              print(f"registry mediaType: {remote.get('mediaType')}", file=sys.stderr)
+              print(f"local manifest digests: {local_children}", file=sys.stderr)
+              raise SystemExit(
+                  "FATAL: registry served a single manifest where the lane pushed an index; "
+                  "refusing to promote (an index-resolving consumer would read nothing)"
+              )
           PY
           EVIDENCE_DIGEST=""
           if skopeo inspect --authfile "${SKOPEO_AUTH_FILE}" --raw \
