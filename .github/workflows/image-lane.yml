@@ -659,6 +659,77 @@ jobs:
           test -f "${OCI_DIR}/index.json"
           test -f "${OCI_DIR}/oci-layout"
           test -s "${SKOPEO_AUTH_FILE:?}"
+          # The published tag MUST carry an OCI index, even for a one-platform
+          # build, because index-resolving consumers get nothing from a bare
+          # manifest. The Hands snapshot-key probe is one: it reads an index only
+          # when the runtime reported a per-platform CHILD digest, which requires
+          # the registry to have served an index
+          # (`if image != probe.digest { index = registry.read(…) }` in
+          # SylphxAI/hands apps/hands/src/capabilities/delivery/bootstrap_probe.rs),
+          # so `apps_delivery.resolve_bootstrap_artifact` then sees a receipt with
+          # no `indexManifest` and returns NULL on its first line — which refuses
+          # every environment's first Knative Service create (measured
+          # 2026-09-18: the Cubeage promote could not settle).
+          #
+          # Neither `--all` nor `--format` keeps the wrapper, and
+          # `--multi-arch index-only` does not either: `containers/image`
+          # resolves `oci:DIR` to the entry its root `index.json` names, so a
+          # root that names the platform MANIFEST resolves to that bare manifest
+          # (`oci/layout/oci_transport.go::getManifestDescriptor`) and there is no
+          # index in the picked image for any flag to preserve.
+          #
+          # So wrap it: make the entry the tag resolves to an index of its own
+          # that names the platform manifest as a child. `--all` then pushes that
+          # index, and the registry serves
+          # `application/vnd.oci.image.index.v1+json`. A genuine multi-platform
+          # layout already has a multi-entry index root and is left untouched.
+          python3 - "${OCI_DIR}" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          index_path = root / "index.json"
+          index = json.loads(index_path.read_text())
+          images = [
+              m
+              for m in index.get("manifests", [])
+              if (m.get("platform") or {}).get("os") != "unknown"
+          ]
+          if len(images) == 1:
+              # Re-point the layout root at an index that carries the platform
+              # manifest as its own child, so the resolved entry is an index.
+              inner = {
+                  "schemaVersion": 2,
+                  "mediaType": "application/vnd.oci.image.index.v1+json",
+                  "manifests": index["manifests"],
+              }
+              raw = json.dumps(inner, separators=(",", ":")).encode()
+              digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+              (root / "blobs" / "sha256" / digest.split(":", 1)[1]).write_bytes(raw)
+              wrapped = dict(images[0])
+              wrapped["mediaType"] = "application/vnd.oci.image.index.v1+json"
+              wrapped["digest"] = digest
+              wrapped["size"] = len(raw)
+              index_path.write_text(
+                  json.dumps(
+                      {
+                          "schemaVersion": 2,
+                          "mediaType": "application/vnd.oci.image.index.v1+json",
+                          "manifests": [wrapped],
+                      }
+                  )
+              )
+              print(
+                  "index_wrapper_added images=1 wrapper="
+                  + digest,
+                  file=sys.stderr,
+              )
+          else:
+              print(
+                  f"index_wrapper_skipped images={len(images)}",
+                  file=sys.stderr,
+              )
+          PY
           skopeo copy --authfile "${SKOPEO_AUTH_FILE}" --all --preserve-digests \
             "oci:${OCI_DIR}" "docker://${LANE_IMAGE}:${IMAGE_TAG}"
           if [ -f "${BUILD_EVIDENCE_OCI_DIR}/index.json" ]; then
@@ -693,7 +764,29 @@ jobs:
           import json, sys
           from pathlib import Path
           remote = json.loads(Path(sys.argv[1]).read_bytes())
-          local_index = json.loads((Path(sys.argv[2]) / "index.json").read_bytes())
+          root_dir = Path(sys.argv[2])
+          local_index = json.loads((root_dir / "index.json").read_bytes())
+
+          def resolve_entry(doc, directory):
+              """The document the tag resolves to: if the root names one entry and
+              that entry is itself an index, follow it. The push step wraps a
+              one-platform layout that way so the tag carries an index (see the
+              push step), and the registry reports the entry it reached."""
+              manifests = doc.get("manifests")
+              if not isinstance(manifests, list) or len(manifests) != 1:
+                  return doc
+              entry = manifests[0]
+              if entry.get("mediaType") not in (
+                  "application/vnd.oci.image.index.v1+json",
+                  "application/vnd.docker.distribution.manifest.list.v2+json",
+              ):
+                  return doc
+              blob = directory / "blobs" / "sha256" / entry["digest"].removeprefix("sha256:")
+              if not blob.exists():
+                  return doc
+              return json.loads(blob.read_bytes())
+
+          local_entry = resolve_entry(local_index, root_dir)
           def child_digests(doc):
               manifests = doc.get("manifests")
               if not isinstance(manifests, list):
@@ -704,7 +797,7 @@ jobs:
                       raise SystemExit("FATAL: manifest entry without a digest; refusing to promote")
                   out.append(m["digest"])
               return sorted(out)
-          local_children = child_digests(local_index)
+          local_children = child_digests(local_entry)
           if local_children is None:
               raise SystemExit("FATAL: locally built index.json has no manifests list; refusing to promote")
           remote_children = child_digests(remote)
@@ -715,20 +808,19 @@ jobs:
                   raise SystemExit(f"FATAL: registry references {len(remote_children)} manifests, locally built {len(local_children)}; refusing to promote")
               print(f"readback_ok manifests={len(remote_children)}", file=sys.stderr)
           else:
-              if len(local_children) != 1:
-                  print(f"registry mediaType: {remote.get('mediaType')}", file=sys.stderr)
-                  print(f"local manifest digests: {local_children}", file=sys.stderr)
-                  raise SystemExit("FATAL: registry returned a single manifest for a multi-manifest local index; refusing to promote")
-              blob = (Path(sys.argv[2]) / "blobs" / "sha256" / local_children[0].removeprefix("sha256:")).read_bytes()
-              local_manifest = json.loads(blob)
-              if "config" not in local_manifest or "layers" not in local_manifest or "config" not in remote or "layers" not in remote:
-                  print(f"registry keys: {sorted(remote.keys())}", file=sys.stderr)
-                  raise SystemExit("FATAL: single-manifest readback lacks config/layers; refusing to promote")
-              if remote["config"].get("digest") != local_manifest["config"].get("digest") or [l.get("digest") for l in remote["layers"]] != [l.get("digest") for l in local_manifest["layers"]]:
-                  print(f"registry config/layers: {remote['config'].get('digest')} {[l.get('digest') for l in remote.get('layers', [])]}", file=sys.stderr)
-                  print(f"local config/layers: {local_manifest['config'].get('digest')} {[l.get('digest') for l in local_manifest.get('layers', [])]}", file=sys.stderr)
-                  raise SystemExit("FATAL: registry single-manifest content differs from the locally built image; refusing to promote")
-              print("readback_ok single-manifest", file=sys.stderr)
+              # A bare manifest at the tag means the push flattened the layout.
+              # The lane now wraps a one-platform build so the tag carries an
+              # index, so this is a hard failure, not a tolerated envelope
+              # difference: index-resolving consumers (the Hands bootstrap probe
+              # receipt is one) would silently receive no artifact at all. Live
+              # 2026-09-18: tolerating it left the Cubeage promote unable to
+              # create its first Knative Service.
+              print(f"registry mediaType: {remote.get('mediaType')}", file=sys.stderr)
+              print(f"expected index children: {local_children}", file=sys.stderr)
+              raise SystemExit(
+                  "FATAL: registry served a single manifest where the lane pushed an index; "
+                  "refusing to promote (an index-resolving consumer would read nothing)"
+              )
           PY
           EVIDENCE_DIGEST=""
           if skopeo inspect --authfile "${SKOPEO_AUTH_FILE}" --raw \

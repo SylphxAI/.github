@@ -172,5 +172,62 @@ class EvidenceDocumentTests(unittest.TestCase):
                 pack.index_digest(oci)
 
 
+class PublishShapeTests(unittest.TestCase):
+    """The lane must publish an INDEX, and a flattened push must fail closed.
+
+    `containers/image` resolves `oci:DIR` to the entry the layout root
+    `index.json` names, so a root that names the platform MANIFEST resolves to
+    that bare manifest and no flag can preserve an index
+    (`oci/layout/oci_transport.go::getManifestDescriptor`). Landing a bare
+    manifest is invisible to index-resolving consumers: the Hands snapshot-key
+    probe reads an index only when the runtime reported a per-platform child
+    digest (so only if the registry served an index), its receipt then carries
+    no `indexManifest`, and `apps_delivery.resolve_bootstrap_artifact` returns
+    NULL on its first line -- refusing every environment's first Knative Service
+    create (measured 2026-09-18: the Cubeage promote could not settle).
+
+    So the lane wraps a one-platform layout in an index that names the platform
+    manifest as its child, and the readback refuses a flattened push.
+    """
+
+    def setUp(self) -> None:
+        self.workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
+
+    def _run_block(self, marker: str) -> str:
+        start = self.workflow.index(marker)
+        end = self.workflow.index("\n          PY\n", start)
+        body = self.workflow[start:end]
+        return "\n".join(
+            line[10:] if line.startswith(" " * 10) else line
+            for line in body.splitlines()
+        )
+
+    def test_the_push_wraps_a_one_platform_layout_in_an_index(self) -> None:
+        block = self._run_block("python3 - \"${OCI_DIR}\" <<'PY'")
+        self.assertIn("application/vnd.oci.image.index.v1+json", block)
+        self.assertIn("index_wrapper_added", block)
+        # A genuine multi-platform layout must be left alone.
+        self.assertIn("index_wrapper_skipped", block)
+        self.assertIn("len(images) == 1", block)
+
+    def test_the_readback_refuses_a_flattened_push(self) -> None:
+        block = self._run_block(
+            "python3 - \"${READBACK_DIR}/image.json\" \"${OCI_DIR}\" <<'PY'"
+        )
+        self.assertIn("registry served a single manifest where the lane pushed an index", block)
+        # The old tolerated branch must be gone.
+        self.assertNotIn("readback_ok single-manifest", self.workflow)
+
+    def test_the_readback_follows_the_wrapper_to_the_platform_manifests(self) -> None:
+        # After wrapping, the layout root names the wrapper, not the platform
+        # manifests, so the local side must resolve one level or a correct push
+        # would FATAL on a digest mismatch.
+        block = self._run_block(
+            "python3 - \"${READBACK_DIR}/image.json\" \"${OCI_DIR}\" <<'PY'"
+        )
+        self.assertIn("def resolve_entry", block)
+        self.assertIn("local_entry = resolve_entry(local_index, root_dir)", block)
+
+
 if __name__ == "__main__":
     unittest.main()
