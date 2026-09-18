@@ -693,7 +693,41 @@ jobs:
           import json, sys
           from pathlib import Path
           remote = json.loads(Path(sys.argv[1]).read_bytes())
-          local_index = json.loads((Path(sys.argv[2]) / "index.json").read_bytes())
+          root_dir = Path(sys.argv[2])
+          local_index = json.loads((root_dir / "index.json").read_bytes())
+
+          def resolved_entry(doc, directory):
+              """The document the tag resolves to.
+
+              `containers/image` resolves `oci:DIR` to the entry the layout root
+              names (`oci/layout/oci_transport.go::getManifestDescriptor`), so a
+              caller that wraps a one-platform layout in an index -- which it
+              must, or the tag carries a bare manifest and index-resolving
+              consumers get nothing (live 2026-09-18: the Hands bootstrap gate
+              could not be satisfied) -- leaves the root naming that wrapper. The
+              registry reports the wrapper, so the comparison below must read the
+              wrapper's children, not the root's.
+              """
+              manifests = doc.get("manifests")
+              if not isinstance(manifests, list) or len(manifests) != 1:
+                  return doc
+              entry = manifests[0]
+              if entry.get("mediaType") not in (
+                  "application/vnd.oci.image.index.v1+json",
+                  "application/vnd.docker.distribution.manifest.list.v2+json",
+              ):
+                  return doc
+              blob = (
+                  directory
+                  / "blobs"
+                  / "sha256"
+                  / str(entry.get("digest", "")).removeprefix("sha256:")
+              )
+              if not blob.is_file():
+                  return doc
+              return json.loads(blob.read_bytes())
+
+          local_index = resolved_entry(local_index, root_dir)
           def child_digests(doc):
               manifests = doc.get("manifests")
               if not isinstance(manifests, list):

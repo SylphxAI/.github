@@ -172,5 +172,28 @@ class EvidenceDocumentTests(unittest.TestCase):
                 pack.index_digest(oci)
 
 
+class ReadbackResolvesWrapperTests(unittest.TestCase):
+    """The readback must follow the entry the layout root names.
+
+    `containers/image` resolves `oci:DIR` to that entry, so a caller that wraps a
+    one-platform layout in an index (which it must, or the tag carries a bare
+    manifest and index-resolving consumers get nothing) leaves the root naming the
+    wrapper. The registry then reports the wrapper, and a readback that compared
+    the root's children would refuse a correct push -- measured live 2026-09-18:
+    `FATAL: registry references 1 manifests, locally built 1; refusing to promote`
+    with the wrapper digest on the registry side and the platform manifest digest
+    on the local side.
+    """
+
+    def setUp(self) -> None:
+        self.workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
+
+    def test_readback_follows_a_single_entry_index_root(self) -> None:
+        self.assertIn("def resolved_entry", self.workflow)
+        self.assertIn("local_index = resolved_entry(local_index, root_dir)", self.workflow)
+        # The resolver must only follow an index entry, never a manifest entry.
+        self.assertIn("application/vnd.oci.image.index.v1+json", self.workflow)
+
+
 if __name__ == "__main__":
     unittest.main()
