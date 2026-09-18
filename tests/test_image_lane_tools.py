@@ -172,5 +172,52 @@ class EvidenceDocumentTests(unittest.TestCase):
                 pack.index_digest(oci)
 
 
+class PublishShapeTests(unittest.TestCase):
+    """The lane must publish an INDEX, and a bare manifest must fail closed.
+
+    A 1-entry OCI layout pushed with `skopeo copy --all` arrives at the registry
+    as the child MANIFEST with the index wrapper dropped. That shape is invisible
+    to any index-resolving consumer: the Hands bootstrap probe reads an index
+    only when the runtime reports a per-platform child digest (so only if the
+    registry served one), its receipt then carries no `indexManifest`, and
+    `apps_delivery.resolve_bootstrap_artifact` returns NULL on its first line --
+    which refuses every environment's first Knative Service create (measured
+    2026-09-18: the Cubeage promote could not settle).
+
+    These pin the two halves of the repair: the push asks for the index, and the
+    readback refuses to promote when the registry flattened it anyway.
+    """
+
+    def setUp(self) -> None:
+        self.workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
+
+    def test_the_image_push_requests_the_index_explicitly(self) -> None:
+        # The image push is the one that targets the image tag (not the evidence
+        # tag). Its whole command must carry `--multi-arch index-only` and must
+        # not carry `--all`, which is mutually exclusive with it -- otherwise the
+        # flatten silently returns.
+        lines = self.workflow.splitlines()
+        targets = [
+            index
+            for index, line in enumerate(lines)
+            if "docker://${LANE_IMAGE}:${IMAGE_TAG}" in line
+        ]
+        self.assertTrue(targets, "the lane must push the image tag")
+        target = targets[0]
+        window = [
+            line
+            for line in lines[target - 4 : target + 1]
+            if not line.strip().startswith("#")
+        ]
+        command = "\n".join(window)
+        self.assertIn("--multi-arch index-only", command)
+        self.assertNotIn("--all", command)
+
+    def test_the_readback_refuses_a_bare_manifest(self) -> None:
+        self.assertIn("registry served a single manifest where the lane pushed an index", self.workflow)
+        # The tolerated branch is gone: no success path may report a bare manifest.
+        self.assertNotIn('readback_ok single-manifest', self.workflow)
+
+
 if __name__ == "__main__":
     unittest.main()

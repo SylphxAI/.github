@@ -675,11 +675,12 @@ jobs:
           # and the bare-manifest shape left the Cubeage promote unable to create
           # its first Knative Service.
           #
-          # `--format v2s2` is not enough (it selects a schema, not an index).
-          # Use `--multi-arch index-only` so a one-platform layout still lands as
-          # an index of one descriptor; a genuinely multi-platform layout is
-          # unaffected because it is already an index.
-          skopeo copy --authfile "${SKOPEO_AUTH_FILE}" --all --preserve-digests \
+          # `--multi-arch index-only` is the flag that keeps the wrapper, but it
+          # is mutually exclusive with `--all` ("Cannot use --all and --multi-arch
+          # flags together", skopeo 1.9.3), so the push requests the index
+          # explicitly and drops `--all`. A genuine multi-platform layout is an
+          # index already, so this only changes the one-platform case.
+          skopeo copy --authfile "${SKOPEO_AUTH_FILE}" --preserve-digests \
             --multi-arch index-only \
             "oci:${OCI_DIR}" "docker://${LANE_IMAGE}:${IMAGE_TAG}"
           # The evidence bundle is a payload the verifier reads by digest, not a
