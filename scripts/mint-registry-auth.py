@@ -36,7 +36,17 @@ SPIFFE_AUDIENCE = "registry-v2-token"
 SPIFFE_ID = "spiffe://sylphx.local/role/registry-token-minter"
 SPIFFE_WORKLOAD_API_SOCKET = Path("/spiffe-workload-api/spire-agent.sock")
 SPIRE_AGENT_IMAGE_BIN = Path("/opt/spire-from-image/opt/spire/bin/spire-agent")
-MAX_SVID_LIFETIME_SECONDS = 660
+# JWT-SVID lifetime budget for the CI publisher identity.
+#
+# The runner's SPIRE registration renders a JWT-SVID from the cluster default
+# (`default_jwt_svid_ttl`, 1h here), not from the TTL a caller pins on one
+# ClusterSPIFFEID: that pin is per object and the pre-flight identity is not the
+# object it belongs to. A budget tuned to a requested 10m therefore refuses the
+# lifetime SPIRE actually mints, and every publisher pre-flight dies before the
+# registry issuer is ever contacted. The budget must cover the *rendered*
+# lifetime; it stays far inside what the registry issuer will exchange, and both
+# bounds stay fail-closed on a token that is already expired or not yet valid.
+MAX_SVID_LIFETIME_SECONDS = 3600
 MAX_REGISTRY_TOKEN_LIFETIME_SECONDS = 900
 DEFAULT_TIMEOUT_SECONDS = 20
 
