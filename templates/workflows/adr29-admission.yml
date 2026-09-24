@@ -17,7 +17,7 @@ jobs:
     name: risk-classification/pass
     # ADR-29 policy lanes run on the managed Linux standard profile. Select a
     # different approved managed profile only for a documented platform need.
-    runs-on: sylphx-linux-standard
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -36,7 +36,7 @@ jobs:
     name: trunk-admission/pass
     # ADR-29 policy lanes run on the managed Linux standard profile. Select a
     # different approved managed profile only for a documented platform need.
-    runs-on: sylphx-linux-standard
+    runs-on: ubuntu-latest
     needs:
       - risk-classification
     if: ${{ !cancelled() }}
@@ -59,7 +59,7 @@ jobs:
     name: postsubmit-proof/pass
     # ADR-29 policy lanes run on the managed Linux standard profile. Select a
     # different approved managed profile only for a documented platform need.
-    runs-on: sylphx-linux-standard
+    runs-on: ubuntu-latest
     # Add the repo's exhaustive main/postsubmit lanes here, for example:
     # needs:
     #   - ci
@@ -78,7 +78,7 @@ jobs:
     name: recovery-decision/pass
     # ADR-29 policy lanes run on the managed Linux standard profile. Select a
     # different approved managed profile only for a documented platform need.
-    runs-on: sylphx-linux-standard
+    runs-on: ubuntu-latest
     needs:
       - postsubmit-proof
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.postsubmit-proof.result != 'success' }}

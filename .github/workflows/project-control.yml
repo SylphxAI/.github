@@ -32,9 +32,12 @@ jobs:
           template=templates/workflows/adr29-admission.yml
           project_control=.github/workflows/project-control.yml
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$reusable")" -eq 1
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$reusable")" -eq 1
+          # ADR-29 admission jobs are summary gates: they run on GitHub-hosted
+          # compute so a Sylphx runner-fleet fault never blocks a merge (org
+          # decision 2026-09-24). Build and test work stays on Sylphx runners.
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$reusable")" -eq 1
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$template")" -eq 4
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$template")" -eq 4
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 1
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control")" -eq 1
           if grep -REn '^[[:space:]]*runs-on:[[:space:]]*.*[$][{][{]' "$reusable" "$template" "$project_control"; then
