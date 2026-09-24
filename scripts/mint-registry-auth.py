@@ -49,6 +49,14 @@ SPIRE_AGENT_IMAGE_BIN = Path("/opt/spire-from-image/opt/spire/bin/spire-agent")
 MAX_SVID_LIFETIME_SECONDS = 3600
 MAX_REGISTRY_TOKEN_LIFETIME_SECONDS = 900
 DEFAULT_TIMEOUT_SECONDS = 20
+# How long the runner's identity may take to appear. SPIRE issues the
+# publisher SVID only after spire-controller-manager registers the runner Pod
+# and the node agent syncs the entry: seconds when healthy, but live
+# 2026-09-24 it took 40 s+ while the controller-manager restarted on
+# API-server resets, and every image lane failed ("SPIRE Workload API refused
+# the publisher identity") against a 20 s budget. The wait is for identity
+# propagation only; each HTTP call keeps DEFAULT_TIMEOUT_SECONDS.
+DEFAULT_IDENTITY_WAIT_SECONDS = 180
 
 
 def _b64url_json(segment: str) -> dict[str, Any]:
@@ -275,6 +283,9 @@ def main() -> int:
     parser.add_argument("--agent-bin", type=Path, default=SPIRE_AGENT_IMAGE_BIN)
     parser.add_argument("--socket", type=Path, default=SPIFFE_WORKLOAD_API_SOCKET)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--identity-wait-seconds", type=float, default=DEFAULT_IDENTITY_WAIT_SECONDS
+    )
     args = parser.parse_args()
     if not args.probe and args.output_dir is None:
         parser.error("--output-dir is required unless --probe is set")
@@ -284,7 +295,7 @@ def main() -> int:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="image-lane-spiffe-") as temporary:
         agent = _copy_agent(args.agent_bin, Path(temporary))
-        svid = _fetch_svid(agent, args.socket, args.timeout_seconds)
+        svid = _fetch_svid(agent, args.socket, args.identity_wait_seconds)
         token = _mint_registry_token(
             svid, f"gha:{args.run_id}", repository, host, args.timeout_seconds
         )
