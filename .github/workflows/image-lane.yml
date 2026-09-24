@@ -169,7 +169,7 @@ jobs:
   preflight:
     name: preflight
     runs-on: ${{ inputs.publisher-label }}
-    timeout-minutes: 3
+    timeout-minutes: 6  # identity wait (mint-registry-auth.py, 180 s) + checkout
     permissions:
       contents: read
     steps:

@@ -197,3 +197,39 @@ class ReadbackResolvesWrapperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublisherIdentityWaitTest(unittest.TestCase):
+    """The runner identity may appear after the job starts (SPIRE entry sync)."""
+
+    def test_waits_for_an_identity_that_appears_late(self) -> None:
+        import json as _json
+        import os
+        import tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            socket = root / "agent.sock"
+            socket.touch()
+            counter = root / "calls"
+            agent = root / "spire-agent"
+            agent.write_text(
+                "#!/bin/sh\n"
+                f"n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}\n"
+                '[ "$n" -ge 3 ] || exit 1\n'
+                "cat <<'JSON'\n"
+                + _json.dumps({"svids": [{"svid": "token"}]})
+                + "\nJSON\n"
+            )
+            agent.chmod(0o755)
+            with mock.patch.object(mint, "_find_svid", return_value="token"), mock.patch.object(
+                mint, "_validate_svid"
+            ), mock.patch.object(mint.time, "sleep"):
+                self.assertEqual(mint._fetch_svid(agent, socket, 60), "token")
+            self.assertEqual(int(counter.read_text()), 3)
+
+    def test_the_identity_wait_outlasts_the_http_timeout(self) -> None:
+        self.assertGreaterEqual(mint.DEFAULT_IDENTITY_WAIT_SECONDS, 120)
+        self.assertLess(mint.DEFAULT_TIMEOUT_SECONDS, mint.DEFAULT_IDENTITY_WAIT_SECONDS)
+
