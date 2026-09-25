@@ -38,11 +38,38 @@ jobs:
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$reusable")" -eq 1
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$template")" -eq 4
-          test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 1
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control")" -eq 1
+          test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 3
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control")" -eq 3
           if grep -REn '^[[:space:]]*runs-on:[[:space:]]*.*[$][{][{]' "$reusable" "$template" "$project_control"; then
             echo '::error::dynamic runner declarations are not allowed in ADR-29 policy surfaces'
             exit 1
           fi
       - name: Check Changesets publisher syntax
         run: node --check .github/actions/setup-changesets-publisher/changesets-publish.mjs
+
+  tests:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+
+  # Aggregate verdict required by the main merge queue ruleset. Skipped jobs
+  # pass; failed or cancelled jobs fail.
+  ci-ok:
+    needs: [project-control, tests]
+    if: always()
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result != "failure" and .result != "cancelled")' <<<"$NEEDS"
