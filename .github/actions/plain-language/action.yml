@@ -1,10 +1,28 @@
 name: Plain language
 description: >
-  Fails when a change adds a coined term that the company replaces with standard
+  Flags a coined term that the company replaces with standard
   vocabulary (owner standards/docs.md, "Plain language"). Checks only the lines
   this pull request or merge group adds, so existing text does not block a
   change. The calling job checks out with `fetch-depth: 0`. A line that must keep
   a term (quoting it, or a standard sense) carries `plain-language: allow`.
+  With `list: product-names`, a platform repository fails a change that names a
+  product (owner standards/architecture.md).
+
+inputs:
+  list:
+    description: Which list to enforce, `terms` (coined jargon) or `product-names` (platform repositories).
+    required: false
+    default: terms
+  mode:
+    description: >
+      `warn` annotates hits and passes; `fail` fails the job. Coined-term lists are
+      open-ended, so `terms` stays advisory; `product-names` is a closed list and fails.
+    required: false
+    default: ""
+  exclude:
+    description: Newline-separated git pathspecs to skip, for example tests or recorded evidence.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -19,6 +37,9 @@ runs:
         MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         PUSH_BEFORE: ${{ github.event.before }}
         GIT_SHA: ${{ github.sha }}
+        LIST: ${{ inputs.list }}
+        MODE: ${{ inputs.mode }}
+        EXCLUDE: ${{ inputs.exclude }}
       run: |
         set -euo pipefail
         case "$EVENT_NAME" in
@@ -26,4 +47,12 @@ runs:
           merge_group) range="${MG_BASE_SHA}..${MG_HEAD_SHA}" ;;
           *) range="${PUSH_BEFORE:-${GIT_SHA}~1}..${GIT_SHA}" ;;
         esac
-        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/terms.tsv"
+        case "$LIST" in
+          terms) mode="${MODE:-warn}" ;;
+          product-names) mode="${MODE:-fail}" ;;
+          *) echo "::error::unknown list '$LIST'"; exit 1 ;;
+        esac
+        export PLAIN_LANGUAGE_MODE="$mode"
+        specs=()
+        while IFS= read -r p; do [ -n "$p" ] && specs+=(":(exclude)$p"); done <<<"$EXCLUDE"
+        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/$LIST.tsv" "${specs[@]}"

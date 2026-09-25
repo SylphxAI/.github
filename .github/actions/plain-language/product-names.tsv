@@ -1,0 +1,5 @@
+# Product and app names that platform repositories (cloud, hands, infra) never contain
+# (owner standards/architecture.md, Between products). One case-insensitive Perl regex, a tab, the message.
+# A product's need is met by a capability any customer can configure through the public API.
+\b(spiron|epiow|ozyrix|kalkas|cubeage|korvana|kernox|viszy|luzzy|puzzled|tryit|voidbite|openclaw|anymd|repomap|lockdocs|readme-mark|sportbet|bgca)\b	platform code names a product; make it a customer-configurable capability (owner standards/architecture.md)
+\b(keel[-_]?(host|beyond|engine)?|hkmt|hkmj|hk-mahjong|alpha[-_ ]foundry|value[-_ ]horizon)\b	platform code names a product; make it a customer-configurable capability (owner standards/architecture.md)
