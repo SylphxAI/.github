@@ -18,6 +18,12 @@ def run(name: str, status: str = "completed", conclusion: str | None = "success"
 
 
 class CiOkTest(unittest.TestCase):
+    def test_action_manifests_parse(self) -> None:
+        import yaml  # every shared action.yml must be valid YAML for the runner
+        root = pathlib.Path(__file__).resolve().parents[1] / ".github" / "actions"
+        for manifest in root.glob("*/action.yml"):
+            self.assertIsInstance(yaml.safe_load(manifest.read_text()), dict, manifest)
+
     def test_pending_until_all_complete(self) -> None:
         state, detail = ci_ok.evaluate([run("a"), run("b", "in_progress", None)], {"ci-ok"})
         self.assertEqual((state, detail), ("pending", ["b"]))
