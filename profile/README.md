@@ -81,16 +81,15 @@ contracts and admission as any customer.
 
 ## Open source
 
-Performance-minded TypeScript / Dart tools and MCP servers (MIT where applicable):
+Tools for developers and AI agents, all MIT licensed:
 
-| Project | Focus |
-|---------|--------|
-| [pdf-reader-mcp](https://github.com/SylphxAI/pdf-reader-mcp) | Production MCP for PDF processing |
-| [filesystem-mcp](https://github.com/SylphxAI/filesystem-mcp) | Agent filesystem primitives |
-| [coderag](https://github.com/SylphxAI/coderag) | Semantic code search + AST chunking |
-| [rapid](https://github.com/SylphxAI/rapid) | Ultra-fast state management |
-| [craft](https://github.com/SylphxAI/craft) | Immutable state, high performance |
-| [firestore_odm](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore ODM (Dart) |
+| Project | What it does | |
+|---------|--------------|--|
+| [anymd](https://github.com/SylphxAI/anymd) | Any file to clean Markdown for AI agents: PDF, Office, EPUB, HTML, images, audio and video. MCP server and CLI. | <img src="https://mark.sylphx.com/github/stars/SylphxAI/anymd.svg?style=flat-square&logo=github&labelColor=0f172a" alt="anymd stars"/> |
+| [repomap](https://github.com/SylphxAI/repomap) | A map of your codebase for AI agents: code graph, search, call paths, change impact and a graph UI. | <img src="https://mark.sylphx.com/github/stars/SylphxAI/repomap.svg?style=flat-square&logo=github&labelColor=0f172a" alt="repomap stars"/> |
+| [lockdocs](https://github.com/SylphxAI/lockdocs) | Library docs for the exact versions in your lockfile, read locally and offline. | <img src="https://mark.sylphx.com/github/stars/SylphxAI/lockdocs.svg?style=flat-square&logo=github&labelColor=0f172a" alt="lockdocs stars"/> |
+| [readme-mark](https://github.com/SylphxAI/readme-mark) | README banners, badges and GitHub stats cards from one URL, hosted at [mark.sylphx.com](https://mark.sylphx.com). | <img src="https://mark.sylphx.com/github/stars/SylphxAI/readme-mark.svg?style=flat-square&logo=github&labelColor=0f172a" alt="readme-mark stars"/> |
+| [firestore_odm](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore ODM for Flutter and Dart, the maintained successor to cloud_firestore_odm. | <img src="https://mark.sylphx.com/github/stars/SylphxAI/firestore_odm.svg?style=flat-square&logo=github&labelColor=0f172a" alt="firestore_odm stars"/> |
 
 <p align="center">
   <img height="160" src="https://mark.sylphx.com/api?username=SylphxAI&show_icons=true&theme=tokyonight&hide_border=true" alt="org stats"/>
