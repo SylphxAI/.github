@@ -1,0 +1,31 @@
+name: zh-Hant characters
+description: >
+  Fails when a change adds a Simplified-only character to Traditional Chinese
+  content (owner standards/experience.md: no Simplified characters in a
+  Traditional locale). Checks only the lines this pull request or merge group
+  adds: whole lines in zh-Hant files (zh_TW, zh_HK, zh-Hant, values-zh-rTW,
+  zh-Hant.lproj ...), and the value after a zh_tw / zh_hk / zh-Hant key in any
+  other file. The calling job checks out with `fetch-depth: 0`. A line that must
+  keep a Simplified character carries `zh-hant: allow`.
+
+runs:
+  using: composite
+  steps:
+    - name: Check added zh-Hant lines for Simplified characters
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        GIT_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        case "$EVENT_NAME" in
+          pull_request) range="${PR_BASE_SHA}...${PR_HEAD_SHA}" ;;
+          merge_group) range="${MG_BASE_SHA}..${MG_HEAD_SHA}" ;;
+          *) range="${PUSH_BEFORE:-${GIT_SHA}~1}..${GIT_SHA}" ;;
+        esac
+        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/simplified.tsv"
