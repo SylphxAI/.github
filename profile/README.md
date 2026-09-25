@@ -93,7 +93,7 @@ Performance-minded TypeScript / Dart tools and MCP servers (MIT where applicable
 | [firestore_odm](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore ODM (Dart) |
 
 <p align="center">
-  <img height="160" src="https://github-readme-stats.vercel.app/api?username=SylphxAI&show_icons=true&theme=tokyonight&hide_border=true" alt="org stats"/>
+  <img height="160" src="https://mark.sylphx.com/api?username=SylphxAI&show_icons=true&theme=tokyonight&hide_border=true" alt="org stats"/>
 </p>
 
 ---
