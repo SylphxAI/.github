@@ -7,7 +7,7 @@
   availability or launch-status claim.
 -->
 
-<img src="https://mark.sylphx.com/api/v1/banner?type=aurora&theme=sylphx&height=220&text=Sylphx&fontSize=54&animation=twinkling&desc=Independent%20services.%20One%20company.%20Built%20to%20compose.&descSize=16&descAlignY=62&fontAlignY=42" width="100%" alt="Sylphx"/>
+<img src="https://mark.sylphx.com/api/v1/mark/hero?type=waving&color=0:1A1A2E,50:4A90E2,100:D87000&height=220&text=Sylphx&desc=Independent%20services.%20One%20company.%20Built%20to%20compose." width="100%" alt="Sylphx"/>
 
 <!-- Adopted tagline C (owner decision 2026-09-13); short form B — "Take what
      you need. It all fits." — where space is tight. Home and retired
@@ -25,7 +25,7 @@
   <!-- Adopted 2026-09-13: Sylphx AI family surfaced as a pointer only — this
        badge plus the hub row below; no contract or credential claims. -->
   <a href="https://sylphx.ai"><img src="https://img.shields.io/badge/Sylphx%20AI-sylphx.ai-D87000?style=for-the-badge" alt="Sylphx AI"/></a>
-  <a href="https://mark.sylphx.com"><img src="https://mark.sylphx.com/api/v1/deploy?service=mark&style=for-the-badge" alt="Mark on Sylphx"/></a>
+  <a href="https://mark.sylphx.com"><img src="https://mark.sylphx.com/api/v1/mark/deploy?service=mark&style=for-the-badge" alt="Mark on Sylphx"/></a>
   <a href="https://status.sylphx.com"><img src="https://img.shields.io/badge/Status-status.sylphx.com-27AE60?style=for-the-badge" alt="Status"/></a>
 </p>
 
@@ -101,7 +101,7 @@ Performance-minded TypeScript / Dart tools and MCP servers (MIT where applicable
 ## Stack
 
 <p align="left">
-  <img src="https://skillicons.dev/icons?i=ts,rust,bun,docker,postgres,redis,react,nextjs,nodejs&theme=dark" alt="stack"/>
+  <img src="https://mark.sylphx.com/icons?i=ts,rust,bun,docker,postgres,redis,react,nextjs,nodejs&theme=dark" alt="stack"/>
 </p>
 
 ---
@@ -114,4 +114,4 @@ Performance-minded TypeScript / Dart tools and MCP servers (MIT where applicable
 
 </div>
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:1A1A2E,100:D87000&height=100&section=footer" width="100%" alt="footer"/>
+<img src="https://mark.sylphx.com/api?type=waving&color=0:1A1A2E,100:D87000&height=100&section=footer" width="100%" alt="footer"/>
