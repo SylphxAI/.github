@@ -34,6 +34,12 @@ DEFAULT_MINT_URL = "https://registry.sylphx.com/token"
 REGISTRY_TOKEN_SERVICE = "container_registry"
 SPIFFE_AUDIENCE = "registry-v2-token"
 SPIFFE_ID = "spiffe://sylphx.local/role/registry-token-minter"
+# The per-grant form binds the SVID to one grant and the one registry
+# repository it may publish: <SPIFFE_ID>/grant/<label>/repository/<repo>.
+# SPIRE issues it from the publisher pod's grant label and repository
+# annotation; the registry issuer refuses any other repository for it.
+GRANT_SEGMENT = "/grant/"
+REPOSITORY_SEGMENT = "/repository/"
 SPIFFE_WORKLOAD_API_SOCKET = Path("/spiffe-workload-api/spire-agent.sock")
 SPIRE_AGENT_IMAGE_BIN = Path("/opt/spire-from-image/opt/spire/bin/spire-agent")
 # JWT-SVID lifetime budget for the CI publisher identity.
@@ -101,26 +107,23 @@ def split_image_reference(image: str) -> tuple[str, str]:
     return host, repository
 
 
-def _find_svid(value: Any) -> str | None:
-    if isinstance(value, dict):
-        candidate = value.get("svid")
-        if isinstance(candidate, str) and candidate.startswith("eyJ"):
-            return candidate
-        for nested in value.values():
-            found = _find_svid(nested)
-            if found:
-                return found
-    elif isinstance(value, list):
-        for nested in value:
-            found = _find_svid(nested)
-            if found:
-                return found
-    return None
+def _publisher_subject_ok(subject: object, repository: str | None) -> bool:
+    """The fixed publisher identity (transition), or the per-grant identity that
+    names exactly the repository this lane publishes."""
+    if subject == SPIFFE_ID:
+        return True
+    if not isinstance(subject, str) or not subject.startswith(SPIFFE_ID + GRANT_SEGMENT):
+        return False
+    rest = subject[len(SPIFFE_ID + GRANT_SEGMENT):]
+    label, sep, named = rest.partition(REPOSITORY_SEGMENT)
+    if not sep or not label or "/" in label:
+        return False
+    return repository is None or named == repository
 
 
-def _validate_svid(token: str, now: int) -> None:
+def _validate_svid(token: str, now: int, repository: str | None = None) -> None:
     claims = _jwt_claims(token)
-    if claims.get("sub") != SPIFFE_ID:
+    if not _publisher_subject_ok(claims.get("sub"), repository):
         raise ValueError("JWT-SVID subject does not match the publisher identity")
     if SPIFFE_AUDIENCE not in _audiences(claims):
         raise ValueError("JWT-SVID audience does not authorize the registry issuer")
@@ -174,7 +177,39 @@ def _copy_agent(agent_source: Path, directory: Path) -> Path:
     return destination
 
 
-def _fetch_svid(agent: Path, socket: Path, timeout_seconds: float) -> str:
+def _all_svids(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        candidate = value.get("svid")
+        if isinstance(candidate, str) and candidate.startswith("eyJ"):
+            found.append(candidate)
+        for nested in value.values():
+            if nested is not candidate:
+                found.extend(_all_svids(nested))
+    elif isinstance(value, list):
+        for nested in value:
+            found.extend(_all_svids(nested))
+    return found
+
+
+def _pick_svid(document: Any, now: int, repository: str | None) -> str | None:
+    """The workload may hold several SVIDs for the audience (fleet and cell
+    forms); take the per-grant one naming this repository, else the fixed one."""
+    valid: list[tuple[int, str]] = []
+    for token in _all_svids(document):
+        try:
+            _validate_svid(token, now, repository)
+        except ValueError:
+            continue
+        subject = _jwt_claims(token).get("sub")
+        valid.append((0 if subject != SPIFFE_ID else 1, token))
+    valid.sort(key=lambda item: item[0])
+    return valid[0][1] if valid else None
+
+
+def _fetch_svid(
+    agent: Path, socket: Path, timeout_seconds: float, repository: str | None = None
+) -> str:
     if not socket.exists():
         raise RuntimeError(f"SPIFFE Workload API socket missing at {socket}")
     deadline = time.monotonic() + timeout_seconds
@@ -189,8 +224,6 @@ def _fetch_svid(agent: Path, socket: Path, timeout_seconds: float) -> str:
                     "jwt",
                     "-audience",
                     SPIFFE_AUDIENCE,
-                    "-spiffeID",
-                    SPIFFE_ID,
                     "-socketPath",
                     str(socket),
                     "-output",
@@ -204,11 +237,10 @@ def _fetch_svid(agent: Path, socket: Path, timeout_seconds: float) -> str:
             )
             if completed.returncode == 0:
                 document = json.loads(completed.stdout)
-                token = _find_svid(document)
+                token = _pick_svid(document, int(time.time()), repository)
                 if token:
-                    _validate_svid(token, int(time.time()))
                     return token
-                last_error = "SPIRE response did not contain the exact publisher JWT-SVID"
+                last_error = "SPIRE response did not contain the publisher JWT-SVID for this repository"
             else:
                 last_error = "SPIRE Workload API refused the publisher identity"
         except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError) as error:
@@ -295,7 +327,7 @@ def main() -> int:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="image-lane-spiffe-") as temporary:
         agent = _copy_agent(args.agent_bin, Path(temporary))
-        svid = _fetch_svid(agent, args.socket, args.identity_wait_seconds)
+        svid = _fetch_svid(agent, args.socket, args.identity_wait_seconds, repository)
         token = _mint_registry_token(
             svid, f"gha:{args.run_id}", repository, host, args.timeout_seconds
         )

@@ -127,6 +127,34 @@ class SvidValidationTests(unittest.TestCase):
             mint._validate_svid(token, now)
 
 
+class PerGrantSvidTests(unittest.TestCase):
+    GRANT = mint.SPIFFE_ID + "/grant/gha-hands-publish/repository/library/sylphx-hands"
+
+    def svid(self, sub: str) -> str:
+        now = int(time.time())
+        return jwt({"sub": sub, "aud": [mint.SPIFFE_AUDIENCE], "iat": now, "exp": now + 300})
+
+    def test_accepts_the_per_grant_identity_only_for_its_own_repository(self) -> None:
+        now = int(time.time())
+        mint._validate_svid(self.svid(self.GRANT), now, "library/sylphx-hands")
+        with self.assertRaises(ValueError):
+            mint._validate_svid(self.svid(self.GRANT), now, "library/sylphx-data-edge")
+        with self.assertRaises(ValueError):
+            mint._validate_svid(self.svid(mint.SPIFFE_ID + "/grant//repository/library/x"), now, None)
+        with self.assertRaises(ValueError):
+            mint._validate_svid(self.svid(mint.SPIFFE_ID + "/grant/a/b/repository/library/x"), now, None)
+
+    def test_picks_the_per_grant_svid_over_the_fixed_one(self) -> None:
+        now = int(time.time())
+        doc = {"svids": [{"svid": self.svid(mint.SPIFFE_ID)}, {"svid": self.svid(self.GRANT)},
+                         {"svid": self.svid("spiffe://sylphx.local/role/other")}]}
+        picked = mint._pick_svid(doc, now, "library/sylphx-hands")
+        self.assertEqual(mint._jwt_claims(picked)["sub"], self.GRANT)
+        fixed_only = {"svids": [{"svid": self.svid(mint.SPIFFE_ID)}]}
+        self.assertEqual(mint._jwt_claims(mint._pick_svid(fixed_only, now, "library/sylphx-hands"))["sub"], mint.SPIFFE_ID)
+        self.assertIsNone(mint._pick_svid({"svids": []}, now, "library/sylphx-hands"))
+
+
 class EvidenceDocumentTests(unittest.TestCase):
     def build(self, tmp: Path) -> dict:
         oci = tmp / "image-oci"
@@ -223,9 +251,9 @@ class PublisherIdentityWaitTest(unittest.TestCase):
                 + "\nJSON\n"
             )
             agent.chmod(0o755)
-            with mock.patch.object(mint, "_find_svid", return_value="token"), mock.patch.object(
-                mint, "_validate_svid"
-            ), mock.patch.object(mint.time, "sleep"):
+            with mock.patch.object(mint, "_pick_svid", return_value="token"), mock.patch.object(
+                mint.time, "sleep"
+            ):
                 self.assertEqual(mint._fetch_svid(agent, socket, 60), "token")
             self.assertEqual(int(counter.read_text()), 3)
 
