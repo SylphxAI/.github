@@ -17,3 +17,4 @@
 \bproof[- ]shaped\b	test environment
 \beffect writers?\b	handler that changes state
 \bowning writes?\b	handler that changes state
+\bdens(ed|ify)?\b	the specific thing: deployed version, promote, migrate, legacy BaaS runtime
