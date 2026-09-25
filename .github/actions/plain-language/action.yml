@@ -1,0 +1,29 @@
+name: Plain language
+description: >
+  Fails when a change adds a coined term that the company replaces with standard
+  vocabulary (owner standards/docs.md, "Plain language"). Checks only the lines
+  this pull request or merge group adds, so existing text does not block a
+  change. The calling job checks out with `fetch-depth: 0`. A line that must keep
+  a term (quoting it, or a standard sense) carries `plain-language: allow`.
+
+runs:
+  using: composite
+  steps:
+    - name: Check added lines for coined terms
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        GIT_SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        case "$EVENT_NAME" in
+          pull_request) range="${PR_BASE_SHA}...${PR_HEAD_SHA}" ;;
+          merge_group) range="${MG_BASE_SHA}..${MG_HEAD_SHA}" ;;
+          *) range="${PUSH_BEFORE:-${GIT_SHA}~1}..${GIT_SHA}" ;;
+        esac
+        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/terms.tsv"
