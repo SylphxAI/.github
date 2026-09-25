@@ -1,20 +1,21 @@
 # Coined terms the company replaces with standard vocabulary (owner standards/docs.md, "Plain language").
-# One term per line: a case-insensitive Perl regex, a tab, then the replacement to suggest.
-# Only terms with no standard meaning in our codebases are listed; context-dependent words
-# (fence, mint, seat, seam, ladder) are left to review.
-\bresiduals?\b	legacy code, remaining work
-\bhonesty\b	accurate status, fail-closed
-\bdual[-_ ]?oracles?\b	differential test
-\bdoorbells?\b	wake-up webhook
-\bpolaris\b	target architecture
-\bread-?backs?\b	post-deploy check
-\bthe pin\b	the deployed version
-\bcross(es|ed)? release\b	deploy to production
-\bsettled path\b	no-op path
-\b(hard|clean)[- ]cuts?\b	breaking change
-\bgap[- ]fill\b	backfill
-\bevidence packs?\b	verification record
-\bproof[- ]shaped\b	test environment
-\beffect writers?\b	handler that changes state
-\bowning writes?\b	handler that changes state
-\bdens(ed|ify)?\b	the specific thing: deployed version, promote, migrate, legacy BaaS runtime
+# One term per line: a case-insensitive Perl regex, a tab, then the message to show.
+# Keep this list to the few terms agents actually keep coining, and drop a term after about
+# 30 days without hits. The check is advisory: the positive rule in docs.md and review catch
+# new jargon. Context-dependent words (fence, mint, seat, seam, ladder) are left to review.
+\bresiduals?\b	coined term; write "legacy code, remaining work" (owner standards/docs.md, Plain language)
+\bhonesty\b	coined term; write "accurate status, fail-closed" (owner standards/docs.md, Plain language)
+\bdual[-_ ]?oracles?\b	coined term; write "differential test" (owner standards/docs.md, Plain language)
+\bdoorbells?\b	coined term; write "wake-up webhook" (owner standards/docs.md, Plain language)
+\bpolaris\b	coined term; write "target architecture" (owner standards/docs.md, Plain language)
+\bread-?backs?\b	coined term; write "post-deploy check" (owner standards/docs.md, Plain language)
+\bthe pin\b	coined term; write "the deployed version" (owner standards/docs.md, Plain language)
+\bcross(es|ed)? release\b	coined term; write "deploy to production" (owner standards/docs.md, Plain language)
+\bsettled path\b	coined term; write "no-op path" (owner standards/docs.md, Plain language)
+\b(hard|clean)[- ]cuts?\b	coined term; write "breaking change" (owner standards/docs.md, Plain language)
+\bgap[- ]fill\b	coined term; write "backfill" (owner standards/docs.md, Plain language)
+\bevidence packs?\b	coined term; write "verification record" (owner standards/docs.md, Plain language)
+\bproof[- ]shaped\b	coined term; write "test environment" (owner standards/docs.md, Plain language)
+\beffect writers?\b	coined term; write "handler that changes state" (owner standards/docs.md, Plain language)
+\bowning writes?\b	coined term; write "handler that changes state" (owner standards/docs.md, Plain language)
+\bdens(ed|ify)?\b	coined term; write the specific thing: deployed version, promote, migrate, legacy BaaS runtime (owner standards/docs.md, Plain language)

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -11,7 +12,7 @@ import unittest
 ACTION = pathlib.Path(__file__).resolve().parents[1] / ".github" / "actions" / "plain-language"
 
 
-def run_check(before: str, after: str) -> subprocess.CompletedProcess[str]:
+def run_check(before: str, after: str, terms: str = "terms.tsv", *specs: str, mode: str = "fail") -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory() as tmp:
         def git(*args: str) -> None:
             subprocess.run(["git", *args], cwd=tmp, check=True, capture_output=True)
@@ -26,8 +27,8 @@ def run_check(before: str, after: str) -> subprocess.CompletedProcess[str]:
         doc.write_text(after)
         git("commit", "-qam", "change")
         return subprocess.run(
-            [str(ACTION / "check.sh"), "HEAD~1..HEAD", str(ACTION / "terms.tsv")],
-            cwd=tmp, capture_output=True, text=True,
+            [str(ACTION / "check.sh"), "HEAD~1..HEAD", str(ACTION / terms), *specs],
+            cwd=tmp, capture_output=True, text=True, env={**os.environ, "PLAIN_LANGUAGE_MODE": mode},
         )
 
 
@@ -49,6 +50,22 @@ class PlainLanguageTest(unittest.TestCase):
     def test_standard_words_pass(self) -> None:
         result = run_check("", "a fencing token, Kueue admission, a database tombstone\n")
         self.assertEqual(result.returncode, 0, result.stdout)
+
+
+    def test_product_names_list_flags_a_product_in_platform_code(self) -> None:
+        result = run_check("", "if project == 'spiron' { grant_extra_quota() }\n", "product-names.tsv")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("names a product", result.stdout)
+
+    def test_excluded_paths_are_skipped(self) -> None:
+        result = run_check("", "spiron\n", "product-names.tsv", ":(exclude)doc.md")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+
+    def test_warn_mode_annotates_and_passes(self) -> None:
+        result = run_check("", "the residual TS copy\n", mode="warn")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("::warning file=doc.md,line=1::", result.stdout)
 
 
 if __name__ == "__main__":
