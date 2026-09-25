@@ -9,7 +9,7 @@ description: >
 
 inputs:
   token:
-    description: Token that can read check runs (the job needs `checks: read`).
+    description: "Token that can read check runs (the job needs `checks: read`)."
     default: ${{ github.token }}
   job-name:
     description: Name of the calling job's check run, ignored while waiting.
