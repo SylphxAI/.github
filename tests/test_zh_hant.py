@@ -65,6 +65,43 @@ class ZhHantTest(unittest.TestCase):
         result = run_check("zh_TW.md", "", "简体示例 zh-hant: allow\n")
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_lines_merged_in_from_base_are_not_the_branchs_own(self) -> None:
+        """A branch that merged its base in is checked against the merge base, as the action computes it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            def git(*args: str) -> str:
+                return subprocess.run(["git", *args], cwd=tmp, check=True, capture_output=True, text=True).stdout.strip()
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            pathlib.Path(tmp, "zh_TW.md").write_text("開始\n", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-qm", "base")
+            stale_base = git("rev-parse", "HEAD")
+            git("checkout", "-qb", "feature")
+            pathlib.Path(tmp, "zh_HK.md").write_text("乾淨的一行\n", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-qm", "feature")
+            git("checkout", "-q", "main")
+            pathlib.Path(tmp, "zh_TW.md").write_text("開始\n设置\n", encoding="utf-8")
+            git("commit", "-qam", "main moves")
+            git("checkout", "-q", "feature")
+            git("merge", "-q", "--no-edit", "main")
+            head = git("rev-parse", "HEAD")
+
+            def check(rng: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [str(ACTION / "check.sh"), rng, str(ACTION / "simplified.tsv")],
+                    cwd=tmp, capture_output=True, text=True, encoding="utf-8",
+                )
+
+            # The event's stale base sha sees main's line as the branch's own.
+            self.assertEqual(check(f"{stale_base}..{head}").returncode, 1)
+            # The merge base with the current base branch does not.
+            merge_base = git("merge-base", "main", head)
+            result = check(f"{merge_base}..{head}")
+            self.assertEqual(result.returncode, 0, result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

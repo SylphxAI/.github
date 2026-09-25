@@ -16,6 +16,7 @@ runs:
       env:
         EVENT_NAME: ${{ github.event_name }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
@@ -24,7 +25,15 @@ runs:
       run: |
         set -euo pipefail
         case "$EVENT_NAME" in
-          pull_request) range="${PR_BASE_SHA}...${PR_HEAD_SHA}" ;;
+          pull_request)
+            # The event's base sha can predate commits the branch merged in from
+            # its base; diff from the merge base with the current base branch so
+            # only the pull request's own lines are checked.
+            base="$PR_BASE_SHA"
+            if git fetch --quiet --no-tags origin "$PR_BASE_REF" 2>/dev/null; then
+              base="$(git merge-base FETCH_HEAD "$PR_HEAD_SHA")"
+            fi
+            range="${base}..${PR_HEAD_SHA}" ;;
           merge_group) range="${MG_BASE_SHA}..${MG_HEAD_SHA}" ;;
           *) range="${PUSH_BEFORE:-${GIT_SHA}~1}..${GIT_SHA}" ;;
         esac
