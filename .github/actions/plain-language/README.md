@@ -9,7 +9,7 @@ check enforces.
 ```yaml
 jobs:
   plain-language:
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-standard
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@<sha>

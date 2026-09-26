@@ -60,7 +60,7 @@ The workflow must:
   events, without workflow-level path filters;
 - run the admission job only for repository ID `1297840366`, which makes the
   same file harmless on source-repository pull requests;
-- use `ubuntu-24.04`, `contents: read`, a timeout, and full-SHA action pins;
+- run on `sylphx-linux-standard` (never a GitHub-hosted label), `contents: read`, a timeout, and full-SHA action pins;
 - omit `pull_request_target`, secret contexts, write permissions, self-hosted
   runners, and cancellation of an in-progress candidate;
 - checkout the candidate at `github.sha`, with `fetch-depth: 0` and

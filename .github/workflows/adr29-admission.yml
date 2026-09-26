@@ -71,10 +71,9 @@ permissions:
 jobs:
   admission:
     name: ${{ inputs.check-name }}
-    # A summary gate (checkout + admission over upstream results) runs on
-    # GitHub-hosted compute so a Sylphx runner-fleet fault can never block a
-    # merge (org decision 2026-09-24).
-    runs-on: ubuntu-latest
+    # Every job runs on our own runners; GitHub-hosted labels are never used
+    # (owner standards/dx.md, owner#746).
+    runs-on: sylphx-linux-standard
     steps:
       - name: Checkout caller repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
