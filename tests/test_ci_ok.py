@@ -42,6 +42,12 @@ class CiOkTest(unittest.TestCase):
         runs = [run("ci-ok", "in_progress", None), run("plain-language", conclusion="failure"), run("a")]
         self.assertEqual(ci_ok.evaluate(runs, {"ci-ok", "plain-language"})[0], "pass")
 
+    def test_other_apps_do_not_gate_by_default(self) -> None:
+        deploy = {"name": "sylphx/deploy", "status": "in_progress", "conclusion": None, "app": {"slug": "sylphx-ai"}}
+        mine = {"name": "a", "status": "completed", "conclusion": "success", "app": {"slug": "github-actions"}}
+        self.assertEqual(ci_ok.evaluate([mine, deploy], set())[0], "pass")
+        self.assertEqual(ci_ok.evaluate([mine, deploy], set(), actions_only=False)[0], "pending")
+
 
 if __name__ == "__main__":
     unittest.main()

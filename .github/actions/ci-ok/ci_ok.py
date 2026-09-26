@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate gate: wait for every other check run on a commit, then pass or fail.
+"""Aggregate gate: wait for every other GitHub Actions check run on a commit, then pass or fail.
 
 Used where a repository's checks live in several workflows (or path-filtered
 ones), so one `ci-ok` job cannot `needs:` them all. It lists the latest check
@@ -19,9 +19,15 @@ import urllib.request
 BAD = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
 
 
-def evaluate(runs: list[dict], ignore: set[str]) -> tuple[str, list[str]]:
-    """Return ('pending'|'fail'|'pass', details) for the given check runs."""
-    relevant = [r for r in runs if r.get("name") not in ignore]
+def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True) -> tuple[str, list[str]]:
+    """Return ('pending'|'fail'|'pass', details) for the given check runs.
+
+    By default only GitHub Actions check runs count: other apps post deploy
+    and preview statuses (for example sylphx/deploy, sylphx/preview) that are
+    not source checks and can stay in progress for a long time.
+    """
+    relevant = [r for r in runs if r.get("name") not in ignore
+                and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")]
     pending = [r["name"] for r in relevant if r.get("status") != "completed"]
     if pending:
         return "pending", sorted(pending)
@@ -52,7 +58,8 @@ def main() -> int:
     last, stable = None, 0
     while time.time() < deadline:
         try:
-            state, detail = evaluate(fetch(repo, sha, token), ignore)
+            state, detail = evaluate(fetch(repo, sha, token), ignore,
+                                     os.environ.get("CI_OK_ALL_APPS", "false") != "true")
         except Exception as exc:  # transient API error: keep waiting
             print(f"check-runs read failed: {exc}", flush=True)
             time.sleep(interval)

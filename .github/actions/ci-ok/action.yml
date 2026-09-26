@@ -2,7 +2,7 @@ name: ci-ok
 description: >
   Aggregate gate for repositories whose checks live in several workflows or in
   path-filtered workflows, where one ci-ok job cannot `needs:` them all. Waits
-  until every other check run on the commit has completed, then fails if any
+  until every other GitHub Actions check run on the commit has completed, then fails if any
   failed, was cancelled or timed out (skipped and neutral pass). Make the job
   that runs it the required status check. Where all gating jobs share one
   workflow, use a plain `needs:` + `if: always()` job instead.
@@ -20,6 +20,9 @@ inputs:
   timeout-minutes:
     description: Give up after this many minutes.
     default: "110"
+  all-apps:
+    description: "Also wait for check runs from other apps (deploy and preview statuses). Default: GitHub Actions only."
+    default: "false"
 
 runs:
   using: composite
@@ -33,4 +36,5 @@ runs:
         SELF_NAME: ${{ inputs.job-name }}
         CI_OK_IGNORE: ${{ inputs.ignore }}
         CI_OK_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        CI_OK_ALL_APPS: ${{ inputs.all-apps }}
       run: python3 "$GITHUB_ACTION_PATH/ci_ok.py"
