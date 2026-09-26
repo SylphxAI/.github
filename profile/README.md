@@ -7,7 +7,7 @@
   availability or launch-status claim.
 -->
 
-<img src="https://mark.sylphx.com/api/v1/mark/hero?type=waving&color=0:1A1A2E,50:4A90E2,100:D87000&height=220&text=Sylphx&desc=Independent%20services.%20One%20company.%20Built%20to%20compose." width="100%" alt="Sylphx"/>
+<img src="https://mark.sylphx.com/api/v1/mark/hero.svg?type=waving&color=0:0F172A,50:5B8CFF,100:FF8A3D&text=Sylphx&desc=Independent%20services.%20One%20company.%20Built%20to%20compose." width="100%" alt="Sylphx"/>
 
 <!-- Adopted tagline C (owner decision 2026-09-13); short form B — "Take what
      you need. It all fits." — where space is tight. Home and retired
@@ -19,14 +19,14 @@
 </p>
 
 <p align="center">
-  <a href="https://sylphx.com"><img src="https://img.shields.io/badge/Website-sylphx.com-4A90E2?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://www.npmjs.com/~sylphx"><img src="https://img.shields.io/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm&logoColor=white" alt="npm"/></a>
-  <a href="https://github.com/SylphxAI/brand"><img src="https://img.shields.io/badge/Brand-SSOT-1A1A2E?style=for-the-badge" alt="Brand"/></a>
+  <a href="https://sylphx.com"><img src="https://mark.sylphx.com/badge/Website-sylphx.com-4A90E2?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Website"/></a>
+  <a href="https://www.npmjs.com/~sylphx"><img src="https://mark.sylphx.com/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm&logoColor=white" alt="npm"/></a>
+  <a href="https://github.com/SylphxAI/brand"><img src="https://mark.sylphx.com/badge/Brand-SSOT-1A1A2E?style=for-the-badge" alt="Brand"/></a>
   <!-- Adopted 2026-09-13: Sylphx AI family surfaced as a pointer only — this
        badge plus the hub row below; no contract or credential claims. -->
-  <a href="https://sylphx.ai"><img src="https://img.shields.io/badge/Sylphx%20AI-sylphx.ai-D87000?style=for-the-badge" alt="Sylphx AI"/></a>
-  <a href="https://mark.sylphx.com"><img src="https://mark.sylphx.com/api/v1/mark/deploy?service=mark&style=for-the-badge" alt="Mark on Sylphx"/></a>
-  <a href="https://status.sylphx.com"><img src="https://img.shields.io/badge/Status-status.sylphx.com-27AE60?style=for-the-badge" alt="Status"/></a>
+  <a href="https://sylphx.ai"><img src="https://mark.sylphx.com/badge/Sylphx%20AI-sylphx.ai-D87000?style=for-the-badge" alt="Sylphx AI"/></a>
+  <a href="https://mark.sylphx.com"><img src="https://mark.sylphx.com/badge/Mark-mark.sylphx.com-5B8CFF?style=for-the-badge" alt="Mark on Sylphx"/></a>
+  <a href="https://status.sylphx.com"><img src="https://mark.sylphx.com/badge/Status-status.sylphx.com-27AE60?style=for-the-badge" alt="Status"/></a>
 </p>
 
 ---
@@ -92,7 +92,7 @@ Tools for developers and AI agents, all MIT licensed:
 | [firestore_odm](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore ODM for Flutter and Dart, the maintained successor to cloud_firestore_odm. | <img src="https://mark.sylphx.com/github/stars/SylphxAI/firestore_odm.svg?style=flat-square&logo=github&labelColor=0f172a" alt="firestore_odm stars"/> |
 
 <p align="center">
-  <img height="160" src="https://mark.sylphx.com/api?username=SylphxAI&show_icons=true&theme=tokyonight&hide_border=true" alt="org stats"/>
+  <img height="160" src="https://mark.sylphx.com/api?username=SylphxAI&show_icons=true&theme=dark&hide_border=true" alt="org stats"/>
 </p>
 
 ---
@@ -113,4 +113,3 @@ Tools for developers and AI agents, all MIT licensed:
 
 </div>
 
-<img src="https://mark.sylphx.com/api?type=waving&color=0:1A1A2E,100:D87000&height=100&section=footer" width="100%" alt="footer"/>
