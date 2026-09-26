@@ -44,7 +44,7 @@ The workflow must:
 - trigger on `pull_request` and `merge_group`, without path filters or
   `cancel-in-progress`;
 - skip only source repository ID `1091169653`;
-- use `ubuntu-24.04`, a bounded timeout and full-SHA action pins;
+- run on `sylphx-linux-standard` (never a GitHub-hosted label), a bounded timeout and full-SHA action pins;
 - grant only `actions: read`, `checks: read`, `contents: read`, and
   `pull-requests: read`;
 - checkout only `SylphxAI/.github` at `github.workflow_sha`, with depth one and

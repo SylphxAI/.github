@@ -32,14 +32,18 @@ jobs:
           template=templates/workflows/adr29-admission.yml
           project_control=.github/workflows/project-control.yml
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$reusable")" -eq 1
-          # ADR-29 admission jobs are summary gates: they run on GitHub-hosted
-          # compute so a Sylphx runner-fleet fault never blocks a merge (org
-          # decision 2026-09-24). Build and test work stays on Sylphx runners.
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$reusable")" -eq 1
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$reusable")" -eq 1
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$template")" -eq 4
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$template")" -eq 4
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 3
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control")" -eq 3
+          # No workflow, template or example in this repository names a
+          # GitHub-hosted runner: all CI runs on our own runners and the
+          # GitHub budget is $0 (owner standards/dx.md, owner#746).
+          if grep -REn '(ubuntu|windows|macos)-(latest|[0-9]+([.][0-9]+)?)([^0-9a-z.]|$)' .github templates --include='*.yml' --include='*.yaml' --include='*.md' | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#'; then
+            echo '::error::GitHub-hosted runner label found; use sylphx-linux-standard (or our macOS runners)'
+            exit 1
+          fi
           if grep -REn '^[[:space:]]*runs-on:[[:space:]]*.*[$][{][{]' "$reusable" "$template" "$project_control"; then
             echo '::error::dynamic runner declarations are not allowed in ADR-29 policy surfaces'
             exit 1

@@ -11,7 +11,7 @@ that are not themselves Traditional, so shared characters such as 台, 里, 后 
 ```yaml
 jobs:
   zh-hant:
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-standard
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@<sha>
