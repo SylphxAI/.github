@@ -108,5 +108,12 @@ class PlainLanguageTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
 
 
+    def test_retired_platform_name_is_flagged(self) -> None:
+        result = run_check("", "runs on Sylphx Platform via api.identity.sylphx.com\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Sylphx Cloud", result.stdout)
+        self.assertIn("api.sylphx.com", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
