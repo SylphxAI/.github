@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -63,6 +64,12 @@ DEFAULT_TIMEOUT_SECONDS = 20
 # the publisher identity") against a 20 s budget. The wait is for identity
 # propagation only; each HTTP call keeps DEFAULT_TIMEOUT_SECONDS.
 DEFAULT_IDENTITY_WAIT_SECONDS = 180
+# Trusted publishing: the job's own GitHub Actions OIDC token, requested for
+# the registry's audience and exchanged at the token service, which matches it
+# against the declared publishers (SylphxAI/infra registry-v2 README).
+GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+GITHUB_OIDC_AUDIENCE = "registry.sylphx.com"
+MAX_GITHUB_OIDC_LIFETIME_SECONDS = 3600
 
 
 def _b64url_json(segment: str) -> dict[str, Any]:
@@ -274,7 +281,7 @@ def _mint_registry_token(svid: str, account: str, repository: str, host: str, ti
         # Do not include the response body: an unexpected proxy must not reflect
         # any credential material into CI logs.
         raise RuntimeError(
-            f"registry token issuer rejected publisher identity: HTTP {error.code}"
+            f"registry token issuer rejected the publisher: HTTP {error.code}"
         ) from error
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise RuntimeError("registry token issuer unavailable or returned invalid JSON") from error
@@ -285,6 +292,51 @@ def _mint_registry_token(svid: str, account: str, repository: str, host: str, ti
         raise RuntimeError("registry token issuer response omitted the token")
     _validate_registry_token(token, int(time.time()), repository)
     return token
+
+
+def _fetch_github_oidc_token(timeout_seconds: float) -> str:
+    """The job's GitHub Actions OIDC token for the registry audience.
+
+    Needs `permissions: id-token: write` on the job (GitHub then sets
+    ACTIONS_ID_TOKEN_REQUEST_URL / _TOKEN). The request token never leaves
+    this process and is never printed."""
+    url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+    request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+    if not url or not request_token:
+        raise RuntimeError(
+            "GitHub OIDC is unavailable: the job needs `permissions: id-token: write`"
+        )
+    separator = "&" if "?" in url else "?"
+    request = urllib.request.Request(
+        f"{url}{separator}{urllib.parse.urlencode({'audience': GITHUB_OIDC_AUDIENCE})}",
+        headers={"Accept": "application/json", "Authorization": f"Bearer {request_token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"GitHub OIDC token request refused: HTTP {error.code}") from error
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise RuntimeError("GitHub OIDC token request failed") from error
+    token = body.get("value") if isinstance(body, dict) else None
+    if not isinstance(token, str):
+        raise RuntimeError("GitHub OIDC response omitted the token")
+    _validate_github_oidc(token, int(time.time()))
+    return token
+
+
+def _validate_github_oidc(token: str, now: int) -> None:
+    claims = _jwt_claims(token)
+    if claims.get("iss") != GITHUB_OIDC_ISSUER:
+        raise ValueError("GitHub OIDC token has the wrong issuer")
+    if GITHUB_OIDC_AUDIENCE not in _audiences(claims):
+        raise ValueError("GitHub OIDC token audience does not name the registry")
+    expires_at = claims.get("exp")
+    if not isinstance(expires_at, int) or expires_at <= now:
+        raise ValueError("GitHub OIDC token is expired")
+    if expires_at - now > MAX_GITHUB_OIDC_LIFETIME_SECONDS:
+        raise ValueError("GitHub OIDC token lifetime exceeds the budget")
 
 
 def _write_auth(directory: Path, token: str, host: str) -> tuple[Path, Path]:
@@ -312,6 +364,12 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, help="directory for docker/skopeo auth files (not used with --probe)")
     parser.add_argument("--run-id", default="probe", help="GitHub run id used as the token account subject")
     parser.add_argument("--probe", action="store_true", help="mint, validate, print, and discard the credential")
+    parser.add_argument(
+        "--identity",
+        choices=("spiffe", "github-oidc"),
+        default="spiffe",
+        help="publisher identity: the job's GitHub OIDC token (trusted publishing) or a SPIFFE JWT-SVID",
+    )
     parser.add_argument("--agent-bin", type=Path, default=SPIRE_AGENT_IMAGE_BIN)
     parser.add_argument("--socket", type=Path, default=SPIFFE_WORKLOAD_API_SOCKET)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
@@ -325,21 +383,25 @@ def main() -> int:
         parser.error("GitHub run id must be numeric")
     host, repository = split_image_reference(args.image)
     started = time.monotonic()
+    mode = args.identity
     with tempfile.TemporaryDirectory(prefix="image-lane-spiffe-") as temporary:
-        agent = _copy_agent(args.agent_bin, Path(temporary))
-        svid = _fetch_svid(agent, args.socket, args.identity_wait_seconds, repository)
+        if mode == "github-oidc":
+            credential = _fetch_github_oidc_token(args.timeout_seconds)
+        else:
+            agent = _copy_agent(args.agent_bin, Path(temporary))
+            credential = _fetch_svid(agent, args.socket, args.identity_wait_seconds, repository)
         token = _mint_registry_token(
-            svid, f"gha:{args.run_id}", repository, host, args.timeout_seconds
+            credential, f"gha:{args.run_id}", repository, host, args.timeout_seconds
         )
         if args.probe:
             print(
-                f"preflight_ok mode=spiffe repository={repository} "
+                f"preflight_ok mode={mode} repository={repository} "
                 f"seconds={time.monotonic() - started:.2f} ttl<={MAX_REGISTRY_TOKEN_LIFETIME_SECONDS}"
             )
             return 0
         docker_path, skopeo_path = _write_auth(args.output_dir, token, host)
     print(
-        f"mint_ok mode=spiffe repository={repository} "
+        f"mint_ok mode={mode} repository={repository} "
         f"seconds={time.monotonic() - started:.2f} ttl<={MAX_REGISTRY_TOKEN_LIFETIME_SECONDS}"
     )
     print(f"docker_config={docker_path}")

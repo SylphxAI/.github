@@ -13,6 +13,7 @@ import importlib.util
 import json
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +126,60 @@ class SvidValidationTests(unittest.TestCase):
         token = jwt({"sub": "spiffe://sylphx.local/role/other", "aud": [mint.SPIFFE_AUDIENCE], "iat": now, "exp": now + 300})
         with self.assertRaises(ValueError):
             mint._validate_svid(token, now)
+
+
+class GitHubOidcTests(unittest.TestCase):
+    def claims(self, **over) -> dict:
+        now = int(time.time())
+        claims = {"iss": mint.GITHUB_OIDC_ISSUER, "aud": mint.GITHUB_OIDC_AUDIENCE, "iat": now, "exp": now + 300}
+        claims.update(over)
+        return claims
+
+    def test_accepts_a_github_token_for_the_registry_audience(self) -> None:
+        mint._validate_github_oidc(jwt(self.claims()), int(time.time()))
+
+    def test_rejects_another_issuer_audience_or_lifetime(self) -> None:
+        now = int(time.time())
+        for claims in [
+            self.claims(iss="https://example.com"),
+            self.claims(aud="sylphx-access"),
+            self.claims(exp=now - 1),
+            self.claims(exp=now + mint.MAX_GITHUB_OIDC_LIFETIME_SECONDS + 60),
+        ]:
+            with self.subTest(claims=claims):
+                with self.assertRaises(ValueError):
+                    mint._validate_github_oidc(jwt(claims), now)
+
+    def test_requests_the_registry_audience_with_the_job_request_token(self) -> None:
+        seen = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return json.dumps({"value": jwt(GitHubOidcTests.claims(GitHubOidcTests()))}).encode()
+
+        def urlopen(request, timeout):
+            seen["url"] = request.full_url
+            seen["auth"] = request.get_header("Authorization")
+            return Response()
+
+        env = {"ACTIONS_ID_TOKEN_REQUEST_URL": "https://gh.example/token?api-version=2.0",
+               "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-token"}
+        with mock.patch.dict(mint.os.environ, env), mock.patch.object(mint.urllib.request, "urlopen", urlopen):
+            token = mint._fetch_github_oidc_token(5)
+        self.assertTrue(token.count(".") == 2)
+        self.assertIn("api-version=2.0&audience=registry.sylphx.com", seen["url"])
+        self.assertEqual(seen["auth"], "Bearer request-token")
+
+    def test_without_id_token_permission_it_fails_closed(self) -> None:
+        with mock.patch.dict(mint.os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError):
+                mint._fetch_github_oidc_token(5)
 
 
 class PerGrantSvidTests(unittest.TestCase):

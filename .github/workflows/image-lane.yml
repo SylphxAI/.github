@@ -13,12 +13,19 @@ name: Image lane
 #     before the build starts; the lane never emulates another architecture.
 #   * `latest` is never published. Content digests are the only promotion
 #     subjects; workloads pin the immutable `@sha256:` reference.
-#   * the publisher pre-flight mints the real repository credential on the
-#     exclusive publisher lane BEFORE the compile starts, so a missing SPIFFE
-#     projection, a missing repository publish grant, or a grant for a
+#   * trusted publishing: the registry credential comes from the job's own
+#     GitHub Actions OIDC token (`id-token: write`, audience
+#     `registry.sylphx.com`), exchanged at the registry token service for a
+#     token scoped to exactly this image's repository. The registry admits a
+#     job only when its caller workflow, ref, event and this lane's pinned ref
+#     match a declared publisher (SylphxAI/infra registry-v2 README, "Trusted
+#     publishing"), so a pull request, another workflow or another branch gets
+#     nothing. Publish jobs run on the ordinary runner class; no special
+#     runner or workload identity is involved. A caller grants
+#     `id-token: write` to the job that calls this lane.
+#   * the publisher pre-flight mints the real repository credential BEFORE the
+#     compile starts, so an undeclared publisher or a declaration for a
 #     different repository fails in seconds instead of after a long build.
-#     (If no runner is served for the exclusive class at all, the job queues:
-#     GitHub has no queue timeout, and that is a capacity fault, not this one.)
 #   * the registry credential is minted after the long build, is never stored in
 #     GitHub, is held only by the lane's own tool steps (mint, push, readback),
 #     is deleted before any caller-supplied verifier runs, and is removed again
@@ -121,7 +128,9 @@ on:
         type: string
         default: "sylphx-linux-standard"
       publisher-label:
-        description: "Exclusive runner class that receives the SPIFFE Workload API projection."
+        description: >-
+          Ignored (trusted publishing needs no special runner class; the publisher jobs run on
+          `runner-class`). Kept so existing callers keep working; removed once they stop passing it.
         required: false
         type: string
         default: "sylphx-registry-publisher"
@@ -168,10 +177,11 @@ on:
 jobs:
   preflight:
     name: preflight
-    runs-on: ${{ inputs.publisher-label }}
-    timeout-minutes: 6  # identity wait (mint-registry-auth.py, 180 s) + checkout
+    runs-on: ${{ inputs.runner-class }}
+    timeout-minutes: 6
     permissions:
       contents: read
+      id-token: write
     steps:
       - name: Check out this lane
         uses: actions/checkout@v4
@@ -181,35 +191,22 @@ jobs:
           path: .image-lane
           persist-credentials: false
 
-      # Fail in seconds when the runner was minted without the publisher
-      # projection (ordinary Kata profile), when the platform's repository
-      # publish grant does not match this exact demand, or when the token issuer
-      # refuses. The compile job waits on this job, so a refusal costs no build
-      # capacity at all.
-      - name: Publisher credential pre-flight (SPIFFE JWT-SVID -> repository JWT)
+      # Fail in seconds when this job is not a declared publisher of this
+      # image's repository or the token service refuses. The compile job waits
+      # on this job, so a refusal costs no build capacity at all.
+      - name: Publisher credential pre-flight (GitHub OIDC -> repository JWT)
         shell: bash
         env:
           LANE_IMAGE: ${{ inputs.image }}
           LANE_PREFLIGHT_TIMEOUT: ${{ inputs.preflight-timeout-seconds }}
         run: |
           set -euo pipefail
-          agent=/opt/spire-from-image/opt/spire/bin/spire-agent
-          socket=/spiffe-workload-api/spire-agent.sock
-          if [[ ! -x "$agent" ]]; then
-            echo "FATAL: SPIRE agent binary missing at ${agent}" >&2
-            echo "The runner for this demand did not receive the trusted-publisher projection." >&2
-            exit 1
-          fi
-          if [[ ! -S "$socket" ]]; then
-            echo "FATAL: SPIFFE Workload API socket missing at ${socket}" >&2
-            echo "The runner for this demand did not receive the trusted-publisher projection." >&2
-            exit 1
-          fi
           test -f .image-lane/scripts/mint-registry-auth.py || {
             echo "FATAL: the lane checkout is incomplete (lane ref not resolved)" >&2
             exit 1
           }
           python3 .image-lane/scripts/mint-registry-auth.py \
+            --identity github-oidc \
             --image "${LANE_IMAGE}" \
             --probe \
             --timeout-seconds "${LANE_PREFLIGHT_TIMEOUT}"
@@ -498,11 +495,12 @@ jobs:
   publish:
     name: publish
     needs: compile
-    runs-on: ${{ inputs.publisher-label }}
+    runs-on: ${{ inputs.runner-class }}
     timeout-minutes: 30
     permissions:
       contents: read
       actions: read
+      id-token: write
     outputs:
       image_tag: ${{ steps.readback.outputs.image_tag }}
       digest: ${{ steps.readback.outputs.digest }}
@@ -627,7 +625,7 @@ jobs:
           name: ${{ steps.evidence_transfer.outputs.name }}
           path: ${{ runner.temp }}/image-lane/publisher-transfer/evidence
 
-      - name: Registry auth (SPIFFE JWT-SVID -> identitytoken)
+      - name: Registry auth (GitHub OIDC -> identitytoken)
         shell: bash
         env:
           LANE_IMAGE: ${{ inputs.image }}
@@ -638,6 +636,7 @@ jobs:
           set -euo pipefail
           mkdir -p "${DOCKER_CONFIG}"
           python3 .image-lane/scripts/mint-registry-auth.py \
+            --identity github-oidc \
             --image "${LANE_IMAGE}" \
             --output-dir "${DOCKER_CONFIG}" \
             --run-id "${LANE_RUN_ID}"
