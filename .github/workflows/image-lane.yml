@@ -606,6 +606,16 @@ jobs:
           name: ${{ steps.image_transfer.outputs.name }}
           path: ${{ runner.temp }}/image-lane/publisher-transfer/image
 
+      # The download step can end short and still report success (2026-09-27:
+      # a 2.1 GiB transfer stopped after 21 min; the push then failed with no
+      # message). Prove the layout is complete, every blob by size and digest,
+      # and say exactly what is missing.
+      - name: Verify the image transfer is complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .image-lane/scripts/verify-oci-layout.py "${OCI_DIR}" --label image
+
       - name: Resolve this run's evidence transfer
         id: evidence_transfer
         shell: bash
@@ -653,11 +663,13 @@ jobs:
           SKOPEO_AUTH_FILE: ${{ runner.temp }}/image-lane/registry-v2-docker/skopeo-auth.json
         run: |
           set -euo pipefail
-          test -n "${IMAGE_TAG:?}"
-          test -d "${OCI_DIR}"
-          test -f "${OCI_DIR}/index.json"
-          test -f "${OCI_DIR}/oci-layout"
-          test -s "${SKOPEO_AUTH_FILE:?}"
+          fail() { echo "::error title=Image push precondition::$*"; exit 1; }
+          [[ -n "${IMAGE_TAG:-}" ]] || fail "IMAGE_TAG is empty"
+          [[ -f "${OCI_DIR}/index.json" && -f "${OCI_DIR}/oci-layout" ]] \
+            || fail "the image transfer at ${OCI_DIR} is not an OCI layout (see the verify step)"
+          [[ -s "${SKOPEO_AUTH_FILE:-}" ]] || fail "registry auth file missing (the auth step did not write it)"
+          # skopeo's own errors go to the log; the auth file is read by path
+          # and its contents are never printed.
           skopeo copy --authfile "${SKOPEO_AUTH_FILE}" --all --preserve-digests \
             "oci:${OCI_DIR}" "docker://${LANE_IMAGE}:${IMAGE_TAG}"
           if [ -f "${BUILD_EVIDENCE_OCI_DIR}/index.json" ]; then
