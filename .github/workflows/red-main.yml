@@ -123,11 +123,6 @@ jobs:
     # Mint, rerun watch (20 min), one dispatch per candidate (20 min each,
     # capped at max-candidates), revert, summary.
     timeout-minutes: 350
-    permissions:
-      actions: read
-      checks: read
-      contents: read
-      pull-requests: read
     env:
       REPO: ${{ github.repository }}
       VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
