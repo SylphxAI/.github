@@ -255,6 +255,10 @@ jobs:
             raw = open(path, "rb").read()
             if tomllib is not None:
                 ci = tomllib.loads(raw.decode("utf-8")).get("ci")
+                if not isinstance(ci, dict):
+                    # A manifest that parses but declares no [ci] table has
+                    # declared nothing, which is not the same as unreadable.
+                    ci = {}
             else:
                 # The manifest is flat key = value TOML; read the [ci] table
                 # line by line when tomllib is unavailable.
