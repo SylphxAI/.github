@@ -13,11 +13,23 @@ import sys
 import unittest
 from pathlib import Path
 
-import yaml
-
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
-SCRIPT = yaml.safe_load(WORKFLOW.read_text())["jobs"]["red-main"]["env"]["CULPRIT_PY"]
+
+
+def embedded(name: str) -> str:
+    """The block scalar `name: |` in the workflow env, dedented (no YAML dependency)."""
+    lines = WORKFLOW.read_text().splitlines()
+    start = lines.index(f"      {name}: |") + 1
+    body = []
+    for line in lines[start:]:
+        if line.strip() and not line.startswith("        "):
+            break
+        body.append(line[8:])
+    return "\n".join(body) + "\n"
+
+
+SCRIPT = embedded("CULPRIT_PY")
 
 
 def decide(*conclusions: str) -> list[str]:
