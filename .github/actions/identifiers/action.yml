@@ -1,0 +1,55 @@
+name: Identifiers
+description: >
+  Flags an id generator, or a primary key, that is not a UUIDv7
+  (owner standards/identifiers.md: every persisted entity id is a UUIDv7 in a
+  Postgres `uuid` column, minted by `uuidv7()` or the SDK `ids` helper). Checks
+  only the lines this pull request, merge group or push adds, so existing code
+  does not block a change. The calling job checks out with `fetch-depth: 0`.
+  A line that must keep an older scheme carries `identifiers: allow <reason>`.
+
+inputs:
+  mode:
+    description: >
+      `fail` fails the job; `warn` annotates hits and passes.
+    required: false
+    default: fail
+  exclude:
+    description: Newline-separated git pathspecs to skip, for example tests or recorded evidence.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check added lines for non-v7 identifiers
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        GIT_SHA: ${{ github.sha }}
+        MODE: ${{ inputs.mode }}
+        EXCLUDE: ${{ inputs.exclude }}
+      run: |
+        set -euo pipefail
+        case "$EVENT_NAME" in
+          pull_request)
+            # The event's base sha can predate commits the branch merged in from
+            # its base; diff from the merge base with the current base branch so
+            # only the pull request's own lines are checked.
+            base="$PR_BASE_SHA"
+            if git fetch --quiet --no-tags origin "$PR_BASE_REF" 2>/dev/null; then
+              base="$(git merge-base FETCH_HEAD "$PR_HEAD_SHA")"
+            fi
+            range="${base}..${PR_HEAD_SHA}" ;;
+          merge_group) range="${MG_BASE_SHA}..${MG_HEAD_SHA}" ;;
+          *) range="${PUSH_BEFORE:-${GIT_SHA}~1}..${GIT_SHA}" ;;
+        esac
+        export IDENTIFIERS_MODE="${MODE:-fail}"
+        specs=()
+        while IFS= read -r p; do [ -n "$p" ] && specs+=(":(exclude)$p"); done <<<"$EXCLUDE"
+        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/rules.tsv" "${specs[@]}"
