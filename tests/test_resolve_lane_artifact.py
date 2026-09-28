@@ -111,12 +111,18 @@ class WorkflowWiringTest(unittest.TestCase):
             )
 
     def test_both_transfers_are_resolved_then_downloaded(self) -> None:
-        for variable in ("image_transfer", "evidence_transfer"):
-            self.assertIn(f"id: {variable}", self.workflow)
-            self.assertIn(
-                f"${{{{ steps.{variable}.outputs.name }}}}", self.workflow
-            )
+        # The evidence bundle is a few hundred bytes and downloads with the
+        # action; the image transfer is GiB and downloads through the
+        # resolver's own resumable transfer (2026-09-27/28: the blob edge
+        # stopped a 2.1 GiB transfer after 21 minutes with the step reporting
+        # success, and reset a 2.3 GiB one at 7.5 minutes).
+        self.assertIn("id: evidence_transfer", self.workflow)
+        self.assertIn(
+            "${{ steps.evidence_transfer.outputs.name }}", self.workflow
+        )
+        self.assertIn('--download-to "${OCI_DIR}"', self.workflow)
         self.assertEqual(self.workflow.count("resolve-lane-artifact.py"), 2)
+        self.assertEqual(self.workflow.count("uses: actions/download-artifact@"), 1)
 
 
 if __name__ == "__main__":

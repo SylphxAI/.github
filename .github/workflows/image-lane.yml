@@ -587,29 +587,32 @@ jobs:
       # attempt that built it. Live 2026-09-15 (hands run 34986604012): attempt
       # 2 looked for `…-34986604012-2` while the run only held `…-1` and failed
       # with `Unable to download artifact(s): Artifact not found`.
-      - name: Resolve this run's image transfer
-        id: image_transfer
+      #
+      # The download is the resolver's own resumable transfer, not
+      # `actions/download-artifact`: one connection to the artifact blob edge
+      # can end short and still report success (live 2026-09-27: a 2.1 GiB
+      # transfer stopped after 21 minutes, exit 0, and the push then found no
+      # index.json; the same edge reset a 2.3 GiB download at 7.5 minutes on
+      # 2026-09-28). Each attempt re-resolves a fresh signed URL and resumes
+      # from the bytes already on disk, and the archive is checked against the
+      # artifact's size and sha256 digest before one byte is extracted.
+      - name: Download this run's image transfer
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          artifact="$(python3 .image-lane/scripts/resolve-lane-artifact.py \
+          python3 .image-lane/scripts/resolve-lane-artifact.py \
             --repo "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" \
             --attempt "${GITHUB_RUN_ATTEMPT}" \
-            --prefix "image-lane-image-${{ github.sha }}-${{ github.run_id }}")"
-          printf 'name=%s\n' "${artifact}" >> "${GITHUB_OUTPUT}"
+            --prefix "image-lane-image-${{ github.sha }}-${{ github.run_id }}" \
+            --download-to "${OCI_DIR}"
 
-      - name: Download this run's image transfer
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ${{ steps.image_transfer.outputs.name }}
-          path: ${{ runner.temp }}/image-lane/publisher-transfer/image
-
-      # The download step can end short and still report success (2026-09-27:
-      # a 2.1 GiB transfer stopped after 21 min; the push then failed with no
-      # message). Prove the layout is complete, every blob by size and digest,
-      # and say exactly what is missing.
+      # The transfer above checks its own bytes, and this walks the extracted
+      # layout from index.json through every manifest to every blob by size and
+      # digest: the archive can still be a valid zip of an incomplete layout,
+      # and the push would then find no index.json (live 2026-09-27: the push
+      # failed with no message at all).
       - name: Verify the image transfer is complete
         shell: bash
         run: |
