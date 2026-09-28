@@ -336,10 +336,14 @@ jobs:
       # A Rust test takes a whole inserted line above its attribute block:
       #     #[ignore = "quarantined ..."]
       # A Bun test takes the comment on the line directly above the test, and
-      # that test's `test(`/`it(` becomes `test.skip(`/`it.skip(`.
+      # that test's `test(`/`it(` becomes `test.skip(`/`it.skip(`. A Bun test
+      # inside a `describe` is found by its title, which is the literal the
+      # source holds, not by the describe-qualified name junit reports.
       #
       # A unit whose location is not found exactly once is never guessed at:
-      # it is reported and left alone, and its issue stays open.
+      # it is reported and left alone, and its issue stays open. That includes
+      # a Rust test that carries an `#[ignore]` of its own - a second one is
+      # inert and warn-deny where clippy runs, so it is never inserted.
       MARK_PY: |
         import datetime
         import os
@@ -404,8 +408,15 @@ jobs:
             top = index
             while top - 1 >= 0 and lines[top - 1].lstrip().startswith("#["):
                 top -= 1
-            if any("quarantined" in line for line in lines[top:index + 1]):
+            block = lines[top:index + 1]
+            if any("quarantined" in line for line in block):
                 return "already"
+            if any(re.match(r"^[ \t]*#\[ignore", line) for line in block):
+                # A second `#[ignore]` on one function is inert (rustc keeps the
+                # first and warns that the second is unused) and that warning is
+                # an error where clippy runs with `-D warnings`, so a quarantine
+                # is never inserted beside an ignore the test already carries.
+                return "already ignored"
             indent = re.match(r"^([ \t]*)", lines[top]).group(1)
             lines.insert(top, indent + marker)
             write(path, lines)
@@ -435,7 +446,15 @@ jobs:
                 skipped.append((f"{name} ({lane})", "a lane with no failing test has no source to mark"))
                 continue
             bare = name.rsplit("::", 1)[-1]
-            hits = rust_hits(bare) or bun_hits(name)
+            # A Rust test is named by its function; a Bun test is named by its
+            # title, and inside a `describe` the class is the describe name, so
+            # the title alone is what the source holds.
+            rust = rust_hits(bare)
+            bun = bun_hits(name) or bun_hits(bare)
+            if rust and bun:
+                skipped.append((name, "matches both a Rust function and a Bun test; a person must decide"))
+                continue
+            hits = rust or bun
             if len(hits) != 1:
                 skipped.append((name, f"not found exactly once ({len(hits)} matches)"))
                 continue
@@ -451,6 +470,9 @@ jobs:
                 where = mark_bun(path, index, comment)
             if where == "already":
                 skipped.append((name, "already quarantined"))
+                continue
+            if where == "already ignored":
+                skipped.append((name, "already ignored — not a quarantine, a person must decide"))
                 continue
             marked.append((kind, name, lane, issue, where))
         with open(applied_path, "w", encoding="utf-8") as fh:
