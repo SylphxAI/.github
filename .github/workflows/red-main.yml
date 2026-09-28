@@ -10,10 +10,20 @@ name: Red main
 #   2. a flake: one issue per failing test (`flake: <test>`), and one pull
 #      request that marks each flaky unit in its own source, beside the test;
 #   3. a real failure: it traces the culprit among the commits the verify run
-#      had not covered yet, then opens one revert pull request for it, and in
+#      had not covered yet - every candidate is verified at once, on its own
+#      temporary branch, under one shared deadline - then opens one revert pull
+#      request for it, and in
 #      revert mode takes the merge-queue jump that the runbook sanctions when
 #      `main` is red and blocks the queue - one jump in 30 minutes per
 #      repository, recorded on the pull request it jumps.
+#
+# The culprit is the OLDEST candidate whose run concluded `failure`, provided
+# every older candidate concluded `success`. A cancelled, startup_failure,
+# timed_out, or not-finished-by-the-deadline run is inconclusive and never
+# blamed; when one sits at or before the first failure, the oldest failing
+# commit cannot be named with certainty, so the whole window is reverted in
+# one pull request (the same path a window wider than max-candidates takes).
+# The rule is CULPRIT_PY below.
 #
 # Every write goes to the forge as a comment, an issue, a branch, or a pull
 # request, so the whole action is auditable in the repository's own timeline.
@@ -71,7 +81,7 @@ on:
         default: verified
       max-candidates:
         description: >-
-          Most unverified commits to trace one by one. A wider window is
+          Most unverified commits to trace (all at once). A wider window is
           reverted in one pull request without tracing.
         type: number
         default: 8
@@ -121,9 +131,9 @@ jobs:
     # Our own runners only; a hosted label is refused in pull requests that
     # add one (owner#750).
     runs-on: sylphx-linux-standard
-    # Mint, rerun watch (20 min), one dispatch per candidate (20 min each,
-    # capped at max-candidates), revert, summary.
-    timeout-minutes: 350
+    # Mint, rerun watch (20 min), every candidate dispatched at once under one
+    # shared deadline (20 min), revert, summary, and slack.
+    timeout-minutes: 90
     env:
       REPO: ${{ github.repository }}
       VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
@@ -288,6 +298,32 @@ jobs:
                 out("error", "", f"sylphx.toml [ci] on_red must be notify or revert, not {on_red!r}")
             else:
                 out("act", on_red, f"sylphx.toml [ci] merge=optimistic on_red={on_red}")
+      # The culprit rule. Input on stdin: one `sha<TAB>conclusion` line per
+      # candidate, oldest first (`timeout` stands for not finished by the
+      # deadline). First line of output: `culprit <sha>`, `window`, or `none`;
+      # a second line `why <reason>` explains a window.
+      CULPRIT_PY: |
+        import sys
+
+        rows = []
+        for line in sys.stdin:
+            parts = line.rstrip("\n").split("\t")
+            if parts[0]:
+                rows.append((parts[0], parts[1] if len(parts) > 1 else ""))
+
+        # The first candidate that is not a success decides: a failure with
+        # only passing ancestors is the culprit; anything else is inconclusive
+        # and the oldest failing commit cannot be named with certainty.
+        for sha, conclusion in rows:
+            if conclusion == "success":
+                continue
+            if conclusion == "failure":
+                print(f"culprit {sha}")
+            else:
+                print("window")
+                print(f"why {sha[:9]} concluded {conclusion or 'nothing'}, which is inconclusive, at or before the first failure")
+            raise SystemExit(0)
+        print("none")
       # The failing units of a run, from its own junit artifacts (never from
       # the job logs). A lane that published none is named by its lane.
       JUNIT_PY: |
@@ -574,6 +610,7 @@ jobs:
           printf '%s\n' "$LIB" >"$RUNNER_TEMP/red-main/lib.sh"
           printf '%s\n' "$GATE_PY" >"$RUNNER_TEMP/red-main/gate.py"
           printf '%s\n' "$JUNIT_PY" >"$RUNNER_TEMP/red-main/junit.py"
+          printf '%s\n' "$CULPRIT_PY" >"$RUNNER_TEMP/red-main/culprit.py"
           printf '%s\n' "$MARK_PY" >"$RUNNER_TEMP/red-main/mark.py"
           printf '%s\n' "$FLAKE_BODY" >"$RUNNER_TEMP/red-main/flake.py"
           chmod 700 "$RUNNER_TEMP/red-main"
@@ -1008,12 +1045,13 @@ jobs:
 
       # ---------------------------------------------------------------------
       # Real failure: trace the culprit among the commits the verify workflow
-      # never covered, oldest first, on a temporary branch per candidate.
+      # never covered: one temporary branch and one verify run per candidate,
+      # all dispatched at once and awaited under one shared deadline.
       # ---------------------------------------------------------------------
       - name: Trace the culprit among the unverified commits
         id: trace
         if: steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'real'
-        timeout-minutes: 200
+        timeout-minutes: 30
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
@@ -1090,19 +1128,10 @@ jobs:
             gh api --method POST "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/dispatches" \
               --input - <<<"$payload" --jq '.workflow_run_id'
           }
-          wait_run() {
-            local id="$1" deadline=$((SECONDS + CANDIDATE_TIMEOUT_MINUTES * 60)) status conclusion
-            while :; do
-              IFS=$'\t' read -r status conclusion < <(
-                gh api "repos/$REPO/actions/runs/$id" --jq '[.status, (.conclusion // "")] | @tsv'
-              )
-              case "$status:$conclusion" in
-                completed:*) printf '%s\n' "$conclusion"; return 0 ;;
-              esac
-              if [ "$SECONDS" -ge "$deadline" ]; then printf 'timeout\n'; return 0; fi
-              sleep 30
-            done
-          }
+          # Every candidate at once: a branch and a verify run each.
+          : >"$WORK_DIR/candidates.tsv"
+          declare -A run_of=() conclusion_of=() subject_of=()
+          order=()
           while IFS=$'\t' read -r sha subject; do
             [ -n "$sha" ] || continue
             candidate_branch="sylphx-verify/$sha"
@@ -1116,28 +1145,59 @@ jobs:
               say "**No action:** $VERIFY_WORKFLOW could not be dispatched on \`${sha:0:9}\` ($(head -c 200 "$WORK_DIR/dispatch.err" | tr '\n' ' ')); a person must decide."
               exit 0
             fi
-            result=$(wait_run "$candidate_run")
-            case "$result" in
-              success)
-                say "Candidate \`${sha:0:9}\` passed: not the culprit." ;;
-              failure|timed_out|cancelled|startup_failure)
-                state_set culprit "$sha"
-                state_set culprit-subject "$subject"
-                state_set culprit-run "$candidate_run"
-                echo "culprit=$sha" >>"$GITHUB_OUTPUT"
-                say "Candidate \`${sha:0:9}\` ($subject) failed: the culprit."
-                break ;;
-              timeout)
-                say "**No action:** the candidate run on \`${sha:0:9}\` had not concluded after $CANDIDATE_TIMEOUT_MINUTES minutes."
-                exit 0 ;;
-              *)
-                say "**No action:** the candidate run on \`${sha:0:9}\` concluded \`$result\`."
-                exit 0 ;;
-            esac
+            run_of[$sha]="$candidate_run"
+            subject_of[$sha]="$subject"
+            order+=("$sha")
           done <<<"$rows"
-          if [ -z "$(state_get culprit)" ]; then
-            say "**No action:** every unverified candidate passed, so no single commit is the culprit."
-          fi
+          # One shared deadline; one poll per still-running run every 30 s.
+          deadline=$((SECONDS + CANDIDATE_TIMEOUT_MINUTES * 60))
+          pending=("${order[@]}")
+          while [ "${#pending[@]}" -gt 0 ]; do
+            still=()
+            for sha in "${pending[@]}"; do
+              status="" conclusion=""
+              IFS=$'\t' read -r status conclusion < <(
+                gh api "repos/$REPO/actions/runs/${run_of[$sha]}" --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null || true
+              ) || true
+              if [ "$status" = "completed" ]; then
+                conclusion_of[$sha]="${conclusion:-unknown}"
+              else
+                still+=("$sha")
+              fi
+            done
+            pending=("${still[@]}")
+            [ "${#pending[@]}" -gt 0 ] || break
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              for sha in "${pending[@]}"; do conclusion_of[$sha]="timeout"; done
+              break
+            fi
+            sleep 30
+          done
+          for sha in "${order[@]}"; do
+            printf '%s\t%s\n' "$sha" "${conclusion_of[$sha]}" >>"$WORK_DIR/candidates.tsv"
+            case "${conclusion_of[$sha]}" in
+              success) say "Candidate \`${sha:0:9}\` passed." ;;
+              timeout) say "Candidate \`${sha:0:9}\` had not concluded after $CANDIDATE_TIMEOUT_MINUTES minutes." ;;
+              *) say "Candidate \`${sha:0:9}\` (${subject_of[$sha]}) concluded \`${conclusion_of[$sha]}\`." ;;
+            esac
+          done
+          decision=$(python3 "$RUNNER_TEMP/red-main/culprit.py" <"$WORK_DIR/candidates.tsv")
+          verdict=$(head -1 <<<"$decision")
+          case "$verdict" in
+            culprit\ *)
+              sha="${verdict#culprit }"
+              state_set culprit "$sha"
+              state_set culprit-subject "${subject_of[$sha]}"
+              state_set culprit-run "${run_of[$sha]}"
+              echo "culprit=$sha" >>"$GITHUB_OUTPUT"
+              say "Candidate \`${sha:0:9}\` (${subject_of[$sha]}) failed and every older candidate passed: the culprit." ;;
+            window)
+              say "The oldest failing commit cannot be named with certainty ($(sed -n 's/^why //p' <<<"$decision")): all ${#order[@]} candidates are reverted as one pull request."
+              printf '%s\n' "${order[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$STATE_DIR/revert-all.json"
+              echo "revert-all=yes" >>"$GITHUB_OUTPUT" ;;
+            *)
+              say "**No action:** every unverified candidate passed, so no single commit is the culprit." ;;
+          esac
 
       # ---------------------------------------------------------------------
       # Revert (mode revert) or report (mode notify).
