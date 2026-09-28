@@ -62,12 +62,13 @@ on:
           candidate commit.
         type: string
         required: true
-      verify-workflow-name:
+      verify-check-name:
         description: >-
-          The verify workflow's `name:` value, e.g. "Verify". Used for the
-          check run that marks a commit as already verified.
+          Name of the aggregate check run that marks a commit as verified,
+          e.g. verified. It is what the handler looks for when it walks the
+          ancestors of a red commit to find the last verified one.
         type: string
-        required: true
+        default: verified
       max-candidates:
         description: >-
           Most unverified commits to trace one by one. A wider window is
@@ -126,7 +127,7 @@ jobs:
     env:
       REPO: ${{ github.repository }}
       VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
-      VERIFY_WORKFLOW_NAME: ${{ inputs.verify-workflow-name }}
+      VERIFY_CHECK_NAME: ${{ inputs.verify-check-name || 'verified' }}
       MAX_CANDIDATES: ${{ inputs.max-candidates }}
       LANE_INPUT: ${{ inputs.lane-input }}
       RERUN_TIMEOUT_MINUTES: '20'
@@ -1003,8 +1004,8 @@ jobs:
           base=$(gh api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?branch=main&status=success&per_page=1" \
             --jq '.workflow_runs[0].head_sha // ""')
           if [ -z "$base" ]; then
-            say "No passing $VERIFY_WORKFLOW run on main was found; walking first-parent ancestors for a verified check run."
-            name=$(enc "$VERIFY_WORKFLOW_NAME")
+            say "No passing $VERIFY_WORKFLOW run on main was found; walking first-parent ancestors for the \`$VERIFY_CHECK_NAME\` check run."
+            name=$(enc "$VERIFY_CHECK_NAME")
             current="$HEAD_SHA"
             for _ in $(seq 1 200); do
               parent=$(gh api "repos/$REPO/commits/$current" --jq '.parents[0].sha // ""')
