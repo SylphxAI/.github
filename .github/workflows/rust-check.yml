@@ -114,6 +114,16 @@ jobs:
           else
             echo "::warning::sccache is unreachable; compiling without the shared cache"
           fi
+      - name: Compile cache on GitHub Actions cache
+        # Only when the shared sccache is not in use (every tenant repository);
+        # with sccache credentials the sccache path above is the cache.
+        if: env.AWS_ACCESS_KEY_ID == ''
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ inputs.workspace }}
+          shared-key: check-tests-${{ inputs.tests }}
+          cache-on-failure: true
+          save-if: true
       - name: cargo check
         working-directory: ${{ inputs.workspace }}
         run: |
