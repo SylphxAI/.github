@@ -97,7 +97,17 @@ queue, and deploys stay as they are.
   limit evicts old entries, and it is never raised - spend stays $0).
   Entries are prefixed by repository.
 - [`workflow-lint`](../.github/actions/workflow-lint/action.yml): pinned
-  actionlint, the gate's workflow parse.
+  actionlint, the gate's workflow parse. Declare self-hosted runner labels in
+  `.github/actionlint.yaml` (`self-hosted-runner: labels:`), never with an
+  ignore pattern. `ignore` takes one regular expression per line and `args`
+  one argument per line, never shell-quoted and never split on spaces:
+
+  ```yaml
+  - uses: SylphxAI/.github/.github/actions/workflow-lint@<pin>
+    with:
+      ignore: |
+        property "workflow_sha" is not defined
+  ```
 - [`red-main.yml`](../.github/workflows/red-main.yml): the reusable handler.
 
 ## Rules kept from the July rollout

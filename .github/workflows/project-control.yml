@@ -110,7 +110,16 @@ jobs:
       - name: actionlint on the starters
         uses: ./.github/actions/workflow-lint
         with:
-          args: -config-file .github/actionlint.yaml ${{ runner.temp }}/starter/.github/workflows/ci.yml ${{ runner.temp }}/starter/.github/workflows/verify.yml ${{ runner.temp }}/starter/.github/workflows/red-main.yml
+          # One argument per line, and a pattern with spaces and quotes, as a
+          # consumer writes them.
+          ignore: |
+            property "never-matches-anything" is not defined
+          args: |
+            -config-file
+            .github/actionlint.yaml
+            ${{ runner.temp }}/starter/.github/workflows/ci.yml
+            ${{ runner.temp }}/starter/.github/workflows/verify.yml
+            ${{ runner.temp }}/starter/.github/workflows/red-main.yml
 
   template-verdict:
     needs: template-plan

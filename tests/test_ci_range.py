@@ -153,6 +153,33 @@ class ActionManifestExpressionTest(unittest.TestCase):
                 self.assertNotIn("${{", text or "", manifest)
 
 
+class WorkflowLintArgumentsTest(unittest.TestCase):
+    """workflow-lint passes each input line as one argument: an -ignore pattern
+    with spaces and quotes reaches actionlint intact (cubeage-platform#857)."""
+
+    def test_patterns_and_args_are_never_word_split(self) -> None:
+        import yaml
+        action = yaml.safe_load((ROOT / ".github" / "actions" / "workflow-lint" / "action.yml").read_text())
+        step = action["runs"]["steps"][0]
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = pathlib.Path(tmp, "actionlint")
+            fake.write_text('#!/usr/bin/env bash\n'
+                            'if [ "${1:-}" = -version ]; then echo "$VERSION"; exit 0; fi\n'
+                            'for a in "$@"; do printf "%s\\n" "$a"; done > "$OUT"\n')
+            fake.chmod(0o755)
+            out = pathlib.Path(tmp, "argv")
+            env = dict(os.environ, PATH=f"{tmp}:{os.environ['PATH']}", RUNNER_TEMP=tmp, OUT=str(out),
+                       VERSION=step["env"]["VERSION"], SHA256=step["env"]["SHA256"],
+                       IGNORE='label ".+" is unknown\n\nproperty "x y" is not defined\n',
+                       ARGS="-config-file\n.github/actionlint.yaml\n")
+            subprocess.run(["bash", "-c", step["run"]], env=env, check=True)
+            self.assertEqual(out.read_text().splitlines(), [
+                "-shellcheck=", "-pyflakes=",
+                "-ignore", 'label ".+" is unknown',
+                "-ignore", 'property "x y" is not defined',
+                "-config-file", ".github/actionlint.yaml"])
+
+
 class StarterWorkflowTest(unittest.TestCase):
     def test_starters_parse_and_reference_existing_actions(self) -> None:
         import yaml
