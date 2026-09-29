@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@<sha>
         with:
           fetch-depth: 0
+          filter: blob:none
       - uses: SylphxAI/.github/.github/actions/plain-language@<sha>
 ```
 
