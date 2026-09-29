@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   check:
-    uses: SylphxAI/.github/.github/workflows/rust-check.yml@main
+    uses: SylphxAI/.github/.github/workflows/rust-check.yml@d488b95155b2c1c48f81610d70a9213262903a19 # main 2026-09-29
     with:
       ref: ${{ inputs.ref }}
       packages: ${{ inputs.packages }}
