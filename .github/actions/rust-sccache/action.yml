@@ -4,18 +4,23 @@ description: >
   sccache, points it at a backend and sets RUSTC_WRAPPER, so every rustc
   invocation after this step is served from the cache when it can be. Run it
   after the Rust toolchain is installed and before the first cargo command.
-  Backend: the S3 bucket named by the inputs when credentials are given (the
-  in-cluster object store on our runners); otherwise the GitHub Actions cache,
-  which needs no secret. The cache only ever speeds a job up: if the backend is
-  unreachable the job compiles cold and says so. Linux x86_64 only; on any
-  other runner it does nothing.
+  Backend, first that applies: the org's own prefix of the platform cache
+  bucket, when the runner carries the per-org credential Hands injects
+  (SYLPHX_SCCACHE_*: short-lived, scoped to sccache/<installation id>/, so no
+  org can read or write another's cache; nothing to configure); else the S3
+  bucket named by the inputs when credentials are given; else the GitHub
+  Actions cache, which needs no secret. The cache only ever speeds a job up:
+  if the backend is unreachable the job compiles cold and says so. Linux
+  x86_64 only; on any other runner it does nothing.
 
 inputs:
   s3-access-key:
     description: >
       S3 access key - the organization secret SYLPHX_CI_CACHE_ACCESS_KEY, an
       object-store user of the organization's own (never shared across
-      organizations). Empty selects the GitHub Actions cache backend.
+      organizations). Not needed on Sylphx runners, whose injected per-org
+      credential takes precedence. Empty (and no injected credential) selects
+      the GitHub Actions cache backend.
     default: ""
   s3-secret-key:
     description: S3 secret key.
@@ -38,7 +43,7 @@ runs:
   using: composite
   steps:
     - name: Export the Actions cache service to sccache
-      if: inputs.s3-access-key == '' && runner.os == 'Linux' && runner.arch == 'X64'
+      if: inputs.s3-access-key == '' && env.SYLPHX_SCCACHE_ACCESS_KEY_ID == '' && runner.os == 'Linux' && runner.arch == 'X64'
       uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       with:
         script: |
@@ -71,7 +76,18 @@ runs:
         # Incremental artifacts are not cacheable, and sccache refuses them.
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
-        if [ -n "$S3_ACCESS_KEY" ]; then
+        if [ -n "${SYLPHX_SCCACHE_ACCESS_KEY_ID:-}" ] && [ -n "${SYLPHX_SCCACHE_SESSION_TOKEN:-}" ]; then
+          # The runner's own per-org credential. Only the sccache server gets
+          # it (never $GITHUB_ENV), so later steps keep their own AWS_* intact.
+          echo "::add-mask::$SYLPHX_SCCACHE_SECRET_ACCESS_KEY"
+          echo "::add-mask::$SYLPHX_SCCACHE_SESSION_TOKEN"
+          prefix="$SYLPHX_SCCACHE_KEY_PREFIX/$KEY_PREFIX"
+          export SCCACHE_BUCKET="$SYLPHX_SCCACHE_BUCKET" SCCACHE_ENDPOINT="$SYLPHX_SCCACHE_ENDPOINT" \
+            SCCACHE_REGION="${SYLPHX_SCCACHE_REGION:-us-east-1}" SCCACHE_S3_KEY_PREFIX="$prefix" \
+            AWS_ACCESS_KEY_ID="$SYLPHX_SCCACHE_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$SYLPHX_SCCACHE_SECRET_ACCESS_KEY" \
+            AWS_SESSION_TOKEN="$SYLPHX_SCCACHE_SESSION_TOKEN"
+          backend="S3 $SCCACHE_ENDPOINT/$SCCACHE_BUCKET/$prefix (org credential until ${SYLPHX_SCCACHE_EXPIRES:-?})"
+        elif [ -n "$S3_ACCESS_KEY" ]; then
           S3_BUCKET="${S3_BUCKET:-ci-sccache-$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')}"
           bucket_url="${S3_ENDPOINT%/}/$S3_BUCKET"
           sign=(--aws-sigv4 "aws:amz:us-east-1:s3" --user "$S3_ACCESS_KEY:$S3_SECRET_KEY")

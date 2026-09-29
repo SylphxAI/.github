@@ -2,7 +2,7 @@ name: Rust check
 
 # One remote `cargo check` for any repository, run on the ordinary Sylphx
 # runner class at the priority of a ready pull request (never the merge gate),
-# with the org's shared sccache. A caller keeps a thin workflow_dispatch
+# with the org's own sccache. A caller keeps a thin workflow_dispatch
 # workflow and passes the inputs through; `sylphx build check` dispatches that
 # caller and follows it (docs/rust-check.md).
 #
@@ -38,11 +38,13 @@ on:
         type: string
         default: '.'
     secrets:
+      # Ignored, and declared only so a caller that still passes them does not
+      # fail: the compile cache is the per-org credential on the runner.
       RGW_S3_ACCESS_KEY:
-        description: Access key of the shared sccache bucket; without it the check compiles cold.
+        description: Ignored.
         required: false
       RGW_S3_SECRET_KEY:
-        description: Secret key of the shared sccache bucket.
+        description: Ignored.
         required: false
 
 permissions:
@@ -59,13 +61,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_TERM_COLOR: never
-      SCCACHE_BUCKET: ci-sccache
-      SCCACHE_ENDPOINT: http://${{ vars.RGW_S3_ENDPOINT || 'rook-ceph-rgw-ceph-objectstore.rook-ceph.svc' }}:${{ vars.RGW_S3_PORT || '80' }}
-      SCCACHE_REGION: us-east-1
-      SCCACHE_S3_KEY_PREFIX: rustc
       SCCACHE_IDLE_TIMEOUT: '0'
-      AWS_ACCESS_KEY_ID: ${{ secrets.RGW_S3_ACCESS_KEY }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.RGW_S3_SECRET_KEY }}
       IN_REF: ${{ inputs.ref }}
       IN_PACKAGES: ${{ inputs.packages }}
       IN_TESTS: ${{ inputs.tests }}
@@ -87,6 +83,7 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Rust toolchain and sccache
+        id: toolchain
         run: |
           set -euo pipefail
           export CARGO_HOME="$RUNNER_TEMP/cargo-home" RUSTUP_HOME="$RUNNER_TEMP/rustup-home"
@@ -105,19 +102,30 @@ jobs:
             "https://github.com/mozilla/sccache/releases/download/${v}/sccache-${v}-x86_64-unknown-linux-musl.tar.gz" \
             | tar -xz -C "$RUNNER_TEMP" --strip-components=1 "sccache-${v}-x86_64-unknown-linux-musl/sccache"
           mv "$RUNNER_TEMP/sccache" "$CARGO_HOME/bin/sccache"
-          if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
-            echo "::warning::sccache credentials are not passed; compiling without the shared cache"
+          # The org's own compile cache: the per-org credential Hands injects
+          # into every runner (scoped to sccache/<installation id>/ of the
+          # platform cache bucket, short-lived). It goes to the sccache server
+          # only, never to $GITHUB_ENV.
+          if [ -z "${SYLPHX_SCCACHE_ACCESS_KEY_ID:-}" ] || [ -z "${SYLPHX_SCCACHE_SESSION_TOKEN:-}" ]; then
+            echo "No per-org sccache credential on this runner; using the GitHub Actions cache"
             exit 0
           fi
-          if SCCACHE_LOG=warn sccache --start-server; then
+          echo "::add-mask::$SYLPHX_SCCACHE_SECRET_ACCESS_KEY"
+          echo "::add-mask::$SYLPHX_SCCACHE_SESSION_TOKEN"
+          if SCCACHE_LOG=warn SCCACHE_BUCKET="$SYLPHX_SCCACHE_BUCKET" SCCACHE_ENDPOINT="$SYLPHX_SCCACHE_ENDPOINT" \
+            SCCACHE_REGION="${SYLPHX_SCCACHE_REGION:-us-east-1}" SCCACHE_S3_KEY_PREFIX="$SYLPHX_SCCACHE_KEY_PREFIX/rustc" \
+            AWS_ACCESS_KEY_ID="$SYLPHX_SCCACHE_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$SYLPHX_SCCACHE_SECRET_ACCESS_KEY" \
+            AWS_SESSION_TOKEN="$SYLPHX_SCCACHE_SESSION_TOKEN" sccache --start-server; then
             echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+            echo "sccache=true" >> "$GITHUB_OUTPUT"
+            echo "sccache on $SYLPHX_SCCACHE_BUCKET/$SYLPHX_SCCACHE_KEY_PREFIX/rustc"
           else
-            echo "::warning::sccache is unreachable; compiling without the shared cache"
+            echo "::warning::the org's sccache is unreachable; using the GitHub Actions cache"
           fi
       - name: Compile cache on GitHub Actions cache
-        # Only when the shared sccache is not in use (every tenant repository);
-        # with sccache credentials the sccache path above is the cache.
-        if: env.AWS_ACCESS_KEY_ID == ''
+        # Only when the org's sccache is not in use (no per-org credential on
+        # the runner, or the cache is unreachable).
+        if: steps.toolchain.outputs.sccache != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ inputs.workspace }}
@@ -139,3 +147,6 @@ jobs:
           echo "@@sylphx-check-end"
           echo "@@sylphx-check-exit=$code"
           exit "$code"
+      - name: sccache stats
+        if: always() && steps.toolchain.outputs.sccache == 'true'
+        run: sccache --show-stats
