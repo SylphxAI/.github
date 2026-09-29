@@ -2,13 +2,24 @@ name: workflow-lint
 description: >
   Parses and lints every workflow in the repository with a pinned,
   checksum-verified actionlint (the gate's "workflow parse" check), using the
-  repository's own `.github/actionlint.yaml` for self-hosted runner labels.
-  A broken workflow then fails the pull request instead of the first run on
-  the trunk. Needs a checkout. Linux x86_64.
+  repository's own `.github/actionlint.yaml` for self-hosted runner labels
+  (declare labels there, not with an ignore pattern). A broken workflow then
+  fails the pull request instead of the first run on the trunk. Needs a
+  checkout. Linux x86_64.
 
 inputs:
+  ignore:
+    description: >
+      Findings to ignore, one regular expression per line, each passed to
+      actionlint as its own `-ignore` argument. Spaces and quotes are part of
+      the pattern; write it without shell quoting, for example
+      `property "workflow_sha" is not defined`.
+    default: ""
   args:
-    description: Extra actionlint arguments (for example `-ignore <pattern>`).
+    description: >
+      Extra actionlint arguments, ONE ARGUMENT PER LINE (a line is never split
+      on spaces), for example `-config-file` on one line and its path on the
+      next, or workflow file paths to lint instead of the whole repository.
     default: ""
 
 runs:
@@ -18,6 +29,7 @@ runs:
       env:
         VERSION: 1.7.12
         SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        IGNORE: ${{ inputs.ignore }}
         ARGS: ${{ inputs.args }}
       run: |
         set -euo pipefail
@@ -33,5 +45,13 @@ runs:
         fi
         # shellcheck and pyflakes integrations are off: they depend on what the
         # runner image happens to carry, and a gate must not.
-        # shellcheck disable=SC2086
-        "$bin" -shellcheck= -pyflakes= $ARGS
+        # Every argument is one line of an input: nothing is word-split or
+        # glob-expanded, so a pattern with spaces or quotes stays one argument.
+        argv=(-shellcheck= -pyflakes=)
+        while IFS= read -r line; do
+          [ -n "$line" ] && argv+=(-ignore "$line")
+        done <<<"$IGNORE"
+        while IFS= read -r line; do
+          [ -n "$line" ] && argv+=("$line")
+        done <<<"$ARGS"
+        "$bin" "${argv[@]}"
