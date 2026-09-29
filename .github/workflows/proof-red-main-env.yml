@@ -1,0 +1,19 @@
+name: Proof red-main env
+on:
+  pull_request:
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: write
+jobs:
+  omitted:
+    uses: ./.github/workflows/red-main.yml
+    with:
+      verify-workflow: verify.yml
+  empty:
+    uses: ./.github/workflows/red-main.yml
+    with:
+      verify-workflow: verify.yml
+      environment: ''
