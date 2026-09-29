@@ -169,7 +169,13 @@ class TokenModeTest(unittest.TestCase):
 
     def test_actions_calls_use_the_workflow_token(self) -> None:
         text = WORKFLOW.read_text()
-        self.assertIn("ACTIONS_TOKEN: ${{ github.token }}", text)
+        # Step-level only: a step without a `gha` call never carries it.
+        self.assertNotRegex(text, r"(?m)^      ACTIONS_TOKEN:")
+        import re
+        for block in re.split(r"(?m)^(?=      - name: )", text)[1:]:
+            code = "\n".join(l for l in block.splitlines() if not l.strip().startswith("#"))
+            has = re.search(r"\bgha\b", code) is not None
+            self.assertEqual("ACTIONS_TOKEN: ${{ github.token }}" in block, has, block[:60])
         self.assertIn('gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }', text)
         # No raw `gh` call on an Actions endpoint: it would use the App token.
         for line in text.splitlines():
@@ -192,7 +198,7 @@ class TokenModeTest(unittest.TestCase):
     def test_probe_reads_actions_through_the_workflow_token(self) -> None:
         probe = step("Probe the grants on the caller's repository")
         self.assertIn("gha api", probe)
-        self.assertIn("SIMULATE", probe)
+        self.assertIn("SIMULATE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate-mint-failure && 'yes' || 'no' }}", probe)
 
     def test_no_key_forces_notify(self) -> None:
         detect = step("Detect the builder App key")

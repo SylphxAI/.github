@@ -133,8 +133,8 @@ on:
       simulate-mint-failure:
         description: >-
           Test hook: fail the grant probe on purpose so the failure notice on
-          `ops-issue` can be checked. The caller must pass it only from a
-          workflow_dispatch input.
+          `ops-issue` can be checked. Honoured only when the caller was
+          started by workflow_dispatch, whatever the caller passes.
         type: boolean
         default: false
       app-id:
@@ -186,7 +186,6 @@ jobs:
     timeout-minutes: 90
     env:
       REPO: ${{ github.repository }}
-      ACTIONS_TOKEN: ${{ github.token }}
       VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
       VERIFY_CHECK_NAME: ${{ inputs.verify-check-name || 'verified' }}
       MAX_CANDIDATES: ${{ inputs.max-candidates }}
@@ -766,10 +765,11 @@ jobs:
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
           KEY_PRESENT: ${{ steps.key.outputs.present }}
           APP_MINTED: ${{ steps.app-token.outputs.token != '' && 'yes' || 'no' }}
           EVENT_RUN_ID: ${{ github.event.workflow_run.id || '' }}
-          SIMULATE: ${{ inputs.simulate-mint-failure && 'yes' || 'no' }}
+          SIMULATE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate-mint-failure && 'yes' || 'no' }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
@@ -862,6 +862,7 @@ jobs:
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
           EVENT_RUN_ID: ${{ github.event.workflow_run.id || '' }}
         run: |
           set -euo pipefail
@@ -920,6 +921,7 @@ jobs:
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
         run: |
@@ -947,6 +949,7 @@ jobs:
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
         run: |
@@ -971,6 +974,7 @@ jobs:
         timeout-minutes: 25
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
         run: |
           set -euo pipefail
@@ -1189,6 +1193,7 @@ jobs:
         timeout-minutes: 30
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
