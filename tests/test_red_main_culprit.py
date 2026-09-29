@@ -150,6 +150,14 @@ class TokenModeTest(unittest.TestCase):
             if line.strip().startswith("if:"):
                 self.assertNotIn("secrets.", line)
 
+    def test_environment_input_wires_to_the_job(self) -> None:
+        text = WORKFLOW.read_text()
+        self.assertRegex(text, r"(?m)^      environment:\n        description:")
+        self.assertIn("        type: string\n        default: ''\n    secrets:", text)
+        self.assertIn("\n    environment: ${{ inputs.environment }}\n", text)
+        # Passed secrets still work when no environment is named.
+        self.assertIn("secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY", text)
+
     def test_mint_steps_need_the_key_flag(self) -> None:
         self.assertIn("steps.key.outputs.present == 'yes'", step("Mint the App token for the caller's repository"))
 

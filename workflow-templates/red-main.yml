@@ -53,5 +53,9 @@ jobs:
     # repository's `vars.SYLPHX_BUILDER_APP_ID`.
     secrets:
       SYLPHX_BUILDER_PRIVATE_KEY: ${{ secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+    # A repository that keeps the App key in a GitHub environment (limited to
+    # the trunk and release tags) drops the `secrets:` block above and adds
+    # `environment: <name>` here: a `uses:` job cannot declare `environment:`,
+    # so the handler's own job enters it and reads the key from it.
     with:
       verify-workflow: verify.yml
