@@ -25,6 +25,10 @@ name: Red main
 # one pull request (the same path a window wider than max-candidates takes).
 # The rule is CULPRIT_PY below.
 #
+# A candidate whose pull request carries `queue-jump:outage` or a P0 label, or
+# whose number is in `protected-prs`, is never reverted by the handler: it
+# comments on that pull request (and on `ops-issue`) for a person to decide.
+#
 # Every write goes to the forge as a comment, an issue, a branch, or a pull
 # request, so the whole action is auditable in the repository's own timeline.
 # Nothing is pushed to the trunk, no ruleset is touched, and the revert lands
@@ -106,6 +110,26 @@ on:
           empty when the workflow takes no inputs.
         type: string
         default: lanes
+      protected-labels:
+        description: >-
+          Comma-separated pull request labels whose change is never reverted
+          by a machine (a live-outage or P0 fix). A label ending in `:p0`
+          counts as P0. The handler comments instead.
+        type: string
+        default: 'queue-jump:outage,P0'
+      protected-prs:
+        description: >-
+          Comma-separated pull request numbers that are never reverted by a
+          machine, whatever their labels.
+        type: string
+        default: ''
+      ops-issue:
+        description: >-
+          Issue in the calling repository that receives the comment when a
+          protected pull request is the culprit, for its owner to decide. Empty
+          comments on the pull request only.
+        type: string
+        default: ''
       app-id:
         description: >-
           GitHub App id holding the caller's installation. Defaults to the
@@ -324,6 +348,26 @@ jobs:
       # candidate, oldest first (`timeout` stands for not finished by the
       # deadline). First line of output: `culprit <sha>`, `window`, or `none`;
       # a second line `why <reason>` explains a window.
+      # The revert guard. Input on stdin: the pull request as JSON
+      # (`{"number": N, "labels": ["..."]}`); env PROTECTED_LABELS and
+      # PROTECTED_PRS are comma-separated. Prints `protected <reason>` or `ok`.
+      REVERT_GUARD_PY: |
+        import json
+        import os
+        import sys
+
+        pr = json.load(sys.stdin)
+        labels = [x.strip().lower() for x in os.environ.get("PROTECTED_LABELS", "").split(",") if x.strip()]
+        numbers = {x.strip().lstrip("#") for x in os.environ.get("PROTECTED_PRS", "").split(",") if x.strip()}
+        if str(pr.get("number", "")) in numbers:
+            print(f"protected: #{pr['number']} is on the never-revert list")
+            raise SystemExit(0)
+        for label in pr.get("labels", []):
+            low = str(label).lower()
+            if low in labels or low.endswith(":p0"):
+                print(f"protected: #{pr.get('number')} carries the label {label}")
+                raise SystemExit(0)
+        print("ok")
       CULPRIT_PY: |
         import sys
 
@@ -633,6 +677,7 @@ jobs:
           printf '%s\n' "$GATE_PY" >"$RUNNER_TEMP/red-main/gate.py"
           printf '%s\n' "$JUNIT_PY" >"$RUNNER_TEMP/red-main/junit.py"
           printf '%s\n' "$CULPRIT_PY" >"$RUNNER_TEMP/red-main/culprit.py"
+          printf '%s\n' "$REVERT_GUARD_PY" >"$RUNNER_TEMP/red-main/revert-guard.py"
           printf '%s\n' "$MARK_PY" >"$RUNNER_TEMP/red-main/mark.py"
           printf '%s\n' "$FLAKE_BODY" >"$RUNNER_TEMP/red-main/flake.py"
           chmod 700 "$RUNNER_TEMP/red-main"
@@ -1296,6 +1341,9 @@ jobs:
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
+          PROTECTED_LABELS: ${{ inputs.protected-labels }}
+          PROTECTED_PRS: ${{ inputs.protected-prs }}
+          OPS_ISSUE: ${{ inputs.ops-issue }}
         run: |
           # shellcheck disable=SC2016
           set -euo pipefail
@@ -1349,6 +1397,30 @@ jobs:
                 fi
               done
             fi
+            exit 0
+          fi
+          # A live-outage or P0 fix, or a pull request on the never-revert list,
+          # is left to a person: comment on it and on the ops issue instead.
+          protected=""
+          for sha in "${shas[@]}"; do
+            pr_json=$(gh api "repos/$REPO/commits/$sha/pulls" \
+              --jq '.[0] | {number: (.number // 0), labels: [(.labels // [])[].name]}' 2>/dev/null || true)
+            [ -n "$pr_json" ] || continue
+            verdict=$(python3 "$RUNNER_TEMP/red-main/revert-guard.py" <<<"$pr_json")
+            case "$verdict" in
+              protected*)
+                pr=$(jq -r '.number' <<<"$pr_json")
+                protected="$protected$pr "
+                note="\`main\` went red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)) and \`$sha\` from this pull request is a candidate. It is not reverted automatically (${verdict#protected: }): a person decides."
+                gh api --method POST "repos/$REPO/issues/$pr/comments" --field body="$note" >/dev/null 2>&1 || true
+                if [ -n "$OPS_ISSUE" ]; then
+                  gh api --method POST "repos/$REPO/issues/$OPS_ISSUE/comments" --field body="$note" >/dev/null 2>&1 || true
+                fi
+                ;;
+            esac
+          done
+          if [ -n "$protected" ]; then
+            say "**No revert:** protected pull request(s) among the candidates (${protected% }); commented for a person to decide."
             exit 0
           fi
           require_grant contents "contents: write" "opening the revert pull request" || {

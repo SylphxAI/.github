@@ -80,6 +80,53 @@ def step(name: str) -> str:
     return text[start : end if end != -1 else len(text)]
 
 
+GUARD = embedded("REVERT_GUARD_PY")
+
+
+def guard(number: int, labels: list[str], protected_prs: str = "") -> str:
+    import json
+    import os
+
+    env = {**os.environ, "PROTECTED_LABELS": "queue-jump:outage,P0", "PROTECTED_PRS": protected_prs}
+    out = subprocess.run(
+        [sys.executable, "-c", GUARD],
+        input=json.dumps({"number": number, "labels": labels}),
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    ).stdout
+    return out.strip()
+
+
+class RevertGuardTest(unittest.TestCase):
+    """A live-outage or P0 fix, or a listed pull request, is never auto-reverted."""
+
+    def test_an_ordinary_pull_request_may_be_reverted(self) -> None:
+        self.assertEqual(guard(1, ["area:ci", "owner:ops"]), "ok")
+
+    def test_outage_label_is_protected(self) -> None:
+        self.assertTrue(guard(2, ["queue-jump:outage"]).startswith("protected"))
+
+    def test_p0_label_is_protected_in_any_case_or_prefix(self) -> None:
+        self.assertTrue(guard(3, ["P0"]).startswith("protected"))
+        self.assertTrue(guard(3, ["p0"]).startswith("protected"))
+        self.assertTrue(guard(3, ["priority:P0"]).startswith("protected"))
+
+    def test_a_listed_number_is_protected_whatever_its_labels(self) -> None:
+        self.assertTrue(guard(10791, [], "10791, #10808").startswith("protected"))
+        self.assertTrue(guard(10808, ["area:ci"], "10791,#10808").startswith("protected"))
+        self.assertEqual(guard(10792, [], "10791,10808"), "ok")
+
+    def test_red_main_label_alone_is_not_protected(self) -> None:
+        self.assertEqual(guard(4, ["queue-jump:red-main"]), "ok")
+
+    def test_the_revert_step_checks_the_guard_before_any_push(self) -> None:
+        revert = step("Revert the culprit or report it")
+        self.assertLess(revert.index("revert-guard.py"), revert.index("git_c revert"))
+        self.assertLess(revert.index("revert-guard.py"), revert.index("push_branch"))
+
+
 class TokenModeTest(unittest.TestCase):
     """No builder App key: notify on the caller's own GITHUB_TOKEN."""
 
