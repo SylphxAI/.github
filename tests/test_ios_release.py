@@ -130,6 +130,56 @@ class IosRelease(unittest.TestCase):
         self.assertIn("kill -KILL", guard)
         self.assertIn("sleep 5", guard)
 
+    def guard_text(self) -> str:
+        return re.search(r"<<'GUARD'\n(.*?)\nGUARD", self.step("Validate inputs")["run"], re.S).group(1) + "\n"
+
+    def test_guard_preflight_runs_first_and_refuses_off_a_ci_runner(self) -> None:
+        import os
+        import subprocess
+        import tempfile
+
+        text = self.guard_text()
+        # Static order: the entry point runs preflight before main, and the
+        # preflight names no ps, kill or process listing.
+        self.assertLess(text.index("preflight || exit 1"), text.index('main "$1"'))
+        pre = re.search(r"preflight\(\) \{.*?\n\}", text, re.S).group(0)
+        for word in ("ps ", "kill", "pgrep", "snap"):
+            self.assertNotIn(word, pre)
+        for needle in ("GITHUB_ACTIONS", "RUNNER_ENVIRONMENT", "runner-[0-9a-f]{12}", "desk-0|kyle-desk", "/home/kyle", "USER"):
+            self.assertIn(needle, pre)
+        # Source only the preflight, with ps and kill stubbed to a marker.
+        with tempfile.TemporaryDirectory() as d:
+            script = os.path.join(d, "pre.sh")
+            with open(script, "w") as f:
+                f.write("ps() { echo CALLED_PS; return 1; }\nkill() { echo CALLED_KILL; return 1; }\n" + pre + "\n")
+            def run(env: dict[str, str]) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    ["bash", "-c", f"source {script}; preflight"],
+                    env={"PATH": "/usr/bin:/bin", **env}, capture_output=True, text=True,
+                )
+            good = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "self-hosted",
+                    "RUNNER_NAME": "runner-0123456789ab", "HOME": "/Users/runner", "USER": "runner"}
+            for bad in (
+                {}, {**good, "GITHUB_ACTIONS": "false"}, {**good, "RUNNER_ENVIRONMENT": ""},
+                {**good, "RUNNER_NAME": "kyle-desk"}, {**good, "RUNNER_NAME": "runner-XYZ"},
+                {**good, "HOME": "/home/kyle"}, {**good, "USER": "kyle"},
+            ):
+                r = run(bad)
+                self.assertNotEqual(r.returncode, 0, bad)
+                self.assertIn("refusing: not a single-use CI runner", r.stdout)
+                self.assertNotIn("CALLED", r.stdout + r.stderr)
+            # Host check: a desk hostname refuses even with a perfect environment.
+            r = subprocess.run(
+                ["bash", "-c", f"hostname() {{ echo desk-0; }}; source {script}; preflight"],
+                env={"PATH": "/usr/bin:/bin", **good}, capture_output=True, text=True,
+            )
+            self.assertNotEqual(r.returncode, 0)
+            r = subprocess.run(
+                ["bash", "-c", f"hostname() {{ echo mac-abc; }}; source {script}; preflight"],
+                env={"PATH": "/usr/bin:/bin", **good}, capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 0, r.stdout)
+
     def test_post_archive_script_between_archive_and_export_without_secrets(self) -> None:
         step = self.step("Post-archive script")
         self.assertNotIn("secrets.", str(step.get("env")))

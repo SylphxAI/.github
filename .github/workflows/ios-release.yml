@@ -311,9 +311,20 @@ jobs:
           #!/bin/bash
           # guard.sh baseline | kill | check
           set -uo pipefail
-          mode="$1"
-          dir="$IOS_SIGN_DIR"
-          me="$(id -u)"
+          # Refuse to touch any process unless this is a single-use CI runner.
+          # Runs before anything else; sends no signal and lists nothing.
+          preflight() {
+            local host
+            host="$(hostname 2> /dev/null)"
+            if [ "${GITHUB_ACTIONS:-}" != true ] \
+              || [ -z "${RUNNER_ENVIRONMENT:-}" ] \
+              || ! [[ "${RUNNER_NAME:-}" =~ ^runner-[0-9a-f]{12}$ ]] \
+              || [[ "$host" =~ ^(desk-0|kyle-desk) ]] \
+              || [ "${HOME:-}" = /home/kyle ] || [ "${USER:-}" = kyle ]; then
+              echo "refusing: not a single-use CI runner"
+              return 1
+            fi
+          }
           # Owned by this user, not an ancestor of, or descended from, this
           # shell: "pid<TAB>start time<TAB>command".
           snap() {
@@ -347,6 +358,10 @@ jobs:
               printf '%s\t%s\t%s\n' "$pid" "$started" "$comm"
             done
           }
+          main() {
+          mode="$1"
+          dir="$IOS_SIGN_DIR"
+          me="$(id -u)"
           case "$mode" in
             baseline) snap > "$dir/procs.base" ;;
             check)
@@ -372,6 +387,11 @@ jobs:
               fi ;;
             *) echo "bad mode"; exit 2 ;;
           esac
+          }
+          if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+            preflight || exit 1
+            main "$1"
+          fi
           GUARD
           chmod 500 "$sign_dir/guard.sh"
           echo "IOS_GUARD_SHA=$(shasum -a 256 "$sign_dir/guard.sh" | cut -d' ' -f1)" >> "$GITHUB_ENV"
