@@ -63,7 +63,13 @@ proofs - is a suite lane.
    Create them in the same change.
 6. **Pin** every `SylphxAI/.github/...@main` in the starters to the commit you
    adopt.
-7. **Ruleset**: `ci-ok` stays the only required check. `verified` is never a
+7. **Rust repositories**: add `.github/workflows/sylphx-check.yml`, a copy of
+   [`workflow-templates/rust-check.yml`](../workflow-templates/rust-check.yml),
+   unchanged. It lets an agent run `cargo check` on CI instead of the desk
+   (`sylphx build check`, or until the CLI ships
+   `gh workflow run sylphx-check.yml -R ORG/REPO -f ref=BRANCH -f packages="a b"`);
+   see [rust-check.md](rust-check.md).
+8. **Ruleset**: `ci-ok` stays the only required check. `verified` is never a
    required check: it exists only after a merge, so requiring it deadlocks
    the queue.
 

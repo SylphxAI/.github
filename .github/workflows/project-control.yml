@@ -105,6 +105,7 @@ jobs:
           cp workflow-templates/optimistic-gate.yml "$work/.github/workflows/ci.yml"
           cp workflow-templates/optimistic-verify.yml "$work/.github/workflows/verify.yml"
           cp workflow-templates/red-main.yml "$work/.github/workflows/red-main.yml"
+          cp workflow-templates/rust-check.yml "$work/.github/workflows/sylphx-check.yml"
           cp .github/actionlint.yaml "$work/.github/actionlint.yaml"
           git -C "$work" init -q
       - name: actionlint on the starters
@@ -120,6 +121,7 @@ jobs:
             ${{ runner.temp }}/starter/.github/workflows/ci.yml
             ${{ runner.temp }}/starter/.github/workflows/verify.yml
             ${{ runner.temp }}/starter/.github/workflows/red-main.yml
+            ${{ runner.temp }}/starter/.github/workflows/sylphx-check.yml
 
   template-verdict:
     needs: template-plan

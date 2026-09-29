@@ -2,6 +2,7 @@ name: Rust check
 
 # Remote `cargo check` for `sylphx build check` (SylphxAI/.github docs/rust-check.md).
 # Copy this file to .github/workflows/sylphx-check.yml and keep the name.
+# Until the CLI ships: gh workflow run sylphx-check.yml -R ORG/REPO -f ref=BRANCH -f packages="crate1 crate2"
 on:
   workflow_dispatch:
     inputs:
@@ -37,7 +38,7 @@ permissions:
 
 jobs:
   check:
-    uses: SylphxAI/.github/.github/workflows/rust-check.yml@main
+    uses: SylphxAI/.github/.github/workflows/rust-check.yml@2065a75f852ba572ea5471e9cf1d9f3bc8bba44f # SylphxAI/.github #119
     with:
       ref: ${{ inputs.ref }}
       packages: ${{ inputs.packages }}

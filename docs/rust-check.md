@@ -12,7 +12,8 @@ not use the merge-gate class.
 ## Adopt it in a repository
 
 Copy `workflow-templates/rust-check.yml` to
-`.github/workflows/sylphx-check.yml` (the CLI dispatches that file name); on
+`.github/workflows/sylphx-check.yml` (the CLI dispatches that file name)
+unchanged - it pins the reusable workflow by commit, as every caller must; on
 Sylphx runners it needs no secret. Then, from any machine:
 
     sylphx build check --repo ORG/REPO --ref my-branch -p my-crate [--tests]
