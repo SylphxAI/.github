@@ -1,0 +1,29 @@
+name: iOS TestFlight
+
+# Sign, archive and upload to TestFlight on the internal macOS runners
+# (SylphxAI/.github docs/ios-release.md). TestFlight only: the reusable
+# workflow never submits for review or releases.
+# Replace COMMIT_SHA with the SylphxAI/.github commit you have reviewed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testflight:
+    uses: SylphxAI/.github/.github/workflows/ios-release.yml@COMMIT_SHA
+    with:
+      scheme: MyApp
+      bundle-id: com.example.myapp
+      workspace: MyApp.xcworkspace # or: project: MyApp.xcodeproj
+      build-number: ${{ github.run_number }}
+    # Pass each secret by name; `secrets: inherit` hands over every secret.
+    secrets:
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+      IOS_DIST_CERTIFICATE_BASE64: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 }}
+      IOS_DIST_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DIST_CERTIFICATE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
