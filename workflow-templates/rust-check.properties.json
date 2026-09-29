@@ -1,0 +1,6 @@
+{
+  "name": "Rust check",
+  "description": "Remote cargo check on Sylphx runners with the shared sccache, driven by `sylphx build check`.",
+  "iconName": "octicon rocket",
+  "categories": ["Continuous integration", "Rust"]
+}

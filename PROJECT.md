@@ -16,6 +16,7 @@ Public surfaces:
 - `profile/README.md` and `.github/*` community health files
 - `.github/workflows/adr29-admission.yml`
 - `.github/workflows/release.yml`
+- `.github/workflows/rust-check.yml` ([docs/rust-check.md](docs/rust-check.md))
 - `.github/workflows/publish-npm.yml`
 - `.github/workflows/red-main.yml`
 - `.github/actions/*`
