@@ -144,6 +144,17 @@ on:
           the other shared workflows use.
         type: string
         default: ''
+      environment:
+        description: >-
+          Name of a GitHub environment the handler job runs in, e.g.
+          `builder-write`. A `uses:` caller job cannot declare `environment:`,
+          so a repository that keeps the builder App key in an environment
+          (limited to the trunk and release tags) names it here; the job then
+          reads SYLPHX_BUILDER_PRIVATE_KEY from that environment itself and
+          the caller passes no secret. Empty means no environment: the key
+          comes from the passed or inherited secret, as before.
+        type: string
+        default: ''
     secrets:
       app-private-key:
         description: >-
@@ -181,6 +192,9 @@ jobs:
     # Our own runners only; a hosted label is refused in pull requests that
     # add one (owner#750).
     runs-on: sylphx-linux-standard
+    # Empty string = no environment (an empty `environment:` name is ignored by
+    # Actions), so callers that omit the input behave as before.
+    environment: ${{ inputs.environment }}
     # Mint, rerun watch (20 min), every candidate dispatched at once under one
     # shared deadline (20 min), revert, summary, and slack.
     timeout-minutes: 90

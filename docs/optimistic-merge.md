@@ -66,6 +66,12 @@ proofs - is a suite lane.
    fails, the handler comments the missing grant on `ops-issue` (the caller
    grants `issues: write`), writes it to the step summary and fails the job;
    it never fails silently.
+   **Key in an environment**: a repository may hold the key in a GitHub
+   environment (deployments limited to the trunk and release tags) instead of
+   a repository secret. The caller sets `with: environment: <name>` and drops
+   the `secrets:` pass-through; the handler job enters that environment and
+   reads `SYLPHX_BUILDER_PRIVATE_KEY` from it (a `uses:` job cannot declare
+   `environment:` itself). The default, empty, keeps the passed-secret path.
 5. **Labels** the handler uses but never creates, and silently skips when
    absent: `flake`, `quarantine`, `auto-revert`, `queue-jump:red-main`.
    Create them in the same change.
