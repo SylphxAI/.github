@@ -8,7 +8,7 @@ description: >
 
 inputs:
   needs:
-    description: "`${{ toJSON(needs) }}` of the calling job."
+    description: "The calling job's needs context as JSON (toJSON of needs)."
     required: true
   required:
     description: >

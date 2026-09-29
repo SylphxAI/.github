@@ -137,6 +137,22 @@ class NeedsPassTest(unittest.TestCase):
         self.assertEqual(needs_pass.verdict({"quarantine": {"result": "failure"}}, set(), {"quarantine"}), [])
 
 
+class ActionManifestExpressionTest(unittest.TestCase):
+    """The runner evaluates `${{ }}` anywhere in a composite action.yml, even in
+    an input's description, and a context the action cannot see (needs) fails
+    the step before it starts. Expressions belong only in defaults and steps."""
+
+    def test_no_expression_in_any_description(self) -> None:
+        import yaml
+        for manifest in (ROOT / ".github" / "actions").glob("*/action.yml"):
+            data = yaml.safe_load(manifest.read_text())
+            texts = [data.get("description", "")]
+            for section in ("inputs", "outputs"):
+                texts += [(v or {}).get("description", "") for v in (data.get(section) or {}).values()]
+            for text in texts:
+                self.assertNotIn("${{", text or "", manifest)
+
+
 class StarterWorkflowTest(unittest.TestCase):
     def test_starters_parse_and_reference_existing_actions(self) -> None:
         import yaml
