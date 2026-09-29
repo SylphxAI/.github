@@ -1,0 +1,6 @@
+{
+  "name": "Optimistic merge",
+  "description": " verify:The full suite runs after merge; the verified check marks what may deploy.",
+  "iconName": "octicon git-merge-queue",
+  "categories": ["Continuous integration"]
+}

@@ -1,0 +1,52 @@
+name: ci-range
+description: >
+  The commit range a CI run covers and which of the caller's lanes it
+  selects - one answer for the merge-queue gate and the post-merge verify
+  workflow (docs/optimistic-merge.md). Pull request: its base. Merge group:
+  the group's base. Push or dispatch: the last commit whose full suite passed
+  (the newest successful run of this workflow on the default branch, else the
+  newest ancestor with a passing `verified` check run). Schedule: everything.
+  Outputs `base`, `run` (JSON lane -> bool; use
+  `fromJSON(needs.<job>.outputs.run).<lane>`) and `changed`.
+  The job needs `actions: read` and `checks: read`, and a checkout of HEAD
+  (any depth: the base commit, and on a push the history, are fetched
+  without blobs).
+
+inputs:
+  lanes:
+    description: >
+      One lane per line, `name: pattern pattern ...`. Patterns are fnmatch
+      globs over repository paths where `*` also crosses `/`. A lane with no
+      pattern, or with `*`, always runs. A change under `.github/` selects
+      every lane.
+    required: true
+  only:
+    description: >
+      Comma-separated lanes to narrow to (the verify workflow's dispatch
+      input, which the red-main handler fills with the failed job names).
+    default: ""
+  token:
+    description: Token that can read this repository's workflow runs and check runs.
+    default: ${{ github.token }}
+
+outputs:
+  base:
+    description: The base commit, or empty when every lane runs.
+    value: ${{ steps.range.outputs.base }}
+  run:
+    description: JSON object mapping each lane to true or false.
+    value: ${{ steps.range.outputs.run }}
+  changed:
+    description: Number of changed files, or empty when there is no base.
+    value: ${{ steps.range.outputs.changed }}
+
+runs:
+  using: composite
+  steps:
+    - id: range
+      shell: bash
+      env:
+        LANES: ${{ inputs.lanes }}
+        ONLY: ${{ inputs.only }}
+        TOKEN: ${{ inputs.token }}
+      run: python3 "$GITHUB_ACTION_PATH/ci_range.py"

@@ -1,0 +1,108 @@
+# The merge-queue gate for optimistic merge (docs/optimistic-merge.md in
+# SylphxAI/.github). Merge groups and draft pull requests run only the fast
+# lanes: format, lint, typecheck, workflow parse, and the unit tests the change
+# affects - a draft is the compiler. A pull request marked ready also runs the
+# full suite its change affects (verify.yml, called below), so it is green
+# before it is armed. After merge, verify.yml runs again on the trunk. `ci-ok`
+# is the one required check.
+#
+# Adopting: replace each `@main` below with the commit of SylphxAI/.github
+# main you adopt (callers pin by commit), then fill in the lanes.
+name: CI
+
+on:
+  pull_request:
+    # ready_for_review: marking a draft ready runs the full suite.
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+
+# A new push supersedes a pull request's run; a merge group's run is never
+# cancelled by another.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+jobs:
+  # Which lanes this change affects. A change under .github/ runs them all.
+  plan:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 10
+    outputs:
+      base: ${{ steps.range.outputs.base }}
+      run: ${{ steps.range.outputs.run }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          filter: blob:none
+      - id: range
+        uses: SylphxAI/.github/.github/actions/ci-range@main
+        with:
+          # name: paths that affect it (`*` crosses `/`; no paths = always)
+          lanes: |
+            lint:
+            test: src/* tests/*
+            migrations: migrations/*
+
+  lint:
+    needs: plan
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: SylphxAI/.github/.github/actions/workflow-lint@main
+      # Rust: install the toolchain first, then
+      #   - uses: SylphxAI/.github/.github/actions/rust-sccache@main
+      #     with:
+      #       s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
+      #       s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
+      - run: echo "format check, lint, typecheck"
+
+  test:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.run).test
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # Affected-only where the build tool allows it, from the plan's base:
+      #   turbo run test --affected (TURBO_SCM_BASE=${{ needs.plan.outputs.base }}),
+      #   cargo nextest run -p <changed crates and their dependents>, ...
+      - run: echo "unit tests the change affects"
+
+  # Migrations run in the gate, path-triggered: DDL cannot be reverted by a
+  # revert pull request, so a migration is exercised before it reaches the
+  # trunk - lint and integrity (atlas lint + atlas.sum, drizzle check) and the
+  # database-backed migration tests.
+  migrations:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.run).migrations
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - run: echo "migration lint, integrity, and the database-backed migration tests"
+
+  # The full suite on a pull request that is ready: the same lanes verify.yml
+  # runs after merge, selected by this change. Never in a merge group or a
+  # draft.
+  suite:
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    uses: ./.github/workflows/verify.yml
+    secrets: inherit
+
+  # The required check. Skipped lanes pass; a failed or cancelled lane fails.
+  ci-ok:
+    if: always()
+    needs: [plan, lint, test, migrations, suite]
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 5
+    steps:
+      - uses: SylphxAI/.github/.github/actions/needs-pass@main
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: plan

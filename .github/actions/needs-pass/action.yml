@@ -1,0 +1,32 @@
+name: needs-pass
+description: >
+  The aggregate verdict of a workflow: pass when every needed job succeeded or
+  was skipped, fail on any failure, cancellation or other result. Run it in
+  the job whose check run is the one that matters - `ci-ok` in the merge-queue
+  gate, `verified` in the post-merge verify workflow (docs/optimistic-merge.md)
+  - with `if: always()` on that job so a failed lane still produces a verdict.
+
+inputs:
+  needs:
+    description: "`${{ toJSON(needs) }}` of the calling job."
+    required: true
+  required:
+    description: >
+      Comma-separated jobs that must have succeeded, not merely been skipped
+      (typically the plan job, so a broken plan never reads as a pass).
+    default: ""
+  advisory:
+    description: >
+      Comma-separated jobs whose result never fails the verdict (for example
+      a lane that runs only quarantined tests).
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        NEEDS: ${{ inputs.needs }}
+        REQUIRED: ${{ inputs.required }}
+        ADVISORY: ${{ inputs.advisory }}
+      run: python3 "$GITHUB_ACTION_PATH/needs_pass.py"

@@ -1,0 +1,98 @@
+# Post-merge verification for optimistic merge (docs/optimistic-merge.md in
+# SylphxAI/.github). Everything the gate dropped - integration, database and
+# browser tests, device matrices, release builds - runs here on each push to
+# the trunk, and on a pull request marked ready (ci.yml calls this file). The `verified` job's check run on the head commit is the marker
+# the platform's Release reads: only verified commits deploy.
+#
+# One run covers every commit since the last one whose suite passed. A running
+# verify is never cancelled; a newer push waits, and covers what it carries.
+# The red-main handler dispatches this workflow on a temporary branch with
+# `lanes` set to the lanes it suspects.
+#
+# Adopting: replace each `@main` below with the commit of SylphxAI/.github
+# main you adopt, then fill in the lanes.
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  workflow_call:
+    inputs:
+      lanes:
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      lanes:
+        description: Comma-separated lanes to run. Empty runs every lane the range selects.
+        type: string
+        default: ""
+
+# On the trunk a running verify is never cancelled: a newer push waits and
+# covers what it carries. On a pull request a new push supersedes the run.
+concurrency:
+  group: verify-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+jobs:
+  plan:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 10
+    outputs:
+      base: ${{ steps.range.outputs.base }}
+      run: ${{ steps.range.outputs.run }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          filter: blob:none
+      - id: range
+        uses: SylphxAI/.github/.github/actions/ci-range@main
+        with:
+          only: ${{ inputs.lanes }}
+          lanes: |
+            integration: src/* tests/*
+            e2e:
+
+  integration:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.run).integration
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - run: echo "the full test suite; write a JUnit report"
+      # The red-main handler names flaky tests from `junit-<lane>` artifacts.
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: junit-integration
+          path: junit.xml
+          if-no-files-found: ignore
+
+  e2e:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.run).e2e
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - run: echo "browser, device or release-build lanes"
+
+  # The marker. Named exactly `verified`; never a required check (it exists
+  # only after a merge).
+  verified:
+    name: verified
+    if: always()
+    needs: [plan, integration, e2e]
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 5
+    steps:
+      - uses: SylphxAI/.github/.github/actions/needs-pass@main
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: plan
