@@ -19,5 +19,13 @@ cold. Then, from any machine:
 
     sylphx build check --repo ORG/REPO --ref my-branch -p my-crate [--tests]
 
+Compile cache: with the sccache secrets the shared sccache is the cache. Without
+them (every tenant repository) the job uses `Swatinem/rust-cache` on GitHub's
+own Actions cache: per repository, no cost, keyed by toolchain, `Cargo.lock` and
+the `tests` input, and saved even when the check fails so a broken first run
+still warms the next. It saves from every ref (the check runs on branches, and
+a branch cannot read another branch's cache), and GitHub evicts least recently
+used entries inside its 10 GB per-repository quota.
+
 Inputs never reach a shell: they travel as environment variables and are
 matched against a strict pattern first.

@@ -25,6 +25,16 @@ class RustCheckWorkflow(unittest.TestCase):
         for marker in ("@@sylphx-check-begin", "@@sylphx-check-end", "@@sylphx-check-exit="):
             self.assertIn(f'echo "{marker}', self.text)
 
+    def test_rust_cache_only_without_sccache_credentials(self) -> None:
+        step = re.search(r"- name: Compile cache on GitHub Actions cache\n((?:        .*\n)+)", self.text)
+        self.assertIsNotNone(step)
+        body = step.group(1)
+        self.assertIn("if: env.AWS_ACCESS_KEY_ID == ''", body)
+        self.assertRegex(body, r"uses: Swatinem/rust-cache@[0-9a-f]{40} # v\d+\.\d+\.\d+")
+        self.assertIn("cache-on-failure: true", body)
+        self.assertLess(self.text.index("Rust toolchain and sccache"), self.text.index("Compile cache on GitHub"))
+        self.assertLess(self.text.index("Compile cache on GitHub"), self.text.index("- name: cargo check"))
+
 
 if __name__ == "__main__":
     unittest.main()
