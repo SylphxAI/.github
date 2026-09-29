@@ -61,9 +61,7 @@ jobs:
       - uses: SylphxAI/.github/.github/actions/workflow-lint@main
       # Rust: install the toolchain first, then
       #   - uses: SylphxAI/.github/.github/actions/rust-sccache@main
-      #     with:
-      #       s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
-      #       s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
+      # (no secret: Sylphx runners carry the org's own cache credential)
       - run: echo "format check, lint, typecheck"
 
   test:

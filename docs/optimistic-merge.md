@@ -91,11 +91,15 @@ queue, and deploys stay as they are.
   `verified` verdict. Skipped passes; failed or cancelled fails; `required:
   plan` makes a broken plan a failure.
 - [`rust-sccache`](../.github/actions/rust-sccache/action.yml): the Rust
-  compile cache. S3 on the in-cluster object store when the organization
-  secrets `SYLPHX_CI_CACHE_ACCESS_KEY` / `SYLPHX_CI_CACHE_SECRET_KEY` are
-  passed (one object-store user and bucket per organization, never shared), else the GitHub Actions cache (no secret; its default per-repository
-  limit evicts old entries, and it is never raised - spend stays $0).
-  Entries are prefixed by repository.
+  compile cache. On Sylphx runners it uses the org's own prefix of the
+  in-cluster object store through the per-org credential the platform puts
+  on every runner (short-lived, scoped to `sccache/<installation id>/`; no
+  secret, and no org can read or poison another's entries). Elsewhere, the
+  GitHub Actions cache (no secret; its default per-repository limit evicts
+  old entries, and it is never raised - spend stays $0). The
+  `s3-access-key` / `s3-secret-key` inputs (the organization secrets
+  `SYLPHX_CI_CACHE_*`) still work until they are retired. Entries are
+  prefixed by repository.
 - [`workflow-lint`](../.github/actions/workflow-lint/action.yml): pinned
   actionlint, the gate's workflow parse. Declare self-hosted runner labels in
   `.github/actionlint.yaml` (`self-hosted-runner: labels:`), never with an
