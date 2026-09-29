@@ -101,15 +101,36 @@ jobs:
           curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -sSfL https://sh.rustup.rs \
             | sh -s -- --default-toolchain none --profile minimal -y --no-modify-path
           cd "$IN_WORKSPACE"
-          rustup toolchain install
-          rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+          # The repository's pinned toolchain when it has one (the workspace or
+          # any parent up to the checkout), else stable. A repository without a
+          # toolchain file used to fail here: "no default is configured".
+          pinned=""
+          dir="$PWD"
+          while :; do
+            for f in rust-toolchain.toml rust-toolchain; do
+              [ -f "$dir/$f" ] && { pinned="$dir/$f"; break 2; }
+            done
+            [ "$dir" = "$GITHUB_WORKSPACE" ] || [ "$dir" = / ] && break
+            dir="$(dirname "$dir")"
+          done
+          if [ -n "$pinned" ]; then
+            echo "toolchain from $pinned"
+            rustup toolchain install
+            rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+          else
+            echo "no rust-toolchain file: stable"
+            rustup default stable
+          fi
+          # cargo check itself needs no component; clippy is added so a caller's
+          # later lint step finds it on the same toolchain.
+          rustup component add clippy
           cargo --version
       - name: Compile cache (sccache)
         # The org's own sccache, first that applies: the per-org credential on
         # the runner, else the organization's own cache user. Never the
         # platform's ci-sccache key.
         id: sccache
-        uses: SylphxAI/.github/.github/actions/rust-sccache@main
+        uses: SylphxAI/.github/.github/actions/rust-sccache@17838ee1f421b91e26c3c16fc0370568bcdb6363 # main after #119/#113
         with:
           s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
           s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
