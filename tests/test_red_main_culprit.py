@@ -151,16 +151,48 @@ class TokenModeTest(unittest.TestCase):
                 self.assertNotIn("secrets.", line)
 
     def test_mint_steps_need_the_key_flag(self) -> None:
-        for name in (
-            "Mint the App token for the caller's repository",
-            "Mint the App token with the observation grant only",
-        ):
-            self.assertIn("steps.key.outputs.present == 'yes'", step(name))
+        self.assertIn("steps.key.outputs.present == 'yes'", step("Mint the App token for the caller's repository"))
 
     def test_token_falls_back_to_github_token(self) -> None:
         text = WORKFLOW.read_text()
-        self.assertNotIn("app-token-min.outputs.token }}", text)
-        self.assertIn("steps.app-token-min.outputs.token || github.token }}", text)
+        self.assertNotIn("app-token-min", text)
+        self.assertNotIn("steps.app-token.outputs.token }}", text)
+        self.assertIn("steps.app-token.outputs.token || github.token }}", text)
+
+    def test_app_mint_requests_no_actions_permission(self) -> None:
+        # The builder App installation holds no `actions` permission; asking
+        # for it fails the whole mint (red-main runs 36615065175 and later).
+        mint = step("Mint the App token for the caller's repository")
+        self.assertNotIn("permission-actions", WORKFLOW.read_text())
+        for perm in ("contents", "issues", "pull-requests"):
+            self.assertIn(f"permission-{perm}: write", mint)
+
+    def test_actions_calls_use_the_workflow_token(self) -> None:
+        text = WORKFLOW.read_text()
+        self.assertIn("ACTIONS_TOKEN: ${{ github.token }}", text)
+        self.assertIn('gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }', text)
+        # No raw `gh` call on an Actions endpoint: it would use the App token.
+        for line in text.splitlines():
+            code = line.strip()
+            if code.startswith("#"):
+                continue
+            self.assertNotRegex(code, r"\bgh (api\b.*repos/\$REPO/actions/|run (rerun|download|view|list))")
+        self.assertIn("gha run rerun", step("Rerun the failed lanes on the same commit"))
+        self.assertIn("/dispatches", step("Trace the culprit among the unverified commits"))
+        self.assertIn("gha api --method POST", step("Trace the culprit among the unverified commits"))
+
+    def test_failed_mint_or_probe_is_reported_by_name(self) -> None:
+        notice = step("Report a failed mint or probe")
+        self.assertIn("steps.app-token.outcome == 'failure' || steps.probe.outcome == 'failure'", notice)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", notice)
+        self.assertIn("OPS_ISSUE: ${{ inputs.ops-issue }}", notice)
+        self.assertIn("GITHUB_STEP_SUMMARY", notice)
+        self.assertIn("\n          exit 1\n", notice)
+
+    def test_probe_reads_actions_through_the_workflow_token(self) -> None:
+        probe = step("Probe the grants on the caller's repository")
+        self.assertIn("gha api", probe)
+        self.assertIn("SIMULATE", probe)
 
     def test_no_key_forces_notify(self) -> None:
         detect = step("Detect the builder App key")
