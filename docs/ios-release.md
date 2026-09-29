@@ -11,6 +11,14 @@ macOS virtualised on non-Apple hardware under a licence risk the owner accepted
 script it runs, submits for App Store review or releases a build
 (`tests/test_ios_release.py` fails if such a call appears).
 
+## Trust model
+
+The caller repository's own build code (build-phase scripts, SPM plugins) runs
+in the job that holds the unlocked distribution identity. Only repositories
+that own that identity may call this workflow; never one that builds
+third-party code. The API key is written only in the upload step, after the
+build.
+
 ## Why a reusable workflow
 
 The temporary keychain, installed profiles and API key must be removed by an
@@ -72,8 +80,8 @@ These names match the Cubeage organization secrets.
 ## What it does
 
 1. Creates a temporary keychain with a random, masked password
-   (`set-keychain-settings -lut 21600`), puts it first in the user search list
-   (the existing list is kept), imports the certificate and runs
+   (`set-keychain-settings -lut 5400`, the job's 90-minute budget), puts it first in the user search list
+   (the existing list is kept), imports the certificate (access granted to `codesign` only, so build code cannot export the private key with `security`) and runs
    `set-key-partition-list -S apple-tool:,apple:,codesign:`.
 2. Decodes each profile (`security cms -D`) into
    `~/Library/MobileDevice/Provisioning Profiles/<UUID>.mobileprovision`. The

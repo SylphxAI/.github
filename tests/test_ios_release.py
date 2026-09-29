@@ -74,9 +74,13 @@ class IosRelease(unittest.TestCase):
         body = self.step("Signing setup")["run"]
         self.assertIn("openssl rand", body)
         self.assertLess(body.index("::add-mask::$kc_password"), body.index("create-keychain"))
-        self.assertIn("set-keychain-settings -lut 21600", body)
+        self.assertIn("set-keychain-settings -lut 5400", body)
         self.assertIn("set-key-partition-list -S apple-tool:,apple:,codesign: -s -k", body)
         self.assertIn("security list-keychains -d user -s", body)
+
+    def test_import_grants_only_codesign(self) -> None:
+        body = self.step("Signing setup")["run"]
+        self.assertEqual(re.findall(r"-T (\S+)", body), ["/usr/bin/codesign"])
 
     def test_no_step_echoes_a_secret(self) -> None:
         self.assertNotIn("set -x", self.text)
