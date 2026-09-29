@@ -95,7 +95,9 @@ queue, and deploys stay as they are.
   --base`).
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
   `verified` verdict. Skipped passes; failed or cancelled fails; `required:
-  plan` makes a broken plan a failure.
+  plan` makes a broken plan a failure. `required-unless-merge-group: suite`
+  (the PR-time jobs) makes a skipped job a failure on every event but
+  `merge_group`, so a dispatch run cannot post a green verdict over a red one.
 - [`rust-sccache`](../.github/actions/rust-sccache/action.yml): the Rust
   compile cache. On Sylphx runners it uses the org's own prefix of the
   in-cluster object store through the per-org credential the platform puts

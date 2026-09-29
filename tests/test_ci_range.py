@@ -120,6 +120,22 @@ class MainTest(unittest.TestCase):
 
 
 class NeedsPassTest(unittest.TestCase):
+    def test_pr_time_job_skipped_fails_outside_merge_group(self) -> None:
+        needs = {"plan": {"result": "success"}, "suite": {"result": "skipped"}}
+        for event in ("pull_request", "workflow_dispatch", "push", ""):
+            self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), event, {"suite"}),
+                             ["suite: skipped (must succeed)"], event)
+
+    def test_pr_time_job_skipped_passes_in_merge_group(self) -> None:
+        needs = {"plan": {"result": "success"}, "suite": {"result": "skipped"}}
+        self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), "merge_group", {"suite"}), [])
+
+    def test_pr_time_job_success_and_failure(self) -> None:
+        ok = {"plan": {"result": "success"}, "suite": {"result": "success"}}
+        self.assertEqual(needs_pass.verdict(ok, {"plan"}, set(), "workflow_dispatch", {"suite"}), [])
+        bad = {"plan": {"result": "success"}, "suite": {"result": "failure"}}
+        self.assertTrue(needs_pass.verdict(bad, {"plan"}, set(), "merge_group", {"suite"}))
+
     def test_success_and_skipped_pass(self) -> None:
         needs = {"plan": {"result": "success"}, "a": {"result": "skipped"}, "b": {"result": "success"}}
         self.assertEqual(needs_pass.verdict(needs, {"plan"}, set()), [])

@@ -1,7 +1,8 @@
 name: needs-pass
 description: >
   The aggregate verdict of a workflow: pass when every needed job succeeded or
-  was skipped, fail on any failure, cancellation or other result. Run it in
+  was skipped (except `required` and, outside merge_group,
+  `required-unless-merge-group`, which must succeed), fail on any failure, cancellation or other result. Run it in
   the job whose check run is the one that matters - `ci-ok` in the merge-queue
   gate, `verified` in the post-merge verify workflow (docs/optimistic-merge.md)
   - with `if: always()` on that job so a failed lane still produces a verdict.
@@ -21,6 +22,15 @@ inputs:
       a lane that runs only quarantined tests).
     default: ""
 
+  required-unless-merge-group:
+    description: >
+      Comma-separated PR-time jobs (for example suite, identifiers,
+      plain-language) that must have succeeded on every event except
+      merge_group. A skipped one is a failure there, so a workflow_dispatch
+      run cannot post a green verdict over a red one. In a merge group the
+      queue does not run them and skipped passes.
+    default: ""
+
 runs:
   using: composite
   steps:
@@ -29,4 +39,6 @@ runs:
         NEEDS: ${{ inputs.needs }}
         REQUIRED: ${{ inputs.required }}
         ADVISORY: ${{ inputs.advisory }}
+        REQUIRED_UNLESS_MERGE_GROUP: ${{ inputs.required-unless-merge-group }}
+        EVENT_NAME: ${{ github.event_name }}
       run: python3 "$GITHUB_ACTION_PATH/needs_pass.py"
