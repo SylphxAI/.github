@@ -1,0 +1,52 @@
+name: Red main
+
+# The caller for the red-main handler (owner#809). When the verify workflow
+# fails on `main`, the change has already landed: the reusable handler in
+# SylphxAI/.github decides whether the failure is a flake - it files an issue
+# per failing unit and opens one pull request that marks each flaky unit in
+# its own source - or real, in which case it traces the culprit and opens one
+# revert pull request.
+#
+# This file decides nothing. Everything the handler does is gated on this
+# repository's own committed `sylphx.toml`: `[ci] merge = "optimistic"` lets
+# it act, and `[ci] on_red` picks `revert` or `notify`. A missing manifest is
+# a no-op, never consent.
+#
+# `workflow_dispatch` is how a classification is rehearsed without waiting for
+# a red main: with no event run, the handler takes the newest failed run of
+# the verify workflow on main.
+
+on:
+  workflow_run:
+    workflows: ["Verify"]
+    types: [completed]
+  workflow_dispatch:
+
+# Read-only on purpose. The handler writes through the builder App's
+# installation token, never through this workflow's own token, so nothing
+# here needs a write.
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  red-main:
+    name: Red main handler
+    # Only a failed run of the verify workflow on the trunk. A dispatch is
+    # always handled.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_branch == 'main')
+    uses: SylphxAI/.github/.github/workflows/red-main.yml@93b5f969a195ceb21552d3d7c5a3ad52a73072d9 # main 93b5f96 (SylphxAI/.github#107)
+    # One secret, passed by name. The handler needs exactly the builder App's
+    # private key, and `secrets: inherit` would hand it every secret this
+    # repository holds. The handler reads it as
+    # `secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY`, so the
+    # org-wide name is the one to pass; its `app-id` input defaults to this
+    # repository's `vars.SYLPHX_BUILDER_APP_ID`.
+    secrets:
+      SYLPHX_BUILDER_PRIVATE_KEY: ${{ secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+    with:
+      verify-workflow: verify.yml

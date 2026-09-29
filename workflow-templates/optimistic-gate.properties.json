@@ -1,0 +1,6 @@
+{
+  "name": "Optimistic merge",
+  "description": " gate:The merge queue runs only the fast lanes; ci-ok is the required check.",
+  "iconName": "octicon git-merge-queue",
+  "categories": ["Continuous integration"]
+}

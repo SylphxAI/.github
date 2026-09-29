@@ -17,7 +17,9 @@ Public surfaces:
 - `.github/workflows/adr29-admission.yml`
 - `.github/workflows/release.yml`
 - `.github/workflows/publish-npm.yml`
+- `.github/workflows/red-main.yml`
 - `.github/actions/*`
+- `workflow-templates/` (starter workflows; [docs/optimistic-merge.md](docs/optimistic-merge.md))
 - `templates/`, `brand/`, and `COMPANY.md`
 
 The historical public-Skills cleanroom and external-admission decisions remain

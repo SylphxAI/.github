@@ -1,0 +1,93 @@
+name: rust-sccache
+description: >
+  Rust compile cache for a CI job: installs a pinned, checksum-verified
+  sccache, points it at a backend and sets RUSTC_WRAPPER, so every rustc
+  invocation after this step is served from the cache when it can be. Run it
+  after the Rust toolchain is installed and before the first cargo command.
+  Backend: the S3 bucket named by the inputs when credentials are given (the
+  in-cluster object store on our runners); otherwise the GitHub Actions cache,
+  which needs no secret. The cache only ever speeds a job up: if the backend is
+  unreachable the job compiles cold and says so. Linux x86_64 only; on any
+  other runner it does nothing.
+
+inputs:
+  s3-access-key:
+    description: S3 access key. Empty selects the GitHub Actions cache backend.
+    default: ""
+  s3-secret-key:
+    description: S3 secret key.
+    default: ""
+  s3-endpoint:
+    description: S3 endpoint URL.
+    default: http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:80
+  s3-bucket:
+    description: S3 bucket.
+    default: ci-sccache
+  key-prefix:
+    description: >
+      Prefix for every cache entry. Defaults to the repository, so no two
+      repositories share entries.
+    default: ${{ github.repository }}
+
+runs:
+  using: composite
+  steps:
+    - name: Export the Actions cache service to sccache
+      if: inputs.s3-access-key == '' && runner.os == 'Linux' && runner.arch == 'X64'
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      with:
+        script: |
+          // Only a JavaScript action sees these; sccache reads them from the environment.
+          for (const name of ['ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_URL', 'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_CACHE_SERVICE_V2']) {
+            if (process.env[name]) core.exportVariable(name, process.env[name]);
+          }
+    - name: sccache
+      if: runner.os == 'Linux' && runner.arch == 'X64'
+      shell: bash
+      env:
+        VERSION: v0.10.0
+        SHA256: 1fbb35e135660d04a2d5e42b59c7874d39b3deb17de56330b25b713ec59f849b
+        S3_ACCESS_KEY: ${{ inputs.s3-access-key }}
+        S3_SECRET_KEY: ${{ inputs.s3-secret-key }}
+        S3_ENDPOINT: ${{ inputs.s3-endpoint }}
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+        KEY_PREFIX: ${{ inputs.key-prefix }}
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/sccache-bin"
+        mkdir -p "$dir"
+        name="sccache-$VERSION-x86_64-unknown-linux-musl"
+        curl --retry 5 --retry-connrefused -sSfL -o "$dir/sccache.tgz" \
+          "https://github.com/mozilla/sccache/releases/download/$VERSION/$name.tar.gz"
+        echo "$SHA256  $dir/sccache.tgz" | sha256sum -c --quiet
+        tar -xzf "$dir/sccache.tgz" -C "$dir" --strip-components=1 "$name/sccache"
+        echo "$dir" >> "$GITHUB_PATH"
+        export PATH="$dir:$PATH"
+        # Incremental artifacts are not cacheable, and sccache refuses them.
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+        echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
+        if [ -n "$S3_ACCESS_KEY" ]; then
+          {
+            echo "SCCACHE_BUCKET=$S3_BUCKET"
+            echo "SCCACHE_ENDPOINT=$S3_ENDPOINT"
+            echo "SCCACHE_REGION=us-east-1"
+            echo "SCCACHE_S3_KEY_PREFIX=$KEY_PREFIX"
+            echo "AWS_ACCESS_KEY_ID=$S3_ACCESS_KEY"
+            echo "AWS_SECRET_ACCESS_KEY=$S3_SECRET_KEY"
+          } >> "$GITHUB_ENV"
+          export SCCACHE_BUCKET="$S3_BUCKET" SCCACHE_ENDPOINT="$S3_ENDPOINT" SCCACHE_REGION=us-east-1 \
+            SCCACHE_S3_KEY_PREFIX="$KEY_PREFIX" AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY"
+          backend="S3 $S3_ENDPOINT/$S3_BUCKET/$KEY_PREFIX"
+        else
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "SCCACHE_GHA_VERSION=$KEY_PREFIX" >> "$GITHUB_ENV"
+          export SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION="$KEY_PREFIX"
+          backend="GitHub Actions cache"
+        fi
+        export SCCACHE_IDLE_TIMEOUT=0
+        if SCCACHE_LOG=warn sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "sccache $VERSION on $backend"
+        else
+          echo "::warning::sccache could not start on $backend; compiling without the cache"
+        fi

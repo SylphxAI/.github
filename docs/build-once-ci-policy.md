@@ -58,7 +58,7 @@ concurrency:
 
 `github.ref` on `push` is `refs/heads/main`, so tip supersession is native—no custom free-runners controller.
 
-Merge Queue: **off by default**. Do **not** declare `merge_group:` on ordinary CI workflows unless MQ is intentionally enabled for that repository.
+Merge queue: optimistic merge - the queue runs a fast gate and the full suite runs after merge ([optimistic-merge.md](optimistic-merge.md)).
 
 ## Platform
 
@@ -73,7 +73,7 @@ After source lands: checkpoint exact SHA → `work.defer` for CI/build/deploy �
 
 ## Template
 
-See [workflow-templates/verification-only-ci.yml](../workflow-templates/verification-only-ci.yml).
+See [optimistic-merge.md](optimistic-merge.md) and the starters in [workflow-templates/](../workflow-templates/).
 
 ## Allowed exceptions
 

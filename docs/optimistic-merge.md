@@ -1,0 +1,104 @@
+# Optimistic merge: adopting it in a repository
+
+The merge queue proves a change can land; the full suite proves the trunk
+after it lands. Queue time drops to the fast gate, and only verified commits
+deploy. The rule is owner `standards/dx.md` (Merge queue); the platform
+contract - what `verified` means to Release, what the red-main handler may do -
+is `docs/services/hosting/verified-commits.md` in `SylphxAI/cloud`. This page
+is the recipe. One pull request per repository carries all of it, so there is
+no half state.
+
+## What runs where
+
+| Event | Runs | Required check |
+| --- | --- | --- |
+| Draft pull request | gate lanes only - the draft is the compiler | `ci-ok` |
+| Pull request marked ready | gate lanes + the full suite the change affects | `ci-ok` |
+| Merge group | gate lanes only (target p90 under 5 min) | `ci-ok` |
+| Push to the trunk | the full suite over every commit since the last verified one | none; `verified` marks the commit |
+| `verify.yml` fails on the trunk | red-main handler: rerun, quarantine a flake, or trace and revert | - |
+
+Gate lanes: format, lint, typecheck, workflow parse, generated-code and
+contract drift, and the unit tests the change affects. Everything else -
+integration and database tests, browser and device matrices, release builds,
+proofs - is a suite lane.
+
+## The pull request
+
+1. **Declare it** in the repository's `sylphx.toml` (the only surface; a
+   repository with none adopts a minimal one):
+
+   ```toml
+   version = "1"
+
+   [ci]
+   merge = "optimistic"
+   on_red = "notify"   # "revert" once the builder App holds the write grant
+   ```
+
+2. **`.github/workflows/ci.yml`** from
+   [`workflow-templates/optimistic-gate.yml`](../workflow-templates/optimistic-gate.yml):
+   the gate lanes, a `suite` job that calls `verify.yml` on ready pull
+   requests, and the `ci-ok` aggregate. Keep the job name the ruleset
+   requires.
+3. **`.github/workflows/verify.yml`** from
+   [`workflow-templates/optimistic-verify.yml`](../workflow-templates/optimistic-verify.yml):
+   the suite lanes and the aggregate job named exactly `verified`. Each lane
+   that runs tests uploads a JUnit report as `junit-<lane>`; the handler names
+   flaky tests from it.
+4. **`.github/workflows/red-main.yml`** from
+   [`workflow-templates/red-main.yml`](../workflow-templates/red-main.yml),
+   unchanged. It needs the `SYLPHX_BUILDER_APP_ID` variable and the
+   `SYLPHX_BUILDER_PRIVATE_KEY` secret; without them it still classifies and
+   says what it could not write.
+5. **Labels** the handler uses but never creates: `flake`, `quarantine`,
+   `auto-revert`, `queue-jump:red-main`.
+6. **Pin** every `SylphxAI/.github/...@main` in the starters to the commit you
+   adopt.
+
+## The shared pieces
+
+- [`ci-range`](../.github/actions/ci-range/action.yml): the range and the lane
+  selection, the same answer in the gate and in verify. Lanes are
+  `name: path globs`; a change under `.github/` runs every lane. Use its
+  `base` output for affected-only builds (`turbo run --affected` with
+  `TURBO_SCM_BASE`, `cargo nextest run -p` on the changed crates, `nx affected
+  --base`).
+- [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
+  `verified` verdict. Skipped passes; failed or cancelled fails; `required:
+  plan` makes a broken plan a failure.
+- [`rust-sccache`](../.github/actions/rust-sccache/action.yml): the Rust
+  compile cache. S3 on the in-cluster object store when credentials are
+  given, else the GitHub Actions cache (no secret). Entries are prefixed by
+  repository.
+- [`workflow-lint`](../.github/actions/workflow-lint/action.yml): pinned
+  actionlint, the gate's workflow parse.
+- [`red-main.yml`](../.github/workflows/red-main.yml): the reusable handler.
+
+## Rules kept from the July rollout
+
+- A running verify on the trunk is never cancelled; a newer push waits and
+  covers what it carries (`concurrency: cancel-in-progress: false`).
+- Verify cost follows cycles, not commits: one run covers the whole range since
+  the last verified commit, never `HEAD~1`.
+- A culprit is traced among the unverified commits at once; when it cannot be
+  named with certainty, the whole window is reverted in one pull request.
+- A flake is quarantined first, in its own source (`#[ignore = "quarantined
+  <date>: <reason> (<issue>, owner <lane>)"]`, or a comment above
+  `test.skip(`), never retried in the queue.
+
+## Runners
+
+Private repositories run every job on our runners: `sylphx-linux-standard`
+for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`
+between. Public repositories may use GitHub's standard hosted runners, which
+are free for them. Never larger or GPU hosted runners.
+
+## Read back after landing
+
+- The first merge group passes with only the gate lanes, and the first push
+  run of `Verify` ends with a `verified` check run on the trunk.
+- `gh workflow run red-main.yml` classifies the newest failed verify run (a
+  rehearsal; it acts only as `on_red` allows).
+- Report: gate p90, pull request CI wall p50/p90 and arm-to-merge p50/p90,
+  before and after.
