@@ -43,3 +43,7 @@ jobs:
       packages: ${{ inputs.packages }}
       tests: ${{ inputs.tests }}
       workspace: ${{ inputs.workspace }}
+    # Only for a runner without the platform's per-org credential (optional).
+    secrets:
+      SYLPHX_CI_CACHE_ACCESS_KEY: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
+      SYLPHX_CI_CACHE_SECRET_KEY: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}

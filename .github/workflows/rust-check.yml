@@ -38,8 +38,16 @@ on:
         type: string
         default: '.'
     secrets:
+      SYLPHX_CI_CACHE_ACCESS_KEY:
+        description: >
+          The organization's own cache user, used only on a runner without the
+          per-org credential the platform injects. Optional.
+        required: false
+      SYLPHX_CI_CACHE_SECRET_KEY:
+        description: Its secret key.
+        required: false
       # Ignored, and declared only so a caller that still passes them does not
-      # fail: the compile cache is the per-org credential on the runner.
+      # fail: the platform's ci-sccache key is never a repository's cache.
       RGW_S3_ACCESS_KEY:
         description: Ignored.
         required: false
@@ -82,8 +90,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - name: Rust toolchain and sccache
-        id: toolchain
+      - name: Rust toolchain
         run: |
           set -euo pipefail
           export CARGO_HOME="$RUNNER_TEMP/cargo-home" RUSTUP_HOME="$RUNNER_TEMP/rustup-home"
@@ -97,35 +104,20 @@ jobs:
           rustup toolchain install
           rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
           cargo --version
-          v=v0.10.0
-          curl --retry 10 --retry-connrefused -sSfL \
-            "https://github.com/mozilla/sccache/releases/download/${v}/sccache-${v}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xz -C "$RUNNER_TEMP" --strip-components=1 "sccache-${v}-x86_64-unknown-linux-musl/sccache"
-          mv "$RUNNER_TEMP/sccache" "$CARGO_HOME/bin/sccache"
-          # The org's own compile cache: the per-org credential Hands injects
-          # into every runner (scoped to sccache/<installation id>/ of the
-          # platform cache bucket, short-lived). It goes to the sccache server
-          # only, never to $GITHUB_ENV.
-          if [ -z "${SYLPHX_SCCACHE_ACCESS_KEY_ID:-}" ] || [ -z "${SYLPHX_SCCACHE_SESSION_TOKEN:-}" ]; then
-            echo "No per-org sccache credential on this runner; using the GitHub Actions cache"
-            exit 0
-          fi
-          echo "::add-mask::$SYLPHX_SCCACHE_SECRET_ACCESS_KEY"
-          echo "::add-mask::$SYLPHX_SCCACHE_SESSION_TOKEN"
-          if SCCACHE_LOG=warn SCCACHE_BUCKET="$SYLPHX_SCCACHE_BUCKET" SCCACHE_ENDPOINT="$SYLPHX_SCCACHE_ENDPOINT" \
-            SCCACHE_REGION="${SYLPHX_SCCACHE_REGION:-us-east-1}" SCCACHE_S3_KEY_PREFIX="$SYLPHX_SCCACHE_KEY_PREFIX/rustc" \
-            AWS_ACCESS_KEY_ID="$SYLPHX_SCCACHE_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$SYLPHX_SCCACHE_SECRET_ACCESS_KEY" \
-            AWS_SESSION_TOKEN="$SYLPHX_SCCACHE_SESSION_TOKEN" sccache --start-server; then
-            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-            echo "sccache=true" >> "$GITHUB_OUTPUT"
-            echo "sccache on $SYLPHX_SCCACHE_BUCKET/$SYLPHX_SCCACHE_KEY_PREFIX/rustc"
-          else
-            echo "::warning::the org's sccache is unreachable; using the GitHub Actions cache"
-          fi
+      - name: Compile cache (sccache)
+        # The org's own sccache, first that applies: the per-org credential on
+        # the runner, else the organization's own cache user. Never the
+        # platform's ci-sccache key.
+        id: sccache
+        uses: SylphxAI/.github/.github/actions/rust-sccache@main
+        with:
+          s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
+          s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
+          key-prefix: rustc
+          actions-cache: 'false'
       - name: Compile cache on GitHub Actions cache
-        # Only when the org's sccache is not in use (no per-org credential on
-        # the runner, or the cache is unreachable).
-        if: steps.toolchain.outputs.sccache != 'true'
+        # Only when no sccache backend is running.
+        if: steps.sccache.outputs.backend != 'org' && steps.sccache.outputs.backend != 'static'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ inputs.workspace }}
@@ -148,5 +140,5 @@ jobs:
           echo "@@sylphx-check-exit=$code"
           exit "$code"
       - name: sccache stats
-        if: always() && steps.toolchain.outputs.sccache == 'true'
+        if: always() && (steps.sccache.outputs.backend == 'org' || steps.sccache.outputs.backend == 'static')
         run: sccache --show-stats
