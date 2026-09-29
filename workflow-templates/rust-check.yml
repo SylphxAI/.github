@@ -5,11 +5,30 @@ name: Rust check
 on:
   workflow_dispatch:
     inputs:
-      ref: { description: Branch, tag, or commit, required: true, type: string }
-      packages: { description: Space-separated package names, required: false, type: string, default: '' }
-      tests: { description: Also check test targets, required: false, type: boolean, default: false }
-      workspace: { description: Cargo workspace directory, required: false, type: string, default: '.' }
-      request: { description: Request id (names the run), required: false, type: string, default: '' }
+      ref:
+        description: Branch, tag, or commit
+        required: true
+        type: string
+      packages:
+        description: Space-separated package names
+        required: false
+        type: string
+        default: ''
+      tests:
+        description: Also check test targets
+        required: false
+        type: boolean
+        default: false
+      workspace:
+        description: Cargo workspace directory
+        required: false
+        type: string
+        default: '.'
+      request:
+        description: Request id (names the run)
+        required: false
+        type: string
+        default: ''
 
 run-name: sylphx-check ${{ inputs.request }}
 
