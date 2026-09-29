@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import subprocess
 import re
 import unittest
 
@@ -91,3 +92,27 @@ class ToolchainSelectionTest(unittest.TestCase):
         self.assertIn("default stable", calls)
         self.assertNotIn("toolchain install", calls)
         self.assertIn("component add clippy", calls)
+
+
+class GitDepsTest(unittest.TestCase):
+    """Private git dependencies: refused without the caller's App, and a line
+    that is not OWNER/REPO never reaches git or the API."""
+
+    def run_step(self, deps: str, app: bool) -> subprocess.CompletedProcess:
+        import os, yaml
+        job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["check"]
+        step = next(s for s in job["steps"] if s.get("name") == "Private git dependencies")
+        env = dict(os.environ, GIT_DEPS=deps, APP_ID="1" if app else "", APP_KEY="k" if app else "",
+                   GITHUB_API_URL="http://127.0.0.1:9", GITHUB_ENV="/dev/null", HOME="/nonexistent")
+        return subprocess.run(["bash", "-c", step["run"]], env=env, capture_output=True, text=True)
+
+    def test_needs_the_callers_app(self) -> None:
+        out = self.run_step("SylphxAI/keel", app=False)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("GIT_DEPS_APP_ID", out.stdout)
+
+    def test_rejects_a_line_that_is_not_owner_repo(self) -> None:
+        for bad in ("SylphxAI/keel;rm -rf /", "https://github.com/x/y", "a/b/c"):
+            out = self.run_step(bad, app=True)
+            self.assertEqual(out.returncode, 2, bad)
+            self.assertIn("bad git-deps line", out.stdout)

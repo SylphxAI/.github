@@ -37,7 +37,22 @@ on:
         required: false
         type: string
         default: '.'
+      git-deps:
+        description: >
+          Private git dependencies Cargo fetches, one OWNER/REPO per line. For
+          each owner a read-only token for exactly those repositories is minted
+          from the caller's own GitHub App (GIT_DEPS_APP_ID / GIT_DEPS_APP_KEY),
+          and git fetches them through it. Empty: public dependencies only.
+        required: false
+        type: string
+        default: ''
     secrets:
+      GIT_DEPS_APP_ID:
+        description: Id of the caller's own reader App, installed on the owners in git-deps.
+        required: false
+      GIT_DEPS_APP_KEY:
+        description: That App's private key.
+        required: false
       SYLPHX_CI_CACHE_ACCESS_KEY:
         description: >
           The organization's own cache user, used only on a runner without the
@@ -125,6 +140,44 @@ jobs:
           # later lint step finds it on the same toolchain.
           rustup component add clippy
           cargo --version
+      - name: Private git dependencies
+        if: inputs.git-deps != ''
+        env:
+          GIT_DEPS: ${{ inputs.git-deps }}
+          APP_ID: ${{ secrets.GIT_DEPS_APP_ID }}
+          APP_KEY: ${{ secrets.GIT_DEPS_APP_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::error::git-deps is set but GIT_DEPS_APP_ID / GIT_DEPS_APP_KEY are not passed"; exit 2
+          fi
+          declare -A repos=()
+          while IFS= read -r line; do
+            line="${line//[[:space:]]/}"; [ -n "$line" ] || continue
+            [[ "$line" =~ ^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$ ]] || { echo "::error::bad git-deps line: $line"; exit 2; }
+            repos[${line%%/*}]+="${line#*/} "
+          done <<<"$GIT_DEPS"
+          b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          now=$(date +%s)
+          head=$(printf '{"alg":"RS256","typ":"JWT"}' | b64)
+          body=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$APP_ID" | b64)
+          sig=$(printf '%s.%s' "$head" "$body" | openssl dgst -sha256 -sign <(printf '%s\n' "$APP_KEY") | b64)
+          jwt="$head.$body.$sig"
+          api() { curl -sSf --retry 3 -H "Authorization: Bearer $1" -H "Accept: application/vnd.github+json" "${@:2}"; }
+          for owner in "${!repos[@]}"; do
+            inst=$(api "$jwt" "$GITHUB_API_URL/orgs/$owner/installation" | jq -r .id) \
+              || { echo "::error::the git-deps App has no installation on $owner"; exit 1; }
+            names=$(printf '%s\n' ${repos[$owner]} | jq -R . | jq -sc .)
+            token=$(api "$jwt" -X POST "$GITHUB_API_URL/app/installations/$inst/access_tokens" \
+              -d "{\"repositories\":$names,\"permissions\":{\"contents\":\"read\"}}" | jq -r .token)
+            echo "::add-mask::$token"
+            for r in ${repos[$owner]}; do
+              git config --global url."https://x-access-token:${token}@github.com/$owner/$r".insteadOf "https://github.com/$owner/$r"
+            done
+            echo "read-only token for $owner: ${repos[$owner]}"
+          done
+          # Cargo's own git client does not read insteadOf; the git CLI does.
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
       - name: Compile cache (sccache)
         # The org's own sccache, first that applies: the per-org credential on
         # the runner, else the organization's own cache user. Never the
