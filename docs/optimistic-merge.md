@@ -51,10 +51,26 @@ proofs - is a suite lane.
    unchanged. It needs the `SYLPHX_BUILDER_APP_ID` variable and the
    `SYLPHX_BUILDER_PRIVATE_KEY` secret; without them it still classifies and
    says what it could not write.
-5. **Labels** the handler uses but never creates: `flake`, `quarantine`,
-   `auto-revert`, `queue-jump:red-main`.
+5. **Labels** the handler uses but never creates, and silently skips when
+   absent: `flake`, `quarantine`, `auto-revert`, `queue-jump:red-main`.
+   Create them in the same change.
 6. **Pin** every `SylphxAI/.github/...@main` in the starters to the commit you
    adopt.
+7. **Ruleset**: `ci-ok` stays the only required check. `verified` is never a
+   required check: it exists only after a merge, so requiring it deadlocks
+   the queue.
+
+`verified` needs only the gating suite lanes. A report-only lane (for example
+one that runs only quarantined tests) stays out of its `needs` and uses
+`continue-on-error`, because the handler also wakes on any failed Verify run.
+A lane that runs `--include-ignored` must skip the quarantined tests by name,
+or the marker does not hold there.
+
+**Deploying only verified commits** is a separate, later opt-in: add the
+`verified` required proof to the environment's delivery policy only after
+Release keeps waiting releases instead of dropping them on each new commit
+(cloud#10373 live in production). Until then the declaration speeds the
+queue, and deploys stay as they are.
 
 ## The shared pieces
 
@@ -69,8 +85,9 @@ proofs - is a suite lane.
   plan` makes a broken plan a failure.
 - [`rust-sccache`](../.github/actions/rust-sccache/action.yml): the Rust
   compile cache. S3 on the in-cluster object store when credentials are
-  given, else the GitHub Actions cache (no secret). Entries are prefixed by
-  repository.
+  given, else the GitHub Actions cache (no secret; its default per-repository
+  limit evicts old entries, and it is never raised - spend stays $0).
+  Entries are prefixed by repository.
 - [`workflow-lint`](../.github/actions/workflow-lint/action.yml): pinned
   actionlint, the gate's workflow parse.
 - [`red-main.yml`](../.github/workflows/red-main.yml): the reusable handler.
