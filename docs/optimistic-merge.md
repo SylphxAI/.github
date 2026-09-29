@@ -134,6 +134,11 @@ queue, and deploys stay as they are.
 
 ## Runners
 
+Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
+'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}`
+(`-xlarge-merge` for xlarge jobs), so a merge group never waits behind the
+pull-request backlog. The gate starter already uses it.
+
 Private repositories run every job on our runners: `sylphx-linux-standard`
 for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`
 between. Public repositories may use GitHub's standard hosted runners, which

@@ -13,4 +13,6 @@ self-hosted-runner:
     # Fleet classes the image lane and its callers request.
     - sylphx-linux-standard
     - sylphx-linux-xlarge
+    - sylphx-linux-standard-merge
+    - sylphx-linux-xlarge-merge
     - sylphx-registry-publisher
