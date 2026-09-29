@@ -155,6 +155,9 @@ class StarterWorkflowTest(unittest.TestCase):
         self.assertEqual(verify["jobs"]["verified"]["name"], "verified")
         gate = yaml.safe_load((ROOT / "workflow-templates" / "optimistic-gate.yml").read_text())
         self.assertIn("ci-ok", gate["jobs"])
+        # A bot-opened pull request gets its ci-ok from a dispatched run.
+        self.assertIn("workflow_dispatch", gate[True])
+        self.assertIn("pull_request", gate["jobs"]["suite"]["if"])
 
 
 class RedMainOnlyOnFailureTest(unittest.TestCase):
