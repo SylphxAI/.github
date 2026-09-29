@@ -1,0 +1,131 @@
+name: Rust check
+
+# One remote `cargo check` for any repository, run on the ordinary Sylphx
+# runner class at the priority of a ready pull request (never the merge gate),
+# with the org's shared sccache. A caller keeps a thin workflow_dispatch
+# workflow and passes the inputs through; `sylphx build check` dispatches that
+# caller and follows it (docs/rust-check.md).
+#
+# Trust boundary: caller inputs never reach a shell body. `packages`, `ref`
+# and `workspace` travel through `env:` and are validated against a strict
+# pattern before use.
+#
+# The step log carries three markers the CLI reads:
+#   @@sylphx-check-begin   cargo output starts after this line
+#   @@sylphx-check-end     cargo output ends before this line
+#   @@sylphx-check-exit=N   cargo's exit status
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to check out.
+        required: true
+        type: string
+      packages:
+        description: Space-separated Cargo package names; empty checks the whole workspace.
+        required: false
+        type: string
+        default: ''
+      tests:
+        description: Also check test targets (`--tests`).
+        required: false
+        type: boolean
+        default: false
+      workspace:
+        description: Directory of the Cargo workspace, relative to the repository root.
+        required: false
+        type: string
+        default: '.'
+    secrets:
+      RGW_S3_ACCESS_KEY:
+        description: Access key of the shared sccache bucket; without it the check compiles cold.
+        required: false
+      RGW_S3_SECRET_KEY:
+        description: Secret key of the shared sccache bucket.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: cargo check
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 45
+    env:
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_CONFIG_NOSYSTEM: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_TERM_COLOR: never
+      SCCACHE_BUCKET: ci-sccache
+      SCCACHE_ENDPOINT: http://${{ vars.RGW_S3_ENDPOINT || 'rook-ceph-rgw-ceph-objectstore.rook-ceph.svc' }}:${{ vars.RGW_S3_PORT || '80' }}
+      SCCACHE_REGION: us-east-1
+      SCCACHE_S3_KEY_PREFIX: rustc
+      SCCACHE_IDLE_TIMEOUT: '0'
+      AWS_ACCESS_KEY_ID: ${{ secrets.RGW_S3_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.RGW_S3_SECRET_KEY }}
+      IN_REF: ${{ inputs.ref }}
+      IN_PACKAGES: ${{ inputs.packages }}
+      IN_TESTS: ${{ inputs.tests }}
+      IN_WORKSPACE: ${{ inputs.workspace }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          [[ "$IN_REF" =~ ^[A-Za-z0-9._/@+-]{1,200}$ && "$IN_REF" != -* ]] || { echo "bad ref"; exit 2; }
+          [[ "$IN_PACKAGES" =~ ^[A-Za-z0-9_.\ -]*$ ]] || { echo "bad packages"; exit 2; }
+          [[ "$IN_WORKSPACE" =~ ^[A-Za-z0-9_./-]{1,200}$ && "$IN_WORKSPACE" != /* && "$IN_WORKSPACE" != *..* ]] || { echo "bad workspace"; exit 2; }
+          if [ ! -w "${HOME:-/}" ] || [ "${HOME:-/root}" = /root ]; then
+            mkdir -p "$RUNNER_TEMP/home" && echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+          fi
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        timeout-minutes: 10
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Rust toolchain and sccache
+        run: |
+          set -euo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/cargo-home" RUSTUP_HOME="$RUNNER_TEMP/rustup-home"
+          mkdir -p "$CARGO_HOME/bin" "$RUSTUP_HOME"
+          { echo "CARGO_HOME=$CARGO_HOME"; echo "RUSTUP_HOME=$RUSTUP_HOME"; } >> "$GITHUB_ENV"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -sSfL https://sh.rustup.rs \
+            | sh -s -- --default-toolchain none --profile minimal -y --no-modify-path
+          cd "$IN_WORKSPACE"
+          rustup toolchain install
+          rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+          cargo --version
+          v=v0.10.0
+          curl --retry 10 --retry-connrefused -sSfL \
+            "https://github.com/mozilla/sccache/releases/download/${v}/sccache-${v}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" --strip-components=1 "sccache-${v}-x86_64-unknown-linux-musl/sccache"
+          mv "$RUNNER_TEMP/sccache" "$CARGO_HOME/bin/sccache"
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+            echo "::warning::sccache credentials are not passed; compiling without the shared cache"
+            exit 0
+          fi
+          if SCCACHE_LOG=warn sccache --start-server; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "::warning::sccache is unreachable; compiling without the shared cache"
+          fi
+      - name: cargo check
+        working-directory: ${{ inputs.workspace }}
+        run: |
+          set -uo pipefail
+          args=(check --locked --color never)
+          if [ -z "$IN_PACKAGES" ]; then args+=(--workspace); else
+            for p in $IN_PACKAGES; do args+=(-p "$p"); done
+          fi
+          if [ "$IN_TESTS" = true ]; then args+=(--tests); fi
+          echo "@@sylphx-check-begin"
+          cargo "${args[@]}" 2>&1
+          code=$?
+          echo "@@sylphx-check-end"
+          echo "@@sylphx-check-exit=$code"
+          exit "$code"
