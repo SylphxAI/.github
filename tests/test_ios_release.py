@@ -49,7 +49,8 @@ class IosRelease(unittest.TestCase):
     def setUp(self) -> None:
         self.text = WORKFLOW.read_text()
         self.doc = yaml.safe_load(self.text)
-        self.job = self.doc["jobs"]["sign-and-upload"]
+        self.job = self.doc["jobs"]["sign"]
+        self.upload = self.doc["jobs"]["upload"]
         self.prepare = self.doc["jobs"]["prepare"]
         self.steps = self.job["steps"]
         # PyYAML reads the key `on` as True.
@@ -103,12 +104,15 @@ class IosRelease(unittest.TestCase):
         self.assertNotIn("secrets.", yaml.safe_dump(self.doc["jobs"]["prepare"].get("env", {})))
         self.assertNotIn("secrets.", str(self.job.get("env")))
 
-    def test_required_secrets_step_names_all_seven_and_the_environment(self) -> None:
-        step = self.step("Require secrets")
-        for name in SECRETS:
-            self.assertIn(f"HAVE_{name}", step["env"])
-        self.assertIn("in the '$IN_ENVIRONMENT' environment", step["run"])
-        self.assertIn("required+=(IOS_DIST_CERTIFICATE_BASE64", step["run"])
+    def test_required_secrets_steps_name_the_secret_and_the_environment(self) -> None:
+        sign = self.step("Require secrets")
+        for name in SECRETS[3:]:
+            self.assertIn(f"HAVE_{name}", sign["env"])
+        up = self.step("Require secrets", self.upload)
+        for name in SECRETS[:3]:
+            self.assertIn(f"HAVE_{name}", up["env"])
+        for s in (sign, up):
+            self.assertIn("in the '$IN_ENVIRONMENT' environment", s["run"])
 
     def test_process_guard_after_each_script_and_before_the_key(self) -> None:
         names = [s["name"] for s in self.steps]
@@ -118,12 +122,10 @@ class IosRelease(unittest.TestCase):
         self.assertLess(idx("Post-archive script"), idx("Process guard after post-archive"))
         self.assertLess(idx("Process guard after post-archive"), idx("Export"))
         self.assertLess(idx("Export"), idx("Process guard after export"))
-        self.assertLess(idx("Process guard after export"), idx("Upload to TestFlight"))
+        self.assertLess(idx("Process guard after export"), idx("Upload exported .ipa"))
         for p in ("Process guard after archive", "Process guard after post-archive", "Process guard after export"):
             self.assertIn("guard.sh\" kill", self.step(p)["run"])
             self.assertIn("shasum -a 256 -c", self.step(p)["run"])
-        upload = self.step("Upload to TestFlight")["run"]
-        self.assertLess(upload.index('guard.sh" check'), upload.index("base64 --decode"))
         guard = self.step("Validate inputs")["run"]
         self.assertIn("baseline", guard)
         self.assertIn("kill -TERM", guard)
@@ -209,13 +211,43 @@ class IosRelease(unittest.TestCase):
             r = subprocess.run(["bash", "-c", f'[[ "$1" =~ {m.group(1)} ]]', "x", value])
             self.assertEqual(r.returncode == 0, ok, value)
 
-    def test_api_key_lives_under_runner_temp_and_after_the_build(self) -> None:
+    def test_asc_secrets_and_the_key_live_only_in_the_upload_job(self) -> None:
         self.assertNotIn(".appstoreconnect", self.text)
-        self.assertNotIn("$HOME/.appstoreconnect", self.text)
-        names = [s["name"] for s in self.steps]
-        writers = [s["name"] for s in self.steps if "APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64" in str(s.get("env")) and s["name"] != "Require secrets"]
+        for j in (self.prepare, self.job):
+            dump = yaml.safe_dump(j)
+            self.assertNotIn("APP_STORE_CONNECT", dump)
+            self.assertNotIn("API_PRIVATE_KEYS_DIR", dump)
+            self.assertNotIn("altool", dump)
+        dump = yaml.safe_dump(self.upload)
+        self.assertIn("APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64", dump)
+        writers = [s["name"] for s in self.upload["steps"] if "APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64" in str(s.get("env")) and s["name"] != "Require secrets"]
         self.assertEqual(writers, ["Upload to TestFlight"])
-        self.assertGreater(names.index("Upload to TestFlight"), names.index("Export"))
+        names = [s["name"] for s in self.upload["steps"]]
+        key = names.index("Upload to TestFlight")
+        self.assertLess(names.index("Validate .ipa before upload"), key)
+        self.assertLess(names.index("Process check before upload"), key)
+        self.assertLess(names.index("Download .ipa"), names.index("Validate .ipa before upload"))
+        body = self.step("Upload to TestFlight", self.upload)["run"]
+        self.assertLess(body.index('guard.sh" check'), body.index("base64 --decode"))
+
+    def test_upload_job_has_the_environment_and_follows_sign(self) -> None:
+        self.assertEqual(self.upload["environment"], self.job["environment"])
+        self.assertEqual(self.upload["environment"], "${{ inputs.environment }}")
+        self.assertEqual(self.upload["needs"], ["prepare", "sign"])
+        self.assertEqual(self.job["if"], "inputs.ipa-artifact == ''")
+        self.assertIn("needs.sign.result == 'skipped'", self.upload["if"])
+        art = self.step("Upload exported .ipa")
+        self.assertRegex(art["uses"], r"^actions/upload-artifact@[0-9a-f]{40}$")
+        self.assertEqual(art["with"]["retention-days"], 1)
+        self.assertRegex(self.step("Download .ipa", self.upload)["uses"], r"^actions/download-artifact@[0-9a-f]{40}$")
+
+    def test_sign_job_holds_only_the_signing_secrets(self) -> None:
+        dump = yaml.safe_dump(self.job)
+        for name in ("IOS_DIST_CERTIFICATE_BASE64", "IOS_DIST_CERTIFICATE_PASSWORD", "APPLE_TEAM_ID", "IOS_PROVISIONING_PROFILE_BASE64"):
+            self.assertIn(f"secrets.{name}", dump)
+        self.assertNotIn("secrets.APP_STORE", dump)
+        self.assertNotIn("secrets.IOS_", yaml.safe_dump(self.upload))
+        self.assertNotIn("secrets.APPLE_TEAM_ID", yaml.safe_dump(self.upload))
 
     def test_pre_build_runs_in_prepare_before_any_secret(self) -> None:
         names = [s["name"] for s in self.prepare["steps"]]
@@ -240,24 +272,18 @@ class IosRelease(unittest.TestCase):
             r = subprocess.run(["bash", "-c", fn + '\npath_ok "$1"', "x", value])
             self.assertEqual(r.returncode == 0, ok, value)
 
-    def test_prebuilt_mode_skips_the_build_steps_and_validates(self) -> None:
+    def test_prebuilt_mode_skips_sign_and_validates_before_upload(self) -> None:
         self.assertEqual(self.step("Checkout", self.prepare)["if"], "inputs.ipa-artifact == ''")
-        for prefix in ("Signing setup", "Archive", "Export", "Unpack", "Select Xcode"):
-            self.assertIn("inputs.ipa-artifact == ''", self.step(prefix)["if"])
-        download = self.step("Download prebuilt")
-        self.assertEqual(download["if"], "inputs.ipa-artifact != ''")
-        self.assertRegex(download["uses"], r"^actions/download-artifact@[0-9a-f]{40}$")
-        validate = self.step("Validate prebuilt")
-        self.assertEqual(validate["if"], "inputs.ipa-artifact != ''")
-        body = validate["run"]
+        self.assertEqual(self.job["if"], "inputs.ipa-artifact == ''")
+        body = self.step("Validate .ipa before upload", self.upload)["run"]
         for needle in (
             "CFBundleIdentifier", "Authority=Apple Distribution:", "codesign --verify --deep --strict",
             "beta-reports-active", "ProvisionedDevices", "application-identifier", "CFBundleShortVersionString",
             "exactly one .ipa",
         ):
             self.assertIn(needle, body)
-        # The shared upload step has no mode condition.
-        self.assertNotIn("if", self.step("Upload to TestFlight"))
+        self.assertNotIn("if", self.step("Upload to TestFlight", self.upload))
+        self.assertIn("inputs.ipa-artifact", self.step("Download .ipa", self.upload)["with"]["name"])
 
     def test_keychain_password_is_random_and_masked_before_use(self) -> None:
         body = self.step("Signing setup")["run"]
@@ -315,7 +341,7 @@ class IosRelease(unittest.TestCase):
 
     def test_files_are_owner_only(self) -> None:
         self.assertIn("umask 077", self.step("Signing setup")["run"])
-        self.assertIn("chmod 600", self.step("Upload to TestFlight")["run"])
+        self.assertIn("chmod 600", self.step("Upload to TestFlight", self.upload)["run"])
 
     def test_testflight_upload_only_review_and_release_are_absent(self) -> None:
         low = self.text.lower()

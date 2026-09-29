@@ -249,8 +249,12 @@ jobs:
           if-no-files-found: error
 
 
-  sign-and-upload:
-    name: sign, archive, upload
+  sign:
+    # Holds only the signing secrets. Caller code (Run Script phases, package
+    # plugins, the post-archive script) runs here, so this job never sees an
+    # App Store Connect secret; the exported .ipa goes to the `upload` job.
+    name: sign and export
+    if: inputs.ipa-artifact == ''
     needs: prepare
     runs-on: [self-hosted, macos, sylphx, standard]
     timeout-minutes: 90
@@ -400,19 +404,13 @@ jobs:
       - name: Require secrets
         timeout-minutes: 2
         env:
-          HAVE_APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID != '' }}
-          HAVE_APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID != '' }}
-          HAVE_APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 != '' }}
           HAVE_IOS_DIST_CERTIFICATE_BASE64: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 != '' }}
           HAVE_IOS_DIST_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DIST_CERTIFICATE_PASSWORD != '' }}
           HAVE_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
           HAVE_IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' }}
         run: |
           set -euo pipefail
-          required=(APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64)
-          if [ -z "$IN_IPA_ARTIFACT" ]; then
-            required+=(IOS_DIST_CERTIFICATE_BASE64 IOS_DIST_CERTIFICATE_PASSWORD APPLE_TEAM_ID IOS_PROVISIONING_PROFILE_BASE64)
-          fi
+          required=(IOS_DIST_CERTIFICATE_BASE64 IOS_DIST_CERTIFICATE_PASSWORD APPLE_TEAM_ID IOS_PROVISIONING_PROFILE_BASE64)
           for name in "${required[@]}"; do
             var="HAVE_$name"
             [ "${!var}" = true ] || { echo "::error::secret $name is empty or missing in the '$IN_ENVIRONMENT' environment of this repository"; exit 1; }
@@ -438,7 +436,6 @@ jobs:
           exit 1
 
       - name: Download prepared workspace
-        if: inputs.ipa-artifact == ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         timeout-minutes: 15
         with:
@@ -446,7 +443,6 @@ jobs:
           path: ${{ runner.temp }}/ios-signing/workspace-dl
 
       - name: Unpack prepared workspace
-        if: inputs.ipa-artifact == ''
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -454,7 +450,6 @@ jobs:
           rm -rf "$IOS_SIGN_DIR/workspace-dl"
 
       - name: Signing setup (temporary keychain, certificate, profiles)
-        if: inputs.ipa-artifact == ''
         timeout-minutes: 10
         env:
           CERT_BASE64: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 }}
@@ -523,7 +518,6 @@ jobs:
           echo "installed $n provisioning profile(s)"
 
       - name: Archive
-        if: inputs.ipa-artifact == ''
         timeout-minutes: 60
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -547,7 +541,6 @@ jobs:
           xcodebuild archive "${args[@]}"
 
       - name: Process guard after archive
-        if: inputs.ipa-artifact == ''
         timeout-minutes: 2
         run: |
           set -euo pipefail
@@ -579,7 +572,6 @@ jobs:
           bash "$IOS_SIGN_DIR/guard.sh" kill
 
       - name: Export
-        if: inputs.ipa-artifact == ''
         timeout-minutes: 20
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -604,23 +596,219 @@ jobs:
           find "$IOS_SIGN_DIR/export" -maxdepth 1 -name '*.ipa' | grep -q .
 
       - name: Process guard after export
-        if: inputs.ipa-artifact == ''
         timeout-minutes: 2
         run: |
           set -euo pipefail
           echo "$IOS_GUARD_SHA  $IOS_SIGN_DIR/guard.sh" | shasum -a 256 -c - > /dev/null
           bash "$IOS_SIGN_DIR/guard.sh" kill
 
-      - name: Download prebuilt .ipa
-        if: inputs.ipa-artifact != ''
+      - name: Upload exported .ipa
+        timeout-minutes: 15
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-ipa-${{ inputs.bundle-id }}
+          path: ${{ runner.temp }}/ios-signing/export/*.ipa
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Cleanup (keychain, profiles, API key, temporary files)
+        if: always()
+        timeout-minutes: 5
+        run: |
+          # Best effort per item: every removal runs even when another fails;
+          # failures are collected and fail the step at the end.
+          dir="${IOS_SIGN_DIR:-}"
+          keychain="${IOS_SIGN_KEYCHAIN:-}"
+          failed=0
+          fail() { echo "::warning::cleanup failed: $1"; failed=1; }
+          if [ -n "$keychain" ] && [ -e "$keychain" ]; then
+            if [ -s "$dir/keychains.list" ]; then
+              mapfile -t saved < "$dir/keychains.list"
+              security list-keychains -d user -s "${saved[@]}" || fail "restore keychain search list"
+            fi
+            security delete-keychain "$keychain" || fail "delete keychain"
+          fi
+          if [ -f "$dir/installed.list" ]; then
+            while IFS= read -r f; do rm -f "$f" || fail "remove profile"; done < "$dir/installed.list"
+          fi
+          [ -z "$dir" ] || rm -rf "$dir/private_keys" || fail "remove API key"
+          [ -z "$dir" ] || rm -rf "$dir" || fail "remove temporary files"
+          exit "$failed"
+
+  upload:
+    # The only job with the App Store Connect secrets. A fresh machine: no
+    # command-file state and no process from the signing job. It validates the
+    # .ipa again before the key is written.
+    name: validate and upload
+    needs: [prepare, sign]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.sign.result == 'success' || (inputs.ipa-artifact != '' && needs.sign.result == 'skipped')) }}
+    runs-on: [self-hosted, macos, sylphx, standard]
+    timeout-minutes: 60
+    environment: ${{ inputs.environment }}
+    env:
+      IN_ENVIRONMENT: ${{ inputs.environment }}
+      IN_IPA_ARTIFACT: ${{ inputs.ipa-artifact }}
+      IN_XCODE_ARTIFACT: ${{ inputs.xcode-artifact }}
+      IN_ARTIFACT_PATH: ${{ inputs.artifact-path }}
+      IN_PRE_BUILD_SCRIPT: ${{ inputs.pre-build-script }}
+      IN_POST_ARCHIVE_SCRIPT: ${{ inputs.post-archive-script }}
+      IN_XCODE_VERSION: ${{ inputs.xcode-version }}
+      IN_OVERRIDE_TEAM: ${{ inputs.override-team }}
+      IN_SCHEME: ${{ inputs.scheme }}
+      IN_BUNDLE_ID: ${{ inputs.bundle-id }}
+      IN_WORKSPACE: ${{ inputs.workspace }}
+      IN_PROJECT: ${{ inputs.project }}
+      IN_CONFIGURATION: ${{ inputs.configuration }}
+      IN_XCCONFIG: ${{ inputs.xcconfig }}
+      IN_BUILD_NUMBER: ${{ inputs.build-number }}
+    steps:
+      - name: Validate inputs
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          path_ok() {
+            [[ "$1" =~ ^[A-Za-z0-9_./\ +-]{1,200}$ ]] || return 1
+            case "$1" in /* | *..*) return 1 ;; esac
+          }
+          [[ "$IN_ENVIRONMENT" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "::error::environment must be set (signing is environment-gated) and match [A-Za-z0-9._-]{1,64}"; exit 2; }
+          [[ "$IN_IPA_ARTIFACT" =~ ^[A-Za-z0-9_.-]{0,100}$ ]] || { echo "::error::bad ipa-artifact"; exit 2; }
+          if [ -z "$IN_IPA_ARTIFACT" ]; then
+            [[ "$IN_SCHEME" =~ ^[A-Za-z0-9_.\ +-]{1,100}$ ]] || { echo "::error::build mode needs a valid scheme"; exit 2; }
+          fi
+          [[ "$IN_BUNDLE_ID" =~ ^[A-Za-z0-9.-]{1,155}$ ]] || { echo "::error::bad bundle-id"; exit 2; }
+          [[ "$IN_CONFIGURATION" =~ ^[A-Za-z0-9_\ -]{1,50}$ ]] || { echo "::error::bad configuration"; exit 2; }
+          [[ "$IN_BUILD_NUMBER" =~ ^[0-9]{0,9}$ ]] || { echo "::error::bad build-number"; exit 2; }
+          [[ "$IN_XCODE_ARTIFACT" =~ ^[A-Za-z0-9_.-]{0,100}$ ]] || { echo "::error::bad xcode-artifact"; exit 2; }
+          path_ok "$IN_ARTIFACT_PATH" || { echo "::error::bad artifact-path"; exit 2; }
+          [[ "$IN_XCODE_VERSION" =~ ^([0-9]+(\.[0-9]+){0,2})?$ ]] || { echo "::error::bad xcode-version"; exit 2; }
+          [ -z "$IN_POST_ARCHIVE_SCRIPT" ] || path_ok "$IN_POST_ARCHIVE_SCRIPT" || { echo "::error::bad post-archive-script"; exit 2; }
+          [ -z "$IN_PRE_BUILD_SCRIPT" ] || path_ok "$IN_PRE_BUILD_SCRIPT" || { echo "::error::bad pre-build-script"; exit 2; }
+          if [ -n "$IN_IPA_ARTIFACT" ] && { [ -n "$IN_XCODE_ARTIFACT" ] || [ -n "$IN_PRE_BUILD_SCRIPT" ] || [ -n "$IN_POST_ARCHIVE_SCRIPT" ] || [ -n "$IN_XCODE_VERSION" ]; }; then
+            echo "::error::xcode-artifact, pre-build-script, post-archive-script and xcode-version are build-mode inputs; ipa-artifact is prebuilt mode"; exit 2
+          fi
+          if [ -z "$IN_IPA_ARTIFACT" ] && [ -z "$IN_WORKSPACE" ] && [ -z "$IN_PROJECT" ]; then
+            echo "::error::set workspace or project"; exit 2
+          fi
+          for p in "$IN_WORKSPACE" "$IN_PROJECT" "$IN_XCCONFIG"; do
+            [ -z "$p" ] || path_ok "$p" || { echo "::error::bad path input"; exit 2; }
+          done
+          echo "IOS_SIGN_DIR=$RUNNER_TEMP/ios-signing" >> "$GITHUB_ENV"
+          # Process guard (see docs/ios-release.md, Trust model). Written here,
+          # before any caller code runs; its hash is checked before every use.
+          sign_dir="$RUNNER_TEMP/ios-signing"
+          mkdir -p "$sign_dir"
+          cat > "$sign_dir/guard.sh" <<'GUARD'
+          #!/bin/bash
+          # guard.sh baseline | kill | check
+          set -uo pipefail
+          # Refuse to touch any process unless this is a single-use CI runner.
+          # Runs before anything else; sends no signal and lists nothing.
+          preflight() {
+            local host
+            host="$(hostname 2> /dev/null)"
+            if [ "${GITHUB_ACTIONS:-}" != true ] \
+              || [ -z "${RUNNER_ENVIRONMENT:-}" ] \
+              || ! [[ "${RUNNER_NAME:-}" =~ ^runner-[0-9a-f]{12}$ ]] \
+              || [[ "$host" =~ ^(desk-0|kyle-desk) ]] \
+              || [ "${HOME:-}" = /home/kyle ] || [ "${USER:-}" = kyle ]; then
+              echo "refusing: not a single-use CI runner"
+              return 1
+            fi
+          }
+          # Owned by this user, not an ancestor of, or descended from, this
+          # shell: "pid<TAB>start time<TAB>command".
+          snap() {
+            ps -axo pid=,ppid=,uid=,lstart=,comm= | awk -v me="$me" -v self="$$" '
+              { pid=$1; P[pid]=$2; U[pid]=$3; L[pid]=$4" "$5" "$6" "$7" "$8
+                c=""; for (i=9; i<=NF; i++) c = c (i>9 ? " " : "") $i; C[pid]=c }
+              END {
+                q=self; n=0; while (q>1 && n<64) { A[q]=1; q=P[q]; n++ }
+                for (p in P) {
+                  if (U[p]!=me || (p in A)) continue
+                  q=p; n=0; kid=0
+                  while (q>1 && n<64) { if (q==self) { kid=1; break } q=P[q]; n++ }
+                  if (!kid) print p "\t" L[p] "\t" C[p]
+                }
+              }' | sort
+          }
+          # Explicit, conservative exclusions: the runner's own processes and
+          # Apple system and Xcode helper daemons that a build starts and keeps.
+          allowed() {
+            local base="${1##*/}"
+            case "$1" in /System/* | /usr/libexec/* | /usr/sbin/* | /Library/Apple/*) return 0 ;; esac
+            case "$base" in
+              Runner.* | XCBBuildService | xcodebuild | xcrun | com.apple.dt.* | ibtoold | IBAgent* | mdworker* | distnoted | cfprefsd) return 0 ;;
+            esac
+            return 1
+          }
+          leftovers() {
+            snap | while IFS=$'\t' read -r pid started comm; do
+              grep -qxF "$pid"$'\t'"$started"$'\t'"$comm" "$dir/procs.base" && continue
+              allowed "$comm" && continue
+              printf '%s\t%s\t%s\n' "$pid" "$started" "$comm"
+            done
+          }
+          main() {
+          mode="$1"
+          dir="$IOS_SIGN_DIR"
+          me="$(id -u)"
+          case "$mode" in
+            baseline) snap > "$dir/procs.base" ;;
+            check)
+              left="$(leftovers)"
+              if [ -n "$left" ]; then
+                echo "::error::unexpected processes are running from an earlier step:"; echo "$left"; exit 1
+              fi
+              echo "process check: no unexpected processes" ;;
+            kill)
+              left="$(leftovers)"
+              [ -z "$left" ] && { echo "process guard: no leftovers"; exit 0; }
+              echo "process guard: leftovers from an earlier step, sending TERM:"; echo "$left"
+              echo "$left" | cut -f1 | xargs kill -TERM 2> /dev/null
+              sleep 5
+              left="$(leftovers)"
+              [ -z "$left" ] && exit 0
+              echo "still running after TERM, sending KILL:"; echo "$left"
+              echo "$left" | cut -f1 | xargs kill -KILL 2> /dev/null
+              sleep 1
+              left="$(leftovers)"
+              if [ -n "$left" ]; then
+                echo "::error::processes survived KILL:"; echo "$left"; exit 1
+              fi ;;
+            *) echo "bad mode"; exit 2 ;;
+          esac
+          }
+          if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+            preflight || exit 1
+            main "$1"
+          fi
+          GUARD
+          chmod 500 "$sign_dir/guard.sh"
+          echo "IOS_GUARD_SHA=$(shasum -a 256 "$sign_dir/guard.sh" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          IOS_SIGN_DIR="$sign_dir" bash "$sign_dir/guard.sh" baseline
+
+      - name: Require secrets
+        timeout-minutes: 2
+        env:
+          HAVE_APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID != '' }}
+          HAVE_APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID != '' }}
+          HAVE_APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 != '' }}
+        run: |
+          set -euo pipefail
+          required=(APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64)
+          for name in "${required[@]}"; do
+            var="HAVE_$name"
+            [ "${!var}" = true ] || { echo "::error::secret $name is empty or missing in the '$IN_ENVIRONMENT' environment of this repository"; exit 1; }
+          done
+
+      - name: Download .ipa
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         timeout-minutes: 10
         with:
-          name: ${{ inputs.ipa-artifact }}
+          name: ${{ inputs.ipa-artifact != '' && inputs.ipa-artifact || format('ios-ipa-{0}', inputs.bundle-id) }}
           path: ${{ runner.temp }}/ios-signing/export
 
-      - name: Validate prebuilt .ipa
-        if: inputs.ipa-artifact != ''
+      - name: Validate .ipa before upload
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -666,6 +854,13 @@ jobs:
             echo "- version: $version, build: $build"
           } >> "$GITHUB_STEP_SUMMARY"
           rm -rf "$unpack"
+
+      - name: Process check before upload
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          echo "$IOS_GUARD_SHA  $IOS_SIGN_DIR/guard.sh" | shasum -a 256 -c - > /dev/null
+          bash "$IOS_SIGN_DIR/guard.sh" check
 
       - name: Upload to TestFlight
         timeout-minutes: 30

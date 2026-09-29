@@ -122,14 +122,22 @@ branches limited to `main` and release tags, and ALL the secrets above stored
 in it (not in the repository or organization). Other refs then cannot read
 them. These names match the Cubeage organization secrets.
 
-## Two jobs
+## Three jobs
 
 1. `prepare` (no environment, no secret; the caller's own pre-build code runs
    here): checks out the ref, selects `xcode-version`, downloads
    `xcode-artifact`, runs `pre-build-script`, and uploads the prepared
    workspace as an artifact (one day retention). In prebuilt mode it only
    validates the inputs.
-2. `sign-and-upload` (the only job with the environment): the steps below.
+2. `sign` (build mode only; environment; holds ONLY the four signing secrets):
+   the build steps below, then uploads the exported `.ipa` as an artifact (one
+   day retention). Caller code runs in this job (Run Script phases, package
+   plugins, the post-archive script), so it never references an App Store
+   Connect secret.
+3. `upload` (environment; the ONLY job with the `APP_STORE_CONNECT_*`
+   secrets): on a fresh machine it downloads the `.ipa` (the `sign` artifact,
+   or `ipa-artifact` in prebuilt mode), validates it, runs a process check,
+   then writes the key and uploads.
 
 ## Build mode
 
@@ -167,9 +175,10 @@ chosen: archiving unsigned (`CODE_SIGNING_ALLOWED=NO`), which drops
 entitlements from the archive. `override-team` adds `DEVELOPMENT_TEAM` for
 projects whose targets share one team.
 
-## Prebuilt mode
+## Validation before upload
 
-Downloads `ipa-artifact` and fails closed unless all of these hold:
+The `upload` job validates every `.ipa`, whether `sign` built it or the caller
+did (prebuilt mode), and fails closed unless all of these hold:
 
 - the artifact has exactly one `.ipa` with exactly one `Payload/*.app`;
 - `CFBundleIdentifier` equals `bundle-id`;
@@ -179,15 +188,15 @@ Downloads `ipa-artifact` and fails closed unless all of these hold:
   `ProvisionedDevices` (an App Store profile), and an `application-identifier`
   ending in the bundle id.
 
-The version and build are printed in the job summary. The signing secrets are
-not read in this mode.
+The version and build are printed in the job summary. In prebuilt mode `sign`
+is skipped and no signing secret reaches any job.
 
 ## Upload and cleanup
 
 `xcrun altool --upload-app --apiKey --apiIssuer`, with the `.p8` written mode
 0600 under `$RUNNER_TEMP` (found through `API_PRIVATE_KEYS_DIR`) only in this
-step, after the build and after a process check that fails if anything from an
-earlier step is still alive, so build scripts never see it. Then the `if: always()`
+step of the `upload` job, after validation and a process check, so build
+scripts never see it. Then the `if: always()`
 cleanup: each of restore search list, delete keychain, remove profiles, remove
 the key and wipe temporary files runs even when another fails; failures are
 collected and fail the step at the end.
@@ -216,9 +225,17 @@ The caller repository's own code runs in the job that ends up holding the
 distribution identity. Only repositories that own that identity may call this
 workflow; never one that builds third-party code.
 
-- **Environment.** Only the signing job has the environment, and the secrets
+- **Environment.** `sign` and `upload` have the environment, and the secrets
   live only there, so a run from another ref cannot read them. `prepare`, which
   runs the caller's pre-build code, has no environment and no secret.
+- **Three jobs, three trust levels.** Caller code runs in `prepare` (no
+  secret) and in `sign` (signing secrets only). It can append to that
+  machine's runner command files (`BASH_ENV`, `PATH`, `DEVELOPER_DIR`, the
+  process-guard hash) and leave processes behind. The App Store Connect key is
+  therefore only ever in `upload`, a separate job on a fresh single-use
+  machine that carries neither command-file state nor processes from `sign`,
+  and which validates the `.ipa` again before the key is written. The `sign`
+  job cannot upload a build or read the ASC key.
 - **Build mode.** `xcodebuild archive` runs the project's Run Script phases
   while the keychain is unlocked, so title code can execute then. The
   `codesign:`-only partition list and the missing `-T /usr/bin/security` stop
@@ -227,8 +244,9 @@ workflow; never one that builds third-party code.
   runs with the keychain present and no signing secret in its environment.
 - **Command files.** Caller scripts run without `GITHUB_ENV`, `GITHUB_PATH`,
   `GITHUB_OUTPUT`, `GITHUB_STATE` or `GITHUB_STEP_SUMMARY` in their
-  environment. A script that guesses the runner's command-file paths could
-  still append to them; that is not closed.
+  environment. A script that guesses the runner's command-file paths can still
+  poison later steps of its own job; the job split contains that to `sign`,
+  which holds no upload credential.
 - **Lingering processes.** At the start of the signing job a baseline of the
   runner user's processes is recorded. After archive, after the post-archive
   script and after export, every new process of that user that is not an
@@ -236,9 +254,8 @@ workflow; never one that builds third-party code.
   (the runner's `Runner.*`, Apple system paths `/System`, `/usr/libexec`,
   `/usr/sbin`, `/Library/Apple`, and Xcode helpers such as `XCBBuildService`,
   `com.apple.dt.*`, `ibtoold`, `mdworker`) is sent TERM, then KILL after 5
-  seconds, and the step fails if any survives. At the start of the upload step,
-  before the `.p8` is written, the same check runs without killing and fails on
-  any unexpected process. This closes a process that title code left running to
+  seconds, and the step fails if any survives. The `upload` job runs the same check without killing before the `.p8` is
+  written; on a fresh machine it finds nothing. This closes a process that title code left running to
   read the `.p8` or use the keychain later. It does not close code that runs
   during archive itself. The exclusion list is conservative but was written
   without a real runner to observe: the first run may list an unexpected
@@ -246,7 +263,7 @@ workflow; never one that builds third-party code.
   `$RUNNER_TEMP` before any caller code runs and its hash is checked before
   each use. Run it only on a dedicated runner: on a shared machine it would
   kill other jobs' processes.
-- **Prebuilt mode.** No signing secret reaches the job. The earlier job that
+- **Prebuilt mode.** No signing secret reaches any job. The earlier job that
   builds the `.ipa` holds whatever identity the engine needs; its trust is that
   job's own. The validation above stops uploading the wrong app or a
   non-App-Store build.
