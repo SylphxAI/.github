@@ -55,12 +55,27 @@ name: Red main
 # Secrets and the App token
 # ---------------------------------------------------------------------------
 #
-# None beyond the inherited App id and private key. The App token it mints is
+# None beyond the inherited App id and private key. A repository that holds no
+# key (a tenant organization never receives the cross-org builder key) runs in
+# token mode: see "Token mode" below. The App token it mints is
 # narrowed to the calling repository, is never printed, never uploaded, and
 # never written to a file - it lives in step outputs and in `$GH_TOKEN` for
 # the length of one step. Git network commands take it from the environment
 # through a credential helper defined in the step's own shell, so it never
 # reaches a remote URL or the git config.
+#
+# ---------------------------------------------------------------------------
+# Token mode (no builder App key)
+# ---------------------------------------------------------------------------
+#
+# When the key is empty the handler skips the App mint and works on the
+# caller's own `github.token`, in notify mode whatever `[ci] on_red` says:
+# a pull request opened with GITHUB_TOKEN triggers no CI and could never pass
+# the merge queue, so neither the quarantine pull request nor the revert pull
+# request is opened. The rerun, the classification, the culprit trace, the
+# comment on the affected pull request(s), and the per-test flake issue run on
+# the token; every write its grant refuses is named. The summary lists what a
+# person must do.
 
 on:
   workflow_call:
@@ -116,14 +131,14 @@ concurrency:
   group: red-main-${{ github.repository }}
   cancel-in-progress: false
 
-# The default token stays read-only on purpose. Every write the handler makes
-# goes through the App installation token, which the probe step measures
-# before anything acts.
-permissions:
-  actions: read
-  checks: read
-  contents: read
-  pull-requests: read
+# No `permissions:` block here on purpose: the caller decides what the job's
+# GITHUB_TOKEN carries, and a called workflow can only narrow that grant (an
+# explicit request above it fails the call), so this handler requests nothing.
+# A cloud-style caller grants read only and the handler writes through the App
+# installation token. A tenant caller without the App grants `actions: write`,
+# `issues: write` and `pull-requests: write` (plus `contents: read` and
+# `checks: read`, which the reads need once any permission is listed) and the
+# handler notifies on its own token.
 
 jobs:
   red-main:
@@ -162,6 +177,13 @@ jobs:
         state_set() { printf '%s' "$2" >"$STATE_DIR/$1"; }
         state_get() { cat "$STATE_DIR/$1" 2>/dev/null || true; }
 
+        # Who the writes belong to, for the messages that name a missing grant.
+        if [ "$(state_get token-mode)" = yes ]; then
+          GRANT_HOLDER="the workflow token on $REPO"
+        else
+          GRANT_HOLDER="the App installation on $REPO"
+        fi
+
         # grant_of <surface>: granted | read-only | missing | unknown
         grant_of() {
           awk -F'\t' -v k="$1" '$1==k {print $2}' "$STATE_DIR/grant.tsv" 2>/dev/null | head -1
@@ -173,8 +195,8 @@ jobs:
           local verdict
           verdict=$(grant_of "$1")
           if [ "$verdict" != "granted" ]; then
-            printf '::error::the App installation on %s does not grant %s (grant probe: %s); %s was not performed\n' \
-              "$REPO" "$2" "${verdict:-unknown}" "$3" >&2
+            printf '::error::%s does not grant %s (grant probe: %s); %s was not performed\n' \
+              "$GRANT_HOLDER" "$2" "${verdict:-unknown}" "$3" >&2
             state_set blocked "$2"
             return 1
           fi
@@ -184,8 +206,8 @@ jobs:
         # refused for want of a permission.
         write_refused() {
           if grep -qE 'HTTP (403|404)' <<<"$1"; then
-            printf '::error::%s was refused: the App installation on %s is missing %s\n' \
-              "$3" "$REPO" "$2" >&2
+            printf '::error::%s was refused: %s is missing %s\n' \
+              "$3" "$GRANT_HOLDER" "$2" >&2
             state_set blocked "$2"
           else
             printf '::error::%s failed: %s\n' "$3" "$(head -c 300 <<<"$1" | tr '\n' ' ')" >&2
@@ -616,6 +638,33 @@ jobs:
           chmod 700 "$RUNNER_TEMP/red-main"
 
       # ---------------------------------------------------------------------
+      # Is there a builder App key? `secrets` cannot appear in an `if:`, so the
+      # step reads it into a flag. No key: token mode (see the header), and the
+      # effective mode is notify whatever the declaration says.
+      # ---------------------------------------------------------------------
+      - name: Detect the builder App key
+        id: key
+        if: steps.gate.outputs.proceed == 'true'
+        timeout-minutes: 5
+        env:
+          APP_KEY: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+          DECLARED_MODE: ${{ steps.gate.outputs.mode }}
+        run: |
+          set -euo pipefail
+          . "$RUNNER_TEMP/red-main/lib.sh"
+          if [ -n "$APP_KEY" ]; then
+            echo "present=yes" >>"$GITHUB_OUTPUT"
+            echo "mode=$DECLARED_MODE" >>"$GITHUB_OUTPUT"
+            echo "the builder App key is present: the App path"
+          else
+            state_set token-mode yes
+            echo "present=no" >>"$GITHUB_OUTPUT"
+            echo "mode=notify" >>"$GITHUB_OUTPUT"
+            echo "no builder App key: token mode, on the caller's own GITHUB_TOKEN"
+            say "revert needs a CI-triggering token (the builder App); notifying only."
+          fi
+
+      # ---------------------------------------------------------------------
       # App token, narrowed to the calling repository, carrying the four
       # permissions the handler writes through. A repository whose
       # installation has not been widened yet still gets the observation
@@ -624,7 +673,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Mint the App token for the caller's repository
         id: app-token
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed == 'true' && steps.key.outputs.present == 'yes'
         continue-on-error: true
         timeout-minutes: 5
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
@@ -640,7 +689,9 @@ jobs:
 
       - name: Mint the App token with the observation grant only
         id: app-token-min
-        if: steps.gate.outputs.proceed == 'true' && steps.app-token.outcome == 'failure'
+        if: >-
+          steps.gate.outputs.proceed == 'true' && steps.key.outputs.present == 'yes'
+          && steps.app-token.outcome == 'failure'
         timeout-minutes: 5
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
@@ -661,8 +712,10 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
           FULL_GRANT: ${{ steps.app-token.outcome == 'success' && 'yes' || 'no' }}
+          KEY_PRESENT: ${{ steps.key.outputs.present }}
+          APP_MINTED: ${{ (steps.app-token.outputs.token || steps.app-token-min.outputs.token) != '' && 'yes' || 'no' }}
           EVENT_RUN_ID: ${{ github.event.workflow_run.id || '' }}
         run: |
           set -euo pipefail
@@ -678,7 +731,7 @@ jobs:
               *) printf 'unknown' ;;
             esac
           }
-          if [ -z "${GH_TOKEN:-}" ]; then
+          if [ "$KEY_PRESENT" = yes ] && [ "$APP_MINTED" != yes ]; then
             echo "::error::no App token was minted: the App id and key are empty, or the App has no installation on $REPO"
             exit 1
           fi
@@ -694,7 +747,16 @@ jobs:
             exit 1
           fi
           grant actions granted
-          if [ "$FULL_GRANT" = "yes" ]; then
+          if [ "$KEY_PRESENT" != yes ]; then
+            # Token mode: the token's grant is the caller's, and a permission
+            # cannot be read back from it, so a write is attempted and, if
+            # refused, named. Pushing is never attempted (contents is not
+            # requested), so it is recorded as read-only.
+            grant contents read-only
+            grant issues granted
+            grant pull-requests granted
+            say "Token mode: the workflow token carries what the caller granted; a write it does not grant is refused and named."
+          elif [ "$FULL_GRANT" = "yes" ]; then
             # The four-permission mint returned a token, so the installation
             # holds every permission the handler writes with.
             grant contents granted
@@ -728,7 +790,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
           EVENT_RUN_ID: ${{ github.event.workflow_run.id || '' }}
         run: |
           set -euo pipefail
@@ -786,7 +848,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
         run: |
@@ -813,7 +875,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
         run: |
@@ -837,7 +899,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 25
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
         run: |
           set -euo pipefail
@@ -879,7 +941,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'flake'
         timeout-minutes: 15
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
         run: |
@@ -928,10 +990,12 @@ jobs:
 
       - name: Mark the flaky units in their own source
         id: quarantine
-        if: steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'flake'
+        if: >-
+          steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'flake'
+          && steps.key.outputs.present == 'yes'
         timeout-minutes: 20
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug || steps.app-token-min.outputs.app-slug }}
           APP_ID: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
@@ -1053,10 +1117,11 @@ jobs:
         if: steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'real'
         timeout-minutes: 30
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
+          TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
@@ -1132,14 +1197,17 @@ jobs:
           : >"$WORK_DIR/candidates.tsv"
           declare -A run_of=() conclusion_of=() subject_of=()
           order=()
+          refs_refused=no
           while IFS=$'\t' read -r sha subject; do
             [ -n "$sha" ] || continue
             candidate_branch="sylphx-verify/$sha"
             if ! gh api --method POST "repos/$REPO/git/refs" \
                  --field "ref=refs/heads/$candidate_branch" --field "sha=$sha" >/dev/null 2>&1; then
               gh api --method PATCH "repos/$REPO/git/refs/heads/$candidate_branch" \
-                --field "sha=$sha" --field force=true >/dev/null 2>&1 || true
+                --field "sha=$sha" --field force=true >/dev/null 2>&1 \
+                || { [ "$TOKEN_MODE" != yes ] || refs_refused=yes; }
             fi
+            if [ "$refs_refused" = yes ]; then break; fi
             printf '%s\n' "$candidate_branch" >>"$WORK_DIR/temp-branches"
             if ! candidate_run=$(dispatch "refs/heads/$candidate_branch" 2>"$WORK_DIR/dispatch.err"); then
               say "**No action:** $VERIFY_WORKFLOW could not be dispatched on \`${sha:0:9}\` ($(head -c 200 "$WORK_DIR/dispatch.err" | tr '\n' ' ')); a person must decide."
@@ -1149,6 +1217,16 @@ jobs:
             subject_of[$sha]="$subject"
             order+=("$sha")
           done <<<"$rows"
+          if [ "$refs_refused" = yes ]; then
+            # Token mode: creating a ref needs contents: write, which a notify
+            # caller does not grant. The trace is skipped and the notify
+            # comment names every candidate commit instead.
+            state_set blocked "contents: write"
+            say "Trace skipped: creating the temporary \`sylphx-verify/<sha>\` branches needs contents: write, which the workflow token does not hold; the $total unverified commit(s) are reported as candidates."
+            jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"$(cut -f1 <<<"$rows")" >"$STATE_DIR/revert-all.json"
+            echo "revert-all=yes" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
           # One shared deadline; one poll per still-running run every 30 s.
           deadline=$((SECONDS + CANDIDATE_TIMEOUT_MINUTES * 60))
           pending=("${order[@]}")
@@ -1209,10 +1287,11 @@ jobs:
           && (steps.trace.outputs.culprit != '' || steps.trace.outputs.revert-all != '')
         timeout-minutes: 25
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug || steps.app-token-min.outputs.app-slug }}
           APP_ID: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
-          MODE: ${{ steps.gate.outputs.mode }}
+          MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
+          TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
@@ -1245,6 +1324,31 @@ jobs:
           if [ "$MODE" != "revert" ]; then
             say "Mode is notify: no revert pull request was opened. \`revert\` would revert $count commit(s):"
             for sha in "${shas[@]}"; do say "- \`$sha\`"; done
+            if [ "$TOKEN_MODE" = yes ]; then
+              # Token mode: tell the authors, on the pull request each
+              # candidate landed through, what failed and what is suspected.
+              if [ -n "$culprit" ]; then
+                verdict_line="The trace names this commit as the culprit: it failed and every older unverified commit passed."
+              else
+                verdict_line="This commit is among the unverified commits that may have broken it."
+              fi
+              candidates=""
+              for sha in "${shas[@]}"; do candidates="$candidates- \`$sha\`"$'\n'; done
+              body="\`main\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` and a rerun of the same commit failed again ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: this repository holds no builder App key, so a person decides."
+              : >"$WORK_DIR/notified"
+              for sha in "${shas[@]}"; do
+                pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
+                [ -n "$pr" ] || continue
+                if grep -qxF "$pr" "$WORK_DIR/notified"; then continue; fi
+                printf '%s\n' "$pr" >>"$WORK_DIR/notified"
+                if gh api --method POST "repos/$REPO/issues/$pr/comments" --field body="$body" >/dev/null 2>"$WORK_DIR/comment.err"; then
+                  say "Commented on pull request #$pr."
+                else
+                  write_refused "$(cat "$WORK_DIR/comment.err")" "pull requests: write" "commenting on pull request #$pr" || true
+                  say "The comment on pull request #$pr was not posted."
+                fi
+              done
+            fi
             exit 0
           fi
           require_grant contents "contents: write" "opening the revert pull request" || {
@@ -1421,8 +1525,8 @@ jobs:
           && (steps.helpers.outcome == 'success' || steps.helpers.outcome == 'failure')
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token }}
-          MODE: ${{ steps.gate.outputs.mode }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.app-token-min.outputs.token || github.token }}
+          MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
         run: |
           set -euo pipefail
@@ -1444,6 +1548,13 @@ jobs:
             echo "Mode: \`$MODE\`. Verify workflow: \`$VERIFY_WORKFLOW\`."
             echo
             if [ -s "$WORK_DIR/summary.md" ]; then cat "$WORK_DIR/summary.md"; else echo "The handler recorded no step."; fi
+            if [ "$(state_get token-mode)" = yes ]; then
+              echo
+              echo "**Token mode (no builder App key).** The quarantine pull request and the revert pull request were not opened: a pull request opened with GITHUB_TOKEN triggers no CI and could never pass the merge queue. A person must:"
+              echo "- for a flaky test, mark it quarantined in its own source through a normal pull request (its flake issue names it);"
+              echo "- for a real failure, revert the candidate commit(s) above through a normal pull request;"
+              echo "- or give this repository the builder App key so the handler can do both."
+            fi
             if [ -n "$(state_get blocked)" ]; then
               echo
               echo "**Blocked by a missing App grant:** $(state_get blocked). The write it names did not happen."
@@ -1471,6 +1582,6 @@ jobs:
                --field body="$(cat "$WORK_DIR/final.md")" >/dev/null 2>"$WORK_DIR/comment.err"; then
             echo "commented on $HEAD_SHA"
           else
-            echo "::warning::the summary comment was not posted: the App installation on $REPO needs contents: write. The record is in this run's step summary."
+            echo "::warning::the summary comment was not posted: $GRANT_HOLDER needs contents: write. The record is in this run's step summary."
             echo "the comment was not posted: $(head -c 300 "$WORK_DIR/comment.err" | tr '\n' ' ')"
           fi

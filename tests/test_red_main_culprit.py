@@ -72,5 +72,82 @@ class CulpritRuleTest(unittest.TestCase):
         self.assertIn("cancelled", out[1])
 
 
+def step(name: str) -> str:
+    """The text of the workflow step called `name` (up to the next step)."""
+    text = WORKFLOW.read_text()
+    start = text.index(f"      - name: {name}\n")
+    end = text.find("\n      - name: ", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+class TokenModeTest(unittest.TestCase):
+    """No builder App key: notify on the caller's own GITHUB_TOKEN."""
+
+    def test_no_permissions_block_at_any_level(self) -> None:
+        lines = WORKFLOW.read_text().splitlines()
+        self.assertEqual([l for l in lines if l.lstrip().startswith("permissions:")], [])
+
+    def test_no_write_permission_is_requested_for_the_token(self) -> None:
+        # `permission-<x>: write` inputs of the App mint are the App's own grant;
+        # a `<x>: write` line anywhere else would request it from GITHUB_TOKEN.
+        for line in WORKFLOW.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("permission-") or stripped.startswith("#"):
+                continue
+            self.assertNotRegex(stripped, r"^(actions|checks|contents|issues|pull-requests|packages|id-token|statuses): write$")
+
+    def test_key_flag_reads_the_secret_outside_an_if(self) -> None:
+        detect = step("Detect the builder App key")
+        self.assertIn("secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY", detect)
+        for line in WORKFLOW.read_text().splitlines():
+            if line.strip().startswith("if:"):
+                self.assertNotIn("secrets.", line)
+
+    def test_mint_steps_need_the_key_flag(self) -> None:
+        for name in (
+            "Mint the App token for the caller's repository",
+            "Mint the App token with the observation grant only",
+        ):
+            self.assertIn("steps.key.outputs.present == 'yes'", step(name))
+
+    def test_token_falls_back_to_github_token(self) -> None:
+        text = WORKFLOW.read_text()
+        self.assertNotIn("app-token-min.outputs.token }}", text)
+        self.assertIn("steps.app-token-min.outputs.token || github.token }}", text)
+
+    def test_no_key_forces_notify(self) -> None:
+        detect = step("Detect the builder App key")
+        self.assertIn("echo \"mode=notify\"", detect)
+        self.assertIn("revert needs a CI-triggering token (the builder App); notifying only.", detect)
+        revert = step("Revert the culprit or report it")
+        self.assertIn("MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}", revert)
+
+    def test_quarantine_pull_request_needs_the_key(self) -> None:
+        self.assertIn("steps.key.outputs.present == 'yes'", step("Mark the flaky units in their own source"))
+
+    def test_revert_pull_request_is_unreachable_in_notify(self) -> None:
+        revert = step("Revert the culprit or report it")
+        self.assertLess(revert.index('if [ "$MODE" != "revert" ]'), revert.index("git_c revert"))
+
+    def test_refused_refs_skip_the_trace_with_a_reason(self) -> None:
+        trace = step("Trace the culprit among the unverified commits")
+        self.assertIn("refs_refused", trace)
+        self.assertIn("needs contents: write", trace)
+
+    def test_summary_lists_what_a_person_must_do(self) -> None:
+        self.assertIn("A person must:", step("Record what the handler did"))
+
+    def test_templates_still_parse(self) -> None:
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+        # The red-main starter lands with #108; nothing to parse until it does.
+        for path in (ROOT / "workflow-templates").glob("red-main*.yml"):
+            self.assertIsInstance(yaml.safe_load(path.read_text()), dict, path.name)
+        doc = yaml.safe_load(WORKFLOW.read_text())
+        self.assertNotIn("permissions", doc)
+
+
 if __name__ == "__main__":
     unittest.main()
