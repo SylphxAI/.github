@@ -1,6 +1,8 @@
 name: iOS release
 
-# Sign, archive, export and upload an iOS app to TestFlight on the internal
+# Two modes, one upload. Build mode signs, archives and exports an iOS app; prebuilt
+# mode (`ipa-artifact`) validates an .ipa an engine already built and signed.
+# Either way it uploads to TestFlight on the internal
 # macOS runner class ([self-hosted, macos, sylphx, standard]; docs/ios-release.md).
 #
 # Why a reusable workflow and not a composite action: the temporary keychain,
@@ -17,12 +19,44 @@ name: iOS release
 on:
   workflow_call:
     inputs:
-      scheme:
-        description: Xcode scheme to archive.
-        required: true
+      ipa-artifact:
+        description: >
+          Prebuilt mode. Name of an artifact holding exactly one signed .ipa,
+          uploaded by an earlier job of the caller's same run (which this job
+          `needs:`). When set, checkout, keychain, archive and export are skipped.
+        required: false
         type: string
+        default: ''
+      xcode-artifact:
+        description: >
+          Build mode only. Name of an artifact holding an exported Xcode
+          project (for example Unity's export from Linux), uploaded by an
+          earlier job of the caller's same run. Downloaded into the checkout
+          at artifact-path before the build.
+        required: false
+        type: string
+        default: ''
+      artifact-path:
+        description: Repo-relative directory the xcode-artifact is downloaded into.
+        required: false
+        type: string
+        default: '.'
+      pre-build-script:
+        description: >
+          Build mode only. Script path, relative to the artifact directory when
+          xcode-artifact is set, else to the repository root. Run with bash
+          before any signing secret is materialised, in a step with no signing
+          secrets.
+        required: false
+        type: string
+        default: ''
+      scheme:
+        description: Build mode only. Xcode scheme to archive.
+        required: false
+        type: string
+        default: ''
       bundle-id:
-        description: Bundle identifier of the app; selects its provisioning profile for the archive.
+        description: Bundle identifier of the app; selects the archive profile (build mode) or must equal the .ipa's CFBundleIdentifier (prebuilt mode).
         required: true
         type: string
       workspace:
@@ -52,8 +86,10 @@ on:
         required: false
         type: string
         default: ''
-      ref:
-        description: Branch, tag, or commit to check out; empty is the caller's own ref.
+      environment:
+        description: >
+          GitHub environment of the job. Store the signing secrets in it and
+          restrict its deployment branches, so other refs cannot read them.
         required: false
         type: string
         default: ''
@@ -69,18 +105,18 @@ on:
         required: true
       IOS_DIST_CERTIFICATE_BASE64:
         description: Apple Distribution certificate with its private key (.p12), base64.
-        required: true
+        required: false
       IOS_DIST_CERTIFICATE_PASSWORD:
         description: Password of the .p12.
-        required: true
+        required: false
       APPLE_TEAM_ID:
         description: Apple Developer team id.
-        required: true
+        required: false
       IOS_PROVISIONING_PROFILE_BASE64:
         description: >
           App Store provisioning profile(s), base64. One profile per line when
           the app has extensions.
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -90,7 +126,12 @@ jobs:
     name: sign, archive, upload
     runs-on: [self-hosted, macos, sylphx, standard]
     timeout-minutes: 90
+    environment: ${{ inputs.environment }}
     env:
+      IN_IPA_ARTIFACT: ${{ inputs.ipa-artifact }}
+      IN_XCODE_ARTIFACT: ${{ inputs.xcode-artifact }}
+      IN_ARTIFACT_PATH: ${{ inputs.artifact-path }}
+      IN_PRE_BUILD_SCRIPT: ${{ inputs.pre-build-script }}
       IN_SCHEME: ${{ inputs.scheme }}
       IN_BUNDLE_ID: ${{ inputs.bundle-id }}
       IN_WORKSPACE: ${{ inputs.workspace }}
@@ -98,10 +139,14 @@ jobs:
       IN_CONFIGURATION: ${{ inputs.configuration }}
       IN_XCCONFIG: ${{ inputs.xcconfig }}
       IN_BUILD_NUMBER: ${{ inputs.build-number }}
-      IN_REF: ${{ inputs.ref }}
     steps:
       - name: Validate inputs
         timeout-minutes: 2
+        env:
+          HAVE_CERT: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 != '' }}
+          HAVE_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERTIFICATE_PASSWORD != '' }}
+          HAVE_TEAM: ${{ secrets.APPLE_TEAM_ID != '' }}
+          HAVE_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' }}
         run: |
           set -euo pipefail
           path_ok() {
@@ -109,12 +154,23 @@ jobs:
             case "$1" in /* | *..*) return 1 ;; esac
           }
           echo "IOS_SIGN_DIR=$RUNNER_TEMP/ios-signing" >> "$GITHUB_ENV"
-          [[ "$IN_SCHEME" =~ ^[A-Za-z0-9_.\ +-]{1,100}$ ]] || { echo "::error::bad scheme"; exit 2; }
+          [[ "$IN_IPA_ARTIFACT" =~ ^[A-Za-z0-9_.-]{0,100}$ ]] || { echo "::error::bad ipa-artifact"; exit 2; }
+          if [ -z "$IN_IPA_ARTIFACT" ]; then
+            [[ "$IN_SCHEME" =~ ^[A-Za-z0-9_.\ +-]{1,100}$ ]] || { echo "::error::build mode needs a valid scheme"; exit 2; }
+            for v in HAVE_CERT HAVE_CERT_PASSWORD HAVE_TEAM HAVE_PROFILE; do
+              [ "${!v}" = true ] || { echo "::error::build mode needs the signing secrets (IOS_DIST_CERTIFICATE_BASE64, IOS_DIST_CERTIFICATE_PASSWORD, APPLE_TEAM_ID, IOS_PROVISIONING_PROFILE_BASE64); missing: $v"; exit 2; }
+            done
+          fi
           [[ "$IN_BUNDLE_ID" =~ ^[A-Za-z0-9.-]{1,155}$ ]] || { echo "::error::bad bundle-id"; exit 2; }
           [[ "$IN_CONFIGURATION" =~ ^[A-Za-z0-9_\ -]{1,50}$ ]] || { echo "::error::bad configuration"; exit 2; }
           [[ "$IN_BUILD_NUMBER" =~ ^[0-9]{0,9}$ ]] || { echo "::error::bad build-number"; exit 2; }
-          [[ "$IN_REF" =~ ^[A-Za-z0-9._/@+-]{0,200}$ && "$IN_REF" != -* ]] || { echo "::error::bad ref"; exit 2; }
-          if [ -z "$IN_WORKSPACE" ] && [ -z "$IN_PROJECT" ]; then
+          [[ "$IN_XCODE_ARTIFACT" =~ ^[A-Za-z0-9_.-]{0,100}$ ]] || { echo "::error::bad xcode-artifact"; exit 2; }
+          path_ok "$IN_ARTIFACT_PATH" || { echo "::error::bad artifact-path"; exit 2; }
+          [ -z "$IN_PRE_BUILD_SCRIPT" ] || path_ok "$IN_PRE_BUILD_SCRIPT" || { echo "::error::bad pre-build-script"; exit 2; }
+          if [ -n "$IN_IPA_ARTIFACT" ] && { [ -n "$IN_XCODE_ARTIFACT" ] || [ -n "$IN_PRE_BUILD_SCRIPT" ]; }; then
+            echo "::error::xcode-artifact and pre-build-script are build-mode inputs; ipa-artifact is prebuilt mode"; exit 2
+          fi
+          if [ -z "$IN_IPA_ARTIFACT" ] && [ -z "$IN_WORKSPACE" ] && [ -z "$IN_PROJECT" ]; then
             echo "::error::set workspace or project"; exit 2
           fi
           for p in "$IN_WORKSPACE" "$IN_PROJECT" "$IN_XCCONFIG"; do
@@ -122,13 +178,35 @@ jobs:
           done
 
       - name: Checkout
+        if: inputs.ipa-artifact == ''
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         timeout-minutes: 10
         with:
-          ref: ${{ inputs.ref }}
           persist-credentials: false
 
+      - name: Download Xcode project artifact
+        if: inputs.ipa-artifact == '' && inputs.xcode-artifact != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 10
+        with:
+          name: ${{ inputs.xcode-artifact }}
+          path: ${{ inputs.artifact-path }}
+
+      - name: Pre-build script (no signing secrets)
+        if: inputs.ipa-artifact == '' && inputs.pre-build-script != ''
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          if [ -n "$IN_XCODE_ARTIFACT" ]; then workdir="$GITHUB_WORKSPACE/$IN_ARTIFACT_PATH"; else workdir="$GITHUB_WORKSPACE"; fi
+          root="$(cd "$workdir" && pwd -P)"
+          [ -f "$root/$IN_PRE_BUILD_SCRIPT" ] || { echo "::error::pre-build-script not found"; exit 1; }
+          script_dir="$(cd "$(dirname "$root/$IN_PRE_BUILD_SCRIPT")" && pwd -P)"
+          case "$script_dir/" in "$root"/*) ;; *) echo "::error::pre-build-script resolves outside its directory"; exit 1 ;; esac
+          cd "$root"
+          bash -- "$IN_PRE_BUILD_SCRIPT"
+
       - name: Signing setup (temporary keychain, certificate, profiles)
+        if: inputs.ipa-artifact == ''
         timeout-minutes: 10
         env:
           CERT_BASE64: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 }}
@@ -162,7 +240,7 @@ jobs:
           chmod 600 "$IOS_SIGN_DIR/dist.p12"
           security import "$IOS_SIGN_DIR/dist.p12" -k "$keychain" -P "$CERT_PASSWORD" \
             -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_password" "$keychain" > /dev/null
+          security set-key-partition-list -S codesign: -s -k "$kc_password" "$keychain" > /dev/null
           security find-identity -v -p codesigning "$keychain" | grep -q "Apple Distribution" \
             || { echo "::error::no Apple Distribution identity in the imported certificate"; exit 1; }
           rm -f "$IOS_SIGN_DIR/dist.p12"
@@ -197,6 +275,7 @@ jobs:
           echo "installed $n provisioning profile(s)"
 
       - name: Archive
+        if: inputs.ipa-artifact == ''
         timeout-minutes: 60
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -217,6 +296,7 @@ jobs:
           xcodebuild archive "${args[@]}"
 
       - name: Export
+        if: inputs.ipa-artifact == ''
         timeout-minutes: 20
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -239,6 +319,62 @@ jobs:
             -exportPath "$IOS_SIGN_DIR/export" -exportOptionsPlist "$opts"
           find "$IOS_SIGN_DIR/export" -maxdepth 1 -name '*.ipa' | grep -q .
 
+      - name: Download prebuilt .ipa
+        if: inputs.ipa-artifact != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 10
+        with:
+          name: ${{ inputs.ipa-artifact }}
+          path: ${{ runner.temp }}/ios-signing/export
+
+      - name: Validate prebuilt .ipa
+        if: inputs.ipa-artifact != ''
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          umask 077
+          # Fail closed: every check must pass before anything is uploaded.
+          export_dir="$IOS_SIGN_DIR/export"
+          [ "$(find "$export_dir" -name '*.ipa' | wc -l | tr -d ' ')" = 1 ] \
+            || { echo "::error::the artifact must hold exactly one .ipa"; exit 1; }
+          ipa="$(find "$export_dir" -name '*.ipa')"
+          unpack="$IOS_SIGN_DIR/unpack"
+          rm -rf "$unpack"; mkdir -p "$unpack"
+          unzip -q "$ipa" -d "$unpack"
+          [ "$(find "$unpack/Payload" -maxdepth 1 -name '*.app' | wc -l | tr -d ' ')" = 1 ] \
+            || { echo "::error::Payload must hold exactly one .app"; exit 1; }
+          app="$(find "$unpack/Payload" -maxdepth 1 -name '*.app')"
+          pb() { /usr/libexec/PlistBuddy -c "$1" "$2"; }
+          # (a) bundle id
+          bundle="$(pb 'Print :CFBundleIdentifier' "$app/Info.plist")"
+          [ "$bundle" = "$IN_BUNDLE_ID" ] \
+            || { echo "::error::CFBundleIdentifier is $bundle, expected $IN_BUNDLE_ID"; exit 1; }
+          # (b) signature
+          codesign -dv --verbose=4 "$app" 2> "$unpack/codesign.txt"
+          grep -q '^Authority=Apple Distribution:' "$unpack/codesign.txt" \
+            || { echo "::error::not signed by an Apple Distribution identity"; exit 1; }
+          codesign --verify --deep --strict "$app"
+          # (c) App Store profile with beta reports
+          profile="$unpack/embedded.plist"
+          security cms -D -i "$app/embedded.mobileprovision" > "$profile"
+          [ "$(pb 'Print :Entitlements:beta-reports-active' "$profile")" = true ] \
+            || { echo "::error::profile lacks beta-reports-active"; exit 1; }
+          if pb 'Print :ProvisionedDevices' "$profile" > /dev/null 2>&1; then
+            echo "::error::profile lists devices, so it is not an App Store profile"; exit 1
+          fi
+          appid="$(pb 'Print :Entitlements:application-identifier' "$profile")"
+          case "$appid" in *".$IN_BUNDLE_ID") ;; *) echo "::error::profile application-identifier does not end in the bundle id"; exit 1 ;; esac
+          # (d) version
+          version="$(pb 'Print :CFBundleShortVersionString' "$app/Info.plist")"
+          build="$(pb 'Print :CFBundleVersion' "$app/Info.plist")"
+          echo "prebuilt .ipa: $bundle version $version build $build"
+          {
+            echo "### Prebuilt .ipa validated"
+            echo "- bundle id: \`$bundle\`"
+            echo "- version: $version, build: $build"
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -rf "$unpack"
+
       - name: Upload to TestFlight
         timeout-minutes: 30
         env:
@@ -250,12 +386,15 @@ jobs:
           umask 077
           [[ "$ASC_KEY_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "::error::bad App Store Connect key id"; exit 2; }
           [[ "$ASC_ISSUER_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] || { echo "::error::bad App Store Connect issuer id"; exit 2; }
-          # altool reads AuthKey_<KEYID>.p8 from this directory.
-          key_dir="$HOME/.appstoreconnect/private_keys"
+          # altool reads AuthKey_<KEYID>.p8 from API_PRIVATE_KEYS_DIR.
+          key_dir="$IOS_SIGN_DIR/private_keys"
+          export API_PRIVATE_KEYS_DIR="$key_dir"
           mkdir -p "$key_dir"
           printf '%s' "$ASC_KEY_BASE64" | base64 --decode > "$key_dir/AuthKey_$ASC_KEY_ID.p8"
           chmod 600 "$key_dir/AuthKey_$ASC_KEY_ID.p8"
-          ipa="$(find "$IOS_SIGN_DIR/export" -maxdepth 1 -name '*.ipa' | head -n 1)"
+          [ "$(find "$IOS_SIGN_DIR/export" -name '*.ipa' | wc -l | tr -d ' ')" = 1 ] \
+            || { echo "::error::expected exactly one .ipa to upload"; exit 1; }
+          ipa="$(find "$IOS_SIGN_DIR/export" -name '*.ipa')"
           log="$IOS_SIGN_DIR/altool.log"
           # Xcode 26's altool has been reported to exit 0 on some failed uploads,
           # so the exit status AND the output are both checked.
@@ -273,21 +412,23 @@ jobs:
       - name: Cleanup (keychain, profiles, API key, temporary files)
         if: always()
         timeout-minutes: 5
-        env:
-          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
         run: |
-          set -euo pipefail
+          # Best effort per item: every removal runs even when another fails;
+          # failures are collected and fail the step at the end.
           dir="${IOS_SIGN_DIR:-}"
           keychain="${IOS_SIGN_KEYCHAIN:-}"
+          failed=0
+          fail() { echo "::warning::cleanup failed: $1"; failed=1; }
           if [ -n "$keychain" ] && [ -e "$keychain" ]; then
             if [ -s "$dir/keychains.list" ]; then
               mapfile -t saved < "$dir/keychains.list"
-              security list-keychains -d user -s "${saved[@]}"
+              security list-keychains -d user -s "${saved[@]}" || fail "restore keychain search list"
             fi
-            security delete-keychain "$keychain"
+            security delete-keychain "$keychain" || fail "delete keychain"
           fi
           if [ -f "$dir/installed.list" ]; then
-            while IFS= read -r f; do rm -f "$f"; done < "$dir/installed.list"
+            while IFS= read -r f; do rm -f "$f" || fail "remove profile"; done < "$dir/installed.list"
           fi
-          [[ "$ASC_KEY_ID" =~ ^[A-Z0-9]{10}$ ]] && rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8"
-          [ -z "$dir" ] || rm -rf "$dir"
+          [ -z "$dir" ] || rm -rf "$dir/private_keys" || fail "remove API key"
+          [ -z "$dir" ] || rm -rf "$dir" || fail "remove temporary files"
+          exit "$failed"

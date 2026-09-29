@@ -18,6 +18,11 @@ jobs:
       bundle-id: com.example.myapp
       workspace: MyApp.xcworkspace # or: project: MyApp.xcodeproj
       build-number: ${{ github.run_number }}
+      # Create this environment (deployment branches: main + release tags) and
+      # keep ALL the secrets below in it.
+      environment: ios-release
+      # Unity: xcode-artifact + pre-build-script. Solar2D/prebuilt: ipa-artifact
+      # (then only the three APP_STORE_CONNECT_* secrets are needed).
     # Pass each secret by name; `secrets: inherit` hands over every secret.
     secrets:
       APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
