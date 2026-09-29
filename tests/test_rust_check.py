@@ -35,6 +35,9 @@ class RustCheckWorkflow(unittest.TestCase):
         self.assertLess(self.text.index("Rust toolchain and sccache"), self.text.index("Compile cache on GitHub"))
         self.assertLess(self.text.index("Compile cache on GitHub"), self.text.index("- name: cargo check"))
 
+    def test_unpinned_workspace_falls_back_to_stable(self) -> None:
+        self.assertIn("rustup default stable", self.text)
+
 
 if __name__ == "__main__":
     unittest.main()
