@@ -4,6 +4,9 @@ name: iOS TestFlight
 # (SylphxAI/.github docs/ios-release.md). TestFlight only: the reusable
 # workflow never submits for review or releases.
 # Replace COMMIT_SHA with the SylphxAI/.github commit you have reviewed.
+# Create the `ios-release` environment in this repository (deployment branches:
+# main + release tags) and keep the secrets in it: there is no `secrets:` block
+# here, the workflow reads them from that environment.
 on:
   workflow_dispatch:
 
@@ -18,17 +21,7 @@ jobs:
       bundle-id: com.example.myapp
       workspace: MyApp.xcworkspace # or: project: MyApp.xcodeproj
       build-number: ${{ github.run_number }}
-      # Create this environment (deployment branches: main + release tags) and
-      # keep ALL the secrets below in it.
-      environment: ios-release
-      # Unity: xcode-artifact + pre-build-script. Solar2D/prebuilt: ipa-artifact
-      # (then only the three APP_STORE_CONNECT_* secrets are needed).
-    # Pass each secret by name; `secrets: inherit` hands over every secret.
-    secrets:
-      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-      APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
-      IOS_DIST_CERTIFICATE_BASE64: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 }}
-      IOS_DIST_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DIST_CERTIFICATE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+      # environment: ios-release   # the default
+      # Unity: xcode-artifact + pre-build-script (+ post-archive-script).
+      # Solar2D / prebuilt: ipa-artifact (then only the three
+      # APP_STORE_CONNECT_* secrets are needed).

@@ -14,7 +14,11 @@ name: iOS release
 # Trust boundary: every secret travels through the `env:` of the one step that
 # needs it and is never echoed. Caller inputs never reach a shell body; they
 # travel through `env:` and are validated against a strict pattern first.
-# Callers pass each secret by name (docs/ios-release.md).
+# There are no `secrets:` on this workflow: the signing job names a GitHub
+# environment (input `environment`, default ios-release) and reads the
+# documented secret names from that environment of the caller's repository
+# (docs/ios-release.md). The first job, `prepare`, has no environment and
+# never sees a secret; it runs the caller's pre-build code.
 
 on:
   workflow_call:
@@ -50,6 +54,30 @@ on:
         required: false
         type: string
         default: ''
+      post-archive-script:
+        description: >
+          Build mode only. Script path (same rules as pre-build-script) run
+          with bash after archive and before export, in a step with no signing
+          secrets. The temporary keychain exists at that point.
+        required: false
+        type: string
+        default: ''
+      xcode-version:
+        description: >
+          Build mode only. Xcode version to select (for example 26.3): the
+          installed /Applications/Xcode*.app whose version equals it or starts
+          with it followed by a dot. Empty keeps the runner default.
+        required: false
+        type: string
+        default: ''
+      override-team:
+        description: >
+          Build mode only. Also pass DEVELOPMENT_TEAM=APPLE_TEAM_ID to the
+          archive (it applies to every target, which is safe when all targets
+          share one team). Off: the project's own team setting stands.
+        required: false
+        type: boolean
+        default: false
       scheme:
         description: Build mode only. Xcode scheme to archive.
         required: false
@@ -88,50 +116,32 @@ on:
         default: ''
       environment:
         description: >
-          GitHub environment of the job. Store the signing secrets in it and
-          restrict its deployment branches, so other refs cannot read them.
+          GitHub environment of the signing job. The signing and App Store
+          Connect secrets are read from it, in the caller's repository; restrict
+          its deployment branches. Must not be empty.
         required: false
         type: string
-        default: ''
-    secrets:
-      APP_STORE_CONNECT_API_KEY_ID:
-        description: App Store Connect API key id.
-        required: true
-      APP_STORE_CONNECT_ISSUER_ID:
-        description: App Store Connect API issuer id.
-        required: true
-      APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64:
-        description: The API key .p8 file, base64.
-        required: true
-      IOS_DIST_CERTIFICATE_BASE64:
-        description: Apple Distribution certificate with its private key (.p12), base64.
-        required: false
-      IOS_DIST_CERTIFICATE_PASSWORD:
-        description: Password of the .p12.
-        required: false
-      APPLE_TEAM_ID:
-        description: Apple Developer team id.
-        required: false
-      IOS_PROVISIONING_PROFILE_BASE64:
-        description: >
-          App Store provisioning profile(s), base64. One profile per line when
-          the app has extensions.
-        required: false
+        default: ios-release
 
 permissions:
   contents: read
 
 jobs:
-  release:
-    name: sign, archive, upload
+  prepare:
+    # No environment and no secret: this job runs the caller's own pre-build
+    # code and hands the prepared workspace to the signing job.
+    name: prepare
     runs-on: [self-hosted, macos, sylphx, standard]
     timeout-minutes: 90
-    environment: ${{ inputs.environment }}
     env:
+      IN_ENVIRONMENT: ${{ inputs.environment }}
       IN_IPA_ARTIFACT: ${{ inputs.ipa-artifact }}
       IN_XCODE_ARTIFACT: ${{ inputs.xcode-artifact }}
       IN_ARTIFACT_PATH: ${{ inputs.artifact-path }}
       IN_PRE_BUILD_SCRIPT: ${{ inputs.pre-build-script }}
+      IN_POST_ARCHIVE_SCRIPT: ${{ inputs.post-archive-script }}
+      IN_XCODE_VERSION: ${{ inputs.xcode-version }}
+      IN_OVERRIDE_TEAM: ${{ inputs.override-team }}
       IN_SCHEME: ${{ inputs.scheme }}
       IN_BUNDLE_ID: ${{ inputs.bundle-id }}
       IN_WORKSPACE: ${{ inputs.workspace }}
@@ -142,33 +152,27 @@ jobs:
     steps:
       - name: Validate inputs
         timeout-minutes: 2
-        env:
-          HAVE_CERT: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 != '' }}
-          HAVE_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERTIFICATE_PASSWORD != '' }}
-          HAVE_TEAM: ${{ secrets.APPLE_TEAM_ID != '' }}
-          HAVE_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' }}
         run: |
           set -euo pipefail
           path_ok() {
             [[ "$1" =~ ^[A-Za-z0-9_./\ +-]{1,200}$ ]] || return 1
             case "$1" in /* | *..*) return 1 ;; esac
           }
-          echo "IOS_SIGN_DIR=$RUNNER_TEMP/ios-signing" >> "$GITHUB_ENV"
+          [[ "$IN_ENVIRONMENT" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "::error::environment must be set (signing is environment-gated) and match [A-Za-z0-9._-]{1,64}"; exit 2; }
           [[ "$IN_IPA_ARTIFACT" =~ ^[A-Za-z0-9_.-]{0,100}$ ]] || { echo "::error::bad ipa-artifact"; exit 2; }
           if [ -z "$IN_IPA_ARTIFACT" ]; then
             [[ "$IN_SCHEME" =~ ^[A-Za-z0-9_.\ +-]{1,100}$ ]] || { echo "::error::build mode needs a valid scheme"; exit 2; }
-            for v in HAVE_CERT HAVE_CERT_PASSWORD HAVE_TEAM HAVE_PROFILE; do
-              [ "${!v}" = true ] || { echo "::error::build mode needs the signing secrets (IOS_DIST_CERTIFICATE_BASE64, IOS_DIST_CERTIFICATE_PASSWORD, APPLE_TEAM_ID, IOS_PROVISIONING_PROFILE_BASE64); missing: $v"; exit 2; }
-            done
           fi
           [[ "$IN_BUNDLE_ID" =~ ^[A-Za-z0-9.-]{1,155}$ ]] || { echo "::error::bad bundle-id"; exit 2; }
           [[ "$IN_CONFIGURATION" =~ ^[A-Za-z0-9_\ -]{1,50}$ ]] || { echo "::error::bad configuration"; exit 2; }
           [[ "$IN_BUILD_NUMBER" =~ ^[0-9]{0,9}$ ]] || { echo "::error::bad build-number"; exit 2; }
           [[ "$IN_XCODE_ARTIFACT" =~ ^[A-Za-z0-9_.-]{0,100}$ ]] || { echo "::error::bad xcode-artifact"; exit 2; }
           path_ok "$IN_ARTIFACT_PATH" || { echo "::error::bad artifact-path"; exit 2; }
+          [[ "$IN_XCODE_VERSION" =~ ^([0-9]+(\.[0-9]+){0,2})?$ ]] || { echo "::error::bad xcode-version"; exit 2; }
+          [ -z "$IN_POST_ARCHIVE_SCRIPT" ] || path_ok "$IN_POST_ARCHIVE_SCRIPT" || { echo "::error::bad post-archive-script"; exit 2; }
           [ -z "$IN_PRE_BUILD_SCRIPT" ] || path_ok "$IN_PRE_BUILD_SCRIPT" || { echo "::error::bad pre-build-script"; exit 2; }
-          if [ -n "$IN_IPA_ARTIFACT" ] && { [ -n "$IN_XCODE_ARTIFACT" ] || [ -n "$IN_PRE_BUILD_SCRIPT" ]; }; then
-            echo "::error::xcode-artifact and pre-build-script are build-mode inputs; ipa-artifact is prebuilt mode"; exit 2
+          if [ -n "$IN_IPA_ARTIFACT" ] && { [ -n "$IN_XCODE_ARTIFACT" ] || [ -n "$IN_PRE_BUILD_SCRIPT" ] || [ -n "$IN_POST_ARCHIVE_SCRIPT" ] || [ -n "$IN_XCODE_VERSION" ]; }; then
+            echo "::error::xcode-artifact, pre-build-script, post-archive-script and xcode-version are build-mode inputs; ipa-artifact is prebuilt mode"; exit 2
           fi
           if [ -z "$IN_IPA_ARTIFACT" ] && [ -z "$IN_WORKSPACE" ] && [ -z "$IN_PROJECT" ]; then
             echo "::error::set workspace or project"; exit 2
@@ -183,6 +187,25 @@ jobs:
         timeout-minutes: 10
         with:
           persist-credentials: false
+
+      - name: Select Xcode version
+        if: inputs.ipa-artifact == '' && inputs.xcode-version != ''
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          installed=""
+          for app in /Applications/Xcode*.app; do
+            [ -d "$app" ] || continue
+            v="$(defaults read "$app/Contents/Info" CFBundleShortVersionString)"
+            installed="$installed $v"
+            if [ "$v" = "$IN_XCODE_VERSION" ] || [[ "$v" == "$IN_XCODE_VERSION".* ]]; then
+              echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+              echo "selected Xcode $v ($app)"
+              exit 0
+            fi
+          done
+          echo "::error::Xcode $IN_XCODE_VERSION is not installed; installed:${installed:- none}"
+          exit 1
 
       - name: Download Xcode project artifact
         if: inputs.ipa-artifact == '' && inputs.xcode-artifact != ''
@@ -203,7 +226,212 @@ jobs:
           script_dir="$(cd "$(dirname "$root/$IN_PRE_BUILD_SCRIPT")" && pwd -P)"
           case "$script_dir/" in "$root"/*) ;; *) echo "::error::pre-build-script resolves outside its directory"; exit 1 ;; esac
           cd "$root"
-          bash -- "$IN_PRE_BUILD_SCRIPT"
+          # The script cannot append to the runner's command files through the
+          # environment of this step.
+          env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STATE -u GITHUB_STEP_SUMMARY \
+            bash -- "$IN_PRE_BUILD_SCRIPT"
+
+      - name: Pack prepared workspace
+        if: inputs.ipa-artifact == ''
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          tar -C "$GITHUB_WORKSPACE" --exclude=./.git -cf "$RUNNER_TEMP/ios-workspace.tar" .
+
+      - name: Upload prepared workspace
+        if: inputs.ipa-artifact == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        timeout-minutes: 15
+        with:
+          name: ios-workspace-${{ inputs.bundle-id }}
+          path: ${{ runner.temp }}/ios-workspace.tar
+          retention-days: 1
+          if-no-files-found: error
+
+
+  sign-and-upload:
+    name: sign, archive, upload
+    needs: prepare
+    runs-on: [self-hosted, macos, sylphx, standard]
+    timeout-minutes: 90
+    environment: ${{ inputs.environment }}
+    env:
+      IN_ENVIRONMENT: ${{ inputs.environment }}
+      IN_IPA_ARTIFACT: ${{ inputs.ipa-artifact }}
+      IN_XCODE_ARTIFACT: ${{ inputs.xcode-artifact }}
+      IN_ARTIFACT_PATH: ${{ inputs.artifact-path }}
+      IN_PRE_BUILD_SCRIPT: ${{ inputs.pre-build-script }}
+      IN_POST_ARCHIVE_SCRIPT: ${{ inputs.post-archive-script }}
+      IN_XCODE_VERSION: ${{ inputs.xcode-version }}
+      IN_OVERRIDE_TEAM: ${{ inputs.override-team }}
+      IN_SCHEME: ${{ inputs.scheme }}
+      IN_BUNDLE_ID: ${{ inputs.bundle-id }}
+      IN_WORKSPACE: ${{ inputs.workspace }}
+      IN_PROJECT: ${{ inputs.project }}
+      IN_CONFIGURATION: ${{ inputs.configuration }}
+      IN_XCCONFIG: ${{ inputs.xcconfig }}
+      IN_BUILD_NUMBER: ${{ inputs.build-number }}
+    steps:
+      - name: Validate inputs
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          path_ok() {
+            [[ "$1" =~ ^[A-Za-z0-9_./\ +-]{1,200}$ ]] || return 1
+            case "$1" in /* | *..*) return 1 ;; esac
+          }
+          [[ "$IN_ENVIRONMENT" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "::error::environment must be set (signing is environment-gated) and match [A-Za-z0-9._-]{1,64}"; exit 2; }
+          [[ "$IN_IPA_ARTIFACT" =~ ^[A-Za-z0-9_.-]{0,100}$ ]] || { echo "::error::bad ipa-artifact"; exit 2; }
+          if [ -z "$IN_IPA_ARTIFACT" ]; then
+            [[ "$IN_SCHEME" =~ ^[A-Za-z0-9_.\ +-]{1,100}$ ]] || { echo "::error::build mode needs a valid scheme"; exit 2; }
+          fi
+          [[ "$IN_BUNDLE_ID" =~ ^[A-Za-z0-9.-]{1,155}$ ]] || { echo "::error::bad bundle-id"; exit 2; }
+          [[ "$IN_CONFIGURATION" =~ ^[A-Za-z0-9_\ -]{1,50}$ ]] || { echo "::error::bad configuration"; exit 2; }
+          [[ "$IN_BUILD_NUMBER" =~ ^[0-9]{0,9}$ ]] || { echo "::error::bad build-number"; exit 2; }
+          [[ "$IN_XCODE_ARTIFACT" =~ ^[A-Za-z0-9_.-]{0,100}$ ]] || { echo "::error::bad xcode-artifact"; exit 2; }
+          path_ok "$IN_ARTIFACT_PATH" || { echo "::error::bad artifact-path"; exit 2; }
+          [[ "$IN_XCODE_VERSION" =~ ^([0-9]+(\.[0-9]+){0,2})?$ ]] || { echo "::error::bad xcode-version"; exit 2; }
+          [ -z "$IN_POST_ARCHIVE_SCRIPT" ] || path_ok "$IN_POST_ARCHIVE_SCRIPT" || { echo "::error::bad post-archive-script"; exit 2; }
+          [ -z "$IN_PRE_BUILD_SCRIPT" ] || path_ok "$IN_PRE_BUILD_SCRIPT" || { echo "::error::bad pre-build-script"; exit 2; }
+          if [ -n "$IN_IPA_ARTIFACT" ] && { [ -n "$IN_XCODE_ARTIFACT" ] || [ -n "$IN_PRE_BUILD_SCRIPT" ] || [ -n "$IN_POST_ARCHIVE_SCRIPT" ] || [ -n "$IN_XCODE_VERSION" ]; }; then
+            echo "::error::xcode-artifact, pre-build-script, post-archive-script and xcode-version are build-mode inputs; ipa-artifact is prebuilt mode"; exit 2
+          fi
+          if [ -z "$IN_IPA_ARTIFACT" ] && [ -z "$IN_WORKSPACE" ] && [ -z "$IN_PROJECT" ]; then
+            echo "::error::set workspace or project"; exit 2
+          fi
+          for p in "$IN_WORKSPACE" "$IN_PROJECT" "$IN_XCCONFIG"; do
+            [ -z "$p" ] || path_ok "$p" || { echo "::error::bad path input"; exit 2; }
+          done
+          echo "IOS_SIGN_DIR=$RUNNER_TEMP/ios-signing" >> "$GITHUB_ENV"
+          # Process guard (see docs/ios-release.md, Trust model). Written here,
+          # before any caller code runs; its hash is checked before every use.
+          sign_dir="$RUNNER_TEMP/ios-signing"
+          mkdir -p "$sign_dir"
+          cat > "$sign_dir/guard.sh" <<'GUARD'
+          #!/bin/bash
+          # guard.sh baseline | kill | check
+          set -uo pipefail
+          mode="$1"
+          dir="$IOS_SIGN_DIR"
+          me="$(id -u)"
+          # Owned by this user, not an ancestor of, or descended from, this
+          # shell: "pid<TAB>start time<TAB>command".
+          snap() {
+            ps -axo pid=,ppid=,uid=,lstart=,comm= | awk -v me="$me" -v self="$$" '
+              { pid=$1; P[pid]=$2; U[pid]=$3; L[pid]=$4" "$5" "$6" "$7" "$8
+                c=""; for (i=9; i<=NF; i++) c = c (i>9 ? " " : "") $i; C[pid]=c }
+              END {
+                q=self; n=0; while (q>1 && n<64) { A[q]=1; q=P[q]; n++ }
+                for (p in P) {
+                  if (U[p]!=me || (p in A)) continue
+                  q=p; n=0; kid=0
+                  while (q>1 && n<64) { if (q==self) { kid=1; break } q=P[q]; n++ }
+                  if (!kid) print p "\t" L[p] "\t" C[p]
+                }
+              }' | sort
+          }
+          # Explicit, conservative exclusions: the runner's own processes and
+          # Apple system and Xcode helper daemons that a build starts and keeps.
+          allowed() {
+            local base="${1##*/}"
+            case "$1" in /System/* | /usr/libexec/* | /usr/sbin/* | /Library/Apple/*) return 0 ;; esac
+            case "$base" in
+              Runner.* | XCBBuildService | xcodebuild | xcrun | com.apple.dt.* | ibtoold | IBAgent* | mdworker* | distnoted | cfprefsd) return 0 ;;
+            esac
+            return 1
+          }
+          leftovers() {
+            snap | while IFS=$'\t' read -r pid started comm; do
+              grep -qxF "$pid"$'\t'"$started"$'\t'"$comm" "$dir/procs.base" && continue
+              allowed "$comm" && continue
+              printf '%s\t%s\t%s\n' "$pid" "$started" "$comm"
+            done
+          }
+          case "$mode" in
+            baseline) snap > "$dir/procs.base" ;;
+            check)
+              left="$(leftovers)"
+              if [ -n "$left" ]; then
+                echo "::error::unexpected processes are running from an earlier step:"; echo "$left"; exit 1
+              fi
+              echo "process check: no unexpected processes" ;;
+            kill)
+              left="$(leftovers)"
+              [ -z "$left" ] && { echo "process guard: no leftovers"; exit 0; }
+              echo "process guard: leftovers from an earlier step, sending TERM:"; echo "$left"
+              echo "$left" | cut -f1 | xargs kill -TERM 2> /dev/null
+              sleep 5
+              left="$(leftovers)"
+              [ -z "$left" ] && exit 0
+              echo "still running after TERM, sending KILL:"; echo "$left"
+              echo "$left" | cut -f1 | xargs kill -KILL 2> /dev/null
+              sleep 1
+              left="$(leftovers)"
+              if [ -n "$left" ]; then
+                echo "::error::processes survived KILL:"; echo "$left"; exit 1
+              fi ;;
+            *) echo "bad mode"; exit 2 ;;
+          esac
+          GUARD
+          chmod 500 "$sign_dir/guard.sh"
+          echo "IOS_GUARD_SHA=$(shasum -a 256 "$sign_dir/guard.sh" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          IOS_SIGN_DIR="$sign_dir" bash "$sign_dir/guard.sh" baseline
+
+      - name: Require secrets
+        timeout-minutes: 2
+        env:
+          HAVE_APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID != '' }}
+          HAVE_APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID != '' }}
+          HAVE_APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 != '' }}
+          HAVE_IOS_DIST_CERTIFICATE_BASE64: ${{ secrets.IOS_DIST_CERTIFICATE_BASE64 != '' }}
+          HAVE_IOS_DIST_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DIST_CERTIFICATE_PASSWORD != '' }}
+          HAVE_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
+          HAVE_IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' }}
+        run: |
+          set -euo pipefail
+          required=(APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64)
+          if [ -z "$IN_IPA_ARTIFACT" ]; then
+            required+=(IOS_DIST_CERTIFICATE_BASE64 IOS_DIST_CERTIFICATE_PASSWORD APPLE_TEAM_ID IOS_PROVISIONING_PROFILE_BASE64)
+          fi
+          for name in "${required[@]}"; do
+            var="HAVE_$name"
+            [ "${!var}" = true ] || { echo "::error::secret $name is empty or missing in the '$IN_ENVIRONMENT' environment of this repository"; exit 1; }
+          done
+
+      - name: Select Xcode version
+        if: inputs.ipa-artifact == '' && inputs.xcode-version != ''
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          installed=""
+          for app in /Applications/Xcode*.app; do
+            [ -d "$app" ] || continue
+            v="$(defaults read "$app/Contents/Info" CFBundleShortVersionString)"
+            installed="$installed $v"
+            if [ "$v" = "$IN_XCODE_VERSION" ] || [[ "$v" == "$IN_XCODE_VERSION".* ]]; then
+              echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+              echo "selected Xcode $v ($app)"
+              exit 0
+            fi
+          done
+          echo "::error::Xcode $IN_XCODE_VERSION is not installed; installed:${installed:- none}"
+          exit 1
+
+      - name: Download prepared workspace
+        if: inputs.ipa-artifact == ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        timeout-minutes: 15
+        with:
+          name: ios-workspace-${{ inputs.bundle-id }}
+          path: ${{ runner.temp }}/ios-signing/workspace-dl
+
+      - name: Unpack prepared workspace
+        if: inputs.ipa-artifact == ''
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          tar -C "$GITHUB_WORKSPACE" -xf "$IOS_SIGN_DIR/workspace-dl/ios-workspace.tar"
+          rm -rf "$IOS_SIGN_DIR/workspace-dl"
 
       - name: Signing setup (temporary keychain, certificate, profiles)
         if: inputs.ipa-artifact == ''
@@ -283,17 +511,52 @@ jobs:
           set -euo pipefail
           umask 077
           [[ "$TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "::error::APPLE_TEAM_ID is not a 10-character team id"; exit 2; }
-          specifier="$(awk -F'\t' -v b="$IN_BUNDLE_ID" '$1 == b { print $2; exit }' "$IOS_SIGN_DIR/profiles.tsv")"
-          [ -n "$specifier" ] || { echo "::error::no installed profile matches bundle-id $IN_BUNDLE_ID"; exit 1; }
+          awk -F'\t' -v b="$IN_BUNDLE_ID" '$1 == b { found = 1 } END { exit !found }' "$IOS_SIGN_DIR/profiles.tsv" \
+            || { echo "::error::no installed profile matches bundle-id $IN_BUNDLE_ID"; exit 1; }
           if [ -n "$IN_WORKSPACE" ]; then target=(-workspace "$IN_WORKSPACE"); else target=(-project "$IN_PROJECT"); fi
+          # No command-line CODE_SIGN_IDENTITY or PROVISIONING_PROFILE_SPECIFIER:
+          # those apply to every target (Pods, frameworks, extensions). The
+          # project's own settings sign the archive; export re-signs for
+          # distribution (docs/ios-release.md, Signing).
           args=("${target[@]}" -scheme "$IN_SCHEME" -configuration "$IN_CONFIGURATION"
             -destination 'generic/platform=iOS' -archivePath "$IOS_SIGN_DIR/App.xcarchive"
-            CODE_SIGN_STYLE=Manual "DEVELOPMENT_TEAM=$TEAM_ID" "CODE_SIGN_IDENTITY=Apple Distribution"
-            "PROVISIONING_PROFILE_SPECIFIER=$specifier"
             "OTHER_CODE_SIGN_FLAGS=--keychain $IOS_SIGN_KEYCHAIN")
+          [ "$IN_OVERRIDE_TEAM" != true ] || args+=("DEVELOPMENT_TEAM=$TEAM_ID")
           [ -z "$IN_XCCONFIG" ] || args+=(-xcconfig "$IN_XCCONFIG")
           [ -z "$IN_BUILD_NUMBER" ] || args+=("CURRENT_PROJECT_VERSION=$IN_BUILD_NUMBER")
           xcodebuild archive "${args[@]}"
+
+      - name: Process guard after archive
+        if: inputs.ipa-artifact == ''
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          echo "$IOS_GUARD_SHA  $IOS_SIGN_DIR/guard.sh" | shasum -a 256 -c - > /dev/null
+          bash "$IOS_SIGN_DIR/guard.sh" kill
+
+      - name: Post-archive script (no signing secrets)
+        if: inputs.ipa-artifact == '' && inputs.post-archive-script != ''
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          if [ -n "$IN_XCODE_ARTIFACT" ]; then workdir="$GITHUB_WORKSPACE/$IN_ARTIFACT_PATH"; else workdir="$GITHUB_WORKSPACE"; fi
+          root="$(cd "$workdir" && pwd -P)"
+          [ -f "$root/$IN_POST_ARCHIVE_SCRIPT" ] || { echo "::error::post-archive-script not found"; exit 1; }
+          script_dir="$(cd "$(dirname "$root/$IN_POST_ARCHIVE_SCRIPT")" && pwd -P)"
+          case "$script_dir/" in "$root"/*) ;; *) echo "::error::post-archive-script resolves outside its directory"; exit 1 ;; esac
+          cd "$root"
+          # The script cannot append to the runner's command files through the
+          # environment of this step.
+          env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STATE -u GITHUB_STEP_SUMMARY \
+            bash -- "$IN_POST_ARCHIVE_SCRIPT"
+
+      - name: Process guard after post-archive script
+        if: inputs.ipa-artifact == '' && inputs.post-archive-script != ''
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          echo "$IOS_GUARD_SHA  $IOS_SIGN_DIR/guard.sh" | shasum -a 256 -c - > /dev/null
+          bash "$IOS_SIGN_DIR/guard.sh" kill
 
       - name: Export
         if: inputs.ipa-artifact == ''
@@ -308,6 +571,7 @@ jobs:
           pb() { /usr/libexec/PlistBuddy -c "$1" "$opts"; }
           pb "Add :method string app-store-connect"
           pb "Add :signingStyle string manual"
+          pb "Add :signingCertificate string Apple Distribution"
           pb "Add :teamID string $TEAM_ID"
           pb "Add :destination string export"
           pb "Add :uploadSymbols bool true"
@@ -318,6 +582,14 @@ jobs:
           xcodebuild -exportArchive -archivePath "$IOS_SIGN_DIR/App.xcarchive" \
             -exportPath "$IOS_SIGN_DIR/export" -exportOptionsPlist "$opts"
           find "$IOS_SIGN_DIR/export" -maxdepth 1 -name '*.ipa' | grep -q .
+
+      - name: Process guard after export
+        if: inputs.ipa-artifact == ''
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          echo "$IOS_GUARD_SHA  $IOS_SIGN_DIR/guard.sh" | shasum -a 256 -c - > /dev/null
+          bash "$IOS_SIGN_DIR/guard.sh" kill
 
       - name: Download prebuilt .ipa
         if: inputs.ipa-artifact != ''
@@ -384,6 +656,9 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          # Before the key exists: fail if anything from an earlier step is alive.
+          echo "$IOS_GUARD_SHA  $IOS_SIGN_DIR/guard.sh" | shasum -a 256 -c - > /dev/null
+          bash "$IOS_SIGN_DIR/guard.sh" check
           [[ "$ASC_KEY_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "::error::bad App Store Connect key id"; exit 2; }
           [[ "$ASC_ISSUER_ID" =~ ^[A-Fa-f0-9-]{36}$ ]] || { echo "::error::bad App Store Connect issuer id"; exit 2; }
           # altool reads AuthKey_<KEYID>.p8 from API_PRIVATE_KEYS_DIR.
