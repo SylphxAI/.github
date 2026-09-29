@@ -157,5 +157,24 @@ class StarterWorkflowTest(unittest.TestCase):
         self.assertIn("ci-ok", gate["jobs"])
 
 
+class RedMainOnlyOnFailureTest(unittest.TestCase):
+    """A cancelled, superseded or timed-out run is never a red trunk: only a
+    completed `failure` of the verify workflow on the trunk wakes the handler."""
+
+    def test_caller_fires_only_on_a_failed_trunk_run(self) -> None:
+        import yaml
+        caller = yaml.safe_load((ROOT / "workflow-templates" / "red-main.yml").read_text())
+        condition = " ".join(caller["jobs"]["red-main"]["if"].split())
+        self.assertIn("github.event.workflow_run.conclusion == 'failure'", condition)
+        self.assertIn("github.event.workflow_run.head_branch == 'main'", condition)
+        self.assertEqual(caller[True]["workflow_run"]["workflows"], ["Verify"])  # yaml reads `on` as True
+
+    def test_handler_quits_on_any_other_conclusion(self) -> None:
+        handler = (ROOT / ".github" / "workflows" / "red-main.yml").read_text()
+        self.assertIn('[ "$conclusion" = "failure" ] || quiet', handler)
+        # A dispatch without an event run takes only a failed run, never a cancelled one.
+        self.assertIn("status=failure", handler)
+
+
 if __name__ == "__main__":
     unittest.main()

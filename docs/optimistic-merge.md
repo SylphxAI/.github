@@ -19,7 +19,11 @@ no half state.
 | `verify.yml` fails on the trunk | red-main handler: rerun, quarantine a flake, or trace and revert | - |
 
 Gate lanes: format, lint, typecheck, workflow parse, generated-code and
-contract drift, and the unit tests the change affects. Everything else -
+contract drift, the unit tests the change affects, and - only when the change
+touches the repository's migration globs - the migration lanes: lint and
+integrity (atlas lint and `atlas.sum`, drizzle checks) and the database-backed
+migration tests. DDL cannot be undone by a revert, so a migration is
+exercised before it reaches the trunk. Everything else -
 integration and database tests, browser and device matrices, release builds,
 proofs - is a suite lane.
 
@@ -84,8 +88,9 @@ queue, and deploys stay as they are.
   `verified` verdict. Skipped passes; failed or cancelled fails; `required:
   plan` makes a broken plan a failure.
 - [`rust-sccache`](../.github/actions/rust-sccache/action.yml): the Rust
-  compile cache. S3 on the in-cluster object store when credentials are
-  given, else the GitHub Actions cache (no secret; its default per-repository
+  compile cache. S3 on the in-cluster object store when the organization
+  secrets `SYLPHX_CI_CACHE_ACCESS_KEY` / `SYLPHX_CI_CACHE_SECRET_KEY` are
+  passed (one object-store user and bucket per organization, never shared), else the GitHub Actions cache (no secret; its default per-repository
   limit evicts old entries, and it is never raised - spend stays $0).
   Entries are prefixed by repository.
 - [`workflow-lint`](../.github/actions/workflow-lint/action.yml): pinned
