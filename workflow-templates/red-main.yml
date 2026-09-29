@@ -22,14 +22,17 @@ on:
     types: [completed]
   workflow_dispatch:
 
-# Read-only on purpose. The handler writes through the builder App's
-# installation token, never through this workflow's own token, so nothing
-# here needs a write.
+# The job's own token. With the builder App key (repositories in the org that
+# holds it) the handler writes through the App and uses none of these writes.
+# Without it (token mode) the handler notifies on this token: it reruns the
+# failed jobs, files the flake issue and comments on the affected pull
+# request; it never opens a pull request with it.
 permissions:
-  actions: read
+  actions: write
   checks: read
   contents: read
-  pull-requests: read
+  issues: write
+  pull-requests: write
 
 jobs:
   red-main:

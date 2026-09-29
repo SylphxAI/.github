@@ -52,9 +52,12 @@ proofs - is a suite lane.
    flaky tests from it.
 4. **`.github/workflows/red-main.yml`** from
    [`workflow-templates/red-main.yml`](../workflow-templates/red-main.yml),
-   unchanged. It needs the `SYLPHX_BUILDER_APP_ID` variable and the
-   `SYLPHX_BUILDER_PRIVATE_KEY` secret; without them it still classifies and
-   says what it could not write.
+   unchanged. In the organization that holds the builder App
+   (`SYLPHX_BUILDER_APP_ID` variable, `SYLPHX_BUILDER_PRIVATE_KEY` secret) it
+   reruns, quarantines and reverts as `on_red` says. Anywhere else it runs in
+   token mode: rerun, flake issue and a comment on the affected pull requests,
+   never a pull request of its own - a person reverts. The App key never
+   leaves its organization.
 5. **Labels** the handler uses but never creates, and silently skips when
    absent: `flake`, `quarantine`, `auto-revert`, `queue-jump:red-main`.
    Create them in the same change.
