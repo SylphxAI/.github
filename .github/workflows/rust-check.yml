@@ -98,7 +98,12 @@ jobs:
             | sh -s -- --default-toolchain none --profile minimal -y --no-modify-path
           cd "$IN_WORKSPACE"
           rustup toolchain install
-          rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+          if rustup show active-toolchain >/dev/null 2>&1; then
+            rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+          else
+            echo "::notice::no rust-toolchain file; using stable"
+            rustup default stable
+          fi
           cargo --version
           v=v0.10.0
           curl --retry 10 --retry-connrefused -sSfL \

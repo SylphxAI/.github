@@ -1,7 +1,7 @@
 # Remote cargo check
 
 `.github/workflows/rust-check.yml` is the one reusable `cargo check` job: it
-checks out a ref, installs the Rust toolchain the workspace pins, starts the
+checks out a ref, installs the Rust toolchain the workspace pins (stable when it pins none), starts the
 shared sccache, runs `cargo check --locked` for the given packages (optionally
 `--tests`), and prints cargo's output between `@@sylphx-check-begin` and
 `@@sylphx-check-end`, then `@@sylphx-check-exit=<code>`.
