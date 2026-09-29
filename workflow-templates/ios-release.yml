@@ -1,0 +1,27 @@
+name: iOS TestFlight
+
+# Sign, archive and upload to TestFlight on the internal macOS runners
+# (SylphxAI/.github docs/ios-release.md). TestFlight only: the reusable
+# workflow never submits for review or releases.
+# Replace COMMIT_SHA with the SylphxAI/.github commit you have reviewed.
+# Create the `ios-release` environment in this repository (deployment branches:
+# main + release tags) and keep the secrets in it: there is no `secrets:` block
+# here, the workflow reads them from that environment.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testflight:
+    uses: SylphxAI/.github/.github/workflows/ios-release.yml@COMMIT_SHA
+    with:
+      scheme: MyApp
+      bundle-id: com.example.myapp
+      workspace: MyApp.xcworkspace # or: project: MyApp.xcodeproj
+      build-number: ${{ github.run_number }}
+      # environment: ios-release   # the default
+      # Unity: xcode-artifact + pre-build-script (+ post-archive-script).
+      # Solar2D / prebuilt: ipa-artifact (then only the three
+      # APP_STORE_CONNECT_* secrets are needed).
