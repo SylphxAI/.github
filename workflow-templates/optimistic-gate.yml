@@ -15,6 +15,10 @@ on:
     # ready_for_review: marking a draft ready runs the full suite.
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
+  # A pull request opened with GITHUB_TOKEN triggers no CI: its opener
+  # dispatches this workflow on the branch (`gh workflow run ci.yml --ref
+  # <branch>`), and the run's ci-ok lands on the head commit. Gate lanes only.
+  workflow_dispatch:
 
 # A new push supersedes a pull request's run; a merge group's run is never
 # cancelled by another.
