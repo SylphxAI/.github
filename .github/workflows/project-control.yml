@@ -35,8 +35,8 @@ jobs:
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$reusable")" -eq 1
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$template")" -eq 4
-          test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 3
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$project_control")" -eq 3
+          test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 5
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$project_control")" -eq 5
           # owner#750 (zero metered GitHub spend): the admission template and
           # reusable workflow serve private repositories, so they run on our
           # runners only (asserted above). This public repository's own jobs
@@ -69,10 +69,67 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover -s tests
 
+  # The optimistic-merge actions, run as a consumer runs them: a manifest the
+  # runner cannot load (an expression in a description, a bad input) fails
+  # here, before any repository pins it (#111). The starters are linted as
+  # workflows, placed where a repository keeps them.
+  template-plan:
+    # A push would walk the trunk's history for a `verified` check this
+    # repository never publishes; pull requests and merge groups diff their
+    # own base.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.range.outputs.run }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          filter: blob:none
+      - id: range
+        uses: ./.github/actions/ci-range
+        with:
+          lanes: |
+            always:
+            actions: .github/actions/*
+      - name: The range selected lanes
+        env:
+          RUN: ${{ steps.range.outputs.run }}
+        run: jq -e '.always == true' <<<"$RUN"
+      - name: The starters lint as workflows
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/starter"
+          mkdir -p "$work/.github/workflows"
+          cp workflow-templates/optimistic-gate.yml "$work/.github/workflows/ci.yml"
+          cp workflow-templates/optimistic-verify.yml "$work/.github/workflows/verify.yml"
+          cp workflow-templates/red-main.yml "$work/.github/workflows/red-main.yml"
+          cp .github/actionlint.yaml "$work/.github/actionlint.yaml"
+          git -C "$work" init -q
+      - name: actionlint on the starters
+        uses: ./.github/actions/workflow-lint
+        with:
+          args: -config-file .github/actionlint.yaml ${{ runner.temp }}/starter/.github/workflows/ci.yml ${{ runner.temp }}/starter/.github/workflows/verify.yml ${{ runner.temp }}/starter/.github/workflows/red-main.yml
+
+  template-verdict:
+    needs: template-plan
+    if: always() && github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/needs-pass
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: template-plan
+
   # Aggregate verdict required by the main merge queue ruleset. Skipped jobs
   # pass; failed or cancelled jobs fail.
   ci-ok:
-    needs: [project-control, tests]
+    needs: [project-control, tests, template-plan, template-verdict]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
