@@ -41,3 +41,12 @@ never a repository's cache: the `RGW_S3_*` secrets are ignored.
 
 Inputs never reach a shell: they travel as environment variables and are
 matched against a strict pattern first.
+
+## Private git dependencies
+
+A workspace that depends on private git repositories passes them as
+`git-deps` (one `OWNER/REPO` per line) and its own reader App as
+`GIT_DEPS_APP_ID` / `GIT_DEPS_APP_KEY`. For each owner the job mints a
+read-only token for exactly those repositories and fetches through it; no
+platform credential is involved. Without a toolchain file the check uses
+stable; with `rust-toolchain(.toml)` it uses the pinned toolchain.
