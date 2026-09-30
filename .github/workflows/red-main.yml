@@ -17,6 +17,14 @@ name: Red main
 #      `main` is red and blocks the queue - one jump in 30 minutes per
 #      repository, recorded on the pull request it jumps.
 #
+# Self-heal rules: only COMPLETED verify runs count (cancelled and skipped are
+# ignored); a real failure reverts only after the SAME failing unit (job and
+# test) failed on two consecutive completed runs, at the first-bad commit; and
+# a run whose every failed job shows an infrastructure signature (installation
+# token mint, artifact upload, cache 403, lost runner) gets one automatic
+# rerun before it counts as red. When the handler itself fails, it opens (or
+# comments on) one issue labelled `red-main-broken` and `owner:ops`.
+#
 # The culprit is the OLDEST candidate whose run concluded `failure`, provided
 # every older candidate concluded `success`. A cancelled, startup_failure,
 # timed_out, or not-finished-by-the-deadline run is inconclusive and never
@@ -464,6 +472,102 @@ jobs:
             for kind, name, lane in rows:
                 fh.write(f"{kind}\t{name}\t{lane}\n")
         print(f"{len(rows)} failing unit(s), {len(lanes)} failed lane(s)")
+      # Infra signatures (owner#809): a failed run whose every failed job died
+      # of the platform, not of the code. Reads {"jobs": [{name, conclusion,
+      # steps: [{name, conclusion}], annotations: [text]}]} on stdin and prints
+      # `infra <signature>` or `none`. The signatures are the installation
+      # token mint, an artifact upload, a cache 403, and a lost runner. A job
+      # whose failed steps include anything else (a test, clippy, a build) is
+      # a code failure and the whole run is `none`.
+      INFRA_PY: |
+        import json
+        import re
+        import sys
+
+        STEP_SIGNATURES = [
+            ("installation-token-mint", re.compile(r"installation token|create-github-app-token|token mint", re.I)),
+            ("upload-artifact", re.compile(r"upload[- ]artifact|upload .*artifact", re.I)),
+        ]
+        CACHE_STEP = re.compile(r"cache", re.I)
+        CACHE_403 = re.compile(r"\b403\b|forbidden", re.I)
+        RUNNER_LOST = re.compile(
+            r"lost communication with the server|runner has received a shutdown signal"
+            r"|runner .*(lost|went offline)|hosted runner .*lost",
+            re.I,
+        )
+
+        def job_signature(job):
+            notes = [str(n) for n in job.get("annotations") or []]
+            failed = [s for s in job.get("steps") or [] if s.get("conclusion") == "failure"]
+            if any(RUNNER_LOST.search(n) for n in notes):
+                return "runner-lost"
+            if not failed:
+                return None
+            found = None
+            for step in failed:
+                name = step.get("name") or ""
+                sig = next((label for label, rx in STEP_SIGNATURES if rx.search(name)), None)
+                if sig is None and CACHE_STEP.search(name) and any(CACHE_403.search(n) for n in notes):
+                    sig = "cache-403"
+                if sig is None:
+                    return None
+                found = found or sig
+            return found
+
+        jobs = [
+            j for j in json.load(sys.stdin).get("jobs", [])
+            if j.get("conclusion") in ("failure", "timed_out")
+        ]
+        signatures = [job_signature(j) for j in jobs]
+        if jobs and all(signatures):
+            print("infra " + ",".join(sorted(set(signatures))))
+        else:
+            print("none")
+      # Same failing unit on the previous completed verify run? Args: the
+      # previous run's conclusion, its failing-units file, this run's. Prints
+      # `yes <why>` or `no <why>`. Units are `kind<TAB>name<TAB>job`; a lane
+      # row (no junit for that job) matches any unit of the same job. A
+      # previous run that passed, or an unknown one, confirms nothing.
+      CONFIRM_PY: |
+        import sys
+
+        prev_conclusion, prev_path, cur_path = sys.argv[1:4]
+
+        def read(path):
+            rows = []
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    for line in fh:
+                        parts = line.rstrip("\n").split("\t")
+                        if len(parts) == 3:
+                            rows.append(tuple(parts))
+            except OSError:
+                pass
+            return rows
+
+        if prev_conclusion not in ("failure", "timed_out"):
+            print(f"no the previous completed run was '{prev_conclusion or 'not found'}'")
+            raise SystemExit(0)
+        prev, cur = read(prev_path), read(cur_path)
+
+        def tests(rows):
+            return {(name, job) for kind, name, job in rows if kind == "test"}
+
+        def lanes(rows):
+            return {job for kind, _name, job in rows if kind == "lane"}
+
+        def jobs(rows):
+            return {job for _kind, _name, job in rows}
+
+        common = tests(prev) & tests(cur)
+        lane_hit = (lanes(prev) & jobs(cur)) | (lanes(cur) & jobs(prev))
+        if common:
+            name, job = sorted(common)[0]
+            print(f"yes the same unit failed on both runs: {name} ({job})")
+        elif lane_hit:
+            print(f"yes the same job failed on both runs: {sorted(lane_hit)[0]}")
+        else:
+            print("no the previous completed run failed a different unit")
       # Mark each flaky unit in its own source, beside the test. The grammar is
       # fixed by the guard that runs beside the tests (cloud's
       # scripts/check-quarantine.ts):
@@ -710,6 +814,8 @@ jobs:
           printf '%s\n' "$CULPRIT_PY" >"$RUNNER_TEMP/red-main/culprit.py"
           printf '%s\n' "$REVERT_GUARD_PY" >"$RUNNER_TEMP/red-main/revert-guard.py"
           printf '%s\n' "$MARK_PY" >"$RUNNER_TEMP/red-main/mark.py"
+          printf '%s\n' "$INFRA_PY" >"$RUNNER_TEMP/red-main/infra.py"
+          printf '%s\n' "$CONFIRM_PY" >"$RUNNER_TEMP/red-main/confirm.py"
           printf '%s\n' "$FLAKE_BODY" >"$RUNNER_TEMP/red-main/flake.py"
           chmod 700 "$RUNNER_TEMP/red-main"
 
@@ -980,6 +1086,43 @@ jobs:
           say "Failing units: $count."
 
       # ---------------------------------------------------------------------
+      # Infra signatures, before the rerun: an installation-token mint failure,
+      # an artifact upload failure, a cache 403 or a lost runner in every
+      # failed job is the platform failing, not the code. The rerun below is
+      # then the ONE automatic rerun, and a pass is not a flake of any test.
+      # ---------------------------------------------------------------------
+      - name: Classify infrastructure failures
+        id: infra
+        if: steps.gate.outputs.proceed == 'true'
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.run.outputs.run-id }}
+        run: |
+          set -euo pipefail
+          . "$RUNNER_TEMP/red-main/lib.sh"
+          jobs_json=$(gha api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")
+                  | {id, name, conclusion, steps: [(.steps // [])[] | {name, conclusion}]}' \
+            | jq -s '.' 2>/dev/null || echo '[]')
+          enriched='[]'
+          for id in $(jq -r '.[].id' <<<"$jobs_json"); do
+            notes=$(gha api "repos/$REPO/check-runs/$id/annotations?per_page=100" --jq '[.[].message]' 2>/dev/null || echo '[]')
+            enriched=$(jq -c --argjson id "$id" --argjson notes "$notes" \
+              '. + [ ($jobs[] | select(.id == $id)) + {annotations: $notes} ]' --argjson jobs "$jobs_json" <<<"$enriched")
+          done
+          verdict=$(jq -c '{jobs: .}' <<<"$enriched" | python3 "$RUNNER_TEMP/red-main/infra.py")
+          echo "infra classification: $verdict"
+          case "$verdict" in
+            infra\ *)
+              echo "infra=yes" >>"$GITHUB_OUTPUT"
+              echo "signature=${verdict#infra }" >>"$GITHUB_OUTPUT"
+              say "Every failed job shows an infrastructure signature (\`${verdict#infra }\`): the failure is rerun once before it counts as red." ;;
+            *) echo "infra=no" >>"$GITHUB_OUTPUT" ;;
+          esac
+
+      # ---------------------------------------------------------------------
       # Flake check: the same commit, the same lanes, no code change.
       # ---------------------------------------------------------------------
       - name: Rerun the failed lanes on the same commit
@@ -990,12 +1133,19 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
+          INFRA: ${{ steps.infra.outputs.infra }}
+          INFRA_SIGNATURE: ${{ steps.infra.outputs.signature }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           if ! gha run rerun "$RUN_ID" --repo "$REPO" --failed 2>"$WORK_DIR/rerun.err"; then
             say "The run could not be rerun ($(head -c 300 "$WORK_DIR/rerun.err" | tr '\n' ' ')), so the failure stands."
-            echo "verdict=real" >>"$GITHUB_OUTPUT"
+            if [ "$INFRA" = yes ]; then
+              echo "verdict=unknown" >>"$GITHUB_OUTPUT"
+              say "It shows an infrastructure signature (\`$INFRA_SIGNATURE\`), so it is not treated as a code failure either."
+            else
+              echo "verdict=real" >>"$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
           deadline=$((SECONDS + RERUN_TIMEOUT_MINUTES * 60))
@@ -1012,11 +1162,21 @@ jobs:
           attempt=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.run_attempt')
           case "$status:$conclusion" in
             completed:success)
-              echo "verdict=flake" >>"$GITHUB_OUTPUT"
-              say "The rerun (attempt $attempt, same commit, no code change) passed: the failure is a flake." ;;
+              if [ "$INFRA" = yes ]; then
+                echo "verdict=infra" >>"$GITHUB_OUTPUT"
+                say "The one automatic rerun (attempt $attempt) passed after an infrastructure failure (\`$INFRA_SIGNATURE\`): the run does not count as red and no test is blamed."
+              else
+                echo "verdict=flake" >>"$GITHUB_OUTPUT"
+                say "The rerun (attempt $attempt, same commit, no code change) passed: the failure is a flake."
+              fi ;;
             completed:*)
-              echo "verdict=real" >>"$GITHUB_OUTPUT"
-              say "The rerun (attempt $attempt) concluded \`$conclusion\`: the failure is real." ;;
+              if [ "$INFRA" = yes ]; then
+                echo "verdict=unknown" >>"$GITHUB_OUTPUT"
+                say "The rerun (attempt $attempt) concluded \`$conclusion\` after an infrastructure failure (\`$INFRA_SIGNATURE\`); the platform, not a commit, is the suspect, so nothing is reverted. A person must look."
+              else
+                echo "verdict=real" >>"$GITHUB_OUTPUT"
+                say "The rerun (attempt $attempt) concluded \`$conclusion\`: the failure is real."
+              fi ;;
             *)
               echo "verdict=unknown" >>"$GITHUB_OUTPUT"
               say "The rerun (attempt $attempt) had not concluded after $RERUN_TIMEOUT_MINUTES minutes; the handler stops without a verdict." ;;
@@ -1197,13 +1357,59 @@ jobs:
           state_set quarantine-pr "$number"
 
       # ---------------------------------------------------------------------
+      # A revert needs two consecutive COMPLETED failures of the same unit
+      # (job + test). Cancelled and skipped runs are not runs: a superseded
+      # verify run neither confirms nor breaks the count. The trace below then
+      # names the first-bad commit across both runs' commits.
+      # ---------------------------------------------------------------------
+      - name: Confirm the same unit failed on two consecutive completed runs
+        id: confirm
+        if: steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'real'
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.run.outputs.run-id }}
+          FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
+        run: |
+          set -euo pipefail
+          . "$RUNNER_TEMP/red-main/lib.sh"
+          created=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.created_at')
+          prev=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?branch=main&status=completed&per_page=50" 2>/dev/null \
+            | jq -r --arg created "$created" '[.workflow_runs[]
+                | select(.created_at < $created)
+                | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out")]
+                | sort_by(.created_at) | reverse | .[0] // empty | [.id, .conclusion, .html_url] | @tsv' || true)
+          prev_id=""; prev_conclusion=""; prev_url=""
+          if [ -n "$prev" ]; then IFS=$'\t' read -r prev_id prev_conclusion prev_url <<<"$prev"; fi
+          : >"$WORK_DIR/previous-failing-tests.tsv"
+          if [ "$prev_conclusion" = failure ] || [ "$prev_conclusion" = timed_out ]; then
+            mkdir -p "$WORK_DIR/junit-previous"
+            gha run download "$prev_id" --repo "$REPO" --pattern 'junit-*' --dir "$WORK_DIR/junit-previous" 2>/dev/null || true
+            prev_lanes=$(gha api "repos/$REPO/actions/runs/$prev_id/jobs?per_page=100" --paginate \
+              --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .name' | paste -sd, - || true)
+            python3 "$RUNNER_TEMP/red-main/junit.py" "$WORK_DIR/junit-previous" "$WORK_DIR/previous-failing-tests.tsv" "$prev_lanes" >/dev/null
+          fi
+          answer=$(python3 "$RUNNER_TEMP/red-main/confirm.py" "$prev_conclusion" "$WORK_DIR/previous-failing-tests.tsv" "$WORK_DIR/failing-tests.tsv")
+          case "$answer" in
+            yes\ *)
+              echo "confirmed=yes" >>"$GITHUB_OUTPUT"
+              say "Second consecutive completed failure${prev_url:+ (previous run $prev_url)}: ${answer#yes }. Tracing the first-bad commit." ;;
+            *)
+              echo "confirmed=no" >>"$GITHUB_OUTPUT"
+              say "**No revert yet:** ${answer#no }. A revert waits for the same unit to fail on two consecutive completed runs; the next completed verify run on main decides." ;;
+          esac
+
+      # ---------------------------------------------------------------------
       # Real failure: trace the culprit among the commits the verify workflow
       # never covered: one temporary branch and one verify run per candidate,
       # all dispatched at once and awaited under one shared deadline.
       # ---------------------------------------------------------------------
       - name: Trace the culprit among the unverified commits
         id: trace
-        if: steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'real'
+        if: >-
+          steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'real'
+          && steps.confirm.outputs.confirmed == 'yes'
         timeout-minutes: 30
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
@@ -1374,6 +1580,7 @@ jobs:
         id: revert
         if: >-
           steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'real'
+          && steps.confirm.outputs.confirmed == 'yes'
           && (steps.trace.outputs.culprit != '' || steps.trace.outputs.revert-all != '')
         timeout-minutes: 25
         env:
@@ -1701,4 +1908,35 @@ jobs:
           else
             echo "::warning::the summary comment was not posted: $GRANT_HOLDER needs contents: write. The record is in this run's step summary."
             echo "the comment was not posted: $(head -c 300 "$WORK_DIR/comment.err" | tr '\n' ' ')"
+          fi
+
+      # ---------------------------------------------------------------------
+      # The handler itself failed: page. One open issue labelled
+      # `red-main-broken` + `owner:ops` per repository, commented on again for
+      # each further failure, so a broken handler is never silent (it failed
+      # 7+ times unseen on 2026-09-29). Runs on the caller's workflow token,
+      # which every caller grants `issues: write`.
+      # ---------------------------------------------------------------------
+      - name: Alert that the red-main handler itself failed
+        if: failure()
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TRIGGER_URL: ${{ github.event.workflow_run.html_url || '' }}
+        run: |
+          set -uo pipefail
+          for label in red-main-broken owner:ops; do
+            gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
+              -f description="red-main handler alert" >/dev/null 2>&1 || true
+          done
+          body="The red-main handler failed on \`$REPO\`: $RUN_URL${TRIGGER_URL:+ (verify run: $TRIGGER_URL)}. A red \`main\` may not be healing itself. Open the run, read the failed step, fix the cause (a missing App grant, an API error, or a handler bug), then close this issue."
+          existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-broken&per_page=1" --jq '.[0].number // empty' 2>/dev/null || true)
+          if [ -n "$existing" ]; then
+            gh api --method POST "repos/$REPO/issues/$existing/comments" -f body="$body" >/dev/null \
+              && echo "commented on #$existing" || echo "::warning::the alert comment on #$existing was not posted"
+          else
+            gh api --method POST "repos/$REPO/issues" -f title="red-main handler failed" -f body="$body" \
+              -f 'labels[]=red-main-broken' -f 'labels[]=owner:ops' >/dev/null \
+              && echo "alert issue opened" || echo "::warning::the alert issue was not opened (the caller needs issues: write)"
           fi
