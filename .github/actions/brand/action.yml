@@ -1,0 +1,46 @@
+name: Brand build
+description: Build brand assets or check their provenance hashes and surface copies.
+
+inputs:
+  mode:
+    description: 'check verifies without writing; write regenerates assets and provenance.'
+    default: check
+  brand-directory:
+    description: Brand data directory, relative to the caller workspace or absolute.
+    default: brand
+  root-directory:
+    description: Surface-copy root; defaults to the parent of the brand directory.
+    default: ''
+  render-fit:
+    description: 'canvas centres renders at the requested size; intrinsic retains the renderer output size.'
+    default: canvas
+  resnap:
+    description: 'true redraws the small favicon grids in write mode; false preserves hand edits.'
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Build or check brand assets
+      shell: bash
+      env:
+        BRAND_MODE: ${{ inputs.mode }}
+        BRAND_DIRECTORY: ${{ inputs.brand-directory }}
+        ROOT_DIRECTORY: ${{ inputs.root-directory }}
+        RENDER_FIT: ${{ inputs.render-fit }}
+        RESNAP: ${{ inputs.resnap }}
+      run: |
+        set -euo pipefail
+        args=(--brand-dir "$BRAND_DIRECTORY" --render-fit "$RENDER_FIT")
+        if [ -n "$ROOT_DIRECTORY" ]; then args+=(--root "$ROOT_DIRECTORY"); fi
+        case "$BRAND_MODE" in
+          check) args+=(--check) ;;
+          write) ;;
+          *) echo "::error::mode must be check or write"; exit 1 ;;
+        esac
+        case "$RESNAP" in
+          true) args+=(--resnap) ;;
+          false) ;;
+          *) echo "::error::resnap must be true or false"; exit 1 ;;
+        esac
+        python3 "$GITHUB_ACTION_PATH/build.py" "${args[@]}"
