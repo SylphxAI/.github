@@ -490,29 +490,35 @@ jobs:
         ]
         CACHE_STEP = re.compile(r"cache", re.I)
         CACHE_403 = re.compile(r"\b403\b|forbidden", re.I)
+        # GitHub's own runner-lost annotations, verbatim (hosted, self-hosted,
+        # and the shutdown signal), anchored at the start of the message.
         RUNNER_LOST = re.compile(
-            r"lost communication with the server|runner has received a shutdown signal"
-            r"|runner .*(lost|went offline)|hosted runner .*lost",
-            re.I,
+            r"The hosted runner lost communication with the server\."
+            r"|The self-hosted runner: \S+ lost communication with the server\."
+            r"|The runner has received a shutdown signal\."
         )
+
+        def step_signature(step, notes):
+            name = step.get("name") or ""
+            sig = next((label for label, rx in STEP_SIGNATURES if rx.search(name)), None)
+            if sig is None and CACHE_STEP.search(name) and any(CACHE_403.search(n) for n in notes):
+                sig = "cache-403"
+            return sig
 
         def job_signature(job):
             notes = [str(n) for n in job.get("annotations") or []]
             failed = [s for s in job.get("steps") or [] if s.get("conclusion") == "failure"]
-            if any(RUNNER_LOST.search(n) for n in notes):
-                return "runner-lost"
-            if not failed:
+            sigs = [step_signature(s, notes) for s in failed]
+            # Any failed step outside the infra patterns (a test, clippy, a
+            # build) is a code failure, whatever the annotations say.
+            if any(sig is None for sig in sigs):
                 return None
-            found = None
-            for step in failed:
-                name = step.get("name") or ""
-                sig = next((label for label, rx in STEP_SIGNATURES if rx.search(name)), None)
-                if sig is None and CACHE_STEP.search(name) and any(CACHE_403.search(n) for n in notes):
-                    sig = "cache-403"
-                if sig is None:
-                    return None
-                found = found or sig
-            return found
+            if sigs:
+                return sigs[0]
+            # No step failed: the job died with the runner.
+            if any(RUNNER_LOST.match(n) for n in notes):
+                return "runner-lost"
+            return None
 
         jobs = [
             j for j in json.load(sys.stdin).get("jobs", [])
@@ -523,10 +529,49 @@ jobs:
             print("infra " + ",".join(sorted(set(signatures))))
         else:
             print("none")
+      # The verdict of the one automatic rerun. Args: infra (yes|no), how the
+      # rerun went (refused | completed | timeout), its conclusion. Prints one
+      # of flake, real, infra, unknown. A pass after an infra failure is
+      # `infra` (no issue, no revert); a fail after an infra failure, a rerun
+      # that could not start or one that never finished is `unknown` (stop);
+      # only a non-infra failure that fails again is `real`.
+      VERDICT_PY: |
+        import sys
+
+        infra, state, conclusion = (sys.argv[1:4] + ["", "", ""])[:3]
+        infra = infra == "yes"
+        if state == "completed" and conclusion == "success":
+            print("infra" if infra else "flake")
+        elif state == "completed":
+            print("unknown" if infra else "real")
+        elif state == "refused":
+            print("unknown" if infra else "real")
+        else:
+            print("unknown")
+      # The previous COMPLETED verify run on main. Reads the workflow runs
+      # JSON on stdin; arg: this run's created_at. Only success, failure and
+      # timed_out runs count: cancelled, skipped, startup_failure and
+      # unfinished runs are not runs. Prints `id<TAB>conclusion<TAB>url` or
+      # nothing.
+      PREV_PY: |
+        import json
+        import sys
+
+        created = sys.argv[1]
+        runs = [
+            r for r in json.load(sys.stdin).get("workflow_runs", [])
+            if r.get("status") == "completed"
+            and r.get("created_at", "") < created
+            and r.get("conclusion") in ("success", "failure", "timed_out")
+        ]
+        runs.sort(key=lambda r: r["created_at"], reverse=True)
+        if runs:
+            print(f"{runs[0]['id']}\t{runs[0]['conclusion']}\t{runs[0].get('html_url', '')}")
       # Same failing unit on the previous completed verify run? Args: the
       # previous run's conclusion, its failing-units file, this run's. Prints
       # `yes <why>` or `no <why>`. Units are `kind<TAB>name<TAB>job`; a lane
-      # row (no junit for that job) matches any unit of the same job. A
+      # row (a job with no junit) counts on the JOB NAME ALONE, so it matches
+      # any unit of the same job, however different the underlying test. A
       # previous run that passed, or an unknown one, confirms nothing.
       CONFIRM_PY: |
         import sys
@@ -816,6 +861,8 @@ jobs:
           printf '%s\n' "$MARK_PY" >"$RUNNER_TEMP/red-main/mark.py"
           printf '%s\n' "$INFRA_PY" >"$RUNNER_TEMP/red-main/infra.py"
           printf '%s\n' "$CONFIRM_PY" >"$RUNNER_TEMP/red-main/confirm.py"
+          printf '%s\n' "$VERDICT_PY" >"$RUNNER_TEMP/red-main/verdict.py"
+          printf '%s\n' "$PREV_PY" >"$RUNNER_TEMP/red-main/prev.py"
           printf '%s\n' "$FLAKE_BODY" >"$RUNNER_TEMP/red-main/flake.py"
           chmod 700 "$RUNNER_TEMP/red-main"
 
@@ -1138,14 +1185,12 @@ jobs:
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
+          # verdict.py owns the decision; the messages below only say it.
           if ! gha run rerun "$RUN_ID" --repo "$REPO" --failed 2>"$WORK_DIR/rerun.err"; then
             say "The run could not be rerun ($(head -c 300 "$WORK_DIR/rerun.err" | tr '\n' ' ')), so the failure stands."
-            if [ "$INFRA" = yes ]; then
-              echo "verdict=unknown" >>"$GITHUB_OUTPUT"
-              say "It shows an infrastructure signature (\`$INFRA_SIGNATURE\`), so it is not treated as a code failure either."
-            else
-              echo "verdict=real" >>"$GITHUB_OUTPUT"
-            fi
+            verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" refused "")
+            echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
+            [ "$verdict" != unknown ] || say "It shows an infrastructure signature (\`$INFRA_SIGNATURE\`), so it is not treated as a code failure either."
             exit 0
           fi
           deadline=$((SECONDS + RERUN_TIMEOUT_MINUTES * 60))
@@ -1160,26 +1205,18 @@ jobs:
             sleep 30
           done
           attempt=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.run_attempt')
-          case "$status:$conclusion" in
-            completed:success)
-              if [ "$INFRA" = yes ]; then
-                echo "verdict=infra" >>"$GITHUB_OUTPUT"
-                say "The one automatic rerun (attempt $attempt) passed after an infrastructure failure (\`$INFRA_SIGNATURE\`): the run does not count as red and no test is blamed."
-              else
-                echo "verdict=flake" >>"$GITHUB_OUTPUT"
-                say "The rerun (attempt $attempt, same commit, no code change) passed: the failure is a flake."
-              fi ;;
-            completed:*)
-              if [ "$INFRA" = yes ]; then
-                echo "verdict=unknown" >>"$GITHUB_OUTPUT"
+          verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" "$status" "$conclusion")
+          echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
+          case "$verdict" in
+            infra) say "The one automatic rerun (attempt $attempt) passed after an infrastructure failure (\`$INFRA_SIGNATURE\`): the run does not count as red and no test is blamed." ;;
+            flake) say "The rerun (attempt $attempt, same commit, no code change) passed: the failure is a flake." ;;
+            real) say "The rerun (attempt $attempt) concluded \`$conclusion\`: the failure is real." ;;
+            *)
+              if [ "$status" = completed ]; then
                 say "The rerun (attempt $attempt) concluded \`$conclusion\` after an infrastructure failure (\`$INFRA_SIGNATURE\`); the platform, not a commit, is the suspect, so nothing is reverted. A person must look."
               else
-                echo "verdict=real" >>"$GITHUB_OUTPUT"
-                say "The rerun (attempt $attempt) concluded \`$conclusion\`: the failure is real."
+                say "The rerun (attempt $attempt) had not concluded after $RERUN_TIMEOUT_MINUTES minutes; the handler stops without a verdict."
               fi ;;
-            *)
-              echo "verdict=unknown" >>"$GITHUB_OUTPUT"
-              say "The rerun (attempt $attempt) had not concluded after $RERUN_TIMEOUT_MINUTES minutes; the handler stops without a verdict." ;;
           esac
 
       # ---------------------------------------------------------------------
@@ -1376,10 +1413,7 @@ jobs:
           . "$RUNNER_TEMP/red-main/lib.sh"
           created=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.created_at')
           prev=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?branch=main&status=completed&per_page=50" 2>/dev/null \
-            | jq -r --arg created "$created" '[.workflow_runs[]
-                | select(.created_at < $created)
-                | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out")]
-                | sort_by(.created_at) | reverse | .[0] // empty | [.id, .conclusion, .html_url] | @tsv' || true)
+            | python3 "$RUNNER_TEMP/red-main/prev.py" "$created" || true)
           prev_id=""; prev_conclusion=""; prev_url=""
           if [ -n "$prev" ]; then IFS=$'\t' read -r prev_id prev_conclusion prev_url <<<"$prev"; fi
           : >"$WORK_DIR/previous-failing-tests.tsv"
