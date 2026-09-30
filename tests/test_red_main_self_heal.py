@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -240,23 +241,46 @@ def step_text(name: str) -> str:
 
 
 class UnarmedStaticTest(unittest.TestCase):
-    def test_unarmed_revert_exits_before_arming_and_jump(self):
-        body = step_text("Revert the culprit or report it")
-        unarmed = body.index("if [ \"$MODE\" = revert_pr_unarmed ]; then\n            state_set revert-pr")
-        exit_at = body.index("exit 0", unarmed)
-        for needle in ("gh pr merge", "enqueuePullRequest", "queue-jump:red-main\" auto-revert"):
-            after = body.find(needle, unarmed)
-            self.assertTrue(after == -1 or after > exit_at, needle)
-
-    def test_quarantine_arms_only_under_revert_in_sylphxai(self):
-        body = step_text("Mark the flaky units in their own source")
-        guard = body.index('if [ "$MODE" != revert ] || [ "${REPO%%/*}" != SylphxAI ]; then')
-        self.assertLess(guard, body.index("gh pr merge --auto"))
-        self.assertIn("exit 0", body[guard:body.index("gh pr merge --auto")])
+    def test_arming_and_enqueue_calls_are_exactly_where_expected(self):
+        text = WORKFLOW.read_text()
+        merges = [m.start() for m in re.finditer(r"gh pr merge", text)]
+        enqueues = [m.start() for m in re.finditer(r"\{enqueuePullRequest\(", text)]
+        self.assertEqual(len(merges), 2)
+        self.assertEqual(len(enqueues), 1)
+        quarantine = step_text("Mark the flaky units in their own source")
+        revert = step_text("Revert the culprit or report it")
+        q_start = text.index(quarantine)
+        r_start = text.index(revert)
+        q_merge = [m for m in merges if q_start <= m < q_start + len(quarantine)]
+        r_merge = [m for m in merges if r_start <= m < r_start + len(revert)]
+        self.assertEqual((len(q_merge), len(r_merge)), (1, 1))
+        # quarantine: after its guard, and the guard exits
+        guard = text.index('if [ "$MODE" != revert ] || [ "${REPO%%/*}" != SylphxAI ]; then', q_start)
+        self.assertLess(guard, q_merge[0])
+        self.assertIn("exit 0", text[guard:q_merge[0]])
+        # revert: after the unarmed branch, which exits
+        unarmed = text.index('if [ "$MODE" = revert_pr_unarmed ]; then\n            state_set revert-pr', r_start)
+        self.assertLess(unarmed, r_merge[0])
+        self.assertIn("exit 0", text[unarmed:r_merge[0]])
+        self.assertLess(r_merge[0], enqueues[0])
+        self.assertTrue(r_start <= enqueues[0] < r_start + len(revert))
 
     def test_unarmed_label_does_not_silence_other_breakage(self):
         body = step_text("Stop when the work is already done or already in hand")
         self.assertIn('if [ "$MODE" != revert_pr_unarmed ]; then', body)
+
+    def test_standing_revert_for_same_culprit_stops_before_push(self):
+        body = step_text("Revert the culprit or report it")
+        guard = body.index('if [ "$MODE" = revert_pr_unarmed ]; then\n            open_prs=')
+        self.assertIn('contains($sha)', body[guard:])
+        self.assertLess(guard, body.index("push_branch \"$branch\""))
+        self.assertLess(guard, body.index("git_c revert"))
+        self.assertIn("exit 0", body[guard:body.index('branch="auto-revert/$SHORT_SHA"')])
+
+    def test_alert_dedupe_is_keyed_on_the_culprit(self):
+        body = step_text("Revert the culprit or report it")
+        self.assertIn('contains(\\"$first\\")', body)
+        self.assertNotIn('contains(\\"$HEAD_SHA\\")', body)
 
 
 if __name__ == "__main__":

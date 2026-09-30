@@ -1749,6 +1749,24 @@ jobs:
             say "**Blocked:** the App installation cannot open pull requests; the revert pull request was not opened."
             exit 1
           }
+          # Unarmed mode: the revert waits for a person, and every later push
+          # to main re-runs this handler. Key the silence on the CULPRIT, not on
+          # the red head: an open auto-revert pull request that already names
+          # this culprit gets a comment and nothing else. A different culprit
+          # still opens its own revert and alert.
+          if [ "$MODE" = revert_pr_unarmed ]; then
+            open_prs=$(gh pr list --repo "$REPO" --state open --label auto-revert --json number,body --limit 100 2>/dev/null || echo '[]')
+            open_prs_by_branch=$(gh pr list --repo "$REPO" --state open --search "head:auto-revert/" --json number,body,headRefName --limit 100 2>/dev/null || echo '[]')
+            standing=$(jq -rn --arg sha "$first" --argjson a "$open_prs" --argjson b "$open_prs_by_branch" \
+              '[($a + $b)[] | select((.body // "") | contains($sha))] | .[0].number // empty')
+            if [ -n "$standing" ]; then
+              gh api --method POST "repos/$REPO/issues/$standing/comments" \
+                --field body="\`main\` is still red at \`$HEAD_SHA\` ([run]($RUN_URL)) for the same culprit \`$first\`. This revert stays open and unarmed; a person decides." \
+                >/dev/null 2>&1 || true
+              say "An open revert pull request (#$standing) already names culprit \`$first\`; commented there and stopped."
+              exit 0
+            fi
+          fi
           branch="auto-revert/$SHORT_SHA"
           repo_dir="$WORK_DIR/repo"
           window=$(state_get window)
@@ -1820,17 +1838,17 @@ jobs:
           if [ "$MODE" = revert_pr_unarmed ]; then
             state_set revert-pr "$number"
             say "Revert pull request [#$number](https://github.com/$REPO/pull/$number) is open and NOT armed (\`on_red = revert_pr_unarmed\`): a person decides whether and when it merges."
-            alert_body="\`main\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). A revert pull request, #$number, is open and not armed: it will not merge until a person decides. Merge it, or fix forward."
+            alert_body="\`main\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit: \`$first\`. A revert pull request, #$number, is open and not armed: it will not merge until a person decides. Merge it, or fix forward."
             for label in red-main-revert-pending "$OWNER_LABEL"; do
               gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
                 -f description="red-main handler alert" >/dev/null 2>&1 || true
             done
-            # One issue per broken sha: an open alert for THIS sha silences a
-            # repeat; a different breakage still alerts.
+            # One issue per culprit: an open alert naming THIS culprit silences a
+            # repeat; a different culprit still alerts.
             existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-revert-pending&per_page=100" \
-              --jq "[.[] | select(.body | contains(\"$HEAD_SHA\"))] | .[0].number // empty" 2>/dev/null || true)
+              --jq "[.[] | select(.body | contains(\"$first\"))] | .[0].number // empty" 2>/dev/null || true)
             if [ -n "$existing" ]; then
-              say "An alert for \`$HEAD_SHA\` is already open (#$existing)."
+              say "An alert for culprit \`$first\` is already open (#$existing)."
             else
               gh api --method POST "repos/$REPO/issues" -f title="main is red: revert #$number awaits a decision" -f body="$alert_body" \
                 -f 'labels[]=red-main-revert-pending' -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
