@@ -338,6 +338,25 @@ jobs:
         # a workflow_dispatch made with GITHUB_TOKEN still starts a run.
         gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }
 
+        # classify_run <run id>: infra classification of a run's failed jobs,
+        # `infra <signatures>` or `none`. A jobs or annotations API error is
+        # NOT `none`: it returns non-zero, and the caller stops, so a
+        # classifier error never falls into the revert path.
+        classify_run() {
+          local run_id="$1" jobs_json enriched id notes
+          jobs_json=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")
+                  | {id, name, conclusion, steps: [(.steps // [])[] | {name, conclusion}]}' \
+            | jq -s '.') || return 1
+          enriched='[]'
+          for id in $(jq -r '.[].id' <<<"$jobs_json"); do
+            notes=$(gha api "repos/$REPO/check-runs/$id/annotations?per_page=100" --jq '[.[].message]') || return 1
+            enriched=$(jq -c --argjson id "$id" --argjson notes "$notes" --argjson jobs "$jobs_json" \
+              '. + [ ($jobs[] | select(.id == $id)) + {annotations: $notes} ]' <<<"$enriched")
+          done
+          jq -c '{jobs: .}' <<<"$enriched" | python3 "$WORK_DIR/infra.py"
+        }
+
         # enc <value>: percent-encode a query parameter value.
         enc() { jq -rn --arg v "$1" '$v|@uri'; }
       # The opt-in gate: which committed declaration decides, and what it says.
@@ -350,12 +369,16 @@ jobs:
 
         OWNER = "owner:ops"
         # Rule 1: a commit that touches these paths is never auto-reverted.
-        # A repository overrides them with `[ci] migration_paths`, a
-        # comma-separated list of globs (`**` crosses directories).
-        MIGRATIONS = "atlas/migrations/**,atlas.sum,**/atlas.sum"
+        # The defaults are unanchored (any directory named migrations, migrate
+        # or drizzle, any atlas.sum, prisma/migrations): over-holding is the
+        # safe direction. `[ci] migration_paths`, a comma-separated list of
+        # globs (`**` crosses directories), ADDS to them.
+        MIGRATIONS = "**/migrations/**,**/migrate/**,**/atlas.sum,**/drizzle/**,**/prisma/migrations/**"
 
         def out(verdict, mode, basis, owner=OWNER, paths=MIGRATIONS, hold=""):
-            print(f"{verdict}\t{mode}\t{owner}\t{paths}\t{hold}\t{basis}")
+            # An empty field would collapse in the shell's tab split, so an
+            # empty hold is written `-`.
+            print(f"{verdict}\t{mode}\t{owner}\t{paths}\t{hold or '-'}\t{basis}")
 
         if has_file != "yes":
             # Silence is never consent: a repository without a manifest has
@@ -407,21 +430,27 @@ jobs:
             out("off", "", f"sylphx.toml [ci] merge is {ci.get('merge')!r}, not optimistic")
         else:
             on_red = ci.get("on_red") or "notify"
-            if on_red not in ("notify", "revert", "revert_pr_unarmed"):
+            if not isinstance(on_red, str) or on_red not in ("notify", "revert", "revert_pr_unarmed"):
                 out("error", "", f"sylphx.toml [ci] on_red must be notify, revert or revert_pr_unarmed, not {on_red!r}")
             else:
                 # The label the handler's alerts carry; a repository names its
                 # own owner label, anything malformed falls back to owner:ops.
-                owner = ci.get("red_main_owner") or OWNER
-                if not re.fullmatch(r"owner:[a-z0-9-]+", owner):
+                # A value that is not a string (a TOML array or number) falls
+                # back to the default: never a crash.
+                owner = ci.get("red_main_owner")
+                if not isinstance(owner, str) or not re.fullmatch(r"owner:[a-z0-9-]+", owner):
                     owner = OWNER
-                paths = ci.get("migration_paths") or MIGRATIONS
-                if not re.fullmatch(r"[A-Za-z0-9_./*,-]+", paths):
-                    paths = MIGRATIONS
+                extra = ci.get("migration_paths")
+                paths = MIGRATIONS
+                if isinstance(extra, str) and re.fullmatch(r"[A-Za-z0-9_./*,-]+", extra):
+                    paths = MIGRATIONS + "," + extra
                 # `revert_hold_utc = "19:00-22:00"`: inside the window a revert
                 # is opened but never armed (a deploy freeze).
-                hold = ci.get("revert_hold_utc") or ""
-                if not re.fullmatch(r"\d\d:\d\d-\d\d:\d\d", hold):
+                # A start equal to the end is an empty window.
+                hold = ci.get("revert_hold_utc")
+                if not isinstance(hold, str) or not re.fullmatch(
+                    r"([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]", hold, re.ASCII
+                ):
                     hold = ""
                 out("act", on_red, f"sylphx.toml [ci] merge=optimistic on_red={on_red}", owner, paths, hold)
       # Rule 1. Input on stdin: the files the candidate commits changed, one
@@ -930,6 +959,7 @@ jobs:
               echo "mode=$mode" >>"$GITHUB_OUTPUT"
               echo "owner-label=${owner_label:-owner:ops}" >>"$GITHUB_OUTPUT"
               echo "migration-paths=$migration_paths" >>"$GITHUB_OUTPUT"
+              [ "$hold_utc" != - ] || hold_utc=""
               echo "hold-utc=$hold_utc" >>"$GITHUB_OUTPUT"
               echo "declaration: $basis" ;;
             off)
@@ -1253,17 +1283,11 @@ jobs:
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
-          jobs_json=$(gha api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
-            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")
-                  | {id, name, conclusion, steps: [(.steps // [])[] | {name, conclusion}]}' \
-            | jq -s '.' 2>/dev/null || echo '[]')
-          enriched='[]'
-          for id in $(jq -r '.[].id' <<<"$jobs_json"); do
-            notes=$(gha api "repos/$REPO/check-runs/$id/annotations?per_page=100" --jq '[.[].message]' 2>/dev/null || echo '[]')
-            enriched=$(jq -c --argjson id "$id" --argjson notes "$notes" \
-              '. + [ ($jobs[] | select(.id == $id)) + {annotations: $notes} ]' --argjson jobs "$jobs_json" <<<"$enriched")
-          done
-          verdict=$(jq -c '{jobs: .}' <<<"$enriched" | python3 "$RUNNER_TEMP/red-main/infra.py")
+          if ! verdict=$(classify_run "$RUN_ID"); then
+            say "**Stopped:** the jobs of run $RUN_ID could not be read to classify the failure; nothing is rerun or reverted."
+            echo "::error::the infra classifier could not read the run's jobs or annotations"
+            exit 1
+          fi
           echo "infra classification: $verdict"
           case "$verdict" in
             infra\ *)
@@ -1713,6 +1737,20 @@ jobs:
               *) say "Candidate \`${sha:0:9}\` (${subject_of[$sha]}) concluded \`${conclusion_of[$sha]}\`." ;;
             esac
           done
+          # A candidate that failed of infrastructure (a runner outage during
+          # the trace fails every candidate) must never name a culprit.
+          for sha in "${order[@]}"; do
+            [ "${conclusion_of[$sha]}" = failure ] || continue
+            if ! infra_verdict=$(classify_run "${run_of[$sha]}"); then
+              say "**Stopped:** the jobs of candidate \`${sha:0:9}\` could not be read to classify its failure; no culprit is named."
+              exit 1
+            fi
+            case "$infra_verdict" in
+              infra\ *)
+                say "**No action:** candidate \`${sha:0:9}\` failed with an infrastructure signature (\`${infra_verdict#infra }\`); a person must look, nothing is reverted."
+                exit 0 ;;
+            esac
+          done
           decision=$(python3 "$RUNNER_TEMP/red-main/culprit.py" <"$WORK_DIR/candidates.tsv")
           verdict=$(head -1 <<<"$decision")
           case "$verdict" in
@@ -1836,46 +1874,6 @@ jobs:
             say "**No revert:** protected pull request(s) among the candidates (${protected% }); commented for a person to decide."
             exit 0
           fi
-          # Rule 1: never auto-revert a commit that adds or changes migrations.
-          # A reverted migration can leave the schema and the code apart, so a
-          # person forward-fixes. Files that cannot be read count as a hold.
-          : >"$WORK_DIR/changed-files.txt"
-          files_ok=yes
-          for sha in "${shas[@]}"; do
-            n=$(gh api "repos/$REPO/commits/$sha" --jq '.files | length' 2>/dev/null || echo unknown)
-            case "$n" in ''|*[!0-9]*) files_ok=no ;; *) [ "$n" -lt 300 ] || files_ok=no ;; esac
-            gh api "repos/$REPO/commits/$sha" --jq '.files[].filename' >>"$WORK_DIR/changed-files.txt" 2>/dev/null || files_ok=no
-          done
-          migration=$(python3 "$RUNNER_TEMP/red-main/migration.py" "${MIGRATION_PATHS:-atlas/migrations/**,atlas.sum}" <"$WORK_DIR/changed-files.txt")
-          if [ "$files_ok" = no ] || [ "${migration%% *}" = migration ]; then
-            why="its changed files could not be listed completely"
-            [ "${migration%% *}" != migration ] || why="it changes a migration path (\`${migration#migration }\`)"
-            for label in red-main-migration-hold "$OWNER_LABEL"; do
-              gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
-                -f description="red-main handler alert" >/dev/null 2>&1 || true
-            done
-            prs=""
-            for sha in "${shas[@]}"; do
-              pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
-              [ -z "$pr" ] || prs="$prs #$pr"
-            done
-            hold_body="\`main\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit \`$first\`${prs:+ (pull request$prs)} was NOT reverted: $why. Forward-fix it; the handler will not revert a migration. Owner: $OWNER_LABEL."
-            existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-migration-hold&per_page=100" \
-              --jq "[.[] | select(has(\"pull_request\") | not) | select(.user.login == (\"$APP_SLUG\" + \"[bot]\")) | select((.body // \"\") | contains(\"$first\"))] | .[0].number // empty" 2>/dev/null || true)
-            if [ -z "$existing" ]; then
-              gh api --method POST "repos/$REPO/issues" -f title="main is red: migration culprit ${first:0:9} needs a forward-fix" -f body="$hold_body" \
-                -f 'labels[]=red-main-migration-hold' -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
-                || say "**Blocked:** the migration-hold issue was not opened (issues: write)."
-            fi
-            if [ -n "$OPS_ISSUE" ]; then
-              gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$hold_body" >/dev/null 2>&1 || true
-            fi
-            for pr in $prs; do
-              gh api --method POST "repos/$REPO/issues/${pr#\#}/comments" --field body="$hold_body" >/dev/null 2>&1 || true
-            done
-            say "**No revert (migration hold):** $why. An issue labelled \`red-main-migration-hold\` and \`$OWNER_LABEL\` names the culprit; a person forward-fixes."
-            exit 0
-          fi
           # A deploy freeze: inside the configured window a revert is opened
           # but not armed, whatever on_red says.
           if [ "$MODE" = revert ] && [ "$(python3 "$RUNNER_TEMP/red-main/hold.py" "${HOLD_UTC:-}" "$(date -u +%H:%M)")" = in ]; then
@@ -1926,6 +1924,58 @@ jobs:
           git_c fetch --quiet --depth="$depth" origin main
           git_c checkout --quiet -B main FETCH_HEAD
           bot_identity
+          # Rule 1: never auto-revert a commit that adds or changes migrations.
+          # A reverted migration can leave the schema and the code apart, so a
+          # person forward-fixes. The diff is computed locally against the
+          # first parent with renames split into both paths, so a file moved
+          # out of a migration directory still counts. A commit with no
+          # changed file, or one whose diff cannot be read, is a hold too.
+          : >"$WORK_DIR/changed-files.txt"
+          files_ok=yes
+          for sha in "${shas[@]}"; do
+            if ! git_c diff --no-renames --name-only -z "$sha^1" "$sha" >"$WORK_DIR/one-commit.z" 2>/dev/null; then
+              files_ok=no
+              continue
+            fi
+            tr '\0' '\n' <"$WORK_DIR/one-commit.z" >"$WORK_DIR/one-commit.txt"
+            [ -s "$WORK_DIR/one-commit.txt" ] || files_ok=no
+            cat "$WORK_DIR/one-commit.txt" >>"$WORK_DIR/changed-files.txt"
+          done
+          migration=$(python3 "$RUNNER_TEMP/red-main/migration.py" "${MIGRATION_PATHS:-**/migrations/**,**/migrate/**,**/atlas.sum,**/drizzle/**,**/prisma/migrations/**}" <"$WORK_DIR/changed-files.txt")
+          if [ "$files_ok" = no ] || [ "${migration%% *}" = migration ]; then
+            why="its changed files could not be read, or it changed none"
+            if [ "${migration%% *}" = migration ]; then
+              matched=$(printf '%s' "${migration#migration }" | tr -d '\140@')
+              why="it changes a migration path (\`$matched\`)"
+            fi
+            for label in red-main-migration-hold "$OWNER_LABEL"; do
+              gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
+                -f description="red-main handler alert" >/dev/null 2>&1 || true
+            done
+            prs=""
+            for sha in "${shas[@]}"; do
+              pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
+              [ -z "$pr" ] || prs="$prs #$pr"
+            done
+            hold_body="\`main\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit \`$first\`${prs:+ (pull request$prs)} was NOT reverted: $why. Forward-fix it; the handler will not revert a migration. Owner: $OWNER_LABEL."
+            existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-migration-hold&per_page=100" \
+              --jq "[.[] | select(has(\"pull_request\") | not) | select(.user.login == (\"$APP_SLUG\" + \"[bot]\")) | select((.body // \"\") | contains(\"$first\"))] | .[0].number // empty" 2>/dev/null || true)
+            if [ -z "$existing" ]; then
+              gh api --method POST "repos/$REPO/issues" -f title="main is red: migration culprit ${first:0:9} needs a forward-fix" -f body="$hold_body" \
+                -f 'labels[]=red-main-migration-hold' -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
+                || say "**Blocked:** the migration-hold issue was not opened (issues: write)."
+              # Told once: the issue is the record; later red pushes for the
+              # same culprit do not repeat the comments.
+              if [ -n "$OPS_ISSUE" ]; then
+                gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$hold_body" >/dev/null 2>&1 || true
+              fi
+              for pr in $prs; do
+                gh api --method POST "repos/$REPO/issues/${pr#\#}/comments" --field body="$hold_body" >/dev/null 2>&1 || true
+              done
+            fi
+            say "**No revert (migration hold):** $why. An issue labelled \`red-main-migration-hold\` and \`$OWNER_LABEL\` names the culprit; a person forward-fixes."
+            exit 0
+          fi
           if ! git_c revert --no-edit "${shas[@]}" 2>"$WORK_DIR/revert.err"; then
             git_c revert --abort >/dev/null 2>&1 || true
             say "**No action:** the revert conflicts with main ($(head -c 200 "$WORK_DIR/revert.err" | tr '\n' ' ')); a person must decide."

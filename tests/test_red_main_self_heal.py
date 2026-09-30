@@ -305,7 +305,7 @@ def migration(globs: str, *files: str) -> str:
     ).stdout.strip()
 
 
-DEFAULT_GLOBS = "atlas/migrations/**,atlas.sum,**/atlas.sum"
+DEFAULT_GLOBS = "**/migrations/**,**/migrate/**,**/atlas.sum,**/drizzle/**,**/prisma/migrations/**"
 
 
 class MigrationPathTest(unittest.TestCase):
@@ -327,7 +327,7 @@ class MigrationPathTest(unittest.TestCase):
 
     def test_repo_declared_dirs(self):
         self.assertEqual(migration("db/migrate/**", "db/migrate/001.rb"), "migration db/migrate/001.rb")
-        self.assertEqual(migration("db/migrate/**", "atlas/migrations/x.sql"), "none")
+        self.assertEqual(migration("db/migrate/**", "atlas/migrations/x.sql"), "none")  # the raw matcher: defaults are added by the gate
 
     def test_single_star_stays_in_one_directory(self):
         self.assertEqual(migration("sql/*.sql", "sql/a.sql"), "migration sql/a.sql")
@@ -373,16 +373,64 @@ class HoldWindowTest(unittest.TestCase):
 
 
 class GateFieldsTest(unittest.TestCase):
-    def test_defaults_and_overrides(self):
+    def test_defaults_and_additions(self):
         row = gate_full("")
-        self.assertEqual(row[3], "atlas/migrations/**,atlas.sum,**/atlas.sum")
-        self.assertEqual(row[4], "")
+        self.assertEqual(row[3], DEFAULT_GLOBS)
+        self.assertEqual(row[4], "-")
         row = gate_full('migration_paths = "db/migrate/**"\nrevert_hold_utc = "19:00-22:00"\n')
-        self.assertEqual((row[3], row[4]), ("db/migrate/**", "19:00-22:00"))
+        self.assertEqual((row[3], row[4]), (DEFAULT_GLOBS + ",db/migrate/**", "19:00-22:00"))
 
-    def test_malformed_values_fall_back(self):
-        row = gate_full('migration_paths = "a b;rm"\nrevert_hold_utc = "evening"\n')
-        self.assertEqual((row[3], row[4]), ("atlas/migrations/**,atlas.sum,**/atlas.sum", ""))
+    def test_malformed_and_mistyped_values_fall_back(self):
+        for extra in (
+            'migration_paths = "a b;rm"\nrevert_hold_utc = "evening"\n',
+            'migration_paths = ["a"]\nrevert_hold_utc = 19\nred_main_owner = 5\n',
+            'revert_hold_utc = "24:00-25:00"\n',
+            'revert_hold_utc = "\u0661\u0669:00-22:00"\n',
+        ):
+            row = gate_full(extra)
+            self.assertEqual(row[0], "act", extra)
+            self.assertEqual((row[2], row[3], row[4]), ("owner:ops", DEFAULT_GLOBS, "-"), extra)
+
+    def test_row_survives_the_shells_tab_split_with_an_empty_hold(self):
+        row = gate_full("")
+        out = subprocess.run(
+            ["bash", "-c", 'IFS=$\'\t\' read -r v m o p h b <<<"$1"; printf "%s|%s|%s" "$h" "$b" "$m"', "_", "\t".join(row)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertEqual(out, "-|" + row[5] + "|revert" if row[1] == "revert" else out)
+        self.assertEqual(out.split("|")[0], "-")
+        self.assertNotEqual(out.split("|")[1], "")
+
+
+class LayoutTest(unittest.TestCase):
+    """One case per real migration layout among the opted-in repositories."""
+
+    def test_layouts(self):
+        for path in (
+            "apps/web/atlas/migrations/20260101_x.sql",  # cloud, 831 files, no atlas.sum
+            "kernel/ledger/migrations/ledger.sql",  # cloud
+            "kernel/billing/migrations/001.sql",
+            "services/ai/migrations/002.sql",
+            "atlas/migrations/003.sql",  # tryit, cubeage-platform
+            "atlas.sum",
+            "kernel/billing/atlas.sum",
+            "packages/db/migrations/0001.sql",  # agents (drizzle)
+            "drizzle/0001_init.sql",  # luzzy, viszy.ai
+            "services/api/migrations/004.sql",  # tachyn
+            "prisma/migrations/2026_x/migration.sql",
+            "db/migrate/005.rb",
+            "crates/keel-cli/src/migrate/mod.rs",  # keel: over-holds, the safe direction
+        ):
+            self.assertEqual(migration(DEFAULT_GLOBS, path), f"migration {path}", path)
+
+    def test_ordinary_paths_are_free(self):
+        for path in ("src/app.ts", "docs/migrating.md", "services/ai/src/main.rs", "README.md"):
+            self.assertEqual(migration(DEFAULT_GLOBS, path), "none", path)
+
+    def test_a_rename_out_of_a_migration_dir_lists_both_paths(self):
+        # The step reads `git diff --no-renames`, so both sides are listed.
+        self.assertEqual(migration(DEFAULT_GLOBS, "archive/x.sql", "services/ai/migrations/x.sql"),
+                         "migration services/ai/migrations/x.sql")
 
 
 class RulesStaticTest(unittest.TestCase):
@@ -416,6 +464,43 @@ class DispatchWithNothingRedTest(unittest.TestCase):
         body = step_text("Resolve the verify run that failed")
         self.assertIn('quiet "no failed run of $VERIFY_WORKFLOW on main was found to handle"', body)
         self.assertNotIn("was found to handle\"\n            exit 1", body)
+
+
+class ReviewFixesStaticTest(unittest.TestCase):
+    def test_diff_is_local_first_parent_with_renames_split_and_empty_is_a_hold(self):
+        body = step_text("Revert the culprit or report it")
+        self.assertIn('git_c diff --no-renames --name-only -z "$sha^1" "$sha"', body)
+        self.assertIn('[ -s "$WORK_DIR/one-commit.txt" ] || files_ok=no', body)
+        self.assertNotIn("--jq '.files", body)
+        # after the clone, before the revert
+        self.assertLess(body.index("git_c checkout --quiet -B main FETCH_HEAD"), body.index("git_c diff --no-renames"))
+        self.assertLess(body.index("git_c diff --no-renames"), body.index("git_c revert --no-edit"))
+
+    def test_shell_fallback_is_the_default_list(self):
+        body = step_text("Revert the culprit or report it")
+        self.assertIn("${MIGRATION_PATHS:-" + DEFAULT_GLOBS + "}", body)
+
+    def test_file_name_is_stripped_of_backticks_and_mentions(self):
+        body = step_text("Revert the culprit or report it")
+        self.assertIn("tr -d '\\140@'", body)
+
+    def test_hold_comments_once_per_culprit(self):
+        body = step_text("Revert the culprit or report it")
+        start = body.index('if [ -z "$existing" ]; then\n              gh api --method POST "repos/$REPO/issues" -f title="main is red: migration')
+        end = body.index('say "**No revert (migration hold)')
+        self.assertIn("OPS_ISSUE#", body[start:end])
+        self.assertIn('for pr in $prs; do', body[start:end])
+
+    def test_classifier_error_stops_the_handler(self):
+        body = step_text("Classify infrastructure failures")
+        self.assertIn('if ! verdict=$(classify_run "$RUN_ID"); then', body)
+        self.assertIn("exit 1", body)
+        self.assertNotIn("|| echo '[]'", body)
+
+    def test_trace_candidates_are_infra_classified_before_a_culprit_is_named(self):
+        body = step_text("Trace the culprit among the unverified commits")
+        self.assertLess(body.index("classify_run"), body.index("culprit.py"))
+        self.assertIn("infra\\ *)", body)
 
 
 if __name__ == "__main__":
