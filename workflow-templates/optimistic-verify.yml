@@ -89,7 +89,7 @@ jobs:
     name: verified
     if: always()
     needs: [plan, integration, e2e]
-    runs-on: sylphx-linux-standard
+    runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main
