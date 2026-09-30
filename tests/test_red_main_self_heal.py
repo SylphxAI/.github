@@ -411,5 +411,12 @@ class RulesStaticTest(unittest.TestCase):
         self.assertIn('OPS_ISSUE#\\#}/comments" --field body="$notice"', body)
 
 
+class DispatchWithNothingRedTest(unittest.TestCase):
+    def test_no_failed_run_is_quiet_not_an_error(self):
+        body = step_text("Resolve the verify run that failed")
+        self.assertIn('quiet "no failed run of $VERIFY_WORKFLOW on main was found to handle"', body)
+        self.assertNotIn("was found to handle\"\n            exit 1", body)
+
+
 if __name__ == "__main__":
     unittest.main()

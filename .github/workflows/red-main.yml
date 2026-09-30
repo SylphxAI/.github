@@ -1145,8 +1145,7 @@ jobs:
               --jq '.workflow_runs[0] // empty')
           fi
           if [ -z "$run_json" ]; then
-            echo "::error::no failed run of $VERIFY_WORKFLOW on main was found to handle"
-            exit 1
+            quiet "no failed run of $VERIFY_WORKFLOW on main was found to handle"
           fi
           run_id=$(jq -r '.id' <<<"$run_json")
           run_path=$(jq -r '.path' <<<"$run_json")
