@@ -1,0 +1,36 @@
+name: migration-hold
+description: >
+  The queue side of the red-main migration hold. While an open issue labelled
+  `red-main-migration-hold` exists (the red-main handler opens one when a red
+  commit changes a migration and so is never auto-reverted), a merge-queue
+  group fails unless its pull request carries `red-main-forward-fix`. The
+  forward-fix pull request itself passes, so the queue drains through it.
+  Runs on `merge_group` only; every other event passes. An API error passes
+  with a warning (a stuck queue is worse than a missed hold). Add the job that
+  runs this action to `ci-ok`'s `needs`. The token needs `issues: read` and
+  `pull-requests: read`.
+
+inputs:
+  token:
+    description: Token that can read issues and pull requests.
+    default: ${{ github.token }}
+  hold-label:
+    description: Label of the hold issue.
+    default: red-main-migration-hold
+  forward-fix-label:
+    description: Label that lets a pull request through the hold.
+    default: red-main-forward-fix
+
+runs:
+  using: composite
+  steps:
+    - name: No merge while a migration hold is open
+      shell: bash
+      env:
+        REPO: ${{ github.repository }}
+        EVENT: ${{ github.event_name }}
+        HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        TOKEN: ${{ inputs.token }}
+        HOLD_LABEL: ${{ inputs.hold-label }}
+        FIX_LABEL: ${{ inputs.forward-fix-label }}
+      run: python3 "$GITHUB_ACTION_PATH/migration_hold.py"
