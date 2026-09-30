@@ -25,6 +25,21 @@ name: Red main
 # rerun before it counts as red. When the handler itself fails, it opens (or
 # comments on) one issue labelled `red-main-broken` and `owner:ops`.
 #
+# Revert rules (every repository, by default):
+#   1. a culprit that adds or changes a migration (`[ci] migration_paths`,
+#      default `atlas/migrations/**,atlas.sum,**/atlas.sum`), or whose changed
+#      files cannot be listed completely, is never reverted: an issue labelled
+#      `red-main-migration-hold` and the owner label, and a comment on the ops
+#      issue and the pull request, hand it to a person for a forward-fix;
+#   2. only real failures revert: flakes are quarantined, infrastructure
+#      failures are rerun once and never reverted;
+#   4. every auto-revert comments on the ops issue and the original pull
+#      request and files a follow-up issue (sha, pull request, failing job,
+#      run link) that re-lands the change.
+# `[ci] revert_hold_utc = "HH:MM-HH:MM"` is an optional deploy freeze: inside
+# it a revert is opened but not armed. `on_red = "notify"` never pushes a
+# branch or opens a pull request; it comments and files issues only.
+#
 # The culprit is the OLDEST candidate whose run concluded `failure`, provided
 # every older candidate concluded `success`. A cancelled, startup_failure,
 # timed_out, or not-finished-by-the-deadline run is inconclusive and never
@@ -334,9 +349,13 @@ jobs:
         import re
 
         OWNER = "owner:ops"
+        # Rule 1: a commit that touches these paths is never auto-reverted.
+        # A repository overrides them with `[ci] migration_paths`, a
+        # comma-separated list of globs (`**` crosses directories).
+        MIGRATIONS = "atlas/migrations/**,atlas.sum,**/atlas.sum"
 
-        def out(verdict, mode, basis, owner=OWNER):
-            print(f"{verdict}\t{mode}\t{owner}\t{basis}")
+        def out(verdict, mode, basis, owner=OWNER, paths=MIGRATIONS, hold=""):
+            print(f"{verdict}\t{mode}\t{owner}\t{paths}\t{hold}\t{basis}")
 
         if has_file != "yes":
             # Silence is never consent: a repository without a manifest has
@@ -396,7 +415,64 @@ jobs:
                 owner = ci.get("red_main_owner") or OWNER
                 if not re.fullmatch(r"owner:[a-z0-9-]+", owner):
                     owner = OWNER
-                out("act", on_red, f"sylphx.toml [ci] merge=optimistic on_red={on_red}", owner)
+                paths = ci.get("migration_paths") or MIGRATIONS
+                if not re.fullmatch(r"[A-Za-z0-9_./*,-]+", paths):
+                    paths = MIGRATIONS
+                # `revert_hold_utc = "19:00-22:00"`: inside the window a revert
+                # is opened but never armed (a deploy freeze).
+                hold = ci.get("revert_hold_utc") or ""
+                if not re.fullmatch(r"\d\d:\d\d-\d\d:\d\d", hold):
+                    hold = ""
+                out("act", on_red, f"sylphx.toml [ci] merge=optimistic on_red={on_red}", owner, paths, hold)
+      # Rule 1. Input on stdin: the files the candidate commits changed, one
+      # per line; arg: the comma-separated globs. Prints `migration <file>` for
+      # the first match, else `none`.
+      MIGRATION_PY: |
+        import re
+        import sys
+
+        def to_regex(glob):
+            out, i = "", 0
+            while i < len(glob):
+                if glob.startswith("**/", i):
+                    out += "(?:.*/)?"
+                    i += 3
+                elif glob.startswith("**", i):
+                    out += ".*"
+                    i += 2
+                elif glob[i] == "*":
+                    out += "[^/]*"
+                    i += 1
+                elif glob[i] == "?":
+                    out += "[^/]"
+                    i += 1
+                else:
+                    out += re.escape(glob[i])
+                    i += 1
+            return re.compile(out + r"\Z")
+
+        patterns = [to_regex(g.strip().lstrip("/")) for g in sys.argv[1].split(",") if g.strip()]
+        for line in sys.stdin:
+            name = line.strip()
+            if name and any(rx.match(name) for rx in patterns):
+                print(f"migration {name}")
+                raise SystemExit(0)
+        print("none")
+      # A deploy freeze. Args: `HH:MM-HH:MM` (UTC, may wrap midnight) and the
+      # current `HH:MM`. Prints `in` or `out`; an empty window is `out`.
+      HOLD_PY: |
+        import sys
+
+        window, now = sys.argv[1:3]
+        if not window:
+            print("out")
+            raise SystemExit(0)
+        start, end = window.split("-")
+        if start <= end:
+            inside = start <= now < end
+        else:
+            inside = now >= start or now < end
+        print("in" if inside else "out")
       # The culprit rule. Input on stdin: one `sha<TAB>conclusion` line per
       # candidate, oldest first (`timeout` stands for not finished by the
       # deadline). First line of output: `culprit <sha>`, `window`, or `none`;
@@ -501,6 +577,10 @@ jobs:
         STEP_SIGNATURES = [
             ("installation-token-mint", re.compile(r"installation token|create-github-app-token|token mint", re.I)),
             ("upload-artifact", re.compile(r"upload[- ]artifact|upload .*artifact", re.I)),
+            # The platform failing before any project code ran: the runner
+            # set-up and the source checkout (runner, network).
+            ("runner-setup", re.compile(r"^set up job$", re.I)),
+            ("checkout", re.compile(r"^(run )?(actions/)?checkout\b", re.I)),
         ]
         CACHE_STEP = re.compile(r"cache", re.I)
         CACHE_403 = re.compile(r"\b403\b|forbidden", re.I)
@@ -843,12 +923,14 @@ jobs:
           fi
           printf '%s\n' "$GATE_PY" >"$RUNNER_TEMP/red-main/gate.py"
           decision=$(python3 "$RUNNER_TEMP/red-main/gate.py" "$MANIFEST" "$has_file")
-          IFS=$'\t' read -r verdict mode owner_label basis <<<"$decision" || true
+          IFS=$'\t' read -r verdict mode owner_label migration_paths hold_utc basis <<<"$decision" || true
           case "${verdict:-}" in
             act)
               echo "proceed=true" >>"$GITHUB_OUTPUT"
               echo "mode=$mode" >>"$GITHUB_OUTPUT"
               echo "owner-label=${owner_label:-owner:ops}" >>"$GITHUB_OUTPUT"
+              echo "migration-paths=$migration_paths" >>"$GITHUB_OUTPUT"
+              echo "hold-utc=$hold_utc" >>"$GITHUB_OUTPUT"
               echo "declaration: $basis" ;;
             off)
               echo "not opted in: $basis" ;;
@@ -877,6 +959,8 @@ jobs:
           printf '%s\n' "$INFRA_PY" >"$RUNNER_TEMP/red-main/infra.py"
           printf '%s\n' "$CONFIRM_PY" >"$RUNNER_TEMP/red-main/confirm.py"
           printf '%s\n' "$VERDICT_PY" >"$RUNNER_TEMP/red-main/verdict.py"
+          printf '%s\n' "$MIGRATION_PY" >"$RUNNER_TEMP/red-main/migration.py"
+          printf '%s\n' "$HOLD_PY" >"$RUNNER_TEMP/red-main/hold.py"
           printf '%s\n' "$PREV_PY" >"$RUNNER_TEMP/red-main/prev.py"
           printf '%s\n' "$FLAKE_BODY" >"$RUNNER_TEMP/red-main/flake.py"
           chmod 700 "$RUNNER_TEMP/red-main"
@@ -1300,6 +1384,7 @@ jobs:
         if: >-
           steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'flake'
           && steps.key.outputs.present == 'yes'
+          && (steps.key.outputs.mode || steps.gate.outputs.mode) != 'notify'
         timeout-minutes: 20
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
@@ -1483,6 +1568,7 @@ jobs:
           RUN_URL: ${{ steps.run.outputs.run-url }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
           TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
+          MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
@@ -1535,6 +1621,14 @@ jobs:
           fi
           if [ "$total" -gt "$MAX_REVERT_COMMITS" ]; then
             say "**No action:** $total unverified commits is beyond the $MAX_REVERT_COMMITS this handler reverts; a person must decide."
+            exit 0
+          fi
+          if [ "$MODE" = notify ]; then
+            # Notify mode never pushes: no verify branch is created, so the
+            # culprit is not traced and every unverified commit is listed.
+            say "Mode is notify: no verify branch is pushed, so the culprit is not traced; all $total unverified commit(s) are listed."
+            jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"$(cut -f1 <<<"$rows")" >"$STATE_DIR/revert-all.json"
+            echo "revert-all=yes" >>"$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "$total" -gt "$MAX_CANDIDATES" ]; then
@@ -1654,6 +1748,8 @@ jobs:
           APP_ID: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
           MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
           OWNER_LABEL: ${{ steps.gate.outputs.owner-label }}
+          MIGRATION_PATHS: ${{ steps.gate.outputs.migration-paths }}
+          HOLD_UTC: ${{ steps.gate.outputs.hold-utc }}
           TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
@@ -1690,7 +1786,7 @@ jobs:
           if [ "$MODE" != "revert" ] && [ "$MODE" != "revert_pr_unarmed" ]; then
             say "Mode is notify: no revert pull request was opened. \`revert\` would revert $count commit(s):"
             for sha in "${shas[@]}"; do say "- \`$sha\`"; done
-            if [ "$TOKEN_MODE" = yes ]; then
+            if true; then
               # Token mode: tell the authors, on the pull request each
               # candidate landed through, what failed and what is suspected.
               if [ -n "$culprit" ]; then
@@ -1700,7 +1796,7 @@ jobs:
               fi
               candidates=""
               for sha in "${shas[@]}"; do candidates="$candidates- \`$sha\`"$'\n'; done
-              body="\`main\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` and a rerun of the same commit failed again ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: this repository holds no builder App key, so a person decides."
+              body="\`main\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` and a rerun of the same commit failed again ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: this repository is in notify mode or holds no builder App key, so a person decides."
               : >"$WORK_DIR/notified"
               for sha in "${shas[@]}"; do
                 pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
@@ -1740,6 +1836,52 @@ jobs:
           if [ -n "$protected" ]; then
             say "**No revert:** protected pull request(s) among the candidates (${protected% }); commented for a person to decide."
             exit 0
+          fi
+          # Rule 1: never auto-revert a commit that adds or changes migrations.
+          # A reverted migration can leave the schema and the code apart, so a
+          # person forward-fixes. Files that cannot be read count as a hold.
+          : >"$WORK_DIR/changed-files.txt"
+          files_ok=yes
+          for sha in "${shas[@]}"; do
+            n=$(gh api "repos/$REPO/commits/$sha" --jq '.files | length' 2>/dev/null || echo unknown)
+            case "$n" in ''|*[!0-9]*) files_ok=no ;; *) [ "$n" -lt 300 ] || files_ok=no ;; esac
+            gh api "repos/$REPO/commits/$sha" --jq '.files[].filename' >>"$WORK_DIR/changed-files.txt" 2>/dev/null || files_ok=no
+          done
+          migration=$(python3 "$RUNNER_TEMP/red-main/migration.py" "${MIGRATION_PATHS:-atlas/migrations/**,atlas.sum}" <"$WORK_DIR/changed-files.txt")
+          if [ "$files_ok" = no ] || [ "${migration%% *}" = migration ]; then
+            why="its changed files could not be listed completely"
+            [ "${migration%% *}" != migration ] || why="it changes a migration path (\`${migration#migration }\`)"
+            for label in red-main-migration-hold "$OWNER_LABEL"; do
+              gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
+                -f description="red-main handler alert" >/dev/null 2>&1 || true
+            done
+            prs=""
+            for sha in "${shas[@]}"; do
+              pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
+              [ -z "$pr" ] || prs="$prs #$pr"
+            done
+            hold_body="\`main\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit \`$first\`${prs:+ (pull request$prs)} was NOT reverted: $why. Forward-fix it; the handler will not revert a migration. Owner: $OWNER_LABEL."
+            existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-migration-hold&per_page=100" \
+              --jq "[.[] | select(has(\"pull_request\") | not) | select(.user.login == (\"$APP_SLUG\" + \"[bot]\")) | select((.body // \"\") | contains(\"$first\"))] | .[0].number // empty" 2>/dev/null || true)
+            if [ -z "$existing" ]; then
+              gh api --method POST "repos/$REPO/issues" -f title="main is red: migration culprit ${first:0:9} needs a forward-fix" -f body="$hold_body" \
+                -f 'labels[]=red-main-migration-hold' -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
+                || say "**Blocked:** the migration-hold issue was not opened (issues: write)."
+            fi
+            if [ -n "$OPS_ISSUE" ]; then
+              gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$hold_body" >/dev/null 2>&1 || true
+            fi
+            for pr in $prs; do
+              gh api --method POST "repos/$REPO/issues/${pr#\#}/comments" --field body="$hold_body" >/dev/null 2>&1 || true
+            done
+            say "**No revert (migration hold):** $why. An issue labelled \`red-main-migration-hold\` and \`$OWNER_LABEL\` names the culprit; a person forward-fixes."
+            exit 0
+          fi
+          # A deploy freeze: inside the configured window a revert is opened
+          # but not armed, whatever on_red says.
+          if [ "$MODE" = revert ] && [ "$(python3 "$RUNNER_TEMP/red-main/hold.py" "${HOLD_UTC:-}" "$(date -u +%H:%M)")" = in ]; then
+            say "Inside the deploy freeze (\`$HOLD_UTC\` UTC): the revert is opened but not armed."
+            MODE=revert_pr_unarmed
           fi
           require_grant contents "contents: write" "opening the revert pull request" || {
             say "**Blocked:** the App installation cannot push; the revert pull request was not opened."
@@ -1865,6 +2007,9 @@ jobs:
                 --field body="\`main\` went red after this merged ([run]($RUN_URL)). A revert pull request, #$number, is open and not armed; a person decides." \
                 >/dev/null 2>&1 || true
             fi
+            if [ -n "$OPS_ISSUE" ]; then
+              gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$alert_body" >/dev/null 2>&1 || true
+            fi
             exit 0
           fi
           if gh pr merge --auto "$number" --repo "$REPO" </dev/null >/dev/null 2>"$WORK_DIR/auto.err"; then
@@ -1958,6 +2103,18 @@ jobs:
             gh api --method POST "repos/$REPO/issues/$original_number/comments" \
               --field body="\`main\` went red after this merged: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). Reverted in #$number; the change can be re-landed once fixed." \
               >/dev/null 2>&1 || say "The comment on the original pull request could not be posted."
+          fi
+          # Rule 4: every auto-revert tells the owner and the ops issue (sha,
+          # pull request, failing job, run link) and files the follow-up that
+          # re-lands the change (a merged pull request cannot be reopened).
+          notice="Auto-revert #$number of \`$first\`${original_number:+ (original pull request #$original_number)}: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` at \`$HEAD_SHA\` ([run]($RUN_URL)). Owner: $OWNER_LABEL."
+          gh api --method POST "repos/$REPO/labels" -f name="$OWNER_LABEL" -f color=b60205 \
+            -f description="red-main handler alert" >/dev/null 2>&1 || true
+          gh api --method POST "repos/$REPO/issues" -f title="re-land after auto-revert #$number (${first:0:9})" \
+            -f body="$notice Re-land the change once the failure is fixed." -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
+            || say "The follow-up issue was not opened."
+          if [ -n "$OPS_ISSUE" ]; then
+            gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$notice" >/dev/null 2>&1 || true
           fi
 
       # ---------------------------------------------------------------------

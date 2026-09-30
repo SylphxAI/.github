@@ -29,6 +29,8 @@ def embedded(name: str) -> str:
 INFRA = embedded("INFRA_PY")
 CONFIRM = embedded("CONFIRM_PY")
 VERDICT = embedded("VERDICT_PY")
+MIGRATION = embedded("MIGRATION_PY")
+HOLD = embedded("HOLD_PY")
 PREV = embedded("PREV_PY")
 
 
@@ -287,12 +289,126 @@ class UnarmedStaticTest(unittest.TestCase):
         self.assertIn('--arg slug "$APP_SLUG"', body)
         self.assertIn('has(\\"pull_request\\") | not', body)
         self.assertIn('.user.login == (\\"$APP_SLUG\\" + \\"[bot]\\")', body)
-        self.assertEqual(body.count('(.body // '), 2)
+        self.assertEqual(body.count('(.body // '), 3)
 
     def test_alert_dedupe_is_keyed_on_the_culprit(self):
         body = step_text("Revert the culprit or report it")
         self.assertIn('contains(\\"$first\\")', body)
         self.assertNotIn('contains(\\"$HEAD_SHA\\")', body)
+
+
+
+def migration(globs: str, *files: str) -> str:
+    return subprocess.run(
+        [sys.executable, "-c", MIGRATION, globs], input="\n".join(files) + "\n",
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+DEFAULT_GLOBS = "atlas/migrations/**,atlas.sum,**/atlas.sum"
+
+
+class MigrationPathTest(unittest.TestCase):
+    def test_migration_file(self):
+        self.assertEqual(
+            migration(DEFAULT_GLOBS, "src/a.ts", "atlas/migrations/20260930_add.sql"),
+            "migration atlas/migrations/20260930_add.sql",
+        )
+
+    def test_atlas_sum_anywhere(self):
+        self.assertEqual(migration(DEFAULT_GLOBS, "atlas.sum"), "migration atlas.sum")
+        self.assertEqual(migration(DEFAULT_GLOBS, "svc/atlas.sum"), "migration svc/atlas.sum")
+
+    def test_nested_migration_dir(self):
+        self.assertEqual(migration(DEFAULT_GLOBS, "atlas/migrations/sub/x.sql"), "migration atlas/migrations/sub/x.sql")
+
+    def test_ordinary_files_are_not_migrations(self):
+        self.assertEqual(migration(DEFAULT_GLOBS, "src/atlas.ts", "docs/atlas/migrations.md", "atlas/other/x.sql"), "none")
+
+    def test_repo_declared_dirs(self):
+        self.assertEqual(migration("db/migrate/**", "db/migrate/001.rb"), "migration db/migrate/001.rb")
+        self.assertEqual(migration("db/migrate/**", "atlas/migrations/x.sql"), "none")
+
+    def test_single_star_stays_in_one_directory(self):
+        self.assertEqual(migration("sql/*.sql", "sql/a.sql"), "migration sql/a.sql")
+        self.assertEqual(migration("sql/*.sql", "sql/deep/a.sql"), "none")
+
+    def test_no_files(self):
+        self.assertEqual(migration(DEFAULT_GLOBS), "none")
+
+
+class InfraRule2Test(unittest.TestCase):
+    def test_runner_setup_and_checkout_are_infra(self):
+        self.assertEqual(classify(job("a", ["Set up job"])), "infra runner-setup")
+        self.assertEqual(classify(job("a", ["Checkout"])), "infra checkout")
+
+    def test_infra_step_beside_a_test_failure_is_a_real_failure(self):
+        self.assertEqual(classify(job("a", ["Checkout", "cargo nextest"])), "none")
+
+    def test_infra_only_run_is_never_a_revert_verdict(self):
+        # The rerun that fails again after an infra failure stops; it never
+        # reaches `real`, so nothing is reverted.
+        self.assertEqual(verdict("yes", "completed", "failure"), "unknown")
+
+
+def hold(window: str, now: str) -> str:
+    return subprocess.run(
+        [sys.executable, "-c", HOLD, window, now], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+class HoldWindowTest(unittest.TestCase):
+    def test_inside_and_outside(self):
+        self.assertEqual(hold("19:00-22:00", "20:30"), "in")
+        self.assertEqual(hold("19:00-22:00", "22:00"), "out")
+        self.assertEqual(hold("19:00-22:00", "18:59"), "out")
+
+    def test_wraps_midnight(self):
+        self.assertEqual(hold("22:00-02:00", "23:30"), "in")
+        self.assertEqual(hold("22:00-02:00", "01:00"), "in")
+        self.assertEqual(hold("22:00-02:00", "12:00"), "out")
+
+    def test_no_window(self):
+        self.assertEqual(hold("", "20:00"), "out")
+
+
+class GateFieldsTest(unittest.TestCase):
+    def test_defaults_and_overrides(self):
+        row = gate_full("")
+        self.assertEqual(row[3], "atlas/migrations/**,atlas.sum,**/atlas.sum")
+        self.assertEqual(row[4], "")
+        row = gate_full('migration_paths = "db/migrate/**"\nrevert_hold_utc = "19:00-22:00"\n')
+        self.assertEqual((row[3], row[4]), ("db/migrate/**", "19:00-22:00"))
+
+    def test_malformed_values_fall_back(self):
+        row = gate_full('migration_paths = "a b;rm"\nrevert_hold_utc = "evening"\n')
+        self.assertEqual((row[3], row[4]), ("atlas/migrations/**,atlas.sum,**/atlas.sum", ""))
+
+
+class RulesStaticTest(unittest.TestCase):
+    def test_migration_hold_precedes_any_push_or_revert(self):
+        body = step_text("Revert the culprit or report it")
+        hold_at = body.index("migration.py")
+        for needle in ('git_c revert', 'push_branch "$branch"', "gh pr merge", "{enqueuePullRequest("):
+            self.assertLess(hold_at, body.index(needle), needle)
+        self.assertIn("exit 0", body[hold_at:body.index("git_c revert")])
+
+    def test_unreadable_files_hold(self):
+        body = step_text("Revert the culprit or report it")
+        self.assertIn('[ "$files_ok" = no ]', body)
+
+    def test_notify_never_pushes(self):
+        trace = step_text("Trace the culprit among the unverified commits")
+        guard = trace.index('if [ "$MODE" = notify ]')
+        self.assertLess(guard, trace.index('"repos/$REPO/git/refs"'))
+        self.assertIn("exit 0", trace[guard:trace.index('"repos/$REPO/git/refs"')])
+        cond = step_text("Mark the flaky units in their own source")
+        self.assertIn("!= 'notify'", cond)
+
+    def test_revert_notifies_owner_and_ops_and_files_followup(self):
+        body = step_text("Revert the culprit or report it")
+        self.assertIn("re-land after auto-revert", body)
+        self.assertIn('OPS_ISSUE#\\#}/comments" --field body="$notice"', body)
 
 
 if __name__ == "__main__":
