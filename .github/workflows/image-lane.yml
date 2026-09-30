@@ -462,6 +462,8 @@ jobs:
 
       - name: Upload immutable image OCI layout
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         with:
           name: ${{ steps.name.outputs.image_artifact }}
           path: ${{ env.OCI_DIR }}
@@ -471,6 +473,8 @@ jobs:
 
       - name: Upload evidence bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         with:
           name: ${{ steps.name.outputs.evidence_artifact }}
           path: |
@@ -807,6 +811,8 @@ jobs:
       - name: Upload registry readback
         if: ${{ steps.readback.outputs.readback_artifact != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         with:
           name: ${{ steps.readback.outputs.readback_artifact }}
           path: ${{ env.READBACK_DIR }}
@@ -849,6 +855,8 @@ jobs:
       - name: Upload verification receipt
         if: ${{ steps.verify.outputs.verify_artifact != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         with:
           name: ${{ steps.verify.outputs.verify_artifact }}
           path: ${{ env.LANE_ROOT }}/verify

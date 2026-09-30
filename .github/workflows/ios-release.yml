@@ -241,6 +241,8 @@ jobs:
       - name: Upload prepared workspace
         if: inputs.ipa-artifact == ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         timeout-minutes: 15
         with:
           name: ios-workspace-${{ inputs.bundle-id }}
@@ -605,6 +607,8 @@ jobs:
       - name: Upload exported .ipa
         timeout-minutes: 15
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         with:
           name: ios-ipa-${{ inputs.bundle-id }}
           path: ${{ runner.temp }}/ios-signing/export/*.ipa

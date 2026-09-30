@@ -79,7 +79,12 @@ class IosRelease(unittest.TestCase):
             self.assertIn("timeout-minutes", s, s["name"])
         self.assertIn("timeout-minutes", self.prepare)
         self.assertNotIn("|| true", self.text)
-        self.assertNotIn("continue-on-error", self.text)
+        # The one allowed form: an upload may not fail a merge_group run (org
+        # artifact quota); outside merge_group it stays loud.
+        allowed = "continue-on-error: ${{ github.event_name == 'merge_group' }}"
+        for line in self.text.splitlines():
+            if "continue-on-error" in line and not line.lstrip().startswith("#"):
+                self.assertEqual(line.strip(), allowed)
 
     def test_cleanup_is_per_item_not_aborting(self) -> None:
         body = self.step("Cleanup")["run"]
