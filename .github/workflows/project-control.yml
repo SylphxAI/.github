@@ -68,6 +68,31 @@ jobs:
         run: python -m pip install --quiet pyyaml
       - name: Unit tests
         run: python -m unittest discover -s tests
+      - name: Prepare shared brand consumer fixture
+        env:
+          BRAND_FIXTURE: ${{ runner.temp }}/brand-consumer
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import pathlib
+          import runpy
+          root = pathlib.Path(os.environ['BRAND_FIXTURE'])
+          root.mkdir()
+          runpy.run_path('tests/test_brand.py')['fixture'](root)
+          PYTHON
+      - name: Invoke shared brand check as a consumer
+        uses: ./.github/actions/brand
+        with:
+          brand-directory: ${{ runner.temp }}/brand-consumer/brand data
+      - name: Invoke shared brand write as a consumer
+        uses: ./.github/actions/brand
+        with:
+          mode: write
+          brand-directory: ${{ runner.temp }}/brand-consumer/brand data
+      - name: Check generated consumer provenance
+        uses: ./.github/actions/brand
+        with:
+          brand-directory: ${{ runner.temp }}/brand-consumer/brand data
 
   # The optimistic-merge actions, run as a consumer runs them: a manifest the
   # runner cannot load (an expression in a description, a bad input) fails
