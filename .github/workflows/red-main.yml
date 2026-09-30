@@ -1755,10 +1755,16 @@ jobs:
           # this culprit gets a comment and nothing else. A different culprit
           # still opens its own revert and alert.
           if [ "$MODE" = revert_pr_unarmed ]; then
-            open_prs=$(gh pr list --repo "$REPO" --state open --label auto-revert --json number,body --limit 100 2>/dev/null || echo '[]')
-            open_prs_by_branch=$(gh pr list --repo "$REPO" --state open --search "head:auto-revert/" --json number,body,headRefName --limit 100 2>/dev/null || echo '[]')
-            standing=$(jq -rn --arg sha "$first" --argjson a "$open_prs" --argjson b "$open_prs_by_branch" \
-              '[($a + $b)[] | select((.body // "") | contains($sha))] | .[0].number // empty')
+            open_prs=$(gh pr list --repo "$REPO" --state open --label auto-revert --json number,body,author,isCrossRepository --limit 100 2>/dev/null || echo '[]')
+            open_prs_by_branch=$(gh pr list --repo "$REPO" --state open --search "head:auto-revert/" --json number,body,headRefName,author,isCrossRepository --limit 100 2>/dev/null || echo '[]')
+            # Only the handler's own pull requests count: same repository, and
+            # authored by the builder App. A fork or collaborator pull request
+            # with the culprit sha in its body must not silence the real revert.
+            standing=$(jq -rn --arg sha "$first" --arg slug "$APP_SLUG" --argjson a "$open_prs" --argjson b "$open_prs_by_branch" \
+              '[($a + $b)[]
+                | select(.isCrossRepository == false and (.author.is_bot // false)
+                    and (.author.login == ("app/" + $slug) or .author.login == ($slug + "[bot]")))
+                | select((.body // "") | contains($sha))] | .[0].number // empty')
             if [ -n "$standing" ]; then
               gh api --method POST "repos/$REPO/issues/$standing/comments" \
                 --field body="\`main\` is still red at \`$HEAD_SHA\` ([run]($RUN_URL)) for the same culprit \`$first\`. This revert stays open and unarmed; a person decides." \
@@ -1846,7 +1852,7 @@ jobs:
             # One issue per culprit: an open alert naming THIS culprit silences a
             # repeat; a different culprit still alerts.
             existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-revert-pending&per_page=100" \
-              --jq "[.[] | select(.body | contains(\"$first\"))] | .[0].number // empty" 2>/dev/null || true)
+              --jq "[.[] | select(has(\"pull_request\") | not) | select(.user.login == (\"$APP_SLUG\" + \"[bot]\")) | select((.body // \"\") | contains(\"$first\"))] | .[0].number // empty" 2>/dev/null || true)
             if [ -n "$existing" ]; then
               say "An alert for culprit \`$first\` is already open (#$existing)."
             else

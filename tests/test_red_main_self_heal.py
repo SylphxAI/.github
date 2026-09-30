@@ -277,6 +277,18 @@ class UnarmedStaticTest(unittest.TestCase):
         self.assertLess(guard, body.index("git_c revert"))
         self.assertIn("exit 0", body[guard:body.index('branch="auto-revert/$SHORT_SHA"')])
 
+    def test_standing_searches_trust_only_the_apps_own_items(self):
+        body = step_text("Revert the culprit or report it")
+        self.assertEqual(body.count("author,isCrossRepository"), 2)
+        self.assertIn(".isCrossRepository == false", body)
+        self.assertIn(".author.is_bot", body)
+        self.assertIn('"app/" + $slug', body)
+        self.assertIn('($slug + "[bot]")', body)
+        self.assertIn('--arg slug "$APP_SLUG"', body)
+        self.assertIn('has(\\"pull_request\\") | not', body)
+        self.assertIn('.user.login == (\\"$APP_SLUG\\" + \\"[bot]\\")', body)
+        self.assertEqual(body.count('(.body // '), 2)
+
     def test_alert_dedupe_is_keyed_on_the_culprit(self):
         body = step_text("Revert the culprit or report it")
         self.assertIn('contains(\\"$first\\")', body)
