@@ -210,5 +210,54 @@ class GateModeTest(unittest.TestCase):
         self.assertTrue(gate("auto").startswith("error"))
 
 
+
+def gate_full(extra: str) -> list[str]:
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d, "sylphx.toml")
+        path.write_text(f'version = "1"\n[ci]\nmerge = "optimistic"\n{extra}')
+        return subprocess.run(
+            [sys.executable, "-c", GATE, str(path), "yes"], capture_output=True, text=True, check=True
+        ).stdout.strip().split("\t")
+
+
+class OwnerLabelTest(unittest.TestCase):
+    def test_default(self):
+        self.assertEqual(gate_full("")[2], "owner:ops")
+
+    def test_configured(self):
+        self.assertEqual(gate_full('red_main_owner = "owner:cubeage-live"\n')[2], "owner:cubeage-live")
+
+    def test_malformed_falls_back(self):
+        for bad in ("cubeage-live", "owner:Bad Label", "owner:", "owner:a/b"):
+            self.assertEqual(gate_full(f'red_main_owner = "{bad}"\n')[2], "owner:ops", bad)
+
+
+def step_text(name: str) -> str:
+    text = WORKFLOW.read_text()
+    start = text.index(f"      - name: {name}\n")
+    end = text.find("\n      - name: ", start + 1)
+    return text[start:end if end != -1 else len(text)]
+
+
+class UnarmedStaticTest(unittest.TestCase):
+    def test_unarmed_revert_exits_before_arming_and_jump(self):
+        body = step_text("Revert the culprit or report it")
+        unarmed = body.index("if [ \"$MODE\" = revert_pr_unarmed ]; then\n            state_set revert-pr")
+        exit_at = body.index("exit 0", unarmed)
+        for needle in ("gh pr merge", "enqueuePullRequest", "queue-jump:red-main\" auto-revert"):
+            after = body.find(needle, unarmed)
+            self.assertTrue(after == -1 or after > exit_at, needle)
+
+    def test_quarantine_arms_only_under_revert_in_sylphxai(self):
+        body = step_text("Mark the flaky units in their own source")
+        guard = body.index('if [ "$MODE" != revert ] || [ "${REPO%%/*}" != SylphxAI ]; then')
+        self.assertLess(guard, body.index("gh pr merge --auto"))
+        self.assertIn("exit 0", body[guard:body.index("gh pr merge --auto")])
+
+    def test_unarmed_label_does_not_silence_other_breakage(self):
+        body = step_text("Stop when the work is already done or already in hand")
+        self.assertIn('if [ "$MODE" != revert_pr_unarmed ]; then', body)
+
+
 if __name__ == "__main__":
     unittest.main()
