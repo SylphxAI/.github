@@ -59,7 +59,7 @@ def env(**extra):
     return base
 
 
-def fake_api(issues, pr_labels=None, compare=None, pulls=None, boom=None):
+def fake_api(issues, pr_labels=None, compare=None, pulls=None, boom=None, subjects=None, total=None):
     calls = []
 
     def api(path, token):
@@ -69,7 +69,8 @@ def fake_api(issues, pr_labels=None, compare=None, pulls=None, boom=None):
         if "/issues?state=open" in path:
             return issues
         if "/compare/" in path:
-            return {"commits": [{"sha": s} for s in (compare or [])]}
+            return {"commits": [{"sha": s, "commit": {"message": (subjects or {}).get(s, "no number")}} for s in (compare or [])],
+                    "total_commits": total if total is not None else len(compare or [])}
         if "/pulls" in path:
             return [{"number": n} for n in (pulls or {}).get(path.split("/commits/")[1].split("/")[0], [])]
         num = int(path.rsplit("/", 1)[1])
@@ -119,6 +120,32 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 1)
         code, _ = self.run_main(e, fake_api([{"number": 7}], pr_labels={5: [FIX], 4: [FIX]}, **common))
         self.assertEqual(code, 0)
+
+    def test_squash_commits_are_attributed_by_their_subject(self):
+        # commits/{sha}/pulls is empty for squash queue commits.
+        e = env(BASE_SHA="b", HEAD_SHA="h")
+        common = dict(compare=["c1"], pulls={}, subjects={"c1": "fix the thing (#4)"})
+        code, _ = self.run_main(e, fake_api([{"number": 7}], pr_labels={5: [FIX], 4: []}, **common))
+        self.assertEqual(code, 1)
+        code, _ = self.run_main(e, fake_api([{"number": 7}], pr_labels={5: [FIX], 4: [FIX]}, **common))
+        self.assertEqual(code, 0)
+
+    def test_an_unmapped_commit_fails(self):
+        e = env(BASE_SHA="b", HEAD_SHA="h")
+        api = fake_api([{"number": 7}], pr_labels={5: [FIX]}, compare=["c1"], pulls={}, subjects={"c1": "chore: no number"})
+        code, sleeps = self.run_main(e, api)
+        self.assertEqual((code, sleeps), (1, []))  # not retried
+
+    def test_a_capped_compare_fails(self):
+        e = env(BASE_SHA="b", HEAD_SHA="h")
+        api = fake_api([{"number": 7}], pr_labels={5: [FIX], 4: [FIX]}, compare=["c1"], pulls={"c1": [4]}, total=300)
+        code, _ = self.run_main(e, api)
+        self.assertEqual(code, 1)
+
+    def test_api_answer_wins_over_the_subject(self):
+        self.assertEqual(mh.commit_pr("s", "x (#9)", [{"number": 4}]), 4)
+        self.assertEqual(mh.commit_pr("s", "x (#9)", []), 9)
+        self.assertIsNone(mh.commit_pr("s", "x (#9) tail", []))
 
     def test_label_is_url_encoded(self):
         api = fake_api([])

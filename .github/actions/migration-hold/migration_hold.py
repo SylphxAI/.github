@@ -62,6 +62,8 @@ def with_retries(fn, sleep=time.sleep):
     for attempt in range(RETRIES):
         try:
             return fn()
+        except GroupError:
+            raise
         except Exception as exc:  # 403, timeout, 5xx
             last = exc
             if attempt < RETRIES - 1:
@@ -69,18 +71,43 @@ def with_retries(fn, sleep=time.sleep):
     raise last  # type: ignore[misc]
 
 
+class GroupError(Exception):
+    """The group's pull requests cannot be fully identified (fails closed)."""
+
+
+SUBJECT_PR = re.compile(r"\(#(\d+)\)\s*$")
+
+
+def commit_pr(sha: str, subject: str, pulls) -> int | None:
+    """A squash-queue commit has no associated pull request in the API, so the
+    trailing `(#N)` of its subject names it; the API answer wins when present."""
+    if pulls:
+        return pulls[0]["number"]
+    m = SUBJECT_PR.search(subject or "")
+    return int(m.group(1)) if m else None
+
+
 def group_labels(repo, token, base_sha, head_sha, head_ref, api) -> dict[int, list[str]]:
-    """Every pull request in the group: the head ref's, and those of every
-    commit in base...head (a batched group holds the entries ahead of it)."""
+    """Every pull request in the group: the head ref's, and one for every
+    commit in base...head (a batched group holds the entries ahead of it).
+    A commit that maps to no pull request, or a compare that was capped,
+    raises GroupError: an unidentified entry could be the unlabelled one."""
     numbers: set[int] = set()
     n = pr_number(head_ref)
     if n is not None:
         numbers.add(n)
     if base_sha and head_sha:
         cmp = api(f"repos/{repo}/compare/{base_sha}...{head_sha}", token)
-        for commit in cmp.get("commits", []):
-            for pr in api(f"repos/{repo}/commits/{commit['sha']}/pulls", token):
-                numbers.add(pr["number"])
+        commits = cmp.get("commits", [])
+        total = cmp.get("total_commits", len(commits))
+        if total != len(commits):
+            raise GroupError(f"compare listed {len(commits)} of {total} commits (capped)")
+        for commit in commits:
+            subject = (commit.get("commit", {}).get("message") or "").split("\n", 1)[0]
+            number = commit_pr(commit["sha"], subject, api(f"repos/{repo}/commits/{commit['sha']}/pulls", token))
+            if number is None:
+                raise GroupError(f"commit {commit['sha'][:9]} maps to no pull request")
+            numbers.add(number)
     return {
         num: [l["name"] for l in api(f"repos/{repo}/issues/{num}", token).get("labels", [])]
         for num in sorted(numbers)
