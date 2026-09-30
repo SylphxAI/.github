@@ -55,7 +55,11 @@ name: Red main
 # answer per repository:
 #
 #   * `[ci] merge = "optimistic"` means act, and `[ci] on_red` picks
-#     `revert` or `notify`. `on_red` absent means `notify`.
+#     `revert`, `revert_pr_unarmed` or `notify`. `on_red` absent means
+#     `notify`. `revert_pr_unarmed` opens the revert pull request and an alert
+#     issue but never arms auto-merge, never enqueues and never jumps: a
+#     person decides whether and when it merges (for a repository whose
+#     deploys have their own gates).
 #   * `merge` absent, or anything else, means do nothing, silently.
 #   * No `sylphx.toml` at all means do nothing, and say so: a repository that
 #     wants verified commits adopts a minimal manifest (version = "1" and
@@ -379,8 +383,8 @@ jobs:
             out("off", "", f"sylphx.toml [ci] merge is {ci.get('merge')!r}, not optimistic")
         else:
             on_red = ci.get("on_red") or "notify"
-            if on_red not in ("notify", "revert"):
-                out("error", "", f"sylphx.toml [ci] on_red must be notify or revert, not {on_red!r}")
+            if on_red not in ("notify", "revert", "revert_pr_unarmed"):
+                out("error", "", f"sylphx.toml [ci] on_red must be notify, revert or revert_pr_unarmed, not {on_red!r}")
             else:
                 out("act", on_red, f"sylphx.toml [ci] merge=optimistic on_red={on_red}")
       # The culprit rule. Input on stdin: one `sha<TAB>conclusion` line per
@@ -1655,7 +1659,7 @@ jobs:
           else
             title="revert: $count commits (${first:0:9}..${last:0:9})"
           fi
-          if [ "$MODE" != "revert" ]; then
+          if [ "$MODE" != "revert" ] && [ "$MODE" != "revert_pr_unarmed" ]; then
             say "Mode is notify: no revert pull request was opened. \`revert\` would revert $count commit(s):"
             for sha in "${shas[@]}"; do say "- \`$sha\`"; done
             if [ "$TOKEN_MODE" = yes ]; then
@@ -1775,10 +1779,33 @@ jobs:
             say "**Blocked:** the revert pull request was not opened."
             exit 1
           fi
-          labels=$(labels_that_exist "queue-jump:red-main" auto-revert owner:ci)
+          if [ "$MODE" = revert_pr_unarmed ]; then
+            # No queue-jump label: nothing here jumps or arms anything.
+            labels=$(labels_that_exist auto-revert owner:ci)
+          else
+            labels=$(labels_that_exist "queue-jump:red-main" auto-revert owner:ci)
+          fi
           if [ "$labels" != "[]" ]; then
             gh api --method POST "repos/$REPO/issues/$number/labels" \
               --input - <<<"$(jq -n --argjson labels "$labels" '{labels: $labels}')" >/dev/null || true
+          fi
+          if [ "$MODE" = revert_pr_unarmed ]; then
+            state_set revert-pr "$number"
+            say "Revert pull request [#$number](https://github.com/$REPO/pull/$number) is open and NOT armed (\`on_red = revert_pr_unarmed\`): a person decides whether and when it merges."
+            alert_body="\`main\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). A revert pull request, #$number, is open and not armed: it will not merge until a person decides. Merge it, or fix forward."
+            for label in red-main-revert-pending owner:ops; do
+              gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
+                -f description="red-main handler alert" >/dev/null 2>&1 || true
+            done
+            gh api --method POST "repos/$REPO/issues" -f title="main is red: revert #$number awaits a decision" -f body="$alert_body" \
+              -f 'labels[]=red-main-revert-pending' -f 'labels[]=owner:ops' >/dev/null 2>&1 \
+              || say "**Blocked:** the alert issue was not opened (issues: write)."
+            if [ -n "$original_number" ]; then
+              gh api --method POST "repos/$REPO/issues/$original_number/comments" \
+                --field body="\`main\` went red after this merged ([run]($RUN_URL)). A revert pull request, #$number, is open and not armed; a person decides." \
+                >/dev/null 2>&1 || true
+            fi
+            exit 0
           fi
           if gh pr merge --auto "$number" --repo "$REPO" </dev/null >/dev/null 2>"$WORK_DIR/auto.err"; then
             say "Revert pull request [#$number](https://github.com/$REPO/pull/$number) is armed for auto-merge (no strategy flag: the queue decides)."

@@ -187,5 +187,28 @@ class ConfirmTest(unittest.TestCase):
         self.assertTrue(confirm("failure", "lane\tj1\tj1\n", "lane\tj2\tj2\n").startswith("no "))
 
 
+GATE = embedded("GATE_PY")
+
+
+def gate(on_red: str | None) -> str:
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d, "sylphx.toml")
+        line = f'on_red = "{on_red}"\n' if on_red else ""
+        path.write_text(f'version = "1"\n[ci]\nmerge = "optimistic"\n{line}')
+        return subprocess.run(
+            [sys.executable, "-c", GATE, str(path), "yes"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+
+class GateModeTest(unittest.TestCase):
+    def test_modes(self):
+        self.assertTrue(gate(None).startswith("act\tnotify"))
+        self.assertTrue(gate("revert").startswith("act\trevert\t"))
+        self.assertTrue(gate("revert_pr_unarmed").startswith("act\trevert_pr_unarmed\t"))
+
+    def test_unknown_mode_is_an_error(self):
+        self.assertTrue(gate("auto").startswith("error"))
+
+
 if __name__ == "__main__":
     unittest.main()
