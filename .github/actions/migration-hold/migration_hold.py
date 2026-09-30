@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
-"""Queue hold for red-main migration culprits (see action.yml)."""
+"""Queue hold for red-main migration culprits (see action.yml).
+
+On `merge_group` it fails CLOSED: a token that cannot read issues would
+otherwise switch the hold off for good, and nobody reads warnings on a green
+queue. The way out of an error is to fix the token or re-enqueue once the API
+is back; the way out of a hold is to merge the forward-fix and close the issue.
+"""
 from __future__ import annotations
 
 import json
 import os
 import re
 import sys
+import time
+import urllib.parse
 import urllib.request
+
+RETRIES = 3
 
 
 def pr_number(head_ref: str) -> int | None:
@@ -15,25 +25,31 @@ def pr_number(head_ref: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def decide(event: str, open_holds: list[int], pr_labels: list[str], fix_label: str) -> tuple[str, str]:
-    """Return ('pass'|'fail', message)."""
-    if event != "merge_group":
-        return "pass", "not a merge-queue group: the hold applies to the queue only"
-    if not open_holds:
-        return "pass", "no open migration hold"
-    if fix_label in pr_labels:
-        return "pass", f"held by {holds(open_holds)}, but this pull request carries {fix_label}"
-    return "fail", (
-        f"a migration hold is open ({holds(open_holds)}): only a pull request labelled {fix_label} "
-        "may merge until it is resolved"
-    )
-
-
 def holds(numbers: list[int]) -> str:
     return ", ".join(f"#{n}" for n in sorted(numbers))
 
 
-def api(path: str, token: str) -> object:
+def decide(event: str, open_holds: list[int], group: dict[int, list[str]], fix_label: str) -> tuple[str, str]:
+    """Return ('pass'|'fail', message). `group` maps each pull request in the
+    merge group to its labels; an empty group with an open hold is unidentified
+    and fails."""
+    if event != "merge_group":
+        return "pass", "not a merge-queue group: the hold applies to the queue only"
+    if not open_holds:
+        return "pass", "no open migration hold"
+    way_out = (
+        f"merge the forward-fix labelled {fix_label}, then close {holds(open_holds)}; "
+        "every pull request in the group must carry the label"
+    )
+    if not group:
+        return "fail", f"a migration hold is open ({holds(open_holds)}) and the pull requests of this group could not be identified: {way_out}"
+    missing = sorted(n for n, labels in group.items() if fix_label not in labels)
+    if missing:
+        return "fail", f"a migration hold is open ({holds(open_holds)}); {holds(missing)} lack {fix_label}: {way_out}"
+    return "pass", f"held by {holds(open_holds)}, but every pull request in this group carries {fix_label}"
+
+
+def http_api(path: str, token: str) -> object:
     req = urllib.request.Request(
         f"https://api.github.com/{path}",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
@@ -41,27 +57,61 @@ def api(path: str, token: str) -> object:
     return json.load(urllib.request.urlopen(req, timeout=30))
 
 
-def main() -> int:
-    env = os.environ
+def with_retries(fn, sleep=time.sleep):
+    last: Exception | None = None
+    for attempt in range(RETRIES):
+        try:
+            return fn()
+        except Exception as exc:  # 403, timeout, 5xx
+            last = exc
+            if attempt < RETRIES - 1:
+                sleep(2 ** (attempt + 1))
+    raise last  # type: ignore[misc]
+
+
+def group_labels(repo, token, base_sha, head_sha, head_ref, api) -> dict[int, list[str]]:
+    """Every pull request in the group: the head ref's, and those of every
+    commit in base...head (a batched group holds the entries ahead of it)."""
+    numbers: set[int] = set()
+    n = pr_number(head_ref)
+    if n is not None:
+        numbers.add(n)
+    if base_sha and head_sha:
+        cmp = api(f"repos/{repo}/compare/{base_sha}...{head_sha}", token)
+        for commit in cmp.get("commits", []):
+            for pr in api(f"repos/{repo}/commits/{commit['sha']}/pulls", token):
+                numbers.add(pr["number"])
+    return {
+        num: [l["name"] for l in api(f"repos/{repo}/issues/{num}", token).get("labels", [])]
+        for num in sorted(numbers)
+    }
+
+
+def main(env=None, api=http_api, sleep=time.sleep) -> int:
+    env = os.environ if env is None else env
     event = env.get("EVENT", "")
     if event != "merge_group":
-        print(decide(event, [], [], "")[1])
+        print(decide(event, [], {}, "")[1])
         return 0
     repo, token = env["REPO"], env["TOKEN"]
-    label, fix = env.get("HOLD_LABEL", "red-main-migration-hold"), env.get("FIX_LABEL", "red-main-forward-fix")
+    label = env.get("HOLD_LABEL", "red-main-migration-hold")
+    fix = env.get("FIX_LABEL", "red-main-forward-fix")
     try:
-        issues = api(f"repos/{repo}/issues?state=open&labels={label}&per_page=100", token)
+        query = urllib.parse.quote(label, safe="")
+        issues = with_retries(lambda: api(f"repos/{repo}/issues?state=open&labels={query}&per_page=100", token), sleep)
         open_holds = [i["number"] for i in issues if "pull_request" not in i]
-        number = pr_number(env.get("HEAD_REF", ""))
-        labels: list[str] = []
-        if open_holds and number is not None:
-            labels = [l["name"] for l in api(f"repos/{repo}/issues/{number}", token).get("labels", [])]
-        elif open_holds:
-            print("::warning::the pull request of this group could not be identified")
-    except Exception as exc:  # a stuck queue is worse than a missed hold
-        print(f"::warning::migration hold not checked: {exc}")
-        return 0
-    verdict, message = decide(event, open_holds, labels, fix)
+        group: dict[int, list[str]] = {}
+        if open_holds:
+            group = with_retries(
+                lambda: group_labels(repo, token, env.get("BASE_SHA", ""), env.get("HEAD_SHA", ""),
+                                     env.get("HEAD_REF", ""), api),
+                sleep,
+            )
+    except Exception as exc:
+        print(f"::error::migration hold could not be checked ({exc}): give the job issues: read and "
+              "pull-requests: read, or re-enqueue once the API is back")
+        return 1
+    verdict, message = decide(event, open_holds, group, fix)
     if verdict == "fail":
         print(f"::error::{message}")
         return 1

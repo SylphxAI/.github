@@ -5,8 +5,10 @@ description: >
   commit changes a migration and so is never auto-reverted), a merge-queue
   group fails unless its pull request carries `red-main-forward-fix`. The
   forward-fix pull request itself passes, so the queue drains through it.
-  Runs on `merge_group` only; every other event passes. An API error passes
-  with a warning (a stuck queue is worse than a missed hold). Add the job that
+  Runs on `merge_group` only; every other event passes. On a merge group it
+  fails closed: an API error (retried three times) fails the job, because a
+  token that cannot read issues would otherwise switch the hold off for good.
+  In a batched group every pull request must carry the label. Add the job that
   runs this action to `ci-ok`'s `needs`. The token needs `issues: read` and
   `pull-requests: read`.
 
@@ -30,6 +32,8 @@ runs:
         REPO: ${{ github.repository }}
         EVENT: ${{ github.event_name }}
         HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         TOKEN: ${{ inputs.token }}
         HOLD_LABEL: ${{ inputs.hold-label }}
         FIX_LABEL: ${{ inputs.forward-fix-label }}
