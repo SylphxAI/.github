@@ -55,7 +55,12 @@ name: Red main
 # answer per repository:
 #
 #   * `[ci] merge = "optimistic"` means act, and `[ci] on_red` picks
-#     `revert` or `notify`. `on_red` absent means `notify`.
+#     `revert`, `revert_pr_unarmed` or `notify`. `on_red` absent means
+#     `notify`. `revert_pr_unarmed` opens the revert pull request and an alert
+#     issue but never arms auto-merge (a quarantine pull request is armed only
+#     under `revert`, and only in the SylphxAI organisation), never enqueues and never jumps: a
+#     person decides whether and when it merges (for a repository whose
+#     deploys have their own gates).
 #   * `merge` absent, or anything else, means do nothing, silently.
 #   * No `sylphx.toml` at all means do nothing, and say so: a repository that
 #     wants verified commits adopts a minimal manifest (version = "1" and
@@ -326,8 +331,12 @@ jobs:
 
         path, has_file = sys.argv[1:3]
 
-        def out(verdict, mode, basis):
-            print(f"{verdict}\t{mode}\t{basis}")
+        import re
+
+        OWNER = "owner:ops"
+
+        def out(verdict, mode, basis, owner=OWNER):
+            print(f"{verdict}\t{mode}\t{owner}\t{basis}")
 
         if has_file != "yes":
             # Silence is never consent: a repository without a manifest has
@@ -379,10 +388,15 @@ jobs:
             out("off", "", f"sylphx.toml [ci] merge is {ci.get('merge')!r}, not optimistic")
         else:
             on_red = ci.get("on_red") or "notify"
-            if on_red not in ("notify", "revert"):
-                out("error", "", f"sylphx.toml [ci] on_red must be notify or revert, not {on_red!r}")
+            if on_red not in ("notify", "revert", "revert_pr_unarmed"):
+                out("error", "", f"sylphx.toml [ci] on_red must be notify, revert or revert_pr_unarmed, not {on_red!r}")
             else:
-                out("act", on_red, f"sylphx.toml [ci] merge=optimistic on_red={on_red}")
+                # The label the handler's alerts carry; a repository names its
+                # own owner label, anything malformed falls back to owner:ops.
+                owner = ci.get("red_main_owner") or OWNER
+                if not re.fullmatch(r"owner:[a-z0-9-]+", owner):
+                    owner = OWNER
+                out("act", on_red, f"sylphx.toml [ci] merge=optimistic on_red={on_red}", owner)
       # The culprit rule. Input on stdin: one `sha<TAB>conclusion` line per
       # candidate, oldest first (`timeout` stands for not finished by the
       # deadline). First line of output: `culprit <sha>`, `window`, or `none`;
@@ -829,11 +843,12 @@ jobs:
           fi
           printf '%s\n' "$GATE_PY" >"$RUNNER_TEMP/red-main/gate.py"
           decision=$(python3 "$RUNNER_TEMP/red-main/gate.py" "$MANIFEST" "$has_file")
-          IFS=$'\t' read -r verdict mode basis <<<"$decision" || true
+          IFS=$'\t' read -r verdict mode owner_label basis <<<"$decision" || true
           case "${verdict:-}" in
             act)
               echo "proceed=true" >>"$GITHUB_OUTPUT"
               echo "mode=$mode" >>"$GITHUB_OUTPUT"
+              echo "owner-label=${owner_label:-owner:ops}" >>"$GITHUB_OUTPUT"
               echo "declaration: $basis" ;;
             off)
               echo "not opted in: $basis" ;;
@@ -1091,6 +1106,7 @@ jobs:
           ACTIONS_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
+          MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
@@ -1101,7 +1117,12 @@ jobs:
           done
           label_q=$(enc "repo:$REPO is:pr is:open label:auto-revert")
           hand_in=$(gh api "search/issues?q=$label_q" --jq '.total_count' 2>/dev/null || echo 0)
-          [ "$hand_in" = "0" ] || quiet "an open pull request already carries the auto-revert label"
+          # An unarmed revert stays open until a person decides, so its label
+          # must not silence a DIFFERENT breakage: that mode is keyed on the
+          # per-sha branch above alone.
+          if [ "$MODE" != revert_pr_unarmed ]; then
+            [ "$hand_in" = "0" ] || quiet "an open pull request already carries the auto-revert label"
+          fi
           green=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?head_sha=$HEAD_SHA&status=success&per_page=1" \
             --jq '.total_count' 2>/dev/null || echo 0)
           [ "$green" = "0" ] || quiet "$HEAD_SHA already has a passing $VERIFY_WORKFLOW run"
@@ -1287,6 +1308,7 @@ jobs:
           RUN_URL: ${{ steps.run.outputs.run-url }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
+          MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
@@ -1385,6 +1407,15 @@ jobs:
           if [ "$labels" != "[]" ]; then
             gh api --method POST "repos/$REPO/issues/$number/labels" \
               --input - <<<"$(jq -n --argjson labels "$labels" '{labels: $labels}')" >/dev/null || true
+          fi
+          # Arm only on a declared full auto-revert (`on_red = revert`) in the
+          # organisation that holds the builder App. `notify`,
+          # `revert_pr_unarmed` and any other owner leave the pull request open
+          # for a person.
+          if [ "$MODE" != revert ] || [ "${REPO%%/*}" != SylphxAI ]; then
+            state_set quarantine-pr "$number"
+            say "Quarantine pull request [#$number](https://github.com/$REPO/pull/$number) is open and NOT armed (on_red \`$MODE\`, owner \`${REPO%%/*}\`): a person decides whether it merges."
+            exit 0
           fi
           if gh pr merge --auto "$number" --repo "$REPO" </dev/null >/dev/null 2>"$WORK_DIR/auto.err"; then
             say "Quarantine pull request [#$number](https://github.com/$REPO/pull/$number) is armed for auto-merge (no strategy flag: the queue decides)."
@@ -1622,6 +1653,7 @@ jobs:
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           APP_ID: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
           MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
+          OWNER_LABEL: ${{ steps.gate.outputs.owner-label }}
           TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
@@ -1655,7 +1687,7 @@ jobs:
           else
             title="revert: $count commits (${first:0:9}..${last:0:9})"
           fi
-          if [ "$MODE" != "revert" ]; then
+          if [ "$MODE" != "revert" ] && [ "$MODE" != "revert_pr_unarmed" ]; then
             say "Mode is notify: no revert pull request was opened. \`revert\` would revert $count commit(s):"
             for sha in "${shas[@]}"; do say "- \`$sha\`"; done
             if [ "$TOKEN_MODE" = yes ]; then
@@ -1717,6 +1749,30 @@ jobs:
             say "**Blocked:** the App installation cannot open pull requests; the revert pull request was not opened."
             exit 1
           }
+          # Unarmed mode: the revert waits for a person, and every later push
+          # to main re-runs this handler. Key the silence on the CULPRIT, not on
+          # the red head: an open auto-revert pull request that already names
+          # this culprit gets a comment and nothing else. A different culprit
+          # still opens its own revert and alert.
+          if [ "$MODE" = revert_pr_unarmed ]; then
+            open_prs=$(gh pr list --repo "$REPO" --state open --label auto-revert --json number,body,author,isCrossRepository --limit 100 2>/dev/null || echo '[]')
+            open_prs_by_branch=$(gh pr list --repo "$REPO" --state open --search "head:auto-revert/" --json number,body,headRefName,author,isCrossRepository --limit 100 2>/dev/null || echo '[]')
+            # Only the handler's own pull requests count: same repository, and
+            # authored by the builder App. A fork or collaborator pull request
+            # with the culprit sha in its body must not silence the real revert.
+            standing=$(jq -rn --arg sha "$first" --arg slug "$APP_SLUG" --argjson a "$open_prs" --argjson b "$open_prs_by_branch" \
+              '[($a + $b)[]
+                | select(.isCrossRepository == false and (.author.is_bot // false)
+                    and (.author.login == ("app/" + $slug) or .author.login == ($slug + "[bot]")))
+                | select((.body // "") | contains($sha))] | .[0].number // empty')
+            if [ -n "$standing" ]; then
+              gh api --method POST "repos/$REPO/issues/$standing/comments" \
+                --field body="\`main\` is still red at \`$HEAD_SHA\` ([run]($RUN_URL)) for the same culprit \`$first\`. This revert stays open and unarmed; a person decides." \
+                >/dev/null 2>&1 || true
+              say "An open revert pull request (#$standing) already names culprit \`$first\`; commented there and stopped."
+              exit 0
+            fi
+          fi
           branch="auto-revert/$SHORT_SHA"
           repo_dir="$WORK_DIR/repo"
           window=$(state_get window)
@@ -1775,10 +1831,41 @@ jobs:
             say "**Blocked:** the revert pull request was not opened."
             exit 1
           fi
-          labels=$(labels_that_exist "queue-jump:red-main" auto-revert owner:ci)
+          if [ "$MODE" = revert_pr_unarmed ]; then
+            # No queue-jump label: nothing here jumps or arms anything.
+            labels=$(labels_that_exist auto-revert owner:ci)
+          else
+            labels=$(labels_that_exist "queue-jump:red-main" auto-revert owner:ci)
+          fi
           if [ "$labels" != "[]" ]; then
             gh api --method POST "repos/$REPO/issues/$number/labels" \
               --input - <<<"$(jq -n --argjson labels "$labels" '{labels: $labels}')" >/dev/null || true
+          fi
+          if [ "$MODE" = revert_pr_unarmed ]; then
+            state_set revert-pr "$number"
+            say "Revert pull request [#$number](https://github.com/$REPO/pull/$number) is open and NOT armed (\`on_red = revert_pr_unarmed\`): a person decides whether and when it merges."
+            alert_body="\`main\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit: \`$first\`. A revert pull request, #$number, is open and not armed: it will not merge until a person decides. Merge it, or fix forward."
+            for label in red-main-revert-pending "$OWNER_LABEL"; do
+              gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
+                -f description="red-main handler alert" >/dev/null 2>&1 || true
+            done
+            # One issue per culprit: an open alert naming THIS culprit silences a
+            # repeat; a different culprit still alerts.
+            existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-revert-pending&per_page=100" \
+              --jq "[.[] | select(has(\"pull_request\") | not) | select(.user.login == (\"$APP_SLUG\" + \"[bot]\")) | select((.body // \"\") | contains(\"$first\"))] | .[0].number // empty" 2>/dev/null || true)
+            if [ -n "$existing" ]; then
+              say "An alert for culprit \`$first\` is already open (#$existing)."
+            else
+              gh api --method POST "repos/$REPO/issues" -f title="main is red: revert #$number awaits a decision" -f body="$alert_body" \
+                -f 'labels[]=red-main-revert-pending' -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
+                || say "**Blocked:** the alert issue was not opened (issues: write)."
+            fi
+            if [ -n "$original_number" ]; then
+              gh api --method POST "repos/$REPO/issues/$original_number/comments" \
+                --field body="\`main\` went red after this merged ([run]($RUN_URL)). A revert pull request, #$number, is open and not armed; a person decides." \
+                >/dev/null 2>&1 || true
+            fi
+            exit 0
           fi
           if gh pr merge --auto "$number" --repo "$REPO" </dev/null >/dev/null 2>"$WORK_DIR/auto.err"; then
             say "Revert pull request [#$number](https://github.com/$REPO/pull/$number) is armed for auto-merge (no strategy flag: the queue decides)."
@@ -1958,9 +2045,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TRIGGER_URL: ${{ github.event.workflow_run.html_url || '' }}
+          OWNER_LABEL: ${{ steps.gate.outputs.owner-label || 'owner:ops' }}
         run: |
           set -uo pipefail
-          for label in red-main-broken owner:ops; do
+          for label in red-main-broken "$OWNER_LABEL"; do
             gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
               -f description="red-main handler alert" >/dev/null 2>&1 || true
           done
@@ -1971,6 +2059,6 @@ jobs:
               && echo "commented on #$existing" || echo "::warning::the alert comment on #$existing was not posted"
           else
             gh api --method POST "repos/$REPO/issues" -f title="red-main handler failed" -f body="$body" \
-              -f 'labels[]=red-main-broken' -f 'labels[]=owner:ops' >/dev/null \
+              -f 'labels[]=red-main-broken' -f "labels[]=$OWNER_LABEL" >/dev/null \
               && echo "alert issue opened" || echo "::warning::the alert issue was not opened (the caller needs issues: write)"
           fi
