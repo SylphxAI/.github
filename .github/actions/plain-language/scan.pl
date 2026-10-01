@@ -77,6 +77,7 @@ my %base;
 my $bf = $ENV{BASELINE};
 if (-f $bf) {
   open(my $b, "<", $bf) or die "baseline: $!";
+  local $/ = "\n";  # the file list above is NUL-separated; the baseline is line-based
   while (<$b>) { chomp; next if /^\s*(#|$)/; my ($p, $nm, $c) = split /\t/; $base{"$p\t$nm"} = $c; }
 }
 my $w = $ENV{WRITE_BASELINE} || "";
