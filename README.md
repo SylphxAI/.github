@@ -14,6 +14,7 @@ Use one from another repository with
 | --- | --- |
 | [metadata-sync](.github/actions/metadata-sync/README.md) | Offline required-region/field patching with whole-plan validation and deterministic check/write; caller owns rendering ([anymd/repomap adoption](.github/actions/metadata-sync/README.md#adoption-in-anymd-and-repomap)) |
 | [brand](.github/actions/brand/README.md) | Builds brand assets or checks provenance hashes and surface copies, with caller-owned masters and data |
+| [review-stamp-gate](.github/actions/review-stamp-gate/README.md) | Blocks merge groups containing failed or pending trusted review statuses; repository-owned scope controls missing-stamp enforcement |
 | [ci-ok](.github/actions/ci-ok/action.yml) | One required check that waits for every other GitHub Actions check on the commit and fails if any failed |
 | [needs-pass](.github/actions/needs-pass/action.yml) | The aggregate verdict of a workflow. A skipped job never counts as passing a required check outside `merge_group`: list PR-time jobs in `required-unless-merge-group` so a `workflow_dispatch` run cannot post a green check over a red one |
 | [secret-scan](.github/actions/secret-scan/action.yml) | Runs gitleaks over only the commits a push or pull request adds |
@@ -24,7 +25,9 @@ Use one from another repository with
 | [setup-sylphx-cli](.github/actions/setup-sylphx-cli/action.yml) | Installs a pinned `@sylphx/cli` |
 | [setup-changesets-publisher](.github/actions/setup-changesets-publisher/action.yml) | Installs the Changesets publish command used by release workflows |
 
-Reusable workflows are in [.github/workflows](.github/workflows).
+Reusable workflows are in [.github/workflows](.github/workflows), including
+[disarm-auto-merge-on-push](docs/disarm-automerge-on-push.md), which clears an
+arm predating a new push without dequeuing an entry already on that head.
 
 ## Repository settings
 

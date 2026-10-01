@@ -1,0 +1,26 @@
+name: Review stamp gate
+description: Refuse merge groups carrying a failed or pending trusted security review.
+inputs:
+  config-path:
+    description: Repository-owned JSON scope, read from the merge group's base commit.
+    default: .github/review-stamp.json
+  trusted-creator-ids:
+    description: Comma-separated numeric GitHub user IDs allowed to post review statuses.
+    required: true
+  token:
+    description: Token with contents and pull-requests read permissions.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Check every queued pull request's review
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        REVIEW_CONFIG_PATH: ${{ inputs.config-path }}
+        REVIEW_TRUSTED_CREATOR_IDS: ${{ inputs.trusted-creator-ids }}
+        MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+        MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+      run: python3 "$GITHUB_ACTION_PATH/review_stamp_gate.py"
