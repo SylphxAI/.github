@@ -188,6 +188,11 @@ class ProductNameGuardV2Test(unittest.TestCase):
         self.assertEqual(new_file.returncode, 1)
         self.assertIn("file=b.md", new_file.stdout)
 
+    def test_ratchet_reads_every_line_of_a_multi_entry_baseline(self) -> None:
+        base = "# header\na.md\tspiron\t1\nb.md\tkalkas\t1\n"
+        result = run_tree({"a.md": "spiron\n", "b.md": "kalkas\n"}, base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
     def test_ratchet_requires_removed_hits_to_leave_the_baseline(self) -> None:
         stale = run_tree({"a.md": "spiron\n"}, "a.md\tspiron\t2\n")
         self.assertEqual(stale.returncode, 1)
