@@ -183,7 +183,7 @@ class TokenModeTest(unittest.TestCase):
         import re
         for block in re.split(r"(?m)^(?=      - name: )", text)[1:]:
             code = "\n".join(l for l in block.splitlines() if not l.strip().startswith("#"))
-            has = re.search(r"\bgha\b|\bclassify_run\b|proof\.py", code) is not None
+            has = re.search(r'\bgha\b|\bclassify_run\b|\bpython3\s+"[^"\n]*/proof\.py"', code) is not None
             self.assertEqual("ACTIONS_TOKEN: ${{ github.token }}" in block, has, block[:60])
         self.assertIn('gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }', text)
         # No raw `gh` call on an Actions endpoint: it would use the App token.
