@@ -3,6 +3,7 @@ import copy
 import json
 import unittest
 import tempfile
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,7 +19,8 @@ def embedded():
             break
         body.append(line[8:])
     namespace = {'__name__': 'test'}
-    exec('\n'.join(body), namespace)
+    with patch.object(sys, 'path', [str(ROOT / '.github/actions/ci-range'), *sys.path]):
+        exec('\n'.join(body), namespace)
     return namespace
 
 
@@ -35,8 +37,19 @@ class API:
         self.reads.append(path)
         if self.hook:
             self.hook(path, method)
-        if self.fail and self.fail in path and method == 'GET':
+        if self.fail and self.fail in path:
             raise RuntimeError('API unavailable')
+        if path == 'graphql':
+            after = data['variables']['after']
+            start = int(after) if after else 0
+            rows = self.issues[start:start + 100]
+            return {'data': {'repository': {'issues': {
+                'totalCount': len(self.issues),
+                'pageInfo': {'endCursor': str(start + len(rows)),
+                             'hasNextPage': start + len(rows) < len(self.issues)},
+                'nodes': [{'databaseId': row['number'], 'number': row['number'],
+                           'body': row['body'], 'state': row['state'].upper(),
+                           'author': {'databaseId': row['user']['id']}} for row in rows]}}}}
         if method != 'GET':
             self.writes.append((path, method, data))
             if path.endswith('/comments'):
@@ -51,12 +64,14 @@ class API:
         if '/actions/workflows/' in path:
             page = int(path.rsplit('page=', 1)[1])
             runs = list(self.runs.values())
-            return {'workflow_runs': copy.deepcopy(runs[(page - 1) * 100:page * 100])}
+            return {'total_count': len(runs),
+                    'workflow_runs': copy.deepcopy(runs[(page - 1) * 100:page * 100])}
         if '/actions/runs/' in path:
             run_id = int(path.split('/actions/runs/')[1].split('/')[0])
             run = self.runs[run_id]
             if '/jobs?' in path:
-                return {'jobs': [{'name': 'verified', 'conclusion': run['conclusion']}]}
+                return {'total_count': 1, 'jobs': [{'id': 1, 'name': 'verified',
+                                                   'conclusion': run['conclusion']}]}
             return copy.deepcopy(run)
         if '/issues?' in path:
             page = int(path.rsplit('page=', 1)[1])
@@ -72,11 +87,11 @@ class LifecycleTest(unittest.TestCase):
         self.api = API()
 
     def event(self, run_id, result='failure', attempt=1):
-        run = {'id': run_id, 'run_attempt': attempt, 'head_sha': 'a' * 40,
+        run = {'id': run_id, 'workflow_id': 1, 'check_suite_id': 1, 'run_attempt': attempt, 'head_sha': 'a' * 40,
                'status': 'completed', 'conclusion': result, 'path': '.github/workflows/verify.yml',
-               'repository': {'full_name': 'SylphxAI/keel'},
+               'repository': {'id': 1, 'full_name': 'SylphxAI/keel'},
                'event': 'push', 'head_branch': 'main',
-               'head_repository': {'full_name': 'SylphxAI/keel'}}
+               'head_repository': {'id': 1, 'full_name': 'SylphxAI/keel'}}
         self.api.runs[run_id] = run
         return self.code['Event']('SylphxAI/keel', 'verify.yml', 'verified',
                                   'a' * 40, run_id, attempt, result)
@@ -186,6 +201,61 @@ class LifecycleTest(unittest.TestCase):
         text = (ROOT / '.github/workflows/red-main.yml').read_text()
         self.assertIn('  queue: max\n  cancel-in-progress: false', text)
 
+    def test_incomplete_counted_reads_never_comment_or_close(self):
+        for source in ('workflow_runs', 'jobs', 'issues'):
+            for fault in ('missing_count', 'invalid_count', 'truncated', 'duplicate'):
+                with self.subTest(source=source, fault=fault):
+                    self.api = API()
+                    self.apply(self.event(5))
+                    green = self.event(10, 'success')
+                    self.event(20)
+                    def reader(path, method='GET', data=None):
+                        response = self.api(path, method, data)
+                        if source == 'issues' and path == 'graphql':
+                            envelope = response['data']['repository']['issues']
+                            count_key, rows_key = 'totalCount', 'nodes'
+                        elif source == 'workflow_runs' and '/actions/workflows/' in path:
+                            envelope = response
+                            count_key, rows_key = 'total_count', source
+                        elif source == 'jobs' and '/jobs?' in path:
+                            envelope = response
+                            count_key, rows_key = 'total_count', source
+                        else:
+                            return response
+                        if fault == 'missing_count':
+                            envelope.pop(count_key)
+                        elif fault == 'invalid_count':
+                            envelope[count_key] = None
+                        elif fault == 'truncated':
+                            envelope[rows_key] = envelope[rows_key][:-1]
+                        else:
+                            rows = envelope[rows_key]
+                            envelope[rows_key] = rows + [copy.deepcopy(rows[0])]
+                            envelope[count_key] += 1
+                        return response
+                    with self.assertLogs(level='WARNING'):
+                        self.code['handle'](reader, green, 42)
+                    self.assertEqual(self.api.issues[0]['state'], 'open')
+                    # No recovery comment and no close, only the initial alert.
+                    self.assertEqual(len(self.api.writes), 1)
+
+    def test_invalid_newer_relevant_row_never_comments_or_closes(self):
+        for field in ('status', 'conclusion'):
+            for value in ('missing', None, '', ' '):
+                with self.subTest(field=field, value=value):
+                    self.api = API()
+                    self.apply(self.event(5))
+                    green = self.event(10, 'success')
+                    self.event(20)
+                    if value == 'missing':
+                        self.api.runs[20].pop(field)
+                    else:
+                        self.api.runs[20][field] = value
+                    with self.assertLogs(level='WARNING'):
+                        self.apply(green)
+                    self.assertEqual(self.api.issues[0]['state'], 'open')
+                    self.assertEqual(len(self.api.writes), 1)
+
     def test_new_green_closes_and_links_run(self):
         self.apply(self.event(10))
         self.apply(self.event(20, 'success'))
@@ -214,7 +284,7 @@ class LifecycleTest(unittest.TestCase):
         self.apply(self.event(20, 'success'))
         self.assertEqual(self.api.issues[105]['state'], 'closed')
         self.assertTrue(all(i['state'] == 'open' for i in self.api.issues[:105]))
-        self.assertTrue(any('page=2' in p for p in self.api.reads))
+        self.assertGreaterEqual(self.api.reads.count('graphql'), 4)
 
     def test_marker_copied_by_non_app_is_not_owned(self):
         self.apply(self.event(10))
@@ -238,7 +308,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(len(self.api.writes), 1)
 
     def test_issue_search_failure_never_creates_duplicate(self):
-        self.api.fail = '/issues?'
+        self.api.fail = 'graphql'
         with self.assertLogs(level='WARNING'):
             self.apply(self.event(10))
         self.assertEqual(self.api.writes, [])

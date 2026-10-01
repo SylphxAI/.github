@@ -219,7 +219,15 @@ non-main runs, dispatches and merge groups cannot mutate lifecycle alerts.
 The caller guard above saves a job, but is not the authority: event binding
 and every run/attempt API re-authentication enforce all three provenance fields.
 Run and attempt reads authenticate the event again immediately before
-each write, including the named aggregate job's conclusion. The handler lists
+each write, including the named aggregate job's conclusion. Lifecycle imports
+the canonical `ci-range/post_main.py` counted reader from a sparse checkout of
+this reusable workflow's exact SHA (`job.workflow_sha`), with no persisted
+credentials. Run history and jobs require stable `total_count` envelopes and
+complete distinct coverage. Issues use GraphQL's `totalCount` connection through
+the same reader because REST issue lists provide no total. The shared five-page
+limit fails closed, as do missing counts, short pages, duplicates, GraphQL errors,
+and missing/null/blank status or conclusion on a potentially relevant run.
+No such read can produce a recovery comment or close. The handler lists
 all issue pages and states, matches both the App author id and a hidden stable
 identity fingerprint, and retains the last represented event and failure in
 the issue marker. Ordering is `(run id, attempt)`, not issue creation time or

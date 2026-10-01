@@ -267,6 +267,7 @@ jobs:
         import re
         import subprocess
         from dataclasses import dataclass
+        from post_main import paged, producer_origin
 
 
         @dataclass
@@ -334,20 +335,44 @@ jobs:
 
 
         def find_issue(api, event, owner):
-            # Enumerate ALL states, including recovered alerts, and all pages. Listing
-            # repository issues avoids the search index's delay and 1,000-result cap.
-            found = []
-            page = 1
-            while True:
-                rows = api(f'repos/{event.repo}/issues?state=all&per_page=100&page={page}')
-                if not isinstance(rows, list):
+            # REST issue lists have no total_count. Adapt GraphQL's counted
+            # issues-only connection to the same canonical coverage validator.
+            cursor = None
+            def issue_page(_path):
+                nonlocal cursor
+                owner_name, repo_name = event.repo.split('/')
+                query = """query($owner:String!, $name:String!, $after:String) {
+                  repository(owner:$owner, name:$name) {
+                    issues(first:100, after:$after, orderBy:{field:CREATED_AT,direction:ASC}) {
+                      totalCount pageInfo { endCursor hasNextPage }
+                      nodes { databaseId number body state
+                        author { ... on Bot { databaseId } ... on User { databaseId } } }
+                    }
+                  }
+                }"""
+                response = api('graphql', 'POST', {'query': query, 'variables': {
+                    'owner': owner_name, 'name': repo_name, 'after': cursor}})
+                if response.get('errors'):
                     raise RuntimeError('Issue enumeration unavailable')
-                for row in rows:
-                    if marker(row, event, owner) is not None:
-                        found.append(row)
-                if len(rows) < 100:
-                    break
-                page += 1
+                connection = response['data']['repository']['issues']
+                info = connection['pageInfo']
+                if type(info.get('hasNextPage')) is not bool:
+                    raise RuntimeError('Issue pagination unavailable')
+                next_cursor = info.get('endCursor')
+                if info['hasNextPage'] and (not isinstance(next_cursor, str)
+                                           or not next_cursor or next_cursor == cursor):
+                    raise RuntimeError('Issue cursor unavailable or repeated')
+                cursor = next_cursor
+                rows = []
+                for node in connection['nodes']:
+                    if node.get('state') not in ('OPEN', 'CLOSED'):
+                        raise RuntimeError('Issue state unavailable')
+                    rows.append({'id': node['databaseId'], 'number': node['number'],
+                                 'body': node['body'], 'state': node['state'].lower(),
+                                 'user': {'id': (node.get('author') or {}).get('databaseId')}})
+                return {'total_count': connection['totalCount'], 'issues': rows}
+            found = [row for row in paged('issues', 'issues', reader=issue_page)
+                     if marker(row, event, owner) is not None]
             if len(found) > 1:
                 raise RuntimeError('Multiple owned identity issues; refusing ambiguous mutation')
             return found[0] if found else None
@@ -377,15 +402,8 @@ jobs:
             # Authenticate the aggregate job on this exact attempt, not a check from a
             # different workflow/attempt sharing the SHA. Cancelled/unknown never close.
             if event.result in ('success', 'failure'):
-                jobs = []
-                page = 1
-                while True:
-                    data = api(f'{base}/attempts/{event.attempt}/jobs?per_page=100&page={page}')
-                    rows = data['jobs']
-                    jobs.extend(j for j in rows if j.get('name') == event.check)
-                    if len(rows) < 100:
-                        break
-                    page += 1
+                jobs = paged(f'{base}/attempts/{event.attempt}/jobs', 'jobs', reader=api)
+                jobs = [job for job in jobs if job.get('name') == event.check]
                 if len(jobs) != 1 or jobs[0].get('conclusion') != event.result:
                     raise RuntimeError('Named check does not prove caller result on this attempt')
 
@@ -393,22 +411,20 @@ jobs:
         def prove_recovery(api, event):
             # Never trust handler delivery/queue order as the latest Verify state.
             # A newer failed run may have completed without its handler running.
+            rows = paged(f'repos/{event.repo}/actions/workflows/{event.workflow}/runs'
+                         '?branch=main&event=push&status=completed', 'workflow_runs', reader=api)
             runs = []
-            page = 1
-            while True:
-                data = api(f'repos/{event.repo}/actions/workflows/{event.workflow}/runs'
-                           f'?branch=main&event=push&status=completed&per_page=100&page={page}')
-                rows = data['workflow_runs']
-                for run in rows:
-                    workflow = run.get('path', '').split('@', 1)[0].removeprefix('.github/workflows/')
-                    if (trusted_main(run, event.repo) and workflow == event.workflow
-                            and run.get('repository', {}).get('full_name') == event.repo
-                            and run.get('status') == 'completed'
-                            and run.get('conclusion') in ('success', 'failure')):
-                        runs.append(run)
-                if len(rows) < 100:
-                    break
-                page += 1
+            for run in rows:
+                origin = producer_origin(run, event.repo, 'main', event.workflow)
+                if origin == 'ineligible':
+                    continue
+                if (origin != 'eligible' or run.get('status') != 'completed'
+                        or run.get('conclusion') not in (
+                            'success', 'failure', 'cancelled', 'skipped', 'neutral',
+                            'timed_out', 'action_required', 'startup_failure', 'stale')):
+                    raise RuntimeError('Relevant main Verify history row is invalid')
+                if run['conclusion'] in ('success', 'failure'):
+                    runs.append(run)
             if not runs:
                 raise RuntimeError('No eligible completed main Verify run proves recovery')
             latest = max(runs, key=lambda run: [run['id'], run['run_attempt']])
@@ -531,11 +547,20 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
+      - name: Read canonical counted proof helper
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ job.workflow_sha }}
+          path: lifecycle-shared
+          persist-credentials: false
+          sparse-checkout: .github/actions/ci-range
       - name: Reconcile owned identity alert
         env:
           GH_TOKEN: ${{ steps.lifecycle-app.outputs.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           APP_SLUG: ${{ steps.lifecycle-app.outputs.app-slug }}
+          PYTHONPATH: lifecycle-shared/.github/actions/ci-range
         run: python3 -c "$LIFECYCLE_PY"
 
   red-main:
@@ -641,13 +666,14 @@ jobs:
             return producer_origin(run, repo, branch, workflow, sha) == "eligible"
 
 
-        def paged(path, key):
-            """Require a stable, complete provider envelope before selecting any proof."""
+        def paged(path, key, reader=None):
+            """Require complete counted coverage; adapters may supply a counted reader."""
+            reader = api if reader is None else reader
             rows = []
             total = None
             identities = set()
             for page in range(1, PAGE_LIMIT + 1):
-                body = api(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
+                body = reader(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
                 count = body.get("total_count") if isinstance(body, dict) else None
                 batch = body.get(key) if isinstance(body, dict) else None
                 if type(count) is not int or count < 0 or not isinstance(batch, list):
