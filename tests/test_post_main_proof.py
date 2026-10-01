@@ -2,6 +2,7 @@
 """Producer/origin regressions shared by range selection and auto-revert."""
 import copy
 import importlib.util
+import io
 import json
 import pathlib
 import unittest
@@ -88,6 +89,19 @@ class ProofTest(unittest.TestCase):
                     patch.object(proof, "api", return_value=check) as read:
                 self.assertEqual(proof.checked_verdict(row, REPO, "main", "verify.yml"), "unknown")
                 read.assert_not_called()
+
+    def test_check_id_cli_uses_the_same_strict_link_for_annotations(self):
+        job, _ = objects(run())
+        output = io.StringIO()
+        with patch.object(proof.sys, "argv", ["proof.py", "check-id", REPO]), \
+                patch.object(proof.sys, "stdin", io.StringIO(json.dumps(job))), \
+                patch.object(proof.sys, "stdout", output):
+            proof.main()
+        self.assertEqual(output.getvalue(), "30\n")
+        with patch.object(proof.sys, "argv", ["proof.py", "check-id", REPO]), \
+                patch.object(proof.sys, "stdin", io.StringIO(json.dumps(dict(job, check_run_url="https://evil.invalid/30")))):
+            with self.assertRaisesRegex(ValueError, "invalid job check_run_url"):
+                proof.main()
 
     def test_linked_check_and_actual_job_must_both_match(self):
         row = run()

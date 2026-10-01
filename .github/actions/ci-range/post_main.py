@@ -155,6 +155,12 @@ def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=F
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "check-id":
+        check_id = linked_check_id(json.load(sys.stdin), sys.argv[2])
+        if check_id is None:
+            raise ValueError("invalid job check_run_url")
+        print(check_id)
+        return
     command, repo, branch, workflow, identity, *rest = sys.argv[1:]
     name = rest[0] if rest else "verified"
     if command == "base":
