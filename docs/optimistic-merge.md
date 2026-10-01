@@ -123,8 +123,14 @@ queue, and deploys stay as they are.
   Unknown/incomplete reads fail closed: Verify runs all lanes, there is no
   trusted baseline or deploy proof, and no destructive revert is authorized.
   They do not silence red-main recovery: eligible runs with unavailable proof
-  stay active for investigation, a bounded rerun or escalation. Only an
-  authenticated success satisfies the same-SHA green guard. A successful
+  stay active for investigation, a bounded rerun or escalation. Partial/null
+  producer metadata is unknown, never a positively established ineligible
+  producer; partial newer history cannot expose an older proof. Only an
+  authenticated success satisfies the same-SHA green guard. A failure from an
+  older run's rerun cannot authorize a revert: destructive handling re-reads
+  the newest approved same-SHA producer, stops on success and escalates on
+  unavailable proof. Previous-run history/proof unavailability also escalates;
+  it is not a genuinely absent prior run or an unconfirmed failure. A successful
   rerun after unknown initial proof is recovery, not a proven flaky test.
   `mode: run` exposes a `verdict` without builder secrets and returns `unknown`
   on provider exceptions instead of failing the preflight job. An authenticated

@@ -57,6 +57,31 @@ class ProofTest(unittest.TestCase):
                        dict(head_sha="b" * 40), dict(head_repository=dict(id=88, full_name="attacker/cloud"))):
             self.assertFalse(proof.full_push(run(**fields), REPO, "main", "verify.yml", SHA), fields)
 
+    def test_partial_null_and_invalid_producers_are_unknown_not_ineligible(self):
+        partials = [None, {}, dict(run(), repository=None), dict(run(), head_repository=None)]
+        for field in ("id", "workflow_id", "check_suite_id", "run_attempt", "event", "path",
+                      "head_branch", "head_sha", "repository", "head_repository"):
+            missing = run()
+            missing.pop(field)
+            partials.extend([missing, run(**{field: None})])
+        partials.extend([run(id=0), run(id=True), run(head_sha="invalid"),
+                         run(head_branch=""), run(path="invalid"), run(event="")])
+        for row in partials:
+            with self.subTest(row=row), patch.object(proof, "paged") as jobs:
+                self.assertEqual(proof.checked_verdict(row, REPO, "main", "verify.yml"), "unknown")
+                jobs.assert_not_called()
+
+    def test_partial_newer_history_never_exposes_an_older_success(self):
+        newer = run(2, check_suite_id=None)
+        with patch.object(proof, "api", return_value={"workflow_runs": [run(1), newer]}), \
+                patch.object(proof, "paged", wraps=proof.paged) as pages:
+            self.assertEqual(proof.sha_verdict(REPO, "main", "verify.yml", SHA), "unknown")
+            self.assertEqual(pages.call_count, 1)  # No older producer's jobs are read.
+        for invalid in (None, {}, run(2, head_sha=None), run(2, run_attempt=None)):
+            with self.subTest(row=invalid), patch.object(proof, "api", return_value={"workflow_runs": [run(1), invalid]}):
+                with self.assertRaisesRegex(ValueError, "identity unavailable"):
+                    proof.sha_verdict(REPO, "main", "verify.yml", SHA)
+
     def test_ineligible_producer_is_distinct_from_unavailable_proof(self):
         for fields in (dict(event="workflow_dispatch"), dict(event="merge_group"),
                        dict(path=".github/workflows/recording.yml")):

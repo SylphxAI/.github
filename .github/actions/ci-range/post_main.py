@@ -31,22 +31,44 @@ def workflow_path(workflow):
     return workflow if workflow.startswith(".github/workflows/") else f".github/workflows/{workflow}"
 
 
-def full_push(run, repo, branch, workflow, sha=None):
-    return (
-        run.get("event") == "push"
-        and run.get("head_branch") == branch
-        and run.get("path") == workflow_path(workflow)
-        and run.get("repository", {}).get("full_name") == repo
-        and run.get("head_repository", {}).get("full_name") == repo
-        and isinstance(run.get("repository", {}).get("id"), int)
-        and run["repository"]["id"] > 0
-        and run["repository"]["id"] == run.get("head_repository", {}).get("id")
-        and isinstance(run.get("workflow_id"), int) and run["workflow_id"] > 0
-        and isinstance(run.get("id"), int) and run["id"] > 0
-        and isinstance(run.get("check_suite_id"), int) and run["check_suite_id"] > 0
-        and re.fullmatch(r"[a-f0-9]{40}", run.get("head_sha", "")) is not None
+def positive_id(value):
+    return type(value) is int and value > 0
+
+
+def valid_sha(value):
+    return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{40}", value) is not None
+
+
+def producer_origin(run, repo, branch, workflow, sha=None):
+    """Only complete, valid producer evidence can establish ineligibility."""
+    if not isinstance(run, dict):
+        return "unknown"
+    for field in ("id", "workflow_id", "check_suite_id", "run_attempt"):
+        if not positive_id(run.get(field)):
+            return "unknown"
+    for field in ("repository", "head_repository"):
+        identity = run.get(field)
+        if (not isinstance(identity, dict) or not positive_id(identity.get("id"))
+                or not isinstance(identity.get("full_name"), str)
+                or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", identity["full_name"]) is None):
+            return "unknown"
+    event, tracked, path = run.get("event"), run.get("head_branch"), run.get("path")
+    if (not isinstance(event, str) or re.fullmatch(r"[a-z][a-z0-9_]*", event) is None
+            or not isinstance(tracked, str) or not tracked.strip()
+            or not isinstance(path, str) or re.fullmatch(r"\.github/workflows/[^/]+\.ya?ml", path) is None
+            or not valid_sha(run.get("head_sha"))):
+        return "unknown"
+    eligible = (
+        event == "push" and tracked == branch and path == workflow_path(workflow)
+        and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
+        and run["repository"]["id"] == run["head_repository"]["id"]
         and (sha is None or run["head_sha"] == sha)
     )
+    return "eligible" if eligible else "ineligible"
+
+
+def full_push(run, repo, branch, workflow, sha=None):
+    return producer_origin(run, repo, branch, workflow, sha) == "eligible"
 
 
 def paged(path, key, require_complete=True):
@@ -77,10 +99,9 @@ def linked_check_id(job, repo):
 
 def checked_verdict(run, repo, branch, workflow, name="verified"):
     """Read the latest attempt's aggregate job AND its authenticated check."""
-    if not full_push(run, repo, branch, workflow):
-        # The provider read succeeded and identifies a non-proof producer.
-        # Distinguish this from an eligible run whose proof is unavailable.
-        return "ineligible"
+    origin = producer_origin(run, repo, branch, workflow)
+    if origin != "eligible":
+        return origin
     jobs = paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
     jobs = [job for job in jobs if job.get("name") == name]
     if len(jobs) != 1:
@@ -116,7 +137,20 @@ def push_runs(repo, branch, workflow, sha=None):
     # verified proof, and a newer genuine failure must not be hidden.
     rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?{urlencode(query)}",
                  "workflow_runs", require_complete=False)
-    return [r for r in rows if full_push(r, repo, branch, workflow, sha)]
+    candidates = []
+    for row in rows:
+        origin = producer_origin(row, repo, branch, workflow, sha)
+        if origin == "ineligible":
+            continue
+        # Missing origin evidence must not erase the newest possible producer
+        # and expose an older passing/failing run. Unorderable history is an
+        # unavailable proof set, not an empty one.
+        if (not isinstance(row, dict) or not positive_id(row.get("id"))
+                or not positive_id(row.get("run_attempt")) or not valid_sha(row.get("head_sha"))
+                or (sha is not None and row["head_sha"] != sha)):
+            raise ValueError("workflow history identity unavailable")
+        candidates.append(row)
+    return candidates
 
 
 def latest_run(rows, sha):

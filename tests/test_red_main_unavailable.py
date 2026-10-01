@@ -37,16 +37,29 @@ path = args[1] if len(args) > 1 else ""
 if "/pulls?" in path or path.startswith("search/issues?"):
     print(0)
 elif "/jobs?" in path:
-    if os.environ.get("JOBS_UNAVAILABLE") == "yes":
+    if (os.environ.get("JOBS_UNAVAILABLE") == "yes"
+            or ("/runs/2/" in path and os.environ.get("NEWEST_UNAVAILABLE") == "yes")):
         print("HTTP 502: jobs unavailable", file=sys.stderr)
         sys.exit(1)
-    print("rust" if "--jq" in args else '{"jobs": []}')
+    if "--jq" in args:
+        print("rust")
+    else:
+        key = "NEWEST_JOB_FIXTURE" if "/runs/2/" in path else "JOB_FIXTURE"
+        print(json.dumps({"jobs": [json.loads(os.environ[key])]} if key in os.environ else {"jobs": []}))
+elif "/actions/workflows/" in path:
+    if os.environ.get("HISTORY_UNAVAILABLE") == "yes":
+        print("HTTP 502: history unavailable", file=sys.stderr)
+        sys.exit(1)
+    print(os.environ.get("HISTORY_FIXTURE", '{"workflow_runs": []}'))
+elif "/check-runs/" in path:
+    print(os.environ["CHECK_FIXTURE"])
 elif path.endswith("actions/runs/1"):
     if os.environ.get("RUN_UNAVAILABLE") == "yes":
         print("HTTP 502: run unavailable", file=sys.stderr)
         sys.exit(1)
     if "--jq" in args:
-        print(2 if args[args.index("--jq") + 1] == ".run_attempt" else "completed\\tfailure")
+        query = args[args.index("--jq") + 1]
+        print(2 if query == ".run_attempt" else "2026-09-30T10:00:00Z" if query == ".created_at" else "completed\\tfailure")
     else:
         print(os.environ["RUN_FIXTURE"])
 else:
@@ -56,7 +69,8 @@ else:
 
 FAKE_PROOF = '''
 import os, sys
-value = os.environ.get("BASE_RESULT", "") if sys.argv[1] == "remote-base" else os.environ["PROOF_RESULT"]
+value = (os.environ.get("BASE_RESULT", "") if sys.argv[1] == "remote-base" else
+         os.environ.get("NEWEST_RESULT", os.environ["PROOF_RESULT"]) if sys.argv[1] == "sha" else os.environ["PROOF_RESULT"])
 if value == "exception":
     print("HTTP 502: jobs/check proof unavailable", file=sys.stderr)
     sys.exit(1)
@@ -71,7 +85,8 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.work = self.root / "red-main"
         self.work.mkdir()
-        for name, filename in (("LIB", "lib.sh"), ("VERDICT_PY", "verdict.py")):
+        for name, filename in (("LIB", "lib.sh"), ("VERDICT_PY", "verdict.py"),
+                               ("PREV_PY", "prev.py"), ("CONFIRM_PY", "confirm.py")):
             (self.work / filename).write_text(HANDLER["env"][name])
         (self.work / "proof.py").write_text(FAKE_PROOF)
         binaries = self.root / "bin"
@@ -103,6 +118,36 @@ class UnavailableHandlerTest(unittest.TestCase):
     def summary(self):
         path = self.work / "summary.md"
         return path.read_text() if path.exists() else ""
+
+    def use_real_proof(self):
+        (self.work / "proof.py").write_text((ROOT / ".github/actions/ci-range/post_main.py").read_text())
+
+    def test_real_helper_partial_and_null_producers_never_quiet(self):
+        self.use_real_proof()
+        partials = [None, {}, dict(RUN, repository=None), dict(RUN, head_repository=None)]
+        for field in ("id", "event", "path", "workflow_id", "head_branch", "head_sha",
+                      "check_suite_id", "run_attempt", "repository", "head_repository"):
+            missing = dict(RUN)
+            missing.pop(field)
+            partials.extend([missing, dict(RUN, **{field: None})])
+        for row in partials:
+            with self.subTest(row=row):
+                self.env["RUN_FIXTURE"] = json.dumps(row)
+                result = self.execute("Resolve the verify run that failed")
+                self.assertFalse((self.work / "state/quiet").exists(), result.stdout)
+                self.assertIn("Unverified", self.summary())
+                if row and row.get("id") == 1 and row.get("head_sha") == SHA:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(self.state("proof-verdict"), "unknown")
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_real_helper_valid_nonproof_origin_is_terminal(self):
+        self.use_real_proof()
+        self.env["RUN_FIXTURE"] = json.dumps(dict(RUN, event="workflow_dispatch"))
+        result = self.execute("Resolve the verify run that failed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ineligible", self.state("quiet"))
 
     def test_resolver_proof_exception_and_unknown_keep_recovery_active(self):
         for result in ("exception", "unknown"):
@@ -164,6 +209,81 @@ class UnavailableHandlerTest(unittest.TestCase):
                 self.assertEqual(self.state("proof-verdict"), "unknown")
                 self.assertFalse((self.work / "state/quiet").exists())
                 self.assertIn("no authenticated", self.summary())
+
+    def test_real_newest_unavailable_blocks_older_run_failure_after_rerun(self):
+        self.use_real_proof()
+        job = dict(id=300, run_id=1, run_attempt=1, head_sha=SHA, name="verified",
+                   status="completed", conclusion="failure",
+                   check_run_url="https://api.github.com/repos/SylphxAI/cloud/check-runs/30")
+        check = dict(id=30, app=dict(id=15368, slug="github-actions"), head_sha=SHA,
+                     name="verified", check_suite=dict(id=3), status="completed", conclusion="failure",
+                     details_url="https://github.com/SylphxAI/cloud/actions/runs/1/job/300")
+        self.env.update(JOB_FIXTURE=json.dumps(job), CHECK_FIXTURE=json.dumps(check),
+                        HISTORY_FIXTURE=json.dumps({"workflow_runs": [dict(RUN, id=2), RUN]}),
+                        NEWEST_UNAVAILABLE="yes")
+        result = self.execute("Rerun the failed lanes on the same commit")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / "rerun.called").exists())
+        self.assertEqual(self.state("proof-verdict"), "unknown")
+        self.assertIn("newest approved same-SHA", self.summary())
+        self.assertIn("verdict=unknown", (self.root / "output").read_text())
+
+    def test_rerun_latest_success_stops_and_latest_unknown_escalates(self):
+        self.env["PROOF_RESULT"] = "failure"
+        for newest in ("unknown", "exception", "success"):
+            with self.subTest(newest=newest):
+                self.env["NEWEST_RESULT"] = newest
+                result = self.execute("Rerun the failed lanes on the same commit")
+                self.assertFalse((self.work / "state/quiet").exists())
+                if newest == "success":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(self.state("proof-verdict"), "success")
+                    self.assertIn("verdict=recovered", (self.root / "output").read_text())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.state("proof-verdict"), "unknown")
+
+    def test_final_revert_guard_refreshes_latest_run_and_baseline(self):
+        state = self.work / "state"
+        state.mkdir(exist_ok=True)
+        (state / "proof-verdict").write_text("failure")
+        (state / "base").write_text("b" * 40)
+        for newest in ("unknown", "exception", "success"):
+            with self.subTest(newest=newest):
+                self.env["NEWEST_RESULT"] = newest
+                result = self.execute("Revert the culprit or report it")
+                self.assertEqual(result.returncode == 0, newest == "success")
+                self.assertFalse((self.root / "git.called").exists())
+        self.env["NEWEST_RESULT"] = "failure"
+        result = self.execute("Revert the culprit or report it")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("baseline no longer has authenticated success", self.summary())
+        self.assertFalse((self.root / "git.called").exists())
+
+    def test_previous_history_missing_is_distinct_from_unavailable(self):
+        history = {"workflow_runs": [dict(id=9, status="completed", conclusion="failure",
+                                          created_at="2026-09-30T09:00:00Z", html_url="fixture")]}
+        self.env["HISTORY_FIXTURE"] = json.dumps(history)
+        for proof in ("unknown", "exception"):
+            with self.subTest(proof=proof):
+                self.env["PROOF_RESULT"] = proof
+                result = self.execute("Confirm the same unit failed on two consecutive completed runs")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("previous run 9 has unavailable proof", self.summary())
+                self.assertFalse((self.work / "state/quiet").exists())
+        self.env["HISTORY_UNAVAILABLE"] = "yes"
+        unavailable = self.execute("Confirm the same unit failed on two consecutive completed runs")
+        self.assertNotEqual(unavailable.returncode, 0)
+        self.assertIn("previous-run history is unavailable", self.summary())
+        del self.env["HISTORY_UNAVAILABLE"]
+        for invalid in ("null", "{}", '{"workflow_runs": null}', '{"workflow_runs": [{"id": 9}]}'):
+            self.env["HISTORY_FIXTURE"] = invalid
+            malformed = self.execute("Confirm the same unit failed on two consecutive completed runs")
+            self.assertNotEqual(malformed.returncode, 0)
+        self.env["HISTORY_FIXTURE"] = '{"workflow_runs": []}'
+        absent = self.execute("Confirm the same unit failed on two consecutive completed runs")
+        self.assertEqual(absent.returncode, 0, absent.stderr)
+        self.assertIn("confirmed=no", (self.root / "output").read_text())
 
     def test_recovered_success_never_blames_a_flake_without_initial_failure(self):
         self.env["PROOF_RESULT"] = "success"
