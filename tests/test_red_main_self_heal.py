@@ -139,8 +139,12 @@ class VerdictTest(unittest.TestCase):
     def test_code_failure_paths_unchanged(self):
         self.assertEqual(verdict("no", "completed", "success"), "flake")
         self.assertEqual(verdict("no", "completed", "failure"), "real")
-        self.assertEqual(verdict("no", "refused"), "real")
+        self.assertEqual(verdict("no", "refused"), "unknown")
         self.assertEqual(verdict("no", "timeout"), "unknown")
+
+    def test_unknown_cancelled_or_recording_rerun_never_proves_a_real_failure(self):
+        for conclusion in ("unknown", "cancelled", "skipped", "neutral", ""):
+            self.assertEqual(verdict("no", "completed", conclusion), "unknown")
 
 
 class PreviousRunTest(unittest.TestCase):

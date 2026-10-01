@@ -837,10 +837,10 @@ jobs:
         infra = infra == "yes"
         if state == "completed" and conclusion == "success":
             print("infra" if infra else "flake")
-        elif state == "completed":
+        elif state == "completed" and conclusion in ("failure", "timed_out", "action_required", "startup_failure"):
             print("unknown" if infra else "real")
         elif state == "refused":
-            print("unknown" if infra else "real")
+            print("unknown")
         else:
             print("unknown")
       # The previous COMPLETED verify run on main. Reads the workflow runs
