@@ -1,29 +1,29 @@
-# Extension pattern <TAB> forbidden pattern <TAB> what to use instead.
+# Extension pattern <TAB> forbidden pattern <TAB> what to use instead <TAB> stable finding code.
 # A row applies only to paths matching its extension pattern. SQL patterns are
 # case-insensitive; every other pattern is case-sensitive. A quoted line, or a
 # line that must keep the old scheme, carries identifiers: allow <reason>.
-\.sql$	(?i)gen_random_uuid\(\)	gen_random_uuid() mints a random (v4) UUID; use uuidv7()
-\.sql$	(?i)uuid_generate_v4\(	uuid_generate_v4() mints a random (v4) UUID; use uuidv7()
-\.sql$	(?i)uuid_generate_v1	uuid_generate_v1() mints a UUIDv1; use uuidv7()
-\.sql$	(?i)\b(?:text|varchar|citext)\b[^,]*\bprimary\s+key\b	a text primary key is not a UUIDv7; use a uuid column with uuidv7()
-\.sql$	(?i)\b(?:big)?serial\b[^,]*\bprimary\s+key\b	a serial primary key is not a UUIDv7; use a uuid column with uuidv7()
-\.rs$	Uuid::new_v4	Uuid::new_v4 mints a UUIDv4; use Uuid::now_v7() or the SDK ids helper
-\.rs$	ulid::	ULID is not a UUIDv7; use the SDK ids helper
-\.rs$	Ulid::new	ULID is not a UUIDv7; use the SDK ids helper
-\.rs$	nanoid	nanoid is not a UUIDv7; use the SDK ids helper
-\.rs$	cuid	CUID is not a UUIDv7; use the SDK ids helper
-\.rs$	ksuid	KSUID is not a UUIDv7; use the SDK ids helper
-\.(ts|tsx|js|mjs)$	randomUUID\(	randomUUID() mints a random (v4) UUID; use the ids helper
-\.(ts|tsx|js|mjs)$	from ['\"]nanoid['\"]	nanoid is not a UUIDv7; use the ids helper
-\.(ts|tsx|js|mjs)$	nanoid\(	nanoid is not a UUIDv7; use the ids helper
-\.(ts|tsx|js|mjs)$	ulid\(	ULID is not a UUIDv7; use the ids helper
-\.(ts|tsx|js|mjs)$	from ['\"]ulid['\"]	ULID is not a UUIDv7; use the ids helper
-\.(ts|tsx|js|mjs)$	cuid	CUID is not a UUIDv7; use the ids helper
-\.(ts|tsx|js|mjs)$	uuidv4	uuidv4 mints a UUIDv4; use the ids helper
-\.(ts|tsx|js|mjs)$	v4 as uuid	v4 is a UUIDv4; import the v7 generator instead
-\.(ts|tsx|js|mjs)$	uuid\.v4\(	uuid.v4() mints a UUIDv4; use the ids helper
-\.py$	uuid4\(	uuid4() mints a UUIDv4; use the SDK ids helper
-\.py$	uuid1\(	uuid1() mints a UUIDv1; use the SDK ids helper
-\.go$	uuid\.New\(\)	uuid.New() mints a random (v4) UUID; use uuid.NewV7()
-\.go$	uuid\.NewString\(\)	uuid.NewString() mints a random (v4) UUID; use uuid.NewV7()
-\.go$	ulid\.	ULID is not a UUIDv7; use the SDK ids helper
+\.sql$	(?i)gen_random_uuid\(\)	gen_random_uuid() mints a random (v4) UUID; use uuidv7()	sql.uuid-v4-random
+\.sql$	(?i)uuid_generate_v4\(	uuid_generate_v4() mints a random (v4) UUID; use uuidv7()	sql.uuid-v4-extension
+\.sql$	(?i)uuid_generate_v1	uuid_generate_v1() mints a UUIDv1; use uuidv7()	sql.uuid-v1
+\.sql$	(?i)\b(?:text|varchar|citext)\b[^,]*\bprimary\s+key\b	a text primary key is not a UUIDv7; use a uuid column with uuidv7()	sql.text-primary-key
+\.sql$	(?i)\b(?:big)?serial\b[^,]*\bprimary\s+key\b	a serial primary key is not a UUIDv7; use a uuid column with uuidv7()	sql.serial-primary-key
+\.rs$	Uuid::new_v4	Uuid::new_v4 mints a UUIDv4; use Uuid::now_v7() or the SDK ids helper	rust.uuid-v4
+\.rs$	ulid::	ULID is not a UUIDv7; use the SDK ids helper	rust.ulid-module
+\.rs$	Ulid::new	ULID is not a UUIDv7; use the SDK ids helper	rust.ulid-new
+\.rs$	nanoid	nanoid is not a UUIDv7; use the SDK ids helper	rust.nanoid
+\.rs$	cuid	CUID is not a UUIDv7; use the SDK ids helper	rust.cuid
+\.rs$	ksuid	KSUID is not a UUIDv7; use the SDK ids helper	rust.ksuid
+\.(ts|tsx|js|mjs)$	randomUUID\(	randomUUID() mints a random (v4) UUID; use the ids helper	js.uuid-v4-random
+\.(ts|tsx|js|mjs)$	from ['\"]nanoid['\"]	nanoid is not a UUIDv7; use the ids helper	js.nanoid-import
+\.(ts|tsx|js|mjs)$	nanoid\(	nanoid is not a UUIDv7; use the ids helper	js.nanoid-call
+\.(ts|tsx|js|mjs)$	ulid\(	ULID is not a UUIDv7; use the ids helper	js.ulid-call
+\.(ts|tsx|js|mjs)$	from ['\"]ulid['\"]	ULID is not a UUIDv7; use the ids helper	js.ulid-import
+\.(ts|tsx|js|mjs)$	cuid	CUID is not a UUIDv7; use the ids helper	js.cuid
+\.(ts|tsx|js|mjs)$	uuidv4	uuidv4 mints a UUIDv4; use the ids helper	js.uuid-v4-helper
+\.(ts|tsx|js|mjs)$	v4 as uuid	v4 is a UUIDv4; import the v7 generator instead	js.uuid-v4-import
+\.(ts|tsx|js|mjs)$	uuid\.v4\(	uuid.v4() mints a UUIDv4; use the ids helper	js.uuid-v4-call
+\.py$	uuid4\(	uuid4() mints a UUIDv4; use the SDK ids helper	python.uuid-v4
+\.py$	uuid1\(	uuid1() mints a UUIDv1; use the SDK ids helper	python.uuid-v1
+\.go$	uuid\.New\(\)	uuid.New() mints a random (v4) UUID; use uuid.NewV7()	go.uuid-v4-new
+\.go$	uuid\.NewString\(\)	uuid.NewString() mints a random (v4) UUID; use uuid.NewV7()	go.uuid-v4-string
+\.go$	ulid\.	ULID is not a UUIDv7; use the SDK ids helper	go.ulid
