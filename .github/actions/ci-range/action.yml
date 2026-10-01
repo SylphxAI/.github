@@ -4,8 +4,8 @@ description: >
   selects - one answer for the merge-queue gate and the post-merge verify
   workflow (docs/optimistic-merge.md). Pull request: its base. Merge group:
   the group's base. Push or dispatch: the last commit whose full suite passed
-  (the newest successful run of this workflow on the default branch, else the
-  newest ancestor with a passing `verified` check run). Schedule: everything.
+  (the newest ancestor with an authenticated successful `verified` job from
+  a full push of the approved workflow on the tracked branch). Schedule: everything.
   Outputs `base`, `run` (JSON lane -> bool; use
   `fromJSON(needs.<job>.outputs.run).<lane>`) and `changed`.
   The job needs `actions: read` and `checks: read`, and a checkout of HEAD
@@ -13,13 +13,26 @@ description: >
   without blobs).
 
 inputs:
+  mode:
+    description: "range (default), or run to authenticate a post-main run's verified verdict."
+    default: range
+  proof-run:
+    description: "Run id for mode=run; empty selects the newest full push of the approved workflow."
+    default: ""
+  proof-workflow:
+    description: Approved workflow file for mode=run.
+    default: verify.yml
+  proof-branch:
+    description: Tracked branch for mode=run.
+    default: main
   lanes:
     description: >
       One lane per line, `name: pattern pattern ...`. Patterns are fnmatch
       globs over repository paths where `*` also crosses `/`. A lane with no
       pattern, or with `*`, always runs. A change under `.github/` selects
       every lane.
-    required: true
+    required: false
+    default: ""
   only:
     description: >
       Comma-separated lanes to narrow to (the verify workflow's dispatch
@@ -30,6 +43,9 @@ inputs:
     default: ${{ github.token }}
 
 outputs:
+  verdict:
+    description: "Authenticated verified verdict for mode=run; unknown is never green or red."
+    value: ${{ steps.range.outputs.verdict }}
   base:
     description: The base commit, or empty when every lane runs.
     value: ${{ steps.range.outputs.base }}
@@ -46,6 +62,10 @@ runs:
     - id: range
       shell: bash
       env:
+        PROOF_MODE: ${{ inputs.mode }}
+        PROOF_IDENTITY: ${{ inputs.proof-run }}
+        PROOF_WORKFLOW: ${{ inputs.proof-workflow }}
+        PROOF_BRANCH: ${{ inputs.proof-branch }}
         LANES: ${{ inputs.lanes }}
         ONLY: ${{ inputs.only }}
         TOKEN: ${{ inputs.token }}

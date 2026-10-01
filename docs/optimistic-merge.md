@@ -106,7 +106,19 @@ queue, and deploys stay as they are.
   `name: path globs`; a change under `.github/` runs every lane. Use its
   `base` output for affected-only builds (`turbo run --affected` with
   `TURBO_SCM_BASE`, `cargo nextest run -p` on the changed crates, `nx affected
-  --base`).
+  --base`). A push/dispatch base is the newest first-parent ancestor whose
+  authenticated full post-main `verified` job succeeded: GitHub Actions App,
+  approved workflow path, event `push`, tracked branch, same repository and
+  exact SHA, with matching latest-attempt job/check membership. Whole-workflow
+  success is not proof; optional publication failure does not erase verified.
+  Recording, diagnostic and merge-group runs can never supply a baseline or
+  mask a genuine post-main failure. The shared red-main handler embeds the
+  exact same helper (a source-equality regression prevents drift) for event
+  selection, the same-SHA green guard, rerun verdict and revert baseline.
+  Unknown/incomplete reads widen Verify to all lanes and stop revert handling.
+  `mode: run` exposes an authenticated `verdict` output without builder secrets,
+  so a caller can gate the handler on verified failure rather than optional
+  publish/cache failure.
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
   `verified` verdict. Skipped passes; failed or cancelled fails; `required:
   plan` makes a broken plan a failure. `required-unless-merge-group: suite`
