@@ -144,11 +144,17 @@ def main() -> int:
         workflow = os.environ.get("PROOF_WORKFLOW", "verify.yml")
         identity = os.environ.get("PROOF_IDENTITY", "")
         if mode == "run":
-            if identity:
-                run = proof.api(f"repos/{repo}/actions/runs/{identity}")
-            else:
-                run = max(proof.push_runs(repo, branch, workflow), key=lambda r: r["id"], default=None)
-            verdict = proof.checked_verdict(run, repo, branch, workflow) if run else "unknown"
+            try:
+                if identity:
+                    run = proof.api(f"repos/{repo}/actions/runs/{identity}")
+                else:
+                    run = max(proof.push_runs(repo, branch, workflow), key=lambda r: r["id"], default=None)
+                verdict = proof.checked_verdict(run, repo, branch, workflow) if run else "unknown"
+            except Exception as error:
+                # A caller can keep recovery active on unknown; a failed
+                # preflight job would skip the handler before it can recover.
+                print(f"::warning::post-main proof unavailable: {error}", file=sys.stderr)
+                verdict = "unknown"
             with open(os.environ["GITHUB_OUTPUT"], "a") as out:
                 out.write(f"verdict={verdict}\n")
             return 0

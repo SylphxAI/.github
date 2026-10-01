@@ -78,7 +78,9 @@ def linked_check_id(job, repo):
 def checked_verdict(run, repo, branch, workflow, name="verified"):
     """Read the latest attempt's aggregate job AND its authenticated check."""
     if not full_push(run, repo, branch, workflow):
-        return "unknown"
+        # The provider read succeeded and identifies a non-proof producer.
+        # Distinguish this from an eligible run whose proof is unavailable.
+        return "ineligible"
     jobs = paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
     jobs = [job for job in jobs if job.get("name") == name]
     if len(jobs) != 1:

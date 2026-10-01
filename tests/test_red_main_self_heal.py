@@ -141,9 +141,9 @@ classify_run 1
         self.assertEqual(classify(), "none")
 
 
-def verdict(infra, state, conclusion="") -> str:
+def verdict(infra, state, conclusion="", initial="failure") -> str:
     return subprocess.run(
-        [sys.executable, "-c", VERDICT, infra, state, conclusion], capture_output=True, text=True, check=True
+        [sys.executable, "-c", VERDICT, infra, state, conclusion, initial], capture_output=True, text=True, check=True
     ).stdout.strip()
 
 
@@ -174,6 +174,12 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(verdict("no", "completed", "failure"), "real")
         self.assertEqual(verdict("no", "refused"), "unknown")
         self.assertEqual(verdict("no", "timeout"), "unknown")
+
+    def test_recovery_from_unknown_initial_proof_is_not_a_flake(self):
+        self.assertEqual(verdict("no", "completed", "success", "unknown"), "recovered")
+        self.assertEqual(verdict("yes", "completed", "success", "unknown"), "recovered")
+        self.assertEqual(verdict("no", "completed", "failure", "unknown"), "real")
+        self.assertEqual(verdict("no", "completed", "unknown", "unknown"), "unknown")
 
     def test_unknown_cancelled_or_recording_rerun_never_proves_a_real_failure(self):
         for conclusion in ("unknown", "cancelled", "skipped", "neutral", ""):

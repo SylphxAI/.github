@@ -44,7 +44,7 @@ inputs:
 
 outputs:
   verdict:
-    description: "Authenticated verified verdict for mode=run; unknown is never green or red."
+    description: "Authenticated verified verdict for mode=run; ineligible names a non-proof producer, unknown is unverified and keeps recovery active."
     value: ${{ steps.range.outputs.verdict }}
   base:
     description: The base commit, or empty when every lane runs.

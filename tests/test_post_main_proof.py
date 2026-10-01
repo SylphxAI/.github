@@ -57,6 +57,28 @@ class ProofTest(unittest.TestCase):
                        dict(head_sha="b" * 40), dict(head_repository=dict(id=88, full_name="attacker/cloud"))):
             self.assertFalse(proof.full_push(run(**fields), REPO, "main", "verify.yml", SHA), fields)
 
+    def test_ineligible_producer_is_distinct_from_unavailable_proof(self):
+        for fields in (dict(event="workflow_dispatch"), dict(event="merge_group"),
+                       dict(path=".github/workflows/recording.yml")):
+            with self.subTest(fields=fields), patch.object(proof, "paged") as jobs:
+                self.assertEqual(proof.checked_verdict(run(**fields), REPO, "main", "verify.yml"), "ineligible")
+                jobs.assert_not_called()
+        with patch.object(proof, "paged", return_value=[]):
+            self.assertEqual(proof.checked_verdict(run(), REPO, "main", "verify.yml"), "unknown")
+
+    def test_unavailable_proof_cannot_supply_a_base(self):
+        row = run(sha="b" * 40)
+        for failure in ("unknown", RuntimeError("HTTP 502")):
+            with self.subTest(failure=failure), patch.object(proof, "push_runs", return_value=[row]), \
+                    patch.object(proof, "api", return_value={"parents": [{"sha": row["head_sha"]}]}), \
+                    patch.object(proof, "checked_verdict", side_effect=failure if isinstance(failure, Exception) else None,
+                                 return_value=failure):
+                if isinstance(failure, Exception):
+                    with self.assertRaisesRegex(RuntimeError, "HTTP 502"):
+                        proof.last_verified(REPO, "main", "verify.yml", SHA, remote=True)
+                else:
+                    self.assertEqual(proof.last_verified(REPO, "main", "verify.yml", SHA, remote=True), "")
+
     def test_optional_publish_failure_does_not_erase_verified_success(self):
         row = run(conclusion="failure")
         job, check = objects(row)
@@ -178,8 +200,8 @@ class ProofTest(unittest.TestCase):
 
     def test_auto_revert_uses_helper_for_event_green_guard_and_baseline(self):
         text = (ROOT / ".github/workflows/red-main.yml").read_text()
-        self.assertIn('proof.py" run "$REPO" main "$VERIFY_WORKFLOW" "$run_id"', text)
-        self.assertIn('proof.py" sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
+        self.assertIn('read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$run_id"', text)
+        self.assertIn('read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
         self.assertIn('proof.py" remote-base "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
         self.assertIn('if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi', text)
         self.assertNotIn("status=success&per_page=1", text)

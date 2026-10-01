@@ -120,10 +120,17 @@ queue, and deploys stay as they are.
   mask a genuine post-main failure. The shared red-main handler embeds the
   exact same helper (a source-equality regression prevents drift) for event
   selection, the same-SHA green guard, rerun verdict and revert baseline.
-  Unknown/incomplete reads widen Verify to all lanes and stop revert handling.
-  `mode: run` exposes an authenticated `verdict` output without builder secrets,
-  so a caller can gate the handler on verified failure rather than optional
-  publish/cache failure.
+  Unknown/incomplete reads fail closed: Verify runs all lanes, there is no
+  trusted baseline or deploy proof, and no destructive revert is authorized.
+  They do not silence red-main recovery: eligible runs with unavailable proof
+  stay active for investigation, a bounded rerun or escalation. Only an
+  authenticated success satisfies the same-SHA green guard. A successful
+  rerun after unknown initial proof is recovery, not a proven flaky test.
+  `mode: run` exposes a `verdict` without builder secrets and returns `unknown`
+  on provider exceptions instead of failing the preflight job. An authenticated
+  non-proof producer returns `ineligible`; callers must retain handling for
+  unknown, never treat it as success or terminal no-action. Destructive revert
+  requires authenticated failure plus a trusted authenticated baseline.
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
   `verified` verdict. Skipped passes; failed or cancelled fails; `required:
   plan` makes a broken plan a failure. `required-unless-merge-group: suite`

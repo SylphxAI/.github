@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Execute the real handler scripts under API exceptions and unknown proof.
+
+All provider commands and proof reads use local fixtures. No network or git
+writes are allowed. Unknown proof must retain recovery without authorizing a
+baseline, quarantine or destructive revert.
+"""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github/workflows/red-main.yml"
+DOCUMENT = yaml.safe_load(WORKFLOW.read_text())
+HANDLER = DOCUMENT["jobs"]["red-main"]
+STEPS = {step["name"]: step for step in HANDLER["steps"] if "name" in step}
+SHA = "a" * 40
+RUN = dict(id=1, event="push", path=".github/workflows/verify.yml", workflow_id=2,
+           head_branch="main", head_sha=SHA, check_suite_id=3, run_attempt=1,
+           repository=dict(id=4, full_name="SylphxAI/cloud"),
+           head_repository=dict(id=4, full_name="SylphxAI/cloud"),
+           html_url="https://github.com/SylphxAI/cloud/actions/runs/1", conclusion="failure")
+
+FAKE_GH = '''
+import json, os, pathlib, sys
+args = sys.argv[1:]
+if args[:2] == ["run", "rerun"]:
+    pathlib.Path(os.environ["RUNNER_TEMP"], "rerun.called").touch()
+    sys.exit(0)
+path = args[1] if len(args) > 1 else ""
+if "/pulls?" in path or path.startswith("search/issues?"):
+    print(0)
+elif "/jobs?" in path:
+    if os.environ.get("JOBS_UNAVAILABLE") == "yes":
+        print("HTTP 502: jobs unavailable", file=sys.stderr)
+        sys.exit(1)
+    print("rust" if "--jq" in args else '{"jobs": []}')
+elif path.endswith("actions/runs/1"):
+    if os.environ.get("RUN_UNAVAILABLE") == "yes":
+        print("HTTP 502: run unavailable", file=sys.stderr)
+        sys.exit(1)
+    if "--jq" in args:
+        print(2 if args[args.index("--jq") + 1] == ".run_attempt" else "completed\\tfailure")
+    else:
+        print(os.environ["RUN_FIXTURE"])
+else:
+    print("unexpected provider command: " + repr(args), file=sys.stderr)
+    sys.exit(1)
+'''
+
+FAKE_PROOF = '''
+import os, sys
+value = os.environ.get("BASE_RESULT", "") if sys.argv[1] == "remote-base" else os.environ["PROOF_RESULT"]
+if value == "exception":
+    print("HTTP 502: jobs/check proof unavailable", file=sys.stderr)
+    sys.exit(1)
+print(value)
+'''
+
+
+class UnavailableHandlerTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.work = self.root / "red-main"
+        self.work.mkdir()
+        for name, filename in (("LIB", "lib.sh"), ("VERDICT_PY", "verdict.py")):
+            (self.work / filename).write_text(HANDLER["env"][name])
+        (self.work / "proof.py").write_text(FAKE_PROOF)
+        binaries = self.root / "bin"
+        binaries.mkdir()
+        gh = binaries / "gh"
+        gh.write_text(f"#!{sys.executable}\n" + FAKE_GH)
+        gh.chmod(0o755)
+        git = binaries / "git"
+        git.write_text('#!/bin/bash\ntouch "$RUNNER_TEMP/git.called"\nexit 1\n')
+        git.chmod(0o755)
+        self.env = dict(os.environ, RUNNER_TEMP=str(self.root),
+                        PATH=f"{binaries}:{os.environ['PATH']}",
+                        GITHUB_OUTPUT=str(self.root / "output"),
+                        REPO="SylphxAI/cloud", VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME="verified",
+                        EVENT_RUN_ID="1", RUN_ID="1", HEAD_SHA=SHA, SHORT_SHA=SHA[:9],
+                        RUN_URL=RUN["html_url"], RUN_FIXTURE=json.dumps(RUN),
+                        MODE="notify", ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
+                        INFRA="no", INFRA_SIGNATURE="", INITIAL_PROOF="unknown",
+                        RERUN_TIMEOUT_MINUTES="1", PROOF_RESULT="unknown")
+
+    def execute(self, name):
+        return subprocess.run(["bash", "-c", STEPS[name]["run"]], env=self.env,
+                              cwd=self.root, capture_output=True, text=True, timeout=10)
+
+    def state(self, name):
+        path = self.work / "state" / name
+        return path.read_text().strip() if path.exists() else ""
+
+    def summary(self):
+        path = self.work / "summary.md"
+        return path.read_text() if path.exists() else ""
+
+    def test_resolver_proof_exception_and_unknown_keep_recovery_active(self):
+        for result in ("exception", "unknown"):
+            with self.subTest(proof=result):
+                self.env["PROOF_RESULT"] = result
+                resolved = self.execute("Resolve the verify run that failed")
+                self.assertEqual(resolved.returncode, 0, resolved.stderr)
+                self.assertFalse((self.work / "state/quiet").exists())
+                self.assertEqual(self.state("proof-verdict"), "unknown")
+                self.assertEqual(self.state("run-id"), "1")
+                self.assertIn("proof-verdict=unknown", (self.root / "output").read_text())
+                self.assertIn("Unverified", self.summary())
+
+    def test_resolver_ineligible_and_authenticated_success_are_terminal(self):
+        for result in ("ineligible", "success"):
+            with self.subTest(proof=result):
+                self.env["PROOF_RESULT"] = result
+                resolved = self.execute("Resolve the verify run that failed")
+                self.assertEqual(resolved.returncode, 0, resolved.stderr)
+                self.assertIn(result, self.state("quiet"))
+                (self.work / "state/quiet").unlink()
+
+    def test_resolver_missing_jobs_does_not_silence_unknown_proof(self):
+        self.env["JOBS_UNAVAILABLE"] = "yes"
+        result = self.execute("Resolve the verify run that failed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.work / "state/quiet").exists())
+        self.assertEqual(self.state("run-id"), "1")
+        self.assertIn("failed lanes could not be listed", self.summary())
+
+    def test_unavailable_run_metadata_escalates_instead_of_quiet(self):
+        self.env["RUN_UNAVAILABLE"] = "yes"
+        result = self.execute("Resolve the verify run that failed")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.work / "state/quiet").exists())
+        self.assertIn("escalating", self.summary())
+        self.assertEqual(STEPS["Alert that the red-main handler itself failed"]["if"], "failure()")
+
+    def test_green_guard_exception_and_unknown_are_not_success(self):
+        for proof in ("exception", "unknown", "failure", "ineligible"):
+            with self.subTest(proof=proof):
+                self.env["PROOF_RESULT"] = proof
+                result = self.execute("Stop when the work is already done or already in hand")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse((self.work / "state/quiet").exists())
+        self.env["PROOF_RESULT"] = "success"
+        result = self.execute("Stop when the work is already done or already in hand")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("authenticated passing", self.state("quiet"))
+
+    def test_unknown_initial_proof_still_reruns_and_unavailable_result_escalates(self):
+        for proof in ("exception", "unknown"):
+            with self.subTest(proof=proof):
+                self.env["PROOF_RESULT"] = proof
+                result = self.execute("Rerun the failed lanes on the same commit")
+                self.assertTrue((self.root / "rerun.called").exists())
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("verdict=unknown", (self.root / "output").read_text())
+                self.assertEqual(self.state("proof-verdict"), "unknown")
+                self.assertFalse((self.work / "state/quiet").exists())
+                self.assertIn("no authenticated", self.summary())
+
+    def test_recovered_success_never_blames_a_flake_without_initial_failure(self):
+        self.env["PROOF_RESULT"] = "success"
+        result = self.execute("Rerun the failed lanes on the same commit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.root / "rerun.called").exists())
+        self.assertIn("verdict=recovered", (self.root / "output").read_text())
+        self.assertIn("no flake blamed", self.summary())
+
+    def test_unavailable_baseline_is_never_a_revert_base(self):
+        for base in ("exception", "", "unknown"):
+            with self.subTest(base=base):
+                self.env["BASE_RESULT"] = base
+                result = self.execute("Trace the culprit among the unverified commits")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.state("base"), "")
+                self.assertFalse((self.work / "state/quiet").exists())
+                self.assertFalse((self.root / "git.called").exists())
+
+    def test_destructive_guard_requires_failure_and_baseline(self):
+        state = self.work / "state"
+        state.mkdir(exist_ok=True)
+        for proof, base in (("unknown", "b" * 40), ("failure", "")):
+            with self.subTest(proof=proof, base=base):
+                (state / "proof-verdict").write_text(proof)
+                (state / "base").write_text(base)
+                result = self.execute("Revert the culprit or report it")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / "git.called").exists())
+
+    def test_preflight_api_exception_returns_unknown_without_skipping_handler(self):
+        output = self.root / "preflight-output"
+        env = dict(self.env, PROOF_MODE="run", PROOF_IDENTITY="1", PROOF_BRANCH="main",
+                   PROOF_WORKFLOW="verify.yml", GITHUB_REPOSITORY="SylphxAI/cloud",
+                   GITHUB_OUTPUT=str(output), JOBS_UNAVAILABLE="yes")
+        result = subprocess.run([sys.executable, str(ROOT / ".github/actions/ci-range/ci_range.py")],
+                                env=env, cwd=self.root, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output.read_text(), "verdict=unknown\n")
+        self.assertIn("proof unavailable", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

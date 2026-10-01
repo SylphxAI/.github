@@ -324,7 +324,9 @@ jobs:
         def checked_verdict(run, repo, branch, workflow, name="verified"):
             """Read the latest attempt's aggregate job AND its authenticated check."""
             if not full_push(run, repo, branch, workflow):
-                return "unknown"
+                # The provider read succeeded and identifies a non-proof producer.
+                # Distinguish this from an eligible run whose proof is unavailable.
+                return "ineligible"
             jobs = paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
             jobs = [job for job in jobs if job.get("name") == name]
             if len(jobs) != 1:
@@ -548,6 +550,18 @@ jobs:
               '. + [ ($jobs[] | select(.id == $id)) + {annotations: $notes} ]' <<<"$enriched")
           done
           jq -c '{jobs: .}' <<<"$enriched" | python3 "$WORK_DIR/infra.py"
+        }
+
+        # read_proof <run|sha> <args...>: unavailable is unverified, never
+        # success or a reason to silence recovery under set -euo pipefail.
+        read_proof() {
+          local verdict
+          if verdict=$(python3 "$WORK_DIR/proof.py" "$@" 2>"$WORK_DIR/proof.err"); then
+            printf '%s\n' "$verdict"
+          else
+            say "**Unverified:** the post-main proof could not be read ($(head -c 200 "$WORK_DIR/proof.err" | tr '\n' ' ')); investigation, rerun or escalation remains active."
+            printf '%s\n' unknown
+          fi
         }
 
         # enc <value>: percent-encode a query parameter value.
@@ -855,9 +869,12 @@ jobs:
         import sys
 
         infra, state, conclusion = (sys.argv[1:4] + ["", "", ""])[:3]
+        initial = sys.argv[4] if len(sys.argv) > 4 else "failure"
+        failed = ("failure", "timed_out", "action_required", "startup_failure")
         infra = infra == "yes"
         if state == "completed" and conclusion == "success":
-            print("infra" if infra else "flake")
+            # Recovery from unknown proof is not evidence of a flaky test.
+            print(("infra" if infra else "flake") if initial in failed else "recovered")
         elif state == "completed" and conclusion in ("failure", "timed_out", "action_required", "startup_failure"):
             print("unknown" if infra else "real")
         elif state == "refused":
@@ -1363,10 +1380,18 @@ jobs:
             exit 0
           }
           if [ -n "$EVENT_RUN_ID" ]; then
-            run_json=$(gha api "repos/$REPO/actions/runs/$EVENT_RUN_ID")
+            if ! run_json=$(gha api "repos/$REPO/actions/runs/$EVENT_RUN_ID"); then
+              say "**Unverified:** run $EVENT_RUN_ID could not be read; escalating the unavailable producer evidence, with no deploy or revert authorization."
+              echo "::error::the verify run is unavailable; recovery requires investigation"
+              exit 1
+            fi
           else
-            run_json=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?event=push&branch=main&per_page=50" \
-              --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .status == "completed")] | .[0] // empty')
+            if ! run_json=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?event=push&branch=main&per_page=50" \
+              --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .status == "completed")] | .[0] // empty'); then
+              say "**Unverified:** Verify history could not be read; escalating instead of treating the missing proof as no action."
+              echo "::error::verify history is unavailable; recovery requires investigation"
+              exit 1
+            fi
           fi
           if [ -z "$run_json" ]; then
             quiet "no failed run of $VERIFY_WORKFLOW on main was found to handle"
@@ -1382,18 +1407,24 @@ jobs:
             *) echo "::error::run $run_id belongs to $run_path, not the declared verify workflow $VERIFY_WORKFLOW"; exit 1 ;;
           esac
           [ "$head_branch" = "main" ] || quiet "the verify run $run_id is on branch '$head_branch', not main"
-          # An optional publish/cache failure is not red main. The run must
-          # be an authenticated full post-main producer and verified failed.
-          proof=$(python3 "$RUNNER_TEMP/red-main/proof.py" run "$REPO" main "$VERIFY_WORKFLOW" "$run_id" "$VERIFY_CHECK_NAME")
+          # Only authenticated success or an authenticated ineligible
+          # producer is terminal. Unknown/unavailable proof stays unverified
+          # and keeps recovery active; it cannot authorize a revert.
+          proof=$(read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$run_id" "$VERIFY_CHECK_NAME")
           case "$proof" in
+            success|ineligible) quiet "the authenticated post-main proof for $run_id is '$proof'" ;;
             failure|timed_out|action_required|startup_failure) ;;
-            *) quiet "the authenticated post-main proof for $run_id is '$proof'" ;;
+            *) say "**Unverified:** run $run_id returned proof '$proof'; continuing investigation and rerun, with no authenticated failure yet." ;;
           esac
+          state_set proof-verdict "$proof"
           [ -n "$head_sha" ] || { echo "::error::run $run_id has no head_sha"; exit 1; }
           short_sha=$(cut -c1-9 <<<"$head_sha")
-          failed_lanes=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" --paginate \
+          if ! failed_lanes=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" --paginate \
             --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | .name' \
-            | paste -sd, -)
+            | paste -sd, -); then
+            failed_lanes=""
+            say "The failed lanes could not be listed; investigation or escalation must recover that evidence."
+          fi
           state_set run-id "$run_id"
           state_set head-sha "$head_sha"
           state_set short-sha "$short_sha"
@@ -1404,8 +1435,9 @@ jobs:
             echo "head-sha=$head_sha"
             echo "short-sha=$short_sha"
             echo "failed-lanes=$failed_lanes"
+            echo "proof-verdict=$proof"
           } >>"$GITHUB_OUTPUT"
-          say "Verify run [$run_id]($run_url) failed on \`$head_sha\`${failed_lanes:+ in lane(s) \`$failed_lanes\`}."
+          say "Verify run [$run_id]($run_url) on \`$head_sha\` has post-main proof \`$proof\`${failed_lanes:+ in lane(s) \`$failed_lanes\`}."
 
       # ---------------------------------------------------------------------
       # Idempotence, before anything else acts.
@@ -1436,8 +1468,11 @@ jobs:
           if [ "$MODE" != revert_pr_unarmed ]; then
             [ "$hand_in" = "0" ] || quiet "an open pull request already carries the auto-revert label"
           fi
-          green=$(python3 "$RUNNER_TEMP/red-main/proof.py" sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
+          green=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
           [ "$green" != success ] || quiet "$HEAD_SHA already has an authenticated passing post-main proof"
+          if [ "$green" = unknown ]; then
+            say "**Unverified:** the same-SHA green guard has no available proof; recovery remains active."
+          fi
           echo "nothing is already in hand for $SHORT_SHA"
 
       # ---------------------------------------------------------------------
@@ -1509,44 +1544,56 @@ jobs:
           RUN_ID: ${{ steps.run.outputs.run-id }}
           INFRA: ${{ steps.infra.outputs.infra }}
           INFRA_SIGNATURE: ${{ steps.infra.outputs.signature }}
+          INITIAL_PROOF: ${{ steps.run.outputs.proof-verdict }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           # verdict.py owns the decision; the messages below only say it.
           if ! gha run rerun "$RUN_ID" --repo "$REPO" --failed 2>"$WORK_DIR/rerun.err"; then
             say "The run could not be rerun ($(head -c 300 "$WORK_DIR/rerun.err" | tr '\n' ' ')), so the failure stands."
-            verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" refused "")
+            verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" refused "" "$INITIAL_PROOF")
             echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
-            [ "$verdict" != unknown ] || say "It shows an infrastructure signature (\`$INFRA_SIGNATURE\`), so it is not treated as a code failure either."
+            if [ "$verdict" = unknown ]; then
+              say "**Unverified:** the rerun could not start; no proof or code-failure verdict is available. Escalating, with no revert authorization."
+              echo "::error::rerun unavailable; red-main recovery requires investigation"
+              exit 1
+            fi
             exit 0
           fi
           deadline=$((SECONDS + RERUN_TIMEOUT_MINUTES * 60))
           status=""
           conclusion=""
           while :; do
-            IFS=$'\t' read -r status conclusion < <(
-              gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '[.status, (.conclusion // "")] | @tsv'
-            )
+            if ! run_status=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '[.status, (.conclusion // "")] | @tsv'); then
+              status="unknown"; conclusion="unknown"
+              say "**Unverified:** the rerun status is unavailable; escalating without a proof verdict."
+              break
+            fi
+            IFS=$'\t' read -r status conclusion <<<"$run_status"
             [ "$status" = "completed" ] && break
             if [ "$SECONDS" -ge "$deadline" ]; then status="timeout"; break; fi
             sleep 30
           done
-          attempt=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.run_attempt')
+          if ! attempt=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.run_attempt'); then attempt=unknown; fi
           if [ "$status" = completed ]; then
-            conclusion=$(python3 "$RUNNER_TEMP/red-main/proof.py" run "$REPO" main "$VERIFY_WORKFLOW" "$RUN_ID" "$VERIFY_CHECK_NAME")
+            conclusion=$(read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$RUN_ID" "$VERIFY_CHECK_NAME")
           fi
-          verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" "$status" "$conclusion")
+          state_set proof-verdict "$conclusion"
+          verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" "$status" "$conclusion" "$INITIAL_PROOF")
           echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
           case "$verdict" in
+            recovered) say "The rerun (attempt $attempt) now has authenticated success after unavailable initial proof; recovery completed, with no flake blamed and no revert." ;;
             infra) say "The one automatic rerun (attempt $attempt) passed after an infrastructure failure (\`$INFRA_SIGNATURE\`): the run does not count as red and no test is blamed." ;;
             flake) say "The rerun (attempt $attempt, same commit, no code change) passed: the failure is a flake." ;;
             real) say "The rerun (attempt $attempt) concluded \`$conclusion\`: the failure is real." ;;
             *)
               if [ "$status" = completed ]; then
-                say "The rerun (attempt $attempt) concluded \`$conclusion\` after an infrastructure failure (\`$INFRA_SIGNATURE\`); the platform, not a commit, is the suspect, so nothing is reverted. A person must look."
+                say "**Unverified:** the rerun (attempt $attempt) supplies no authenticated code-failure verdict (proof \`$conclusion\`, infra \`$INFRA_SIGNATURE\`); escalating without authorizing a revert."
               else
-                say "The rerun (attempt $attempt) had not concluded after $RERUN_TIMEOUT_MINUTES minutes; the handler stops without a verdict."
-              fi ;;
+                say "The rerun (attempt $attempt) has no authenticated terminal verdict within its bounded recovery; the handler escalates without authorizing a revert."
+              fi
+              echo "::error::post-main proof remains unverified; red-main recovery requires investigation"
+              exit 1 ;;
           esac
 
       # ---------------------------------------------------------------------
@@ -1758,7 +1805,7 @@ jobs:
           prev_id=""; prev_conclusion=""; prev_url=""
           if [ -n "$prev" ]; then IFS=$'\t' read -r prev_id prev_conclusion prev_url <<<"$prev"; fi
           if [ -n "$prev_id" ]; then
-            prev_conclusion=$(python3 "$RUNNER_TEMP/red-main/proof.py" run "$REPO" main "$VERIFY_WORKFLOW" "$prev_id" "$VERIFY_CHECK_NAME")
+            prev_conclusion=$(read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$prev_id" "$VERIFY_CHECK_NAME")
           fi
           : >"$WORK_DIR/previous-failing-tests.tsv"
           if [ "$prev_conclusion" = failure ] || [ "$prev_conclusion" = timed_out ]; then
@@ -1805,10 +1852,15 @@ jobs:
           state_set window 0
           # A recording/merge_group/diagnostic success cannot be a revert
           # baseline. Optional publication failure cannot hide verified success.
-          base=$(python3 "$RUNNER_TEMP/red-main/proof.py" remote-base "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
-          if [ -z "$base" ]; then
-            say "**No action:** no verified base was found within 200 ancestors; a person must decide."
-            exit 0
+          if ! base=$(python3 "$RUNNER_TEMP/red-main/proof.py" remote-base "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME" 2>"$WORK_DIR/base.err"); then
+            say "**Unverified:** the trusted revert baseline is unavailable ($(head -c 200 "$WORK_DIR/base.err" | tr '\n' ' ')); escalating with no revert authorization."
+            echo "::error::trusted revert baseline unavailable"
+            exit 1
+          fi
+          if [[ ! "$base" =~ ^[a-f0-9]{40}$ ]]; then
+            say "**Unverified:** no trusted baseline was found within 200 ancestors; escalating with no revert authorization."
+            echo "::error::no trusted revert baseline"
+            exit 1
           fi
           state_set base "$base"
           if [ "$base" = "$HEAD_SHA" ]; then
@@ -1988,6 +2040,13 @@ jobs:
           # shellcheck disable=SC2016
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
+          # Destructive handling needs a current authenticated failure and a
+          # baseline supplied only by the authenticated ancestor selector.
+          case "$(state_get proof-verdict)" in
+            failure|timed_out|action_required|startup_failure) ;;
+            *) say "**Unverified:** no authenticated post-main failure authorizes this revert."; exit 1 ;;
+          esac
+          [ -n "$(state_get base)" ] || { say "**Unverified:** no trusted baseline authorizes this revert."; exit 1; }
           culprit=$(state_get culprit)
           revert_all=$(cat "$STATE_DIR/revert-all.json" 2>/dev/null || true)
           if [ -z "$culprit" ] && [ -z "$revert_all" ]; then
