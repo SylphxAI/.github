@@ -200,6 +200,27 @@ def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=F
     return ""
 
 
+def failed_lanes(repo, identity):
+    """Only complete, valid jobs can establish the previous run's failing lanes."""
+    if not isinstance(identity, str) or re.fullmatch(r"[1-9][0-9]*", identity) is None:
+        raise ValueError("invalid workflow run identity")
+    jobs = paged(f"repos/{repo}/actions/runs/{identity}/jobs?filter=latest", "jobs")
+    lanes = []
+    for job in jobs:
+        name = job.get("name")
+        if (not isinstance(name, str) or not name.strip()
+                or re.search(r"[,\x00-\x1f\x7f]", name)
+                or type(job.get("run_id")) is not int or job["run_id"] != int(identity)
+                or job.get("status") != "completed"
+                or job.get("conclusion") not in
+                ("success", "failure", "timed_out", "cancelled", "skipped", "neutral",
+                 "action_required", "startup_failure", "stale")):
+            raise ValueError("previous-run lane evidence unavailable or invalid")
+        if job["conclusion"] in ("failure", "timed_out"):
+            lanes.append(name)
+    return ",".join(lanes)
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "check-id":
         check_id = linked_check_id(json.load(sys.stdin), sys.argv[2])
@@ -215,6 +236,8 @@ def main():
         rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?"
                      + urlencode({"event": "push", "branch": branch}), "workflow_runs")
         print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
+    elif command == "failed-lanes":
+        print(failed_lanes(repo, identity))
     elif command == "base":
         print(last_verified(repo, branch, workflow, identity, name))
     elif command == "remote-base":

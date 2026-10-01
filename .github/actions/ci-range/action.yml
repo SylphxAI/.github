@@ -11,6 +11,8 @@ description: >
   Proof history must have a valid, stable total_count and complete pages
   within five pages of 100 rows. Missing, inconsistent or larger history
   is unavailable, never an older proof or a confirmed absent predecessor.
+  Previous failing lanes also require complete jobs with valid names,
+  run membership, completed statuses and recognized conclusions.
   The job needs `actions: read` and `checks: read`, and a checkout of HEAD
   (any depth: the base commit, and on a push the history, are fetched
   without blobs).

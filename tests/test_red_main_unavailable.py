@@ -37,6 +37,12 @@ path = args[1] if len(args) > 1 else ""
 if "/pulls?" in path or path.startswith("search/issues?"):
     print(0)
 elif "/jobs?" in path:
+    if "/runs/9/" in path and "PREVIOUS_JOB_HISTORY" in os.environ:
+        reads = pathlib.Path(os.environ["RUNNER_TEMP"], "previous-jobs-read")
+        if reads.exists():
+            print(os.environ["PREVIOUS_JOB_HISTORY"])
+            sys.exit(0)
+        reads.touch()
     if (os.environ.get("JOBS_UNAVAILABLE") == "yes"
             or ("/runs/2/" in path and os.environ.get("NEWEST_UNAVAILABLE") == "yes")):
         print("HTTP 502: jobs unavailable", file=sys.stderr)
@@ -56,6 +62,8 @@ elif "/actions/workflows/" in path:
     print(os.environ.get("HISTORY_FIXTURE", '{"total_count": 0, "workflow_runs": []}'))
 elif "/check-runs/" in path:
     print(os.environ["CHECK_FIXTURE"])
+elif path.endswith("actions/runs/9"):
+    print(os.environ["PREVIOUS_RUN_FIXTURE"])
 elif path.endswith("actions/runs/1"):
     if os.environ.get("RUN_UNAVAILABLE") == "yes":
         print("HTTP 502: run unavailable", file=sys.stderr)
@@ -308,6 +316,30 @@ class UnavailableHandlerTest(unittest.TestCase):
         result = self.execute("Confirm the same unit failed on two consecutive completed runs")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("previous-run history is unavailable", self.summary())
+
+    def test_authenticated_previous_failure_with_partial_jobs_escalates(self):
+        self.use_real_proof()
+        previous = dict(RUN, id=9, status="completed", conclusion="failure",
+                        created_at="2026-09-30T09:00:00Z")
+        job = dict(id=300, run_id=9, run_attempt=1, head_sha=SHA, name="verified",
+                   status="completed", conclusion="failure",
+                   check_run_url="https://api.github.com/repos/SylphxAI/cloud/check-runs/30")
+        check = dict(id=30, app=dict(id=15368, slug="github-actions"), head_sha=SHA,
+                     name="verified", check_suite=dict(id=3), status="completed", conclusion="failure",
+                     details_url="https://github.com/SylphxAI/cloud/actions/runs/9/job/300")
+        self.env.update(PREVIOUS_RUN_FIXTURE=json.dumps(previous), JOB_FIXTURE=json.dumps(job),
+                        CHECK_FIXTURE=json.dumps(check),
+                        HISTORY_FIXTURE=json.dumps(dict(total_count=1, workflow_runs=[previous])),
+                        PREVIOUS_JOB_HISTORY='{"total_count": 2, "jobs": []}')
+        result = self.execute("Confirm the same unit failed on two consecutive completed runs")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertTrue((self.root / "previous-jobs-read").exists())  # Authenticated first read succeeded.
+        self.assertFalse(list((self.work / "junit-previous").glob("*")))
+        output = (self.root / "output").read_text() if (self.root / "output").exists() else ""
+        self.assertNotIn("confirmed=no", output)
+        self.assertNotIn("confirmed=yes", output)
+        self.assertIn("previous failing lanes are unavailable", self.summary())
+        self.assertFalse((self.root / "git.called").exists())
 
     def test_invalid_previous_status_escalates(self):
         for status in ("", "mystery"):
