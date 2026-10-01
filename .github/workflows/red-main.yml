@@ -317,19 +317,29 @@ jobs:
             return producer_origin(run, repo, branch, workflow, sha) == "eligible"
 
 
-        def paged(path, key, require_complete=True):
+        def paged(path, key):
+            """Require a stable, complete provider envelope before selecting any proof."""
             rows = []
+            total = None
+            identities = set()
             for page in range(1, PAGE_LIMIT + 1):
                 body = api(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
-                batch = body.get(key)
-                if not isinstance(batch, list):
-                    raise ValueError(f"missing {key} array")
+                count = body.get("total_count") if isinstance(body, dict) else None
+                batch = body.get(key) if isinstance(body, dict) else None
+                if type(count) is not int or count < 0 or not isinstance(batch, list):
+                    raise ValueError(f"{key} history envelope unavailable")
+                if total is None:
+                    total = count
+                if count != total or len(batch) != min(100, max(0, total - len(rows))):
+                    raise ValueError(f"{key} history count/page inconsistent")
+                for row in batch:
+                    if not isinstance(row, dict) or not positive_id(row.get("id")) or row["id"] in identities:
+                        raise ValueError(f"{key} history identity unavailable or repeated")
+                    identities.add(row["id"])
                 rows.extend(batch)
-                if len(batch) < 100:
+                if len(rows) == total:
                     return rows
-            if require_complete:
-                raise ValueError(f"{key} pagination exhausted")
-            return rows
+            raise ValueError(f"{key} pagination exhausted")
 
 
         def linked_check_id(job, repo):
@@ -382,7 +392,7 @@ jobs:
             # No whole-run status filter: a failed optional publish is not a failed
             # verified proof, and a newer genuine failure must not be hidden.
             rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?{urlencode(query)}",
-                         "workflow_runs", require_complete=False)
+                         "workflow_runs")
             candidates = []
             for row in rows:
                 origin = producer_origin(row, repo, branch, workflow, sha)
@@ -445,7 +455,13 @@ jobs:
                 return
             command, repo, branch, workflow, identity, *rest = sys.argv[1:]
             name = rest[0] if rest else "verified"
-            if command == "base":
+            if command == "history":
+                # Require complete history: no undocumented provider ordering can
+                # establish the predecessor from a partial set. Exhausted bounds fail.
+                rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?"
+                             + urlencode({"event": "push", "branch": branch}), "workflow_runs")
+                print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
+            elif command == "base":
                 print(last_verified(repo, branch, workflow, identity, name))
             elif command == "remote-base":
                 print(last_verified(repo, branch, workflow, identity, name, remote=True))
@@ -936,12 +952,15 @@ jobs:
         created = timestamp(sys.argv[1])
         body = json.load(sys.stdin)
         rows = body.get("workflow_runs") if isinstance(body, dict) else None
-        if not isinstance(rows, list):
-            raise ValueError("workflow history unavailable")
+        count = body.get("total_count") if isinstance(body, dict) else None
+        if (not isinstance(rows, list) or type(count) is not int or count < 0
+                or count != len(rows)):
+            raise ValueError("workflow history unavailable or incomplete")
         runs = []
         for row in rows:
             if (not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] < 1
-                    or not isinstance(row.get("status"), str)):
+                    or row.get("status") not in
+                    ("completed", "queued", "in_progress", "waiting", "pending", "requested")):
                 raise ValueError("workflow history identity unavailable")
             at = timestamp(row.get("created_at"))
             if (row["status"] == "completed" and row.get("conclusion") not in
@@ -1877,7 +1896,7 @@ jobs:
             echo "::error::confirmation metadata unavailable"
             exit 1
           fi
-          if ! prev=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?event=push&branch=main&status=completed&per_page=50" \
+          if ! prev=$(python3 "$RUNNER_TEMP/red-main/proof.py" history "$REPO" main "$VERIFY_WORKFLOW" "$created" \
             | python3 "$RUNNER_TEMP/red-main/prev.py" "$created"); then
             say "**Unverified:** previous-run history is unavailable or invalid, not genuinely absent; escalating without confirmation."
             echo "::error::previous-run history unavailable"

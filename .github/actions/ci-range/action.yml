@@ -8,6 +8,9 @@ description: >
   a full push of the approved workflow on the tracked branch). Schedule: everything.
   Outputs `base`, `run` (JSON lane -> bool; use
   `fromJSON(needs.<job>.outputs.run).<lane>`) and `changed`.
+  Proof history must have a valid, stable total_count and complete pages
+  within five pages of 100 rows. Missing, inconsistent or larger history
+  is unavailable, never an older proof or a confirmed absent predecessor.
   The job needs `actions: read` and `checks: read`, and a checkout of HEAD
   (any depth: the base commit, and on a push the history, are fetched
   without blobs).

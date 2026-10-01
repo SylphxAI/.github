@@ -150,7 +150,7 @@ def verdict(infra, state, conclusion="", initial="failure") -> str:
 def previous(runs, created="2026-09-30T10:00:00Z") -> str:
     return subprocess.run(
         [sys.executable, "-c", PREV, created],
-        input=json.dumps({"workflow_runs": runs}), capture_output=True, text=True, check=True,
+        input=json.dumps({"total_count": len(runs), "workflow_runs": runs}), capture_output=True, text=True, check=True,
     ).stdout.strip()
 
 
@@ -205,6 +205,20 @@ class PreviousRunTest(unittest.TestCase):
 
     def test_unfinished_run_is_ignored(self):
         self.assertEqual(previous([run(2, None, "2026-09-30T09:40:00Z", "in_progress")]), "")
+
+    def test_invalid_or_blank_status_is_rejected_but_unfinished_states_are_kept(self):
+        for status in ("", None, "mystery", 5):
+            with self.assertRaises(subprocess.CalledProcessError):
+                previous([run(2, "success", "2026-09-30T09:40:00Z", status)])
+        for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+            self.assertEqual(previous([run(2, None, "2026-09-30T09:40:00Z", status)]), "")
+
+    def test_incomplete_envelope_is_rejected(self):
+        for body in ('{"workflow_runs": []}', '{"total_count": null, "workflow_runs": []}',
+                     '{"total_count": 2, "workflow_runs": []}'):
+            with self.assertRaises(subprocess.CalledProcessError):
+                subprocess.run([sys.executable, "-c", PREV, "2026-09-30T10:00:00Z"], input=body,
+                               capture_output=True, text=True, check=True)
 
     def test_none_found(self):
         self.assertEqual(previous([]), "")

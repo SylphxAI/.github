@@ -71,19 +71,29 @@ def full_push(run, repo, branch, workflow, sha=None):
     return producer_origin(run, repo, branch, workflow, sha) == "eligible"
 
 
-def paged(path, key, require_complete=True):
+def paged(path, key):
+    """Require a stable, complete provider envelope before selecting any proof."""
     rows = []
+    total = None
+    identities = set()
     for page in range(1, PAGE_LIMIT + 1):
         body = api(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
-        batch = body.get(key)
-        if not isinstance(batch, list):
-            raise ValueError(f"missing {key} array")
+        count = body.get("total_count") if isinstance(body, dict) else None
+        batch = body.get(key) if isinstance(body, dict) else None
+        if type(count) is not int or count < 0 or not isinstance(batch, list):
+            raise ValueError(f"{key} history envelope unavailable")
+        if total is None:
+            total = count
+        if count != total or len(batch) != min(100, max(0, total - len(rows))):
+            raise ValueError(f"{key} history count/page inconsistent")
+        for row in batch:
+            if not isinstance(row, dict) or not positive_id(row.get("id")) or row["id"] in identities:
+                raise ValueError(f"{key} history identity unavailable or repeated")
+            identities.add(row["id"])
         rows.extend(batch)
-        if len(batch) < 100:
+        if len(rows) == total:
             return rows
-    if require_complete:
-        raise ValueError(f"{key} pagination exhausted")
-    return rows
+    raise ValueError(f"{key} pagination exhausted")
 
 
 def linked_check_id(job, repo):
@@ -136,7 +146,7 @@ def push_runs(repo, branch, workflow, sha=None):
     # No whole-run status filter: a failed optional publish is not a failed
     # verified proof, and a newer genuine failure must not be hidden.
     rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?{urlencode(query)}",
-                 "workflow_runs", require_complete=False)
+                 "workflow_runs")
     candidates = []
     for row in rows:
         origin = producer_origin(row, repo, branch, workflow, sha)
@@ -199,7 +209,13 @@ def main():
         return
     command, repo, branch, workflow, identity, *rest = sys.argv[1:]
     name = rest[0] if rest else "verified"
-    if command == "base":
+    if command == "history":
+        # Require complete history: no undocumented provider ordering can
+        # establish the predecessor from a partial set. Exhausted bounds fail.
+        rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?"
+                     + urlencode({"event": "push", "branch": branch}), "workflow_runs")
+        print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
+    elif command == "base":
         print(last_verified(repo, branch, workflow, identity, name))
     elif command == "remote-base":
         print(last_verified(repo, branch, workflow, identity, name, remote=True))

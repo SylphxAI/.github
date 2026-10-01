@@ -73,14 +73,66 @@ class ProofTest(unittest.TestCase):
 
     def test_partial_newer_history_never_exposes_an_older_success(self):
         newer = run(2, check_suite_id=None)
-        with patch.object(proof, "api", return_value={"workflow_runs": [run(1), newer]}), \
+        with patch.object(proof, "api", return_value={"total_count": 2, "workflow_runs": [run(1), newer]}), \
                 patch.object(proof, "paged", wraps=proof.paged) as pages:
             self.assertEqual(proof.sha_verdict(REPO, "main", "verify.yml", SHA), "unknown")
             self.assertEqual(pages.call_count, 1)  # No older producer's jobs are read.
         for invalid in (None, {}, run(2, head_sha=None), run(2, run_attempt=None)):
-            with self.subTest(row=invalid), patch.object(proof, "api", return_value={"workflow_runs": [run(1), invalid]}):
+            with self.subTest(row=invalid), patch.object(proof, "api", return_value={"total_count": 2, "workflow_runs": [run(1), invalid]}):
                 with self.assertRaisesRegex(ValueError, "identity unavailable"):
                     proof.sha_verdict(REPO, "main", "verify.yml", SHA)
+
+    def test_history_envelope_must_be_complete_and_consistent(self):
+        def rows(start, n):
+            return [run(i) for i in range(start, start + n)]
+        bad = ({"workflow_runs": [run(1)]}, {"total_count": None, "workflow_runs": [run(1)]},
+               {"total_count": "1", "workflow_runs": [run(1)]}, {"total_count": -1, "workflow_runs": []},
+               {"total_count": True, "workflow_runs": [run(1)]},
+               {"total_count": 2, "workflow_runs": [run(1)]},      # omitted newest
+               {"total_count": 1, "workflow_runs": [run(1), run(2)]},
+               {"total_count": 1, "workflow_runs": [run(1), run(1)]},
+               {"total_count": 1, "workflow_runs": None})
+        for body in bad:
+            with self.subTest(body=body), patch.object(proof, "api", return_value=body):
+                with self.assertRaises(ValueError):
+                    proof.paged("p", "workflow_runs")
+        pages = [dict(total_count=101, workflow_runs=rows(1, 100)), dict(total_count=101, workflow_runs=rows(101, 1))]
+        with patch.object(proof, "api", side_effect=pages):
+            self.assertEqual(len(proof.paged("p", "workflow_runs")), 101)
+        pages = [dict(total_count=101, workflow_runs=rows(1, 100)), dict(total_count=102, workflow_runs=rows(101, 1))]
+        with patch.object(proof, "api", side_effect=pages):
+            with self.assertRaises(ValueError):
+                proof.paged("p", "workflow_runs")
+        with patch.object(proof, "api", side_effect=[dict(total_count=600, workflow_runs=rows(i * 100 + 1, 100)) for i in range(5)]):
+            with self.assertRaisesRegex(ValueError, "exhausted"):
+                proof.paged("p", "workflow_runs")
+
+    def test_omitted_newest_same_sha_producer_never_exposes_older_proof(self):
+        old = run(1)
+        job, check = objects(old, "success")
+        for verdict in ("success", "failure"):
+            job, check = objects(old, verdict)
+            def api(path):
+                if "/runs?" in path:   # provider advertises two rows but returns only the older
+                    return {"total_count": 2, "workflow_runs": [old]}
+                return {"total_count": 1, "jobs": [job]} if "/jobs?" in path else check
+            with self.subTest(older=verdict), patch.object(proof, "api", side_effect=api):
+                with self.assertRaisesRegex(ValueError, "inconsistent"):
+                    proof.sha_verdict(REPO, "main", "verify.yml", SHA)
+                with self.assertRaises(ValueError):
+                    proof.last_verified(REPO, "main", "verify.yml", SHA, remote=True)
+
+    def test_newest_same_sha_found_on_later_page(self):
+        newest = run(300)
+        job, check = objects(newest, "failure")
+        pages = [dict(total_count=101, workflow_runs=[run(i) for i in range(1, 101)]),
+                 dict(total_count=101, workflow_runs=[newest])]
+        def api(path):
+            if "/runs?" in path:
+                return pages[int(path.rsplit("page=", 1)[1]) - 1]
+            return {"total_count": 1, "jobs": [job]} if "/jobs?" in path else check
+        with patch.object(proof, "api", side_effect=api):
+            self.assertEqual(proof.sha_verdict(REPO, "main", "verify.yml", SHA), "failure")
 
     def test_ineligible_producer_is_distinct_from_unavailable_proof(self):
         for fields in (dict(event="workflow_dispatch"), dict(event="merge_group"),
@@ -185,9 +237,9 @@ class ProofTest(unittest.TestCase):
         job, check = objects(genuine, "failure")
         def api(path):
             if "/runs?" in path:
-                return {"workflow_runs": rows}
+                return {"total_count": len(rows), "workflow_runs": rows}
             if "/jobs?" in path:
-                return {"jobs": [job]}
+                return {"total_count": 1, "jobs": [job]}
             return check
         with patch.object(proof, "api", side_effect=api):
             self.assertEqual(proof.sha_verdict(REPO, "main", "verify.yml", SHA), "failure")

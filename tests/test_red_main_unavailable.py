@@ -45,12 +45,15 @@ elif "/jobs?" in path:
         print("rust")
     else:
         key = "NEWEST_JOB_FIXTURE" if "/runs/2/" in path else "JOB_FIXTURE"
-        print(json.dumps({"jobs": [json.loads(os.environ[key])]} if key in os.environ else {"jobs": []}))
+        print(json.dumps({"total_count": 1, "jobs": [json.loads(os.environ[key])]} if key in os.environ else {"total_count": 0, "jobs": []}))
 elif "/actions/workflows/" in path:
     if os.environ.get("HISTORY_UNAVAILABLE") == "yes":
         print("HTTP 502: history unavailable", file=sys.stderr)
         sys.exit(1)
-    print(os.environ.get("HISTORY_FIXTURE", '{"workflow_runs": []}'))
+    if "HISTORY_PAGES" in os.environ:
+        print(json.dumps(json.loads(os.environ["HISTORY_PAGES"])[int(path.rsplit("page=", 1)[1]) - 1]))
+        sys.exit(0)
+    print(os.environ.get("HISTORY_FIXTURE", '{"total_count": 0, "workflow_runs": []}'))
 elif "/check-runs/" in path:
     print(os.environ["CHECK_FIXTURE"])
 elif path.endswith("actions/runs/1"):
@@ -69,6 +72,9 @@ else:
 
 FAKE_PROOF = '''
 import os, sys
+if sys.argv[1] == "history":
+    import subprocess
+    sys.exit(subprocess.run([sys.executable, os.path.join(os.environ["RUNNER_TEMP"], "red-main/real_proof.py"), *sys.argv[1:]]).returncode)
 value = (os.environ.get("BASE_RESULT", "") if sys.argv[1] == "remote-base" else
          os.environ.get("NEWEST_RESULT", os.environ["PROOF_RESULT"]) if sys.argv[1] == "sha" else os.environ["PROOF_RESULT"])
 if value == "exception":
@@ -89,6 +95,7 @@ class UnavailableHandlerTest(unittest.TestCase):
                                ("PREV_PY", "prev.py"), ("CONFIRM_PY", "confirm.py")):
             (self.work / filename).write_text(HANDLER["env"][name])
         (self.work / "proof.py").write_text(FAKE_PROOF)
+        (self.work / "real_proof.py").write_text((ROOT / ".github/actions/ci-range/post_main.py").read_text())
         binaries = self.root / "bin"
         binaries.mkdir()
         gh = binaries / "gh"
@@ -219,7 +226,7 @@ class UnavailableHandlerTest(unittest.TestCase):
                      name="verified", check_suite=dict(id=3), status="completed", conclusion="failure",
                      details_url="https://github.com/SylphxAI/cloud/actions/runs/1/job/300")
         self.env.update(JOB_FIXTURE=json.dumps(job), CHECK_FIXTURE=json.dumps(check),
-                        HISTORY_FIXTURE=json.dumps({"workflow_runs": [dict(RUN, id=2), RUN]}),
+                        HISTORY_FIXTURE=json.dumps({"total_count": 2, "workflow_runs": [dict(RUN, id=2), RUN]}),
                         NEWEST_UNAVAILABLE="yes")
         result = self.execute("Rerun the failed lanes on the same commit")
         self.assertNotEqual(result.returncode, 0)
@@ -261,7 +268,7 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.assertFalse((self.root / "git.called").exists())
 
     def test_previous_history_missing_is_distinct_from_unavailable(self):
-        history = {"workflow_runs": [dict(id=9, status="completed", conclusion="failure",
+        history = {"total_count": 1, "workflow_runs": [dict(id=9, status="completed", conclusion="failure",
                                           created_at="2026-09-30T09:00:00Z", html_url="fixture")]}
         self.env["HISTORY_FIXTURE"] = json.dumps(history)
         for proof in ("unknown", "exception"):
@@ -280,10 +287,34 @@ class UnavailableHandlerTest(unittest.TestCase):
             self.env["HISTORY_FIXTURE"] = invalid
             malformed = self.execute("Confirm the same unit failed on two consecutive completed runs")
             self.assertNotEqual(malformed.returncode, 0)
-        self.env["HISTORY_FIXTURE"] = '{"workflow_runs": []}'
+        self.env["HISTORY_FIXTURE"] = '{"total_count": 0, "workflow_runs": []}'
         absent = self.execute("Confirm the same unit failed on two consecutive completed runs")
         self.assertEqual(absent.returncode, 0, absent.stderr)
         self.assertIn("confirmed=no", (self.root / "output").read_text())
+
+    def test_predecessor_on_page_two_is_found_and_exhaustion_escalates(self):
+        old = dict(id=9, status="completed", conclusion="success", created_at="2026-09-30T09:00:00Z")
+        newer = [dict(id=1000 + i, status="in_progress", conclusion=None,
+                      created_at="2026-09-30T11:00:00Z") for i in range(100)]
+        self.env["HISTORY_PAGES"] = json.dumps([dict(total_count=101, workflow_runs=newer),
+                                                dict(total_count=101, workflow_runs=[old])])
+        self.env["PROOF_RESULT"] = "success"
+        result = self.execute("Confirm the same unit failed on two consecutive completed runs")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("confirmed=no", (self.root / "output").read_text())
+        self.assertIn("was 'success'", self.summary())
+        # History that never reaches a predecessor within the bound is unknown, not absent.
+        self.env["HISTORY_PAGES"] = json.dumps([dict(total_count=600, workflow_runs=[dict(row, id=row["id"] + i * 100) for row in newer]) for i in range(5)])
+        result = self.execute("Confirm the same unit failed on two consecutive completed runs")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("previous-run history is unavailable", self.summary())
+
+    def test_invalid_previous_status_escalates(self):
+        for status in ("", "mystery"):
+            self.env["HISTORY_FIXTURE"] = json.dumps(dict(total_count=1, workflow_runs=[dict(
+                id=9, status=status, conclusion="failure", created_at="2026-09-30T09:00:00Z")]))
+            result = self.execute("Confirm the same unit failed on two consecutive completed runs")
+            self.assertNotEqual(result.returncode, 0)
 
     def test_recovered_success_never_blames_a_flake_without_initial_failure(self):
         self.env["PROOF_RESULT"] = "success"
