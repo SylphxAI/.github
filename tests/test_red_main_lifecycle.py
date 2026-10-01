@@ -239,6 +239,49 @@ class LifecycleTest(unittest.TestCase):
                     # No recovery comment and no close, only the initial alert.
                     self.assertEqual(len(self.api.writes), 1)
 
+    def test_contradictory_issue_continuation_never_recovers(self):
+        for fault in ('complete_with_continuation', 'empty_with_continuation',
+                      'incomplete_without_continuation'):
+            with self.subTest(fault=fault):
+                self.api = API()
+                self.apply(self.event(5))
+                green = self.event(10, 'success')  # Valid latest recovery proof.
+                def reader(path, method='GET', data=None):
+                    response = self.api(path, method, data)
+                    if path == 'graphql':
+                        connection = response['data']['repository']['issues']
+                        if fault == 'complete_with_continuation':
+                            connection['pageInfo']['hasNextPage'] = True
+                        elif fault == 'empty_with_continuation':
+                            connection['nodes'] = []
+                            connection['totalCount'] = 0
+                            connection['pageInfo']['hasNextPage'] = True
+                        else:
+                            connection['totalCount'] = 2
+                            connection['pageInfo']['hasNextPage'] = False
+                    return response
+                with self.assertLogs(level='WARNING'):
+                    self.code['handle'](reader, green, 42)
+                self.assertEqual(self.api.issues[0]['state'], 'open')
+                self.assertEqual(len(self.api.writes), 1)  # No comment or close.
+
+    def test_empty_issue_page_with_continuation_never_creates_duplicate(self):
+        self.apply(self.event(5))
+        failure = self.event(10)
+        def reader(path, method='GET', data=None):
+            response = self.api(path, method, data)
+            if path == 'graphql':
+                connection = response['data']['repository']['issues']
+                connection['nodes'] = []
+                connection['totalCount'] = 0
+                connection['pageInfo']['hasNextPage'] = True
+            return response
+        with self.assertLogs(level='WARNING'):
+            self.code['handle'](reader, failure, 42)
+        self.assertEqual(len(self.api.issues), 1)
+        self.assertEqual(len(self.api.writes), 1)
+        self.assertEqual(self.api.issues[0]['state'], 'open')
+
     def test_invalid_newer_relevant_row_never_comments_or_closes(self):
         for field in ('status', 'conclusion'):
             for value in ('missing', None, '', ' '):

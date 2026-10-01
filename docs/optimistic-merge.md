@@ -224,7 +224,9 @@ the canonical `ci-range/post_main.py` counted reader from a sparse checkout of
 this reusable workflow's exact SHA (`job.workflow_sha`), with no persisted
 credentials. Run history and jobs require stable `total_count` envelopes and
 complete distinct coverage. Issues use GraphQL's `totalCount` connection through
-the same reader because REST issue lists provide no total. The shared five-page
+the same reader because REST issue lists provide no total. Each issue page must
+also have `hasNextPage == (cumulative raw nodes < totalCount)`; a contradictory
+continuation flag invalidates enumeration before any mutation. The shared five-page
 limit fails closed, as do missing counts, short pages, duplicates, GraphQL errors,
 and missing/null/blank status or conclusion on a potentially relevant run.
 No such read can produce a recovery comment or close. The handler lists

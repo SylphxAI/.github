@@ -338,8 +338,9 @@ jobs:
             # REST issue lists have no total_count. Adapt GraphQL's counted
             # issues-only connection to the same canonical coverage validator.
             cursor = None
+            covered = 0
             def issue_page(_path):
-                nonlocal cursor
+                nonlocal cursor, covered
                 owner_name, repo_name = event.repo.split('/')
                 query = """query($owner:String!, $name:String!, $after:String) {
                   repository(owner:$owner, name:$name) {
@@ -358,13 +359,19 @@ jobs:
                 info = connection['pageInfo']
                 if type(info.get('hasNextPage')) is not bool:
                     raise RuntimeError('Issue pagination unavailable')
+                count, nodes = connection.get('totalCount'), connection.get('nodes')
+                if type(count) is not int or count < 0 or not isinstance(nodes, list):
+                    raise RuntimeError('Issue count/nodes unavailable')
+                covered += len(nodes)
+                if covered > count or info['hasNextPage'] != (covered < count):
+                    raise RuntimeError('Issue continuation contradicts counted coverage')
                 next_cursor = info.get('endCursor')
                 if info['hasNextPage'] and (not isinstance(next_cursor, str)
                                            or not next_cursor or next_cursor == cursor):
                     raise RuntimeError('Issue cursor unavailable or repeated')
                 cursor = next_cursor
                 rows = []
-                for node in connection['nodes']:
+                for node in nodes:
                     if node.get('state') not in ('OPEN', 'CLOSED'):
                         raise RuntimeError('Issue state unavailable')
                     rows.append({'id': node['databaseId'], 'number': node['number'],
