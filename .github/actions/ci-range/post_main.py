@@ -71,13 +71,14 @@ def full_push(run, repo, branch, workflow, sha=None):
     return producer_origin(run, repo, branch, workflow, sha) == "eligible"
 
 
-def paged(path, key):
-    """Require a stable, complete provider envelope before selecting any proof."""
+def paged(path, key, reader=None):
+    """Require complete counted coverage; adapters may supply a counted reader."""
+    reader = api if reader is None else reader
     rows = []
     total = None
     identities = set()
     for page in range(1, PAGE_LIMIT + 1):
-        body = api(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
+        body = reader(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
         count = body.get("total_count") if isinstance(body, dict) else None
         batch = body.get(key) if isinstance(body, dict) else None
         if type(count) is not int or count < 0 or not isinstance(batch, list):

@@ -166,6 +166,89 @@ queue, and deploys stay as they are.
   ```
 - [`red-main.yml`](../.github/workflows/red-main.yml): the reusable handler.
 
+## Lifecycle-only alerts (no repair)
+
+Set `mode: lifecycle` to reconcile one owned alert per repository, workflow
+file and aggregate check name without rerunning, dispatching, quarantining or
+reverting anything. This explicit opt-in does not require the optimistic-merge
+manifest declaration. Existing callers default to `mode: repair` unchanged.
+
+The caller must trigger on **completed runs, including successes**, pass the
+exact run id **and attempt**, and pass App credentials explicitly. The App
+installation needs `issues: write` on the calling repository; run/job reads
+use the caller's `github.token` with `actions: read`, never the App token.
+App-token fallback is intentionally unavailable. Create `owner:ops`
+in the caller repository before adoption. Replace `<lifecycle-pin>` with the
+reviewed full commit SHA, and `Verify` / `verify.yml` / `verified` with the
+caller's workflow display name / filename / aggregate job name.
+
+```yaml
+name: CI alert lifecycle
+on:
+  workflow_run:
+    workflows: [Verify]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  alert:
+    if: >-
+      github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    uses: SylphxAI/.github/.github/workflows/red-main.yml@<lifecycle-pin>
+    with:
+      mode: lifecycle
+      repository: ${{ github.repository }}
+      verify-workflow: verify.yml
+      verify-check-name: verified
+      head-sha: ${{ github.event.workflow_run.head_sha }}
+      run-id: ${{ format('{0}', github.event.workflow_run.id) }}
+      run-attempt: ${{ format('{0}', github.event.workflow_run.run_attempt) }}
+      result: ${{ github.event.workflow_run.conclusion == 'success' && 'success' || github.event.workflow_run.conclusion == 'failure' && 'failure' || github.event.workflow_run.conclusion == 'cancelled' && 'cancelled' || 'unknown' }}
+      app-id: ${{ vars.SYLPHX_BUILDER_APP_ID }}
+    secrets:
+      app-private-key: ${{ secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+```
+
+Do not add a failure-only `if:` to the caller: success events are the recovery
+signal. Only same-repository `push` runs on `main` are eligible; fork PRs,
+non-main runs, dispatches and merge groups cannot mutate lifecycle alerts.
+The caller guard above saves a job, but is not the authority: event binding
+and every run/attempt API re-authentication enforce all three provenance fields.
+Run and attempt reads authenticate the event again immediately before
+each write, including the named aggregate job's conclusion. Lifecycle imports
+the canonical `ci-range/post_main.py` counted reader from a sparse checkout of
+this reusable workflow's exact SHA (`job.workflow_sha`), with no persisted
+credentials. Run history and jobs require stable `total_count` envelopes and
+complete distinct coverage. Issues use GraphQL's `totalCount` connection through
+the same reader because REST issue lists provide no total. Each issue page must
+also have `hasNextPage == (cumulative raw nodes < totalCount)`; a contradictory
+continuation flag invalidates enumeration before any mutation. The shared five-page
+limit fails closed, as do missing counts, short pages, duplicates, GraphQL errors,
+and missing/null/blank status or conclusion on a potentially relevant run.
+No such read can produce a recovery comment or close. The handler lists
+all issue pages and states, matches both the App author id and a hidden stable
+identity fingerprint, and retains the last represented event and failure in
+the issue marker. Ordering is `(run id, attempt)`, not issue creation time or
+event delivery order. A newer authenticated success comments with its green
+run link and closes only that owned identity issue; later failures reopen the
+same issue. Cancelled and unknown events advance its ordering record without
+closing it. An unavailable or mismatched proof logs the reason and stops
+without recovery or other destructive action. Unrelated flake/red-main issues
+are never touched. Calls share the existing per-repository concurrency group
+with `queue: max`: [GitHub's concurrency contract](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+allows up to **100 pending** jobs/runs, then cancels additional arrivals.
+Queue arrival order is not Verify run order. Immediately before each recovery
+comment or close, the handler lists the eligible completed main Verify runs
+and re-authenticates the latest `(run id, attempt)` through the run/attempt and
+aggregate-job APIs. Only that latest successful run can recover: an older green
+cannot close over a newer red even if the red handler never ran. Cancelled and
+unknown conclusions are not eligible recovery evidence. A list/read failure
+leaves the alert open; no parallel writer should edit lifecycle markers.
+
 ## Rules kept from the July rollout
 
 - A running verify on the trunk is never cancelled; a newer push waits and

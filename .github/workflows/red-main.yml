@@ -112,6 +112,30 @@ name: Red main
 on:
   workflow_call:
     inputs:
+      mode:
+        description: 'repair (existing behavior) or lifecycle (owned alerts only; no CI/source mutations).'
+        type: string
+        default: repair
+      repository:
+        description: 'Qualified caller repository for lifecycle mode; must match the workflow_run event.'
+        type: string
+        default: ''
+      head-sha:
+        description: 'workflow_run.head_sha for lifecycle mode.'
+        type: string
+        default: ''
+      run-id:
+        description: 'workflow_run.id for lifecycle mode.'
+        type: string
+        default: ''
+      run-attempt:
+        description: 'workflow_run.run_attempt for lifecycle mode; required even for attempt 1.'
+        type: string
+        default: ''
+      result:
+        description: 'workflow_run conclusion: success, failure, cancelled or unknown. Lifecycle callers trigger on completed, with no failure-only filter.'
+        type: string
+        default: unknown
       verify-workflow:
         description: >-
           File name of the caller's verify workflow, e.g. verify.yml. Its runs
@@ -196,9 +220,12 @@ on:
         required: false
 
 # One handler per repository at a time: two of them must not race a rerun, a
-# revert, or a quarantine branch. A second event waits rather than cancels.
+# revert, or a quarantine branch. Queue up to 100 pending calls instead of
+# replacing the single pending slot; GitHub cancels additional calls at capacity.
+# Arrival order is not run order, so lifecycle recovery also reconciles live runs.
 concurrency:
   group: red-main-${{ github.repository }}
+  queue: max
   cancel-in-progress: false
 
 # No `permissions:` block here on purpose: the caller decides what the job's
@@ -215,7 +242,336 @@ concurrency:
 # write` and the handler notifies on its own token.
 
 jobs:
+  # Explicit lifecycle opt-in bypasses the repair manifest gate. This job has
+  # only run/job reads and owned issue writes; it cannot reach repair steps.
+  lifecycle:
+    if: inputs.mode == 'lifecycle'
+    name: Owned CI alert lifecycle
+    runs-on: sylphx-linux-standard
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 10
+    env:
+      REPO: ${{ inputs.repository }}
+      VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
+      VERIFY_CHECK_NAME: ${{ inputs.verify-check-name }}
+      HEAD_SHA: ${{ inputs.head-sha }}
+      RUN_ID: ${{ inputs.run-id }}
+      RUN_ATTEMPT: ${{ inputs.run-attempt }}
+      RESULT: ${{ inputs.result }}
+      LIFECYCLE_PY: |
+        """Owned alert lifecycle only. No actions or source mutations."""
+        import hashlib
+        import json
+        import logging
+        import os
+        import re
+        import subprocess
+        from dataclasses import dataclass
+        from post_main import paged, producer_origin
+
+
+        @dataclass
+        class Event:
+            repo: str
+            workflow: str
+            check: str
+            sha: str
+            run: int
+            attempt: int
+            result: str
+
+            @property
+            def order(self):
+                return [self.run, self.attempt]
+
+            @property
+            def identity(self):
+                return [self.repo, self.workflow, self.check]
+
+            @property
+            def fingerprint(self):
+                return hashlib.sha256(json.dumps(self.identity).encode()).hexdigest()
+
+            @property
+            def url(self):
+                return f'https://github.com/{self.repo}/actions/runs/{self.run}/attempts/{self.attempt}'
+
+
+        MARKER = re.compile(r'<!-- red-main-lifecycle:v1 (\{[^\n]+\}) -->')
+
+
+        def api(path, method='GET', data=None):
+            args = ['gh', 'api', path, '--method', method]
+            if data is not None:
+                args += ['--input', '-']
+            env = dict(os.environ)
+            if '/actions/' in path:
+                env['GH_TOKEN'] = os.environ['ACTIONS_TOKEN']
+            proc = subprocess.run(args, input=json.dumps(data) if data is not None else None,
+                                  text=True, capture_output=True, env=env)
+            if proc.returncode:
+                # Do not print API response bodies or credentials.
+                raise RuntimeError(f'{method} {path} unavailable (exit {proc.returncode})')
+            return json.loads(proc.stdout)
+
+
+        def marker(issue, event, owner):
+            if issue.get('pull_request') or issue.get('user', {}).get('id') != owner:
+                return None
+            matches = MARKER.findall(issue.get('body') or '')
+            if len(matches) != 1:
+                return None
+            state = json.loads(matches[0])
+            if state.get('identity') != event.identity or state.get('fingerprint') != event.fingerprint:
+                return None
+            for key in ('last_event', 'last_failure'):
+                value = state.get(key)
+                if not isinstance(value, list) or len(value) != 2 or not all(
+                        type(n) is int and n > 0 for n in value):
+                    raise RuntimeError('Owned lifecycle marker has invalid ordering proof')
+            if state['last_failure'] > state['last_event']:
+                raise RuntimeError('Owned lifecycle marker has inconsistent ordering proof')
+            return state
+
+
+        def find_issue(api, event, owner):
+            # REST issue lists have no total_count. Adapt GraphQL's counted
+            # issues-only connection to the same canonical coverage validator.
+            cursor = None
+            covered = 0
+            def issue_page(_path):
+                nonlocal cursor, covered
+                owner_name, repo_name = event.repo.split('/')
+                query = """query($owner:String!, $name:String!, $after:String) {
+                  repository(owner:$owner, name:$name) {
+                    issues(first:100, after:$after, orderBy:{field:CREATED_AT,direction:ASC}) {
+                      totalCount pageInfo { endCursor hasNextPage }
+                      nodes { databaseId number body state
+                        author { ... on Bot { databaseId } ... on User { databaseId } } }
+                    }
+                  }
+                }"""
+                response = api('graphql', 'POST', {'query': query, 'variables': {
+                    'owner': owner_name, 'name': repo_name, 'after': cursor}})
+                if response.get('errors'):
+                    raise RuntimeError('Issue enumeration unavailable')
+                connection = response['data']['repository']['issues']
+                info = connection['pageInfo']
+                if type(info.get('hasNextPage')) is not bool:
+                    raise RuntimeError('Issue pagination unavailable')
+                count, nodes = connection.get('totalCount'), connection.get('nodes')
+                if type(count) is not int or count < 0 or not isinstance(nodes, list):
+                    raise RuntimeError('Issue count/nodes unavailable')
+                covered += len(nodes)
+                if covered > count or info['hasNextPage'] != (covered < count):
+                    raise RuntimeError('Issue continuation contradicts counted coverage')
+                next_cursor = info.get('endCursor')
+                if info['hasNextPage'] and (not isinstance(next_cursor, str)
+                                           or not next_cursor or next_cursor == cursor):
+                    raise RuntimeError('Issue cursor unavailable or repeated')
+                cursor = next_cursor
+                rows = []
+                for node in nodes:
+                    if node.get('state') not in ('OPEN', 'CLOSED'):
+                        raise RuntimeError('Issue state unavailable')
+                    rows.append({'id': node['databaseId'], 'number': node['number'],
+                                 'body': node['body'], 'state': node['state'].lower(),
+                                 'user': {'id': (node.get('author') or {}).get('databaseId')}})
+                return {'total_count': connection['totalCount'], 'issues': rows}
+            found = [row for row in paged('issues', 'issues', reader=issue_page)
+                     if marker(row, event, owner) is not None]
+            if len(found) > 1:
+                raise RuntimeError('Multiple owned identity issues; refusing ambiguous mutation')
+            return found[0] if found else None
+
+
+        def trusted_main(run, repo):
+            # A fork PR can also name its branch main. Only same-repository main
+            # pushes are authoritative; dispatch/PR/merge-group runs are excluded.
+            return (run.get('event') == 'push' and run.get('head_branch') == 'main'
+                    and run.get('head_repository', {}).get('full_name') == repo)
+
+
+        def prove(api, event):
+            base = f'repos/{event.repo}/actions/runs/{event.run}'
+            latest = api(base)
+            attempt = api(f'{base}/attempts/{event.attempt}')
+            for run in (latest, attempt):
+                workflow = run.get('path', '').split('@', 1)[0].removeprefix('.github/workflows/')
+                conclusion = run.get('conclusion')
+                result = conclusion if conclusion in ('success', 'failure', 'cancelled') else 'unknown'
+                if (not trusted_main(run, event.repo)
+                        or run.get('id') != event.run or run.get('run_attempt') != event.attempt
+                        or run.get('repository', {}).get('full_name') != event.repo
+                        or run.get('head_sha') != event.sha or workflow != event.workflow
+                        or run.get('status') != 'completed' or result != event.result):
+                    raise RuntimeError('Run/attempt no longer matches completed caller event')
+            # Authenticate the aggregate job on this exact attempt, not a check from a
+            # different workflow/attempt sharing the SHA. Cancelled/unknown never close.
+            if event.result in ('success', 'failure'):
+                jobs = paged(f'{base}/attempts/{event.attempt}/jobs', 'jobs', reader=api)
+                jobs = [job for job in jobs if job.get('name') == event.check]
+                if len(jobs) != 1 or jobs[0].get('conclusion') != event.result:
+                    raise RuntimeError('Named check does not prove caller result on this attempt')
+
+
+        def prove_recovery(api, event):
+            # Never trust handler delivery/queue order as the latest Verify state.
+            # A newer failed run may have completed without its handler running.
+            rows = paged(f'repos/{event.repo}/actions/workflows/{event.workflow}/runs'
+                         '?branch=main&event=push&status=completed', 'workflow_runs', reader=api)
+            runs = []
+            for run in rows:
+                origin = producer_origin(run, event.repo, 'main', event.workflow)
+                if origin == 'ineligible':
+                    continue
+                if (origin != 'eligible' or run.get('status') != 'completed'
+                        or run.get('conclusion') not in (
+                            'success', 'failure', 'cancelled', 'skipped', 'neutral',
+                            'timed_out', 'action_required', 'startup_failure', 'stale')):
+                    raise RuntimeError('Relevant main Verify history row is invalid')
+                if run['conclusion'] in ('success', 'failure'):
+                    runs.append(run)
+            if not runs:
+                raise RuntimeError('No eligible completed main Verify run proves recovery')
+            latest = max(runs, key=lambda run: [run['id'], run['run_attempt']])
+            candidate = Event(event.repo, event.workflow, event.check, latest['head_sha'],
+                              latest['id'], latest['run_attempt'], latest['conclusion'])
+            # Re-authenticate the listing's candidate through the run/attempt APIs.
+            prove(api, candidate)
+            if candidate.order != event.order or candidate.result != 'success':
+                raise RuntimeError('Latest eligible main Verify run does not prove this recovery')
+
+
+        def body(event, state):
+            return (f'Alert for `{event.repo}` / `{event.workflow}` / `{event.check}`.\n\n'
+                    f'Latest event: [{event.result}]({event.url}) at `{event.sha}`.\n\n'
+                    '<!-- red-main-lifecycle:v1 ' + json.dumps(state, sort_keys=True) + ' -->')
+
+
+        def handle(api, event, owner):
+            try:
+                prove(api, event)
+                issue = find_issue(api, event, owner)
+                state = marker(issue, event, owner) if issue else None
+                if state and event.order <= state['last_event']:
+                    logging.info('Ignoring older/replayed lifecycle event %s', event.order)
+                    return
+                if issue is None:
+                    if event.result != 'failure':
+                        logging.info('No owned failure to recover for %s', event.identity)
+                        return
+                    # Repeat the scan before creating, so a failed/partial read cannot
+                    # create a duplicate. The workflow serializes all handler calls.
+                    if find_issue(api, event, owner) is not None:
+                        raise RuntimeError('Identity issue appeared; refusing duplicate creation')
+                    prove(api, event)
+                    state = {'identity': event.identity, 'fingerprint': event.fingerprint,
+                             'last_event': event.order, 'last_failure': event.order}
+                    api(f'repos/{event.repo}/issues', 'POST', {
+                        'title': f'CI alert: {event.workflow} / {event.check}',
+                        'body': body(event, state), 'labels': ['owner:ops']})
+                    return
+                path = f'repos/{event.repo}/issues/{issue["number"]}'
+                snapshot = state
+
+                def fresh():
+                    # Every write gets a new issue read AND run/attempt proof. Any
+                    # concurrent update or API failure leaves the alert open.
+                    current = api(path)
+                    if marker(current, event, owner) != snapshot or current['state'] != issue['state']:
+                        raise RuntimeError('Issue changed since lifecycle decision')
+                    prove(api, event)
+                    if event.result == 'success':
+                        prove_recovery(api, event)
+
+                new_state = {**state, 'last_event': event.order}
+                if event.result == 'failure':
+                    new_state['last_failure'] = event.order
+                    fresh()
+                    api(path, 'PATCH', {'body': body(event, new_state), 'state': 'open'})
+                elif event.result == 'success':
+                    if event.order <= state['last_failure']:
+                        return
+                    if issue['state'] == 'open':
+                        fresh()
+                        api(path + '/comments', 'POST', {
+                            'body': f'Recovered: [{event.check} passed]({event.url}) on `{event.sha}`.'})
+                    fresh()
+                    api(path, 'PATCH', {'body': body(event, new_state), 'state': 'closed'})
+                else:
+                    # Record inconclusive events for FIFO, but NEVER change open/closed.
+                    fresh()
+                    api(path, 'PATCH', {'body': body(event, new_state)})
+                    logging.warning('Inconclusive lifecycle result %s; alert state unchanged', event.result)
+            except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+                logging.warning('Lifecycle proof/read unavailable; no further mutations: %s', exc)
+
+
+        def main():
+            logging.basicConfig(level=logging.INFO)
+            event = Event(os.environ['REPO'], os.environ['VERIFY_WORKFLOW'],
+                          os.environ['VERIFY_CHECK_NAME'], os.environ['HEAD_SHA'],
+                          int(os.environ['RUN_ID']), int(os.environ['RUN_ATTEMPT']),
+                          os.environ['RESULT'])
+            # Inputs are transport, not authority: bind them to the actual caller event.
+            with open(os.environ['GITHUB_EVENT_PATH']) as stream:
+                payload = json.load(stream)
+            run = payload.get('workflow_run', {})
+            if (os.environ.get('GITHUB_EVENT_NAME') != 'workflow_run'
+                    or payload.get('action') != 'completed'
+                    or event.repo != os.environ['GITHUB_REPOSITORY']
+                    or payload.get('repository', {}).get('full_name') != event.repo
+                    or not trusted_main(run, event.repo)
+                    or run.get('id') != event.run or run.get('run_attempt') != event.attempt
+                    or run.get('head_sha') != event.sha or run.get('status') != 'completed'
+                    or event.result not in ('success', 'failure', 'cancelled', 'unknown')):
+                raise RuntimeError('Lifecycle inputs must match the completed workflow_run event')
+            slug = os.environ['APP_SLUG']
+            owner = api(f'users/{slug}[bot]')['id']
+            handle(api, event, owner)
+
+
+        if __name__ == '__main__':
+            main()
+    steps:
+      - name: Require explicit App credentials
+        env:
+          APP_ID: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
+          APP_KEY: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_KEY" ]]; then
+            echo '::error::Lifecycle mode requires the handler App credentials; no token fallback'
+            exit 1
+          fi
+      - name: Mint repository-scoped lifecycle token
+        id: lifecycle-app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
+          private-key: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+      - name: Read canonical counted proof helper
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ job.workflow_sha }}
+          path: lifecycle-shared
+          persist-credentials: false
+          sparse-checkout: .github/actions/ci-range
+      - name: Reconcile owned identity alert
+        env:
+          GH_TOKEN: ${{ steps.lifecycle-app.outputs.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
+          APP_SLUG: ${{ steps.lifecycle-app.outputs.app-slug }}
+          PYTHONPATH: lifecycle-shared/.github/actions/ci-range
+        run: python3 -c "$LIFECYCLE_PY"
+
   red-main:
+    if: inputs.mode == 'repair'
     name: Red main handler
     # Our own runners only; a hosted label is refused in pull requests that
     # add one (owner#750).
@@ -317,13 +673,14 @@ jobs:
             return producer_origin(run, repo, branch, workflow, sha) == "eligible"
 
 
-        def paged(path, key):
-            """Require a stable, complete provider envelope before selecting any proof."""
+        def paged(path, key, reader=None):
+            """Require complete counted coverage; adapters may supply a counted reader."""
+            reader = api if reader is None else reader
             rows = []
             total = None
             identities = set()
             for page in range(1, PAGE_LIMIT + 1):
-                body = api(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
+                body = reader(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
                 count = body.get("total_count") if isinstance(body, dict) else None
                 batch = body.get(key) if isinstance(body, dict) else None
                 if type(count) is not int or count < 0 or not isinstance(batch, list):
