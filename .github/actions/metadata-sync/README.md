@@ -92,12 +92,14 @@ then delegates only file patching/check/write. Compose README/docs edits into
 that plan, rather than invoking the engine once per edit. Remote descriptions
 and topics remain explicit, separate product-owned operations.
 
-Pin both local tooling and CI to the **same full reviewed commit SHA** containing
-this action (replace the placeholder only after the upstream commit exists):
+Pin both local tooling and CI to the **same full commit SHA** containing this
+action. The implementation pin below is supplied for consumer adoption after
+this upstream outcome passes review and lands (the later documentation commit
+does not change the engine):
 
 ```yaml
 # After the product adapter renders its plan into RUNNER_TEMP:
-- uses: SylphxAI/.github/.github/actions/metadata-sync@<full-reviewed-commit-sha>
+- uses: SylphxAI/.github/.github/actions/metadata-sync@64a33b1973e33196c38605fb1fcc301ac3bf37a2
   with:
     plan: ${{ runner.temp }}/metadata-plan.json
     mode: check
@@ -110,7 +112,7 @@ not an engine operation; a checkout at the pin can supply `sync.py` offline.
 ```sh
 (
   set -eu
-  PIN=<full-reviewed-commit-sha> # Same SHA as the CI action pin.
+  PIN=64a33b1973e33196c38605fb1fcc301ac3bf37a2 # Same SHA as the CI action pin.
   PLAN=/path/to/product-rendered-plan.json
   SCRIPT="$(mktemp)"
   trap 'rm -f "$SCRIPT"' EXIT
