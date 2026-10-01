@@ -166,6 +166,63 @@ queue, and deploys stay as they are.
   ```
 - [`red-main.yml`](../.github/workflows/red-main.yml): the reusable handler.
 
+## Lifecycle-only alerts (no repair)
+
+Set `mode: lifecycle` to reconcile one owned alert per repository, workflow
+file and aggregate check name without rerunning, dispatching, quarantining or
+reverting anything. This explicit opt-in does not require the optimistic-merge
+manifest declaration. Existing callers default to `mode: repair` unchanged.
+
+The caller must trigger on **completed runs, including successes**, pass the
+exact run id **and attempt**, and pass App credentials explicitly. The App
+installation needs `issues: write` on the calling repository; run/job reads
+use the caller's `github.token` with `actions: read`, never the App token.
+App-token fallback is intentionally unavailable. Create `owner:ops`
+in the caller repository before adoption. Replace `<lifecycle-pin>` with the
+reviewed full commit SHA, and `Verify` / `verify.yml` / `verified` with the
+caller's workflow display name / filename / aggregate job name.
+
+```yaml
+name: CI alert lifecycle
+on:
+  workflow_run:
+    workflows: [Verify]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  alert:
+    uses: SylphxAI/.github/.github/workflows/red-main.yml@<lifecycle-pin>
+    with:
+      mode: lifecycle
+      repository: ${{ github.repository }}
+      verify-workflow: verify.yml
+      verify-check-name: verified
+      head-sha: ${{ github.event.workflow_run.head_sha }}
+      run-id: ${{ format('{0}', github.event.workflow_run.id) }}
+      run-attempt: ${{ format('{0}', github.event.workflow_run.run_attempt) }}
+      result: ${{ github.event.workflow_run.conclusion == 'success' && 'success' || github.event.workflow_run.conclusion == 'failure' && 'failure' || github.event.workflow_run.conclusion == 'cancelled' && 'cancelled' || 'unknown' }}
+      app-id: ${{ vars.SYLPHX_BUILDER_APP_ID }}
+    secrets:
+      app-private-key: ${{ secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+```
+
+Do not add a failure-only `if:` to the caller: success events are the recovery
+signal. Run and attempt reads authenticate the event again immediately before
+each write, including the named aggregate job's conclusion. The handler lists
+all issue pages and states, matches both the App author id and a hidden stable
+identity fingerprint, and retains the last represented event and failure in
+the issue marker. Ordering is `(run id, attempt)`, not issue creation time or
+event delivery order. A newer authenticated success comments with its green
+run link and closes only that owned identity issue; later failures reopen the
+same issue. Cancelled and unknown events advance its ordering record without
+closing it. An unavailable or mismatched proof logs the reason and stops
+without recovery or other destructive action. Unrelated flake/red-main issues
+are never touched. Calls share the existing per-repository concurrency group;
+no parallel writer should edit lifecycle markers.
+
 ## Rules kept from the July rollout
 
 - A running verify on the trunk is never cancelled; a newer push waits and

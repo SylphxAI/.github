@@ -176,9 +176,9 @@ class TokenModeTest(unittest.TestCase):
             self.assertIn(f"permission-{perm}: write", mint)
 
     def test_actions_calls_use_the_workflow_token(self) -> None:
-        text = WORKFLOW.read_text()
-        # Step-level only: Actions calls (gha, classifier or authenticated
-        # proof helper) carry the workflow token, never the builder App token.
+        # Repair and lifecycle jobs each enforce their own token split.
+        text = '  red-main:' + WORKFLOW.read_text().split('  red-main:', 1)[1]
+        # Actions calls and authenticated proofs use the workflow token.
         self.assertNotRegex(text, r"(?m)^      ACTIONS_TOKEN:")
         import re
         for block in re.split(r"(?m)^(?=      - name: )", text)[1:]:
