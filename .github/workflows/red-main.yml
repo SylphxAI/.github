@@ -415,6 +415,10 @@ jobs:
         STATE_DIR="$WORK_DIR/state"
         export WORK_DIR STATE_DIR GIT_TERMINAL_PROMPT=0
         mkdir -p "$STATE_DIR"
+        # No-action is terminal for subsequent steps, not just the resolver.
+        # In particular, a non-proof optional/diagnostic failure cannot reach
+        # rerun, quarantine or revert after the resolver exits successfully.
+        if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi
 
         # say <line>: append a line to the summary the final step posts.
         say() { printf '%s\n' "$*" >>"$WORK_DIR/summary.md"; }

@@ -109,6 +109,7 @@ class ProofTest(unittest.TestCase):
         self.assertIn('proof.py" run "$REPO" main "$VERIFY_WORKFLOW" "$run_id"', text)
         self.assertIn('proof.py" sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
         self.assertIn('proof.py" remote-base "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
+        self.assertIn('if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi', text)
         self.assertNotIn("status=success&per_page=1", text)
         self.assertNotIn("check_name=$name&filter=latest", text)
 
