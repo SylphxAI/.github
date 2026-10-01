@@ -194,6 +194,10 @@ permissions:
   actions: read
 jobs:
   alert:
+    if: >-
+      github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
     uses: SylphxAI/.github/.github/workflows/red-main.yml@<lifecycle-pin>
     with:
       mode: lifecycle
@@ -210,7 +214,11 @@ jobs:
 ```
 
 Do not add a failure-only `if:` to the caller: success events are the recovery
-signal. Run and attempt reads authenticate the event again immediately before
+signal. Only same-repository `push` runs on `main` are eligible; fork PRs,
+non-main runs, dispatches and merge groups cannot mutate lifecycle alerts.
+The caller guard above saves a job, but is not the authority: event binding
+and every run/attempt API re-authentication enforce all three provenance fields.
+Run and attempt reads authenticate the event again immediately before
 each write, including the named aggregate job's conclusion. The handler lists
 all issue pages and states, matches both the App author id and a hidden stable
 identity fingerprint, and retains the last represented event and failure in
@@ -220,8 +228,16 @@ run link and closes only that owned identity issue; later failures reopen the
 same issue. Cancelled and unknown events advance its ordering record without
 closing it. An unavailable or mismatched proof logs the reason and stops
 without recovery or other destructive action. Unrelated flake/red-main issues
-are never touched. Calls share the existing per-repository concurrency group;
-no parallel writer should edit lifecycle markers.
+are never touched. Calls share the existing per-repository concurrency group
+with `queue: max`: [GitHub's concurrency contract](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+allows up to **100 pending** jobs/runs, then cancels additional arrivals.
+Queue arrival order is not Verify run order. Immediately before each recovery
+comment or close, the handler lists the eligible completed main Verify runs
+and re-authenticates the latest `(run id, attempt)` through the run/attempt and
+aggregate-job APIs. Only that latest successful run can recover: an older green
+cannot close over a newer red even if the red handler never ran. Cancelled and
+unknown conclusions are not eligible recovery evidence. A list/read failure
+leaves the alert open; no parallel writer should edit lifecycle markers.
 
 ## Rules kept from the July rollout
 

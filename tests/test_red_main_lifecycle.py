@@ -2,7 +2,9 @@
 import copy
 import json
 import unittest
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,6 +48,10 @@ class API:
             number = int(path.rsplit('/', 1)[1])
             self.issues[number - 1].update(data)
             return copy.deepcopy(self.issues[number - 1])
+        if '/actions/workflows/' in path:
+            page = int(path.rsplit('page=', 1)[1])
+            runs = list(self.runs.values())
+            return {'workflow_runs': copy.deepcopy(runs[(page - 1) * 100:page * 100])}
         if '/actions/runs/' in path:
             run_id = int(path.split('/actions/runs/')[1].split('/')[0])
             run = self.runs[run_id]
@@ -68,7 +74,9 @@ class LifecycleTest(unittest.TestCase):
     def event(self, run_id, result='failure', attempt=1):
         run = {'id': run_id, 'run_attempt': attempt, 'head_sha': 'a' * 40,
                'status': 'completed', 'conclusion': result, 'path': '.github/workflows/verify.yml',
-               'repository': {'full_name': 'SylphxAI/keel'}}
+               'repository': {'full_name': 'SylphxAI/keel'},
+               'event': 'push', 'head_branch': 'main',
+               'head_repository': {'full_name': 'SylphxAI/keel'}}
         self.api.runs[run_id] = run
         return self.code['Event']('SylphxAI/keel', 'verify.yml', 'verified',
                                   'a' * 40, run_id, attempt, result)
@@ -81,6 +89,102 @@ class LifecycleTest(unittest.TestCase):
         self.apply(self.event(10, 'success'))
         self.assertEqual(self.api.issues[0]['state'], 'open')
         self.assertEqual(len(self.api.writes), 1)
+
+    def test_pending_newer_failure_blocks_older_recovery(self):
+        self.apply(self.event(5))
+        green = self.event(10, 'success')
+        self.event(20)  # Completed red run whose pending handler never ran.
+        with self.assertLogs(level='WARNING'):
+            self.apply(green)
+        self.assertEqual(self.api.issues[0]['state'], 'open')
+        self.assertEqual(len(self.api.writes), 1)
+
+    def test_event_binding_rejects_fork_main_success_and_non_main_failure(self):
+        cases = [({'event': 'pull_request', 'head_repository': {'full_name': 'fork/keel'}},
+                  'success'), ({'head_branch': 'feature'}, 'failure')]
+        for changes, result in cases:
+            with self.subTest(changes=changes), tempfile.NamedTemporaryFile(mode='w+') as stream:
+                event = self.event(10, result)
+                run = {**self.api.runs[10], **changes}
+                json.dump({'action': 'completed', 'repository': {'full_name': event.repo},
+                           'workflow_run': run}, stream)
+                stream.flush()
+                env = {'REPO': event.repo, 'VERIFY_WORKFLOW': event.workflow,
+                       'VERIFY_CHECK_NAME': event.check, 'HEAD_SHA': event.sha,
+                       'RUN_ID': str(event.run), 'RUN_ATTEMPT': str(event.attempt),
+                       'RESULT': result, 'GITHUB_EVENT_PATH': stream.name,
+                       'GITHUB_EVENT_NAME': 'workflow_run', 'GITHUB_REPOSITORY': event.repo}
+                with patch.dict(self.code['os'].environ, env):
+                    with self.assertRaisesRegex(RuntimeError, 'completed workflow_run'):
+                        self.code['main']()
+        self.assertEqual(self.api.writes, [])
+
+    def test_api_provenance_mismatch_before_each_write(self):
+        for changes in ({'event': 'pull_request'}, {'head_branch': 'feature'},
+                        {'head_repository': {'full_name': 'fork/keel'}}):
+            with self.subTest(changes=changes):
+                self.api = API()
+                self.apply(self.event(10))
+                event = self.event(20, 'success')
+                count = 0
+                def hook(path, method):
+                    nonlocal count
+                    if path.endswith('/actions/runs/20'):
+                        count += 1
+                        if count == 2:
+                            self.api.runs[20].update(changes)
+                self.api.hook = hook
+                with self.assertLogs(level='WARNING'):
+                    self.apply(event)
+                self.assertEqual(len(self.api.writes), 1)
+                self.assertEqual(self.api.issues[0]['state'], 'open')
+
+    def test_fork_main_success_and_non_main_failure_api_rejected(self):
+        for changes, result in [({'event': 'pull_request',
+                                 'head_repository': {'full_name': 'fork/keel'}}, 'success'),
+                                ({'head_branch': 'feature'}, 'failure')]:
+            with self.subTest(changes=changes):
+                self.api = API()
+                event = self.event(10, result)
+                self.api.runs[10].update(changes)
+                with self.assertLogs(level='WARNING'):
+                    self.apply(event)
+                self.assertEqual(self.api.writes, [])
+
+    def test_recovery_listing_failure_leaves_open(self):
+        self.apply(self.event(10))
+        self.api.fail = '/actions/workflows/'
+        with self.assertLogs(level='WARNING'):
+            self.apply(self.event(20, 'success'))
+        self.assertEqual(self.api.issues[0]['state'], 'open')
+        self.assertEqual(len(self.api.writes), 1)
+
+    def test_new_red_between_comment_and_close_leaves_open(self):
+        self.apply(self.event(10))
+        green = self.event(20, 'success')
+        def hook(path, method):
+            if path.endswith('/comments') and method == 'POST':
+                self.event(30)
+        self.api.hook = hook
+        with self.assertLogs(level='WARNING'):
+            self.apply(green)
+        self.assertEqual(self.api.issues[0]['state'], 'open')
+        self.assertEqual(len(self.api.writes), 2)
+
+    def test_latest_run_listing_is_paginated_and_ignores_ineligible_runs(self):
+        self.apply(self.event(10))
+        green = self.event(20, 'success')
+        for run_id in range(30, 135):
+            self.event(run_id)
+            self.api.runs[run_id]['head_branch'] = 'feature'
+        self.apply(green)
+        self.assertEqual(self.api.issues[0]['state'], 'closed')
+        self.assertTrue(any('/actions/workflows/' in p and 'page=2' in p
+                            for p in self.api.reads))
+
+    def test_queue_preserves_up_to_100_pending_handlers(self):
+        text = (ROOT / '.github/workflows/red-main.yml').read_text()
+        self.assertIn('  queue: max\n  cancel-in-progress: false', text)
 
     def test_new_green_closes_and_links_run(self):
         self.apply(self.event(10))

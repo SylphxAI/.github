@@ -5,6 +5,11 @@
 # `property "workflow_sha" is not defined in object type ... [expression]` for
 # the image lane's lane-ref fallback. That warning is accepted and documented
 # rather than traded for a property that would check out the wrong tree.
+# `concurrency.queue: max` is supported by GitHub (100 pending runs/jobs):
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+# actionlint 1.7.12 (current release) predates this key and reports `unexpected
+# key "queue" for "concurrency" section`. This exact schema warning is accepted;
+# do not remove the queue and restore pending-run replacement to appease lint.
 self-hosted-runner:
   labels:
     # Pre-existing org labels.

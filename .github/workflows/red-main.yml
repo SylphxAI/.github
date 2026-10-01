@@ -220,9 +220,12 @@ on:
         required: false
 
 # One handler per repository at a time: two of them must not race a rerun, a
-# revert, or a quarantine branch. A second event waits rather than cancels.
+# revert, or a quarantine branch. Queue up to 100 pending calls instead of
+# replacing the single pending slot; GitHub cancels additional calls at capacity.
+# Arrival order is not run order, so lifecycle recovery also reconciles live runs.
 concurrency:
   group: red-main-${{ github.repository }}
+  queue: max
   cancel-in-progress: false
 
 # No `permissions:` block here on purpose: the caller decides what the job's
@@ -350,6 +353,13 @@ jobs:
             return found[0] if found else None
 
 
+        def trusted_main(run, repo):
+            # A fork PR can also name its branch main. Only same-repository main
+            # pushes are authoritative; dispatch/PR/merge-group runs are excluded.
+            return (run.get('event') == 'push' and run.get('head_branch') == 'main'
+                    and run.get('head_repository', {}).get('full_name') == repo)
+
+
         def prove(api, event):
             base = f'repos/{event.repo}/actions/runs/{event.run}'
             latest = api(base)
@@ -358,7 +368,8 @@ jobs:
                 workflow = run.get('path', '').split('@', 1)[0].removeprefix('.github/workflows/')
                 conclusion = run.get('conclusion')
                 result = conclusion if conclusion in ('success', 'failure', 'cancelled') else 'unknown'
-                if (run.get('id') != event.run or run.get('run_attempt') != event.attempt
+                if (not trusted_main(run, event.repo)
+                        or run.get('id') != event.run or run.get('run_attempt') != event.attempt
                         or run.get('repository', {}).get('full_name') != event.repo
                         or run.get('head_sha') != event.sha or workflow != event.workflow
                         or run.get('status') != 'completed' or result != event.result):
@@ -377,6 +388,36 @@ jobs:
                     page += 1
                 if len(jobs) != 1 or jobs[0].get('conclusion') != event.result:
                     raise RuntimeError('Named check does not prove caller result on this attempt')
+
+
+        def prove_recovery(api, event):
+            # Never trust handler delivery/queue order as the latest Verify state.
+            # A newer failed run may have completed without its handler running.
+            runs = []
+            page = 1
+            while True:
+                data = api(f'repos/{event.repo}/actions/workflows/{event.workflow}/runs'
+                           f'?branch=main&event=push&status=completed&per_page=100&page={page}')
+                rows = data['workflow_runs']
+                for run in rows:
+                    workflow = run.get('path', '').split('@', 1)[0].removeprefix('.github/workflows/')
+                    if (trusted_main(run, event.repo) and workflow == event.workflow
+                            and run.get('repository', {}).get('full_name') == event.repo
+                            and run.get('status') == 'completed'
+                            and run.get('conclusion') in ('success', 'failure')):
+                        runs.append(run)
+                if len(rows) < 100:
+                    break
+                page += 1
+            if not runs:
+                raise RuntimeError('No eligible completed main Verify run proves recovery')
+            latest = max(runs, key=lambda run: [run['id'], run['run_attempt']])
+            candidate = Event(event.repo, event.workflow, event.check, latest['head_sha'],
+                              latest['id'], latest['run_attempt'], latest['conclusion'])
+            # Re-authenticate the listing's candidate through the run/attempt APIs.
+            prove(api, candidate)
+            if candidate.order != event.order or candidate.result != 'success':
+                raise RuntimeError('Latest eligible main Verify run does not prove this recovery')
 
 
         def body(event, state):
@@ -418,6 +459,8 @@ jobs:
                     if marker(current, event, owner) != snapshot or current['state'] != issue['state']:
                         raise RuntimeError('Issue changed since lifecycle decision')
                     prove(api, event)
+                    if event.result == 'success':
+                        prove_recovery(api, event)
 
                 new_state = {**state, 'last_event': event.order}
                 if event.result == 'failure':
@@ -456,6 +499,7 @@ jobs:
                     or payload.get('action') != 'completed'
                     or event.repo != os.environ['GITHUB_REPOSITORY']
                     or payload.get('repository', {}).get('full_name') != event.repo
+                    or not trusted_main(run, event.repo)
                     or run.get('id') != event.run or run.get('run_attempt') != event.attempt
                     or run.get('head_sha') != event.sha or run.get('status') != 'completed'
                     or event.result not in ('success', 'failure', 'cancelled', 'unknown')):
@@ -474,10 +518,10 @@ jobs:
           APP_KEY: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          test -n "$APP_ID" && test -n "$APP_KEY" || {
+          if [[ -z "$APP_ID" || -z "$APP_KEY" ]]; then
             echo '::error::Lifecycle mode requires the handler App credentials; no token fallback'
             exit 1
-          }
+          fi
       - name: Mint repository-scoped lifecycle token
         id: lifecycle-app
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
