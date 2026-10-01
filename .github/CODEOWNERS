@@ -1,0 +1,5 @@
+# Ops maintainer fallback: SylphxAI currently has no GitHub teams.
+/.github/actions/** @shtse8
+/.github/workflows/** @shtse8
+/.github/rulesets/** @shtse8
+/rulesets/** @shtse8
