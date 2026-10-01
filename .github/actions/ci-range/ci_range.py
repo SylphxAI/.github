@@ -7,10 +7,10 @@ verify workflow agree on what "changed" means:
   pull_request   base = the pull request's base commit (GitHub checks out the
                  merge commit, so base..HEAD is exactly the change)
   merge_group    base = the merge group's base commit (everything the group adds)
-  push, dispatch base = the head of the newest successful run of this same
-                 workflow on the default branch, else the newest first-parent
-                 ancestor whose `verified` check run passed (200 commits at
-                 most). A base that is not an ancestor of HEAD is dropped.
+  push, dispatch base = the newest first-parent ancestor with an authenticated
+                 successful `verified` job from a full push of the approved
+                 workflow on the tracked branch (200 commits at most).
+                 Diagnostic, recording and merge-group runs never count.
                  One run therefore covers every commit since the last one whose
                  full suite passed, never a single commit (a base of HEAD~1
                  skips the commits a push carries).
@@ -107,21 +107,18 @@ def is_ancestor(base: str, head: str = "HEAD") -> bool:
 
 def last_verified(repo: str, workflow_file: str, branch: str) -> str:
     """The last commit whose full suite passed, or '' (every lane runs)."""
+    # The helper is also embedded verbatim in red-main.yml (enforced by a
+    # source-equality test). Both consumers use one producer/origin contract.
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("post_main", Path(__file__).with_name("post_main.py"))
+    proof = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(proof)
     try:
-        runs = api(f"repos/{repo}/actions/workflows/{workflow_file}/runs"
-                   f"?branch={branch}&status=success&per_page=1").get("workflow_runs", [])
-        if runs and is_ancestor(runs[0]["head_sha"]):
-            return runs[0]["head_sha"]
-    except Exception as error:  # an API blip must not fail the run; it only widens it
-        print(f"::warning::the last successful run of {workflow_file} could not be read ({error}); walking `{VERIFY_CHECK}` checks")
-    for sha in git("rev-list", "--first-parent", f"--max-count={WALK_LIMIT}", "HEAD").split():
-        try:
-            runs = api(f"repos/{repo}/commits/{sha}/check-runs?check_name={VERIFY_CHECK}&per_page=1").get("check_runs", [])
-        except Exception:
-            return ""
-        if runs and runs[0].get("conclusion") == "success":
-            return sha
-    return ""
+        return proof.last_verified(repo, branch, workflow_file)
+    except Exception as error:
+        print(f"::warning::authenticated post-main base unavailable ({error}); every lane runs")
+        return ""
 
 
 def base_for(event: str, payload: dict, repo: str, workflow_file: str, branch: str) -> str:
@@ -135,6 +132,33 @@ def base_for(event: str, payload: dict, repo: str, workflow_file: str, branch: s
 
 
 def main() -> int:
+    mode = os.environ.get("PROOF_MODE", "range")
+    if mode != "range":
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location("post_main", Path(__file__).with_name("post_main.py"))
+        proof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(proof)
+        repo = os.environ["GITHUB_REPOSITORY"]
+        branch = os.environ.get("PROOF_BRANCH", "main")
+        workflow = os.environ.get("PROOF_WORKFLOW", "verify.yml")
+        identity = os.environ.get("PROOF_IDENTITY", "")
+        if mode == "run":
+            try:
+                if identity:
+                    run = proof.api(f"repos/{repo}/actions/runs/{identity}")
+                else:
+                    run = max(proof.push_runs(repo, branch, workflow), key=lambda r: r["id"], default=None)
+                verdict = proof.checked_verdict(run, repo, branch, workflow) if run else "unknown"
+            except Exception as error:
+                # A caller can keep recovery active on unknown; a failed
+                # preflight job would skip the handler before it can recover.
+                print(f"::warning::post-main proof unavailable: {error}", file=sys.stderr)
+                verdict = "unknown"
+            with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                out.write(f"verdict={verdict}\n")
+            return 0
+        raise ValueError("unsupported proof mode")
     lanes = parse_lanes(os.environ["LANES"])
     event = os.environ["GITHUB_EVENT_NAME"]
     payload = json.load(open(os.environ["GITHUB_EVENT_PATH"])) if os.environ.get("GITHUB_EVENT_PATH") else {}

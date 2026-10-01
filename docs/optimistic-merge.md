@@ -106,7 +106,37 @@ queue, and deploys stay as they are.
   `name: path globs`; a change under `.github/` runs every lane. Use its
   `base` output for affected-only builds (`turbo run --affected` with
   `TURBO_SCM_BASE`, `cargo nextest run -p` on the changed crates, `nx affected
-  --base`).
+  --base`). A push/dispatch base is the newest first-parent ancestor whose
+  authenticated full post-main `verified` job succeeded: GitHub Actions App,
+  approved workflow path, event `push`, tracked branch, same repository and
+  exact SHA, with matching latest-attempt job/check membership. Run, job and
+  check-run IDs are separate identities: the job's strictly validated
+  `check_run_url` supplies the check ID, fetched through a locally constructed
+  API path; the authenticated check's details URL must name the actual job ID.
+  The newest approved run wins before its latest attempt is read, so a rerun
+  of an older run cannot mask a newer run's failure. Whole-workflow success is
+  not proof; optional publication failure does not erase verified.
+  Recording, diagnostic and merge-group runs can never supply a baseline or
+  mask a genuine post-main failure. The shared red-main handler embeds the
+  exact same helper (a source-equality regression prevents drift) for event
+  selection, the same-SHA green guard, rerun verdict and revert baseline.
+  Unknown/incomplete reads fail closed: Verify runs all lanes, there is no
+  trusted baseline or deploy proof, and no destructive revert is authorized.
+  They do not silence red-main recovery: eligible runs with unavailable proof
+  stay active for investigation, a bounded rerun or escalation. Partial/null
+  producer metadata is unknown, never a positively established ineligible
+  producer; partial newer history cannot expose an older proof. Only an
+  authenticated success satisfies the same-SHA green guard. A failure from an
+  older run's rerun cannot authorize a revert: destructive handling re-reads
+  the newest approved same-SHA producer, stops on success and escalates on
+  unavailable proof. Previous-run history/proof unavailability also escalates;
+  it is not a genuinely absent prior run or an unconfirmed failure. A successful
+  rerun after unknown initial proof is recovery, not a proven flaky test.
+  `mode: run` exposes a `verdict` without builder secrets and returns `unknown`
+  on provider exceptions instead of failing the preflight job. An authenticated
+  non-proof producer returns `ineligible`; callers must retain handling for
+  unknown, never treat it as success or terminal no-action. Destructive revert
+  requires authenticated failure plus a trusted authenticated baseline.
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
   `verified` verdict. Skipped passes; failed or cancelled fails; `required:
   plan` makes a broken plan a failure. `required-unless-merge-group: suite`

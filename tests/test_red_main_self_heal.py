@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -60,6 +61,38 @@ def confirm(prev_conclusion: str, prev_rows: str, cur_rows: str) -> str:
 
 
 class InfraTest(unittest.TestCase):
+    def test_classifier_fetches_annotations_by_linked_check_not_job_id(self):
+        fixture = dict(job("cache", ["Restore cache"]), id=300,
+                       check_run_url="https://api.github.com/repos/SylphxAI/cloud/check-runs/30")
+        script = '''
+set -euo pipefail
+. "$RUNNER_TEMP/lib.sh"
+gha() {
+  case "$2" in
+    "repos/$REPO/actions/runs/1/jobs?filter=latest&per_page=100") printf '%s\\n' "$FIXTURE_JOB" ;;
+    "repos/$REPO/check-runs/30/annotations?per_page=100") printf '%s\\n' '["Failed to restore: 403 Forbidden"]' ;;
+    *) echo "unexpected API path: $2" >&2; return 1 ;;
+  esac
+}
+classify_run 1
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "lib.sh").write_text(embedded("LIB"))
+            work = root / "red-main"
+            work.mkdir()
+            (work / "infra.py").write_text(INFRA)
+            (work / "proof.py").write_text(embedded("PROOF_PY"))
+            env = dict(os.environ, RUNNER_TEMP=directory, REPO="SylphxAI/cloud",
+                       FIXTURE_JOB=json.dumps(fixture))
+            result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "infra cache-403")
+            env["FIXTURE_JOB"] = json.dumps(dict(fixture, check_run_url="https://evil.invalid/30"))
+            malformed = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+            self.assertNotEqual(malformed.returncode, 0)
+            self.assertIn("invalid job check_run_url", malformed.stderr)
+
     def test_token_mint(self):
         self.assertEqual(classify(job("a", ["Mint installation token"])), "infra installation-token-mint")
 
@@ -108,16 +141,16 @@ class InfraTest(unittest.TestCase):
         self.assertEqual(classify(), "none")
 
 
-def verdict(infra, state, conclusion="") -> str:
+def verdict(infra, state, conclusion="", initial="failure") -> str:
     return subprocess.run(
-        [sys.executable, "-c", VERDICT, infra, state, conclusion], capture_output=True, text=True, check=True
+        [sys.executable, "-c", VERDICT, infra, state, conclusion, initial], capture_output=True, text=True, check=True
     ).stdout.strip()
 
 
 def previous(runs, created="2026-09-30T10:00:00Z") -> str:
     return subprocess.run(
         [sys.executable, "-c", PREV, created],
-        input=json.dumps({"workflow_runs": runs}), capture_output=True, text=True, check=True,
+        input=json.dumps({"total_count": len(runs), "workflow_runs": runs}), capture_output=True, text=True, check=True,
     ).stdout.strip()
 
 
@@ -139,8 +172,18 @@ class VerdictTest(unittest.TestCase):
     def test_code_failure_paths_unchanged(self):
         self.assertEqual(verdict("no", "completed", "success"), "flake")
         self.assertEqual(verdict("no", "completed", "failure"), "real")
-        self.assertEqual(verdict("no", "refused"), "real")
+        self.assertEqual(verdict("no", "refused"), "unknown")
         self.assertEqual(verdict("no", "timeout"), "unknown")
+
+    def test_recovery_from_unknown_initial_proof_is_not_a_flake(self):
+        self.assertEqual(verdict("no", "completed", "success", "unknown"), "recovered")
+        self.assertEqual(verdict("yes", "completed", "success", "unknown"), "recovered")
+        self.assertEqual(verdict("no", "completed", "failure", "unknown"), "real")
+        self.assertEqual(verdict("no", "completed", "unknown", "unknown"), "unknown")
+
+    def test_unknown_cancelled_or_recording_rerun_never_proves_a_real_failure(self):
+        for conclusion in ("unknown", "cancelled", "skipped", "neutral", ""):
+            self.assertEqual(verdict("no", "completed", conclusion), "unknown")
 
 
 class PreviousRunTest(unittest.TestCase):
@@ -162,6 +205,20 @@ class PreviousRunTest(unittest.TestCase):
 
     def test_unfinished_run_is_ignored(self):
         self.assertEqual(previous([run(2, None, "2026-09-30T09:40:00Z", "in_progress")]), "")
+
+    def test_invalid_or_blank_status_is_rejected_but_unfinished_states_are_kept(self):
+        for status in ("", None, "mystery", 5):
+            with self.assertRaises(subprocess.CalledProcessError):
+                previous([run(2, "success", "2026-09-30T09:40:00Z", status)])
+        for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+            self.assertEqual(previous([run(2, None, "2026-09-30T09:40:00Z", status)]), "")
+
+    def test_incomplete_envelope_is_rejected(self):
+        for body in ('{"workflow_runs": []}', '{"total_count": null, "workflow_runs": []}',
+                     '{"total_count": 2, "workflow_runs": []}'):
+            with self.assertRaises(subprocess.CalledProcessError):
+                subprocess.run([sys.executable, "-c", PREV, "2026-09-30T10:00:00Z"], input=body,
+                               capture_output=True, text=True, check=True)
 
     def test_none_found(self):
         self.assertEqual(previous([]), "")

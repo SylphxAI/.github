@@ -241,12 +241,278 @@ jobs:
       # Shell helpers, written to disk by the first step. They are held here
       # rather than in a heredoc because a heredoc terminator cannot be
       # indented inside a YAML block scalar.
+      # Canonical source: .github/actions/ci-range/post_main.py. The equality
+      # regression test requires this reusable-workflow payload to match it.
+      PROOF_PY: |
+        #!/usr/bin/env python3
+        """Authenticated post-main proof selection, shared by CI range and red-main.
+
+        The workflow-run conclusion is not proof: optional publication can fail after
+        verified passed. Likewise a newer recording/dispatch/merge_group check cannot
+        mask a full post-main failure. Unknown or incomplete reads are never green.
+        """
+        from __future__ import annotations
+
+        import json
+        import os
+        import re
+        import subprocess
+        import sys
+        from urllib.parse import urlencode
+
+        ACTIONS_APP_ID = 15368
+        PAGE_LIMIT = 5
+        WALK_LIMIT = 200
+
+
+        def api(path):
+            env = dict(os.environ)
+            env["GH_TOKEN"] = env.get("ACTIONS_TOKEN") or env.get("TOKEN") or env.get("GH_TOKEN", "")
+            result = subprocess.run(["gh", "api", path], env=env, check=True, capture_output=True,
+                                    text=True, timeout=35)
+            return json.loads(result.stdout)
+
+
+        def workflow_path(workflow):
+            return workflow if workflow.startswith(".github/workflows/") else f".github/workflows/{workflow}"
+
+
+        def positive_id(value):
+            return type(value) is int and value > 0
+
+
+        def valid_sha(value):
+            return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{40}", value) is not None
+
+
+        def producer_origin(run, repo, branch, workflow, sha=None):
+            """Only complete, valid producer evidence can establish ineligibility."""
+            if not isinstance(run, dict):
+                return "unknown"
+            for field in ("id", "workflow_id", "check_suite_id", "run_attempt"):
+                if not positive_id(run.get(field)):
+                    return "unknown"
+            for field in ("repository", "head_repository"):
+                identity = run.get(field)
+                if (not isinstance(identity, dict) or not positive_id(identity.get("id"))
+                        or not isinstance(identity.get("full_name"), str)
+                        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", identity["full_name"]) is None):
+                    return "unknown"
+            event, tracked, path = run.get("event"), run.get("head_branch"), run.get("path")
+            if (not isinstance(event, str) or re.fullmatch(r"[a-z][a-z0-9_]*", event) is None
+                    or not isinstance(tracked, str) or not tracked.strip()
+                    or not isinstance(path, str) or re.fullmatch(r"\.github/workflows/[^/]+\.ya?ml", path) is None
+                    or not valid_sha(run.get("head_sha"))):
+                return "unknown"
+            eligible = (
+                event == "push" and tracked == branch and path == workflow_path(workflow)
+                and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
+                and run["repository"]["id"] == run["head_repository"]["id"]
+                and (sha is None or run["head_sha"] == sha)
+            )
+            return "eligible" if eligible else "ineligible"
+
+
+        def full_push(run, repo, branch, workflow, sha=None):
+            return producer_origin(run, repo, branch, workflow, sha) == "eligible"
+
+
+        def paged(path, key):
+            """Require a stable, complete provider envelope before selecting any proof."""
+            rows = []
+            total = None
+            identities = set()
+            for page in range(1, PAGE_LIMIT + 1):
+                body = api(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
+                count = body.get("total_count") if isinstance(body, dict) else None
+                batch = body.get(key) if isinstance(body, dict) else None
+                if type(count) is not int or count < 0 or not isinstance(batch, list):
+                    raise ValueError(f"{key} history envelope unavailable")
+                if total is None:
+                    total = count
+                if count != total or len(batch) != min(100, max(0, total - len(rows))):
+                    raise ValueError(f"{key} history count/page inconsistent")
+                for row in batch:
+                    if not isinstance(row, dict) or not positive_id(row.get("id")) or row["id"] in identities:
+                        raise ValueError(f"{key} history identity unavailable or repeated")
+                    identities.add(row["id"])
+                rows.extend(batch)
+                if len(rows) == total:
+                    return rows
+            raise ValueError(f"{key} pagination exhausted")
+
+
+        def linked_check_id(job, repo):
+            """Extract the check identity from a strict provider URL, never the job id."""
+            url = job.get("check_run_url")
+            if not isinstance(url, str):
+                return None
+            match = re.fullmatch(
+                rf"https://api\.github\.com/repos/{re.escape(repo)}/check-runs/([1-9][0-9]*)", url,
+            )
+            return int(match[1]) if match else None
+
+
+        def checked_verdict(run, repo, branch, workflow, name="verified"):
+            """Read the latest attempt's aggregate job AND its authenticated check."""
+            origin = producer_origin(run, repo, branch, workflow)
+            if origin != "eligible":
+                return origin
+            jobs = paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
+            jobs = [job for job in jobs if job.get("name") == name]
+            if len(jobs) != 1:
+                return "unknown"
+            job = jobs[0]
+            check_id = linked_check_id(job, repo)
+            if (type(job.get("id")) is not int or job["id"] < 1 or check_id is None
+                    or job.get("run_id") != run["id"] or job.get("run_attempt") != run.get("run_attempt")
+                    or not isinstance(run.get("run_attempt"), int) or run["run_attempt"] < 1
+                    or job.get("head_sha") != run["head_sha"]):
+                return "unknown"
+            # Run, job and check ids are distinct identities. Fetch the locally built
+            # path for the linked check; its details URL must name this actual job.
+            check = api(f"repos/{repo}/check-runs/{check_id}")
+            if (check.get("id") != check_id or check.get("app", {}).get("id") != ACTIONS_APP_ID
+                    or check.get("app", {}).get("slug") != "github-actions"
+                    or check.get("head_sha") != run["head_sha"] or check.get("name") != name
+                    or check.get("check_suite", {}).get("id") != run["check_suite_id"]
+                    or check.get("details_url") != f"https://github.com/{repo}/actions/runs/{run['id']}/job/{job['id']}"
+                    or check.get("status") != job.get("status")
+                    or check.get("conclusion") != job.get("conclusion")):
+                return "unknown"
+            if check.get("status") != "completed":
+                return "pending"
+            return check.get("conclusion") or "unknown"
+
+
+        def push_runs(repo, branch, workflow, sha=None):
+            query = {"event": "push", "branch": branch}
+            if sha:
+                query["head_sha"] = sha
+            # No whole-run status filter: a failed optional publish is not a failed
+            # verified proof, and a newer genuine failure must not be hidden.
+            rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?{urlencode(query)}",
+                         "workflow_runs")
+            candidates = []
+            for row in rows:
+                origin = producer_origin(row, repo, branch, workflow, sha)
+                if origin == "ineligible":
+                    continue
+                # Missing origin evidence must not erase the newest possible producer
+                # and expose an older passing/failing run. Unorderable history is an
+                # unavailable proof set, not an empty one.
+                if (not isinstance(row, dict) or not positive_id(row.get("id"))
+                        or not positive_id(row.get("run_attempt")) or not valid_sha(row.get("head_sha"))
+                        or (sha is not None and row["head_sha"] != sha)):
+                    raise ValueError("workflow history identity unavailable")
+                candidates.append(row)
+            return candidates
+
+
+        def latest_run(rows, sha):
+            candidates = [row for row in rows if row.get("head_sha") == sha]
+            return max(candidates, key=lambda r: (r["id"], r.get("run_attempt", 0)), default=None)
+
+
+        def sha_verdict(repo, branch, workflow, sha, name="verified"):
+            run = latest_run(push_runs(repo, branch, workflow, sha), sha)
+            return checked_verdict(run, repo, branch, workflow, name) if run else "unknown"
+
+
+        def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=False):
+            rows = push_runs(repo, branch, workflow)
+            if remote:
+                sha = head
+                ancestors = []
+                for _ in range(WALK_LIMIT):
+                    parents = api(f"repos/{repo}/commits/{sha}").get("parents", [])
+                    if not parents:
+                        break
+                    sha = parents[0]["sha"]
+                    ancestors.append(sha)
+                    # Stop at the first authenticated success. No current-HEAD base.
+                    run = latest_run(rows, sha)
+                    if run and checked_verdict(run, repo, branch, workflow, name) == "success":
+                        return sha
+                return ""
+            ancestors = subprocess.run(["git", "rev-list", "--first-parent", f"--max-count={WALK_LIMIT}",
+                                        f"{head}^"], capture_output=True, text=True, check=False)
+            if ancestors.returncode:
+                return ""
+            for sha in ancestors.stdout.split():
+                run = latest_run(rows, sha)
+                if run and checked_verdict(run, repo, branch, workflow, name) == "success":
+                    return sha
+            return ""
+
+
+        def failed_lanes(repo, identity):
+            """Only complete, valid jobs can establish the previous run's failing lanes."""
+            if not isinstance(identity, str) or re.fullmatch(r"[1-9][0-9]*", identity) is None:
+                raise ValueError("invalid workflow run identity")
+            jobs = paged(f"repos/{repo}/actions/runs/{identity}/jobs?filter=latest", "jobs")
+            lanes = []
+            for job in jobs:
+                name = job.get("name")
+                if (not isinstance(name, str) or not name.strip()
+                        or re.search(r"[,\x00-\x1f\x7f]", name)
+                        or type(job.get("run_id")) is not int or job["run_id"] != int(identity)
+                        or job.get("status") != "completed"
+                        or job.get("conclusion") not in
+                        ("success", "failure", "timed_out", "cancelled", "skipped", "neutral",
+                         "action_required", "startup_failure", "stale")):
+                    raise ValueError("previous-run lane evidence unavailable or invalid")
+                if job["conclusion"] in ("failure", "timed_out"):
+                    lanes.append(name)
+            return ",".join(lanes)
+
+
+        def main():
+            if len(sys.argv) == 3 and sys.argv[1] == "check-id":
+                check_id = linked_check_id(json.load(sys.stdin), sys.argv[2])
+                if check_id is None:
+                    raise ValueError("invalid job check_run_url")
+                print(check_id)
+                return
+            command, repo, branch, workflow, identity, *rest = sys.argv[1:]
+            name = rest[0] if rest else "verified"
+            if command == "history":
+                # Require complete history: no undocumented provider ordering can
+                # establish the predecessor from a partial set. Exhausted bounds fail.
+                rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?"
+                             + urlencode({"event": "push", "branch": branch}), "workflow_runs")
+                print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
+            elif command == "failed-lanes":
+                print(failed_lanes(repo, identity))
+            elif command == "base":
+                print(last_verified(repo, branch, workflow, identity, name))
+            elif command == "remote-base":
+                print(last_verified(repo, branch, workflow, identity, name, remote=True))
+            elif command == "sha":
+                print(sha_verdict(repo, branch, workflow, identity, name))
+            elif command == "run":
+                run = api(f"repos/{repo}/actions/runs/{identity}")
+                print(checked_verdict(run, repo, branch, workflow, name))
+            else:
+                raise ValueError("unknown proof selection command")
+
+
+        if __name__ == "__main__":
+            try:
+                main()
+            except Exception as error:
+                print(f"post-main proof unavailable: {error}", file=sys.stderr)
+                sys.exit(1)
       LIB: |
         # Red main handler helpers (owner#809).
         WORK_DIR="${RUNNER_TEMP}/red-main"
         STATE_DIR="$WORK_DIR/state"
         export WORK_DIR STATE_DIR GIT_TERMINAL_PROMPT=0
         mkdir -p "$STATE_DIR"
+        # No-action is terminal for subsequent steps, not just the resolver.
+        # In particular, a non-proof optional/diagnostic failure cannot reach
+        # rerun, quarantine or revert after the resolver exits successfully.
+        if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi
 
         # say <line>: append a line to the summary the final step posts.
         say() { printf '%s\n' "$*" >>"$WORK_DIR/summary.md"; }
@@ -343,18 +609,32 @@ jobs:
         # NOT `none`: it returns non-zero, and the caller stops, so a
         # classifier error never falls into the revert path.
         classify_run() {
-          local run_id="$1" jobs_json enriched id notes
-          jobs_json=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" --paginate \
+          local run_id="$1" jobs_json enriched id check_id notes
+          jobs_json=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" --paginate \
             --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")
-                  | {id, name, conclusion, steps: [(.steps // [])[] | {name, conclusion}]}' \
+                  | {id, check_run_url, name, conclusion, steps: [(.steps // [])[] | {name, conclusion}]}' \
             | jq -s '.') || return 1
           enriched='[]'
           for id in $(jq -r '.[].id' <<<"$jobs_json"); do
-            notes=$(gha api "repos/$REPO/check-runs/$id/annotations?per_page=100" --jq '[.[].message]') || return 1
+            check_id=$(jq -c --argjson id "$id" '.[] | select(.id == $id)' <<<"$jobs_json" \
+              | python3 "$WORK_DIR/proof.py" check-id "$REPO") || return 1
+            notes=$(gha api "repos/$REPO/check-runs/$check_id/annotations?per_page=100" --jq '[.[].message]') || return 1
             enriched=$(jq -c --argjson id "$id" --argjson notes "$notes" --argjson jobs "$jobs_json" \
               '. + [ ($jobs[] | select(.id == $id)) + {annotations: $notes} ]' <<<"$enriched")
           done
           jq -c '{jobs: .}' <<<"$enriched" | python3 "$WORK_DIR/infra.py"
+        }
+
+        # read_proof <run|sha> <args...>: unavailable is unverified, never
+        # success or a reason to silence recovery under set -euo pipefail.
+        read_proof() {
+          local verdict
+          if verdict=$(python3 "$WORK_DIR/proof.py" "$@" 2>"$WORK_DIR/proof.err"); then
+            printf '%s\n' "$verdict"
+          else
+            say "**Unverified:** the post-main proof could not be read ($(head -c 200 "$WORK_DIR/proof.err" | tr '\n' ' ')); investigation, rerun or escalation remains active."
+            printf '%s\n' unknown
+          fi
         }
 
         # enc <value>: percent-encode a query parameter value.
@@ -662,13 +942,16 @@ jobs:
         import sys
 
         infra, state, conclusion = (sys.argv[1:4] + ["", "", ""])[:3]
+        initial = sys.argv[4] if len(sys.argv) > 4 else "failure"
+        failed = ("failure", "timed_out", "action_required", "startup_failure")
         infra = infra == "yes"
         if state == "completed" and conclusion == "success":
-            print("infra" if infra else "flake")
-        elif state == "completed":
+            # Recovery from unknown proof is not evidence of a flaky test.
+            print(("infra" if infra else "flake") if initial in failed else "recovered")
+        elif state == "completed" and conclusion in ("failure", "timed_out", "action_required", "startup_failure"):
             print("unknown" if infra else "real")
         elif state == "refused":
-            print("unknown" if infra else "real")
+            print("unknown")
         else:
             print("unknown")
       # The previous COMPLETED verify run on main. Reads the workflow runs
@@ -677,17 +960,39 @@ jobs:
       # unfinished runs are not runs. Prints `id<TAB>conclusion<TAB>url` or
       # nothing.
       PREV_PY: |
+        from datetime import datetime
         import json
         import sys
 
-        created = sys.argv[1]
-        runs = [
-            r for r in json.load(sys.stdin).get("workflow_runs", [])
-            if r.get("status") == "completed"
-            and r.get("created_at", "") < created
-            and r.get("conclusion") in ("success", "failure", "timed_out")
-        ]
-        runs.sort(key=lambda r: r["created_at"], reverse=True)
+        def timestamp(value):
+            if not isinstance(value, str) or not value:
+                raise ValueError("workflow history timestamp unavailable")
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("workflow history timestamp lacks timezone")
+            return parsed
+
+        created = timestamp(sys.argv[1])
+        body = json.load(sys.stdin)
+        rows = body.get("workflow_runs") if isinstance(body, dict) else None
+        count = body.get("total_count") if isinstance(body, dict) else None
+        if (not isinstance(rows, list) or type(count) is not int or count < 0
+                or count != len(rows)):
+            raise ValueError("workflow history unavailable or incomplete")
+        runs = []
+        for row in rows:
+            if (not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] < 1
+                    or row.get("status") not in
+                    ("completed", "queued", "in_progress", "waiting", "pending", "requested")):
+                raise ValueError("workflow history identity unavailable")
+            at = timestamp(row.get("created_at"))
+            if (row["status"] == "completed" and row.get("conclusion") not in
+                    ("success", "failure", "timed_out", "cancelled", "skipped", "neutral", "action_required", "startup_failure", "stale")):
+                raise ValueError("workflow history conclusion unavailable")
+            if (row["status"] == "completed" and at < created
+                    and row.get("conclusion") in ("success", "failure", "timed_out")):
+                runs.append(row)
+        runs.sort(key=lambda row: timestamp(row["created_at"]), reverse=True)
         if runs:
             print(f"{runs[0]['id']}\t{runs[0]['conclusion']}\t{runs[0].get('html_url', '')}")
       # Same failing unit on the previous completed verify run? Args: the
@@ -981,6 +1286,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/red-main"
           printf '%s\n' "$LIB" >"$RUNNER_TEMP/red-main/lib.sh"
+          printf '%s\n' "$PROOF_PY" >"$RUNNER_TEMP/red-main/proof.py"
           printf '%s\n' "$GATE_PY" >"$RUNNER_TEMP/red-main/gate.py"
           printf '%s\n' "$JUNIT_PY" >"$RUNNER_TEMP/red-main/junit.py"
           printf '%s\n' "$CULPRIT_PY" >"$RUNNER_TEMP/red-main/culprit.py"
@@ -1169,10 +1475,18 @@ jobs:
             exit 0
           }
           if [ -n "$EVENT_RUN_ID" ]; then
-            run_json=$(gha api "repos/$REPO/actions/runs/$EVENT_RUN_ID")
+            if ! run_json=$(gha api "repos/$REPO/actions/runs/$EVENT_RUN_ID"); then
+              say "**Unverified:** run $EVENT_RUN_ID could not be read; escalating the unavailable producer evidence, with no deploy or revert authorization."
+              echo "::error::the verify run is unavailable; recovery requires investigation"
+              exit 1
+            fi
           else
-            run_json=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?branch=main&status=failure&per_page=1" \
-              --jq '.workflow_runs[0] // empty')
+            if ! run_json=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?event=push&branch=main&per_page=50" \
+              --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .status == "completed")] | .[0] // empty'); then
+              say "**Unverified:** Verify history could not be read; escalating instead of treating the missing proof as no action."
+              echo "::error::verify history is unavailable; recovery requires investigation"
+              exit 1
+            fi
           fi
           if [ -z "$run_json" ]; then
             quiet "no failed run of $VERIFY_WORKFLOW on main was found to handle"
@@ -1183,17 +1497,31 @@ jobs:
           head_branch=$(jq -r '.head_branch // ""' <<<"$run_json")
           conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
           run_url=$(jq -r '.html_url' <<<"$run_json")
-          case "$run_path" in
-            */"$VERIFY_WORKFLOW") ;;
-            *) echo "::error::run $run_id belongs to $run_path, not the declared verify workflow $VERIFY_WORKFLOW"; exit 1 ;;
+          # Do not infer ineligibility from missing path/branch fields.
+          # The strict producer helper distinguishes positive non-proof
+          # origins from partial/null metadata, which remains unverified.
+          # Only authenticated success or an authenticated ineligible
+          # producer is terminal. Unknown/unavailable proof stays unverified
+          # and keeps recovery active; it cannot authorize a revert.
+          proof=$(read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$run_id" "$VERIFY_CHECK_NAME")
+          case "$proof" in
+            success|ineligible) quiet "the authenticated post-main proof for $run_id is '$proof'" ;;
+            failure|timed_out|action_required|startup_failure) ;;
+            *) say "**Unverified:** run $run_id returned proof '$proof'; continuing investigation and rerun, with no authenticated failure yet." ;;
           esac
-          [ "$head_branch" = "main" ] || quiet "the verify run $run_id is on branch '$head_branch', not main"
-          [ "$conclusion" = "failure" ] || quiet "the verify run $run_id concluded '$conclusion'"
-          [ -n "$head_sha" ] || { echo "::error::run $run_id has no head_sha"; exit 1; }
+          state_set proof-verdict "$proof"
+          if [[ ! "$run_id" =~ ^[1-9][0-9]*$ || ! "$head_sha" =~ ^[a-f0-9]{40}$ ]]; then
+            say "**Unverified:** the producer lacks a valid run identity or exact SHA; escalating incomplete metadata, not silencing recovery."
+            echo "::error::producer metadata is unavailable"
+            exit 1
+          fi
           short_sha=$(cut -c1-9 <<<"$head_sha")
-          failed_lanes=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" --paginate \
+          if ! failed_lanes=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" --paginate \
             --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | .name' \
-            | paste -sd, -)
+            | paste -sd, -); then
+            failed_lanes=""
+            say "The failed lanes could not be listed; investigation or escalation must recover that evidence."
+          fi
           state_set run-id "$run_id"
           state_set head-sha "$head_sha"
           state_set short-sha "$short_sha"
@@ -1204,8 +1532,9 @@ jobs:
             echo "head-sha=$head_sha"
             echo "short-sha=$short_sha"
             echo "failed-lanes=$failed_lanes"
+            echo "proof-verdict=$proof"
           } >>"$GITHUB_OUTPUT"
-          say "Verify run [$run_id]($run_url) failed on \`$head_sha\`${failed_lanes:+ in lane(s) \`$failed_lanes\`}."
+          say "Verify run [$run_id]($run_url) on \`$head_sha\` has post-main proof \`$proof\`${failed_lanes:+ in lane(s) \`$failed_lanes\`}."
 
       # ---------------------------------------------------------------------
       # Idempotence, before anything else acts.
@@ -1236,9 +1565,11 @@ jobs:
           if [ "$MODE" != revert_pr_unarmed ]; then
             [ "$hand_in" = "0" ] || quiet "an open pull request already carries the auto-revert label"
           fi
-          green=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?head_sha=$HEAD_SHA&status=success&per_page=1" \
-            --jq '.total_count' 2>/dev/null || echo 0)
-          [ "$green" = "0" ] || quiet "$HEAD_SHA already has a passing $VERIFY_WORKFLOW run"
+          green=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
+          [ "$green" != success ] || quiet "$HEAD_SHA already has an authenticated passing post-main proof"
+          if [ "$green" = unknown ]; then
+            say "**Unverified:** the same-SHA green guard has no available proof; recovery remains active."
+          fi
           echo "nothing is already in hand for $SHORT_SHA"
 
       # ---------------------------------------------------------------------
@@ -1308,43 +1639,76 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
+          HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           INFRA: ${{ steps.infra.outputs.infra }}
           INFRA_SIGNATURE: ${{ steps.infra.outputs.signature }}
+          INITIAL_PROOF: ${{ steps.run.outputs.proof-verdict }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           # verdict.py owns the decision; the messages below only say it.
           if ! gha run rerun "$RUN_ID" --repo "$REPO" --failed 2>"$WORK_DIR/rerun.err"; then
             say "The run could not be rerun ($(head -c 300 "$WORK_DIR/rerun.err" | tr '\n' ' ')), so the failure stands."
-            verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" refused "")
+            verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" refused "" "$INITIAL_PROOF")
             echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
-            [ "$verdict" != unknown ] || say "It shows an infrastructure signature (\`$INFRA_SIGNATURE\`), so it is not treated as a code failure either."
+            if [ "$verdict" = unknown ]; then
+              say "**Unverified:** the rerun could not start; no proof or code-failure verdict is available. Escalating, with no revert authorization."
+              echo "::error::rerun unavailable; red-main recovery requires investigation"
+              exit 1
+            fi
             exit 0
           fi
           deadline=$((SECONDS + RERUN_TIMEOUT_MINUTES * 60))
           status=""
           conclusion=""
           while :; do
-            IFS=$'\t' read -r status conclusion < <(
-              gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '[.status, (.conclusion // "")] | @tsv'
-            )
+            if ! run_status=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '[.status, (.conclusion // "")] | @tsv'); then
+              status="unknown"; conclusion="unknown"
+              say "**Unverified:** the rerun status is unavailable; escalating without a proof verdict."
+              break
+            fi
+            IFS=$'\t' read -r status conclusion <<<"$run_status"
             [ "$status" = "completed" ] && break
             if [ "$SECONDS" -ge "$deadline" ]; then status="timeout"; break; fi
             sleep 30
           done
-          attempt=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.run_attempt')
-          verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" "$status" "$conclusion")
+          if ! attempt=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.run_attempt'); then attempt=unknown; fi
+          if [ "$status" = completed ]; then
+            conclusion=$(read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$RUN_ID" "$VERIFY_CHECK_NAME")
+          fi
+          case "$conclusion" in
+            failure|timed_out|action_required|startup_failure)
+              # An old event run's rerun cannot override a newer same-SHA
+              # producer whose proof is successful or unavailable.
+              newest=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
+              case "$newest" in
+                success)
+                  state_set proof-verdict success
+                  echo "verdict=recovered" >>"$GITHUB_OUTPUT"
+                  say "The newest approved same-SHA run has authenticated success; the older run's failure authorizes no revert."
+                  exit 0 ;;
+                failure|timed_out|action_required|startup_failure) conclusion="$newest" ;;
+                *)
+                  say "**Unverified:** the newest approved same-SHA producer has proof '$newest'; an older failure cannot authorize destructive handling."
+                  conclusion=unknown ;;
+              esac ;;
+          esac
+          state_set proof-verdict "$conclusion"
+          verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" "$status" "$conclusion" "$INITIAL_PROOF")
           echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
           case "$verdict" in
+            recovered) say "The rerun (attempt $attempt) now has authenticated success after unavailable initial proof; recovery completed, with no flake blamed and no revert." ;;
             infra) say "The one automatic rerun (attempt $attempt) passed after an infrastructure failure (\`$INFRA_SIGNATURE\`): the run does not count as red and no test is blamed." ;;
             flake) say "The rerun (attempt $attempt, same commit, no code change) passed: the failure is a flake." ;;
             real) say "The rerun (attempt $attempt) concluded \`$conclusion\`: the failure is real." ;;
             *)
               if [ "$status" = completed ]; then
-                say "The rerun (attempt $attempt) concluded \`$conclusion\` after an infrastructure failure (\`$INFRA_SIGNATURE\`); the platform, not a commit, is the suspect, so nothing is reverted. A person must look."
+                say "**Unverified:** the rerun (attempt $attempt) supplies no authenticated code-failure verdict (proof \`$conclusion\`, infra \`$INFRA_SIGNATURE\`); escalating without authorizing a revert."
               else
-                say "The rerun (attempt $attempt) had not concluded after $RERUN_TIMEOUT_MINUTES minutes; the handler stops without a verdict."
-              fi ;;
+                say "The rerun (attempt $attempt) has no authenticated terminal verdict within its bounded recovery; the handler escalates without authorizing a revert."
+              fi
+              echo "::error::post-main proof remains unverified; red-main recovery requires investigation"
+              exit 1 ;;
           esac
 
       # ---------------------------------------------------------------------
@@ -1550,17 +1914,38 @@ jobs:
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
-          created=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.created_at')
-          prev=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?branch=main&status=completed&per_page=50" 2>/dev/null \
-            | python3 "$RUNNER_TEMP/red-main/prev.py" "$created" || true)
+          if ! created=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.created_at'); then
+            say "**Unverified:** current-run history metadata is unavailable; escalating without confirmation or revert authorization."
+            echo "::error::confirmation metadata unavailable"
+            exit 1
+          fi
+          if ! prev=$(python3 "$RUNNER_TEMP/red-main/proof.py" history "$REPO" main "$VERIFY_WORKFLOW" "$created" \
+            | python3 "$RUNNER_TEMP/red-main/prev.py" "$created"); then
+            say "**Unverified:** previous-run history is unavailable or invalid, not genuinely absent; escalating without confirmation."
+            echo "::error::previous-run history unavailable"
+            exit 1
+          fi
           prev_id=""; prev_conclusion=""; prev_url=""
           if [ -n "$prev" ]; then IFS=$'\t' read -r prev_id prev_conclusion prev_url <<<"$prev"; fi
+          if [ -n "$prev_id" ]; then
+            prev_conclusion=$(read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$prev_id" "$VERIFY_CHECK_NAME")
+            case "$prev_conclusion" in
+              success|failure|timed_out|action_required|startup_failure|ineligible) ;;
+              *)
+                say "**Unverified:** previous run $prev_id has unavailable proof '$prev_conclusion', not an absent prior failure; escalating without confirmation."
+                echo "::error::previous-run proof unavailable"
+                exit 1 ;;
+            esac
+          fi
           : >"$WORK_DIR/previous-failing-tests.tsv"
           if [ "$prev_conclusion" = failure ] || [ "$prev_conclusion" = timed_out ]; then
             mkdir -p "$WORK_DIR/junit-previous"
             gha run download "$prev_id" --repo "$REPO" --pattern 'junit-*' --dir "$WORK_DIR/junit-previous" 2>/dev/null || true
-            prev_lanes=$(gha api "repos/$REPO/actions/runs/$prev_id/jobs?per_page=100" --paginate \
-              --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .name' | paste -sd, - || true)
+            if ! prev_lanes=$(python3 "$RUNNER_TEMP/red-main/proof.py" failed-lanes "$REPO" main "$VERIFY_WORKFLOW" "$prev_id"); then
+              say "**Unverified:** previous failing lanes are unavailable; escalating without confirmation."
+              echo "::error::previous-run failed lanes unavailable"
+              exit 1
+            fi
             python3 "$RUNNER_TEMP/red-main/junit.py" "$WORK_DIR/junit-previous" "$WORK_DIR/previous-failing-tests.tsv" "$prev_lanes" >/dev/null
           fi
           answer=$(python3 "$RUNNER_TEMP/red-main/confirm.py" "$prev_conclusion" "$WORK_DIR/previous-failing-tests.tsv" "$WORK_DIR/failing-tests.tsv")
@@ -1598,28 +1983,17 @@ jobs:
           : >"$WORK_DIR/temp-branches"
           state_set culprit ""
           state_set window 0
-          # The base is the newest commit on main whose verify run passed:
-          # every later commit is unverified, and that is the suspect window.
-          base=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?branch=main&status=success&per_page=1" \
-            --jq '.workflow_runs[0].head_sha // ""')
-          if [ -z "$base" ]; then
-            say "No passing $VERIFY_WORKFLOW run on main was found; walking first-parent ancestors for the \`$VERIFY_CHECK_NAME\` check run."
-            name=$(enc "$VERIFY_CHECK_NAME")
-            current="$HEAD_SHA"
-            for _ in $(seq 1 200); do
-              parent=$(gh api "repos/$REPO/commits/$current" --jq '.parents[0].sha // ""')
-              [ -n "$parent" ] || break
-              if [ -n "$(gh api "repos/$REPO/commits/$parent/check-runs?check_name=$name&filter=latest&per_page=100" \
-                          --jq '.check_runs[] | select(.conclusion == "success") | .name' | head -1)" ]; then
-                base="$parent"
-                break
-              fi
-              current="$parent"
-            done
+          # A recording/merge_group/diagnostic success cannot be a revert
+          # baseline. Optional publication failure cannot hide verified success.
+          if ! base=$(python3 "$RUNNER_TEMP/red-main/proof.py" remote-base "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME" 2>"$WORK_DIR/base.err"); then
+            say "**Unverified:** the trusted revert baseline is unavailable ($(head -c 200 "$WORK_DIR/base.err" | tr '\n' ' ')); escalating with no revert authorization."
+            echo "::error::trusted revert baseline unavailable"
+            exit 1
           fi
-          if [ -z "$base" ]; then
-            say "**No action:** no verified base was found within 200 ancestors; a person must decide."
-            exit 0
+          if [[ ! "$base" =~ ^[a-f0-9]{40}$ ]]; then
+            say "**Unverified:** no trusted baseline was found within 200 ancestors; escalating with no revert authorization."
+            echo "::error::no trusted revert baseline"
+            exit 1
           fi
           state_set base "$base"
           if [ "$base" = "$HEAD_SHA" ]; then
@@ -1781,6 +2155,7 @@ jobs:
         timeout-minutes: 25
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           APP_ID: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
           MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
@@ -1799,6 +2174,25 @@ jobs:
           # shellcheck disable=SC2016
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
+          # Destructive handling needs a current authenticated failure and a
+          # baseline supplied only by the authenticated ancestor selector.
+          case "$(state_get proof-verdict)" in
+            failure|timed_out|action_required|startup_failure) ;;
+            *) say "**Unverified:** no authenticated post-main failure authorizes this revert."; exit 1 ;;
+          esac
+          newest=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
+          case "$newest" in
+            success) say "The newest approved same-SHA producer has authenticated success; no revert."; exit 0 ;;
+            failure|timed_out|action_required|startup_failure) ;;
+            *) say "**Unverified:** the newest approved same-SHA producer has proof '$newest'; escalating without revert authorization."; exit 1 ;;
+          esac
+          base=$(state_get base)
+          if [[ ! "$base" =~ ^[a-f0-9]{40}$ ]]; then
+            say "**Unverified:** no trusted baseline authorizes this revert."
+            exit 1
+          fi
+          base_proof=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$base" "$VERIFY_CHECK_NAME")
+          [ "$base_proof" = success ] || { say "**Unverified:** the baseline no longer has authenticated success; no revert authorization."; exit 1; }
           culprit=$(state_get culprit)
           revert_all=$(cat "$STATE_DIR/revert-all.json" 2>/dev/null || true)
           if [ -z "$culprit" ] && [ -z "$revert_all" ]; then
