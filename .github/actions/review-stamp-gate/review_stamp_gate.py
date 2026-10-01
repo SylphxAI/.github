@@ -8,6 +8,7 @@ for the read-only origin fetch. No dependency installation or PR code execution.
 from __future__ import annotations
 
 import datetime as dt
+import fnmatch
 import json
 import os
 import pathlib
@@ -51,14 +52,24 @@ def trusted_ids(text: str) -> set[int]:
     return {int(p) for p in parts}
 
 
+def creator_list(value, name: str) -> set[int]:
+    if not isinstance(value, list) or not value or any(type(x) is not int or x <= 0 for x in value):
+        raise ValueError(f"{name} must contain positive GitHub creator IDs")
+    return set(value)
+
+
 def validate_config(cfg: dict) -> dict:
     if not isinstance(cfg, dict) or not isinstance(cfg.get("context"), str) or not cfg["context"]:
         raise ValueError("config needs a nonempty context")
-    for field in ("requireStampLabels", "requireStampPaths"):
+    for field in ("requireStampLabels", "requireStampPaths", "requireStampPathGlobs"):
         if not isinstance(cfg.get(field), list) or any(not isinstance(p, str) or not p for p in cfg[field]):
             raise ValueError(f"config needs a string array: {field}")
-    if not isinstance(cfg.get("enforceMissing", True), bool):
-        raise ValueError("enforceMissing must be a boolean")
+    if cfg.get("enforceMissing") is not True:
+        raise ValueError("missing-stamp enforcement must be enabled")
+    reviewer = cfg.get("productReview", {})
+    if not isinstance(reviewer, dict) or not isinstance(reviewer.get("context"), str) or not reviewer["context"]:
+        raise ValueError("config needs a productReview context")
+    creator_list(reviewer.get("trustedCreatorIds"), "productReview.trustedCreatorIds")
     return cfg
 
 
@@ -82,25 +93,63 @@ def latest_stamp(statuses: list[dict], context: str, creators: set[int]):
     return sorted(matches, key=lambda s: dt.datetime.fromisoformat(s["created_at"].replace("Z", "+00:00")), reverse=True)[0] if matches else None
 
 
+def path_matches(file: str, pattern: str) -> bool:
+    # fnmatch globs span path separators; **/ also permits a root directory.
+    return fnmatch.fnmatchcase(file, pattern) or (
+        pattern.startswith("**/") and fnmatch.fnmatchcase(file, pattern[3:])
+    )
+
+
 def stamp_required(labels: list[str], files: list[str], cfg: dict):
     for label in labels:
         if label in cfg["requireStampLabels"]:
             return f"label {label}"
     for file in files:
-        for path in cfg["requireStampPaths"]:
+        for path in cfg.get("requireStampPaths", []):
             if file == path or (path.endswith("/") and file.startswith(path)):
                 return f"path {file}"
+        for pattern in cfg.get("requireStampPathGlobs", []):
+            if path_matches(file, pattern):
+                return f"path {file} ({pattern})"
     return None
 
 
-def verdict(stamp, required, cfg: dict) -> tuple[bool, str]:
-    context = cfg["context"]
-    if stamp:
-        state = stamp["state"]
-        return state == "success", f"{context} is {state}"
-    if required and cfg.get("enforceMissing", True):
-        return False, f"no {context} stamp; required by {required}"
-    return True, f"no {context} stamp; missing-stamp enforcement {'deferred' if required else 'not required'}"
+def ops_requirement(repository: str, labels: list[str], files: list[str], cfg: dict, policy: dict):
+    if repository in policy["platformRepositories"]:
+        return "platform repository"
+    # Mandatory policy first; repository scope can add triggers, never subtract.
+    return stamp_required(labels, files, policy) or stamp_required(labels, files, cfg)
+
+
+def verdict(stamp, required: str, reviewer: dict, author_id=None, shared_ids=frozenset()) -> tuple[bool, str]:
+    context = reviewer["context"]
+    if not stamp:
+        return False, f"no trusted {context} stamp; required by {required}"
+    if stamp["state"] != "success":
+        return False, f"{context} is {stamp['state']}"
+    prefix = reviewer.get("descriptionPrefix")
+    if prefix and not (stamp.get("description") or "").startswith(prefix):
+        return False, f"{context} success lacks required description prefix {prefix}"
+    creator = (stamp.get("creator") or {}).get("id")
+    if author_id is not None and creator == author_id and creator not in shared_ids:
+        return False, f"{context} was stamped by the PR author, not an independent reviewer"
+    limit = "; shared identity cannot prove reviewer independence" if creator == author_id and creator in shared_ids else ""
+    return True, f"{context} success ({required}){limit}"
+
+
+def review_verdict(repository: str, labels: list[str], files: list[str], statuses: list[dict],
+                   cfg: dict, policy: dict, ops_creators: set[int], author_id=None) -> tuple[bool, str]:
+    ops = policy["opsReview"]
+    # Even ordinary product PRs cannot override an explicit trusted Ops veto.
+    ops_stamp = latest_stamp(statuses, ops["context"], ops_creators)
+    if ops_stamp and ops_stamp["state"] != "success":
+        return False, f"{ops['context']} is {ops_stamp['state']}"
+    required = ops_requirement(repository, labels, files, cfg, policy)
+    if required:
+        return verdict(ops_stamp, required, ops)
+    reviewer = cfg["productReview"]
+    stamp = latest_stamp(statuses, reviewer["context"], creator_list(reviewer["trustedCreatorIds"], "product reviewer"))
+    return verdict(stamp, "owning lane independent final review", reviewer, author_id, set(policy["sharedCreatorIds"]))
 
 
 def api(path: str):
@@ -132,6 +181,9 @@ def main() -> int:
         raise ValueError("checkout is not the merge group's head")
     creators = trusted_ids(os.environ["REVIEW_TRUSTED_CREATOR_IDS"])
     cfg = read_config(base, os.environ.get("REVIEW_CONFIG_PATH", ".github/review-stamp.json"))
+    policy = json.loads(pathlib.Path(__file__).with_name("policy.json").read_text())
+    if not creators <= creator_list(policy["opsReview"]["trustedCreatorIds"], "Ops reviewers"):
+        raise ValueError("trusted-creator-ids includes an identity not authorized by shared Ops policy")
     branch = base_ref.removeprefix("refs/heads/")
     # Read refs before target: entries merged between reads remain mapped or on target.
     refs = queue_refs_by_sha(git("ls-remote", "origin", f"refs/heads/gh-readonly-queue/{branch}/*"))
@@ -148,9 +200,10 @@ def main() -> int:
     for number, sha in prs:
         pr = api(f"/pulls/{number}")
         files = git("diff", "--name-only", f"{sha}^", sha).splitlines()
-        required = stamp_required([label["name"] for label in pr["labels"]], files, cfg)
-        stamp = latest_stamp(statuses_for(pr["head"]["sha"]), cfg["context"], creators)
-        ok, reason = verdict(stamp, required, cfg)
+        ok, reason = review_verdict(
+            os.environ["GITHUB_REPOSITORY"], [label["name"] for label in pr["labels"]], files,
+            statuses_for(pr["head"]["sha"]), cfg, policy, creators, (pr.get("user") or {}).get("id"),
+        )
         print(f"{'::error::' if not ok else ''}#{number} head {pr['head']['sha'][:8]}: {reason}")
         failed |= not ok
     return int(failed)

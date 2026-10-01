@@ -1,11 +1,11 @@
 name: Review stamp gate
-description: Refuse merge groups carrying a failed or pending trusted security review.
+description: Require trusted successful reviews by the data-mapped Ops or owning-lane reviewer.
 inputs:
   config-path:
     description: Repository-owned JSON scope, read from the merge group's base commit.
     default: .github/review-stamp.json
   trusted-creator-ids:
-    description: Comma-separated numeric GitHub user IDs allowed to post review statuses.
+    description: Comma-separated Ops creator IDs authorized by the pinned shared policy.
     required: true
   token:
     description: Token with contents and pull-requests read permissions.

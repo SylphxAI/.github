@@ -44,9 +44,10 @@ Timestamps are second-resolution, and a re-arm or queue entry can occur
 between the read and mutation. The event's `updated_at` is a push-time proxy,
 not a separately signed receive timestamp. This workflow is stale-arm hygiene,
 not the merge authorization boundary. The merge-group review stamp gate is the
-backstop: failed/pending trusted stamps always block, and scoped missing stamps
-block where the repository has enabled missing-stamp enforcement. Repositories
-with deferred missing-stamp enforcement do not yet have that latter guarantee.
+backstop: failed/pending trusted stamps always block, and every adopted PR
+requires a trusted review. Platform and security/money/migration classes require
+an Ops success whose description starts with `PASS`; other product changes
+require their owning lane's independent final reviewer.
 
 The arm workflow remains responsible for reviewing the exact head and using
 `--match-head-commit`; this workflow grants no new approval.
