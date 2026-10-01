@@ -310,6 +310,17 @@ jobs:
             return rows
 
 
+        def linked_check_id(job, repo):
+            """Extract the check identity from a strict provider URL, never the job id."""
+            url = job.get("check_run_url")
+            if not isinstance(url, str):
+                return None
+            match = re.fullmatch(
+                rf"https://api\.github\.com/repos/{re.escape(repo)}/check-runs/([1-9][0-9]*)", url,
+            )
+            return int(match[1]) if match else None
+
+
         def checked_verdict(run, repo, branch, workflow, name="verified"):
             """Read the latest attempt's aggregate job AND its authenticated check."""
             if not full_push(run, repo, branch, workflow):
@@ -319,14 +330,16 @@ jobs:
             if len(jobs) != 1:
                 return "unknown"
             job = jobs[0]
-            check_url = f"https://api.github.com/repos/{repo}/check-runs/{job.get('id')}"
-            if (job.get("run_id") != run["id"] or job.get("run_attempt") != run.get("run_attempt")
+            check_id = linked_check_id(job, repo)
+            if (type(job.get("id")) is not int or job["id"] < 1 or check_id is None
+                    or job.get("run_id") != run["id"] or job.get("run_attempt") != run.get("run_attempt")
                     or not isinstance(run.get("run_attempt"), int) or run["run_attempt"] < 1
-                    or job.get("head_sha") != run["head_sha"] or job.get("check_run_url") != check_url):
+                    or job.get("head_sha") != run["head_sha"]):
                 return "unknown"
-            # Never fetch a provider-supplied URL. Construct the approved API path.
-            check = api(f"repos/{repo}/check-runs/{job['id']}")
-            if (check.get("id") != job["id"] or check.get("app", {}).get("id") != ACTIONS_APP_ID
+            # Run, job and check ids are distinct identities. Fetch the locally built
+            # path for the linked check; its details URL must name this actual job.
+            check = api(f"repos/{repo}/check-runs/{check_id}")
+            if (check.get("id") != check_id or check.get("app", {}).get("id") != ACTIONS_APP_ID
                     or check.get("app", {}).get("slug") != "github-actions"
                     or check.get("head_sha") != run["head_sha"] or check.get("name") != name
                     or check.get("check_suite", {}).get("id") != run["check_suite_id"]

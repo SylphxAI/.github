@@ -25,13 +25,16 @@ def run(id=1, sha=SHA, **fields):
     return row
 
 
-def objects(row, conclusion="success"):
-    job = dict(id=77, run_id=row["id"], run_attempt=1, head_sha=row["head_sha"], name="verified",
-               status="completed", conclusion=conclusion,
-               check_run_url=f"https://api.github.com/repos/{REPO}/check-runs/77")
-    check = dict(id=77, app=dict(id=15368, slug="github-actions"), head_sha=row["head_sha"],
+def objects(row, conclusion="success", job_id=300, check_id=30):
+    # Run, job and check identities deliberately differ, as in the provider
+    # contract exercised by cloud's legacy release proof fixtures.
+    job = dict(id=job_id, run_id=row["id"], run_attempt=row["run_attempt"],
+               head_sha=row["head_sha"], name="verified", status="completed", conclusion=conclusion,
+               check_run_url=f"https://api.github.com/repos/{REPO}/check-runs/{check_id}")
+    check = dict(id=check_id, app=dict(id=15368, slug="github-actions"), head_sha=row["head_sha"],
                  name="verified", check_suite=dict(id=row["check_suite_id"]), status="completed",
-                 conclusion=conclusion, details_url=f"https://github.com/{REPO}/actions/runs/{row['id']}/job/77")
+                 conclusion=conclusion,
+                 details_url=f"https://github.com/{REPO}/actions/runs/{row['id']}/job/{job_id}")
     return job, check
 
 
@@ -58,6 +61,44 @@ class ProofTest(unittest.TestCase):
         job, check = objects(row)
         with patch.object(proof, "paged", return_value=[job]), patch.object(proof, "api", return_value=check):
             self.assertEqual(proof.checked_verdict(row, REPO, "main", "verify.yml"), "success")
+
+    def test_distinct_job_and_check_ids_preserve_success_and_failure(self):
+        row = run()
+        for verdict in ("success", "failure"):
+            with self.subTest(verdict=verdict):
+                job, check = objects(row, verdict)
+                self.assertEqual((row["id"], job["id"], check["id"]), (1, 300, 30))
+                with patch.object(proof, "paged", return_value=[job]), \
+                        patch.object(proof, "api", return_value=check) as read:
+                    self.assertEqual(proof.checked_verdict(row, REPO, "main", "verify.yml"), verdict)
+                    read.assert_called_once_with(f"repos/{REPO}/check-runs/30")
+
+    def test_check_url_shape_is_validated_before_any_check_fetch(self):
+        row = run()
+        job, check = objects(row)
+        url = job["check_run_url"]
+        invalid = (None, 30, url.replace("https:", "http:"), url.replace("api.github.com", "evil.invalid"),
+                   url.replace("api.github.com", "user@api.github.com"),
+                   url.replace("api.github.com", "api.github.com:443"),
+                   url.replace(REPO, "attacker/cloud"), url + "?x=1", url + "#x", url + "/",
+                   url.replace("/30", "/0"), url.replace("/30", "/-30"),
+                   url.replace("/30", "/030"), url.replace("/30", "/30/31"))
+        for value in invalid:
+            with self.subTest(url=value), patch.object(proof, "paged", return_value=[dict(job, check_run_url=value)]), \
+                    patch.object(proof, "api", return_value=check) as read:
+                self.assertEqual(proof.checked_verdict(row, REPO, "main", "verify.yml"), "unknown")
+                read.assert_not_called()
+
+    def test_linked_check_and_actual_job_must_both_match(self):
+        row = run()
+        job, check = objects(row)
+        for field, value in (("id", job["id"]),
+                             ("details_url", check["details_url"].replace("/job/300", "/job/30")),
+                             ("details_url", check["details_url"].replace("/job/300", "/job/301")),
+                             ("conclusion", "failure")):
+            with self.subTest(field=field, value=value), patch.object(proof, "paged", return_value=[job]), \
+                    patch.object(proof, "api", return_value=dict(check, **{field: value})):
+                self.assertEqual(proof.checked_verdict(row, REPO, "main", "verify.yml"), "unknown")
 
     def test_unknown_producer_or_job_membership_never_admits(self):
         row = run()
@@ -101,8 +142,25 @@ class ProofTest(unittest.TestCase):
                              {"returncode": 0, "stdout": f"{bad}\n{good}\n"})()):
             self.assertEqual(proof.last_verified(REPO, "main", "verify.yml"), good)
 
-    def test_newer_genuine_failure_not_hidden_by_older_success(self):
-        self.assertEqual(proof.latest_run([run(1), run(2)], SHA)["id"], 2)
+    def test_newer_genuine_failure_not_hidden_by_older_run_rerun(self):
+        old = run(1, run_attempt=99)
+        newest = run(2, run_attempt=1)
+        old_job, old_check = objects(old, "success", job_id=900, check_id=90)
+        job, check = objects(newest, "failure")
+        # The older run's rerun gets newer job/check ids, but cannot replace
+        # the newest approved run as the proof for this SHA.
+        self.assertGreater(old_job["id"], job["id"])
+        self.assertGreater(old_check["id"], check["id"])
+        for rows in ([old, newest], [newest, old]):
+            with self.subTest(rows=rows), patch.object(proof, "push_runs", return_value=rows), \
+                    patch.object(proof, "paged", return_value=[job]) as jobs, \
+                    patch.object(proof, "api", return_value=check):
+                self.assertEqual(proof.sha_verdict(REPO, "main", "verify.yml", SHA), "failure")
+                jobs.assert_called_once_with(f"repos/{REPO}/actions/runs/2/jobs?filter=latest", "jobs")
+
+    def test_latest_attempt_is_selected_only_within_the_newest_run(self):
+        rows = [run(1, run_attempt=99), run(2, run_attempt=1), run(2, run_attempt=2)]
+        self.assertEqual(proof.latest_run(rows, SHA), rows[2])
 
     def test_auto_revert_uses_helper_for_event_green_guard_and_baseline(self):
         text = (ROOT / ".github/workflows/red-main.yml").read_text()

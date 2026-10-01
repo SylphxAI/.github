@@ -109,8 +109,13 @@ queue, and deploys stay as they are.
   --base`). A push/dispatch base is the newest first-parent ancestor whose
   authenticated full post-main `verified` job succeeded: GitHub Actions App,
   approved workflow path, event `push`, tracked branch, same repository and
-  exact SHA, with matching latest-attempt job/check membership. Whole-workflow
-  success is not proof; optional publication failure does not erase verified.
+  exact SHA, with matching latest-attempt job/check membership. Run, job and
+  check-run IDs are separate identities: the job's strictly validated
+  `check_run_url` supplies the check ID, fetched through a locally constructed
+  API path; the authenticated check's details URL must name the actual job ID.
+  The newest approved run wins before its latest attempt is read, so a rerun
+  of an older run cannot mask a newer run's failure. Whole-workflow success is
+  not proof; optional publication failure does not erase verified.
   Recording, diagnostic and merge-group runs can never supply a baseline or
   mask a genuine post-main failure. The shared red-main handler embeds the
   exact same helper (a source-equality regression prevents drift) for event
