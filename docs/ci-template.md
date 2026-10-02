@@ -60,8 +60,15 @@ release.
 
 ## Runners
 
-- Light jobs (`changes`, lint, `ci-ok`, docs, scripts): `sylphx-linux-standard`.
+- Light jobs (`changes`, lint, docs, scripts): `sylphx-linux-standard`.
   Never `-xlarge` or `-2xlarge`.
+- Every `if: always()` verdict job (`ci-ok`, `verified`, any `source-ci/pass`
+  alias) runs on `sylphx-linux-control`, the reserved gate pool, on every
+  event: it still runs after its run is cancelled, and the run keeps its
+  concurrency group until it does, so on a busy build pool it holds the next
+  run. Keep `always()`; never `!cancelled()` on a verdict (a skipped required
+  check counts as passing). Any other job that would run after a cancel uses
+  `!cancelled()`.
 - Merge-group runs use the `-merge` lane (`sylphx-linux-standard-merge`,
   `sylphx-linux-xlarge-merge`) so they never queue behind the pull-request
   backlog: `runs-on: ${{ github.event_name == 'merge_group' && '...-merge' || '...' }}`.

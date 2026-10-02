@@ -268,6 +268,14 @@ Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
 (`-xlarge-merge` for xlarge jobs), so a merge group never waits behind the
 pull-request backlog. The gate starter already uses it.
 
+The verdict jobs (`ci-ok`, `verified`) run on `sylphx-linux-control`, the
+reserved gate pool, on every event; it has no `-merge` twin. A verdict keeps
+`if: always()`, so a cancelled run still reports a failure instead of a
+skipped check, which GitHub counts as passing. It therefore runs after every
+cancel, and the cancelled run holds its concurrency group until it has: on a
+busy build pool that left a pull request's next run pending with no jobs
+(SylphxAI/agents#4222, 2026-10-02).
+
 Private repositories run every job on our runners: `sylphx-linux-standard`
 for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`
 between. Public repositories may use GitHub's standard hosted runners, which
