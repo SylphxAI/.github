@@ -1,0 +1,57 @@
+name: cache-toolchain
+description: >
+  Dependency and build cache for one toolchain, keyed per toolchain, runner OS
+  and lockfile so a job restores what it can and saves once on a hit-miss.
+  `cargo` caches the registry and git sources only: for compiled Rust output
+  use rust-sccache (a shared object-store backend), or Swatinem/rust-cache for
+  a repository with neither. `unity` caches the Library folder. Run it after
+  checkout and before the install or build step. The cache only ever speeds a
+  job up.
+
+inputs:
+  toolchain:
+    description: cargo, bun, npm, pnpm, gradle or unity.
+    required: true
+  working-directory:
+    description: Directory that holds the lockfiles or the Unity project.
+    default: .
+  extra-key:
+    description: Extra text for the key, for example a matrix leg or build target.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - id: spec
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+        WD: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        case "$TOOLCHAIN" in
+          cargo)  paths="~/.cargo/registry/index
+        ~/.cargo/registry/cache
+        ~/.cargo/git/db"; hash="$WD/**/Cargo.lock" ;;
+          bun)    paths="~/.bun/install/cache"; hash="$WD/**/bun.lock*" ;;
+          npm)    paths="~/.npm"; hash="$WD/**/package-lock.json" ;;
+          pnpm)   paths="~/.local/share/pnpm/store"; hash="$WD/**/pnpm-lock.yaml" ;;
+          gradle) paths="~/.gradle/caches
+        ~/.gradle/wrapper"; hash="$WD/**/*.gradle*
+        $WD/**/gradle-wrapper.properties
+        $WD/**/libs.versions.toml" ;;
+          unity)  paths="$WD/Library"; hash="$WD/Packages/manifest.json
+        $WD/Packages/packages-lock.json
+        $WD/ProjectSettings/ProjectVersion.txt" ;;
+          *) echo "unknown toolchain: $TOOLCHAIN" >&2; exit 1 ;;
+        esac
+        {
+          echo "paths<<EOF"; echo "$paths"; echo "EOF"
+          echo "hash<<EOF"; echo "$hash"; echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.spec.outputs.paths }}
+        key: ${{ inputs.toolchain }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.extra-key }}-${{ hashFiles(steps.spec.outputs.hash) }}
+        restore-keys: |
+          ${{ inputs.toolchain }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.extra-key }}-
