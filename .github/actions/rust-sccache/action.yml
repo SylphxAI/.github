@@ -67,8 +67,8 @@ runs:
       if: runner.os == 'Linux' && runner.arch == 'X64'
       shell: bash
       env:
-        VERSION: v0.10.0
-        SHA256: 1fbb35e135660d04a2d5e42b59c7874d39b3deb17de56330b25b713ec59f849b
+        VERSION: v0.18.0
+        SHA256: 45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
         S3_ACCESS_KEY: ${{ inputs.s3-access-key }}
         S3_SECRET_KEY: ${{ inputs.s3-secret-key }}
         S3_ENDPOINT: ${{ inputs.s3-endpoint }}
