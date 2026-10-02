@@ -106,7 +106,7 @@ jobs:
   ci-ok:
     if: always()
     needs: [plan, lint, test, migrations, suite]
-    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+    runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main

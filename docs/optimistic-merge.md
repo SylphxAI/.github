@@ -268,6 +268,10 @@ Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
 (`-xlarge-merge` for xlarge jobs), so a merge group never waits behind the
 pull-request backlog. The gate starter already uses it.
 
+Aggregator jobs (`ci-ok`, `verified`: only `needs-pass`, no checkout, no
+build) run on `runs-on: sylphx-linux-control`, the small reserved pool that
+never waits behind build runners.
+
 Private repositories run every job on our runners: `sylphx-linux-standard`
 for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`
 between. Public repositories may use GitHub's standard hosted runners, which
