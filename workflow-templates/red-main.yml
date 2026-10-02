@@ -22,13 +22,12 @@ on:
     types: [completed]
   workflow_dispatch:
 
-# The job's own token. It carries every Actions call (rerun, dispatch, runs,
+# The job's own token. It carries every Actions call (dispatch, runs,
 # artifacts) and the failure notice, in every mode; the handler never hands it
 # to pull-request-controlled code. With the builder App key (repositories in
 # the org that holds it) branch pushes and pull requests go through the App.
-# Without it (token mode) the handler notifies on this token: it reruns the
-# failed jobs, files the flake issue and comments on the affected pull
-# request; it never opens a pull request with it.
+# Without it (token mode) the handler notifies on this token: it comments on the
+# affected pull request; it never opens a pull request with it.
 permissions:
   actions: write
   checks: read

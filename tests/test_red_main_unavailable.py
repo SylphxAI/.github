@@ -99,7 +99,7 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.work = self.root / "red-main"
         self.work.mkdir()
-        for name, filename in (("LIB", "lib.sh"), ("VERDICT_PY", "verdict.py"),
+        for name, filename in (("LIB", "lib.sh"),
                                ("PREV_PY", "prev.py"), ("CONFIRM_PY", "confirm.py")):
             (self.work / filename).write_text(HANDLER["env"][name])
         (self.work / "proof.py").write_text(FAKE_PROOF)
@@ -120,7 +120,7 @@ class UnavailableHandlerTest(unittest.TestCase):
                         RUN_URL=RUN["html_url"], RUN_FIXTURE=json.dumps(RUN),
                         MODE="notify", ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
                         INFRA="no", INFRA_SIGNATURE="", INITIAL_PROOF="unknown",
-                        RERUN_TIMEOUT_MINUTES="1", PROOF_RESULT="unknown")
+                        PROOF_RESULT="unknown")
 
     def execute(self, name):
         return subprocess.run(["bash", "-c", STEPS[name]["run"]], env=self.env,
@@ -213,50 +213,33 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("authenticated passing", self.state("quiet"))
 
-    def test_unknown_initial_proof_still_reruns_and_unavailable_result_escalates(self):
-        for proof in ("exception", "unknown"):
+    def test_unknown_initial_proof_escalates_and_never_reruns(self):
+        for proof in ("exception", "unknown", "success"):
             with self.subTest(proof=proof):
-                self.env["PROOF_RESULT"] = proof
-                result = self.execute("Rerun the failed lanes on the same commit")
-                self.assertTrue((self.root / "rerun.called").exists())
+                self.env["INITIAL_PROOF"] = proof
+                result = self.execute("Decide the verdict of the failed run")
+                self.assertFalse((self.root / "rerun.called").exists())
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("verdict=unknown", (self.root / "output").read_text())
-                self.assertEqual(self.state("proof-verdict"), "unknown")
                 self.assertFalse((self.work / "state/quiet").exists())
-                self.assertIn("no authenticated", self.summary())
+                self.assertIn("Unverified", self.summary())
 
-    def test_real_newest_unavailable_blocks_older_run_failure_after_rerun(self):
-        self.use_real_proof()
-        job = dict(id=300, run_id=1, run_attempt=1, head_sha=SHA, name="verified",
-                   status="completed", conclusion="failure",
-                   check_run_url="https://api.github.com/repos/SylphxAI/cloud/check-runs/30")
-        check = dict(id=30, app=dict(id=15368, slug="github-actions"), head_sha=SHA,
-                     name="verified", check_suite=dict(id=3), status="completed", conclusion="failure",
-                     details_url="https://github.com/SylphxAI/cloud/actions/runs/1/job/300")
-        self.env.update(JOB_FIXTURE=json.dumps(job), CHECK_FIXTURE=json.dumps(check),
-                        HISTORY_FIXTURE=json.dumps({"total_count": 2, "workflow_runs": [dict(RUN, id=2), RUN]}),
-                        NEWEST_UNAVAILABLE="yes")
-        result = self.execute("Rerun the failed lanes on the same commit")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertTrue((self.root / "rerun.called").exists())
-        self.assertEqual(self.state("proof-verdict"), "unknown")
-        self.assertIn("newest approved same-SHA", self.summary())
-        self.assertIn("verdict=unknown", (self.root / "output").read_text())
+    def test_authenticated_failure_is_real_and_never_reruns(self):
+        for proof in ("failure", "timed_out"):
+            with self.subTest(proof=proof):
+                self.env["INITIAL_PROOF"] = proof
+                result = self.execute("Decide the verdict of the failed run")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse((self.root / "rerun.called").exists())
+                self.assertIn("verdict=real", (self.root / "output").read_text())
 
-    def test_rerun_latest_success_stops_and_latest_unknown_escalates(self):
-        self.env["PROOF_RESULT"] = "failure"
-        for newest in ("unknown", "exception", "success"):
-            with self.subTest(newest=newest):
-                self.env["NEWEST_RESULT"] = newest
-                result = self.execute("Rerun the failed lanes on the same commit")
-                self.assertFalse((self.work / "state/quiet").exists())
-                if newest == "success":
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(self.state("proof-verdict"), "success")
-                    self.assertIn("verdict=recovered", (self.root / "output").read_text())
-                else:
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(self.state("proof-verdict"), "unknown")
+    def test_infrastructure_failure_is_reported_without_revert_or_rerun(self):
+        self.env.update(INITIAL_PROOF="failure", INFRA="yes", INFRA_SIGNATURE="runner-lost")
+        result = self.execute("Decide the verdict of the failed run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "rerun.called").exists())
+        self.assertIn("verdict=infra", (self.root / "output").read_text())
+        self.assertIn("no revert and no rerun", self.summary())
 
     def test_final_revert_guard_refreshes_latest_run_and_baseline(self):
         state = self.work / "state"
@@ -347,14 +330,6 @@ class UnavailableHandlerTest(unittest.TestCase):
                 id=9, status=status, conclusion="failure", created_at="2026-09-30T09:00:00Z")]))
             result = self.execute("Confirm the same unit failed on two consecutive completed runs")
             self.assertNotEqual(result.returncode, 0)
-
-    def test_recovered_success_never_blames_a_flake_without_initial_failure(self):
-        self.env["PROOF_RESULT"] = "success"
-        result = self.execute("Rerun the failed lanes on the same commit")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.root / "rerun.called").exists())
-        self.assertIn("verdict=recovered", (self.root / "output").read_text())
-        self.assertIn("no flake blamed", self.summary())
 
     def test_unavailable_baseline_is_never_a_revert_base(self):
         for base in ("exception", "", "unknown"):

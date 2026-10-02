@@ -192,7 +192,8 @@ class TokenModeTest(unittest.TestCase):
             if code.startswith("#"):
                 continue
             self.assertNotRegex(code, r"\bgh (api\b.*repos/\$REPO/actions/|run (rerun|download|view|list))")
-        self.assertIn("gha run rerun", step("Rerun the failed lanes on the same commit"))
+        # The handler never reruns: a flake is quarantined, a real failure reverted.
+        self.assertNotRegex(text, r"(?i)gha? run rerun|rerun --failed|RERUN_TIMEOUT")
         self.assertIn("/dispatches", step("Trace the culprit among the unverified commits"))
         self.assertIn("gha api --method POST", step("Trace the culprit among the unverified commits"))
 
@@ -215,9 +216,6 @@ class TokenModeTest(unittest.TestCase):
         self.assertIn("revert needs a CI-triggering token (the builder App); notifying only.", detect)
         revert = step("Revert the culprit or report it")
         self.assertIn("MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}", revert)
-
-    def test_quarantine_pull_request_needs_the_key(self) -> None:
-        self.assertIn("steps.key.outputs.present == 'yes'", step("Mark the flaky units in their own source"))
 
     def test_revert_pull_request_is_unreachable_in_notify(self) -> None:
         revert = step("Revert the culprit or report it")
