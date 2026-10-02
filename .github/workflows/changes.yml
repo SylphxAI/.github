@@ -1,0 +1,69 @@
+name: changes
+
+# Which kinds of file a change touches, so a docs-only pull request skips the
+# heavy jobs. Call it first and gate heavy jobs on its outputs (see
+# docs/ci-template.md). A merge_group or push has no useful diff base for a
+# per-PR filter, so every output is "true" there: the queue and the trunk
+# always run everything the caller gates on `code`.
+
+on:
+  workflow_call:
+    inputs:
+      code:
+        description: >
+          JSON array of globs that count as code; every pattern must match
+          (a "!" pattern excludes). Default: everything except documentation,
+          issue templates and workflow files.
+        type: string
+        default: '["**", "!docs/**", "!**/*.md", "!LICENSE*", "!.github/ISSUE_TEMPLATE/**", "!.github/workflows/**", "!.github/actions/**"]'
+      runner:
+        description: Runner label for the job. Keep the cheap standard one.
+        type: string
+        default: sylphx-linux-standard
+    outputs:
+      code:
+        description: '"true" when a code file changed (or the event has no diff).'
+        value: ${{ jobs.changes.outputs.code }}
+      docs:
+        description: '"true" when documentation changed.'
+        value: ${{ jobs.changes.outputs.docs }}
+      workflows:
+        description: '"true" when a workflow or action definition changed.'
+        value: ${{ jobs.changes.outputs.workflows }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code || steps.all.outputs.value }}
+      docs: ${{ steps.kinds.outputs.docs || steps.all.outputs.value }}
+      workflows: ${{ steps.kinds.outputs.workflows || steps.all.outputs.value }}
+    steps:
+      # No pull request, no diff to filter: report everything as changed.
+      - id: all
+        run: echo "value=true" >> "$GITHUB_OUTPUT"
+      - if: github.event_name == 'pull_request'
+        id: kinds
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
+        with:
+          filters: |
+            docs:
+              - 'docs/**'
+              - '**/*.md'
+            workflows:
+              - '.github/workflows/**'
+              - '.github/actions/**'
+      # `every` makes the "!" patterns exclusions; the default `some` marks a
+      # docs-only change as code because "**" matches it.
+      - if: github.event_name == 'pull_request'
+        id: filter
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
+        with:
+          predicate-quantifier: every
+          filters: |
+            code: ${{ inputs.code }}

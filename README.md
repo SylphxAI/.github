@@ -21,10 +21,11 @@ Use one from another repository with
 | [identifiers](.github/actions/identifiers/action.yml) | Fails when a change adds an id generator, or a text or serial primary key, that is not a UUIDv7 |
 | [zh-hant](.github/actions/zh-hant/action.yml) | Fails when a change adds a Simplified-only character to Traditional Chinese text |
 | [git-app-credentials](.github/actions/git-app-credentials/action.yml) | Creates a job-scoped GitHub App token for private git and cargo fetches |
+| [cache-toolchain](.github/actions/cache-toolchain/action.yml) | Dependency cache keyed per toolchain (cargo, bun, npm, pnpm, gradle, unity) |
 | [setup-sylphx-cli](.github/actions/setup-sylphx-cli/action.yml) | Installs a pinned `@sylphx/cli` |
 | [setup-changesets-publisher](.github/actions/setup-changesets-publisher/action.yml) | Installs the Changesets publish command used by release workflows |
 
-Reusable workflows are in [.github/workflows](.github/workflows).
+Reusable workflows are in [.github/workflows](.github/workflows); the CI fast-path recipe (`changes.yml`, `cache-toolchain`, `ci-fast-path` starter) is [docs/ci-template.md](docs/ci-template.md).
 
 ## Repository settings
 
