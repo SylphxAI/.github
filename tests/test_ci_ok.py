@@ -48,6 +48,38 @@ class CiOkTest(unittest.TestCase):
         self.assertEqual(ci_ok.evaluate([mine, deploy], set())[0], "pass")
         self.assertEqual(ci_ok.evaluate([mine, deploy], set(), actions_only=False)[0], "pending")
 
+    def test_zero_other_checks_fails(self) -> None:
+        state, detail = ci_ok.evaluate([run("ci-ok", "in_progress", None)], {"ci-ok"})
+        self.assertEqual((state, detail), ("fail", ["no other check ran on this commit"]))
+
+    def test_workflow_that_failed_to_start_fails(self) -> None:
+        # Cubeage/voidbite-keel#1: ci.yml failed to start (a suite concluded
+        # failure with 0 check runs) while the other workflows passed.
+        runs = [run("plain-language"), run("game-standard")]
+        own = {"id": 1, "status": "in_progress", "conclusion": None, "latest_check_runs_count": 1}
+        ok = {"id": 2, "status": "completed", "conclusion": "success", "latest_check_runs_count": 1}
+        for bad in ("failure", "startup_failure", "cancelled", "action_required", "timed_out"):
+            broken = {"id": 3, "status": "completed", "conclusion": bad, "latest_check_runs_count": 0}
+            state, detail = ci_ok.evaluate(runs, {"ci-ok"}, suites=[own, ok, broken])
+            self.assertEqual(state, "fail", bad)
+            self.assertIn("workflow failed to start", detail[0])
+        self.assertEqual(ci_ok.evaluate(runs, {"ci-ok"}, suites=[own, ok])[0], "pass")
+
+    def test_queued_empty_suite_neither_blocks_nor_fails(self) -> None:
+        queued = {"id": 4, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
+        self.assertEqual(ci_ok.evaluate([run("a")], set(), suites=[queued])[0], "pass")
+
+    def test_failed_suite_with_jobs_is_judged_by_its_check_runs(self) -> None:
+        # A re-run that passed leaves the suite's latest check runs green.
+        rerun = {"id": 5, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 2}
+        self.assertEqual(ci_ok.evaluate([run("a")], set(), suites=[rerun])[0], "pass")
+
+    def test_required_checks_must_succeed(self) -> None:
+        runs = [run("a"), run("b", conclusion="skipped")]
+        self.assertEqual(ci_ok.evaluate(runs, set(), required={"a"})[0], "pass")
+        state, detail = ci_ok.evaluate(runs, set(), required={"a", "b", "c"})
+        self.assertEqual((state, detail), ("fail", ["b=skipped (required)", "c=missing (required)"]))
+
 
 if __name__ == "__main__":
     unittest.main()
