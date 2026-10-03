@@ -46,7 +46,10 @@ name: Red main
 # blamed; when one sits at or before the first failure, the oldest failing
 # commit cannot be named with certainty, so the whole window is reverted in
 # one pull request (the same path a window wider than max-candidates takes).
-# The rule is CULPRIT_PY below.
+# The rule is CULPRIT_PY below. A caller that sets `revert-window: false`
+# reverts only a traced culprit: a window is reported on its pull requests and
+# a person decides. `candidate-timeout-minutes` (default 20, at most 60) is the
+# trace's shared deadline; set it above the slowest lane a trace re-runs.
 #
 # A candidate whose pull request carries `queue-jump:outage` or a P0 label, or
 # whose number is in `protected-prs`, is never reverted by the handler: it
@@ -154,6 +157,21 @@ on:
           reverted in one pull request without tracing.
         type: number
         default: 8
+      revert-window:
+        description: >-
+          Whether a window may be reverted when no single culprit is named (a
+          window wider than max-candidates, or an inconclusive candidate before
+          the first failure). false reverts only a traced culprit; a window is
+          reported on its pull requests and a person decides.
+        type: boolean
+        default: true
+      candidate-timeout-minutes:
+        description: >-
+          Shared deadline, in minutes (1-60), for the candidate verify runs of
+          one trace. A candidate still running at the deadline is inconclusive.
+          Set it above the slowest lane the trace re-runs.
+        type: number
+        default: 20
       lane-input:
         description: >-
           Input on the verify workflow that selects lanes, e.g. `lanes`. Set
@@ -577,16 +595,17 @@ jobs:
     # Empty string = no environment (an empty `environment:` name is ignored by
     # Actions), so callers that omit the input behave as before.
     environment: ${{ inputs.environment }}
-    # Mint, every candidate dispatched at once under one
-    # shared deadline (20 min), revert, summary, and slack.
-    timeout-minutes: 90
+    # Mint, every candidate dispatched at once under one shared deadline
+    # (candidate-timeout-minutes, at most 60), revert, summary, and slack.
+    timeout-minutes: 120
     env:
       REPO: ${{ github.repository }}
       VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
       VERIFY_CHECK_NAME: ${{ inputs.verify-check-name || 'verified' }}
       MAX_CANDIDATES: ${{ inputs.max-candidates }}
       LANE_INPUT: ${{ inputs.lane-input }}
-      CANDIDATE_TIMEOUT_MINUTES: '20'
+      CANDIDATE_TIMEOUT_MINUTES: ${{ inputs.candidate-timeout-minutes }}
+      REVERT_WINDOW: ${{ inputs.revert-window }}
       # A window wider than this is never reverted by a machine; the handler
       # says so and stops.
       MAX_REVERT_COMMITS: '250'
@@ -1887,7 +1906,8 @@ jobs:
         if: >-
           steps.gate.outputs.proceed == 'true' && steps.verdict.outputs.verdict == 'real'
           && steps.confirm.outputs.confirmed == 'yes'
-        timeout-minutes: 30
+        # The candidate deadline (at most 60 minutes) plus branch setup.
+        timeout-minutes: 70
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
@@ -1900,6 +1920,20 @@ jobs:
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           : >"$WORK_DIR/temp-branches"
+          case "$CANDIDATE_TIMEOUT_MINUTES" in
+            ''|*[!0-9]*) say "**Stopped:** candidate-timeout-minutes '$CANDIDATE_TIMEOUT_MINUTES' is not a whole number of minutes."; exit 1 ;;
+          esac
+          if [ "$CANDIDATE_TIMEOUT_MINUTES" -lt 1 ] || [ "$CANDIDATE_TIMEOUT_MINUTES" -gt 60 ]; then
+            say "**Stopped:** candidate-timeout-minutes $CANDIDATE_TIMEOUT_MINUTES is outside 1-60."
+            exit 1
+          fi
+          # What a window (no single named culprit) becomes: one revert pull
+          # request, or with revert-window false a report on its pull requests.
+          if [ "$REVERT_WINDOW" = false ]; then
+            window_fate="reported on their pull requests and nothing is reverted (revert-window is false)"
+          else
+            window_fate="reverted as one pull request"
+          fi
           state_set culprit ""
           state_set window 0
           # A recording/merge_group/diagnostic success cannot be a revert
@@ -1948,7 +1982,7 @@ jobs:
             exit 0
           fi
           if [ "$total" -gt "$MAX_CANDIDATES" ]; then
-            say "More than $MAX_CANDIDATES unverified commits: tracing is skipped and all of them are reverted as one pull request."
+            say "More than $MAX_CANDIDATES unverified commits: tracing is skipped and all of them are $window_fate."
             jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"$(cut -f1 <<<"$rows")" >"$STATE_DIR/revert-all.json"
             echo "revert-all=yes" >>"$GITHUB_OUTPUT"
             exit 0
@@ -2055,7 +2089,7 @@ jobs:
               echo "culprit=$sha" >>"$GITHUB_OUTPUT"
               say "Candidate \`${sha:0:9}\` (${subject_of[$sha]}) failed and every older candidate passed: the culprit." ;;
             window)
-              say "The oldest failing commit cannot be named with certainty ($(sed -n 's/^why //p' <<<"$decision")): all ${#order[@]} candidates are reverted as one pull request."
+              say "The oldest failing commit cannot be named with certainty ($(sed -n 's/^why //p' <<<"$decision")): all ${#order[@]} candidates are $window_fate."
               printf '%s\n' "${order[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$STATE_DIR/revert-all.json"
               echo "revert-all=yes" >>"$GITHUB_OUTPUT" ;;
             *)
@@ -2133,6 +2167,14 @@ jobs:
           else
             title="revert: $count commits (${first:0:9}..${last:0:9})"
           fi
+          # revert-window false: only a traced culprit is reverted. A window
+          # (no single culprit named) takes the notify path below.
+          not_reverted="this repository is in notify mode or holds no builder App key"
+          if [ -z "$culprit" ] && [ "$REVERT_WINDOW" = false ]; then
+            not_reverted="no single culprit was named and this repository reverts only a traced culprit (revert-window: false)"
+            say "No single culprit was named: the $count unverified commit(s) are reported, nothing is reverted (revert-window is false)."
+            MODE=notify
+          fi
           if [ "$MODE" != "revert" ] && [ "$MODE" != "revert_pr_unarmed" ]; then
             say "Mode is notify: no revert pull request was opened. \`revert\` would revert $count commit(s):"
             for sha in "${shas[@]}"; do say "- \`$sha\`"; done
@@ -2146,7 +2188,7 @@ jobs:
               fi
               candidates=""
               for sha in "${shas[@]}"; do candidates="$candidates- \`$sha\`"$'\n'; done
-              body="\`main\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: this repository is in notify mode or holds no builder App key, so a person decides."
+              body="\`main\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: $not_reverted, so a person decides."
               : >"$WORK_DIR/notified"
               for sha in "${shas[@]}"; do
                 pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
