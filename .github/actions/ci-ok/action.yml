@@ -12,7 +12,10 @@ description: >
 
 inputs:
   token:
-    description: "Token that can read check runs (the job needs `checks: read`)."
+    description: >
+      Token that can read check runs and workflow runs (the job needs
+      `checks: read` and `actions: read`; without `actions: read` a workflow_run
+      or push workflow that failed to start on the commit also fails the gate).
     default: ${{ github.token }}
   job-name:
     description: Name of the calling job's check run, ignored while waiting.

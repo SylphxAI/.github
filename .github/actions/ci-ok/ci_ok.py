@@ -12,7 +12,9 @@ It fails closed when a check never ran:
 - a GitHub Actions check suite that completed with a bad conclusion and no
   check runs is a workflow that failed to start (invalid YAML, a reusable
   workflow or permission it cannot get); it posts no check run, so the
-  check-run list alone would read green;
+  check-run list alone would read green. Only a pull_request, merge_group or
+  pull_request_target workflow counts (read through `actions: read`); when the
+  event cannot be read, every such suite counts;
 - no other check run at all on the commit fails: a gate over nothing is not
   a pass (a repository whose every workflow is path-filtered may allow that
   on pull_request only, CI_OK_ALLOW_NONE_ON_PR; its merge group still fails);
@@ -25,16 +27,23 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 BAD = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
 ACTIONS_APP_ID = 15368  # GitHub Actions; the app every required ci-ok check is pinned to
+# Events whose workflows gate a change. A workflow_run or push workflow that
+# fails to start on the same commit (a broken red-main.yml on main lands on the
+# merge-group SHA) is not a check this gate waits for, and counting it would
+# fail every merge group, including the one that fixes it.
+GATING_EVENTS = {"pull_request", "pull_request_target", "merge_group"}
 
 
 def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
              suites: list[dict] | None = None,
              required: frozenset[str] | set[str] = frozenset(),
-             allow_none: bool = False) -> tuple[str, list[str]]:
+             allow_none: bool = False,
+             suite_events: dict[int, str] | None = None) -> tuple[str, list[str]]:
     """Return ('pending'|'fail'|'pass', details) for the given check runs.
 
     By default only GitHub Actions check runs count: other apps post deploy
@@ -45,6 +54,8 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     with a bad conclusion and zero check runs is a workflow that never started
     and fails the gate. `required` names must be present and have succeeded.
     No other check run fails unless `allow_none` (pull_request opt-in only).
+    `suite_events` maps a check suite id to its workflow run's event; a suite
+    whose event is known and not a gating event is ignored.
     """
     relevant = [r for r in runs if r.get("name") not in ignore
                 and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")]
@@ -53,8 +64,10 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
         return "pending", sorted(pending)
     bad = [f'{r["name"]}={r.get("conclusion")}' for r in relevant if r.get("conclusion") in BAD]
     for suite in suites or []:
+        event = (suite_events or {}).get(suite.get("id"))
         if (suite.get("status") == "completed" and suite.get("conclusion") in BAD
-                and not suite.get("latest_check_runs_count")):
+                and not suite.get("latest_check_runs_count")
+                and (event is None or event in GATING_EVENTS)):
             bad.append(f'workflow failed to start (check suite {suite.get("id")}, '
                        f'conclusion {suite.get("conclusion")}, 0 jobs)')
     concluded = {r["name"]: r.get("conclusion") for r in relevant}
@@ -95,6 +108,25 @@ def fetch_suites(repo: str, sha: str, token: str) -> list[dict]:
         page += 1
 
 
+def started_badly(suites: list[dict]) -> bool:
+    return any(s.get("status") == "completed" and s.get("conclusion") in BAD
+               and not s.get("latest_check_runs_count") for s in suites)
+
+
+def fetch_suite_events(repo: str, sha: str, token: str) -> dict[int, str] | None:
+    """check_suite_id -> event of the commit's workflow runs; None when unreadable
+    (no `actions: read`), so every failed empty suite then counts."""
+    try:
+        data = _get(f"https://api.github.com/repos/{repo}/actions/runs?head_sha={sha}&per_page=100", token)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 404):
+            print("::warning::cannot read workflow runs (grant actions: read); "
+                  "every workflow that failed to start counts", flush=True)
+            return None
+        raise
+    return {r["check_suite_id"]: r.get("event", "") for r in data.get("workflow_runs", [])}
+
+
 def main() -> int:
     repo, sha, token = os.environ["REPO"], os.environ["SHA"], os.environ["TOKEN"]
     ignore = {os.environ.get("SELF_NAME", "ci-ok")} | {
@@ -106,11 +138,14 @@ def main() -> int:
     last, stable = None, 0
     while time.time() < deadline:
         try:
+            suites = fetch_suites(repo, sha, token)
+            events = fetch_suite_events(repo, sha, token) if started_badly(suites) else None
             state, detail = evaluate(fetch(repo, sha, token), ignore,
                                      os.environ.get("CI_OK_ALL_APPS", "false") != "true",
-                                     fetch_suites(repo, sha, token), required,
+                                     suites, required,
                                      os.environ.get("CI_OK_ALLOW_NONE_ON_PR", "false") == "true"
-                                     and os.environ.get("EVENT_NAME") == "pull_request")
+                                     and os.environ.get("EVENT_NAME") == "pull_request",
+                                     events)
         except Exception as exc:  # transient API error: keep waiting
             print(f"check-runs read failed: {exc}", flush=True)
             time.sleep(interval)

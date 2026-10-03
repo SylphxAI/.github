@@ -66,6 +66,17 @@ class CiOkTest(unittest.TestCase):
             self.assertIn("workflow failed to start", detail[0])
         self.assertEqual(ci_ok.evaluate(runs, {"ci-ok"}, suites=[own, ok])[0], "pass")
 
+    def test_non_gating_workflow_that_failed_to_start_is_ignored(self) -> None:
+        # Cubeage/fun-big2-tw#280: a broken red-main.yml (workflow_run) posted
+        # failed empty suites on the merge-group SHA; it is not a gate check.
+        runs = [run("a")]
+        broken = {"id": 7, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={7: "workflow_run"})[0], "pass")
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={7: "push"})[0], "pass")
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={7: "merge_group"})[0], "fail")
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={})[0], "fail")
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events=None)[0], "fail")
+
     def test_queued_empty_suite_neither_blocks_nor_fails(self) -> None:
         queued = {"id": 4, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
         self.assertEqual(ci_ok.evaluate([run("a")], set(), suites=[queued])[0], "pass")
