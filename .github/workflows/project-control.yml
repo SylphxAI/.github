@@ -36,8 +36,9 @@ jobs:
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$reusable")" -eq 1
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$template")" -eq 4
-          test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 5
+          test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 6
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$project_control")" -eq 5
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control")" -eq 1
           # owner#750 (zero metered GitHub spend): the admission template and
           # reusable workflow serve private repositories, so they run on our
           # runners only (asserted above). This public repository's own jobs
@@ -188,10 +189,50 @@ jobs:
           needs: ${{ toJSON(needs) }}
           required: template-plan
 
+  review-stamp:
+    if: github.event_name == 'merge_group'
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      # This repository ships the gate: run its code and policy from the merge
+      # group's BASE commit, never the queued head, so a PR cannot rewrite the
+      # trust list that grades it. The head copy runs only for first adoption,
+      # while the base has no gate yet.
+      - name: Check out the gate from the base commit
+        id: gate-base
+        env:
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          if git cat-file -e "$BASE_SHA:.github/actions/review-stamp-gate/review_stamp_gate.py" 2>/dev/null; then
+            mkdir -p .review-gate-base
+            git archive "$BASE_SHA" .github/actions/review-stamp-gate | tar -x -C .review-gate-base
+            echo "from=base" >> "$GITHUB_OUTPUT"
+          else
+            echo "base $BASE_SHA has no review-stamp-gate; first adoption runs the queued copy"
+            echo "from=head" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate-base.outputs.from == 'base'
+        uses: ./.review-gate-base/.github/actions/review-stamp-gate
+        with:
+          config-path: .github/review-stamp.json
+          trusted-creator-ids: '8020099'
+      - if: steps.gate-base.outputs.from == 'head'
+        uses: ./.github/actions/review-stamp-gate
+        with:
+          config-path: .github/review-stamp.json
+          trusted-creator-ids: '8020099'
+
   # Aggregate verdict required by the main merge queue ruleset. Skipped jobs
   # pass; failed or cancelled jobs fail.
   ci-ok:
-    needs: [project-control, tests, template-plan, template-verdict]
+    needs: [project-control, tests, template-plan, template-verdict, review-stamp]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

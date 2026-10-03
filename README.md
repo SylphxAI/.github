@@ -14,6 +14,7 @@ Use one from another repository with
 | --- | --- |
 | [metadata-sync](.github/actions/metadata-sync/README.md) | Offline required-region/field patching with whole-plan validation and deterministic check/write; caller owns rendering ([anymd/repomap adoption](.github/actions/metadata-sync/README.md#adoption-in-anymd-and-repomap)) |
 | [brand](.github/actions/brand/README.md) | Builds brand assets or checks provenance hashes and surface copies, with caller-owned masters and data |
+| [review-stamp-gate](.github/actions/review-stamp-gate/README.md) | Requires trusted successful head reviews; data maps platform and security/money/migration classes to Ops and other changes to the owning lane's independent final reviewer |
 | [ci-ok](.github/actions/ci-ok/action.yml) | One required check that waits for every other GitHub Actions check on the commit and fails if any failed, a workflow failed to start, or no check ran |
 | [needs-pass](.github/actions/needs-pass/action.yml) | The aggregate verdict of a workflow. A skipped job never counts as passing a required check outside `merge_group`: list PR-time jobs in `required-unless-merge-group` so a `workflow_dispatch` run cannot post a green check over a red one |
 | [secret-scan](.github/actions/secret-scan/action.yml) | Runs gitleaks over only the commits a push or pull request adds |
@@ -26,6 +27,8 @@ Use one from another repository with
 | [setup-changesets-publisher](.github/actions/setup-changesets-publisher/action.yml) | Installs the Changesets publish command used by release workflows |
 
 Reusable workflows are in [.github/workflows](.github/workflows); the CI fast-path recipe (`changes.yml`, `cache-toolchain`, `ci-fast-path` starter) is [docs/ci-template.md](docs/ci-template.md).
+[disarm-auto-merge-on-push](docs/disarm-automerge-on-push.md) clears an
+arm predating a new push without dequeuing an entry already on that head.
 
 ## Repository settings
 

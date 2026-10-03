@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "platformRepositories": [
+    "SylphxAI/cloud",
+    "SylphxAI/infra",
+    "SylphxAI/.github",
+    "SylphxAI/janus",
+    "SylphxAI/hands"
+  ],
+  "opsReview": {
+    "context": "ops-security/review",
+    "trustedCreatorIds": [8020099],
+    "qaReviewerCreatorIds": [336710508, 336710515, 336710524],
+    "descriptionPrefix": "PASS"
+  },
+  "sharedCreatorIds": [8020099],
+  "requireStampLabels": [
+    "security",
+    "area:security",
+    "money",
+    "money-path",
+    "area:money",
+    "migration",
+    "area:migration"
+  ],
+  "requireStampPathGlobs": [
+    ".github/workflows/**",
+    ".github/actions/**",
+    ".github/review-stamp.json",
+    "**/auth/**",
+    "**/authz/**",
+    "**/*billing*/**",
+    "**/payment/**",
+    "**/payments/**",
+    "**/money/**",
+    "**/migrations/**",
+    "**/migration/**",
+    "**/*.migration.*",
+    "**/atlas.sum"
+  ]
+}
