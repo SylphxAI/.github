@@ -14,7 +14,8 @@ It fails closed when a check never ran:
   workflow or permission it cannot get); it posts no check run, so the
   check-run list alone would read green;
 - no other check run at all on the commit fails: a gate over nothing is not
-  a pass;
+  a pass (a repository whose every workflow is path-filtered may allow that
+  on pull_request only, CI_OK_ALLOW_NONE_ON_PR; its merge group still fails);
 - every name in CI_OK_REQUIRED must be present and have succeeded (skipped,
   neutral or missing fails).
 """
@@ -32,7 +33,8 @@ ACTIONS_APP_ID = 15368  # GitHub Actions; the app every required ci-ok check is 
 
 def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
              suites: list[dict] | None = None,
-             required: frozenset[str] | set[str] = frozenset()) -> tuple[str, list[str]]:
+             required: frozenset[str] | set[str] = frozenset(),
+             allow_none: bool = False) -> tuple[str, list[str]]:
     """Return ('pending'|'fail'|'pass', details) for the given check runs.
 
     By default only GitHub Actions check runs count: other apps post deploy
@@ -42,6 +44,7 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     `suites` are the commit's GitHub Actions check suites: one that completed
     with a bad conclusion and zero check runs is a workflow that never started
     and fails the gate. `required` names must be present and have succeeded.
+    No other check run fails unless `allow_none` (pull_request opt-in only).
     """
     relevant = [r for r in runs if r.get("name") not in ignore
                 and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")]
@@ -58,7 +61,7 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     for name in sorted(required):
         if concluded.get(name) != "success":
             bad.append(f'{name}={concluded.get(name) or "missing"} (required)')
-    if not relevant:
+    if not relevant and not allow_none:
         bad.append("no other check ran on this commit")
     return ("fail", sorted(bad)) if bad else ("pass", sorted(r["name"] for r in relevant))
 
@@ -105,7 +108,9 @@ def main() -> int:
         try:
             state, detail = evaluate(fetch(repo, sha, token), ignore,
                                      os.environ.get("CI_OK_ALL_APPS", "false") != "true",
-                                     fetch_suites(repo, sha, token), required)
+                                     fetch_suites(repo, sha, token), required,
+                                     os.environ.get("CI_OK_ALLOW_NONE_ON_PR", "false") == "true"
+                                     and os.environ.get("EVENT_NAME") == "pull_request")
         except Exception as exc:  # transient API error: keep waiting
             print(f"check-runs read failed: {exc}", flush=True)
             time.sleep(interval)

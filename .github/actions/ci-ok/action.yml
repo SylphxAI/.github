@@ -25,6 +25,12 @@ inputs:
       Comma-separated check names that must be present and have succeeded
       (skipped, neutral or missing fails), for the jobs every change must run.
     default: ""
+  allow-none-on-pull-request:
+    description: >
+      "true" lets a pull_request run pass when no other check ran, for a
+      repository whose every workflow is path-filtered on pull_request but
+      runs in full on merge_group. The merge group still fails when none ran.
+    default: "false"
   timeout-minutes:
     description: Give up after this many minutes.
     default: "110"
@@ -44,6 +50,8 @@ runs:
         SELF_NAME: ${{ inputs.job-name }}
         CI_OK_IGNORE: ${{ inputs.ignore }}
         CI_OK_REQUIRED: ${{ inputs.required }}
+        CI_OK_ALLOW_NONE_ON_PR: ${{ inputs.allow-none-on-pull-request }}
+        EVENT_NAME: ${{ github.event_name }}
         CI_OK_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         CI_OK_ALL_APPS: ${{ inputs.all-apps }}
       run: python3 "$GITHUB_ACTION_PATH/ci_ok.py"
