@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 ACTION = ROOT / ".github/actions/review-stamp-gate"
 spec = importlib.util.spec_from_file_location("review_stamp_gate", ACTION / "review_stamp_gate.py")
@@ -177,6 +179,54 @@ class GateTest(unittest.TestCase):
                 self.assertEqual(gate.read_config(base, "scope.json"), CFG)
                 with self.assertRaises(ValueError):
                     gate.read_config(base, "../scope.json")
+
+    def test_own_repo_gate_runs_from_base_not_queued_head(self):
+        steps = yaml.safe_load((ROOT / ".github/workflows/project-control.yml").read_text())["jobs"]["review-stamp"]["steps"]
+        gates = [s for s in steps if "review-stamp-gate" in s.get("uses", "")]
+        self.assertEqual({(s["uses"], s["if"]) for s in gates}, {
+            ("./.review-gate-base/.github/actions/review-stamp-gate", "steps.gate-base.outputs.from == 'base'"),
+            ("./.github/actions/review-stamp-gate", "steps.gate-base.outputs.from == 'head'"),
+        })
+        script = next(s for s in steps if s.get("id") == "gate-base")["run"]
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            run = lambda *a: subprocess.check_output(["git", "-C", directory, "-c", "user.name=T", "-c", "user.email=t@example.invalid", *a], text=True).strip()
+            run("init", "-q")
+            (repo / "README.md").write_text("x")
+            run("add", "README.md"); run("commit", "-qm", "pre-adoption")
+            pre = run("rev-parse", "HEAD")
+            gate_dir = repo / ".github/actions/review-stamp-gate"
+            gate_dir.mkdir(parents=True)
+            for name in ("review_stamp_gate.py", "policy.json", "action.yml"):
+                (gate_dir / name).write_text((ACTION / name).read_text())
+            run("add", "."); run("commit", "-qm", "base")
+            base = run("rev-parse", "HEAD")
+            # The queued PR adds an untrusted id to both trust lists of its own policy.
+            hostile = json.loads((gate_dir / "policy.json").read_text())
+            hostile["opsReview"]["trustedCreatorIds"].append(999)
+            hostile["opsReview"]["qaReviewerCreatorIds"].append(999)
+            (gate_dir / "policy.json").write_text(json.dumps(hostile))
+            run("commit", "-qam", "widen trust")
+
+            def stage(base_sha):
+                out = repo / "out"
+                out.write_text("")
+                subprocess.run(["bash", "-c", script], cwd=directory, check=True, capture_output=True,
+                               env={**os.environ, "BASE_SHA": base_sha, "GITHUB_OUTPUT": str(out)})
+                return out.read_text().strip()
+
+            self.assertEqual(stage(base), "from=base")
+            graded = repo / ".review-gate-base/.github/actions/review-stamp-gate"
+            spec = importlib.util.spec_from_file_location("base_gate", graded / "review_stamp_gate.py")
+            base_gate = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(base_gate)
+            policy = json.loads((graded / "policy.json").read_text())
+            self.assertNotIn(999, policy["opsReview"]["trustedCreatorIds"])
+            self.assertEqual(base_gate.qa_reviewers(policy), set())
+            ok, reason = base_gate.review_verdict("SylphxAI/.github", [], [".github/actions/review-stamp-gate/policy.json"],
+                                                  [status(creator=999)], CFG, policy, {8020099}, 123)
+            self.assertFalse(ok, reason)
+            self.assertEqual(stage(pre), "from=head")
 
     def test_non_merge_group_fails_closed(self):
         with patch.dict(os.environ, {}, clear=True):

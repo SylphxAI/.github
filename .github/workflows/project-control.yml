@@ -196,7 +196,31 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - uses: ./.github/actions/review-stamp-gate
+      # This repository ships the gate: run its code and policy from the merge
+      # group's BASE commit, never the queued head, so a PR cannot rewrite the
+      # trust list that grades it. The head copy runs only for first adoption,
+      # while the base has no gate yet.
+      - name: Check out the gate from the base commit
+        id: gate-base
+        env:
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          if git cat-file -e "$BASE_SHA:.github/actions/review-stamp-gate/review_stamp_gate.py" 2>/dev/null; then
+            mkdir -p .review-gate-base
+            git archive "$BASE_SHA" .github/actions/review-stamp-gate | tar -x -C .review-gate-base
+            echo "from=base" >> "$GITHUB_OUTPUT"
+          else
+            echo "base $BASE_SHA has no review-stamp-gate; first adoption runs the queued copy"
+            echo "from=head" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate-base.outputs.from == 'base'
+        uses: ./.review-gate-base/.github/actions/review-stamp-gate
+        with:
+          config-path: .github/review-stamp.json
+          trusted-creator-ids: '8020099'
+      - if: steps.gate-base.outputs.from == 'head'
+        uses: ./.github/actions/review-stamp-gate
         with:
           config-path: .github/review-stamp.json
           trusted-creator-ids: '8020099'

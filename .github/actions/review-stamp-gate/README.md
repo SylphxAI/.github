@@ -30,7 +30,7 @@ The action ships [policy.json](policy.json), pinned with its code:
 
 ### Adding the QA reviewer App
 
-The slot is empty until the App is registered. Statuses carry the App's bot
+The slot stays empty until the App is registered and its real bot user ID is read back. Statuses carry the App's bot
 user ID, not the App ID: read it with
 `gh api 'users/<app-slug>%5Bbot%5D' --jq .id`, add that single number to
 `qaReviewerCreatorIds`, and land it through Ops review. The App needs the
@@ -104,7 +104,10 @@ PR cannot loosen its own policy. Only first adoption, when the base has no
 config file, reads the queued copy. Every entry carried by a multi-PR group is
 checked; unrecognized commits fail closed. Status reads are paginated.
 
-The workflow and creator input still come from the queued commit. Removing
+In this repository, which ships the gate, `project-control` runs the gate's
+code and `policy.json` from the merge group's base commit, so a PR cannot
+widen the trust list that grades it; only first adoption (no gate on the
+base) runs the queued copy. The workflow and creator input still come from the queued commit. Removing
 this step needs review; a pinned required workflow is the eventual hardening
 boundary. Cloud#11840 retains its local implementation until its owner
 explicitly adopts the shared action.
