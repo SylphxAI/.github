@@ -37,7 +37,8 @@ jobs:
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
           test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$template")" -eq 4
           test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 6
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$project_control")" -eq 6
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$project_control")" -eq 5
+          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control")" -eq 1
           # owner#750 (zero metered GitHub spend): the admission template and
           # reusable workflow serve private repositories, so they run on our
           # runners only (asserted above). This public repository's own jobs
@@ -190,7 +191,7 @@ jobs:
 
   review-stamp:
     if: github.event_name == 'merge_group'
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-standard
     timeout-minutes: 5
     permissions:
       contents: read
