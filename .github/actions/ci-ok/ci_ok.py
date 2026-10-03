@@ -124,7 +124,21 @@ def fetch_suite_events(repo: str, sha: str, token: str) -> dict[int, str] | None
                   "every workflow that failed to start counts", flush=True)
             return None
         raise
-    return {r["check_suite_id"]: r.get("event", "") for r in data.get("workflow_runs", [])}
+    return suite_events(data.get("workflow_runs", []))
+
+
+def suite_events(workflow_runs: list[dict]) -> dict[int, str]:
+    """check_suite_id -> event. A run superseded by a later run of the same
+    workflow and event on the commit maps to "superseded": a workflow that
+    failed to start once (a transient reusable-workflow or permission fault)
+    and then ran on a re-trigger is judged by the later run's check runs."""
+    latest: dict[tuple[str, str], str] = {}
+    for r in workflow_runs:
+        key = (r.get("path", ""), r.get("event", ""))
+        latest[key] = max(latest.get(key, ""), r.get("created_at", ""))
+    return {r["check_suite_id"]: (r.get("event", "") if r.get("created_at", "") >= latest[(r.get("path", ""), r.get("event", ""))]
+                                  else "superseded")
+            for r in workflow_runs}
 
 
 def main() -> int:

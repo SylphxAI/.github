@@ -77,6 +77,22 @@ class CiOkTest(unittest.TestCase):
         self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={})[0], "fail")
         self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events=None)[0], "fail")
 
+    def test_startup_failure_superseded_by_a_later_run_is_ignored(self) -> None:
+        # Cubeage/block-sort-keel#2: ci.yml failed to start at 16:23, then a
+        # re-trigger ran it with 6 jobs at 00:08 on the same head SHA.
+        wr = [{"check_suite_id": 1, "path": ".github/workflows/ci.yml", "event": "pull_request", "created_at": "2026-10-02T16:23:23Z"},
+              {"check_suite_id": 2, "path": ".github/workflows/ci.yml", "event": "pull_request", "created_at": "2026-10-03T00:08:00Z"}]
+        events = ci_ok.suite_events(wr)
+        self.assertEqual(events, {1: "superseded", 2: "pull_request"})
+        broken = {"id": 1, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        later = {"id": 2, "status": "completed", "conclusion": "success", "latest_check_runs_count": 6}
+        self.assertEqual(ci_ok.evaluate([run("server")], set(), suites=[broken, later], suite_events=events)[0], "pass")
+        # The latest attempt failed to start: still a failure.
+        events = ci_ok.suite_events([dict(wr[0], check_suite_id=2), dict(wr[1], check_suite_id=1)])
+        self.assertEqual(events, {2: "superseded", 1: "pull_request"})
+        self.assertEqual(ci_ok.evaluate([run("server")], set(), suites=[dict(broken, id=1), dict(later, id=2)],
+                                        suite_events=events)[0], "fail")
+
     def test_queued_empty_suite_neither_blocks_nor_fails(self) -> None:
         queued = {"id": 4, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
         self.assertEqual(ci_ok.evaluate([run("a")], set(), suites=[queued])[0], "pass")
