@@ -19,6 +19,7 @@ Public surfaces:
 - `.github/workflows/rust-check.yml` ([docs/rust-check.md](docs/rust-check.md))
 - `.github/workflows/publish-npm.yml`
 - `.github/workflows/red-main.yml`
+- `.github/workflows/actions-approval-guard.yml` ([docs/actions-approval-guard.md](docs/actions-approval-guard.md))
 - `.github/actions/*`
 - `workflow-templates/` (starter workflows; [docs/optimistic-merge.md](docs/optimistic-merge.md))
 - `templates/`, `brand/`, and `COMPANY.md`

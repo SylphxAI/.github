@@ -1,0 +1,18 @@
+{
+  "org": "Clean",
+  "actions_can_approve": false,
+  "errors": [],
+  "org_rulesets": [
+    {"id": 1, "name": "queued-trunk", "enforcement": "active", "bypass_actors": [],
+     "rules": [{"type": "merge_queue", "parameters": {}},
+               {"type": "pull_request", "parameters": {"required_approving_review_count": 0}}]}
+  ],
+  "repos": [
+    {"name": "app", "default_branch": "main", "actions_can_approve": false, "errors": [],
+     "rulesets": [{"id": 2, "name": "main", "enforcement": "active", "bypass_actors": [],
+                   "rules": [{"type": "pull_request", "parameters": {"required_approving_review_count": 0}}]}],
+     "effective_rules": [{"type": "pull_request", "ruleset_source_type": "Organization", "ruleset_id": 1,
+                          "parameters": {"required_approving_review_count": 0}}],
+     "protection": {"required_pull_request_reviews": {"required_approving_review_count": 0}}}
+  ]
+}

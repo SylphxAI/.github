@@ -1,0 +1,110 @@
+# Actions approval guard (weekly). Fails when any Cubeage or SylphxAI ruleset or
+# branch protection could count a GitHub Actions approval, or lists the Actions
+# identity as a bypass actor. Policy and the one-time App setup:
+# docs/actions-approval-guard.md. Read-only: the audit only GETs.
+name: Actions approval guard
+
+on:
+  schedule:
+    - cron: '23 4 * * 1' # Mondays, 04:23 UTC
+  workflow_dispatch: {}
+
+# The job token only files the findings issue; the audit itself runs on the
+# read-only audit App's installation tokens.
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: actions-approval-guard
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        timeout-minutes: 5
+        with:
+          persist-credentials: false
+
+      # A failed mint (App not installed on an org, key missing) must reach the
+      # audit as "unreadable" so the run fails and files the issue, not stop
+      # the job before either happens.
+      - name: Mint read-only token (SylphxAI)
+        id: token-sylphxai
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.ORG_AUDIT_APP_ID }}
+          private-key: ${{ secrets.ORG_AUDIT_APP_PRIVATE_KEY }}
+          owner: SylphxAI
+          permission-administration: read
+          permission-organization-administration: read
+          permission-metadata: read
+
+      - name: Mint read-only token (Cubeage)
+        id: token-cubeage
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.ORG_AUDIT_APP_ID }}
+          private-key: ${{ secrets.ORG_AUDIT_APP_PRIVATE_KEY }}
+          owner: Cubeage
+          permission-administration: read
+          permission-organization-administration: read
+          permission-metadata: read
+
+      # The step always succeeds and records the code: the next steps branch on
+      # it (a missing code also routes to the failure path).
+      - name: Audit rulesets and branch protection
+        id: audit
+        env:
+          AUDIT_TOKEN_SYLPHXAI: ${{ steps.token-sylphxai.outputs.token }}
+          AUDIT_TOKEN_CUBEAGE: ${{ steps.token-cubeage.outputs.token }}
+        run: |
+          set +e
+          python3 scripts/audit_actions_approval.py --org SylphxAI --org Cubeage --report "$RUNNER_TEMP/report.md"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          [ -f "$RUNNER_TEMP/report.md" ] && cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      # One findings issue: opened on the first failure, commented on while it
+      # persists, closed by the first clean run.
+      - name: File, update or close the findings issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXIT_CODE: ${{ steps.audit.outputs.exit_code }}
+        run: |
+          title="actions-approval-guard: a rule could count a GitHub Actions approval"
+          existing=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ "$EXIT_CODE" = "0" ]; then
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --comment "Clean run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            fi
+            exit 0
+          fi
+          body="$RUNNER_TEMP/issue.md"
+          if [ -f "$RUNNER_TEMP/report.md" ]; then
+            head -c 60000 "$RUNNER_TEMP/report.md" > "$body"
+          else
+            echo "The audit produced no report (exit code ${EXIT_CODE:-none})." > "$body"
+          fi
+          echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >> "$body"
+          gh label create "owner:ops" --color ededed --description "Owned by Ops" 2>/dev/null || true
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$body"
+          else
+            gh issue create --title "$title" --label "owner:ops" --body-file "$body"
+          fi
+
+      - name: Fail the run on findings
+        if: steps.audit.outputs.exit_code != '0'
+        run: |
+          echo "the audit found a failing rule, or could not read one (exit ${{ steps.audit.outputs.exit_code }})"
+          exit 1
