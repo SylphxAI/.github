@@ -1,0 +1,176 @@
+name: keel-repin
+description: >
+  Polls Keel's tags and, when a new keel-verified-* tag is ahead of this repository's pin, opens
+  the pull request `chore/keel-repin-<tag>` with the workflow token (contents:write and
+  pull-requests:write on this repository only) and starts the repository's CI on that branch by
+  workflow_dispatch (actions:write), so the checks land on the pull request head. Two modes of
+  one action: `poll` (cheap; says whether a repin is needed) and `repin` (moves the pins,
+  refreshes Cargo.lock, runs a build check, opens the pull request, dispatches CI). A broken
+  build opens a draft with the error summary. It never merges and never enables auto-merge.
+  Needs a checkout (persist-credentials: false); run it on our own runners only.
+  See docs/keel-repin.md.
+
+inputs:
+  mode:
+    description: poll or repin.
+    required: true
+  tag:
+    description: The Keel tag (keel-verified-YYYY-MM-DD-N), or latest for the newest keel-verified-* tag.
+    default: latest
+  dry-run:
+    description: Print the pull request that would be opened and the workflows it would start; push and open nothing.
+    default: "false"
+  reader-app-id:
+    description: Read-only GitHub App id that can read the Keel repository (the CUBEAGE_CI_READER_APP_ID secret for Cubeage titles).
+    required: true
+  reader-app-key:
+    description: Private key of the read-only App.
+    required: true
+  extra-read-owner:
+    description: Owner of a second private repository the build fetches (for example the title kit); empty for none.
+    default: ""
+  extra-read-repos:
+    description: Comma or newline separated repositories of extra-read-owner the build fetches.
+    default: ""
+  token:
+    description: The workflow token, with contents:write, pull-requests:write and actions:write on this repository.
+    default: ${{ github.token }}
+  check-command:
+    description: The build check, run after the pin moves. A failure opens the pull request as a draft.
+    default: cargo check
+  check-dir:
+    description: Directory the check command runs in, relative to the repository root.
+    default: "."
+  ci-workflows:
+    description: >
+      Workflow files started by workflow_dispatch on the branch, space separated, in order (each is waited
+      for until its run appears before the next starts). They must list workflow_dispatch.
+    default: ci.yml
+  base:
+    description: Branch the pull request targets.
+    default: ${{ github.event.repository.default_branch }}
+  label:
+    description: >
+      Label for the pull request. Empty: the repository's single `owner:*` label, if it has exactly one.
+    default: ""
+
+outputs:
+  needed:
+    description: "poll: true when a repin pull request should be opened."
+    value: ${{ steps.poll.outputs.needed }}
+  tag:
+    description: "poll: the tag a repin would move to."
+    value: ${{ steps.poll.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Mint read-only Keel token
+      id: keel-token
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.reader-app-id }}
+        private-key: ${{ inputs.reader-app-key }}
+        owner: SylphxAI
+        repositories: keel
+        permission-contents: read
+
+    - name: Mint read-only token for the extra repositories
+      id: extra-token
+      if: inputs.mode == 'repin' && inputs.extra-read-owner != ''
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.reader-app-id }}
+        private-key: ${{ inputs.reader-app-key }}
+        owner: ${{ inputs.extra-read-owner }}
+        repositories: ${{ inputs.extra-read-repos }}
+        permission-contents: read
+
+    - name: Point git at the read tokens
+      shell: bash
+      env:
+        KEEL_TOKEN: ${{ steps.keel-token.outputs.token }}
+        EXTRA_TOKEN: ${{ steps.extra-token.outputs.token }}
+        EXTRA_OWNER: ${{ inputs.extra-read-owner }}
+        EXTRA_REPOS: ${{ inputs.extra-read-repos }}
+      run: |
+        set -euo pipefail
+        : "${KEEL_TOKEN:?missing read token for the Keel repository}"
+        n=0
+        add() {  # $1 = https://github.com/OWNER/[REPO], $2 = token
+          {
+            echo "GIT_CONFIG_KEY_$n=url.https://x-access-token:$2@${1#https://}.insteadOf"
+            echo "GIT_CONFIG_VALUE_$n=$1"
+          } >> "$GITHUB_ENV"
+          n=$((n + 1))
+        }
+        add "https://github.com/SylphxAI/keel" "$KEEL_TOKEN"
+        if [ -n "$EXTRA_OWNER" ] && [ -n "$EXTRA_TOKEN" ]; then
+          while read -r repo; do
+            [ -n "$repo" ] && add "https://github.com/$EXTRA_OWNER/$repo" "$EXTRA_TOKEN"
+          done < <(printf '%s\n' "$EXTRA_REPOS" | tr ',' '\n' | tr -d ' ')
+        fi
+        {
+          echo "GIT_CONFIG_COUNT=$n"
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true"
+          echo "GIT_TERMINAL_PROMPT=0"
+        } >> "$GITHUB_ENV"
+
+    - name: Poll Keel's tags
+      id: poll
+      if: inputs.mode == 'poll'
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        ACTION_PATH: ${{ github.action_path }}
+        GH_TOKEN: ${{ inputs.token }}
+        KEEL_API_TOKEN: ${{ steps.keel-token.outputs.token }}
+      run: python3 "$ACTION_PATH/keel_repin.py" poll --tag "$TAG"
+
+    - name: Repin
+      if: inputs.mode == 'repin'
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        CHECK_COMMAND: ${{ inputs.check-command }}
+        CHECK_DIR: ${{ inputs.check-dir }}
+        ACTION_PATH: ${{ github.action_path }}
+        REPORT: ${{ runner.temp }}/keel-repin-report.json
+        # A dry run rebuilds even when the branch exists, so it always shows the pull request.
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+        args=(run --tag "$TAG" --check-command "$CHECK_COMMAND" --check-dir "$CHECK_DIR" --report "$REPORT")
+        [ "$DRY_RUN" = true ] && args+=(--ignore-branch)
+        python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"
+
+    - name: Open the pull request
+      if: inputs.mode == 'repin'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        REPORT: ${{ runner.temp }}/keel-repin-report.json
+        GH_TOKEN: ${{ inputs.token }}
+        BASE: ${{ inputs.base }}
+        LABEL: ${{ inputs.label }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+        args=(pr --report "$REPORT" --base "$BASE" --label "$LABEL")
+        [ "$DRY_RUN" = true ] && args+=(--dry-run)
+        python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"
+
+    - name: Start CI on the branch
+      if: inputs.mode == 'repin'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        REPORT: ${{ runner.temp }}/keel-repin-report.json
+        GH_TOKEN: ${{ inputs.token }}
+        WORKFLOWS: ${{ inputs.ci-workflows }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+        args=(dispatch --report "$REPORT" --workflows "$WORKFLOWS")
+        [ "$DRY_RUN" = true ] && args+=(--dry-run)
+        python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"

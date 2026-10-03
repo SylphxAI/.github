@@ -256,7 +256,11 @@ leaves the alert open; no parallel writer should edit lifecycle markers.
 - Verify cost follows cycles, not commits: one run covers the whole range since
   the last verified commit, never `HEAD~1`.
 - A culprit is traced among the unverified commits at once; when it cannot be
-  named with certainty, the whole window is reverted in one pull request.
+  named with certainty, the whole window is reverted in one pull request. A
+  caller that sets `revert-window: false` reverts only a traced culprit and
+  reports a window on its pull requests instead; one whose suite lanes run
+  longer than 20 minutes raises `candidate-timeout-minutes` (at most 60), or
+  every trace ends inconclusive.
 - A flake is quarantined first, in its own source (`#[ignore = "quarantined
   <date>: <reason> (<issue>, owner <lane>)"]`, or a comment above
   `test.skip(`), never retried in the queue.
