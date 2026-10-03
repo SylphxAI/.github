@@ -20,6 +20,23 @@ The action ships [policy.json](policy.json), pinned with its code:
 - Other product changes require the owning lane's independent Opus final
   reviewer, never the author's builder. Each repository records the trusted
   creator IDs and status context in its `productReview` data.
+- The QA reviewer GitHub App is one review gate with Ops: its bot identity,
+  listed in `opsReview.qaReviewerCreatorIds`, is trusted for
+  `ops-security/review` wherever Ops is, and for each repository's
+  `productReview` context, with no Ops stamp on top. Its stamps obey the same
+  `PASS` prefix, and its latest non-success stamp is a veto like an Ops one.
+  Only the pinned shared policy can list it; callers and repository configs
+  cannot add or remove it.
+
+### Adding the QA reviewer App
+
+The slot is empty until the App is registered. Statuses carry the App's bot
+user ID, not the App ID: read it with
+`gh api 'users/<app-slug>%5Bbot%5D' --jq .id`, add that single number to
+`qaReviewerCreatorIds`, and land it through Ops review. The App needs the
+`statuses: write` permission and posts `ops-security/review` with a
+description beginning `PASS` on the PR head SHA. Consumers pick it up when
+they bump their pin.
 
 All current desk lanes post with the shared creator identity `8020099`.
 Product configs therefore explicitly trust `[8020099]`, not an empty list.

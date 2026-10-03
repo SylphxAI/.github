@@ -10,6 +10,7 @@
   "opsReview": {
     "context": "ops-security/review",
     "trustedCreatorIds": [8020099],
+    "qaReviewerCreatorIds": [],
     "descriptionPrefix": "PASS"
   },
   "sharedCreatorIds": [8020099],

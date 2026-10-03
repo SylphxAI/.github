@@ -58,6 +58,15 @@ def creator_list(value, name: str) -> set[int]:
     return set(value)
 
 
+def qa_reviewers(policy: dict) -> set[int]:
+    # The QA reviewer App's bot user, trusted from the pinned shared policy only.
+    # An empty list is valid until the App is registered; callers cannot add or remove it.
+    value = policy["opsReview"].get("qaReviewerCreatorIds", [])
+    if not isinstance(value, list) or any(type(x) is not int or x <= 0 for x in value):
+        raise ValueError("opsReview.qaReviewerCreatorIds must contain positive GitHub creator IDs")
+    return set(value)
+
+
 def validate_config(cfg: dict) -> dict:
     if not isinstance(cfg, dict) or not isinstance(cfg.get("context"), str) or not cfg["context"]:
         raise ValueError("config needs a nonempty context")
@@ -140,15 +149,17 @@ def verdict(stamp, required: str, reviewer: dict, author_id=None, shared_ids=fro
 def review_verdict(repository: str, labels: list[str], files: list[str], statuses: list[dict],
                    cfg: dict, policy: dict, ops_creators: set[int], author_id=None) -> tuple[bool, str]:
     ops = policy["opsReview"]
-    # Even ordinary product PRs cannot override an explicit trusted Ops veto.
-    ops_stamp = latest_stamp(statuses, ops["context"], ops_creators)
+    qa = qa_reviewers(policy)
+    # QA's reviewer App is one review gate with Ops: either identity's latest stamp decides.
+    # Even ordinary product PRs cannot override an explicit trusted Ops or QA veto.
+    ops_stamp = latest_stamp(statuses, ops["context"], ops_creators | qa)
     if ops_stamp and ops_stamp["state"] != "success":
         return False, f"{ops['context']} is {ops_stamp['state']}"
     required = ops_requirement(repository, labels, files, cfg, policy)
     if required:
         return verdict(ops_stamp, required, ops)
     reviewer = cfg["productReview"]
-    stamp = latest_stamp(statuses, reviewer["context"], creator_list(reviewer["trustedCreatorIds"], "product reviewer"))
+    stamp = latest_stamp(statuses, reviewer["context"], creator_list(reviewer["trustedCreatorIds"], "product reviewer") | qa)
     return verdict(stamp, "owning lane independent final review", reviewer, author_id, set(policy["sharedCreatorIds"]))
 
 

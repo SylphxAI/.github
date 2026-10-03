@@ -22,14 +22,15 @@ CFG = {
 }
 POLICY = json.loads((ACTION / "policy.json").read_text())
 POLICY = {**POLICY, "opsReview": {**POLICY["opsReview"], "trustedCreatorIds": [42]}}
+QA_POLICY = {**POLICY, "opsReview": {**POLICY["opsReview"], "qaReviewerCreatorIds": [55]}}
 
 
 def status(state="success", creator=42, date="2026-10-01T00:00:00Z", context="ops-security/review", description="PASS independent review"):
     return {"state": state, "creator": {"id": creator} if creator else None, "created_at": date, "context": context, "description": description}
 
 
-def review(statuses, files=None, labels=None, repo="SylphxAI/anymd", cfg=CFG, author=123):
-    return gate.review_verdict(repo, labels or [], files or ["README.md"], statuses, cfg, POLICY, {42}, author)
+def review(statuses, files=None, labels=None, repo="SylphxAI/anymd", cfg=CFG, author=123, policy=POLICY):
+    return gate.review_verdict(repo, labels or [], files or ["README.md"], statuses, cfg, policy, {42}, author)
 
 
 class GateTest(unittest.TestCase):
@@ -112,9 +113,42 @@ class GateTest(unittest.TestCase):
                 gate.validate_config(cfg)
         self.assertEqual(gate.validate_config(CFG), CFG)
 
+    def test_qa_app_approval_passes_alone_where_ops_is_required(self):
+        for kwargs in ({"files": ["auth/a"]}, {"labels": ["money"]}, {"repo": "SylphxAI/.github"}, {"repo": "SylphxAI/cloud"}):
+            self.assertTrue(review([status(creator=55)], policy=QA_POLICY, **kwargs)[0], kwargs)
+        # The same stamp without the QA slot filled is untrusted.
+        self.assertFalse(review([status(creator=55)], files=["auth/a"])[0])
+
+    def test_qa_app_counts_as_product_reviewer_in_its_context(self):
+        self.assertTrue(review([status(creator=55, context="product/final")], policy=QA_POLICY)[0])
+        self.assertFalse(review([status(creator=55)], policy=QA_POLICY)[0])
+
+    def test_ops_stamp_still_passes_with_qa_slot_filled(self):
+        self.assertTrue(review([status()], files=["auth/a"], policy=QA_POLICY)[0])
+        self.assertTrue(review([status()], repo="SylphxAI/.github", policy=QA_POLICY)[0])
+
+    def test_untrusted_creator_refused_with_qa_slot_filled(self):
+        for creator in (99, 8020099, None):
+            self.assertFalse(review([status(creator=creator)], files=["auth/a"], policy=QA_POLICY)[0], creator)
+            self.assertFalse(review([status(creator=creator, context="product/final")], policy=QA_POLICY)[0], creator)
+
+    def test_qa_stamp_obeys_pass_prefix_and_veto(self):
+        self.assertFalse(review([status(creator=55, description="LGTM")], files=["auth/a"], policy=QA_POLICY)[0])
+        for state in ("failure", "pending", "error"):
+            self.assertFalse(review([status(state, creator=55), status(creator=77, context="product/final")], policy=QA_POLICY)[0], state)
+        newest_qa_veto = [status(), status("failure", creator=55, date="2026-10-01T01:00:00Z")]
+        self.assertFalse(review(newest_qa_veto, files=["auth/a"], policy=QA_POLICY)[0])
+
+    def test_qa_slot_rejects_malformed_ids(self):
+        for bad in ([0], [-1], ["55"], [True], 55, None):
+            policy = {**POLICY, "opsReview": {**POLICY["opsReview"], "qaReviewerCreatorIds": bad}}
+            with self.assertRaises(ValueError):
+                review([status()], policy=policy)
+        self.assertEqual(gate.qa_reviewers(POLICY), set())
+
     def test_actual_policy_and_adopter_require_review(self):
         policy = json.loads((ACTION / "policy.json").read_text())
-        self.assertEqual(policy["opsReview"], {"context": "ops-security/review", "trustedCreatorIds": [8020099], "descriptionPrefix": "PASS"})
+        self.assertEqual(policy["opsReview"], {"context": "ops-security/review", "trustedCreatorIds": [8020099], "qaReviewerCreatorIds": [], "descriptionPrefix": "PASS"})
         self.assertIn("SylphxAI/.github", policy["platformRepositories"])
         self.assertTrue(gate.validate_config(json.loads((ROOT / ".github/review-stamp.json").read_text()))["enforceMissing"])
 
