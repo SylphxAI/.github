@@ -2,7 +2,7 @@
 """Aggregate gate: wait for every other GitHub Actions check run on a commit, then pass or fail.
 
 Used where a repository's checks live in several workflows (or path-filtered
-ones), so one `ci-ok` job cannot `needs:` them all. It lists the latest check
+ones), so one `ci-ok` job cannot `needs:` them all. It lists the check
 runs on the commit through the REST API, ignores its own job and any names in
 CI_OK_IGNORE, and waits until the set is complete and stable. Any failure,
 cancellation, timeout, action_required or startup failure fails the gate;
@@ -19,6 +19,23 @@ import urllib.request
 BAD = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
 
 
+def latest_per_name(runs: list[dict]) -> list[dict]:
+    """Keep only the newest check run per (app, name).
+
+    `filter=latest` collapses reruns inside one check suite, but a commit with
+    two workflow runs (a second pull_request run on the same SHA) has two
+    suites, and it returns each suite's latest: a red check from the older run
+    then gates the commit for good even after the newer run passed. Check run
+    ids grow with creation, so the highest id per name is the current result.
+    """
+    newest: dict[tuple[str, str], dict] = {}
+    for r in runs:
+        key = ((r.get("app") or {}).get("slug", "github-actions"), r.get("name", ""))
+        if key not in newest or r.get("id", 0) > newest[key].get("id", 0):
+            newest[key] = r
+    return list(newest.values())
+
+
 def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True) -> tuple[str, list[str]]:
     """Return ('pending'|'fail'|'pass', details) for the given check runs.
 
@@ -26,6 +43,7 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True) -> t
     and preview statuses (for example sylphx/deploy, sylphx/preview) that are
     not source checks and can stay in progress for a long time.
     """
+    runs = latest_per_name(runs)
     relevant = [r for r in runs if r.get("name") not in ignore
                 and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")]
     pending = [r["name"] for r in relevant if r.get("status") != "completed"]
@@ -38,7 +56,7 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True) -> t
 def fetch(repo: str, sha: str, token: str) -> list[dict]:
     runs, page = [], 1
     while True:
-        url = f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs?filter=latest&per_page=100&page={page}"
+        url = f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs?filter=all&per_page=100&page={page}"
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
         data = json.load(urllib.request.urlopen(req, timeout=30))
