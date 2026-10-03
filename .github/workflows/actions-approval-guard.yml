@@ -1,12 +1,12 @@
-# Actions approval guard (weekly). Fails when any Cubeage or SylphxAI ruleset or
-# branch protection could count a GitHub Actions approval, or lists the Actions
-# identity as a bypass actor. Policy and the one-time App setup:
-# docs/actions-approval-guard.md. Read-only: the audit only GETs.
+# Actions approval guard (manual dispatch only). Fails when any Cubeage or
+# SylphxAI ruleset or branch protection could count a GitHub Actions approval,
+# or lists the Actions identity as a bypass actor. The weekly run is the desk
+# script /scratch/ops-ci/actions-approval-guard.sh; this workflow is kept for
+# when the audit App exists and skips until then. Policy and the optional App
+# setup: docs/actions-approval-guard.md. Read-only: the audit only GETs.
 name: Actions approval guard
 
 on:
-  schedule:
-    - cron: '23 4 * * 1' # Mondays, 04:23 UTC
   workflow_dispatch: {}
 
 # The job token only files the findings issue; the audit itself runs on the
@@ -24,7 +24,22 @@ jobs:
     runs-on: sylphx-linux-standard
     timeout-minutes: 20
     steps:
+      # No audit App yet: skip cleanly (exit 0, no issue). Every later step
+      # runs only when this step reports configured=true.
+      - name: Check the audit App is configured
+        id: gate
+        env:
+          APP_ID: ${{ vars.ORG_AUDIT_APP_ID }}
+        run: |
+          if [ -z "$APP_ID" ]; then
+            echo "::notice::audit App not configured; the desk guard /scratch/ops-ci/actions-approval-guard.sh covers this"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: steps.gate.outputs.configured == 'true'
         timeout-minutes: 5
         with:
           persist-credentials: false
@@ -34,6 +49,7 @@ jobs:
       # the job before either happens.
       - name: Mint read-only token (SylphxAI)
         id: token-sylphxai
+        if: steps.gate.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: 5
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
@@ -47,6 +63,7 @@ jobs:
 
       - name: Mint read-only token (Cubeage)
         id: token-cubeage
+        if: steps.gate.outputs.configured == 'true'
         continue-on-error: true
         timeout-minutes: 5
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
@@ -62,6 +79,7 @@ jobs:
       # it (a missing code also routes to the failure path).
       - name: Audit rulesets and branch protection
         id: audit
+        if: steps.gate.outputs.configured == 'true'
         env:
           AUDIT_TOKEN_SYLPHXAI: ${{ steps.token-sylphxai.outputs.token }}
           AUDIT_TOKEN_CUBEAGE: ${{ steps.token-cubeage.outputs.token }}
@@ -77,6 +95,7 @@ jobs:
       # One findings issue: opened on the first failure, commented on while it
       # persists, closed by the first clean run.
       - name: File, update or close the findings issue
+        if: steps.gate.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           EXIT_CODE: ${{ steps.audit.outputs.exit_code }}
@@ -104,7 +123,7 @@ jobs:
           fi
 
       - name: Fail the run on findings
-        if: steps.audit.outputs.exit_code != '0'
+        if: steps.gate.outputs.configured == 'true' && steps.audit.outputs.exit_code != '0'
         run: |
           echo "the audit found a failing rule, or could not read one (exit ${{ steps.audit.outputs.exit_code }})"
           exit 1

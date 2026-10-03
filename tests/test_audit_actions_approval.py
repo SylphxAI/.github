@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
+import subprocess
 import sys
+import tempfile
 import unittest
+
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("audit_actions_approval", ROOT / "scripts" / "audit_actions_approval.py")
@@ -144,6 +149,45 @@ class CollectAndRunTest(unittest.TestCase):
         code, report = audit.run(["Org"], lambda org: "", audit.DEFAULT_EXCLUDE)
         self.assertEqual(code, 1)
         self.assertIn("no audit token for Org", report)
+
+
+class WorkflowGateTest(unittest.TestCase):
+    """Without the audit App the workflow skips cleanly: no schedule, notice, exit 0, no issue."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.wf = yaml.safe_load((ROOT / ".github" / "workflows" / "actions-approval-guard.yml").read_text())
+        cls.steps = cls.wf["jobs"]["audit"]["steps"]
+        cls.gate = cls.steps[0]
+
+    def test_dispatch_only(self) -> None:
+        triggers = self.wf[True] if True in self.wf else self.wf["on"]  # YAML 1.1 reads `on` as True
+        self.assertEqual(set(triggers), {"workflow_dispatch"})
+
+    def run_gate(self, app_id: str) -> tuple:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "out"
+            env = {"PATH": os.environ["PATH"], "APP_ID": app_id, "GITHUB_OUTPUT": str(out)}
+            proc = subprocess.run(["bash", "-e", "-c", self.gate["run"]], env=env, capture_output=True, text=True)
+            return proc, out.read_text()
+
+    def test_unconfigured_app_skips_with_notice_and_exit_zero(self) -> None:
+        self.assertEqual(self.gate["id"], "gate")
+        self.assertEqual(self.gate["env"]["APP_ID"], "${{ vars.ORG_AUDIT_APP_ID }}")
+        proc, outputs = self.run_gate("")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("::notice::audit App not configured", proc.stdout)
+        self.assertIn("/scratch/ops-ci/actions-approval-guard.sh", proc.stdout)
+        self.assertEqual(outputs.strip(), "configured=false")
+
+    def test_configured_app_runs_the_audit(self) -> None:
+        proc, outputs = self.run_gate("12345")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(outputs.strip(), "configured=true")
+
+    def test_every_later_step_waits_for_the_gate_so_no_issue_is_filed_when_skipped(self) -> None:
+        for step in self.steps[1:]:
+            self.assertIn("steps.gate.outputs.configured == 'true'", step.get("if", ""), step.get("name", step.get("uses")))
 
 
 if __name__ == "__main__":
