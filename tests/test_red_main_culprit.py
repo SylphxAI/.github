@@ -127,6 +127,48 @@ class RevertGuardTest(unittest.TestCase):
         self.assertLess(revert.index("revert-guard.py"), revert.index("push_branch"))
 
 
+class RevertWindowTest(unittest.TestCase):
+    """revert-window false: only a traced culprit is reverted, never a window."""
+
+    def test_inputs_default_to_the_old_behaviour(self) -> None:
+        text = WORKFLOW.read_text()
+        self.assertRegex(text, r"(?m)^      revert-window:\n        description: >-\n(?:          .*\n)+        type: boolean\n        default: true\n")
+        self.assertRegex(text, r"(?m)^      candidate-timeout-minutes:\n        description: >-\n(?:          .*\n)+        type: number\n        default: 20\n")
+        self.assertIn("      CANDIDATE_TIMEOUT_MINUTES: ${{ inputs.candidate-timeout-minutes }}\n", text)
+        self.assertIn("      REVERT_WINDOW: ${{ inputs.revert-window }}\n", text)
+
+    def test_a_window_without_a_culprit_takes_the_notify_path(self) -> None:
+        revert = step("Revert the culprit or report it")
+        downgrade = revert.index('if [ -z "$culprit" ] && [ "$REVERT_WINDOW" = false ]; then')
+        self.assertIn("MODE=notify", revert[downgrade : downgrade + 400])
+        # Decided before the notify branch, so no revert branch, push, pull
+        # request or queue jump can follow for a window.
+        self.assertLess(downgrade, revert.index('if [ "$MODE" != "revert" ]'))
+        self.assertLess(downgrade, revert.index("git_c revert"))
+        self.assertLess(downgrade, revert.index("push_branch"))
+
+    def test_a_named_culprit_is_still_reverted(self) -> None:
+        revert = step("Revert the culprit or report it")
+        self.assertIn('if [ -n "$culprit" ]; then\n            shas=("$culprit")', revert)
+
+    def test_trace_messages_follow_the_setting(self) -> None:
+        trace = step("Trace the culprit among the unverified commits")
+        self.assertNotIn("are reverted as one pull request", trace)
+        self.assertEqual(trace.count("$window_fate"), 2)
+
+    def test_candidate_deadline_is_bounded_and_fits_the_step(self) -> None:
+        import re
+
+        trace = step("Trace the culprit among the unverified commits")
+        self.assertIn('-gt 60 ]', trace)
+        self.assertLess(trace.index("-gt 60 ]"), trace.index("/dispatches"))
+        step_timeout = int(re.search(r"(?m)^        timeout-minutes: (\d+)$", trace).group(1))
+        self.assertGreaterEqual(step_timeout, 60 + 10)
+        job = WORKFLOW.read_text().split("\n  red-main:\n", 1)[1]
+        job_timeout = int(re.search(r"(?m)^    timeout-minutes: (\d+)$", job).group(1))
+        self.assertGreater(job_timeout, step_timeout + 25)
+
+
 class TokenModeTest(unittest.TestCase):
     """No builder App key: notify on the caller's own GITHUB_TOKEN."""
 
