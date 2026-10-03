@@ -147,25 +147,27 @@ def verdict(stamp, required: str, reviewer: dict, author_id=None, shared_ids=fro
 
 
 def qa_review_decision(reviews: list[dict], head_sha: str, qa: set[int], author_id=None):
-    """The QA reviewer App's PR reviews, judged per bot user by its latest APPROVED or CHANGES_REQUESTED.
+    """The QA reviewer Apps' PR reviews, judged as one reviewer by the latest APPROVED or CHANGES_REQUESTED.
 
-    Returns ("veto", reason), ("approved", reason) or (None, ""). Only a review at the exact PR head
-    approves; a CHANGES_REQUESTED review vetoes at any commit until the App supersedes or dismisses it.
-    Dismissed, commented and pending reviews carry no decision. The PR author cannot approve itself.
+    The desk Apps rotate, so every listed bot is the same reviewer: the newest decisive review across
+    the whole set decides, whichever App wrote it. Returns ("veto", reason), ("approved", reason) or
+    (None, ""). Only a review at the exact PR head approves; a CHANGES_REQUESTED review vetoes at any
+    commit until an App supersedes or dismisses it. Dismissed, commented and pending reviews carry no
+    decision. The PR author cannot approve itself.
     """
-    latest: dict[int, dict] = {}
-    decisive = [r for r in reviews if r.get("state") in ("APPROVED", "CHANGES_REQUESTED") and r.get("submitted_at")]
+    decisive = [
+        r for r in reviews
+        if r.get("state") in ("APPROVED", "CHANGES_REQUESTED") and r.get("submitted_at")
+        and (r.get("user") or {}).get("id") in qa and (r.get("user") or {}).get("id") != author_id
+    ]
+    if not decisive:
+        return None, ""
     # Stable sort retains API order for reviews submitted in the same second.
-    for r in sorted(decisive, key=lambda r: dt.datetime.fromisoformat(r["submitted_at"].replace("Z", "+00:00"))):
-        reviewer = (r.get("user") or {}).get("id")
-        if reviewer in qa and reviewer != author_id:
-            latest[reviewer] = r
-    for r in latest.values():
-        if r["state"] == "CHANGES_REQUESTED":
-            return "veto", "QA review requested changes"
-    for r in latest.values():
-        if r["state"] == "APPROVED" and r.get("commit_id") == head_sha:
-            return "approved", "QA review approved this head"
+    last = sorted(decisive, key=lambda r: dt.datetime.fromisoformat(r["submitted_at"].replace("Z", "+00:00")))[-1]
+    if last["state"] == "CHANGES_REQUESTED":
+        return "veto", "QA review requested changes"
+    if last.get("commit_id") == head_sha:
+        return "approved", "QA review approved this head"
     return None, ""
 
 

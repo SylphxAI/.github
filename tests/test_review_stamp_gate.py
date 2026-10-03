@@ -174,8 +174,21 @@ class GateTest(unittest.TestCase):
         cr = pr_review("CHANGES_REQUESTED", commit=OLD)
         self.assertFalse(review([status()], repo="SylphxAI/.github", reviews=[cr], policy=QA_POLICY)[0])
         self.assertFalse(review([status(creator=77, context="product/final")], reviews=[cr], policy=QA_POLICY)[0])
-        # A veto from one QA App stands even when another approves the head.
-        self.assertFalse(review([], repo="SylphxAI/.github", reviews=[cr, pr_review(user=56)], policy={**QA_POLICY, "opsReview": {**QA_POLICY["opsReview"], "qaReviewerCreatorIds": [55, 56]}})[0])
+
+    def test_qa_apps_are_one_reviewer_and_the_last_decisive_review_decides(self):
+        # The desk Apps rotate, so the listed bots are one reviewer: the newest decisive review
+        # across the whole set decides, not each bot's own latest.
+        two = {**QA_POLICY, "opsReview": {**QA_POLICY["opsReview"], "qaReviewerCreatorIds": [55, 56]}}
+        old_cr = pr_review("CHANGES_REQUESTED", user=55, commit=OLD)
+        later = lambda state, user, commit=HEAD: pr_review(state, user=user, commit=commit, at="2026-10-01T01:00:00Z")
+        # Another App's later approval supersedes an earlier App's change request.
+        self.assertTrue(review([], repo="SylphxAI/.github", reviews=[old_cr, later("APPROVED", 56)], policy=two)[0])
+        # Reverse: another App's later change request vetoes an earlier approval.
+        self.assertFalse(review([], repo="SylphxAI/.github", reviews=[pr_review(user=55), later("CHANGES_REQUESTED", 56)], policy=two)[0])
+        # A single trusted change request with no later approval still vetoes.
+        self.assertFalse(review([], repo="SylphxAI/.github", reviews=[old_cr], policy=two)[0])
+        # An untrusted later approval does not supersede a trusted change request.
+        self.assertFalse(review([], repo="SylphxAI/.github", reviews=[old_cr, later("APPROVED", 99)], policy=two)[0])
 
     def test_qa_app_latest_review_per_reviewer_decides(self):
         later = lambda state, commit=HEAD: pr_review(state, commit=commit, at="2026-10-01T01:00:00Z")
