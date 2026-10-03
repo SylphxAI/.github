@@ -14,7 +14,7 @@ no half state.
 | --- | --- | --- |
 | Draft pull request | gate lanes only - the draft is the compiler | `ci-ok` |
 | Pull request marked ready | gate lanes + the full suite the change affects | `ci-ok` |
-| Merge group | gate lanes only (target p90 under 5 min) | `ci-ok` |
+| Merge group | gate lanes only (target p90 under 5 min); while the trunk is red, only a revert or the labelled fix is admitted | `ci-ok` |
 | Push to the trunk | the full suite over every commit since the last verified one | none; `verified` marks the commit |
 | `verify.yml` fails on the trunk | red-main handler: trace and revert (never a rerun; a flake is quarantined through the quarantine list) | - |
 
@@ -74,8 +74,8 @@ proofs - is a suite lane.
    reads `SYLPHX_BUILDER_PRIVATE_KEY` from it (a `uses:` job cannot declare
    `environment:` itself). The default, empty, keeps the passed-secret path.
 5. **Labels** the handler uses but never creates, and silently skips when
-   absent: `flake`, `quarantine`, `auto-revert`, `queue-jump:red-main`.
-   Create them in the same change.
+   absent: `flake`, `quarantine`, `auto-revert`, `queue-jump:red-main`, and
+   `main-red-fix` (below). Create them in the same change.
 6. **Pin** every `SylphxAI/.github/...@main` in the starters to the commit you
    adopt.
 7. **Rust repositories**: add `.github/workflows/sylphx-check.yml`, a copy of
@@ -100,8 +100,31 @@ Release keeps waiting releases instead of dropping them on each new commit
 (cloud#10373 live in production). Until then the declaration speeds the
 queue, and deploys stay as they are.
 
+## Stop the line on a red trunk
+
+The starter gate has a `main-state` job (merge groups only) that runs
+[`main-red-gate`](../.github/actions/main-red-gate/action.yml). The trunk is
+red when its newest conclusive push run of the verify workflow failed
+(cancelled, skipped and superseded runs are passed over, as in owner
+standards/dx.md); a later success clears it. While red, a merge group is
+admitted only for the way back to green:
+
+- a revert: branch `auto-revert/*` (the red-main handler's), a title starting
+  `Revert`, or the `auto-revert` / `queue-jump:red-main` labels;
+- the fix, when a person labels the pull request `main-red-fix`.
+
+Any other pull request fails `main-state`, so `ci-ok` fails, and it leaves the
+queue; re-enqueue it once the trunk is green. The gate fails open: a verify
+history or pull request it cannot read admits with a warning, so it never jams
+the queue on its own fault. Adopt with `mode: observe` first to see what it
+would refuse, then `enforce`. The job needs `pull-requests: read` beside the
+gate's other read permissions. A check on the trunk that is not the verify
+workflow (a benchmark or nightly) never makes the trunk red here.
+
 ## The shared pieces
 
+- [`main-red-gate`](../.github/actions/main-red-gate/action.yml): the red-trunk
+  admission rule above; `mode`, `verify-workflow` and `fix-label` inputs.
 - [`ci-range`](../.github/actions/ci-range/action.yml): the range and the lane
   selection, the same answer in the gate and in verify. Lanes are
   `name: path globs`; a change under `.github/` runs every lane. Use its
