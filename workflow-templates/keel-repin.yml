@@ -1,0 +1,76 @@
+name: Keel repin
+
+# Every 30 minutes, checks Keel's tags with the read-only reader App; on a new keel-verified-*
+# tag that is ahead of this repository's pin it opens the pull request `chore/keel-repin-<tag>`
+# with the workflow token and starts the repository's CI on that branch by workflow_dispatch
+# (SylphxAI/.github docs/keel-repin.md). It never merges.
+# Copy to .github/workflows/keel-repin.yml, replace the commit placeholder with the pinned
+# commit of SylphxAI/.github, and set `check-command` and `ci-workflows` for this repository.
+# Needs the repository setting named in docs/keel-repin.md, and every workflow in `ci-workflows`
+# must list workflow_dispatch.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Keel tag to pin (empty: the newest keel-verified-* tag)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Print the pull request that would be opened; open nothing"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: keel-repin
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  poll:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      needed: ${{ steps.poll.outputs.needed }}
+      tag: ${{ steps.poll.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: poll
+        uses: SylphxAI/.github/.github/actions/keel-repin@PINNED_COMMIT_SHA
+        with:
+          mode: poll
+          tag: ${{ inputs.tag || 'latest' }}
+          reader-app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
+          reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
+
+  repin:
+    needs: poll
+    if: needs.poll.outputs.needed == 'true' || (inputs.dry_run == true && needs.poll.result == 'success')
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: SylphxAI/.github/.github/actions/keel-repin@PINNED_COMMIT_SHA
+        with:
+          mode: repin
+          tag: ${{ needs.poll.outputs.tag }}
+          dry-run: ${{ inputs.dry_run == true }}
+          reader-app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
+          reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
+          check-command: cargo check
+          ci-workflows: ci.yml
