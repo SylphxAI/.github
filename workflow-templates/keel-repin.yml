@@ -1,0 +1,49 @@
+name: Keel repin
+
+# Opens the pull request that moves this repository's Keel pin to a keel-verified-* tag
+# (SylphxAI/.github docs/keel-repin.md). Keel dispatches it when it cuts a tag; the daily
+# run is the catch-up when a dispatch was missed. It never merges.
+# Copy to .github/workflows/keel-repin.yml, replace the commit placeholder with the reviewed
+# commit of SylphxAI/.github, set `check-command` to the build this repository needs, and
+# keep the workflow file name: Keel dispatches it by name.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Keel tag to pin (empty: the newest keel-verified-* tag)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Print the pull request that would be opened; open nothing"
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: "37 3 * * *"
+
+concurrency:
+  group: keel-repin-${{ inputs.tag || 'latest' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  repin:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: SylphxAI/.github/.github/actions/keel-repin@REVIEWED_COMMIT_SHA
+        with:
+          tag: ${{ inputs.tag || 'latest' }}
+          dry-run: ${{ inputs.dry_run == true }}
+          reader-app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
+          reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
+          writer-app-id: ${{ vars.SYLPHX_BUILDER_APP_ID }}
+          writer-app-key: ${{ secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+          check-command: cargo check

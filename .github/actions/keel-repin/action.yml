@@ -1,0 +1,149 @@
+name: keel-repin
+description: >
+  Moves a repository's Keel pin to a Keel tag and opens (or updates) a pull
+  request `chore/keel-repin-<tag>`: rewrites every pin, refreshes Cargo.lock for
+  the Keel crates, runs a build check, and opens the pull request. A broken build
+  opens it as a draft with the error summary. It never merges and never enables
+  auto-merge. Needs a checkout of the repository (persist-credentials: false) and a
+  Rust toolchain on the runner; run it on our own runners only. See docs/keel-repin.md.
+
+inputs:
+  tag:
+    description: The Keel tag to pin (keel-verified-YYYY-MM-DD-N or keel-weekly-YYYY-MM-DD), or latest for the newest keel-verified-* tag.
+    default: latest
+  dry-run:
+    description: Print the pull request that would be opened; push and open nothing.
+    default: "false"
+  reader-app-id:
+    description: Read-only GitHub App id that can read the Keel repository (the CUBEAGE_CI_READER_APP_ID secret for Cubeage titles).
+    required: true
+  reader-app-key:
+    description: Private key of the read-only App.
+    required: true
+  extra-read-owner:
+    description: Owner of a second private repository the build fetches (for example the title kit); empty for none.
+    default: ""
+  extra-read-repos:
+    description: Comma or newline separated repositories of extra-read-owner the build fetches.
+    default: ""
+  writer-app-id:
+    description: >
+      Id of a GitHub App with contents:write and pull_requests:write on this repository. Its pushes and pull
+      requests start CI. Empty: the workflow token is used, and CI does not start on its own.
+    default: ""
+  writer-app-key:
+    description: Private key of the writer App.
+    default: ""
+  token:
+    description: Fallback token (contents:write, pull-requests:write) when no writer App is given.
+    default: ${{ github.token }}
+  check-command:
+    description: The build check, run after the pin moves. A failure opens the pull request as a draft.
+    default: cargo check
+  check-dir:
+    description: Directory the check command runs in, relative to the repository root.
+    default: "."
+  base:
+    description: Branch the pull request targets.
+    default: ${{ github.event.repository.default_branch }}
+  label:
+    description: >
+      Label for the pull request. Empty: the repository's single `owner:*` label, if it has exactly one.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Mint read-only Keel token
+      id: keel-token
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.reader-app-id }}
+        private-key: ${{ inputs.reader-app-key }}
+        owner: SylphxAI
+        repositories: keel
+        permission-contents: read
+
+    - name: Mint read-only token for the extra repositories
+      id: extra-token
+      if: inputs.extra-read-owner != ''
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.reader-app-id }}
+        private-key: ${{ inputs.reader-app-key }}
+        owner: ${{ inputs.extra-read-owner }}
+        repositories: ${{ inputs.extra-read-repos }}
+        permission-contents: read
+
+    - name: Mint writer token
+      id: writer-token
+      if: inputs.writer-app-id != ''
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.writer-app-id }}
+        private-key: ${{ inputs.writer-app-key }}
+        permission-contents: write
+        permission-pull-requests: write
+
+    - name: Point git at the read tokens
+      shell: bash
+      env:
+        KEEL_TOKEN: ${{ steps.keel-token.outputs.token }}
+        EXTRA_TOKEN: ${{ steps.extra-token.outputs.token }}
+        EXTRA_OWNER: ${{ inputs.extra-read-owner }}
+        EXTRA_REPOS: ${{ inputs.extra-read-repos }}
+      run: |
+        set -euo pipefail
+        : "${KEEL_TOKEN:?missing read token for the Keel repository}"
+        n=0
+        add() {  # $1 = https://github.com/OWNER/[REPO], $2 = token
+          {
+            echo "GIT_CONFIG_KEY_$n=url.https://x-access-token:$2@${1#https://}.insteadOf"
+            echo "GIT_CONFIG_VALUE_$n=$1"
+          } >> "$GITHUB_ENV"
+          n=$((n + 1))
+        }
+        add "https://github.com/SylphxAI/keel" "$KEEL_TOKEN"
+        if [ -n "$EXTRA_OWNER" ]; then
+          while read -r repo; do
+            [ -n "$repo" ] && add "https://github.com/$EXTRA_OWNER/$repo" "$EXTRA_TOKEN"
+          done < <(printf '%s\n' "$EXTRA_REPOS" | tr ',' '\n' | tr -d ' ')
+        fi
+        {
+          echo "GIT_CONFIG_COUNT=$n"
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true"
+          echo "GIT_TERMINAL_PROMPT=0"
+        } >> "$GITHUB_ENV"
+
+    - name: Repin
+      id: repin
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        CHECK_COMMAND: ${{ inputs.check-command }}
+        CHECK_DIR: ${{ inputs.check-dir }}
+        ACTION_PATH: ${{ github.action_path }}
+        REPORT: ${{ runner.temp }}/keel-repin-report.json
+        # A dry run rebuilds even when the branch exists, so it always shows the pull request.
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+        args=(run --tag "$TAG" --check-command "$CHECK_COMMAND" --check-dir "$CHECK_DIR" --report "$REPORT")
+        [ "$DRY_RUN" = true ] && args+=(--ignore-branch)
+        python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"
+
+    - name: Open the pull request
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        REPORT: ${{ runner.temp }}/keel-repin-report.json
+        GH_TOKEN: ${{ steps.writer-token.outputs.token || inputs.token }}
+        KEEL_REPIN_WRITER: ${{ inputs.writer-app-id != '' && 'app' || 'workflow' }}
+        BASE: ${{ inputs.base }}
+        LABEL: ${{ inputs.label }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+        args=(pr --report "$REPORT" --base "$BASE" --label "$LABEL")
+        [ "$DRY_RUN" = true ] && args+=(--dry-run)
+        python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"
