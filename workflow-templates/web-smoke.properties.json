@@ -1,0 +1,6 @@
+{
+  "name": "Keel web smoke",
+  "description": "Boots a Keel title's web pack in headless Chrome on Slow 3G: splash within 1 s and a drawn frame, no black screen. Check name web-smoke, on Sylphx runners.",
+  "iconName": "octicon browser",
+  "categories": ["Automation", "Rust"]
+}
