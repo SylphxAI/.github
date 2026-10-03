@@ -51,6 +51,7 @@ class CiOkTest(unittest.TestCase):
     def test_zero_other_checks_fails(self) -> None:
         state, detail = ci_ok.evaluate([run("ci-ok", "in_progress", None)], {"ci-ok"})
         self.assertEqual((state, detail), ("fail", ["no other check ran on this commit"]))
+        self.assertEqual(ci_ok.evaluate([], {"ci-ok"}, allow_none=True), ("pass", []))
 
     def test_workflow_that_failed_to_start_fails(self) -> None:
         # Cubeage/voidbite-keel#1: ci.yml failed to start (a suite concluded
