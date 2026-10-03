@@ -20,23 +20,28 @@ The action ships [policy.json](policy.json), pinned with its code:
 - Other product changes require the owning lane's independent Opus final
   reviewer, never the author's builder. Each repository records the trusted
   creator IDs and status context in its `productReview` data.
-- The QA reviewer GitHub App is one review gate with Ops: its bot identity,
-  listed in `opsReview.qaReviewerCreatorIds`, is trusted for
-  `ops-security/review` wherever Ops is, and for each repository's
-  `productReview` context, with no Ops stamp on top. Its stamps obey the same
-  `PASS` prefix, and its latest non-success stamp is a veto like an Ops one.
-  Only the pinned shared policy can list it; callers and repository configs
-  cannot add or remove it.
+- The QA reviewer GitHub Apps are one review gate with Ops. Their bot user IDs,
+  listed in `opsReview.qaReviewerCreatorIds`, are trusted two ways, wherever Ops
+  is and for each repository's `productReview` context, with no Ops stamp on top:
+  - **PR review.** The latest `APPROVED` review by a listed bot, submitted at
+    the PR's exact head commit, passes the gate. A `CHANGES_REQUESTED` review
+    by a listed bot blocks at any commit until that bot approves, or the review
+    is dismissed. Commented, dismissed and pending reviews carry no decision,
+    and the PR author's own review never counts.
+  - **Status.** A `ops-security/review` status from a listed bot obeys the same
+    `PASS` prefix rule, and its latest non-success status is a veto like an Ops
+    one.
+  Only the pinned shared policy can list the bots; callers and repository
+  configs cannot add or remove them.
 
-### Adding the QA reviewer App
+### Changing the QA reviewer Apps
 
-The slot stays empty until the App is registered and its real bot user ID is read back. Statuses carry the App's bot
-user ID, not the App ID: read it with
+Statuses and reviews carry the App's bot user ID, not the App ID: read it with
 `gh api 'users/<app-slug>%5Bbot%5D' --jq .id`, add that single number to
-`qaReviewerCreatorIds`, and land it through Ops review. The App needs the
-`statuses: write` permission and posts `ops-security/review` with a
-description beginning `PASS` on the PR head SHA. Consumers pick it up when
-they bump their pin.
+`qaReviewerCreatorIds`, and land it through Ops review. For statuses the App
+needs the `statuses: write` permission and a description beginning `PASS`; for
+reviews it needs `pull-requests: write`. Consumers pick it up when they bump
+their pin.
 
 All current desk lanes post with the shared creator identity `8020099`.
 Product configs therefore explicitly trust `[8020099]`, not an empty list.

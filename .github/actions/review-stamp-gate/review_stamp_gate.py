@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Base-owned scope and trusted head statuses gate every PR in a merge group.
+"""Base-owned scope, trusted head statuses and the QA App's PR reviews gate every PR in a merge group.
 
 Adapted from cloud#11840. Only queue refs, never commit subjects, identify PRs.
 The caller checks out the group with fetch-depth: 0 and retains git credentials
@@ -146,8 +146,32 @@ def verdict(stamp, required: str, reviewer: dict, author_id=None, shared_ids=fro
     return True, f"{context} success ({required}){limit}"
 
 
+def qa_review_decision(reviews: list[dict], head_sha: str, qa: set[int], author_id=None):
+    """The QA reviewer App's PR reviews, judged per bot user by its latest APPROVED or CHANGES_REQUESTED.
+
+    Returns ("veto", reason), ("approved", reason) or (None, ""). Only a review at the exact PR head
+    approves; a CHANGES_REQUESTED review vetoes at any commit until the App supersedes or dismisses it.
+    Dismissed, commented and pending reviews carry no decision. The PR author cannot approve itself.
+    """
+    latest: dict[int, dict] = {}
+    decisive = [r for r in reviews if r.get("state") in ("APPROVED", "CHANGES_REQUESTED") and r.get("submitted_at")]
+    # Stable sort retains API order for reviews submitted in the same second.
+    for r in sorted(decisive, key=lambda r: dt.datetime.fromisoformat(r["submitted_at"].replace("Z", "+00:00"))):
+        reviewer = (r.get("user") or {}).get("id")
+        if reviewer in qa and reviewer != author_id:
+            latest[reviewer] = r
+    for r in latest.values():
+        if r["state"] == "CHANGES_REQUESTED":
+            return "veto", "QA review requested changes"
+    for r in latest.values():
+        if r["state"] == "APPROVED" and r.get("commit_id") == head_sha:
+            return "approved", "QA review approved this head"
+    return None, ""
+
+
 def review_verdict(repository: str, labels: list[str], files: list[str], statuses: list[dict],
-                   cfg: dict, policy: dict, ops_creators: set[int], author_id=None) -> tuple[bool, str]:
+                   cfg: dict, policy: dict, ops_creators: set[int], author_id=None,
+                   reviews=(), head_sha="") -> tuple[bool, str]:
     ops = policy["opsReview"]
     qa = qa_reviewers(policy)
     # QA's reviewer App is one review gate with Ops: either identity's latest stamp decides.
@@ -155,7 +179,14 @@ def review_verdict(repository: str, labels: list[str], files: list[str], statuse
     ops_stamp = latest_stamp(statuses, ops["context"], ops_creators | qa)
     if ops_stamp and ops_stamp["state"] != "success":
         return False, f"{ops['context']} is {ops_stamp['state']}"
+    # QA approves by App PR review: an approval at the exact head satisfies the same gate as a
+    # trusted status, and a CHANGES_REQUESTED review is a veto. Statuses stay as the alternative.
+    decision, why = qa_review_decision(list(reviews), head_sha, qa, author_id)
+    if decision == "veto":
+        return False, why
     required = ops_requirement(repository, labels, files, cfg, policy)
+    if decision == "approved":
+        return True, f"{why} ({required or 'owning lane independent final review'})"
     if required:
         return verdict(ops_stamp, required, ops)
     reviewer = cfg["productReview"]
@@ -173,14 +204,22 @@ def api(path: str):
         return json.load(response)
 
 
-def statuses_for(sha: str) -> list[dict]:
-    statuses, page = [], 1
+def paged(path: str) -> list[dict]:
+    items, page = [], 1
     while True:
-        batch = api(f"/commits/{sha}/statuses?per_page=100&page={page}")
-        statuses.extend(batch)
+        batch = api(f"{path}?per_page=100&page={page}")
+        items.extend(batch)
         if len(batch) < 100:
-            return statuses
+            return items
         page += 1
+
+
+def statuses_for(sha: str) -> list[dict]:
+    return paged(f"/commits/{sha}/statuses")
+
+
+def reviews_for(number: int) -> list[dict]:
+    return paged(f"/pulls/{number}/reviews")
 
 
 def main() -> int:
@@ -214,6 +253,7 @@ def main() -> int:
         ok, reason = review_verdict(
             os.environ["GITHUB_REPOSITORY"], [label["name"] for label in pr["labels"]], files,
             statuses_for(pr["head"]["sha"]), cfg, policy, creators, (pr.get("user") or {}).get("id"),
+            reviews_for(number), pr["head"]["sha"],
         )
         print(f"{'::error::' if not ok else ''}#{number} head {pr['head']['sha'][:8]}: {reason}")
         failed |= not ok

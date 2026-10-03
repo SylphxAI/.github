@@ -23,7 +23,8 @@ CFG = {
     "productReview": {"context": "product/final", "trustedCreatorIds": [77]},
 }
 POLICY = json.loads((ACTION / "policy.json").read_text())
-POLICY = {**POLICY, "opsReview": {**POLICY["opsReview"], "trustedCreatorIds": [42]}}
+REAL_QA_IDS = POLICY["opsReview"]["qaReviewerCreatorIds"]
+POLICY = {**POLICY, "opsReview": {**POLICY["opsReview"], "trustedCreatorIds": [42], "qaReviewerCreatorIds": []}}
 QA_POLICY = {**POLICY, "opsReview": {**POLICY["opsReview"], "qaReviewerCreatorIds": [55]}}
 
 
@@ -31,8 +32,16 @@ def status(state="success", creator=42, date="2026-10-01T00:00:00Z", context="op
     return {"state": state, "creator": {"id": creator} if creator else None, "created_at": date, "context": context, "description": description}
 
 
-def review(statuses, files=None, labels=None, repo="SylphxAI/anymd", cfg=CFG, author=123, policy=POLICY):
-    return gate.review_verdict(repo, labels or [], files or ["README.md"], statuses, cfg, policy, {42}, author)
+HEAD = "a" * 40
+OLD = "b" * 40
+
+
+def pr_review(state="APPROVED", user=55, commit=HEAD, at="2026-10-01T00:00:00Z"):
+    return {"state": state, "user": {"id": user}, "commit_id": commit, "submitted_at": at}
+
+
+def review(statuses, files=None, labels=None, repo="SylphxAI/anymd", cfg=CFG, author=123, policy=POLICY, reviews=(), head=HEAD):
+    return gate.review_verdict(repo, labels or [], files or ["README.md"], statuses, cfg, policy, {42}, author, reviews, head)
 
 
 class GateTest(unittest.TestCase):
@@ -148,9 +157,48 @@ class GateTest(unittest.TestCase):
                 review([status()], policy=policy)
         self.assertEqual(gate.qa_reviewers(POLICY), set())
 
+    def test_qa_app_review_approval_satisfies_ops_and_product_gates(self):
+        approved = [pr_review()]
+        for kwargs in ({"repo": "SylphxAI/.github"}, {"repo": "SylphxAI/cloud"}, {"files": ["auth/a"]}, {"labels": ["money"]}, {}):
+            self.assertTrue(review([], reviews=approved, policy=QA_POLICY, **kwargs)[0], kwargs)
+
+    def test_qa_app_review_must_be_trusted_and_at_the_exact_head(self):
+        for reviews in ([pr_review(commit=OLD)], [pr_review(user=99)], [pr_review("COMMENTED")], [pr_review("DISMISSED")], []):
+            self.assertFalse(review([], repo="SylphxAI/.github", reviews=reviews, policy=QA_POLICY)[0], reviews)
+        # An empty QA slot trusts no review at all.
+        self.assertFalse(review([], repo="SylphxAI/.github", reviews=[pr_review()])[0])
+        # The PR author cannot approve its own PR through the slot.
+        self.assertFalse(review([], repo="SylphxAI/.github", reviews=[pr_review(user=55)], policy=QA_POLICY, author=55)[0])
+
+    def test_qa_app_changes_requested_is_a_veto_over_any_stamp_or_approval(self):
+        cr = pr_review("CHANGES_REQUESTED", commit=OLD)
+        self.assertFalse(review([status()], repo="SylphxAI/.github", reviews=[cr], policy=QA_POLICY)[0])
+        self.assertFalse(review([status(creator=77, context="product/final")], reviews=[cr], policy=QA_POLICY)[0])
+        # A veto from one QA App stands even when another approves the head.
+        self.assertFalse(review([], repo="SylphxAI/.github", reviews=[cr, pr_review(user=56)], policy={**QA_POLICY, "opsReview": {**QA_POLICY["opsReview"], "qaReviewerCreatorIds": [55, 56]}})[0])
+
+    def test_qa_app_latest_review_per_reviewer_decides(self):
+        later = lambda state, commit=HEAD: pr_review(state, commit=commit, at="2026-10-01T01:00:00Z")
+        self.assertTrue(review([], repo="SylphxAI/.github", reviews=[pr_review("CHANGES_REQUESTED", commit=OLD), later("APPROVED")], policy=QA_POLICY)[0])
+        self.assertFalse(review([], repo="SylphxAI/.github", reviews=[pr_review(), later("CHANGES_REQUESTED")], policy=QA_POLICY)[0])
+        # A dismissed veto, or a later comment, changes nothing about the standing decision.
+        self.assertFalse(review([], repo="SylphxAI/.github", reviews=[pr_review("CHANGES_REQUESTED"), later("COMMENTED")], policy=QA_POLICY)[0])
+        self.assertTrue(review([], repo="SylphxAI/.github", reviews=[pr_review("DISMISSED", commit=OLD), later("APPROVED")], policy=QA_POLICY)[0])
+
+    def test_qa_status_stays_an_alternative_and_ops_veto_still_wins(self):
+        self.assertTrue(review([status(creator=55)], repo="SylphxAI/.github", policy=QA_POLICY)[0])
+        self.assertFalse(review([status("failure")], repo="SylphxAI/.github", reviews=[pr_review()], policy=QA_POLICY)[0])
+
+    def test_review_pagination_finds_approval_after_first_page(self):
+        pages = [[pr_review(user=99)] * 100, [pr_review()]]
+        with patch.object(gate, "api", side_effect=pages) as api:
+            reviews = gate.reviews_for(7)
+            self.assertEqual(api.call_count, 2)
+        self.assertTrue(review([], repo="SylphxAI/.github", reviews=reviews, policy=QA_POLICY)[0])
+
     def test_actual_policy_and_adopter_require_review(self):
         policy = json.loads((ACTION / "policy.json").read_text())
-        self.assertEqual(policy["opsReview"], {"context": "ops-security/review", "trustedCreatorIds": [8020099], "qaReviewerCreatorIds": [], "descriptionPrefix": "PASS"})
+        self.assertEqual(policy["opsReview"], {"context": "ops-security/review", "trustedCreatorIds": [8020099], "qaReviewerCreatorIds": [336710508, 336710515, 336710524], "descriptionPrefix": "PASS"})
         self.assertIn("SylphxAI/.github", policy["platformRepositories"])
         self.assertTrue(gate.validate_config(json.loads((ROOT / ".github/review-stamp.json").read_text()))["enforceMissing"])
 
@@ -222,7 +270,8 @@ class GateTest(unittest.TestCase):
             spec.loader.exec_module(base_gate)
             policy = json.loads((graded / "policy.json").read_text())
             self.assertNotIn(999, policy["opsReview"]["trustedCreatorIds"])
-            self.assertEqual(base_gate.qa_reviewers(policy), set())
+            self.assertEqual(base_gate.qa_reviewers(policy), set(REAL_QA_IDS))
+            self.assertNotIn(999, base_gate.qa_reviewers(policy))
             ok, reason = base_gate.review_verdict("SylphxAI/.github", [], [".github/actions/review-stamp-gate/policy.json"],
                                                   [status(creator=999)], CFG, policy, {8020099}, 123)
             self.assertFalse(ok, reason)
