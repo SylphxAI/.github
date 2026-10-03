@@ -51,6 +51,7 @@ class CiOkTest(unittest.TestCase):
     def test_zero_other_checks_fails(self) -> None:
         state, detail = ci_ok.evaluate([run("ci-ok", "in_progress", None)], {"ci-ok"})
         self.assertEqual((state, detail), ("fail", ["no other check ran on this commit"]))
+        self.assertEqual(ci_ok.evaluate([], {"ci-ok"}, allow_none=True), ("pass", []))
 
     def test_workflow_that_failed_to_start_fails(self) -> None:
         # Cubeage/voidbite-keel#1: ci.yml failed to start (a suite concluded
@@ -64,6 +65,33 @@ class CiOkTest(unittest.TestCase):
             self.assertEqual(state, "fail", bad)
             self.assertIn("workflow failed to start", detail[0])
         self.assertEqual(ci_ok.evaluate(runs, {"ci-ok"}, suites=[own, ok])[0], "pass")
+
+    def test_non_gating_workflow_that_failed_to_start_is_ignored(self) -> None:
+        # Cubeage/fun-big2-tw#280: a broken red-main.yml (workflow_run) posted
+        # failed empty suites on the merge-group SHA; it is not a gate check.
+        runs = [run("a")]
+        broken = {"id": 7, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={7: "workflow_run"})[0], "pass")
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={7: "push"})[0], "pass")
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={7: "merge_group"})[0], "fail")
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={})[0], "fail")
+        self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events=None)[0], "fail")
+
+    def test_startup_failure_superseded_by_a_later_run_is_ignored(self) -> None:
+        # Cubeage/block-sort-keel#2: ci.yml failed to start at 16:23, then a
+        # re-trigger ran it with 6 jobs at 00:08 on the same head SHA.
+        wr = [{"check_suite_id": 1, "path": ".github/workflows/ci.yml", "event": "pull_request", "created_at": "2026-10-02T16:23:23Z"},
+              {"check_suite_id": 2, "path": ".github/workflows/ci.yml", "event": "pull_request", "created_at": "2026-10-03T00:08:00Z"}]
+        events = ci_ok.suite_events(wr)
+        self.assertEqual(events, {1: "superseded", 2: "pull_request"})
+        broken = {"id": 1, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        later = {"id": 2, "status": "completed", "conclusion": "success", "latest_check_runs_count": 6}
+        self.assertEqual(ci_ok.evaluate([run("server")], set(), suites=[broken, later], suite_events=events)[0], "pass")
+        # The latest attempt failed to start: still a failure.
+        events = ci_ok.suite_events([dict(wr[0], check_suite_id=2), dict(wr[1], check_suite_id=1)])
+        self.assertEqual(events, {2: "superseded", 1: "pull_request"})
+        self.assertEqual(ci_ok.evaluate([run("server")], set(), suites=[dict(broken, id=1), dict(later, id=2)],
+                                        suite_events=events)[0], "fail")
 
     def test_queued_empty_suite_neither_blocks_nor_fails(self) -> None:
         queued = {"id": 4, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
