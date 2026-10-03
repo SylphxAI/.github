@@ -89,7 +89,11 @@ jobs:
     name: verified
     if: always()
     needs: [plan, integration, e2e]
-    runs-on: sylphx-linux-standard
+    # The reserved gate pool (Kueue queue scale-set-gate, never lends): an
+    # `if: always()` verdict still runs after its run is cancelled, and that run
+    # keeps its concurrency group until it does, so on a busy build pool a
+    # superseded run held the next one (SylphxAI/agents#4222, 2026-10-02).
+    runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main

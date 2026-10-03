@@ -16,7 +16,7 @@ no half state.
 | Pull request marked ready | gate lanes + the full suite the change affects | `ci-ok` |
 | Merge group | gate lanes only (target p90 under 5 min) | `ci-ok` |
 | Push to the trunk | the full suite over every commit since the last verified one | none; `verified` marks the commit |
-| `verify.yml` fails on the trunk | red-main handler: rerun, quarantine a flake, or trace and revert | - |
+| `verify.yml` fails on the trunk | red-main handler: trace and revert (never a rerun; a flake is quarantined through the quarantine list) | - |
 
 Gate lanes: format, lint, typecheck, workflow parse, generated-code and
 contract drift, the unit tests the change affects, and - only when the change
@@ -54,11 +54,12 @@ proofs - is a suite lane.
    [`workflow-templates/red-main.yml`](../workflow-templates/red-main.yml),
    unchanged. In the organization that holds the builder App
    (`SYLPHX_BUILDER_APP_ID` variable, `SYLPHX_BUILDER_PRIVATE_KEY` secret) it
-   reruns, quarantines and reverts as `on_red` says. Anywhere else it runs in
-   token mode: rerun, flake issue and a comment on the affected pull requests,
+   reverts as `on_red` says (absent: `revert`; `notify` is an explicit
+   opt-out). It never reruns. Anywhere else it runs in
+   token mode: a comment on the affected pull requests,
    never a pull request of its own - a person reverts. The App key never
    leaves its organization. Token split: every Actions call (runs, jobs,
-   artifacts, rerun, dispatch of the verify workflow) uses the caller's
+   artifacts, dispatch of the verify workflow) uses the caller's
    `github.token`, so the caller grants `actions: write`; the builder App
    installation needs no `actions` permission, only contents, issues and
    pull-requests write, and is used for what must start CI (verify and revert
@@ -113,25 +114,24 @@ queue, and deploys stay as they are.
   check-run IDs are separate identities: the job's strictly validated
   `check_run_url` supplies the check ID, fetched through a locally constructed
   API path; the authenticated check's details URL must name the actual job ID.
-  The newest approved run wins before its latest attempt is read, so a rerun
-  of an older run cannot mask a newer run's failure. Whole-workflow success is
+  The newest approved run wins before its latest attempt is read, so an
+  older run's attempt cannot mask a newer run's failure. Whole-workflow success is
   not proof; optional publication failure does not erase verified.
   Recording, diagnostic and merge-group runs can never supply a baseline or
   mask a genuine post-main failure. The shared red-main handler embeds the
   exact same helper (a source-equality regression prevents drift) for event
-  selection, the same-SHA green guard, rerun verdict and revert baseline.
+  selection, the same-SHA green guard and revert baseline.
   Unknown/incomplete reads fail closed: Verify runs all lanes, there is no
   trusted baseline or deploy proof, and no destructive revert is authorized.
   They do not silence red-main recovery: eligible runs with unavailable proof
-  stay active for investigation, a bounded rerun or escalation. Partial/null
+  stay active for investigation or escalation. Partial/null
   producer metadata is unknown, never a positively established ineligible
   producer; partial newer history cannot expose an older proof. Only an
   authenticated success satisfies the same-SHA green guard. A failure from an
-  older run's rerun cannot authorize a revert: destructive handling re-reads
-  the newest approved same-SHA producer, stops on success and escalates on
-  unavailable proof. Previous-run history/proof unavailability also escalates;
-  it is not a genuinely absent prior run or an unconfirmed failure. A successful
-  rerun after unknown initial proof is recovery, not a proven flaky test.
+  older run cannot authorize a revert: the same-SHA green guard reads the
+  newest approved same-SHA producer and stops on success. Unknown proof
+  escalates without a revert. Previous-run history/proof unavailability also
+  escalates; it is not a genuinely absent prior run or an unconfirmed failure.
   `mode: run` exposes a `verdict` without builder secrets and returns `unknown`
   on provider exceptions instead of failing the preflight job. An authenticated
   non-proof producer returns `ineligible`; callers must retain handling for
@@ -169,7 +169,7 @@ queue, and deploys stay as they are.
 ## Lifecycle-only alerts (no repair)
 
 Set `mode: lifecycle` to reconcile one owned alert per repository, workflow
-file and aggregate check name without rerunning, dispatching, quarantining or
+file and aggregate check name without dispatching, quarantining or
 reverting anything. This explicit opt-in does not require the optimistic-merge
 manifest declaration. Existing callers default to `mode: repair` unchanged.
 
@@ -267,6 +267,14 @@ Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}`
 (`-xlarge-merge` for xlarge jobs), so a merge group never waits behind the
 pull-request backlog. The gate starter already uses it.
+
+The verdict jobs (`ci-ok`, `verified`) run on `sylphx-linux-control`, the
+reserved gate pool, on every event; it has no `-merge` twin. A verdict keeps
+`if: always()`, so a cancelled run still reports a failure instead of a
+skipped check, which GitHub counts as passing. It therefore runs after every
+cancel, and the cancelled run holds its concurrency group until it has: on a
+busy build pool that left a pull request's next run pending with no jobs
+(SylphxAI/agents#4222, 2026-10-02).
 
 Private repositories run every job on our runners: `sylphx-linux-standard`
 for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`

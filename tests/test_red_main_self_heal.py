@@ -29,7 +29,6 @@ def embedded(name: str) -> str:
 
 INFRA = embedded("INFRA_PY")
 CONFIRM = embedded("CONFIRM_PY")
-VERDICT = embedded("VERDICT_PY")
 MIGRATION = embedded("MIGRATION_PY")
 HOLD = embedded("HOLD_PY")
 PREV = embedded("PREV_PY")
@@ -141,12 +140,6 @@ classify_run 1
         self.assertEqual(classify(), "none")
 
 
-def verdict(infra, state, conclusion="", initial="failure") -> str:
-    return subprocess.run(
-        [sys.executable, "-c", VERDICT, infra, state, conclusion, initial], capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
 def previous(runs, created="2026-09-30T10:00:00Z") -> str:
     return subprocess.run(
         [sys.executable, "-c", PREV, created],
@@ -156,34 +149,6 @@ def previous(runs, created="2026-09-30T10:00:00Z") -> str:
 
 def run(id, conclusion, created, status="completed"):
     return {"id": id, "conclusion": conclusion, "created_at": created, "status": status, "html_url": f"u{id}"}
-
-
-class VerdictTest(unittest.TestCase):
-    def test_infra_rerun_passes_means_no_flake_and_no_revert(self):
-        self.assertEqual(verdict("yes", "completed", "success"), "infra")
-
-    def test_infra_rerun_fails_means_stop(self):
-        self.assertEqual(verdict("yes", "completed", "failure"), "unknown")
-
-    def test_infra_rerun_refused_or_timeout_means_stop(self):
-        self.assertEqual(verdict("yes", "refused"), "unknown")
-        self.assertEqual(verdict("yes", "timeout"), "unknown")
-
-    def test_code_failure_paths_unchanged(self):
-        self.assertEqual(verdict("no", "completed", "success"), "flake")
-        self.assertEqual(verdict("no", "completed", "failure"), "real")
-        self.assertEqual(verdict("no", "refused"), "unknown")
-        self.assertEqual(verdict("no", "timeout"), "unknown")
-
-    def test_recovery_from_unknown_initial_proof_is_not_a_flake(self):
-        self.assertEqual(verdict("no", "completed", "success", "unknown"), "recovered")
-        self.assertEqual(verdict("yes", "completed", "success", "unknown"), "recovered")
-        self.assertEqual(verdict("no", "completed", "failure", "unknown"), "real")
-        self.assertEqual(verdict("no", "completed", "unknown", "unknown"), "unknown")
-
-    def test_unknown_cancelled_or_recording_rerun_never_proves_a_real_failure(self):
-        for conclusion in ("unknown", "cancelled", "skipped", "neutral", ""):
-            self.assertEqual(verdict("no", "completed", conclusion), "unknown")
 
 
 class PreviousRunTest(unittest.TestCase):
@@ -262,7 +227,8 @@ def gate(on_red: str | None) -> str:
 
 class GateModeTest(unittest.TestCase):
     def test_modes(self):
-        self.assertTrue(gate(None).startswith("act\tnotify"))
+        self.assertTrue(gate(None).startswith("act\trevert\t"))  # revert by default
+        self.assertTrue(gate("notify").startswith("act\tnotify"))  # an explicit opt-out
         self.assertTrue(gate("revert").startswith("act\trevert\t"))
         self.assertTrue(gate("revert_pr_unarmed").startswith("act\trevert_pr_unarmed\t"))
 
@@ -304,19 +270,12 @@ class UnarmedStaticTest(unittest.TestCase):
         text = WORKFLOW.read_text()
         merges = [m.start() for m in re.finditer(r"gh pr merge", text)]
         enqueues = [m.start() for m in re.finditer(r"\{enqueuePullRequest\(", text)]
-        self.assertEqual(len(merges), 2)
+        self.assertEqual(len(merges), 1)
         self.assertEqual(len(enqueues), 1)
-        quarantine = step_text("Mark the flaky units in their own source")
         revert = step_text("Revert the culprit or report it")
-        q_start = text.index(quarantine)
         r_start = text.index(revert)
-        q_merge = [m for m in merges if q_start <= m < q_start + len(quarantine)]
         r_merge = [m for m in merges if r_start <= m < r_start + len(revert)]
-        self.assertEqual((len(q_merge), len(r_merge)), (1, 1))
-        # quarantine: after its guard, and the guard exits
-        guard = text.index('if [ "$MODE" != revert ] || [ "${REPO%%/*}" != SylphxAI ]; then', q_start)
-        self.assertLess(guard, q_merge[0])
-        self.assertIn("exit 0", text[guard:q_merge[0]])
+        self.assertEqual(len(r_merge), 1)
         # revert: after the unarmed branch, which exits
         unarmed = text.index('if [ "$MODE" = revert_pr_unarmed ]; then\n            state_set revert-pr', r_start)
         self.assertLess(unarmed, r_merge[0])
@@ -403,9 +362,11 @@ class InfraRule2Test(unittest.TestCase):
         self.assertEqual(classify(job("a", ["Checkout", "cargo nextest"])), "none")
 
     def test_infra_only_run_is_never_a_revert_verdict(self):
-        # The rerun that fails again after an infra failure stops; it never
-        # reaches `real`, so nothing is reverted.
-        self.assertEqual(verdict("yes", "completed", "failure"), "unknown")
+        # An infra failure is reported as `infra`, never `real`: nothing is
+        # reverted, and nothing is rerun.
+        body = step_text("Decide the verdict of the failed run")
+        self.assertLess(body.index("verdict=infra"), body.index("verdict=real"))
+        self.assertNotIn("rerun --failed", WORKFLOW.read_text())
 
 
 def hold(window: str, now: str) -> str:
@@ -507,8 +468,6 @@ class RulesStaticTest(unittest.TestCase):
         guard = trace.index('if [ "$MODE" = notify ]')
         self.assertLess(guard, trace.index('"repos/$REPO/git/refs"'))
         self.assertIn("exit 0", trace[guard:trace.index('"repos/$REPO/git/refs"')])
-        cond = step_text("Mark the flaky units in their own source")
-        self.assertIn("!= 'notify'", cond)
 
     def test_revert_notifies_owner_and_ops_and_files_followup(self):
         body = step_text("Revert the culprit or report it")

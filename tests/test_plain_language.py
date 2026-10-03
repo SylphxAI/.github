@@ -115,5 +115,104 @@ class PlainLanguageTest(unittest.TestCase):
         self.assertIn("api.sylphx.com", result.stdout)
 
 
+def run_tree(files: dict[str, str], baseline: str | None, mode: str = "fail", env: dict[str, str] | None = None, *specs: str) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(["git", "init", "-q"], cwd=tmp, check=True, capture_output=True)
+        for name, text in files.items():
+            pathlib.Path(tmp, name).parent.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(tmp, name).write_text(text)
+        extra = {}
+        if baseline is not None:
+            pathlib.Path(tmp, "base.txt").write_text(baseline)
+            extra["PLAIN_LANGUAGE_BASELINE"] = "base.txt"
+        subprocess.run(["git", "add", "."], cwd=tmp, check=True, capture_output=True)
+        return subprocess.run(
+            [str(ACTION / "check.sh"), "HEAD", str(ACTION / "product-names.tsv"), *specs],
+            cwd=tmp, capture_output=True, text=True,
+            env={**os.environ, "PLAIN_LANGUAGE_MODE": mode, "PLAIN_LANGUAGE_TODAY": "2026-10-01", **extra, **(env or {})},
+        )
+
+
+class ProductNameGuardV2Test(unittest.TestCase):
+    def test_underscore_and_dash_are_boundaries(self) -> None:
+        for line in ("KALKAS_NAMESPACE=x", "HKMJ_KEEL_OFFICIAL_LABEL", "kalkas_ksvc", "pg-dearhouse-db-1", "com.cubeage.fmj16.app", "big2tw-api"[:4] + "_x", "lavapot-1292"):
+            result = run_check("", line + "\n", "product-names.tsv")
+            self.assertEqual(result.returncode, 1, line)
+
+    def test_names_inside_longer_words_pass(self) -> None:
+        for line in ("a spironic tale\n", "tycoon and mahjong are words\n", "a mahjongg tile\n", "the keeled hull\n"):
+            result = run_check("", line, "product-names.tsv")
+            self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_new_portfolio_names_and_product_tokens_are_flagged(self) -> None:
+        for line in ("tachyn", "gpdt", "opencity", "worldreign", "tenkind", "bloomkin", "number-grove", "twmj", "fun-mahjong", "Mahjong Tycoon TW", "tycoon-engine", "Big2 Tycoon", "Harbour Sort"):
+            result = run_check("", f"x {line} y\n", "product-names.tsv")
+            self.assertEqual(result.returncode, 1, line)
+
+    def test_allow_marker_with_reason_and_future_date_passes(self) -> None:
+        env = {"PLAIN_LANGUAGE_TODAY": "2026-10-01"}
+        os.environ.update(env)
+        try:
+            ok = run_check("", "spiron plain-language: allow(word list; until=2026-12-31)\n", "product-names.tsv")
+            self.assertEqual(ok.returncode, 0, ok.stdout)
+            expired = run_check("", "spiron plain-language: allow(old; until=2026-09-30)\n", "product-names.tsv")
+            self.assertEqual(expired.returncode, 1)
+            self.assertIn("expired", expired.stdout)
+            no_reason = run_check("", "spiron plain-language: allow(; until=2026-12-31)\n", "product-names.tsv")
+            self.assertEqual(no_reason.returncode, 1)
+            no_date = run_check("", "spiron plain-language: allow(because)\n", "product-names.tsv")
+            self.assertEqual(no_date.returncode, 1)
+        finally:
+            os.environ.pop("PLAIN_LANGUAGE_TODAY")
+
+    def test_bare_allow_has_a_grace_period_then_fails(self) -> None:
+        os.environ["PLAIN_LANGUAGE_TODAY"] = "2026-10-15"
+        try:
+            grace = run_check("", "spiron plain-language: allow\n", "product-names.tsv")
+            self.assertEqual(grace.returncode, 0, grace.stdout)
+            self.assertIn("::warning", grace.stdout)
+            os.environ["PLAIN_LANGUAGE_TODAY"] = "2026-10-16"
+            late = run_check("", "spiron plain-language: allow\n", "product-names.tsv")
+            self.assertEqual(late.returncode, 1)
+            self.assertIn("no longer accepted", late.stdout)
+        finally:
+            os.environ.pop("PLAIN_LANGUAGE_TODAY")
+
+    def test_ratchet_passes_at_baseline_and_fails_on_a_new_hit(self) -> None:
+        base = "a.md\tspiron\t2\n"
+        self.assertEqual(run_tree({"a.md": "spiron\nx spiron\n"}, base).returncode, 0)
+        grown = run_tree({"a.md": "spiron\nspiron\nspiron\n"}, base)
+        self.assertEqual(grown.returncode, 1)
+        self.assertIn("baseline allows 2", grown.stdout)
+        new_file = run_tree({"a.md": "spiron\nspiron\n", "b.md": "kalkas\n"}, base)
+        self.assertEqual(new_file.returncode, 1)
+        self.assertIn("file=b.md", new_file.stdout)
+
+    def test_ratchet_reads_every_line_of_a_multi_entry_baseline(self) -> None:
+        base = "# header\na.md\tspiron\t1\nb.md\tkalkas\t1\n"
+        result = run_tree({"a.md": "spiron\n", "b.md": "kalkas\n"}, base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_ratchet_requires_removed_hits_to_leave_the_baseline(self) -> None:
+        stale = run_tree({"a.md": "spiron\n"}, "a.md\tspiron\t2\n")
+        self.assertEqual(stale.returncode, 1)
+        self.assertIn("shrink the baseline", stale.stdout)
+        gone = run_tree({"a.md": "clean\n"}, "a.md\tspiron\t1\n")
+        self.assertEqual(gone.returncode, 1)
+
+    def test_ratchet_skips_excluded_paths_and_allowed_lines(self) -> None:
+        result = run_tree({"a.md": "spiron plain-language: allow(word list; until=2026-12-31)\n", "t/x.md": "spiron\n"}, "", "fail", None, ":(exclude)t/**")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_write_baseline_init_and_shrink(self) -> None:
+        init = run_tree({"a.md": "spiron\nspiron\n"}, "", env={"PLAIN_LANGUAGE_WRITE_BASELINE": "init"})
+        self.assertEqual(init.returncode, 0)
+        self.assertIn("a.md\tspiron\t2", init.stdout)
+        shrink = run_tree({"a.md": "spiron\n"}, "a.md\tspiron\t2\n", env={"PLAIN_LANGUAGE_WRITE_BASELINE": "shrink"})
+        self.assertIn("a.md\tspiron\t1", shrink.stdout)
+        grows = run_tree({"a.md": "spiron\nspiron\nspiron\n"}, "a.md\tspiron\t2\n", env={"PLAIN_LANGUAGE_WRITE_BASELINE": "shrink"})
+        self.assertEqual(grows.returncode, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -311,9 +311,12 @@ jobs:
             printf 'BUILD_EVIDENCE_OCI_DIR=%s\n' "${LANE_ROOT}/evidence-oci"
             printf 'BUILD_EVIDENCE_TAG=%s-%s-%s-%s\n' "${LANE_EVIDENCE_TAG_PREFIX}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
           } >> "$GITHUB_ENV"
+          # One run may call this lane several times (one per image): the
+          # image's own name keeps each call's artifacts apart.
+          LANE_KEY="$(printf '%s' "${LANE_IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')"
           {
-            printf 'image_artifact=image-lane-image-%s-%s-%s\n' "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
-            printf 'evidence_artifact=image-lane-evidence-%s-%s-%s\n' "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
+            printf 'image_artifact=image-lane-image-%s-%s-%s-%s\n' "${LANE_KEY}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
+            printf 'evidence_artifact=image-lane-evidence-%s-%s-%s-%s\n' "${LANE_KEY}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
           } >> "$GITHUB_OUTPUT"
           echo "lane_context image=${LANE_IMAGE} tag=${LANE_TAG} platforms=${LANE_PLATFORMS}"
 
@@ -604,12 +607,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          LANE_IMAGE: ${{ inputs.image }}
         run: |
           set -euo pipefail
+          LANE_KEY="$(printf '%s' "${LANE_IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')"
           python3 .image-lane/scripts/resolve-lane-artifact.py \
             --repo "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" \
             --attempt "${GITHUB_RUN_ATTEMPT}" \
-            --prefix "image-lane-image-${{ github.sha }}-${{ github.run_id }}" \
+            --prefix "image-lane-image-${LANE_KEY}-${{ github.sha }}-${{ github.run_id }}" \
             --download-to "${OCI_DIR}"
 
       # The transfer above checks its own bytes, and this walks the extracted
@@ -628,12 +633,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          LANE_IMAGE: ${{ inputs.image }}
         run: |
           set -euo pipefail
+          LANE_KEY="$(printf '%s' "${LANE_IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')"
           artifact="$(python3 .image-lane/scripts/resolve-lane-artifact.py \
             --repo "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" \
             --attempt "${GITHUB_RUN_ATTEMPT}" \
-            --prefix "image-lane-evidence-${{ github.sha }}-${{ github.run_id }}")"
+            --prefix "image-lane-evidence-${LANE_KEY}-${{ github.sha }}-${{ github.run_id }}")"
           printf 'name=%s\n' "${artifact}" >> "${GITHUB_OUTPUT}"
 
       - name: Download this run's evidence transfer
@@ -794,7 +801,7 @@ jobs:
             printf 'digest=%s\n' "${DIGEST}"
             printf 'evidence_tag=%s\n' "${BUILD_EVIDENCE_TAG}"
             printf 'evidence_digest=%s\n' "${EVIDENCE_DIGEST}"
-            printf 'readback_artifact=image-lane-readback-%s-%s-%s\n' "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
+            printf 'readback_artifact=image-lane-readback-%s-%s-%s-%s\n' "$(printf '%s' "${IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')" "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
           } >> "$GITHUB_OUTPUT"
           {
             printf 'REGISTRY_DIGEST=%s\n' "${DIGEST}"
@@ -849,7 +856,7 @@ jobs:
           echo "lane_verify=custom"
           bash -lc "${VERIFY_COMMAND}"
           test -n "$(ls -A "${LANE_ROOT}/verify")"
-          printf 'verify_artifact=image-lane-verification-%s-%s-%s\n' "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          printf 'verify_artifact=image-lane-verification-%s-%s-%s-%s\n' "$(printf '%s' "${IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')" "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
           echo "verify_dir_ok files=$(find "${LANE_ROOT}/verify" -type f | wc -l)"
 
       - name: Upload verification receipt

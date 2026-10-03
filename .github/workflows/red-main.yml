@@ -5,11 +5,10 @@ name: Red main
 #
 # What it does, in order:
 #
-#   1. reruns the failed lanes on the same commit, to separate a flake from a
-#      real failure;
-#   2. a flake: one issue per failing test (`flake: <test>`), and one pull
-#      request that marks each flaky unit in its own source, beside the test;
-#   3. a real failure: it traces the culprit among the commits the verify run
+#   1. classifies the failure from the run's job and step data: a lost runner,
+#      a cancel by the system or another infrastructure failure is reported
+#      and never reverted;
+#   2. a real failure: it traces the culprit among the commits the verify run
 #      had not covered yet - every candidate is verified at once, on its own
 #      temporary branch, under one shared deadline - then opens one revert pull
 #      request for it, and in
@@ -21,9 +20,10 @@ name: Red main
 # ignored); a real failure reverts only after the SAME failing unit (job and
 # test) failed on two consecutive completed runs, at the first-bad commit; and
 # a run whose every failed job shows an infrastructure signature (installation
-# token mint, artifact upload, cache 403, lost runner) gets one automatic
-# rerun before it counts as red. When the handler itself fails, it opens (or
-# comments on) one issue labelled `red-main-broken` and `owner:ops`.
+# token mint, artifact upload, cache 403, lost runner) is reported and never
+# reverted. Nothing is ever rerun: a flaky test is quarantined through the
+# repository's quarantine list, not retried. When the handler itself fails, it
+# opens (or comments on) one issue labelled `red-main-broken` and `owner:ops`.
 #
 # Revert rules (every repository, by default):
 #   1. a culprit that adds or changes a migration (`[ci] migration_paths`,
@@ -31,8 +31,8 @@ name: Red main
 #      files cannot be listed completely, is never reverted: an issue labelled
 #      `red-main-migration-hold` and the owner label, and a comment on the ops
 #      issue and the pull request, hand it to a person for a forward-fix;
-#   2. only real failures revert: flakes are quarantined, infrastructure
-#      failures are rerun once and never reverted;
+#   2. only real failures revert: infrastructure failures are reported and
+#      never reverted;
 #   4. every auto-revert comments on the ops issue and the original pull
 #      request and files a follow-up issue (sha, pull request, failing job,
 #      run link) that re-lands the change.
@@ -71,9 +71,8 @@ name: Red main
 #
 #   * `[ci] merge = "optimistic"` means act, and `[ci] on_red` picks
 #     `revert`, `revert_pr_unarmed` or `notify`. `on_red` absent means
-#     `notify`. `revert_pr_unarmed` opens the revert pull request and an alert
-#     issue but never arms auto-merge (a quarantine pull request is armed only
-#     under `revert`, and only in the SylphxAI organisation), never enqueues and never jumps: a
+#     `revert`; `notify` is an explicit opt-out. `revert_pr_unarmed` opens the revert pull request and an alert
+#     issue but never arms auto-merge, never enqueues and never jumps: a
 #     person decides whether and when it merges (for a repository whose
 #     deploys have their own gates).
 #   * `merge` absent, or anything else, means do nothing, silently.
@@ -103,9 +102,8 @@ name: Red main
 # When the key is empty the handler skips the App mint and works on the
 # caller's own `github.token`, in notify mode whatever `[ci] on_red` says:
 # a pull request opened with GITHUB_TOKEN triggers no CI and could never pass
-# the merge queue, so neither the quarantine pull request nor the revert pull
-# request is opened. The rerun, the classification, the culprit trace, the
-# comment on the affected pull request(s), and the per-test flake issue run on
+# the merge queue, so the revert pull request is not opened. The classification,
+# the culprit trace and the comment on the affected pull request(s) run on
 # the token; every write its grant refuses is named. The summary lists what a
 # person must do.
 
@@ -139,7 +137,7 @@ on:
       verify-workflow:
         description: >-
           File name of the caller's verify workflow, e.g. verify.yml. Its runs
-          are the ones this handler reruns, and the ones it dispatches on a
+          are the ones this handler reads, and the ones it dispatches on a
           candidate commit.
         type: string
         required: true
@@ -219,8 +217,8 @@ on:
           it by name as well as through `secrets: inherit`.
         required: false
 
-# One handler per repository at a time: two of them must not race a rerun, a
-# revert, or a quarantine branch. Queue up to 100 pending calls instead of
+# One handler per repository at a time: two of them must not race a
+# revert or a trace branch. Queue up to 100 pending calls instead of
 # replacing the single pending slot; GitHub cancels additional calls at capacity.
 # Arrival order is not run order, so lifecycle recovery also reconciles live runs.
 concurrency:
@@ -231,7 +229,7 @@ concurrency:
 # No `permissions:` block here on purpose: the caller decides what the job's
 # GITHUB_TOKEN carries, and a called workflow can only narrow that grant (an
 # explicit request above it fails the call), so this handler requests nothing.
-# Every caller grants `actions: write` (rerun, dispatch of the verify workflow,
+# Every caller grants `actions: write` (dispatch of the verify workflow,
 # runs, jobs and artifacts, all through `github.token`) and `issues: write`
 # (the notice when a mint or probe fails), plus `contents: read` and
 # `checks: read`. The github.token is never handed to anything that runs
@@ -579,7 +577,7 @@ jobs:
     # Empty string = no environment (an empty `environment:` name is ignored by
     # Actions), so callers that omit the input behave as before.
     environment: ${{ inputs.environment }}
-    # Mint, rerun watch (20 min), every candidate dispatched at once under one
+    # Mint, every candidate dispatched at once under one
     # shared deadline (20 min), revert, summary, and slack.
     timeout-minutes: 90
     env:
@@ -588,12 +586,10 @@ jobs:
       VERIFY_CHECK_NAME: ${{ inputs.verify-check-name || 'verified' }}
       MAX_CANDIDATES: ${{ inputs.max-candidates }}
       LANE_INPUT: ${{ inputs.lane-input }}
-      RERUN_TIMEOUT_MINUTES: '20'
       CANDIDATE_TIMEOUT_MINUTES: '20'
       # A window wider than this is never reverted by a machine; the handler
       # says so and stops.
       MAX_REVERT_COMMITS: '250'
-      MAX_FLAKE_ISSUES: '20'
       # Shell helpers, written to disk by the first step. They are held here
       # rather than in a heredoc because a heredoc terminator cannot be
       # indented inside a YAML block scalar.
@@ -868,7 +864,7 @@ jobs:
         mkdir -p "$STATE_DIR"
         # No-action is terminal for subsequent steps, not just the resolver.
         # In particular, a non-proof optional/diagnostic failure cannot reach
-        # rerun, quarantine or revert after the resolver exits successfully.
+        # revert after the resolver exits successfully.
         if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi
 
         # say <line>: append a line to the summary the final step posts.
@@ -956,7 +952,7 @@ jobs:
         }
 
         # gha <gh args...>: gh on the caller-granted workflow token. Every
-        # Actions API call (runs, jobs, artifacts, rerun, dispatch) goes through
+        # Actions API call (runs, jobs, artifacts, dispatch) goes through
         # it: the builder App installation holds no `actions` permission, and
         # a workflow_dispatch made with GITHUB_TOKEN still starts a run.
         gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }
@@ -989,7 +985,7 @@ jobs:
           if verdict=$(python3 "$WORK_DIR/proof.py" "$@" 2>"$WORK_DIR/proof.err"); then
             printf '%s\n' "$verdict"
           else
-            say "**Unverified:** the post-main proof could not be read ($(head -c 200 "$WORK_DIR/proof.err" | tr '\n' ' ')); investigation, rerun or escalation remains active."
+            say "**Unverified:** the post-main proof could not be read ($(head -c 200 "$WORK_DIR/proof.err" | tr '\n' ' ')); investigation or escalation remains active."
             printf '%s\n' unknown
           fi
         }
@@ -1066,7 +1062,7 @@ jobs:
             # Absent or anything else: the repository has not opted in.
             out("off", "", f"sylphx.toml [ci] merge is {ci.get('merge')!r}, not optimistic")
         else:
-            on_red = ci.get("on_red") or "notify"
+            on_red = ci.get("on_red") or "revert"
             if not isinstance(on_red, str) or on_red not in ("notify", "revert", "revert_pr_unarmed"):
                 out("error", "", f"sylphx.toml [ci] on_red must be notify, revert or revert_pr_unarmed, not {on_red!r}")
             else:
@@ -1289,28 +1285,6 @@ jobs:
             print("infra " + ",".join(sorted(set(signatures))))
         else:
             print("none")
-      # The verdict of the one automatic rerun. Args: infra (yes|no), how the
-      # rerun went (refused | completed | timeout), its conclusion. Prints one
-      # of flake, real, infra, unknown. A pass after an infra failure is
-      # `infra` (no issue, no revert); a fail after an infra failure, a rerun
-      # that could not start or one that never finished is `unknown` (stop);
-      # only a non-infra failure that fails again is `real`.
-      VERDICT_PY: |
-        import sys
-
-        infra, state, conclusion = (sys.argv[1:4] + ["", "", ""])[:3]
-        initial = sys.argv[4] if len(sys.argv) > 4 else "failure"
-        failed = ("failure", "timed_out", "action_required", "startup_failure")
-        infra = infra == "yes"
-        if state == "completed" and conclusion == "success":
-            # Recovery from unknown proof is not evidence of a flaky test.
-            print(("infra" if infra else "flake") if initial in failed else "recovered")
-        elif state == "completed" and conclusion in ("failure", "timed_out", "action_required", "startup_failure"):
-            print("unknown" if infra else "real")
-        elif state == "refused":
-            print("unknown")
-        else:
-            print("unknown")
       # The previous COMPLETED verify run on main. Reads the workflow runs
       # JSON on stdin; arg: this run's created_at. Only success, failure and
       # timed_out runs count: cancelled, skipped, startup_failure and
@@ -1398,179 +1372,6 @@ jobs:
             print(f"yes the same job failed on both runs: {sorted(lane_hit)[0]}")
         else:
             print("no the previous completed run failed a different unit")
-      # Mark each flaky unit in its own source, beside the test. The grammar is
-      # fixed by the guard that runs beside the tests (cloud's
-      # scripts/check-quarantine.ts):
-      #
-      #     quarantined YYYY-MM-DD: <reason> (<repo>#<issue>, owner ci)
-      #
-      # A Rust test takes a whole inserted line above its attribute block:
-      #     #[ignore = "quarantined ..."]
-      # A Bun test takes the comment on the line directly above the test, and
-      # that test's `test(`/`it(` becomes `test.skip(`/`it.skip(`. A Bun test
-      # inside a `describe` is found by its title, which is the literal the
-      # source holds, not by the describe-qualified name junit reports.
-      #
-      # A unit whose location is not found exactly once is never guessed at:
-      # it is reported and left alone, and its issue stays open. That includes
-      # a Rust test that carries an `#[ignore]` of its own - a second one is
-      # inert and warn-deny where clippy runs, so it is never inserted.
-      MARK_PY: |
-        import datetime
-        import os
-        import re
-        import sys
-
-        rows_path, repo, repo_name, applied_path, skipped_path = sys.argv[1:6]
-        today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
-        skip_dirs = {".git", "node_modules", "target", "dist", "build", ".next", "vendor", "coverage"}
-
-        def walk(exts):
-            for dirpath, dirnames, filenames in os.walk(repo):
-                dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
-                for filename in sorted(filenames):
-                    if filename.endswith(exts):
-                        yield os.path.join(dirpath, filename)
-
-        def read(path):
-            with open(path, encoding="utf-8") as fh:
-                return fh.read().split("\n")
-
-        def write(path, lines):
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write("\n".join(lines))
-
-        def rel(path):
-            return os.path.relpath(path, repo)
-
-        rust_fn = r"^([ \t]*)(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+%s\s*[(<]"
-
-        def rust_hits(bare):
-            pattern = re.compile(rust_fn % re.escape(bare))
-            hits = []
-            for path in walk(".rs"):
-                try:
-                    lines = read(path)
-                except Exception:
-                    continue
-                for index, line in enumerate(lines):
-                    if pattern.match(line):
-                        hits.append((path, index))
-            return hits
-
-        def bun_hits(name):
-            hits = []
-            for path in walk((".ts", ".tsx")):
-                try:
-                    lines = read(path)
-                except Exception:
-                    continue
-                for index, line in enumerate(lines):
-                    match = re.match(r"^([ \t]*)(test|it)(\.skip)?\(", line)
-                    if not match:
-                        continue
-                    rest = line[match.end():]
-                    if any(rest.startswith(q + name + q) for q in ('"', "'", "`")):
-                        hits.append((path, index))
-            return hits
-
-        def mark_rust(path, index, marker):
-            lines = read(path)
-            top = index
-            while top - 1 >= 0 and lines[top - 1].lstrip().startswith("#["):
-                top -= 1
-            block = lines[top:index + 1]
-            if any("quarantined" in line for line in block):
-                return "already"
-            if any(re.match(r"^[ \t]*#\[ignore", line) for line in block):
-                # A second `#[ignore]` on one function is inert (rustc keeps the
-                # first and warns that the second is unused) and that warning is
-                # an error where clippy runs with `-D warnings`, so a quarantine
-                # is never inserted beside an ignore the test already carries.
-                return "already ignored"
-            indent = re.match(r"^([ \t]*)", lines[top]).group(1)
-            lines.insert(top, indent + marker)
-            write(path, lines)
-            return f"{rel(path)}:{top + 1}"
-
-        def mark_bun(path, index, comment):
-            lines = read(path)
-            if index - 1 >= 0 and "quarantined" in lines[index - 1]:
-                return "already"
-            match = re.match(r"^([ \t]*)(test|it)(\.skip)?\(", lines[index])
-            indent = match.group(1)
-            if not match.group(3):
-                # A call that is not yet skipped takes the one `.skip` token;
-                # one that already is keeps its line and takes the comment.
-                lines[index] = indent + match.group(2) + ".skip(" + lines[index][match.end():]
-            lines.insert(index, indent + comment)
-            write(path, lines)
-            return f"{rel(path)}:{index + 1}"
-
-        marked, skipped = [], []
-        for row in open(rows_path, encoding="utf-8"):
-            parts = row.rstrip("\n").split("\t")
-            if len(parts) < 4:
-                continue
-            kind, name, lane, issue = parts[0], parts[1], parts[2], parts[3]
-            if kind != "test":
-                skipped.append((f"{name} ({lane})", "a lane with no failing test has no source to mark"))
-                continue
-            bare = name.rsplit("::", 1)[-1]
-            # A Rust test is named by its function; a Bun test is named by its
-            # title, and inside a `describe` the class is the describe name, so
-            # the title alone is what the source holds.
-            rust = rust_hits(bare)
-            bun = bun_hits(name) or bun_hits(bare)
-            if rust and bun:
-                skipped.append((name, "matches both a Rust function and a Bun test; a person must decide"))
-                continue
-            hits = rust or bun
-            if len(hits) != 1:
-                skipped.append((name, f"not found exactly once ({len(hits)} matches)"))
-                continue
-            path, index = hits[0]
-            # The grammar's owner is the lane that owns this mechanism, not
-            # the lane that failed; the failing lane stays in the report.
-            ref = f"{repo_name}#{issue}"
-            if path.endswith(".rs"):
-                marker = f'#[ignore = "quarantined {today}: flaky on main ({ref}, owner ci)"]'
-                where = mark_rust(path, index, marker)
-            else:
-                comment = f"// quarantined {today}: flaky on main ({ref}, owner ci)"
-                where = mark_bun(path, index, comment)
-            if where == "already":
-                skipped.append((name, "already quarantined"))
-                continue
-            if where == "already ignored":
-                skipped.append((name, "already ignored — not a quarantine, a person must decide"))
-                continue
-            marked.append((kind, name, lane, issue, where))
-        with open(applied_path, "w", encoding="utf-8") as fh:
-            for kind, name, lane, issue, where in marked:
-                fh.write(f"{kind}\t{name}\t{lane}\t{issue}\t{where}\n")
-        with open(skipped_path, "w", encoding="utf-8") as fh:
-            for name, reason in skipped:
-                fh.write(f"{name}\t{reason}\n")
-        print(f"{len(marked)} marked, {len(skipped)} left alone")
-      # The flake issue a unit gets when it is first seen flaky.
-      FLAKE_BODY: |
-        import sys
-
-        out, head_sha, run_url, name, kind, lane = sys.argv[1:7]
-        with open(out, "w", encoding="utf-8") as fh:
-            fh.write(
-                f"The verify workflow failed on `main` at `{head_sha}` in lane `{lane}`, and a rerun of the "
-                f"same commit passed: the failure is a flake, not a regression.\n"
-                f"\n"
-                f"- verify run: {run_url}\n"
-                f"- unit: `{name}` ({kind})\n"
-                f"\n"
-                f"The red-main handler marks this unit quarantined in its own source, in the pull request it "
-                f"opens for this run: `quarantined <date>: flaky on main (<repo>#<issue>, owner ci)`, "
-                f"which for a Rust test is an `#[ignore = \"...\"]` above it and for a Bun test is a comment "
-                f"above it with the call changed to `test.skip(`. Fix the unit and remove the marker.\n"
-            )
     steps:
       # ---------------------------------------------------------------------
       # Gate: the repository's own committed declaration decides whether the
@@ -1581,7 +1382,7 @@ jobs:
       #   in the .github repository and the caller's tree is not checked out.
       #
       #     [ci] merge = "optimistic"  -> act; [ci] on_red picks revert or
-      #                                   notify (absent: notify)
+      #                                   notify (absent: revert)
       #     merge absent or other     -> silent no-op
       #     no sylphx.toml            -> silent no-op, and say what to adopt
       #     on_red outside the two    -> error, and no action
@@ -1648,14 +1449,11 @@ jobs:
           printf '%s\n' "$JUNIT_PY" >"$RUNNER_TEMP/red-main/junit.py"
           printf '%s\n' "$CULPRIT_PY" >"$RUNNER_TEMP/red-main/culprit.py"
           printf '%s\n' "$REVERT_GUARD_PY" >"$RUNNER_TEMP/red-main/revert-guard.py"
-          printf '%s\n' "$MARK_PY" >"$RUNNER_TEMP/red-main/mark.py"
           printf '%s\n' "$INFRA_PY" >"$RUNNER_TEMP/red-main/infra.py"
           printf '%s\n' "$CONFIRM_PY" >"$RUNNER_TEMP/red-main/confirm.py"
-          printf '%s\n' "$VERDICT_PY" >"$RUNNER_TEMP/red-main/verdict.py"
           printf '%s\n' "$MIGRATION_PY" >"$RUNNER_TEMP/red-main/migration.py"
           printf '%s\n' "$HOLD_PY" >"$RUNNER_TEMP/red-main/hold.py"
           printf '%s\n' "$PREV_PY" >"$RUNNER_TEMP/red-main/prev.py"
-          printf '%s\n' "$FLAKE_BODY" >"$RUNNER_TEMP/red-main/flake.py"
           chmod 700 "$RUNNER_TEMP/red-main"
 
       # ---------------------------------------------------------------------
@@ -1713,7 +1511,7 @@ jobs:
 
       # ---------------------------------------------------------------------
       # Probe the grant before anything acts. Actions is read through the
-      # workflow token (a read proves `actions: read`; a rerun or dispatch the
+      # workflow token (a read proves `actions: read`; a dispatch the
       # caller did not grant is refused and named where it happens). The
       # App-token surfaces are proven by the mint itself. A failed mint or
       # probe writes its reason to `grant-failure` for the notice step.
@@ -1748,7 +1546,7 @@ jobs:
           run_path="repos/$REPO/actions/runs?per_page=1"
           if [ -n "$EVENT_RUN_ID" ]; then run_path="repos/$REPO/actions/runs/$EVENT_RUN_ID"; fi
           if ! err=$(gha api "$run_path" 2>&1 >/dev/null); then
-            fail "the workflow token could not read $run_path on $REPO ($(head -c 200 <<<"$err" | tr '\n' ' ')): the caller must grant actions: write (rerun and dispatch of $VERIFY_WORKFLOW go through it)"
+            fail "the workflow token could not read $run_path on $REPO ($(head -c 200 <<<"$err" | tr '\n' ' ')): the caller must grant actions: write (dispatch of $VERIFY_WORKFLOW goes through it)"
           fi
           grant actions "granted (workflow token)"
           if [ "$KEY_PRESENT" != yes ]; then
@@ -1799,7 +1597,7 @@ jobs:
           if [ -z "$reason" ]; then
             reason="the App token mint for $REPO failed: the builder App installation does not grant contents, issues and pull-requests write, or has no installation on this repository"
           fi
-          body="Red main handler could not act on \`$REPO\`: $reason. No rerun, bisect or revert was performed. Run: $RUN_URL"
+          body="Red main handler could not act on \`$REPO\`: $reason. No bisect or revert was performed. Run: $RUN_URL"
           {
             echo "### Red main handler blocked"
             echo
@@ -1864,7 +1662,7 @@ jobs:
           case "$proof" in
             success|ineligible) quiet "the authenticated post-main proof for $run_id is '$proof'" ;;
             failure|timed_out|action_required|startup_failure) ;;
-            *) say "**Unverified:** run $run_id returned proof '$proof'; continuing investigation and rerun, with no authenticated failure yet." ;;
+            *) say "**Unverified:** run $run_id returned proof '$proof'; escalating, with no authenticated failure yet." ;;
           esac
           state_set proof-verdict "$proof"
           if [[ ! "$run_id" =~ ^[1-9][0-9]*$ || ! "$head_sha" =~ ^[a-f0-9]{40}$ ]]; then
@@ -1910,10 +1708,9 @@ jobs:
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           quiet() { state_set quiet "$1"; echo "no action: $1"; exit 0; }
-          for branch in "auto-revert/$SHORT_SHA" "quarantine/$SHORT_SHA"; do
-            open=$(gh api "repos/$REPO/pulls?head=$REPO:$branch&state=open" --jq 'length' 2>/dev/null || echo 0)
-            [ "$open" = "0" ] || quiet "an open pull request already stands for $branch"
-          done
+          branch="auto-revert/$SHORT_SHA"
+          open=$(gh api "repos/$REPO/pulls?head=$REPO:$branch&state=open" --jq 'length' 2>/dev/null || echo 0)
+          [ "$open" = "0" ] || quiet "an open pull request already stands for $branch"
           label_q=$(enc "repo:$REPO is:pr is:open label:auto-revert")
           hand_in=$(gh api "search/issues?q=$label_q" --jq '.total_count' 2>/dev/null || echo 0)
           # An unarmed revert stays open until a person decides, so its label
@@ -1955,10 +1752,10 @@ jobs:
           say "Failing units: $count."
 
       # ---------------------------------------------------------------------
-      # Infra signatures, before the rerun: an installation-token mint failure,
-      # an artifact upload failure, a cache 403 or a lost runner in every
-      # failed job is the platform failing, not the code. The rerun below is
-      # then the ONE automatic rerun, and a pass is not a flake of any test.
+      # Infra signatures: an installation-token mint failure, an artifact
+      # upload failure, a cache 403 or a lost runner in every failed job is
+      # the platform failing, not the code. It is reported and never reverted,
+      # and never rerun.
       # ---------------------------------------------------------------------
       - name: Classify infrastructure failures
         id: infra
@@ -1972,7 +1769,7 @@ jobs:
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           if ! verdict=$(classify_run "$RUN_ID"); then
-            say "**Stopped:** the jobs of run $RUN_ID could not be read to classify the failure; nothing is rerun or reverted."
+            say "**Stopped:** the jobs of run $RUN_ID could not be read to classify the failure; nothing is reverted."
             echo "::error::the infra classifier could not read the run's jobs or annotations"
             exit 1
           fi
@@ -1981,277 +1778,42 @@ jobs:
             infra\ *)
               echo "infra=yes" >>"$GITHUB_OUTPUT"
               echo "signature=${verdict#infra }" >>"$GITHUB_OUTPUT"
-              say "Every failed job shows an infrastructure signature (\`${verdict#infra }\`): the failure is rerun once before it counts as red." ;;
+              say "Every failed job shows an infrastructure signature (\`${verdict#infra }\`): it is reported, not reverted." ;;
             *) echo "infra=no" >>"$GITHUB_OUTPUT" ;;
           esac
 
       # ---------------------------------------------------------------------
-      # Flake check: the same commit, the same lanes, no code change.
+      # Verdict: an infrastructure failure is reported; anything else stands
+      # as a real failure.
       # ---------------------------------------------------------------------
-      - name: Rerun the failed lanes on the same commit
-        id: rerun
+      - name: Decide the verdict of the failed run
+        id: verdict
         if: steps.gate.outputs.proceed == 'true'
-        timeout-minutes: 25
+        timeout-minutes: 5
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
-          ACTIONS_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ steps.run.outputs.run-id }}
-          HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           INFRA: ${{ steps.infra.outputs.infra }}
           INFRA_SIGNATURE: ${{ steps.infra.outputs.signature }}
           INITIAL_PROOF: ${{ steps.run.outputs.proof-verdict }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
-          # verdict.py owns the decision; the messages below only say it.
-          if ! gha run rerun "$RUN_ID" --repo "$REPO" --failed 2>"$WORK_DIR/rerun.err"; then
-            say "The run could not be rerun ($(head -c 300 "$WORK_DIR/rerun.err" | tr '\n' ' ')), so the failure stands."
-            verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" refused "" "$INITIAL_PROOF")
-            echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
-            if [ "$verdict" = unknown ]; then
-              say "**Unverified:** the rerun could not start; no proof or code-failure verdict is available. Escalating, with no revert authorization."
-              echo "::error::rerun unavailable; red-main recovery requires investigation"
-              exit 1
-            fi
-            exit 0
-          fi
-          deadline=$((SECONDS + RERUN_TIMEOUT_MINUTES * 60))
-          status=""
-          conclusion=""
-          while :; do
-            if ! run_status=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '[.status, (.conclusion // "")] | @tsv'); then
-              status="unknown"; conclusion="unknown"
-              say "**Unverified:** the rerun status is unavailable; escalating without a proof verdict."
-              break
-            fi
-            IFS=$'\t' read -r status conclusion <<<"$run_status"
-            [ "$status" = "completed" ] && break
-            if [ "$SECONDS" -ge "$deadline" ]; then status="timeout"; break; fi
-            sleep 30
-          done
-          if ! attempt=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.run_attempt'); then attempt=unknown; fi
-          if [ "$status" = completed ]; then
-            conclusion=$(read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$RUN_ID" "$VERIFY_CHECK_NAME")
-          fi
-          case "$conclusion" in
-            failure|timed_out|action_required|startup_failure)
-              # An old event run's rerun cannot override a newer same-SHA
-              # producer whose proof is successful or unavailable.
-              newest=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
-              case "$newest" in
-                success)
-                  state_set proof-verdict success
-                  echo "verdict=recovered" >>"$GITHUB_OUTPUT"
-                  say "The newest approved same-SHA run has authenticated success; the older run's failure authorizes no revert."
-                  exit 0 ;;
-                failure|timed_out|action_required|startup_failure) conclusion="$newest" ;;
-                *)
-                  say "**Unverified:** the newest approved same-SHA producer has proof '$newest'; an older failure cannot authorize destructive handling."
-                  conclusion=unknown ;;
-              esac ;;
-          esac
-          state_set proof-verdict "$conclusion"
-          verdict=$(python3 "$RUNNER_TEMP/red-main/verdict.py" "$INFRA" "$status" "$conclusion" "$INITIAL_PROOF")
-          echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
-          case "$verdict" in
-            recovered) say "The rerun (attempt $attempt) now has authenticated success after unavailable initial proof; recovery completed, with no flake blamed and no revert." ;;
-            infra) say "The one automatic rerun (attempt $attempt) passed after an infrastructure failure (\`$INFRA_SIGNATURE\`): the run does not count as red and no test is blamed." ;;
-            flake) say "The rerun (attempt $attempt, same commit, no code change) passed: the failure is a flake." ;;
-            real) say "The rerun (attempt $attempt) concluded \`$conclusion\`: the failure is real." ;;
+          # Nothing is rerun: a failure on main is acted on as it stands, and
+          # a flake is quarantined through the repository's quarantine list.
+          case "$INITIAL_PROOF" in
+            failure|timed_out|action_required|startup_failure) ;;
             *)
-              if [ "$status" = completed ]; then
-                say "**Unverified:** the rerun (attempt $attempt) supplies no authenticated code-failure verdict (proof \`$conclusion\`, infra \`$INFRA_SIGNATURE\`); escalating without authorizing a revert."
-              else
-                say "The rerun (attempt $attempt) has no authenticated terminal verdict within its bounded recovery; the handler escalates without authorizing a revert."
-              fi
+              echo "verdict=unknown" >>"$GITHUB_OUTPUT"
+              say "**Unverified:** the post-main proof is '$INITIAL_PROOF', not an authenticated failure; escalating without authorizing a revert."
               echo "::error::post-main proof remains unverified; red-main recovery requires investigation"
               exit 1 ;;
           esac
-
-      # ---------------------------------------------------------------------
-      # Flake: one issue per failing unit, one quarantine pull request.
-      # ---------------------------------------------------------------------
-      - name: File one flake issue per failing unit
-        id: flare-issues
-        if: steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'flake'
-        timeout-minutes: 15
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
-          RUN_URL: ${{ steps.run.outputs.run-url }}
-          HEAD_SHA: ${{ steps.run.outputs.head-sha }}
-        run: |
-          set -euo pipefail
-          . "$RUNNER_TEMP/red-main/lib.sh"
-          require_grant issues "issues: write" "filing the flake issues" || {
-            say "**Blocked:** the App installation cannot file issues; the flake issues were not opened."
-            exit 1
-          }
-          labels=$(labels_that_exist flake owner:ci)
-          open_q=$(enc "repo:$REPO is:issue is:open label:flake")
-          open=$(gh api "search/issues?q=$open_q&per_page=100" --jq '.items[] | [.number, .title] | @tsv' 2>/dev/null || true)
-          : >"$WORK_DIR/units.tsv"
-          filed=0
-          updated=0
-          skipped=0
-          while IFS=$'\t' read -r kind name lane; do
-            [ -n "$name" ] || continue
-            title="flake: $name"
-            number=$(awk -F'\t' -v t="$title" "\$2==t {print \$1}" <<<"$open" | head -1)
-            if [ -n "$number" ]; then
-              if gh api --method POST "repos/$REPO/issues/$number/comments" \
-                   --field body="Flaky again on \`$HEAD_SHA\`: $RUN_URL" >/dev/null 2>"$WORK_DIR/comment.err"; then
-                updated=$((updated + 1))
-                printf '%s\t%s\t%s\t%s\n' "$kind" "$name" "$lane" "$number" >>"$WORK_DIR/units.tsv"
-              else
-                write_refused "$(cat "$WORK_DIR/comment.err")" "issues: write" "commenting on issue #$number" || true
-              fi
-              continue
-            fi
-            if [ "$filed" -ge "$MAX_FLAKE_ISSUES" ]; then skipped=$((skipped + 1)); continue; fi
-            python3 "$RUNNER_TEMP/red-main/flake.py" "$WORK_DIR/issue-body.md" "$HEAD_SHA" "$RUN_URL" "$name" "$kind" "$lane"
-            payload=$(jq -n --arg title "$title" --arg body "$(cat "$WORK_DIR/issue-body.md")" --argjson labels "$labels" \
-              '{title: $title, body: $body, labels: $labels}')
-            if number=$(gh api --method POST "repos/$REPO/issues" --input - <<<"$payload" --jq '.number' 2>"$WORK_DIR/issue.err"); then
-              filed=$((filed + 1))
-              printf '%s\t%s\t%s\t%s\n' "$kind" "$name" "$lane" "$number" >>"$WORK_DIR/units.tsv"
-            else
-              write_refused "$(cat "$WORK_DIR/issue.err")" "issues: write" "filing an issue for $name" || {
-                say "**Blocked:** $name has no flake issue; the quarantine pull request was not opened."
-                exit 1
-              }
-            fi
-          done <"$WORK_DIR/failing-tests.tsv"
-          say "Flake issues: $filed opened, $updated updated, $skipped left (cap $MAX_FLAKE_ISSUES)."
-
-      - name: Mark the flaky units in their own source
-        id: quarantine
-        if: >-
-          steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'flake'
-          && steps.key.outputs.present == 'yes'
-          && (steps.key.outputs.mode || steps.gate.outputs.mode) != 'notify'
-        timeout-minutes: 20
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          APP_ID: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
-          RUN_URL: ${{ steps.run.outputs.run-url }}
-          SHORT_SHA: ${{ steps.run.outputs.short-sha }}
-          HEAD_SHA: ${{ steps.run.outputs.head-sha }}
-          MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
-        run: |
-          set -euo pipefail
-          . "$RUNNER_TEMP/red-main/lib.sh"
-          if [ ! -s "$WORK_DIR/units.tsv" ]; then
-            say "No failing unit was left unowned; no quarantine pull request."
+          if [ "$INFRA" = yes ]; then
+            echo "verdict=infra" >>"$GITHUB_OUTPUT"
+            say "Infrastructure failure (\`$INFRA_SIGNATURE\`): reported, with no revert and no rerun."
             exit 0
           fi
-          require_grant contents "contents: write" "marking the flaky units" || {
-            say "**Blocked:** the App installation cannot push; no quarantine pull request was opened."
-            exit 1
-          }
-          require_grant pull-requests "pull requests: write" "opening the quarantine pull request" || {
-            say "**Blocked:** the App installation cannot open pull requests; no quarantine pull request was opened."
-            exit 1
-          }
-          branch="quarantine/$SHORT_SHA"
-          repo_dir="$WORK_DIR/repo"
-          mkdir -p "$repo_dir"
-          git_c init --quiet "$repo_dir"
-          cd "$repo_dir"
-          git_c remote add origin "https://github.com/$REPO.git" 2>/dev/null || git_c remote set-url origin "https://github.com/$REPO.git"
-          git_c fetch --quiet --depth=1 origin main
-          git_c checkout --quiet -B main FETCH_HEAD
-          python3 "$RUNNER_TEMP/red-main/mark.py" "$WORK_DIR/units.tsv" "$repo_dir" "${REPO##*/}" \
-            "$WORK_DIR/marked.tsv" "$WORK_DIR/unmarked.tsv"
-          if [ ! -s "$WORK_DIR/marked.tsv" ]; then
-            say "No flaky unit could be marked in its own source; no pull request was opened, and the flake issues stand."
-            while IFS=$'\t' read -r name reason; do
-              [ -n "$name" ] || continue
-              say "- not quarantined automatically: $name ($reason)"
-            done <"$WORK_DIR/unmarked.tsv"
-            exit 0
-          fi
-          # Only whole-line insertions and the one `.skip` token are allowed,
-          # so the diff may touch nothing but the files a marker went into.
-          marked_files=$(cut -f5 "$WORK_DIR/marked.tsv" | sed 's/:.*$//' | sort -u)
-          changed=$(git_c diff --name-only | sort -u)
-          if [ "$changed" != "$marked_files" ]; then
-            say "**No action:** the working tree changed beyond the marked files; no pull request was opened."
-            exit 0
-          fi
-          marked=$(wc -l <"$WORK_DIR/marked.tsv" | tr -d ' ')
-          bot_identity
-          while IFS= read -r file; do
-            [ -n "$file" ] && git_c add -- "$file"
-          done <<<"$marked_files"
-          git_c commit --quiet -m "test: quarantine $marked flaky test(s)"
-          if ! push_branch "$branch" 2>"$WORK_DIR/push.err"; then
-            if grep -qE 'non-fast-forward|fetch first|stale info' "$WORK_DIR/push.err"; then
-              git_c fetch --quiet origin "$branch" || true
-              if ! push_branch "$branch" --force-with-lease 2>"$WORK_DIR/push.err"; then
-                write_refused "$(cat "$WORK_DIR/push.err")" "contents: write" "pushing $branch" || true
-                say "**Blocked:** the quarantine branch could not be pushed; no pull request."
-                exit 1
-              fi
-            else
-              write_refused "$(cat "$WORK_DIR/push.err")" "contents: write" "pushing $branch" || true
-              say "**Blocked:** the quarantine branch could not be pushed; no pull request."
-              exit 1
-            fi
-          fi
-          number=$(gh api "repos/$REPO/pulls?head=$REPO:$branch&state=open" --jq '.[0].number // empty' 2>/dev/null || true)
-          if [ -z "$number" ]; then
-            {
-              printf '%s\n' "The verify workflow failed on \`main\` at \`$HEAD_SHA\` and a rerun of the same commit passed, so the units below are flaky rather than regressions. Each is marked in its own source, beside the test, and returns to the gate once its issue closes."
-              printf '%s\n' ""
-              printf '%s\n' "| unit | name | file:line | lane | owner issue |"
-              printf '%s\n' "| --- | --- | --- | --- | --- |"
-              while IFS=$'\t' read -r kind name lane issue where; do
-                [ -n "$name" ] || continue
-                printf "| %s | \`%s\` | \`%s\` | \`%s\` | #%s |\n" "$kind" "$name" "$where" "$lane" "$issue"
-              done <"$WORK_DIR/marked.tsv"
-              if [ -s "$WORK_DIR/unmarked.tsv" ]; then
-                printf '%s\n' ""
-                printf '%s\n' "Not quarantined automatically:"
-                while IFS=$'\t' read -r name reason; do
-                  [ -n "$name" ] || continue
-                  printf -- "- \`%s\` (%s)\n" "$name" "$reason"
-                done <"$WORK_DIR/unmarked.tsv"
-              fi
-              printf '%s\n' ""
-              printf '%s\n' "Verify run: $RUN_URL"
-              printf '%s\n' ""
-              printf '%s\n' "This pull request was opened automatically; a quarantined unit returns to the gate once its issue closes."
-            } >"$WORK_DIR/quarantine-body.md"
-            payload=$(jq -n --arg title "test: quarantine $marked flaky test(s)" --arg head "$branch" \
-              --arg body "$(cat "$WORK_DIR/quarantine-body.md")" \
-              '{title: $title, head: $head, base: "main", body: $body, draft: false}')
-            if ! number=$(gh api --method POST "repos/$REPO/pulls" --input - <<<"$payload" --jq '.number' 2>"$WORK_DIR/pr.err"); then
-              write_refused "$(cat "$WORK_DIR/pr.err")" "pull requests: write" "opening the quarantine pull request" || true
-              say "**Blocked:** the quarantine pull request was not opened."
-              exit 1
-            fi
-          fi
-          labels=$(labels_that_exist quarantine owner:ci)
-          if [ "$labels" != "[]" ]; then
-            gh api --method POST "repos/$REPO/issues/$number/labels" \
-              --input - <<<"$(jq -n --argjson labels "$labels" '{labels: $labels}')" >/dev/null || true
-          fi
-          # Arm only on a declared full auto-revert (`on_red = revert`) in the
-          # organisation that holds the builder App. `notify`,
-          # `revert_pr_unarmed` and any other owner leave the pull request open
-          # for a person.
-          if [ "$MODE" != revert ] || [ "${REPO%%/*}" != SylphxAI ]; then
-            state_set quarantine-pr "$number"
-            say "Quarantine pull request [#$number](https://github.com/$REPO/pull/$number) is open and NOT armed (on_red \`$MODE\`, owner \`${REPO%%/*}\`): a person decides whether it merges."
-            exit 0
-          fi
-          if gh pr merge --auto "$number" --repo "$REPO" </dev/null >/dev/null 2>"$WORK_DIR/auto.err"; then
-            say "Quarantine pull request [#$number](https://github.com/$REPO/pull/$number) is armed for auto-merge (no strategy flag: the queue decides)."
-          else
-            say "Quarantine pull request [#$number](https://github.com/$REPO/pull/$number) is open; auto-merge was not armed: $(head -c 200 "$WORK_DIR/auto.err" | tr '\n' ' ')"
-          fi
-          state_set quarantine-pr "$number"
+          echo "verdict=real" >>"$GITHUB_OUTPUT"
+          say "The failure stands as red (proof \`$INITIAL_PROOF\`): acting on it as \`[ci] on_red\` says."
 
       # ---------------------------------------------------------------------
       # A revert needs two consecutive COMPLETED failures of the same unit
@@ -2261,7 +1823,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Confirm the same unit failed on two consecutive completed runs
         id: confirm
-        if: steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'real'
+        if: steps.gate.outputs.proceed == 'true' && steps.verdict.outputs.verdict == 'real'
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
@@ -2323,7 +1885,7 @@ jobs:
       - name: Trace the culprit among the unverified commits
         id: trace
         if: >-
-          steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'real'
+          steps.gate.outputs.proceed == 'true' && steps.verdict.outputs.verdict == 'real'
           && steps.confirm.outputs.confirmed == 'yes'
         timeout-minutes: 30
         env:
@@ -2506,7 +2068,7 @@ jobs:
       - name: Revert the culprit or report it
         id: revert
         if: >-
-          steps.gate.outputs.proceed == 'true' && steps.rerun.outputs.verdict == 'real'
+          steps.gate.outputs.proceed == 'true' && steps.verdict.outputs.verdict == 'real'
           && steps.confirm.outputs.confirmed == 'yes'
           && (steps.trace.outputs.culprit != '' || steps.trace.outputs.revert-all != '')
         timeout-minutes: 25
@@ -2584,7 +2146,7 @@ jobs:
               fi
               candidates=""
               for sha in "${shas[@]}"; do candidates="$candidates- \`$sha\`"$'\n'; done
-              body="\`main\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` and a rerun of the same commit failed again ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: this repository is in notify mode or holds no builder App key, so a person decides."
+              body="\`main\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: this repository is in notify mode or holds no builder App key, so a person decides."
               : >"$WORK_DIR/notified"
               for sha in "${shas[@]}"; do
                 pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
@@ -2753,7 +2315,7 @@ jobs:
             original_number=$(gh api "repos/$REPO/commits/$first/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
           fi
           {
-            printf '%s\n' "The verify workflow failed on \`main\` at \`$HEAD_SHA\` in lane(s) \`${FAILED_LANES:-unknown}\`, and a rerun of the same commit failed again, so the failure is real."
+            printf '%s\n' "The verify workflow failed on \`main\` at \`$HEAD_SHA\` in lane(s) \`${FAILED_LANES:-unknown}\`."
             printf '%s\n' ""
             printf '%s\n' "- verify run: $RUN_URL"
             if [ -n "$original" ]; then printf '%s\n' "- original pull request: $original"; fi
@@ -2952,18 +2514,13 @@ jobs:
             if [ -s "$WORK_DIR/summary.md" ]; then cat "$WORK_DIR/summary.md"; else echo "The handler recorded no step."; fi
             if [ "$(state_get token-mode)" = yes ]; then
               echo
-              echo "**Token mode (no builder App key).** The quarantine pull request and the revert pull request were not opened: a pull request opened with GITHUB_TOKEN triggers no CI and could never pass the merge queue. A person must:"
-              echo "- for a flaky test, mark it quarantined in its own source through a normal pull request (its flake issue names it);"
+              echo "**Token mode (no builder App key).** The revert pull request was not opened: a pull request opened with GITHUB_TOKEN triggers no CI and could never pass the merge queue. A person must:"
               echo "- for a real failure, revert the candidate commit(s) above through a normal pull request;"
-              echo "- or give this repository the builder App key so the handler can do both."
+              echo "- or give this repository the builder App key so the handler can do it."
             fi
             if [ -n "$(state_get blocked)" ]; then
               echo
               echo "**Blocked by a missing App grant:** $(state_get blocked). The write it names did not happen."
-            fi
-            if [ -n "$(state_get quarantine-pr)" ]; then
-              echo
-              echo "Quarantine pull request: #$(state_get quarantine-pr)"
             fi
             if [ -n "$(state_get culprit)" ]; then
               echo

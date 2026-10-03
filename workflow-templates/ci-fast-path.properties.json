@@ -1,0 +1,6 @@
+{
+  "name": "Fast-path CI",
+  "description": "Docs-only pull requests skip heavy jobs; superseded runs cancel; heavy jobs wait for the gate; ci-ok is the required check.",
+  "iconName": "octicon workflow",
+  "categories": ["Continuous integration"]
+}

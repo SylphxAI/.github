@@ -5,7 +5,8 @@ description: >
   `required-unless-merge-group`, which must succeed), fail on any failure, cancellation or other result. Run it in
   the job whose check run is the one that matters - `ci-ok` in the merge-queue
   gate, `verified` in the post-merge verify workflow (docs/optimistic-merge.md)
-  - with `if: always()` on that job so a failed lane still produces a verdict.
+  - with `if: always()` on that job so a failed lane still produces a verdict,
+  and `runs-on: sylphx-linux-control` so that verdict never waits for a seat.
 
 inputs:
   needs:

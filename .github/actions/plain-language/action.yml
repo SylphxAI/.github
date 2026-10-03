@@ -23,6 +23,14 @@ inputs:
     description: Newline-separated git pathspecs to skip, for example tests or recorded evidence.
     required: false
     default: ""
+  baseline:
+    description: >
+      Path of the repository's committed ratchet baseline (path, name, count per line, tab
+      separated), for example `.plain-language-baseline.tsv`. When set, the check scans every
+      tracked file instead of only added lines: a hit above its baseline count fails, and a
+      baselined hit that is gone must be removed from the baseline, so it only shrinks.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -41,6 +49,7 @@ runs:
         LIST: ${{ inputs.list }}
         MODE: ${{ inputs.mode }}
         EXCLUDE: ${{ inputs.exclude }}
+        PLAIN_LANGUAGE_BASELINE: ${{ inputs.baseline }}
       run: |
         set -euo pipefail
         case "$EVENT_NAME" in

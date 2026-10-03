@@ -1,5 +1,8 @@
 # Product and app names that platform repositories (cloud, hands, infra) never contain
 # (owner standards/architecture.md, Between products). One case-insensitive Perl regex, a tab, the message.
 # A product's need is met by a capability any customer can configure through the public API.
-\b(spiron|epiow|ozyrix|kalkas|cubeage|korvana|kernox|viszy|luzzy|puzzled|tryit|voidbite|openclaw|anymd|repomap|lockdocs|readme-mark|sportbet|bgca)\b	platform code names a product; make it a customer-configurable capability (owner standards/architecture.md)
-\b(keel[-_]?(host|beyond|engine)?|hkmt|hkmj|hk-mahjong|alpha[-_ ]foundry|value[-_ ]horizon)\b	platform code names a product; make it a customer-configurable capability (owner standards/architecture.md)
+# Boundaries are lookarounds on letters and digits, so `_`, `-` and `.` end a name: KALKAS_NAMESPACE matches.
+# Left off on purpose (too generic to be a product token alone): mahjong, tycoon, blackjack, crumple,
+# cubit, showhand, holdem, sneak, janus. Their product forms (fun-mahjong, mahjong-tycoon, crumple-keel ...) are listed.
+(?<![a-z0-9])(spiron|epiow|ozyrix|kalkas|cubeage|korvana|kernox|viszy|luzzy|puzzled|tryit|voidbite|openclaw|anymd|repomap|lockdocs|readme-mark|sportbet|bgca|tachyn|gpdt|dearhouse|opencity|lavapot|worldreign|tenkind|cubloom|bloomkin|number-grove|planet-post|postgrove|sneak-home|mail-mcp|tse-family|firestore[-_]odm|crumple-keel|blackjack-showdown)(?![a-z0-9])	platform code names a product; make it a customer-configurable capability (owner standards/architecture.md)
+(?<![a-z0-9])(keel([-_]?(host|beyond|engine))?|hkmt|hkmj|twmj|fmj|(hk|hong[-_ ]?kong|tw|taiwan|fun)[-_ ]?mahjong|mahjong[-_ ]?tycoon|big2|big[-_ ]?two[-_ ]?tycoon|tycoon[-_ ]?engine|fun[-_ ]?(showhand|texas[-_ ]?holdem)|harbou?r[-_ ]?sort|alpha[-_ ]foundry|value[-_ ]horizon)(?![a-z0-9])	platform code names a product; make it a customer-configurable capability (owner standards/architecture.md)
