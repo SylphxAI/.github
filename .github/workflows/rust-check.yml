@@ -76,6 +76,12 @@ permissions:
 jobs:
   check:
     name: cargo check
+    # id-token: the compile cache (BuildCache) knows the job by its GitHub OIDC
+    # identity. Without it the cache action falls back to the static secrets,
+    # then the Actions cache. The caller's job must grant it too.
+    permissions:
+      contents: read
+      id-token: write
     runs-on: sylphx-linux-standard
     timeout-minutes: 45
     env:
@@ -179,11 +185,11 @@ jobs:
           # Cargo's own git client does not read insteadOf; the git CLI does.
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
       - name: Compile cache (sccache)
-        # The org's own sccache, first that applies: the per-org credential on
-        # the runner, else the organization's own cache user. Never the
-        # platform's ci-sccache key.
+        # The org's own compile cache, first that applies: BuildCache with the
+        # job's OIDC identity, else the organization's own cache user. Never
+        # the platform's ci-sccache key.
         id: sccache
-        uses: SylphxAI/.github/.github/actions/rust-sccache@05e861fb0ad737ad552d900d23358a4cb2f9e205 # main after #150
+        uses: SylphxAI/.github/.github/actions/rust-sccache@d4305368ad744cdb047d8cdfd7588d99618cb5b5 # main after #171
         with:
           s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
           s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
@@ -191,7 +197,7 @@ jobs:
           actions-cache: 'false'
       - name: Compile cache on GitHub Actions cache
         # Only when no sccache backend is running.
-        if: steps.sccache.outputs.backend != 'org' && steps.sccache.outputs.backend != 'static'
+        if: steps.sccache.outputs.backend != 'buildcache' && steps.sccache.outputs.backend != 'static'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ inputs.workspace }}
@@ -214,5 +220,5 @@ jobs:
           echo "@@sylphx-check-exit=$code"
           exit "$code"
       - name: sccache stats
-        if: always() && (steps.sccache.outputs.backend == 'org' || steps.sccache.outputs.backend == 'static')
+        if: always() && (steps.sccache.outputs.backend == 'buildcache' || steps.sccache.outputs.backend == 'static')
         run: sccache --show-stats

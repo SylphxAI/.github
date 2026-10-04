@@ -24,6 +24,11 @@ decision and its reasons are
    is slower and capped.
 4. Make `ci-ok` the required check.
 
+A caller that moves its pin of `rust-ci.yml` (or `rust-check.yml`) to a commit
+that requests `id-token: write` must grant it on the calling job as well: a
+reusable workflow cannot hold more permission than its caller gives it, and
+GitHub refuses to start the run otherwise.
+
 A repository whose gate has bespoke jobs (device lanes, release builds,
 generated code) keeps its own jobs and uses the same cache directly: the
 `rust-sccache` step with `key-prefix: rustc`, after the toolchain and before
