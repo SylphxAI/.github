@@ -3,16 +3,18 @@ description: >
   Polls Keel's tags and, when a new keel-verified-* tag is ahead of this repository's pin, opens
   the pull request `chore/keel-repin-<tag>` with the workflow token (contents:write and
   pull-requests:write on this repository only) and starts the repository's CI on that branch by
-  workflow_dispatch (actions:write), so the checks land on the pull request head. Two modes of
-  one action: `poll` (cheap; says whether a repin is needed) and `repin` (moves the pins,
-  refreshes Cargo.lock, runs a build check, opens the pull request, dispatches CI). A broken
-  build opens a draft with the error summary. It never merges and never enables auto-merge.
+  workflow_dispatch (actions:write), so the checks land on the pull request head. Three modes of
+  one action: `poll` (cheap; says whether a repin is needed), `repin` (moves the pins,
+  refreshes Cargo.lock, runs a build check, opens the pull request, dispatches CI) and `settle`
+  (merges a repin pull request whose required checks, CI and the web smoke, all succeeded on its
+  exact head commit; a red one gets one comment naming the failed check and the owner). A broken
+  build opens a draft with the error summary and is never merged.
   Needs a checkout (persist-credentials: false); run it on our own runners only.
   See docs/keel-repin.md.
 
 inputs:
   mode:
-    description: poll or repin.
+    description: poll, repin or settle.
     required: true
   tag:
     description: The Keel tag (keel-verified-YYYY-MM-DD-N), or latest for the newest keel-verified-* tag.
@@ -21,11 +23,11 @@ inputs:
     description: Print the pull request that would be opened and the workflows it would start; push and open nothing.
     default: "false"
   reader-app-id:
-    description: Read-only GitHub App id that can read the Keel repository (the CUBEAGE_CI_READER_APP_ID secret for Cubeage titles).
-    required: true
+    description: Read-only GitHub App id that can read the Keel repository (the CUBEAGE_CI_READER_APP_ID secret for Cubeage titles). Not used by settle.
+    default: ""
   reader-app-key:
-    description: Private key of the read-only App.
-    required: true
+    description: Private key of the read-only App. Not used by settle.
+    default: ""
   extra-read-owner:
     description: Owner of a second private repository the build fetches (for example the title kit); empty for none.
     default: ""
@@ -49,6 +51,25 @@ inputs:
   base:
     description: Branch the pull request targets.
     default: ${{ github.event.repository.default_branch }}
+  required-checks:
+    description: >
+      settle: check names that must have run and succeeded on the repin pull request's head commit,
+      space separated. The default needs the title's `ci-ok` and a `web-smoke` check (the browser
+      boots the packed web build to a drawn frame, with no black screen). A title that has no web
+      build lists only its own aggregate check.
+    default: ci-ok web-smoke
+  owner:
+    description: "settle: who a red repin comment addresses, such as @Cubeage/studio. Empty: nobody is mentioned."
+    default: ""
+  max-wait-minutes:
+    description: "settle: a required check that has not finished this long after the pull request opened turns it red."
+    default: "360"
+  after-merge-workflows:
+    description: >
+      settle: workflow files started by workflow_dispatch on the base branch after the bot's merge
+      lands, space separated (a merge by the workflow token starts no push run, so a title that
+      deploys on push lists its deploy workflow here).
+    default: ""
   label:
     description: >
       Label for the pull request. Empty: the repository's single `owner:*` label, if it has exactly one.
@@ -67,6 +88,7 @@ runs:
   steps:
     - name: Mint read-only Keel token
       id: keel-token
+      if: inputs.mode != 'settle'
       uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
       with:
         app-id: ${{ inputs.reader-app-id }}
@@ -87,6 +109,7 @@ runs:
         permission-contents: read
 
     - name: Point git at the read tokens
+      if: inputs.mode != 'settle'
       shell: bash
       env:
         KEEL_TOKEN: ${{ steps.keel-token.outputs.token }}
@@ -172,5 +195,24 @@ runs:
       run: |
         set -euo pipefail
         args=(dispatch --report "$REPORT" --workflows "$WORKFLOWS")
+        [ "$DRY_RUN" = true ] && args+=(--dry-run)
+        python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"
+
+    - name: Merge the repin pull requests that are green
+      if: inputs.mode == 'settle'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        REQUIRED: ${{ inputs.required-checks }}
+        OWNER_MENTION: ${{ inputs.owner }}
+        MAX_WAIT: ${{ inputs.max-wait-minutes }}
+        AFTER_MERGE: ${{ inputs.after-merge-workflows }}
+        BASE: ${{ inputs.base }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+        args=(settle --required "$REQUIRED" --owner "$OWNER_MENTION" --max-wait-minutes "$MAX_WAIT" --after-merge "$AFTER_MERGE" --base "$BASE")
         [ "$DRY_RUN" = true ] && args+=(--dry-run)
         python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"

@@ -407,6 +407,157 @@ class WorkflowFilesTest(unittest.TestCase):
             self.assertEqual((repo / ".github/workflows/ci.yml").read_text(), "on: push\n")
 
 
+FAKE_SETTLE_GH = r"""#!/usr/bin/env python3
+import json, os, sys
+d = os.environ["FAKE_DIR"]
+sc = json.load(open(d + "/scenario.json"))
+a = sys.argv[1:]
+open(d + "/gh-calls.txt", "a").write(" ".join(a) + "\n")
+if a[:2] == ["pr", "list"]:
+    print("\n".join("\t".join(map(str, pr)) for pr in sc["prs"]))
+elif a[:1] == ["api"] and "check-runs" in a[-1] + " ".join(a):
+    print("\n".join("\t".join(map(str, r)) for r in sc["runs"]))
+elif a[:1] == ["api"] and "/commits" in " ".join(a):
+    print("\n".join(sc["emails"]))
+elif a[:2] == ["pr", "view"] and "comments" in a:
+    try:
+        print(open(d + "/comments.txt").read())
+    except FileNotFoundError:
+        pass
+elif a[:2] == ["pr", "view"] and "state" in a:
+    print(sc.get("state", "OPEN"))
+elif a[:2] == ["pr", "comment"]:
+    open(d + "/comments.txt", "a").write(a[a.index("--body") + 1] + "\n")
+elif a[:2] == ["pr", "merge"]:
+    if "--auto" not in a and sc.get("merge") == "needs-auto":
+        sys.stderr.write("the merge queue is on: use --auto\n"); sys.exit(1)
+    if sc.get("merge") == "refuse":
+        sys.stderr.write("Pull request is not mergeable: required status check\n"); sys.exit(1)
+"""
+
+HEAD = "e" * 40
+BOT = keel_repin.BOT_EMAIL
+TAG_BRANCH = keel_repin.BRANCH_PREFIX + NEW_TAG
+NOW = 1_800_000_000
+
+
+def check(name, status="completed", conclusion="success", app="github-actions", id=None):
+    return [id or abs(hash(name + status + conclusion)) % 10_000, name, status, conclusion if status == "completed" else "", app, f"https://example.invalid/{name}"]
+
+
+class SettleTest(unittest.TestCase):
+    def settle(self, scenario, extra=None, repeat=1):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            sc = {"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"]], "emails": [BOT], "runs": [], **scenario}
+            (base / "scenario.json").write_text(json.dumps(sc))
+            created = keel_repin.calendar.timegm((2027, 1, 15, 7, 0, 0))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            rcs = []
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"):
+                for _ in range(repeat):
+                    rcs.append(keel_repin.main(["settle", "--owner", "@o/team", "--now", str(created + 600), *(extra or [])]))
+            calls = (base / "gh-calls.txt").read_text() if (base / "gh-calls.txt").exists() else ""
+            comments = (base / "comments.txt").read_text() if (base / "comments.txt").exists() else ""
+            return rcs, calls, comments
+
+    def merges(self, calls):
+        return [c for c in calls.splitlines() if c.startswith("pr merge")]
+
+    def test_green_on_the_exact_head_merges_pinned_to_that_head(self):
+        rcs, calls, comments = self.settle({"runs": [check("ci-ok"), check("web-smoke"), check("rust")]})
+        self.assertEqual(rcs, [0])
+        self.assertEqual(self.merges(calls), [f"pr merge 5 --squash --match-head-commit {HEAD}"])
+        self.assertIn(f"commits/{HEAD}/check-runs", calls)  # judged on the head the merge is pinned to
+        self.assertEqual(comments, "")
+
+    def test_a_missing_or_unfinished_required_check_waits(self):
+        for runs in ([check("ci-ok")], [check("ci-ok"), check("web-smoke", "in_progress")], []):
+            rcs, calls, comments = self.settle({"runs": runs})
+            self.assertEqual((self.merges(calls), comments), ([], ""), runs)
+
+    def test_a_red_check_is_never_merged_and_the_owner_hears_once(self):
+        runs = [check("ci-ok"), check("web-smoke", conclusion="failure")]
+        rcs, calls, comments = self.settle({"runs": runs}, repeat=1)
+        self.assertEqual(self.merges(calls), [])
+        self.assertIn("@o/team", comments)
+        self.assertIn("`web-smoke` failure", comments)
+        self.assertIn(f"keel-repin-red:{HEAD} ", comments)
+        # The same condition seen again produces no second comment.
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"]], "emails": [BOT], "runs": runs}))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            now = str(keel_repin.calendar.timegm((2027, 1, 15, 7, 10, 0)))
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"):
+                for _ in range(3):
+                    keel_repin.main(["settle", "--now", now])
+            self.assertEqual((base / "comments.txt").read_text().count(keel_repin.RED_MARKER), 1)
+
+    def test_any_failed_check_on_the_head_is_red_even_when_not_required(self):
+        rcs, calls, comments = self.settle({"runs": [check("ci-ok"), check("web-smoke"), check("lint", conclusion="failure")]})
+        self.assertEqual((self.merges(calls), "`lint` failure" in comments), ([], True))
+
+    def test_a_check_posted_by_another_app_does_not_count(self):
+        rcs, calls, comments = self.settle({"runs": [check("ci-ok"), check("web-smoke", app="some-other-app")]})
+        self.assertEqual((self.merges(calls), comments), ([], ""))
+
+    def test_the_newest_run_of_a_name_decides(self):
+        runs = [check("ci-ok"), check("web-smoke", conclusion="failure", id=1), check("web-smoke", id=2)]
+        self.assertEqual(len(self.merges(self.settle({"runs": runs})[1])), 1)
+        runs = [check("ci-ok"), check("web-smoke", id=1), check("web-smoke", conclusion="failure", id=2)]
+        self.assertEqual(self.merges(self.settle({"runs": runs})[1]), [])
+
+    def test_a_pending_check_that_never_finishes_turns_red(self):
+        rcs, calls, comments = self.settle({"runs": [check("ci-ok")]}, extra=["--max-wait-minutes", "5"])
+        self.assertEqual(self.merges(calls), [])
+        self.assertIn("still waiting after 10 minutes", comments)
+        self.assertIn("`web-smoke` has not run", comments)
+
+    def test_only_the_bots_own_commits_are_merged(self):
+        runs = [check("ci-ok"), check("web-smoke")]
+        rcs, calls, comments = self.settle({"runs": runs, "emails": [BOT, "person@example.com"]})
+        self.assertEqual((self.merges(calls), comments), ([], ""))
+
+    def test_a_draft_is_never_merged_and_told_once(self):
+        draft = [[5, TAG_BRANCH, HEAD, "true", "2027-01-15T07:00:00Z"]]
+        rcs, calls, comments = self.settle({"prs": draft, "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(self.merges(calls), [])
+        self.assertIn("is a draft", comments)
+
+    def test_other_pull_requests_are_not_listed_for_merge(self):
+        other = [[6, "feature/x", HEAD, "false", "2027-01-15T07:00:00Z"]]
+        # The branch filter is in the gh --jq expression; the fake answers its rows as given, so check the filter text.
+        rcs, calls, comments = self.settle({"prs": [], "runs": []})
+        self.assertIn('startswith("chore/keel-repin-")', calls)
+
+    def test_a_queue_repository_retries_with_auto_and_a_refusal_is_told(self):
+        runs = [check("ci-ok"), check("web-smoke")]
+        rcs, calls, comments = self.settle({"runs": runs, "merge": "needs-auto"})
+        self.assertEqual(len(self.merges(calls)), 2)
+        self.assertTrue(self.merges(calls)[1].endswith("--auto"))
+        rcs, calls, comments = self.settle({"runs": runs, "merge": "refuse"})
+        self.assertIn("the merge was refused", comments)
+
+    def test_after_merge_workflows_start_only_when_the_merge_landed(self):
+        runs = [check("ci-ok"), check("web-smoke")]
+        rcs, calls, _ = self.settle({"runs": runs, "state": "MERGED"}, extra=["--after-merge", "pages.yml deploy.yml", "--base", "main"])
+        self.assertIn("workflow run pages.yml --ref main", calls)
+        self.assertIn("workflow run deploy.yml --ref main", calls)
+        rcs, calls, _ = self.settle({"runs": runs, "state": "OPEN"}, extra=["--after-merge", "pages.yml"])
+        self.assertNotIn("workflow run", calls)
+
+    def test_dry_run_merges_nothing(self):
+        rcs, calls, _ = self.settle({"runs": [check("ci-ok"), check("web-smoke")]}, extra=["--dry-run"])
+        self.assertEqual(self.merges(calls), [])
+
+
 class ActionContractTest(unittest.TestCase):
     def test_manifest_and_guards(self):
         import yaml
@@ -415,8 +566,8 @@ class ActionContractTest(unittest.TestCase):
         text = (ACTION / "action.yml").read_text()
         self.assertNotRegex(text, r"(?m)^\s*runs-on:")  # a composite action takes its runner from the caller
         self.assertNotRegex(text, r"(ubuntu|windows|macos)-(latest|\d)")
-        self.assertNotRegex(text, r"gh pr merge|--auto\b|enableAutoMerge")
-        for need in ("mode", "tag", "reader-app-id", "reader-app-key", "dry-run", "check-command", "ci-workflows"):
+        for need in ("mode", "tag", "reader-app-id", "reader-app-key", "dry-run", "check-command", "ci-workflows",
+                     "required-checks", "owner", "max-wait-minutes", "after-merge-workflows"):
             self.assertIn(need, action["inputs"])
         for step in action["runs"]["steps"]:
             uses = step.get("uses", "")
@@ -429,25 +580,39 @@ class ActionContractTest(unittest.TestCase):
         for path in sources:
             text = path.read_text()
             self.assertNotRegex(text, r"(?i)approv|review|/reviews|pr review", path.name)
-            self.assertNotRegex(text, r"gh pr merge|enableAutoMerge|--auto\b", path.name)
         wf = yaml.safe_load((ROOT / "workflow-templates" / "keel-repin.yml").read_text())
         self.assertEqual(wf["permissions"], {})
-        allowed = {"contents": {"read", "write"}, "pull-requests": {"read", "write"}, "actions": {"write"}}
+        allowed = {"contents": {"read", "write"}, "pull-requests": {"read", "write"}, "actions": {"write"}, "checks": {"read"}}
         for name, job in wf["jobs"].items():
             for scope, level in job["permissions"].items():
                 self.assertIn(level, allowed.get(scope, set()), f"{name}: {scope}: {level}")
         self.assertEqual(wf["jobs"]["poll"]["permissions"], {"contents": "read", "pull-requests": "read"})
         self.assertEqual(wf["jobs"]["repin"]["permissions"], {"contents": "write", "pull-requests": "write", "actions": "write"})
+        self.assertEqual(wf["jobs"]["settle"]["permissions"], {"contents": "write", "pull-requests": "write", "checks": "read", "actions": "write"})
+        # A cadence that meets "a repin pull request within 15 minutes of a tag".
+        self.assertEqual(wf[True]["schedule"], [{"cron": "*/10 * * * *"}])
 
     def test_template_runs_on_our_runners_only(self):
         text = (ROOT / "workflow-templates" / "keel-repin.yml").read_text()
         labels = re.findall(r"(?m)^\s*runs-on:\s*(.+)$", text)
-        self.assertEqual(labels, ["sylphx-linux-standard"] * 2)
+        self.assertEqual(labels, ["sylphx-linux-standard"] * 3)
         self.assertNotRegex(text, r"(ubuntu|windows|macos)-(latest|slim|\d)")
 
-    def test_the_script_has_no_merge_call(self):
-        calls = re.findall(r'"pr",\s*"(\w+)"', (ACTION / "keel_repin.py").read_text())
-        self.assertEqual(sorted(set(calls)), ["close", "create", "list"])
+    def test_the_only_merge_is_pinned_to_the_judged_head(self):
+        text = (ACTION / "keel_repin.py").read_text()
+        calls = re.findall(r'"pr",\s*"(\w+)"', text)
+        self.assertEqual(sorted(set(calls)), ["close", "comment", "create", "list", "merge", "view"])
+        self.assertEqual(text.count('"merge"'), 1)
+        self.assertIn('"--match-head-commit", sha', text)  # a push after the verdict voids the merge
+        self.assertNotIn("update-branch", text)
+        self.assertNotIn("--admin", text)  # no bypass merge
+
+    def test_the_template_settles_on_the_aggregate_and_the_web_smoke(self):
+        import yaml
+        wf = yaml.safe_load((ROOT / "workflow-templates" / "keel-repin.yml").read_text())
+        step = wf["jobs"]["settle"]["steps"][-1]
+        self.assertEqual(step["with"]["mode"], "settle")
+        self.assertEqual(step["with"]["required-checks"].split(), ["ci-ok", "web-smoke"])
 
 
 if __name__ == "__main__":

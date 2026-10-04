@@ -15,12 +15,19 @@ Steps, run from the repository root (the action calls them in this order):
 
   keel_repin.py pr --report FILE [--dry-run]
       Branch, commit, push and open (or report) the pull request. A broken build opens it
-      as a draft with the error summary. It never merges or enables auto-merge.
+      as a draft with the error summary. Merging is `settle`'s job, never this step's.
 
   keel_repin.py dispatch --branch B --workflows "ci.yml ..."
       Start the title's CI on the branch by workflow_dispatch, in order, waiting for each run to
       appear on the branch head. A pull request opened with the workflow token starts no
       pull_request run, so this is what puts the checks on the pull request's head commit.
+
+  keel_repin.py settle [--required "ci-ok web-smoke"] [--owner @team] [--dry-run]
+      For every open repin pull request: merge it when, and only when, every required check ran on
+      its exact head commit and succeeded, no check on that commit failed, it is not a draft, and
+      every commit on it is the bot's own. A red pull request is left open with one comment that
+      names the failing check and the owner; a pending one is left for the next run. Idempotent:
+      it keeps no state, so the title's schedule just runs it again.
 
 What counts as a pin: a `rev = "<40 hex>"` or `tag = "keel-..."` on a Cargo.toml line that
 names the Keel git repository, every `deps/keel.rev`, and the old full or short commit
@@ -31,6 +38,7 @@ edited (the workflow token cannot push them); the pull request lists those that 
 """
 
 import argparse
+import calendar
 import json
 import os
 import re
@@ -54,6 +62,11 @@ WORKFLOWS = ".github/workflows/"
 MAX_TEXT_BYTES = 2_000_000
 LOG_TAIL_LINES = 40
 LOG_TAIL_CHARS = 5000
+BOT_EMAIL = "keel-repin@users.noreply.github.com"
+RED_CONCLUSIONS = ("failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale")
+RED_MARKER = "<!-- keel-repin-red:"
+DEFAULT_REQUIRED = "ci-ok web-smoke"
+DEFAULT_MAX_WAIT_MINUTES = 360
 
 
 class Refused(Exception):
@@ -320,7 +333,8 @@ def pr_text(report):
             "The build check passed on this pin. A pull request opened with the workflow token starts no pull_request run, "
             "so the bot starts the repository's CI by workflow_dispatch on this branch; its checks land on this head commit.",
         ]
-    lines += ["", "Opened by the keel-repin action. It never merges: check it and queue it as usual."]
+    lines += ["", "Opened by the keel-repin action. It merges this pull request itself once CI and the web smoke are green on this exact head; "
+              "a person can merge it earlier, or close it to stop that."]
     return title, "\n".join(lines) + "\n"
 
 
@@ -462,6 +476,136 @@ def cmd_dispatch(args):
     return 0
 
 
+def classify(check_runs, required):
+    """Judge one head commit from its check runs: ('green'|'red'|'pending', [what, ...]).
+
+    Only runs of the GitHub Actions app count (an App cannot satisfy a required check by posting one
+    under the same name). Of several runs with one name (a re-run) the newest decides. Any failed check
+    on the commit makes it red, required or not; a required check that has not appeared, or has not
+    finished, keeps it pending.
+    """
+    latest = {}
+    for r in check_runs:
+        if r.get("app") != "github-actions":
+            continue
+        if r["name"] not in latest or r["id"] > latest[r["name"]]["id"]:
+            latest[r["name"]] = r
+    red = sorted(n for n, r in latest.items() if r["status"] == "completed" and r["conclusion"] in RED_CONCLUSIONS)
+    if red:
+        return "red", [f"`{n}` {latest[n]['conclusion']}" for n in red]
+    pending = []
+    for name in required:
+        r = latest.get(name)
+        if r is None:
+            pending.append(f"`{name}` has not run")
+        elif r["status"] != "completed":
+            pending.append(f"`{name}` is {r['status']}")
+        elif r["conclusion"] != "success":
+            return "red", [f"`{name}` ended {r['conclusion']}, not success"]
+    for n, r in latest.items():
+        if r["status"] != "completed":
+            pending.append(f"`{n}` is {r['status']}")
+    return ("pending", pending) if pending else ("green", [])
+
+
+def gh_json(args, jq):
+    p = run([*gh_bin(), *args, "--jq", jq], check=False)
+    if p.returncode != 0:
+        raise Refused(f"gh {' '.join(args[:3])} failed: {(p.stderr or p.stdout).strip()[-300:]}")
+    return p.stdout
+
+
+def repo_name():
+    return os.environ.get("GITHUB_REPOSITORY") or os.environ.get("KEEL_REPIN_REPO") or "{owner}/{repo}"
+
+
+def head_check_runs(repo, sha):
+    out = gh_json(["api", "--paginate", f"repos/{repo}/commits/{sha}/check-runs?per_page=100"],
+                  '.check_runs[] | [.id, .name, .status, (.conclusion // ""), (.app.slug // ""), .html_url] | @tsv')
+    runs = []
+    for line in out.splitlines():
+        if line.strip():
+            i, name, status, conclusion, app, url = line.split("\t")
+            runs.append({"id": int(i), "name": name, "status": status, "conclusion": conclusion, "app": app, "url": url})
+    return runs
+
+
+def commit_emails(repo, number):
+    out = gh_json(["api", "--paginate", f"repos/{repo}/pulls/{number}/commits?per_page=100"], ".[].commit.author.email")
+    return [e for e in out.split() if e]
+
+
+def already_told(number, sha):
+    out = gh_json(["pr", "view", str(number), "--json", "comments"], ".comments[].body")
+    return f"{RED_MARKER}{sha} " in out
+
+
+def tell_red(number, tag, sha, owner, problems, draft, dry):
+    who = f"{owner} " if owner else ""
+    if draft:
+        text = (f"{who}The Keel repin to `{tag}` is a draft: the build does not pass on the new tag. "
+                "The bot leaves the branch alone; fix it here, mark it ready, and merge it once CI and the web smoke pass on the new head.")
+    else:
+        text = (f"{who}The Keel repin to `{tag}` is not merged: " + "; ".join(problems) + f" on `{sha[:9]}`. "
+                "Fix it on this branch, or close the pull request and delete the branch so the next poll rebuilds it. "
+                "The bot merges only when CI and the web smoke are green on the exact head.")
+    text += f"\n\n{RED_MARKER}{sha} -->"
+    if dry:
+        print(f"DRY RUN: would comment on #{number}:\n{text}")
+        return
+    run([*gh_bin(), "pr", "comment", str(number), "--body", text])
+
+
+def cmd_settle(args):
+    repo = repo_name()
+    required = args.required.split()
+    prs = gh_json(["pr", "list", "--state", "open", "--limit", "50", "--json", "number,headRefName,headRefOid,isDraft,createdAt"],
+                  '.[] | select(.headRefName | startswith("' + BRANCH_PREFIX + '")) | [.number, .headRefName, .headRefOid, .isDraft, .createdAt] | @tsv')
+    now = time.time() if args.now is None else args.now
+    for line in prs.splitlines():
+        if not line.strip():
+            continue
+        number, branch, sha, draft, created = line.split("\t")
+        tag = branch[len(BRANCH_PREFIX):]
+        draft = draft == "true"
+        age_min = (now - calendar.timegm(time.strptime(created, "%Y-%m-%dT%H:%M:%SZ"))) / 60
+        if draft:
+            if not already_told(number, sha):
+                tell_red(number, tag, sha, args.owner, [], True, args.dry_run)
+            print(f"#{number} {tag}: draft, left for the owner")
+            continue
+        strangers = sorted(set(commit_emails(repo, number)) - {BOT_EMAIL})
+        if strangers:
+            print(f"#{number} {tag}: has commits that are not the bot's; a person merges it")
+            continue
+        verdict, why = classify(head_check_runs(repo, sha), required)
+        if verdict == "pending" and age_min > args.max_wait_minutes:
+            verdict, why = "red", [f"still waiting after {int(age_min)} minutes ({'; '.join(why)})"]
+        print(f"#{number} {tag} {sha[:9]}: {verdict} {'; '.join(why)}")
+        if verdict == "pending":
+            continue
+        if verdict == "red":
+            if not already_told(number, sha):
+                tell_red(number, tag, sha, args.owner, why, False, args.dry_run)
+            continue
+        if args.dry_run:
+            print(f"DRY RUN: would merge #{number} at {sha}")
+            continue
+        cmd = [*gh_bin(), "pr", "merge", number, "--squash", "--match-head-commit", sha]
+        p = run(cmd, check=False)
+        if p.returncode != 0 and re.search(r"--auto|merge queue", p.stderr + p.stdout):
+            p = run([*cmd, "--auto"], check=False)
+        if p.returncode != 0:
+            tell_red(number, tag, sha, args.owner, [f"the merge was refused: {(p.stderr or p.stdout).strip()[-200:]}"], False, False)
+            continue
+        print(f"merged (or queued) #{number} at {sha[:9]}")
+        state = gh_json(["pr", "view", number, "--json", "state"], ".state").strip()
+        if state == "MERGED":
+            for wf in args.after_merge.split():
+                run([*gh_bin(), "workflow", "run", wf, "--ref", args.base], check=False)
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -483,6 +627,14 @@ def main(argv=None):
     d.add_argument("--wait-seconds", type=int, default=180)
     d.add_argument("--interval", type=int, default=5)
     d.add_argument("--dry-run", action="store_true")
+    t = sub.add_parser("settle")
+    t.add_argument("--required", default=DEFAULT_REQUIRED, help="check names that must have succeeded on the head commit")
+    t.add_argument("--owner", default="", help="who the red comment addresses, e.g. @Cubeage/studio")
+    t.add_argument("--max-wait-minutes", type=int, default=DEFAULT_MAX_WAIT_MINUTES)
+    t.add_argument("--after-merge", default="", help="workflow files started on the base branch after a merge (a merge by the workflow token starts no push run)")
+    t.add_argument("--base", default="main")
+    t.add_argument("--now", type=float, default=None, help=argparse.SUPPRESS)
+    t.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("pr")
     p.add_argument("--root", default=".")
     p.add_argument("--report", required=True)
@@ -491,7 +643,7 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     try:
-        return {"run": cmd_run, "pr": cmd_pr, "poll": cmd_poll, "dispatch": cmd_dispatch}[args.cmd](args)
+        return {"run": cmd_run, "pr": cmd_pr, "poll": cmd_poll, "dispatch": cmd_dispatch, "settle": cmd_settle}[args.cmd](args)
     except Refused as e:
         print(f"::error::{e}")
         return 1

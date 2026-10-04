@@ -1,16 +1,18 @@
 name: Keel repin
 
-# Every 30 minutes, checks Keel's tags with the read-only reader App; on a new keel-verified-*
+# Every 10 minutes, checks Keel's tags with the read-only reader App; on a new keel-verified-*
 # tag that is ahead of this repository's pin it opens the pull request `chore/keel-repin-<tag>`
 # with the workflow token and starts the repository's CI on that branch by workflow_dispatch
-# (SylphxAI/.github docs/keel-repin.md). It never merges.
+# (SylphxAI/.github docs/keel-repin.md). The `settle` job merges a repin pull request once every
+# required check (CI and the web smoke) succeeded on its exact head commit, and says so on the
+# pull request when one is red.
 # Copy to .github/workflows/keel-repin.yml, replace the commit placeholder with the pinned
-# commit of SylphxAI/.github, and set `check-command` and `ci-workflows` for this repository.
-# Needs the repository setting named in docs/keel-repin.md, and every workflow in `ci-workflows`
-# must list workflow_dispatch.
+# commit of SylphxAI/.github, and set `check-command`, `ci-workflows`, `required-checks` and
+# `owner` for this repository. Needs the repository setting named in docs/keel-repin.md, and
+# every workflow in `ci-workflows` must list workflow_dispatch.
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       tag:
@@ -74,3 +76,22 @@ jobs:
           reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
           check-command: cargo check
           ci-workflows: ci.yml
+
+  settle:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      actions: write
+    steps:
+      - uses: SylphxAI/.github/.github/actions/keel-repin@PINNED_COMMIT_SHA
+        with:
+          mode: settle
+          dry-run: ${{ inputs.dry_run == true }}
+          # Both must have succeeded on the pull request's head commit before the bot merges.
+          required-checks: ci-ok web-smoke
+          owner: "@OWNER_TEAM"
+          # Workflows to start on the default branch after the merge (it starts no push run).
+          after-merge-workflows: ""
