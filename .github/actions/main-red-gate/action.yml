@@ -1,0 +1,48 @@
+name: main-red-gate
+description: >
+  Stop the line on a red trunk. Run it in the merge-queue gate (merge_group
+  only): while the trunk's newest conclusive Verify run is a failure and its
+  way back is in motion (a newer Verify run is still running, or a revert or
+  fix pull request is open), only a revert, a live-outage fix or a pull
+  request labelled as the fix is admitted; anything else fails the gate and
+  leaves the queue, so the revert (or fix) is the next thing to land and the
+  trunk returns to green before more changes pile onto it. A red trunk with
+  nothing in motion admits with a warning, so the run the red-main handler
+  waits for can happen. Green, or a state it cannot read, admits: a broken
+  read never jams the queue. Needs `actions: read` and `pull-requests: read`.
+
+inputs:
+  token:
+    description: Token that can read workflow runs and pull requests.
+    default: ${{ github.token }}
+  verify-workflow:
+    description: File name of the post-merge verify workflow, e.g. verify.yml.
+    default: verify.yml
+  mode:
+    description: >
+      `enforce` fails the gate while the trunk is red, its way back is in
+      motion and the change is not that way back; `observe` only prints what
+      it would have done (adoption canary).
+    default: enforce
+  fix-label:
+    description: >
+      Label that marks a pull request as the fix for the red trunk. A revert
+      needs none: a branch `auto-revert/*`, a title starting `Revert`, or the
+      `auto-revert` / `queue-jump:red-main` labels of the red-main handler.
+      A live-outage fix (`queue-jump:outage`) is admitted the same way.
+    default: main-red-fix
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        REPO: ${{ github.repository }}
+        TOKEN: ${{ inputs.token }}
+        EVENT_NAME: ${{ github.event_name }}
+        MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+        BASE_BRANCH: ${{ github.event.merge_group.base_ref || github.event.repository.default_branch }}
+        VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
+        MODE: ${{ inputs.mode }}
+        FIX_LABEL: ${{ inputs.fix-label }}
+      run: python3 "$GITHUB_ACTION_PATH/main_red_gate.py"
