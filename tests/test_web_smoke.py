@@ -68,7 +68,8 @@ class Options:
     def __init__(self, **kw):
         self.__dict__.update(dict(tap="", viewport="390x844,touch", budget_s=10.0, splash_budget_ms=1000.0,
                                   slow_3g_splash=True, ignore_console=["blocked by CORS policy"],
-                                  report="", timeout_s=60, ref=SHA, chrome="/chrome"))
+                                  report="", timeout_s=60, ref=SHA, chrome="/chrome",
+                                  max_served_ratio=1.03, require_precompressed=False))
         self.__dict__.update(kw)
 
 
@@ -245,6 +246,98 @@ class RunAgainstAStandIn(unittest.TestCase):
         rc, out = self.run_it("<html>ok</html>", timeout_s=1)
         self.assertEqual(rc, 1)
         self.assertIn("did not finish", out)
+
+
+try:
+    import brotli
+except ImportError:  # the check installs it on a runner; the tests need it here
+    brotli = None
+
+
+def wasm_bytes() -> bytes:
+    """Compressible but not trivial, so q11 and a lower quality differ clearly."""
+    import random
+    rnd = random.Random(7)
+    words = [bytes(rnd.randrange(256) for _ in range(rnd.randrange(3, 12))) for _ in range(400)]
+    return b"\0asm" + b"".join(rnd.choice(words) for _ in range(40000))
+
+
+@unittest.skipIf(brotli is None, "needs the brotli module")
+class ServedQ11(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.pack = pathlib.Path(self.tmp.name)
+        self.wasm = wasm_bytes()
+        (self.pack / "title_bg.wasm").write_bytes(self.wasm)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def precompress(self, quality):
+        (self.pack / "title_bg.wasm.br").write_bytes(brotli.compress(self.wasm, quality=quality, lgwin=24))
+
+    def test_a_q11_copy_passes(self):
+        self.precompress(11)
+        ok, out = web_smoke.served_q11(self.pack, 1.03, True)
+        self.assertTrue(ok, out)
+        self.assertIn("served/q11 1.000", out)
+
+    def test_a_weaker_copy_fails_over_the_bound(self):
+        self.precompress(4)
+        ok, out = web_smoke.served_q11(self.pack, 1.03, False)
+        self.assertFalse(ok)
+        self.assertIn("FAIL title_bg.wasm: served/q11", out)
+
+    def test_a_copy_that_does_not_decode_to_the_module_fails(self):
+        (self.pack / "title_bg.wasm.br").write_bytes(brotli.compress(b"something else", quality=11))
+        ok, out = web_smoke.served_q11(self.pack, 1.03, False)
+        self.assertFalse(ok)
+        self.assertIn("does not decode", out)
+
+    def test_no_copy_is_a_note_unless_precompressed_is_required(self):
+        ok, out = web_smoke.served_q11(self.pack, 1.03, False)
+        self.assertTrue(ok)
+        self.assertIn("note title_bg.wasm", out)
+        ok, out = web_smoke.served_q11(self.pack, 1.03, True)
+        self.assertFalse(ok)
+        self.assertIn("compresses it on the fly", out)
+
+    def test_assets_and_a_pack_without_wasm_are_left_alone(self):
+        (self.pack / "title_bg.wasm").unlink()
+        (self.pack / "assets").mkdir()
+        (self.pack / "assets" / "model.wasm").write_bytes(self.wasm)
+        ok, out = web_smoke.served_q11(self.pack, 1.03, True)
+        self.assertTrue(ok)
+        self.assertIn("no wasm module", out)
+
+
+@unittest.skipIf(brotli is None, "needs the brotli module")
+class ServedQ11InTheRun(RunAgainstAStandIn):
+    def run_with(self, quality, **kw):
+        pack = make_pack(self.base, "<html>splash</html>")
+        wasm = wasm_bytes()
+        (pack / "title_bg.wasm").write_bytes(wasm)
+        if quality:
+            (pack / "title_bg.wasm.br").write_bytes(brotli.compress(wasm, quality=quality, lgwin=24))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = web_smoke.cmd_run(Options(keel=str(self.keel), pack=str(pack), **kw))
+        return rc, out.getvalue()
+
+    def test_a_precompressed_q11_title_passes_and_the_row_is_in_the_summary(self):
+        rc, out = self.run_with(11, require_precompressed=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("| served-q11 | pass |", (self.base / "summary.md").read_text())
+
+    def test_an_on_the_fly_title_fails_when_precompressed_is_required(self):
+        rc, out = self.run_with(None, require_precompressed=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("::error title=web-smoke served-q11::", out)
+        self.assertEqual([c.split()[0] for c in self.calls()], ["slow-3g-splash", "live"])  # the browser checks still ran
+
+    def test_the_default_does_not_fail_a_pack_with_no_copy(self):
+        rc, out = self.run_with(None)
+        self.assertEqual(rc, 0, out)
 
 
 if __name__ == "__main__":
