@@ -68,6 +68,11 @@ proofs - is a suite lane.
    fails, the handler comments the missing grant on `ops-issue` (the caller
    grants `issues: write`), writes it to the step summary and fails the job;
    it never fails silently.
+   **Trunk**: the handler guards the repository's default branch, read from
+   the event payload, so a repository on `master` is classified like one on
+   `main`. The `trunk` input names a different branch. The starter's `if:`
+   compares the failed run's branch with the same default branch; list that
+   branch under `push` in `verify.yml` too.
    **Key in an environment**: a repository may hold the key in a GitHub
    environment (deployments limited to the trunk and release tags) instead of
    a repository secret. The caller sets `with: environment: <name>` and drops

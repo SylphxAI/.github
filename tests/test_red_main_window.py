@@ -393,7 +393,7 @@ class TraceStepTest(unittest.TestCase):
         (self.work / "confirmed-units.tsv").write_text("".join("\t".join(r) + "\n" for r in confirmed))
         env = dict(os.environ, RUNNER_TEMP=str(self.root), FIXTURE=str(self.fixture),
                    PATH=f"{self.root / 'bin'}:{os.environ['PATH']}", GITHUB_OUTPUT=str(self.root / "output"),
-                   REPO=REPO, VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME=AGGREGATE,
+                   TRUNK="main", REPO=REPO, VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME=AGGREGATE,
                    MAX_CANDIDATES="8", MAX_REVERT_COMMITS="250", LANE_INPUT="lanes",
                    CANDIDATE_TIMEOUT_MINUTES="20", REVERT_WINDOW="true", HEAD_SHA=sha(scenario.last),
                    RUN_ID=str(run_id(scenario.last)), RUN_URL="u", FAILED_LANES=failed_lanes,
