@@ -14,7 +14,7 @@ no half state.
 | --- | --- | --- |
 | Draft pull request | gate lanes only - the draft is the compiler | `ci-ok` |
 | Pull request marked ready | gate lanes + the full suite the change affects | `ci-ok` |
-| Merge group | gate lanes only (target p90 under 5 min); while the trunk is red, only a revert or the labelled fix is admitted | `ci-ok` |
+| Merge group | gate lanes only (target p90 under 5 min); while the trunk is red and its way back is in motion, only a revert or the labelled fix is admitted | `ci-ok` |
 | Push to the trunk | the full suite over every commit since the last verified one | none; `verified` marks the commit |
 | `verify.yml` fails on the trunk | red-main handler: trace and revert (never a rerun; a flake is quarantined through the quarantine list) | - |
 
@@ -102,24 +102,41 @@ queue, and deploys stay as they are.
 
 ## Stop the line on a red trunk
 
+This is Chromium's tree closure for our merge queue: a failing tree-closer
+builder closes the tree, the commit queue's tree status check holds every
+ordinary change until it reopens, and only a change carrying `No-Tree-Checks:
+true` (the revert, or the fix that reopens the tree) lands meanwhile.
+
 The starter gate has a `main-state` job (merge groups only) that runs
 [`main-red-gate`](../.github/actions/main-red-gate/action.yml). The trunk is
 red when its newest conclusive push run of the verify workflow failed
 (cancelled, skipped and superseded runs are passed over, as in owner
 standards/dx.md); a later success clears it. While red, a merge group is
-admitted only for the way back to green:
+admitted when it is the way back to green:
 
 - a revert: branch `auto-revert/*` (the red-main handler's), a title starting
   `Revert`, or the `auto-revert` / `queue-jump:red-main` labels;
+- a live-outage fix, labelled `queue-jump:outage` (the handler never reverts
+  one either);
 - the fix, when a person labels the pull request `main-red-fix`.
 
 Any other pull request fails `main-state`, so `ci-ok` fails, and it leaves the
-queue; re-enqueue it once the trunk is green. The gate fails open: a verify
-history or pull request it cannot read admits with a warning, so it never jams
-the queue on its own fault. Adopt with `mode: observe` first to see what it
-would refuse, then `enforce`. The job needs `pull-requests: read` beside the
-gate's other read permissions. A check on the trunk that is not the verify
-workflow (a benchmark or nightly) never makes the trunk red here.
+queue, but only while the way back is in motion: a newer run of the verify
+workflow on the trunk is still running, or a revert or fix pull request (not a
+draft) is open. When nothing is in motion the group is admitted with a
+warning. The red-main handler reverts only after the same failure repeats on a
+second completed run, and never reverts an infrastructure failure, a
+`timed_out` run or one that did not start; a queue that stayed shut on the
+first red would wait for a run nothing can start, and the next change landing
+is that run. A person can always pass a change by labelling it `main-red-fix`.
+
+The gate fails open: a verify history, pull request or pull request list it
+cannot read admits with a warning, so it never jams the queue on its own
+fault. The starter ships `mode: observe` (prints what it would refuse and
+refuses nothing): read a few merge groups, including one on a red trunk, then
+set `enforce`. The job needs `pull-requests: read` beside the gate's other
+read permissions. A check on the trunk that is not the verify workflow (a
+benchmark or nightly) never makes the trunk red here.
 
 ## The shared pieces
 
