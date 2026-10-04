@@ -1,0 +1,41 @@
+name: workflow-pin-check
+description: >
+  Fails a pull request whose workflows or actions pin another of our repositories (uses: owner/repo@<40-hex>)
+  to a commit that is not on that repository's default branch, naming the file and line. Such a pin works
+  until the dependency's pull request is squash-merged and its branch deleted; then the commit is
+  unreachable and merge_group fails at startup with no job and no annotation. Needs a checkout and a
+  read token for the pinned repositories; run it on our own runners only. See docs/workflow-pin-check.md.
+
+inputs:
+  token:
+    description: Token that can read every repository the workflows pin (a read-only App token or GH_TOKEN).
+    required: true
+  owners:
+    description: Space-separated owners whose pins are judged. Empty means the organizations in policy/optimistic-merge.json.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Refuse a GitHub-hosted runner
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ runner.environment }}
+      run: |
+        set -euo pipefail
+        if [ "$ENVIRONMENT" = github-hosted ]; then
+          echo "::error::workflow-pin-check runs on our own runners only (GitHub spend is zero)"
+          exit 1
+        fi
+
+    - name: Check the workflow pins
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ACTION_PATH: ${{ github.action_path }}
+        OWNERS: ${{ inputs.owners }}
+      run: |
+        set -euo pipefail
+        args=()
+        for owner in $OWNERS; do args+=(--owner "$owner"); done
+        python3 "$ACTION_PATH/../../../scripts/workflow_pin_check.py" "${args[@]}" check --dir "$GITHUB_WORKSPACE"
