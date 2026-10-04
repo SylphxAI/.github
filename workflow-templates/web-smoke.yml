@@ -1,0 +1,45 @@
+name: Web smoke
+
+# The job is named `web-smoke` on purpose: that is the check run the Keel repin bot's settle step
+# requires (docs/keel-repin.md) and the one to require in the repository's ruleset.
+# Copy to .github/workflows/web-smoke.yml, replace the commit placeholder with the pinned commit of
+# SylphxAI/.github, and replace the "Pack the web build" step with this repository's own pack steps
+# (the ones its CI and Pages deploy run); the action only judges what they write to `pack-dir`.
+# Add `web-smoke.yml` to the repin workflow's `ci-workflows` so the bot starts it on a repin branch.
+# See docs/web-smoke.md.
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: web-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  web-smoke:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Same steps as the title's CI web job: Keel CLI at KEEL_PIN, wasm-bindgen at the lockfile
+      # version, wasm-opt, then the pack. Keep them in one place if the repository has a composite
+      # action for them.
+      - name: Pack the web build
+        run: |
+          set -euo pipefail
+          keel pack --profile web --out dist/web
+
+      - uses: SylphxAI/.github/.github/actions/web-smoke@PINNED_COMMIT_SHA
+        with:
+          pack-dir: dist/web
+          reader-app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
+          reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
+          # The start control's accessibility-mirror id; empty skips the tap.
+          tap: ""
