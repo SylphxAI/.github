@@ -43,3 +43,8 @@ jobs:
           reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
           # The start control's accessibility-mirror id; empty skips the tap.
           tap: ""
+          # Endpoints the smoke cannot reach (the page runs on 127.0.0.1, which the API does not allow);
+          # a network or CORS failure naming one is skipped. The default is the Cubeage auth service, so
+          # a Cubeage title leaves this out. Setting it replaces the default.
+          # offline-dependencies: |
+          #   api\.cubeage\.com/cubeage\.v1\.AuthService/
