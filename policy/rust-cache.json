@@ -4,7 +4,7 @@
   "orgs": ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"],
   "pin_floor": {
     "repo": "SylphxAI/.github",
-    "sha": "05e861fb0ad737ad552d900d23358a4cb2f9e205",
+    "sha": "d4305368ad744cdb047d8cdfd7588d99618cb5b5",
     "note": "A rust-sccache pin is conformant when it is this commit or a descendant of it: the commit rust-ci.yml pins. Move the floor forward when a fix every caller needs lands."
   },
   "rustc_default_sha": "",

@@ -21,11 +21,10 @@ Sylphx runners it needs no secret. Then, from any machine:
 Compile cache, first that applies (the
 [`rust-sccache`](../.github/actions/rust-sccache/action.yml) action):
 
-1. The org's own sccache prefix. Every Sylphx runner carries its org's cache
-   credential, minted by the platform for that runner (`SYLPHX_SCCACHE_*`):
-   short-lived, and scoped to `sccache/<installation id>/` of the platform
-   cache bucket, so an org reads and writes only its own entries and can never
-   read or poison another org's. No secret to set.
+1. BuildCache. The job exchanges its GitHub OIDC identity for a short-lived
+   run token scoped to the organization's own cache namespace, so an org reads
+   and writes only its own entries and can never read or poison another org's.
+   No secret to set. It needs `id-token: write` (see below).
 2. The organization's own cache user, when the caller passes its
    `SYLPHX_CI_CACHE_ACCESS_KEY` / `SYLPHX_CI_CACHE_SECRET_KEY`.
 3. `Swatinem/rust-cache` on GitHub's own Actions cache: per repository, no
@@ -36,8 +35,19 @@ Compile cache, first that applies (the
    inside its 10 GB per-repository quota.
 
 sccache entries are keyed under `rustc`, shared by the org's repositories, and
-the job ends with `sccache --show-stats`. The platform's `ci-sccache` key is
-never a repository's cache: the `RGW_S3_*` secrets are ignored.
+the job ends with `sccache --show-stats` whenever BuildCache or the static keys
+carried it (the action's `backend` output is `buildcache` or `static`). The
+platform's `ci-sccache` key is never a repository's cache: the `RGW_S3_*`
+secrets are ignored.
+
+## Permissions the caller must grant
+
+The reusable job requests `id-token: write` (with `contents: read`) so the
+compile cache can use BuildCache. A reusable workflow cannot hold more
+permission than its caller gives it, so a caller that moves its pin to a commit
+with this requirement must grant `id-token: write` on the calling job (the
+starter's `check` job, next to its `uses:`), or GitHub refuses to start the
+workflow.
 
 Inputs never reach a shell: they travel as environment variables and are
 matched against a strict pattern first.
