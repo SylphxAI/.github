@@ -37,8 +37,11 @@ inputs:
   key-prefix:
     description: >
       Prefix for every cache entry, under the org's prefix on the org backend.
-      Defaults to the repository, so no two repositories share entries.
-    default: ${{ github.repository }}
+      One namespace per organization (docs/adr/0004-fleet-rust-compile-cache.md):
+      sccache keys are content hashes, so a repository in the prefix would only
+      lower the hit rate. Leave it; change it only to roll the whole namespace
+      after a poisoned entry, as one change in every caller.
+    default: rustc
   actions-cache:
     description: >
       "false" skips the GitHub Actions cache backend, for a caller that brings

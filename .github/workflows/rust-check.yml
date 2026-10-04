@@ -183,7 +183,7 @@ jobs:
         # the runner, else the organization's own cache user. Never the
         # platform's ci-sccache key.
         id: sccache
-        uses: SylphxAI/.github/.github/actions/rust-sccache@17838ee1f421b91e26c3c16fc0370568bcdb6363 # main after #119/#113
+        uses: SylphxAI/.github/.github/actions/rust-sccache@05e861fb0ad737ad552d900d23358a4cb2f9e205 # main after #150
         with:
           s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
           s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
