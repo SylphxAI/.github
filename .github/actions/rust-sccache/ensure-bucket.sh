@@ -3,7 +3,12 @@
 # says plainly what the object store answered when it cannot. Only HTTP status
 # codes and the S3 error code are ever printed, never a credential.
 #
-# In: SCCACHE_ENDPOINT, SCCACHE_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+# A bucket that exists but refuses a write (a read-only credential) only
+# warns: the cache must never turn a build red, but the job log and annotations
+# name the cause instead of leaving a silently cold cache.
+#
+# In: SCCACHE_ENDPOINT, SCCACHE_BUCKET, SCCACHE_S3_KEY_PREFIX (optional),
+#     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
 # Exit 0: the bucket exists (or already existed). Exit 1: it cannot be created.
 set -uo pipefail
 
@@ -19,8 +24,18 @@ s3() {
 }
 s3_error() { grep -oE '<Code>[^<]*</Code>' "$body" 2>/dev/null | head -n1 | sed -E 's#</?Code>##g'; }
 
+# Writes one tiny object under the cache prefix and removes it again.
+check_write() {
+  local key="${SCCACHE_S3_KEY_PREFIX:+${SCCACHE_S3_KEY_PREFIX%/}/}.write-probe" code
+  code="$(s3 -X PUT --data-binary probe "$bucket_url/$key")"
+  case "$code" in
+    2??) s3 -X DELETE "$bucket_url/$key" > /dev/null ;;
+    *) echo "::warning::the compile cache bucket $SCCACHE_BUCKET refuses writes: HTTP ${code:-000} $(s3_error). The cache will be read-only and every run compiles cold until its credential may write." ;;
+  esac
+}
+
 code="$(s3 -I "$bucket_url")"
-[ "$code" = 200 ] && exit 0
+if [ "$code" = 200 ]; then check_write; exit 0; fi
 
 code="$(s3 -X PUT "$bucket_url")"
 case "$code" in
@@ -40,3 +55,4 @@ case "$code" in
   2??) ;;
   *) echo "::warning::bucket $SCCACHE_BUCKET has no 14-day expiry (lifecycle PUT: HTTP ${code:-000} $(s3_error)); the cache will grow unbounded" ;;
 esac
+check_write

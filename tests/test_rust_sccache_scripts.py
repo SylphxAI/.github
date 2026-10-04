@@ -20,7 +20,7 @@ for a in "$@"; do
   [ "$a" = -I ] && method=HEAD
   prev="$a"; url="$a"
 done
-case "$url" in *"?lifecycle") method=LIFECYCLE ;; esac
+case "$url" in *"?lifecycle") method=LIFECYCLE ;; */.write-probe) method="OBJ$method" ;; esac
 line="$(grep "^$method:" "$FAKE_ANSWERS" | head -n1)"
 IFS=: read -r _ code s3 <<<"$line"
 [ -n "$out" ] && { [ -n "${s3:-}" ] && printf '<Error><Code>%s</Code></Error>' "$s3" > "$out" || : > "$out"; }
@@ -68,12 +68,18 @@ def report(hits: int, misses: int, write_errors: int, writes: int) -> subprocess
 
 
 class EnsureBucket(unittest.TestCase):
-    def test_existing_bucket_is_left_alone(self) -> None:
-        r = bucket("HEAD:200\n")
+    def test_existing_writable_bucket_is_left_alone(self) -> None:
+        r = bucket("HEAD:200\nOBJPUT:200\nOBJDELETE:204\n")
         self.assertEqual((r.returncode, r.stdout), (0, ""))
 
+    def test_existing_bucket_that_refuses_writes_warns_with_the_status(self) -> None:
+        r = bucket("HEAD:200\nOBJPUT:403:AccessDenied\n")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("::warning::", r.stdout)
+        self.assertIn("HTTP 403 AccessDenied", r.stdout)
+
     def test_missing_bucket_is_created(self) -> None:
-        self.assertEqual(bucket("HEAD:404\nPUT:200\nLIFECYCLE:200\n").returncode, 0)
+        self.assertEqual(bucket("HEAD:404\nPUT:200\nLIFECYCLE:200\nOBJPUT:200\n").returncode, 0)
 
     def test_already_exists_is_not_a_failure(self) -> None:
         r = bucket("HEAD:403\nPUT:409:BucketAlreadyExists\nLIFECYCLE:200\n")
