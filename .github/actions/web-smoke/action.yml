@@ -1,0 +1,136 @@
+name: web-smoke
+description: >
+  Boots a Keel title's packed web build in headless Chrome and requires what a player must see: on a
+  cold Slow 3G load the title's splash paints within 1 s and its bar moves (no black screen while it
+  loads), and the title then draws a ready frame with no boot failure and a quiet console. Call it from
+  a job named `web-smoke`, after the title's own `keel pack --profile web` step, so the check run is
+  named `web-smoke` and the Keel repin bot's settle can require it. The check is Keel's own
+  (scripts/browser_smoke.py at the title's KEEL_PIN); this action fetches that script, installs Chrome
+  for Testing, serves the pack as a static host does and judges it. Our own runners only: it refuses a
+  GitHub-hosted runner. See docs/web-smoke.md.
+
+inputs:
+  pack-dir:
+    description: Directory `keel pack --profile web` wrote (holds index.html), relative to the workspace.
+    required: true
+  reader-app-id:
+    description: Read-only GitHub App id that can read the Keel repository (the CUBEAGE_CI_READER_APP_ID secret for Cubeage titles).
+    required: true
+  reader-app-key:
+    description: Private key of the read-only App.
+    required: true
+  keel-ref:
+    description: >
+      Keel revision whose scripts judge the pack. Empty: the revision in the file named by keel-pin-file,
+      so the check is the one that shipped with the title's engine. Set a newer one to hold an older title
+      to a newer standard.
+    default: ""
+  keel-pin-file:
+    description: File holding the title's Keel pin, used when keel-ref is empty.
+    default: KEEL_PIN
+  slow-3g-splash:
+    description: >
+      "true" (default) runs the Slow 3G splash check. "false" is only for a title whose Keel has no web
+      boot standard yet and is being repinned.
+    default: "true"
+  splash-budget-ms:
+    description: Budget for the splash's first contentful paint on Slow 3G.
+    default: "1000"
+  tap:
+    description: Accessibility-mirror id of the start control to touch-tap once after the frame (empty for no tap).
+    default: ""
+  viewport:
+    description: Viewport of the boot check, WIDTHxHEIGHT[,touch].
+    default: 390x844,touch
+  budget-s:
+    description: Seconds the title has to draw its ready frame (and the bar to move on Slow 3G).
+    default: "10"
+  ignore-console:
+    description: >
+      Console errors to ignore, one regular expression per line. The pack is served from 127.0.0.1, which
+      is not an origin the title's API allows, so CORS blocks are ignored by default; a panic, an uncaught
+      exception or a failed request is still a failure.
+    default: blocked by CORS policy
+  chrome-version:
+    description: Chrome for Testing version (headless shell and chromedriver).
+    default: 153.0.8010.52
+  timeout-s:
+    description: Seconds each check may take before it fails.
+    default: "300"
+
+outputs:
+  keel-ref:
+    description: The Keel revision the check ran with.
+    value: ${{ steps.ref.outputs.ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Pick the Keel revision
+      id: ref
+      shell: bash
+      env:
+        KEEL_REF: ${{ inputs.keel-ref }}
+        PIN_FILE: ${{ inputs.keel-pin-file }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: python3 "$ACTION_PATH/web_smoke.py" ref --ref "$KEEL_REF" --pin-file "$PIN_FILE"
+
+    - name: Mint read-only Keel token
+      id: keel-token
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.reader-app-id }}
+        private-key: ${{ inputs.reader-app-key }}
+        owner: SylphxAI
+        repositories: keel
+        permission-contents: read
+
+    - name: Fetch Keel's smoke scripts
+      shell: bash
+      env:
+        KEEL_TOKEN: ${{ steps.keel-token.outputs.token }}
+        KEEL_REF: ${{ steps.ref.outputs.ref }}
+        ACTION_PATH: ${{ github.action_path }}
+        DEST: ${{ runner.temp }}/web-smoke-keel
+      run: |
+        set -euo pipefail
+        rm -rf "$DEST"
+        python3 "$ACTION_PATH/web_smoke.py" keel --ref "$KEEL_REF" --dest "$DEST"
+
+    - name: Chrome for Testing
+      id: chrome
+      shell: bash
+      env:
+        VERSION: ${{ inputs.chrome-version }}
+        ACTION_PATH: ${{ github.action_path }}
+        DEST: ${{ runner.tool_cache }}/web-smoke
+      run: |
+        set -euo pipefail
+        mkdir -p "$DEST"
+        python3 "$ACTION_PATH/web_smoke.py" chrome --version "$VERSION" --dest "$DEST"
+
+    - name: Boot the pack
+      shell: bash
+      env:
+        PACK: ${{ inputs.pack-dir }}
+        KEEL_REF: ${{ steps.ref.outputs.ref }}
+        KEEL_DIR: ${{ runner.temp }}/web-smoke-keel
+        CHROME_DIR: ${{ steps.chrome.outputs.dir }}
+        SLOW_3G: ${{ inputs.slow-3g-splash }}
+        SPLASH_BUDGET_MS: ${{ inputs.splash-budget-ms }}
+        TAP: ${{ inputs.tap }}
+        VIEWPORT: ${{ inputs.viewport }}
+        BUDGET_S: ${{ inputs.budget-s }}
+        IGNORE_CONSOLE: ${{ inputs.ignore-console }}
+        TIMEOUT_S: ${{ inputs.timeout-s }}
+        ACTION_PATH: ${{ github.action_path }}
+        REPORT: ${{ runner.temp }}/web-smoke-report.json
+      run: |
+        set -euo pipefail
+        args=(run --keel "$KEEL_DIR" --pack "$PACK" --chrome "$CHROME_DIR" --ref "$KEEL_REF"
+              --slow-3g-splash "$SLOW_3G" --splash-budget-ms "$SPLASH_BUDGET_MS" --tap "$TAP"
+              --viewport "$VIEWPORT" --budget-s "$BUDGET_S" --timeout-s "$TIMEOUT_S" --report "$REPORT")
+        while IFS= read -r pattern; do
+          if [ -n "$pattern" ]; then args+=(--ignore-console "$pattern"); fi
+        done <<< "$IGNORE_CONSOLE"
+        python3 "$ACTION_PATH/web_smoke.py" "${args[@]}"
