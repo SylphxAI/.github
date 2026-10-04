@@ -27,6 +27,11 @@ jobs:
     uses: SylphxAI/.github/.github/workflows/rust-ci.yml@main
     with:
       workspace: .
+      # toolchain: 1.85.0            # default: rust-toolchain.toml, else stable
+      # features: all                # all, or a comma list; default: crate defaults
+      # key-prefix: rustc            # leave: one namespace per organization
+      # runner-class: standard       # xlarge only after a measured need
+      # fmt: true
       # apt-packages: libasound2-dev pkg-config
       # clippy-args: --workspace --all-targets --all-features -- -D warnings
       # test-args: --workspace

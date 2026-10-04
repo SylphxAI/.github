@@ -28,17 +28,35 @@ run of those jobs.
 
 ## Inputs
 
+Every input is optional. The contract the rollout repositories adopt:
+
 | Input | Default | Use |
 | --- | --- | --- |
-| `workspace` | `.` | Cargo workspace directory |
-| `runner-class` | `standard` | `xlarge` only after a measured need; a merge group uses the class's `-merge` lane |
-| `fmt` | `true` | `cargo fmt --all -- --check` |
-| `clippy-args` | `--workspace --all-targets -- -D warnings` | empty skips clippy |
-| `test-args` | `--workspace` | empty skips tests |
-| `locked` | `true` | `--locked` on clippy and test |
-| `apt-packages` | empty | system packages the build needs |
-| `git-deps` | empty | private git dependencies, as in [rust-check.md](rust-check.md) |
-| `timeout-minutes` | `45` | job timeout |
+| `key-prefix` | `rustc` | Cache namespace: one per organization. Leave it. It changes only to roll the whole namespace after a poisoned entry (`rustc-2`), as one change in the starter of every caller. Letters, digits, `.`, `_`, `-`, up to 64 |
+| `toolchain` | empty | Toolchain to install (`stable`, `1.85.0`, `nightly-2026-09-01`). Empty uses the repository's `rust-toolchain.toml` (or `rust-toolchain`) found from the workspace upward, else `stable`. Prefer the pin file: the compiler version is part of every cache key, so an unpinned `stable` loses the cache every release |
+| `features` | empty | Features for clippy and test: `all` is `--all-features`, a comma list is `--features a,b`. Empty is the crates' defaults. Use the same value on every event: a different feature set is a different compile and a cache miss |
+| `fmt` | `true` | Lane: `cargo fmt --all -- --check` |
+| `clippy-args` | `--workspace --all-targets -- -D warnings` | Lane: arguments after `cargo clippy --locked`; empty skips the lane |
+| `test-args` | `--workspace` | Lane: arguments after `cargo test --locked`; empty skips the lane |
+| `locked` | `true` | `--locked` on clippy and test (needs a committed `Cargo.lock`) |
+| `workspace` | `.` | Cargo workspace directory, relative to the checkout |
+| `runner-class` | `standard` | `standard` or `xlarge` (only after a measured need). A merge group runs on the class's `-merge` lane. No other label is reachable |
+| `apt-packages` | empty | Debian packages the build needs |
+| `git-deps` | empty | Private git dependencies, one `OWNER/REPO` per line, read through your own reader App; see [rust-check.md](rust-check.md) |
+| `timeout-minutes` | `45` | Job timeout |
+
+Secrets, passed by name: `SYLPHX_CI_CACHE_ACCESS_KEY` and
+`SYLPHX_CI_CACHE_SECRET_KEY` (the organization's cache user; optional, the
+action falls back to the GitHub Actions cache without them), and
+`GIT_DEPS_APP_ID` / `GIT_DEPS_APP_KEY` with `git-deps`.
+
+Fixed by the workflow, because they are part of the cache key: the checkout
+path, `CARGO_HOME` under the runner temp directory, `CARGO_INCREMENTAL=0`,
+and `debug = 0` for the dev and test profiles. Callers never set `SCCACHE_*`,
+`AWS_*` or `RUSTC_WRAPPER`; the `rust-sccache` action owns them.
+
+Arguments and features are checked against a strict character set before
+use and never reach a shell as text; anything else fails the first step.
 
 ## Reading the cache
 

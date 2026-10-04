@@ -29,6 +29,29 @@ on:
         required: false
         type: string
         default: '.'
+      toolchain:
+        description: >
+          Rust toolchain to install (stable, beta, nightly, 1.85.0, nightly-2026-09-01).
+          Empty uses the repository's rust-toolchain(.toml) when it has one,
+          else stable. Prefer the pin file: it is part of every cache key.
+        required: false
+        type: string
+        default: ''
+      features:
+        description: >
+          Cargo features for clippy and test: `all` for --all-features, or a
+          comma-separated list for --features. Empty uses the crates' defaults.
+        required: false
+        type: string
+        default: ''
+      key-prefix:
+        description: >
+          Compile-cache namespace. One per organization, so leave the default;
+          change it only to roll the whole namespace after a poisoned entry
+          (docs/adr/0004-fleet-rust-compile-cache.md).
+        required: false
+        type: string
+        default: rustc
       runner-class:
         description: standard or xlarge (xlarge only after a measured need).
         required: false
@@ -106,6 +129,9 @@ jobs:
       SCCACHE_IDLE_TIMEOUT: '0'
       IN_WORKSPACE: ${{ inputs.workspace }}
       IN_CLASS: ${{ inputs.runner-class }}
+      IN_TOOLCHAIN: ${{ inputs.toolchain }}
+      IN_FEATURES: ${{ inputs.features }}
+      IN_PREFIX: ${{ inputs.key-prefix }}
       IN_CLIPPY: ${{ inputs.clippy-args }}
       IN_TEST: ${{ inputs.test-args }}
       IN_LOCKED: ${{ inputs.locked }}
@@ -116,6 +142,9 @@ jobs:
           set -euo pipefail
           [[ "$IN_WORKSPACE" =~ ^[A-Za-z0-9_./-]{1,200}$ && "$IN_WORKSPACE" != /* && "$IN_WORKSPACE" != *..* ]] || { echo "bad workspace"; exit 2; }
           [[ "$IN_CLASS" == standard || "$IN_CLASS" == xlarge ]] || { echo "bad runner-class"; exit 2; }
+          [[ "$IN_TOOLCHAIN" =~ ^[A-Za-z0-9._-]{0,64}$ ]] || { echo "bad toolchain"; exit 2; }
+          [[ "$IN_FEATURES" =~ ^[A-Za-z0-9_,/-]{0,200}$ ]] || { echo "bad features"; exit 2; }
+          [[ "$IN_PREFIX" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "bad key-prefix"; exit 2; }
           [[ "$IN_CLIPPY" =~ ^[A-Za-z0-9_.,:=/\ -]*$ ]] || { echo "bad clippy-args"; exit 2; }
           [[ "$IN_TEST" =~ ^[A-Za-z0-9_.,:=/\ -]*$ ]] || { echo "bad test-args"; exit 2; }
           [[ "$IN_APT" =~ ^[a-z0-9.+\ -]*$ ]] || { echo "bad apt-packages"; exit 2; }
@@ -138,8 +167,8 @@ jobs:
           curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -sSfL https://sh.rustup.rs \
             | sh -s -- --default-toolchain none --profile minimal -y --no-modify-path
           cd "$IN_WORKSPACE"
-          # The repository's pinned toolchain when it has one (the workspace or
-          # any parent up to the checkout), else stable.
+          # The toolchain input when given, else the repository's pinned
+          # toolchain (the workspace or any parent up to the checkout), else stable.
           pinned=""
           dir="$PWD"
           while :; do
@@ -149,7 +178,11 @@ jobs:
             [ "$dir" = "$GITHUB_WORKSPACE" ] || [ "$dir" = / ] && break
             dir="$(dirname "$dir")"
           done
-          if [ -n "$pinned" ]; then
+          if [ -n "$IN_TOOLCHAIN" ]; then
+            echo "toolchain from input: $IN_TOOLCHAIN"
+            rustup toolchain install "$IN_TOOLCHAIN" --profile minimal
+            rustup default "$IN_TOOLCHAIN"
+          elif [ -n "$pinned" ]; then
             echo "toolchain from $pinned"
             rustup toolchain install
             rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
@@ -213,7 +246,7 @@ jobs:
         with:
           s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
           s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
-          key-prefix: rustc
+          key-prefix: ${{ inputs.key-prefix }}
       - name: Format
         if: inputs.fmt
         working-directory: ${{ inputs.workspace }}
@@ -224,16 +257,28 @@ jobs:
         run: |
           set -euo pipefail
           locked=(); [ "$IN_LOCKED" = true ] && locked=(--locked)
+          feat=()
+          case "$IN_FEATURES" in
+            "") ;;
+            all) feat=(--all-features) ;;
+            *) feat=(--features "$IN_FEATURES") ;;
+          esac
           read -ra args <<<"$IN_CLIPPY"
-          cargo clippy "${locked[@]}" "${args[@]}"
+          cargo clippy "${locked[@]}" "${feat[@]}" "${args[@]}"
       - name: Test
         if: inputs.test-args != ''
         working-directory: ${{ inputs.workspace }}
         run: |
           set -euo pipefail
           locked=(); [ "$IN_LOCKED" = true ] && locked=(--locked)
+          feat=()
+          case "$IN_FEATURES" in
+            "") ;;
+            all) feat=(--all-features) ;;
+            *) feat=(--features "$IN_FEATURES") ;;
+          esac
           read -ra args <<<"$IN_TEST"
-          cargo test "${locked[@]}" "${args[@]}"
+          cargo test "${locked[@]}" "${feat[@]}" "${args[@]}"
       - name: Cache report
         # Hit rate per run, for the before/after numbers (docs/rust-ci.md).
         if: always() && steps.sccache.outputs.backend != 'none' && steps.sccache.outputs.backend != ''

