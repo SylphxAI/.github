@@ -37,8 +37,10 @@ import datetime
 import fnmatch
 import json
 import re
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -473,6 +475,8 @@ def evaluate(fleet: dict, policy: dict, compare: Comparer, today: datetime.date)
                 repos.append(record)
                 continue
             facts = dict(facts)
+            if facts.get("errors"):
+                record["errors"] = list(facts["errors"])
             waived = waived_rows(policy, entry) if entry else set()
             facts["needs_ci_ok"] = "R2" not in waived
             rows = evaluate_rows(facts, policy, compare) if set(ROWS) - waived else {}
@@ -495,14 +499,56 @@ def evaluate(fleet: dict, policy: dict, compare: Comparer, today: datetime.date)
 # --- collect: GraphQL, a few queries per organization ---------------------------------
 
 
-class Gh:
-    """Read-only GitHub access through the `gh` CLI (the desk login, or GH_TOKEN in CI)."""
+CAP_MARKER = "desk-gh-graphql-cap"
 
-    def graphql(self, query: str) -> dict:
+
+def _env_seconds(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ[name]))
+    except (KeyError, ValueError):
+        return default
+
+
+class Gh:
+    """Read-only GitHub access through the `gh` CLI (the desk login, or GH_TOKEN in CI).
+
+    The desk `gh` wrapper refuses live GraphQL reads past a per-lane cap in a rolling
+    window (30 per 10 minutes). A refusal is waited out: sleep in `step` seconds and
+    ask again, at most AUDIT_CAP_WAIT_S (default 720) per call and AUDIT_CAP_WAIT_TOTAL_S
+    (default 5400) over the whole run. Any other failure surfaces at once.
+    """
+
+    def __init__(self, sleep=time.sleep, per_call_s: float | None = None, total_s: float | None = None,
+                 step_s: float = 45.0):
+        self.sleep = sleep
+        self.per_call_s = _env_seconds("AUDIT_CAP_WAIT_S", 720.0) if per_call_s is None else per_call_s
+        self.total_s = _env_seconds("AUDIT_CAP_WAIT_TOTAL_S", 5400.0) if total_s is None else total_s
+        self.step_s = step_s
+        self.waited_s = 0.0
+
+    def _graphql_once(self, query: str) -> dict:
         result = subprocess.run(["gh", "api", "graphql", "-f", "query=" + query], capture_output=True, text=True, timeout=180)
         if not result.stdout.strip():
             raise RuntimeError((result.stderr or "empty reply").strip()[:200])
         return json.loads(result.stdout)
+
+    def graphql(self, query: str) -> dict:
+        waited = 0.0
+        while True:
+            try:
+                return self._graphql_once(query)
+            except RuntimeError as err:
+                if CAP_MARKER not in str(err):
+                    raise
+                pause = min(self.step_s, self.per_call_s - waited, self.total_s - self.waited_s)
+                if pause <= 0:
+                    raise
+                print(f"audit: live GraphQL cap reached; waiting {pause:.0f}s "
+                      f"({waited + pause:.0f}s of {self.per_call_s:.0f}s for this read, "
+                      f"{self.waited_s + pause:.0f}s of {self.total_s:.0f}s for the run)", file=sys.stderr, flush=True)
+                self.sleep(pause)
+                waited += pause
+                self.waited_s += pause
 
     def rest(self, path: str) -> dict:
         result = subprocess.run(["gh", "api", path], capture_output=True, text=True, timeout=60)
@@ -661,7 +707,7 @@ def render(report: dict) -> str:
     lines = []
     for repo in report["repos"]:
         if repo["status"] == "FAIL":
-            detail = repo.get("errors") or [f"{n}: {repo['rows'][n]['detail']}" for n in repo.get("failing", [])]
+            detail = [f"{n}: {repo['rows'][n]['detail']}" for n in repo.get("failing", [])] or repo.get("errors") or []
             lines.append(f"FAIL   {repo['repo']}  " + " | ".join(detail))
     s = report["summary"]
     lines.append(f"{s['repos']} repositories: {s['PASS']} PASS, {s['EXEMPT']} EXEMPT, {s['FAIL']} FAIL "

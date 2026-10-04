@@ -6,15 +6,19 @@ GitHub is a fake that answers the audit's GraphQL queries and compare reads.
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import datetime
 import importlib.util
+import io
 import json
+import os
 import pathlib
 import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("audit_optimistic_merge", ROOT / "scripts" / "audit_optimistic_merge.py")
@@ -649,6 +653,71 @@ class CommandLineTest(unittest.TestCase):
     def test_an_organization_outside_the_policy_is_refused_before_any_read(self) -> None:
         for org in ("TseFamily", "shtse8", "SomeoneElse"):
             self.assertEqual(self.run_main("--org", org), 2)
+
+
+CAP_REFUSAL = ("desk-gh-graphql-cap: refusing this live GraphQL read - lane x has made 30 of its 30 allowed in 10 min.")
+
+
+class CapGh(audit.Gh):
+    """The real retry loop over a fake transport that refuses `refusals` times."""
+
+    def __init__(self, refusals: float, message: str = CAP_REFUSAL, **kwargs):
+        self.naps: list[float] = []
+        super().__init__(sleep=self.naps.append, **kwargs)
+        self.refusals, self.message, self.calls = refusals, message, 0
+
+    def _graphql_once(self, query: str) -> dict:
+        self.calls += 1
+        if self.calls <= self.refusals:
+            raise RuntimeError(self.message)
+        return {"data": {"ok": True}}
+
+
+class CapRetryTest(unittest.TestCase):
+    def test_a_cap_refusal_is_waited_out_and_the_read_succeeds(self) -> None:
+        gh = CapGh(3, per_call_s=720, total_s=5400, step_s=45)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(gh.graphql("q"), {"data": {"ok": True}})
+        self.assertEqual((gh.calls, gh.naps), (4, [45, 45, 45]))
+        self.assertIn("waiting 45s", err.getvalue())
+
+    def test_a_read_that_never_gets_a_slot_fails_as_before_within_the_per_call_budget(self) -> None:
+        gh = CapGh(10 ** 6, per_call_s=100, total_s=5400, step_s=45)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(RuntimeError) as raised:
+                gh.graphql("q")
+        self.assertIn("desk-gh-graphql-cap", str(raised.exception))
+        self.assertEqual(gh.naps, [45, 45, 10])
+
+    def test_the_run_budget_is_shared_between_reads(self) -> None:
+        gh = CapGh(10 ** 6, per_call_s=720, total_s=60, step_s=45)
+        with contextlib.redirect_stderr(io.StringIO()):
+            for _ in range(2):
+                with self.assertRaises(RuntimeError):
+                    gh.graphql("q")
+        self.assertEqual(sum(gh.naps), 60)
+
+    def test_any_other_failure_is_not_retried(self) -> None:
+        gh = CapGh(10 ** 6, message="HTTP 502", per_call_s=720, total_s=5400)
+        with self.assertRaises(RuntimeError):
+            gh.graphql("q")
+        self.assertEqual((gh.calls, gh.naps), (1, []))
+
+    def test_env_overrides_the_budgets(self) -> None:
+        with mock.patch.dict(os.environ, {"AUDIT_CAP_WAIT_S": "0", "AUDIT_CAP_WAIT_TOTAL_S": "7"}):
+            gh = audit.Gh()
+        self.assertEqual((gh.per_call_s, gh.total_s), (0, 7))
+
+    def test_an_unreadable_repository_carries_its_errors_in_the_report(self) -> None:
+        facts = conformant()
+        facts["errors"] = ["query failed: " + CAP_REFUSAL[:60]]
+        facts["files"]["ci.yml"] = None
+        report = audit.evaluate({"SylphxAI": [facts]}, POLICY, compare_fake()[0], TODAY)
+        record = report["repos"][0]
+        self.assertEqual(record["status"], "FAIL")
+        self.assertEqual(record["errors"], facts["errors"])
+        clean = audit.evaluate({"SylphxAI": [conformant()]}, POLICY, compare_fake()[0], TODAY)
+        self.assertNotIn("errors", clean["repos"][0])
 
 
 if __name__ == "__main__":
