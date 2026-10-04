@@ -29,7 +29,7 @@ class RustCheckWorkflow(unittest.TestCase):
     def test_sccache_through_the_action_then_rust_cache(self) -> None:
         sccache = re.search(r"- name: Compile cache \(sccache\)\n((?:        .*\n)+)", self.text)
         self.assertIsNotNone(sccache)
-        self.assertIn("uses: SylphxAI/.github/.github/actions/rust-sccache@17838ee1f421b91e26c3c16fc0370568bcdb6363", sccache.group(1))
+        self.assertIn("uses: SylphxAI/.github/.github/actions/rust-sccache@05e861fb0ad737ad552d900d23358a4cb2f9e205", sccache.group(1))
         self.assertIn("actions-cache: 'false'", sccache.group(1))
         self.assertIn("secrets.SYLPHX_CI_CACHE_ACCESS_KEY", sccache.group(1))
         step = re.search(r"- name: Compile cache on GitHub Actions cache\n((?:        .*\n)+)", self.text)
