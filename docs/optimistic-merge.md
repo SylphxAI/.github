@@ -68,6 +68,11 @@ proofs - is a suite lane.
    fails, the handler comments the missing grant on `ops-issue` (the caller
    grants `issues: write`), writes it to the step summary and fails the job;
    it never fails silently.
+   **Trunk**: the handler guards the repository's default branch, read from
+   the event payload, so a repository on `master` is classified like one on
+   `main`. The `trunk` input names a different branch. The starter's `if:`
+   compares the failed run's branch with the same default branch; list that
+   branch under `push` in `verify.yml` too.
    **Key in an environment**: a repository may hold the key in a GitHub
    environment (deployments limited to the trunk and release tags) instead of
    a repository secret. The caller sets `with: environment: <name>` and drops
@@ -336,6 +341,33 @@ Private repositories run every job on our runners: `sylphx-linux-standard`
 for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`
 between. Public repositories may use GitHub's standard hosted runners, which
 are free for them. Never larger or GPU hosted runners.
+
+## Conformance check
+
+[`scripts/audit_optimistic_merge.py`](../scripts/audit_optimistic_merge.py)
+reads every non-archived repository of the organizations in
+[`policy/optimistic-merge.json`](../policy/optimistic-merge.json) (read-only:
+a few batched GraphQL queries and one compare read per distinct pin) and
+reports it against these rows. It exits 1 on any FAIL outside a named
+exemption and writes the whole report with `--json`.
+
+| Row | Holds when |
+| --- | --- |
+| R1 | `sylphx.toml` has `[ci] merge = "optimistic"` and an explicit `on_red` |
+| R2 | `ci.yml` runs on `merge_group` and has the `ci-ok` job |
+| R3 | `verify.yml` runs on push to the default branch, has a `verified` job and does not cancel a trunk run |
+| R3b | every other workflow that runs on push to the default branch is called from `verify.yml`, or carries the comment `# optimistic-merge: advisory`; otherwise its red never reaches the handler |
+| R4 | `red-main.yml` calls the shared handler pinned to a full SHA at or after the policy floor, and its `if:` follows the default branch |
+| R5 | `ci.yml` has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
+| R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
+| R7 | `on_red` is `revert` (or `revert_pr_unarmed`) where the builder App reaches the repository, `notify` elsewhere |
+
+Unreadable is FAIL. A repository whose rows are waived by a policy
+exemption reports EXEMPT; an exemption carries a class, reason, owner and a
+review date, and one past its date stops applying. Hands-off repositories
+and fully waived ones are listed by name only; their files are not read.
+Move `pin_floor` forward in the policy when a fix every caller needs lands:
+every pin behind it then fails R4 and R5 until it is repinned.
 
 ## Read back after landing
 

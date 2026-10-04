@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "doc": "docs/optimistic-merge.md. Read by scripts/audit_optimistic_merge.py. Every exemption names its class, reason, owner and a review date; one past its review date stops applying and the repository is audited again.",
+  "orgs": ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"],
+  "pin_floor": {
+    "repo": "SylphxAI/.github",
+    "sha": "6533cb5cc43517cdb9f8734d57f98fe0d8f05c54",
+    "note": "A red-main caller or main-red-gate pin is conformant when it is this commit or a descendant of it. Move the floor forward when a fix every caller needs lands."
+  },
+  "writer_app_orgs": ["SylphxAI"],
+  "writer_app_repos": [],
+  "classes": {
+    "no-build": {
+      "waives": ["*"],
+      "meaning": "Nothing to build or deploy (brand, profile, policy pages, shared config); also frozen open-source repositories."
+    },
+    "frozen-legacy": {
+      "waives": ["*"],
+      "meaning": "A shipped original kept as it is; no change flows through its queue."
+    },
+    "hands-off": {
+      "waives": ["*"],
+      "meaning": "A delivered customer repository or a protected original. Its files are never read."
+    },
+    "suite-is-gate": {
+      "waives": ["R1", "R2", "R3", "R3b", "R4", "R5", "R7"],
+      "meaning": "Whole pull-request CI is short enough (p90 about 5 minutes or less) that the merge gate already is the full suite, so there is no post-merge verification to add. The merge queue and a required check still must exist, and `verified` is never one."
+    },
+    "on-red-notify": {
+      "waives": ["R7"],
+      "meaning": "Declares an on_red the builder App does not back yet; the handler runs as notify until the App reaches the organization."
+    }
+  },
+  "exemptions": [
+    {
+      "class": "suite-is-gate",
+      "repos": ["Cubeage/mobile-app", "Cubeage/cubeage-cs-agent", "Cubeage/fun-server-kit", "Cubeage/cubeage-native-sdk", "Cubeage/big2-tycoon", "Cubeage/cubeage-studio"],
+      "reason": "Measured pull-request CI p90 at or under about 5 minutes (jobs 1.2 minutes or less in big2-tycoon and cubeage-studio; the wall time is runner wait, not suite length). cubeage-native-sdk gates on release acceptance checks. cubeage-cs-agent: recheck at 20 runs.",
+      "owner": "Build",
+      "review": "2026-11-30"
+    },
+    {
+      "class": "no-build",
+      "repos": ["Cubeage/cubeage-preview-router", "Cubeage/rank-system", "Cubeage/unity-runner", "Cubeage/h5-sdk-backend", "Cubeage/Info", "Cubeage/Policy", "Cubeage/app-ads.txt", "Cubeage/brand", "Cubeage/renovate-config", "Cubeage/solar2d-*", "Cubeage/.github",
+                "EpiowAI/.github", "EpiowAI/brand", "EpiowAI/hris-public", "EpiowAI/renovate-config",
+                "OzyrixLtd/.github", "OzyrixLtd/brand", "OzyrixLtd/renovate-config",
+                "SylphxAI/brand", "SylphxAI/renovate-config"],
+      "reason": "Nothing to build or deploy: assets, policy pages, shared configuration, SDK mirrors and frozen open-source repositories.",
+      "owner": "Build",
+      "review": "2027-04-04"
+    },
+    {
+      "class": "frozen-legacy",
+      "repos": ["Cubeage/big2-tycoon-2", "Cubeage/big2-tycoon-tw", "Cubeage/mahjong-tycoon-tw", "Cubeage/mahjong-tycoon-tw-2", "Cubeage/Big2TycoonHk"],
+      "reason": "Shipped legacy originals, kept as they are; the faithful remakes carry the new pipeline.",
+      "owner": "Build",
+      "review": "2027-04-04"
+    },
+    {
+      "class": "hands-off",
+      "repos": ["SylphxAI/bgca", "Cubeage/hk-mahjong-tycoon", "SylphxAI/openclaw-sylphx"],
+      "reason": "Delivered customer repository (bgca), protected original (hk-mahjong-tycoon) and the hosted stopgap (openclaw-sylphx): no work unless their owner asks.",
+      "owner": "CEO",
+      "review": "2027-04-04"
+    },
+    {
+      "class": "on-red-notify",
+      "repos": ["Cubeage/fun-big2-hk", "Cubeage/fun-big2-tw"],
+      "reason": "Declare on_red revert, but the builder App does not reach the Cubeage organization, so the handler runs as notify (tenant organizations lack the writer App).",
+      "owner": "Ops",
+      "review": "2026-12-31"
+    }
+  ]
+}

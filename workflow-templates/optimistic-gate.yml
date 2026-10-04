@@ -118,8 +118,9 @@ jobs:
     secrets: inherit
 
   # The required check. Skipped lanes pass; a failed or cancelled lane fails; the
-  # PR-time suite must succeed everywhere but the merge group, so a skipped
-  # suite (a dispatch run) never turns a red check green.
+  # PR-time suite must succeed everywhere but the merge group and a draft (which
+  # runs the gate lanes only), so a skipped suite on a dispatch run never turns
+  # a red check green.
   ci-ok:
     if: always()
     needs: [main-state, plan, lint, test, migrations, suite]
@@ -134,4 +135,4 @@ jobs:
         with:
           needs: ${{ toJSON(needs) }}
           required: plan
-          required-unless-merge-group: suite
+          required-unless-merge-group: ${{ github.event.pull_request.draft && ' ' || 'suite' }}

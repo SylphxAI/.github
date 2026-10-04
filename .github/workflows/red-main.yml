@@ -146,6 +146,14 @@ on:
         description: 'workflow_run conclusion: success, failure, cancelled or unknown. Lifecycle callers trigger on completed, with no failure-only filter.'
         type: string
         default: unknown
+      trunk:
+        description: >-
+          Branch the handler guards (the one the verify workflow runs on after
+          a merge). Empty reads the repository's default branch from the
+          event payload, so a repository whose default branch is `master` or
+          anything else is classified like one on `main`.
+        type: string
+        default: ''
       verify-workflow:
         description: >-
           File name of the caller's verify workflow, e.g. verify.yml. Its runs
@@ -276,6 +284,7 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 10
     env:
+      TRUNK: ${{ inputs.trunk || github.event.repository.default_branch || 'main' }}
       REPO: ${{ inputs.repository }}
       VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
       VERIFY_CHECK_NAME: ${{ inputs.verify-check-name }}
@@ -292,6 +301,7 @@ jobs:
         import re
         import subprocess
         from dataclasses import dataclass
+        from urllib.parse import quote
         from post_main import paged, producer_origin
 
 
@@ -413,7 +423,7 @@ jobs:
         def trusted_main(run, repo):
             # A fork PR can also name its branch main. Only same-repository main
             # pushes are authoritative; dispatch/PR/merge-group runs are excluded.
-            return (run.get('event') == 'push' and run.get('head_branch') == 'main'
+            return (run.get('event') == 'push' and run.get('head_branch') == os.environ['TRUNK']
                     and run.get('head_repository', {}).get('full_name') == repo)
 
 
@@ -443,29 +453,30 @@ jobs:
         def prove_recovery(api, event):
             # Never trust handler delivery/queue order as the latest Verify state.
             # A newer failed run may have completed without its handler running.
+            trunk = os.environ['TRUNK']
             rows = paged(f'repos/{event.repo}/actions/workflows/{event.workflow}/runs'
-                         '?branch=main&event=push&status=completed', 'workflow_runs', reader=api)
+                         f'?branch={quote(trunk, safe="")}&event=push&status=completed', 'workflow_runs', reader=api)
             runs = []
             for run in rows:
-                origin = producer_origin(run, event.repo, 'main', event.workflow)
+                origin = producer_origin(run, event.repo, trunk, event.workflow)
                 if origin == 'ineligible':
                     continue
                 if (origin != 'eligible' or run.get('status') != 'completed'
                         or run.get('conclusion') not in (
                             'success', 'failure', 'cancelled', 'skipped', 'neutral',
                             'timed_out', 'action_required', 'startup_failure', 'stale')):
-                    raise RuntimeError('Relevant main Verify history row is invalid')
+                    raise RuntimeError('Relevant trunk Verify history row is invalid')
                 if run['conclusion'] in ('success', 'failure'):
                     runs.append(run)
             if not runs:
-                raise RuntimeError('No eligible completed main Verify run proves recovery')
+                raise RuntimeError('No eligible completed trunk Verify run proves recovery')
             latest = max(runs, key=lambda run: [run['id'], run['run_attempt']])
             candidate = Event(event.repo, event.workflow, event.check, latest['head_sha'],
                               latest['id'], latest['run_attempt'], latest['conclusion'])
             # Re-authenticate the listing's candidate through the run/attempt APIs.
             prove(api, candidate)
             if candidate.order != event.order or candidate.result != 'success':
-                raise RuntimeError('Latest eligible main Verify run does not prove this recovery')
+                raise RuntimeError('Latest eligible trunk Verify run does not prove this recovery')
 
 
         def body(event, state):
@@ -608,6 +619,9 @@ jobs:
     # (candidate-timeout-minutes, at most 60), revert, summary, and slack.
     timeout-minutes: 120
     env:
+      # The branch the handler guards: the `trunk` input, else the repository's
+      # own default branch from the event payload, else `main`.
+      TRUNK: ${{ inputs.trunk || github.event.repository.default_branch || 'main' }}
       REPO: ${{ github.repository }}
       VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
       VERIFY_CHECK_NAME: ${{ inputs.verify-check-name || 'verified' }}
@@ -1903,15 +1917,15 @@ jobs:
               exit 1
             fi
           else
-            if ! run_json=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?event=push&branch=main&per_page=50" \
-              --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .status == "completed")] | .[0] // empty'); then
+            if ! run_json=$(gha api "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/runs?event=push&branch=$TRUNK&per_page=50" \
+              | jq -c --arg trunk "$TRUNK" '[.workflow_runs[] | select(.event == "push" and .head_branch == $trunk and .status == "completed")] | .[0] // empty'); then
               say "**Unverified:** Verify history could not be read; escalating instead of treating the missing proof as no action."
               echo "::error::verify history is unavailable; recovery requires investigation"
               exit 1
             fi
           fi
           if [ -z "$run_json" ]; then
-            quiet "no failed run of $VERIFY_WORKFLOW on main was found to handle"
+            quiet "no failed run of $VERIFY_WORKFLOW on $TRUNK was found to handle"
           fi
           run_id=$(jq -r '.id' <<<"$run_json")
           run_path=$(jq -r '.path' <<<"$run_json")
@@ -1925,7 +1939,7 @@ jobs:
           # Only authenticated success or an authenticated ineligible
           # producer is terminal. Unknown/unavailable proof stays unverified
           # and keeps recovery active; it cannot authorize a revert.
-          proof=$(read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$run_id" "$VERIFY_CHECK_NAME")
+          proof=$(read_proof run "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$run_id" "$VERIFY_CHECK_NAME")
           case "$proof" in
             success|ineligible) quiet "the authenticated post-main proof for $run_id is '$proof'" ;;
             failure|timed_out|action_required|startup_failure) ;;
@@ -1986,7 +2000,7 @@ jobs:
           if [ "$MODE" != revert_pr_unarmed ]; then
             [ "$hand_in" = "0" ] || quiet "an open pull request already carries the auto-revert label"
           fi
-          green=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
+          green=$(read_proof sha "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
           [ "$green" != success ] || quiet "$HEAD_SHA already has an authenticated passing post-main proof"
           if [ "$green" = unknown ]; then
             say "**Unverified:** the same-SHA green guard has no available proof; recovery remains active."
@@ -2105,7 +2119,7 @@ jobs:
             echo "::error::confirmation metadata unavailable"
             exit 1
           fi
-          if ! prev=$(python3 "$RUNNER_TEMP/red-main/proof.py" history "$REPO" main "$VERIFY_WORKFLOW" "$created" \
+          if ! prev=$(python3 "$RUNNER_TEMP/red-main/proof.py" history "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$created" \
             | python3 "$RUNNER_TEMP/red-main/prev.py" "$created"); then
             say "**Unverified:** previous-run history is unavailable or invalid, not genuinely absent; escalating without confirmation."
             echo "::error::previous-run history unavailable"
@@ -2114,7 +2128,7 @@ jobs:
           prev_id=""; prev_conclusion=""; prev_url=""
           if [ -n "$prev" ]; then IFS=$'\t' read -r prev_id prev_conclusion prev_url <<<"$prev"; fi
           if [ -n "$prev_id" ]; then
-            prev_conclusion=$(read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$prev_id" "$VERIFY_CHECK_NAME")
+            prev_conclusion=$(read_proof run "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$prev_id" "$VERIFY_CHECK_NAME")
             case "$prev_conclusion" in
               success|failure|timed_out|action_required|startup_failure|ineligible) ;;
               *)
@@ -2127,7 +2141,7 @@ jobs:
           if [ "$prev_conclusion" = failure ] || [ "$prev_conclusion" = timed_out ]; then
             mkdir -p "$WORK_DIR/junit-previous"
             gha run download "$prev_id" --repo "$REPO" --pattern 'junit-*' --dir "$WORK_DIR/junit-previous" 2>/dev/null || true
-            if ! prev_lanes=$(python3 "$RUNNER_TEMP/red-main/proof.py" failed-lanes "$REPO" main "$VERIFY_WORKFLOW" "$prev_id"); then
+            if ! prev_lanes=$(python3 "$RUNNER_TEMP/red-main/proof.py" failed-lanes "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$prev_id"); then
               say "**Unverified:** previous failing lanes are unavailable; escalating without confirmation."
               echo "::error::previous-run failed lanes unavailable"
               exit 1
@@ -2142,7 +2156,7 @@ jobs:
               say "Second consecutive completed failure${prev_url:+ (previous run $prev_url)}: ${answer#yes }. Tracing the first-bad commit." ;;
             *)
               echo "confirmed=no" >>"$GITHUB_OUTPUT"
-              say "**No revert yet:** ${answer#no }. A revert waits for the same unit to fail on two consecutive completed runs; the next completed verify run on main decides." ;;
+              say "**No revert yet:** ${answer#no }. A revert waits for the same unit to fail on two consecutive completed runs; the next completed verify run on $TRUNK decides." ;;
           esac
 
       # ---------------------------------------------------------------------
@@ -2188,7 +2202,7 @@ jobs:
           state_set window 0
           # A recording/merge_group/diagnostic success cannot be a revert
           # baseline. Optional publication failure cannot hide verified success.
-          if ! base=$(python3 "$RUNNER_TEMP/red-main/proof.py" remote-base "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME" 2>"$WORK_DIR/base.err"); then
+          if ! base=$(python3 "$RUNNER_TEMP/red-main/proof.py" remote-base "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME" 2>"$WORK_DIR/base.err"); then
             say "**Unverified:** the trusted revert baseline is unavailable ($(head -c 200 "$WORK_DIR/base.err" | tr '\n' ' ')); escalating with no revert authorization."
             echo "::error::trusted revert baseline unavailable"
             exit 1
@@ -2215,7 +2229,7 @@ jobs:
           if [ -s "$WORK_DIR/confirmed-units.tsv" ]; then
             unit_why="the run history could not be read"
             if created_at=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.created_at' 2>/dev/null) \
-              && unit=$(python3 "$RUNNER_TEMP/red-main/window.py" window "$REPO" main "$VERIFY_WORKFLOW" "$created_at" \
+              && unit=$(python3 "$RUNNER_TEMP/red-main/window.py" window "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$created_at" \
                 "$VERIFY_CHECK_NAME" "$WORK_DIR/confirmed-units.tsv" "$WORK_DIR/target-units.tsv" 2>"$WORK_DIR/window.err"); then
               case "$unit" in
                 base\ *)
@@ -2372,7 +2386,7 @@ jobs:
               candidate_dir="$WORK_DIR/junit-candidate-${run_of[$sha]}"
               mkdir -p "$candidate_dir"
               gha run download "${run_of[$sha]}" --repo "$REPO" --pattern 'junit-*' --dir "$candidate_dir" 2>/dev/null || true
-              if ! candidate_lanes=$(python3 "$RUNNER_TEMP/red-main/proof.py" failed-lanes "$REPO" main "$VERIFY_WORKFLOW" "${run_of[$sha]}" 2>/dev/null); then
+              if ! candidate_lanes=$(python3 "$RUNNER_TEMP/red-main/proof.py" failed-lanes "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "${run_of[$sha]}" 2>/dev/null); then
                 conclusion_of[$sha]=inconclusive
                 say "Candidate \`${sha:0:9}\` failed, but its failing jobs could not be read: inconclusive for the traced units."
                 continue
@@ -2444,7 +2458,7 @@ jobs:
             failure|timed_out|action_required|startup_failure) ;;
             *) say "**Unverified:** no authenticated post-main failure authorizes this revert."; exit 1 ;;
           esac
-          newest=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
+          newest=$(read_proof sha "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
           case "$newest" in
             success) say "The newest approved same-SHA producer has authenticated success; no revert."; exit 0 ;;
             failure|timed_out|action_required|startup_failure) ;;
@@ -2459,7 +2473,7 @@ jobs:
           # units while other lanes were red, so it has no `verified` success
           # to re-read; the trace admitted it from authenticated run history.
           if [ -z "$(state_get base-unit-run)" ]; then
-            base_proof=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$base" "$VERIFY_CHECK_NAME")
+            base_proof=$(read_proof sha "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$base" "$VERIFY_CHECK_NAME")
             [ "$base_proof" = success ] || { say "**Unverified:** the baseline no longer has authenticated success; no revert authorization."; exit 1; }
           fi
           culprit=$(state_get culprit)
@@ -2504,7 +2518,7 @@ jobs:
               fi
               candidates=""
               for sha in "${shas[@]}"; do candidates="$candidates- \`$sha\`"$'\n'; done
-              body="\`main\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: $not_reverted, so a person decides."
+              body="\`$TRUNK\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: $not_reverted, so a person decides."
               : >"$WORK_DIR/notified"
               for sha in "${shas[@]}"; do
                 pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
@@ -2533,7 +2547,7 @@ jobs:
               protected*)
                 pr=$(jq -r '.number' <<<"$pr_json")
                 protected="$protected$pr "
-                note="\`main\` went red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)) and \`$sha\` from this pull request is a candidate. It is not reverted automatically (${verdict#protected: }): a person decides."
+                note="\`$TRUNK\` went red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)) and \`$sha\` from this pull request is a candidate. It is not reverted automatically (${verdict#protected: }): a person decides."
                 gh api --method POST "repos/$REPO/issues/$pr/comments" --field body="$note" >/dev/null 2>&1 || true
                 if [ -n "$OPS_ISSUE" ]; then
                   gh api --method POST "repos/$REPO/issues/$OPS_ISSUE/comments" --field body="$note" >/dev/null 2>&1 || true
@@ -2577,7 +2591,7 @@ jobs:
                 | select((.body // "") | contains($sha))] | .[0].number // empty')
             if [ -n "$standing" ]; then
               gh api --method POST "repos/$REPO/issues/$standing/comments" \
-                --field body="\`main\` is still red at \`$HEAD_SHA\` ([run]($RUN_URL)) for the same culprit \`$first\`. This revert stays open and unarmed; a person decides." \
+                --field body="\`$TRUNK\` is still red at \`$HEAD_SHA\` ([run]($RUN_URL)) for the same culprit \`$first\`. This revert stays open and unarmed; a person decides." \
                 >/dev/null 2>&1 || true
               say "An open revert pull request (#$standing) already names culprit \`$first\`; commented there and stopped."
               exit 0
@@ -2592,8 +2606,8 @@ jobs:
           git_c init --quiet "$repo_dir"
           cd "$repo_dir"
           git_c remote add origin "https://github.com/$REPO.git" 2>/dev/null || git_c remote set-url origin "https://github.com/$REPO.git"
-          git_c fetch --quiet --depth="$depth" origin main
-          git_c checkout --quiet -B main FETCH_HEAD
+          git_c fetch --quiet --depth="$depth" origin "$TRUNK"
+          git_c checkout --quiet -B "$TRUNK" FETCH_HEAD
           bot_identity
           # Rule 1: never auto-revert a commit that adds or changes migrations.
           # A reverted migration can leave the schema and the code apart, so a
@@ -2628,11 +2642,11 @@ jobs:
               pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
               [ -z "$pr" ] || prs="$prs #$pr"
             done
-            hold_body="\`main\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit \`$first\`${prs:+ (pull request$prs)} was NOT reverted: $why. Forward-fix it; the handler will not revert a migration. Owner: $OWNER_LABEL."
+            hold_body="\`$TRUNK\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit \`$first\`${prs:+ (pull request$prs)} was NOT reverted: $why. Forward-fix it; the handler will not revert a migration. Owner: $OWNER_LABEL."
             existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-migration-hold&per_page=100" \
               --jq "[.[] | select(has(\"pull_request\") | not) | select(.user.login == (\"$APP_SLUG\" + \"[bot]\")) | select((.body // \"\") | contains(\"$first\"))] | .[0].number // empty" 2>/dev/null || true)
             if [ -z "$existing" ]; then
-              gh api --method POST "repos/$REPO/issues" -f title="main is red: migration culprit ${first:0:9} needs a forward-fix" -f body="$hold_body" \
+              gh api --method POST "repos/$REPO/issues" -f title="$TRUNK is red: migration culprit ${first:0:9} needs a forward-fix" -f body="$hold_body" \
                 -f 'labels[]=red-main-migration-hold' -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
                 || say "**Blocked:** the migration-hold issue was not opened (issues: write)."
               # Told once: the issue is the record; later red pushes for the
@@ -2649,7 +2663,7 @@ jobs:
           fi
           if ! git_c revert --no-edit "${shas[@]}" 2>"$WORK_DIR/revert.err"; then
             git_c revert --abort >/dev/null 2>&1 || true
-            say "**No action:** the revert conflicts with main ($(head -c 200 "$WORK_DIR/revert.err" | tr '\n' ' ')); a person must decide."
+            say "**No action:** the revert conflicts with $TRUNK ($(head -c 200 "$WORK_DIR/revert.err" | tr '\n' ' ')); a person must decide."
             exit 0
           fi
           if ! push_branch "$branch" 2>"$WORK_DIR/push.err"; then
@@ -2673,7 +2687,7 @@ jobs:
             original_number=$(gh api "repos/$REPO/commits/$first/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
           fi
           {
-            printf '%s\n' "The verify workflow failed on \`main\` at \`$HEAD_SHA\` in lane(s) \`${FAILED_LANES:-unknown}\`."
+            printf '%s\n' "The verify workflow failed on \`$TRUNK\` at \`$HEAD_SHA\` in lane(s) \`${FAILED_LANES:-unknown}\`."
             printf '%s\n' ""
             printf '%s\n' "- verify run: $RUN_URL"
             if [ -n "$original" ]; then printf '%s\n' "- original pull request: $original"; fi
@@ -2685,9 +2699,9 @@ jobs:
             printf '%s\n' ""
             printf '%s\n' "This revert was opened automatically; the change can be re-landed once fixed."
           } >"$WORK_DIR/revert-body.md"
-          payload=$(jq -n --arg title "$title" --arg head "$branch" \
+          payload=$(jq -n --arg title "$title" --arg head "$branch" --arg base "$TRUNK" \
             --arg body "$(cat "$WORK_DIR/revert-body.md")" \
-            '{title: $title, head: $head, base: "main", body: $body, draft: false}')
+            '{title: $title, head: $head, base: $base, body: $body, draft: false}')
           if ! number=$(gh api --method POST "repos/$REPO/pulls" --input - <<<"$payload" --jq '.number' 2>"$WORK_DIR/pr.err"); then
             write_refused "$(cat "$WORK_DIR/pr.err")" "pull requests: write" "opening the revert pull request" || true
             say "**Blocked:** the revert pull request was not opened."
@@ -2706,7 +2720,7 @@ jobs:
           if [ "$MODE" = revert_pr_unarmed ]; then
             state_set revert-pr "$number"
             say "Revert pull request [#$number](https://github.com/$REPO/pull/$number) is open and NOT armed (\`on_red = revert_pr_unarmed\`): a person decides whether and when it merges."
-            alert_body="\`main\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit: \`$first\`. A revert pull request, #$number, is open and not armed: it will not merge until a person decides. Merge it, or fix forward."
+            alert_body="\`$TRUNK\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit: \`$first\`. A revert pull request, #$number, is open and not armed: it will not merge until a person decides. Merge it, or fix forward."
             for label in red-main-revert-pending "$OWNER_LABEL"; do
               gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
                 -f description="red-main handler alert" >/dev/null 2>&1 || true
@@ -2718,13 +2732,13 @@ jobs:
             if [ -n "$existing" ]; then
               say "An alert for culprit \`$first\` is already open (#$existing)."
             else
-              gh api --method POST "repos/$REPO/issues" -f title="main is red: revert #$number awaits a decision" -f body="$alert_body" \
+              gh api --method POST "repos/$REPO/issues" -f title="$TRUNK is red: revert #$number awaits a decision" -f body="$alert_body" \
                 -f 'labels[]=red-main-revert-pending' -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
                 || say "**Blocked:** the alert issue was not opened (issues: write)."
             fi
             if [ -n "$original_number" ]; then
               gh api --method POST "repos/$REPO/issues/$original_number/comments" \
-                --field body="\`main\` went red after this merged ([run]($RUN_URL)). A revert pull request, #$number, is open and not armed; a person decides." \
+                --field body="\`$TRUNK\` went red after this merged ([run]($RUN_URL)). A revert pull request, #$number, is open and not armed; a person decides." \
                 >/dev/null 2>&1 || true
             fi
             if [ -n "$OPS_ISSUE" ]; then
@@ -2811,7 +2825,7 @@ jobs:
                     sleep 60
                     IFS=$'\t' read -r queued position <<<"$(queue_state 2>/dev/null)" || true
                   fi
-                  say "The red-main handler jumped the revert to the front of the merge queue under the red-\`main\` rule (queue position ${position:--1})."
+                  say "The red-main handler jumped the revert to the front of the merge queue under the red-\`$TRUNK\` rule (queue position ${position:--1})."
                 else
                   write_refused "$(cat "$WORK_DIR/jump.err")" "pull requests: write" "the jump" || true
                   say "**Blocked:** the jump was refused, so the revert waits its turn; auto-merge stays armed."
@@ -2821,7 +2835,7 @@ jobs:
           fi
           if [ -n "$original_number" ]; then
             gh api --method POST "repos/$REPO/issues/$original_number/comments" \
-              --field body="\`main\` went red after this merged: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). Reverted in #$number; the change can be re-landed once fixed." \
+              --field body="\`$TRUNK\` went red after this merged: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). Reverted in #$number; the change can be re-landed once fixed." \
               >/dev/null 2>&1 || say "The comment on the original pull request could not be posted."
           fi
           # Rule 4: every auto-revert tells the owner and the ops issue (sha,
@@ -2924,7 +2938,7 @@ jobs:
             gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
               -f description="red-main handler alert" >/dev/null 2>&1 || true
           done
-          body="The red-main handler failed on \`$REPO\`: $RUN_URL${TRIGGER_URL:+ (verify run: $TRIGGER_URL)}. A red \`main\` may not be healing itself. Open the run, read the failed step, fix the cause (a missing App grant, an API error, or a handler bug), then close this issue."
+          body="The red-main handler failed on \`$REPO\`: $RUN_URL${TRIGGER_URL:+ (verify run: $TRIGGER_URL)}. A red \`$TRUNK\` may not be healing itself. Open the run, read the failed step, fix the cause (a missing App grant, an API error, or a handler bug), then close this issue."
           existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-broken&per_page=1" --jq '.[0].number // empty' 2>/dev/null || true)
           if [ -n "$existing" ]; then
             gh api --method POST "repos/$REPO/issues/$existing/comments" -f body="$body" >/dev/null \
