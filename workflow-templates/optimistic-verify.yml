@@ -10,7 +10,8 @@
 # `lanes` set to the lanes it suspects.
 #
 # Adopting: replace each `@main` below with the commit of SylphxAI/.github
-# main you adopt, then fill in the lanes.
+# main you adopt, then fill in the lanes. A repository whose default branch is
+# not `main` lists its own branch under `push` below.
 name: Verify
 
 on:

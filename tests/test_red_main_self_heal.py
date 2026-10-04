@@ -478,7 +478,7 @@ class RulesStaticTest(unittest.TestCase):
 class DispatchWithNothingRedTest(unittest.TestCase):
     def test_no_failed_run_is_quiet_not_an_error(self):
         body = step_text("Resolve the verify run that failed")
-        self.assertIn('quiet "no failed run of $VERIFY_WORKFLOW on main was found to handle"', body)
+        self.assertIn('quiet "no failed run of $VERIFY_WORKFLOW on $TRUNK was found to handle"', body)
         self.assertNotIn("was found to handle\"\n            exit 1", body)
 
 
@@ -489,7 +489,7 @@ class ReviewFixesStaticTest(unittest.TestCase):
         self.assertIn('[ -s "$WORK_DIR/one-commit.txt" ] || files_ok=no', body)
         self.assertNotIn("--jq '.files", body)
         # after the clone, before the revert
-        self.assertLess(body.index("git_c checkout --quiet -B main FETCH_HEAD"), body.index("git_c diff --no-renames"))
+        self.assertLess(body.index("git_c checkout --quiet -B \"$TRUNK\" FETCH_HEAD"), body.index("git_c diff --no-renames"))
         self.assertLess(body.index("git_c diff --no-renames"), body.index("git_c revert --no-edit"))
 
     def test_shell_fallback_is_the_default_list(self):
@@ -502,7 +502,7 @@ class ReviewFixesStaticTest(unittest.TestCase):
 
     def test_hold_comments_once_per_culprit(self):
         body = step_text("Revert the culprit or report it")
-        start = body.index('if [ -z "$existing" ]; then\n              gh api --method POST "repos/$REPO/issues" -f title="main is red: migration')
+        start = body.index('if [ -z "$existing" ]; then\n              gh api --method POST "repos/$REPO/issues" -f title="$TRUNK is red: migration')
         end = body.index('say "**No revert (migration hold)')
         self.assertIn("OPS_ISSUE#", body[start:end])
         self.assertIn('for pr in $prs; do', body[start:end])

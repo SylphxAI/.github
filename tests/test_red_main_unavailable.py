@@ -53,6 +53,8 @@ elif "/jobs?" in path:
         key = "NEWEST_JOB_FIXTURE" if "/runs/2/" in path else "JOB_FIXTURE"
         print(json.dumps({"total_count": 1, "jobs": [json.loads(os.environ[key])]} if key in os.environ else {"total_count": 0, "jobs": []}))
 elif "/actions/workflows/" in path:
+    with open(os.path.join(os.environ["RUNNER_TEMP"], "workflow-paths"), "a") as stream:
+        stream.write(path + "\\n")
     if os.environ.get("HISTORY_UNAVAILABLE") == "yes":
         print("HTTP 502: history unavailable", file=sys.stderr)
         sys.exit(1)
@@ -115,7 +117,7 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.env = dict(os.environ, RUNNER_TEMP=str(self.root),
                         PATH=f"{binaries}:{os.environ['PATH']}",
                         GITHUB_OUTPUT=str(self.root / "output"),
-                        REPO="SylphxAI/cloud", VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME="verified",
+                        TRUNK="main", REPO="SylphxAI/cloud", VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME="verified",
                         EVENT_RUN_ID="1", RUN_ID="1", HEAD_SHA=SHA, SHORT_SHA=SHA[:9],
                         RUN_URL=RUN["html_url"], RUN_FIXTURE=json.dumps(RUN),
                         MODE="notify", ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
@@ -136,6 +138,27 @@ class UnavailableHandlerTest(unittest.TestCase):
 
     def use_real_proof(self):
         (self.work / "proof.py").write_text((ROOT / ".github/actions/ci-range/post_main.py").read_text())
+
+    def history_of(self, branch):
+        self.env["EVENT_RUN_ID"] = ""
+        self.env["PROOF_RESULT"] = "failure"
+        self.env["HISTORY_FIXTURE"] = json.dumps(dict(total_count=1, workflow_runs=[dict(RUN, head_branch=branch, status="completed")]))
+
+    def test_dispatch_on_a_master_repository_classifies_its_newest_failed_run(self):
+        self.history_of("master")
+        self.env["TRUNK"] = "master"
+        result = self.execute("Resolve the verify run that failed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.work / "state/quiet").exists(), result.stdout)
+        self.assertEqual(self.state("run-id"), "1")
+        self.assertIn("branch=master&", (self.root / "workflow-paths").read_text())
+
+    def test_dispatch_never_takes_another_branch_for_the_trunk(self):
+        self.history_of("main")
+        self.env["TRUNK"] = "master"
+        result = self.execute("Resolve the verify run that failed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("on master was found", self.state("quiet"))
 
     def test_real_helper_partial_and_null_producers_never_quiet(self):
         self.use_real_proof()

@@ -297,9 +297,9 @@ class ProofTest(unittest.TestCase):
 
     def test_auto_revert_uses_helper_for_event_green_guard_and_baseline(self):
         text = (ROOT / ".github/workflows/red-main.yml").read_text()
-        self.assertIn('read_proof run "$REPO" main "$VERIFY_WORKFLOW" "$run_id"', text)
-        self.assertIn('read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
-        self.assertIn('proof.py" remote-base "$REPO" main "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
+        self.assertIn('read_proof run "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$run_id"', text)
+        self.assertIn('read_proof sha "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
+        self.assertIn('proof.py" remote-base "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
         self.assertIn('if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi', text)
         self.assertNotIn("status=success&per_page=1", text)
         self.assertNotIn("check_name=$name&filter=latest", text)
