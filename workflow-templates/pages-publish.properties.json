@@ -1,0 +1,6 @@
+{
+  "name": "Pages publish",
+  "description": "Deploys a web preview from every passing main run that is ahead of the commit it serves, never going back, on Sylphx runners.",
+  "iconName": "octicon rocket",
+  "categories": ["Automation", "Rust"]
+}
