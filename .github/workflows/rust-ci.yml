@@ -15,6 +15,10 @@ name: Rust CI
 # - The checkout and CARGO_HOME paths are the same on every event, because
 #   rustc's arguments (and so the keys) carry absolute paths.
 #
+# Compile cache: the job asks BuildCache for a run token with its OIDC
+# identity (`id-token: write`, granted to the job below and by the caller's
+# `rust` job in the starter); the organization secrets are the fallback.
+#
 # Spend: Sylphx runners only. `runner-class` picks a Sylphx label, and a merge
 # group runs on that class's -merge lane; no GitHub-hosted label is reachable.
 #
@@ -117,6 +121,12 @@ permissions:
 jobs:
   rust:
     name: Rust (fmt, clippy, test)
+    # id-token: the compile cache (BuildCache) knows the job by its GitHub OIDC
+    # identity. Without it the cache action falls back to the static secrets,
+    # then the Actions cache. The caller's job must grant it too.
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ${{ format('sylphx-linux-{0}{1}', inputs.runner-class == 'xlarge' && 'xlarge' || 'standard', github.event_name == 'merge_group' && '-merge' || '') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
