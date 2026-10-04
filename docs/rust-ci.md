@@ -112,3 +112,33 @@ It does not cache build-script execution, linking, or test runs; cargo still
 links every binary and runs every test. Dependency downloads come from the
 registry each run. The bound is the bucket's 14-day expiry and the
 organization's object-store quota.
+
+## Conformance check
+
+The `rust-sccache` action's `key-prefix` defaults to `rustc`, the one
+namespace of ADR 0004, so a caller that does not set it cannot land in a
+namespace of its own. A caller still states `key-prefix: rustc` until its pin
+is at or after the commit that made it the default.
+
+[`scripts/audit_rust_cache.py`](../scripts/audit_rust_cache.py) reads every
+non-archived repository of the organizations in
+[`policy/rust-cache.json`](../policy/rust-cache.json) (read-only, with the
+optimistic-merge audit's reader: batched GraphQL queries and one compare read
+per distinct pin) and reports each one whose workflows compile Rust on a
+Sylphx Linux runner against three rows. It exits 1 on any FAIL and writes the
+whole report with `--json`.
+
+| Row | Holds when |
+| --- | --- |
+| C1 | every Rust job calls `rust-ci.yml` or `rust-check.yml`, or runs `rust-sccache` pinned to a full SHA at or after the policy's `pin_floor` |
+| C2 | the namespace is `rustc`: no other `key-prefix` on a `rust-sccache` step or a `rust-ci.yml` call, and none left unset on a pin that predates the default |
+| C3 | every workflow with a Rust job that runs on `pull_request` or `merge_group` also runs on push to the default branch (directly or through a local workflow call), so main warms the cache |
+
+Unreadable is FAIL. Out of scope: jobs on GitHub-hosted, macOS or Windows
+runners, Rust compiled inside container image builds, and Rust reached only
+through a wrapper the workflow text does not show (a script, `make`, a local
+composite action). An exemption in the policy carries a class, reason, owner
+and review date; one past its date stops applying, and an exempt repository's
+files are not read. Move `pin_floor` forward when a fix every caller needs
+lands, and set `rustc_default_sha` to the commit that made `rustc` the action
+default.

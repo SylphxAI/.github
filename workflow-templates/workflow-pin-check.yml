@@ -1,0 +1,38 @@
+name: Workflow pin check
+
+# Fails a pull request that pins another of our repositories to a commit that is not on that repository's
+# default branch (a pin to an unmerged pull request's head becomes unreachable once it is squash-merged
+# and fails merge_group at startup). Copy to .github/workflows/workflow-pin-check.yml and replace the
+# commit placeholder with the pinned commit of SylphxAI/.github (docs/workflow-pin-check.md).
+on:
+  pull_request:
+    paths: ['.github/workflows/**', '.github/actions/**']
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: workflow-pin-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-pin-check:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Mint read-only token
+        id: reader
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
+          private-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
+          owner: SylphxAI
+          permission-contents: read
+      - uses: SylphxAI/.github/.github/actions/workflow-pin-check@PINNED_COMMIT_SHA
+        with:
+          token: ${{ steps.reader.outputs.token }}
