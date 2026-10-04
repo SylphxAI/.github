@@ -1,0 +1,38 @@
+name: Keel pin check
+
+# Fails a pull request that moves the Keel pin to a commit that is not on Keel main, to a branch, or to a
+# second commit, and warns when the pin is not a keel-verified-* / keel-weekly-* tag. A pull request that
+# leaves the pin alone is only warned about, so an existing fork stays green until its pin moves
+# (SylphxAI/.github docs/keel-pin-check.md).
+# Copy to .github/workflows/keel-pin-check.yml and replace the commit placeholder with the pinned commit of
+# SylphxAI/.github. Add the job (`keel-pin-check`) to the ruleset's required checks, or to the aggregate
+# check, once the repository's pin is clean. The Keel repin bot's pull requests pin a verified tag, so
+# list this workflow in its `ci-workflows` only if it should run on them too.
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: keel-pin-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  keel-pin-check:
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # The merge commit and its parents: the first parent is the pull request's base.
+          fetch-depth: 2
+      - uses: SylphxAI/.github/.github/actions/keel-pin-check@PINNED_COMMIT_SHA
+        with:
+          reader-app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
+          reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
+          # A manual run audits every pin; a pull request or merge group is judged against its base.
+          base: ${{ github.event_name == 'workflow_dispatch' && '' || 'auto' }}
