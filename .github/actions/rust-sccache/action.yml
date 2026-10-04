@@ -4,24 +4,26 @@ description: >
   sccache, points it at a backend and sets RUSTC_WRAPPER, so every rustc
   invocation after this step is served from the cache when it can be. Run it
   after the Rust toolchain is installed and before the first cargo command.
-  Backend, first that applies (backend.sh): (1) the org's own prefix of the
-  platform cache bucket, when the runner carries the per-org credential Hands
-  injects (SYLPHX_SCCACHE_*: short-lived, scoped to sccache/<installation
-  id>/, so no org can read or write another's cache; nothing to configure);
-  (2) the organization's own bucket when the s3-* inputs carry its
-  SYLPHX_CI_CACHE_* pair; (3) the repository's GitHub Actions cache, which
-  needs no secret. Never the platform's ci-sccache bucket. The cache only
-  ever speeds a job up: if the backend is unreachable the job compiles cold
-  and says so. Linux x86_64 only; on any other runner it does nothing.
+  Backend, first that applies (backend.sh): (1) BuildCache, the platform's
+  compile-cache gateway: the job's GitHub OIDC token (the job needs
+  `permissions: id-token: write`) is exchanged for a run token scoped by the
+  event - main, the merge queue and schedules write the protected scope, every
+  other event a dev scope that reads protected - and the token goes only to
+  the sccache server, never to the job's environment; (2) the organization's
+  own bucket when the s3-* inputs carry its SYLPHX_CI_CACHE_* pair; (3) the
+  repository's GitHub Actions cache, which needs no secret. A backend that
+  fails or whose server will not start falls through to the next. Never the
+  platform's ci-sccache bucket. The cache only ever speeds a job up: if no
+  backend works the job compiles cold and says so. Linux x86_64 only; on any
+  other runner it does nothing.
 
 inputs:
   s3-access-key:
     description: >
       S3 access key - the organization secret SYLPHX_CI_CACHE_ACCESS_KEY, an
       object-store user of the organization's own (never shared across
-      organizations). Not needed on Sylphx runners, whose injected per-org
-      credential takes precedence. Empty (and no injected credential) selects
-      the GitHub Actions cache backend.
+      organizations). The fallback when BuildCache is not available to the
+      job. Empty selects the GitHub Actions cache backend.
     default: ""
   s3-secret-key:
     description: S3 secret key.
@@ -47,17 +49,32 @@ inputs:
       "false" skips the GitHub Actions cache backend, for a caller that brings
       its own fallback (read the `backend` output).
     default: "true"
+  build-cache:
+    description: >
+      "false" skips the BuildCache backend (it is also skipped when the job
+      has no `id-token: write` permission).
+    default: "true"
+  build-cache-url:
+    description: BuildCache gateway URL.
+    default: https://build-cache.sylphx.net
+  build-cache-network:
+    description: >
+      Which of the gateway's endpoints the run token is for: `public`, or
+      `cluster` for jobs on the platform's own network.
+    default: public
 
 outputs:
   backend:
-    description: The backend sccache runs on - org, static or gha - or none.
+    description: >
+      The backend sccache runs on - buildcache|static|gha|none - also written
+      to the job summary.
     value: ${{ steps.sccache.outputs.backend }}
 
 runs:
   using: composite
   steps:
     - name: Export the Actions cache service to sccache
-      if: inputs.s3-access-key == '' && env.SYLPHX_SCCACHE_ACCESS_KEY_ID == '' && inputs.actions-cache != 'false' && runner.os == 'Linux' && runner.arch == 'X64'
+      if: inputs.s3-access-key == '' && inputs.actions-cache != 'false' && runner.os == 'Linux' && runner.arch == 'X64'
       uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       with:
         script: |
@@ -78,6 +95,9 @@ runs:
         S3_BUCKET: ${{ inputs.s3-bucket }}
         KEY_PREFIX: ${{ inputs.key-prefix }}
         ACTIONS_CACHE: ${{ inputs.actions-cache }}
+        BUILD_CACHE: ${{ inputs.build-cache }}
+        BUILD_CACHE_URL: ${{ inputs.build-cache-url }}
+        BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
       run: |
         set -euo pipefail
         dir="$RUNNER_TEMP/sccache-bin"
@@ -92,48 +112,4 @@ runs:
         # Incremental artifacts are not cacheable, and sccache refuses them.
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
-        . "$GITHUB_ACTION_PATH/backend.sh"
-        case "$backend" in
-          org)
-            # The runner's own per-org credential goes to the sccache server
-            # only (never $GITHUB_ENV), so later steps keep their own AWS_*.
-            echo "::add-mask::$SYLPHX_SCCACHE_SECRET_ACCESS_KEY"
-            echo "::add-mask::$SYLPHX_SCCACHE_SESSION_TOKEN"
-            ;;
-          static)
-            bucket_url="${SCCACHE_ENDPOINT%/}/$SCCACHE_BUCKET"
-            sign=(--aws-sigv4 "aws:amz:us-east-1:s3" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY")
-            if ! curl -sS -o /dev/null --max-time 10 -w '%{http_code}' "${sign[@]}" -I "$bucket_url" | grep -q '^200$'; then
-              curl -sS --max-time 10 "${sign[@]}" -X PUT "$bucket_url" -o /dev/null || true
-              lifecycle='<LifecycleConfiguration><Rule><ID>expire</ID><Filter><Prefix></Prefix></Filter><Status>Enabled</Status><Expiration><Days>14</Days></Expiration></Rule></LifecycleConfiguration>'
-              md5="$(printf '%s' "$lifecycle" | openssl dgst -md5 -binary | base64)"
-              curl -sS --max-time 10 "${sign[@]}" -X PUT -H "Content-MD5: $md5" --data "$lifecycle" "$bucket_url?lifecycle" -o /dev/null || true
-            fi
-            {
-              echo "SCCACHE_BUCKET=$SCCACHE_BUCKET"
-              echo "SCCACHE_ENDPOINT=$SCCACHE_ENDPOINT"
-              echo "SCCACHE_REGION=us-east-1"
-              echo "SCCACHE_S3_KEY_PREFIX=$SCCACHE_S3_KEY_PREFIX"
-              echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
-              echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
-            } >> "$GITHUB_ENV"
-            ;;
-          gha)
-            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-            echo "SCCACHE_GHA_VERSION=$KEY_PREFIX" >> "$GITHUB_ENV"
-            ;;
-          none)
-            echo "backend=none" >> "$GITHUB_OUTPUT"
-            echo "No sccache backend; compiling without it"
-            exit 0
-            ;;
-        esac
-        export SCCACHE_IDLE_TIMEOUT=0
-        if SCCACHE_LOG=warn sccache --start-server; then
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          echo "backend=$backend" >> "$GITHUB_OUTPUT"
-          echo "sccache $VERSION on $backend_label"
-        else
-          echo "backend=none" >> "$GITHUB_OUTPUT"
-          echo "::warning::sccache could not start on $backend_label; compiling without the cache"
-        fi
+        . "$GITHUB_ACTION_PATH/start.sh"

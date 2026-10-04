@@ -60,6 +60,13 @@ class RustCiWorkflow(unittest.TestCase):
         self.assertIn("github.event_name == 'merge_group' && '-merge' || ''", runs_on)
         self.assertNotRegex(self.text, r"(ubuntu|macos|windows)-(latest|\d)")
 
+    def test_job_may_request_an_oidc_token_and_nothing_else_beyond_read(self) -> None:
+        # BuildCache authenticates the job by its GitHub OIDC identity.
+        self.assertEqual(job()["permissions"], {"contents": "read", "id-token": "write"})
+        top = yaml.safe_load(self.text)["permissions"]
+        self.assertEqual(top, {"contents": "read"})
+        self.assertNotRegex(self.text, r"(?m)^\s+(?!contents|id-token)[a-z-]+: write\s*$")
+
     def test_one_org_wide_namespace_through_the_shared_action(self) -> None:
         cache = step("Compile cache (sccache)")
         self.assertRegex(cache["uses"], r"^SylphxAI/\.github/\.github/actions/rust-sccache@[0-9a-f]{40}$")
@@ -135,6 +142,17 @@ class ValidateInputs(unittest.TestCase):
 
 
 class Template(unittest.TestCase):
+    def test_rust_job_grants_the_oidc_permission_the_reusable_job_needs(self) -> None:
+        # A called workflow can only narrow its caller's token.
+        rust = yaml.safe_load(TEMPLATE.read_text())["jobs"]["rust"]
+        self.assertEqual(rust["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertEqual(yaml.safe_load(TEMPLATE.read_text())["permissions"], {"contents": "read"})
+
+    def test_reaches_only_sylphx_runner_labels(self) -> None:
+        jobs = yaml.safe_load(TEMPLATE.read_text())["jobs"]
+        self.assertNotRegex(TEMPLATE.read_text(), r"(ubuntu|macos|windows)-(latest|\d)")
+        self.assertTrue(jobs["ci-ok"]["runs-on"].startswith("sylphx-"))
+
     def test_main_push_warms_the_cache(self) -> None:
         on = yaml.safe_load(TEMPLATE.read_text())[True]
         self.assertEqual(on["push"]["branches"], ["main"])

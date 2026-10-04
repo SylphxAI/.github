@@ -33,9 +33,10 @@ missing cache, the missing credential, and the missing main run.
 What exists today:
 
 - [`actions/rust-sccache`](../../.github/actions/rust-sccache/action.yml)
-  installs a pinned sccache and picks a backend, first that applies: a
-  per-organization credential the runner would carry (`SYLPHX_SCCACHE_*`),
-  the organization's own object-store user passed as secrets
+  installs a pinned sccache and picks a backend, first that applies: BuildCache
+  (the job's GitHub OIDC identity exchanged for a run token; it replaced the
+  runner-carried `SYLPHX_SCCACHE_*` slot, which was never delivered and is
+  gone from the action), the organization's own object-store user passed as secrets
   (`SYLPHX_CI_CACHE_*`, bucket `ci-sccache-<org>` on the in-cluster Ceph RGW,
   14-day expiry), then the repository's GitHub Actions cache. It never uses
   the platform's own `ci-sccache` bucket.
@@ -119,8 +120,8 @@ gateway:
   Each organization's secrets must exist and be visible to every repository
   that compiles Rust. The values are copied from the object-store user by the
   operator; they are never printed or committed.
-- **Phase 2 (when BuildCache's protected-scope minting ships).** The action's
-  first backend becomes BuildCache: the job exchanges its GitHub OIDC token
+- **Phase 2 (action side landed; live once the gateway serves the exchange and
+  callers bump their pin).** The action's first backend becomes BuildCache: the job exchanges its GitHub OIDC token
   (`id-token: write`) at the gateway for a run token (claims: organization
   from `repository_owner_id` through the gateway's table of GitHub
   organizations, cache `ci`, scope from the event, expiry at the
@@ -242,8 +243,12 @@ and write `protected` only.
   or platform key appears in the job; caller inputs never reach a shell body
   and shell metacharacters are refused; the starter keeps the push to main and
   cancels only pull-request runs; every run reports its hit rate.
-- `tests/test_rust_sccache_backend.py` (existing) covers the backend order;
-  phase 2 adds the BuildCache case and its fallback.
+- `tests/test_rust_sccache_backend.py` covers the backend order against a
+  local fake OIDC issuer and gateway: BuildCache first, then the static
+  secrets, then the Actions cache; every failure (no OIDC permission, 404, 503,
+  timeout, invalid reply, a server that will not start) falls through with a
+  warning that holds no token or body; no token reaches `$GITHUB_ENV`, an
+  output or the summary; hostile input values are refused or inert.
 - On adoption, each of the first three repositories shows: a second main run
   with a hit rate of 90% or more on unchanged inputs; a pull request touching
   one leaf crate hitting every other crate; the before and after median wall

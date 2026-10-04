@@ -24,6 +24,12 @@ permissions:
 
 jobs:
   rust:
+    # id-token: the compile cache knows the job by its GitHub OIDC identity
+    # (a called workflow can only narrow what its caller grants). Without it
+    # the cache falls back to the organization secrets, then the Actions cache.
+    permissions:
+      contents: read
+      id-token: write
     uses: SylphxAI/.github/.github/workflows/rust-ci.yml@main
     with:
       workspace: .
