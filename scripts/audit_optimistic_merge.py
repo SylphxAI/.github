@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report every repository against the optimistic-merge conformance rows R1-R7.
+"""Report every repository against the optimistic-merge conformance rows R1-R8.
 
 Contract: docs/optimistic-merge.md. Policy: policy/optimistic-merge.json (the
 pin floor and the named exemptions). Read-only: GraphQL queries and compare
@@ -22,6 +22,11 @@ Rows, per non-archived repository of the policy's organizations:
        (where R2 applies) and `verified` never is
   R7   on_red is `revert` or `revert_pr_unarmed` only where the builder App
        reaches the repository (policy writer_app_orgs), `notify` elsewhere
+  R8   merge lane: in a workflow that runs on merge_group, every job on the
+       `sylphx-linux-standard` or `sylphx-linux-xlarge` pool selects its
+       `-merge` twin on merge_group, so a merge group never queues behind the
+       pull-request backlog (verdict jobs on `sylphx-linux-control` and jobs
+       that skip merge_group are out of scope)
 
 A row is PASS, FAIL, EXEMPT (waived by a named, unexpired exemption) or SKIP
 (nothing to check). Anything the audit could not read is a FAIL, never a pass.
@@ -43,7 +48,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "policy" / "optimistic-merge.json"
-ROWS = ("R1", "R2", "R3", "R3b", "R4", "R5", "R6", "R7")
+ROWS = ("R1", "R2", "R3", "R3b", "R4", "R5", "R6", "R7", "R8")
 ON_RED = ("revert", "revert_pr_unarmed", "notify")
 # Personal repositories are never read, whatever the policy says.
 NEVER_READ_OWNERS = ("tsefamily", "shtse8")
@@ -229,6 +234,49 @@ def job_needs(text: str, job: str) -> list[str]:
     return []
 
 
+BUILD_POOL = re.compile(r"sylphx-linux-(?:standard|xlarge)(?![\w-])")
+MERGE_LANE = re.compile(r"sylphx-linux-(?:standard|xlarge)-merge(?![\w-])")
+
+
+def job_runs_on(body: list[str]) -> str | None:
+    """The `runs-on:` of one job as text (an inline value or its list items), None if it has none."""
+    for i, line in enumerate(body):
+        match = re.match(r"^\s*runs-on\s*:\s*(.*)$", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value:
+            return value
+        return " ".join(entry.strip() for entry in _sub_block(body, i))
+    return None
+
+
+def job_skips_merge_group(body: list[str]) -> bool:
+    """A single-line `if:` that only lets pull_request (or anything but merge_group) run the job."""
+    for line in body:
+        match = re.match(r"^\s*if\s*:\s*(.*)$", line)
+        if match:
+            cond = match.group(1)
+            return bool(re.search(r"event_name\s*!=\s*'merge_group'|event_name\s*==\s*'(?:pull_request|push|schedule|workflow_dispatch)'", cond)
+                        and not re.search(r"event_name\s*==\s*'merge_group'", cond))
+    return False
+
+
+def merge_lane_misses(text: str) -> list[str]:
+    """Jobs of a merge_group workflow on the shared build pool without the `-merge` selector."""
+    if "merge_group" not in triggers(text):
+        return []
+    misses = []
+    for job_id, body in jobs(text).items():
+        runs_on = job_runs_on(body)
+        if runs_on is None or not BUILD_POOL.search(runs_on) or MERGE_LANE.search(runs_on):
+            continue
+        if re.search(r"\$\{\{[^}]*(?:matrix|inputs)\.", runs_on) or job_skips_merge_group(body):
+            continue  # decided at run time, or never a merge-group job
+        misses.append(job_id)
+    return misses
+
+
 def uses_refs(text: str, path_pattern: str) -> list[str]:
     """Refs after `@` for every `uses: SylphxAI/.github/<path_pattern>@ref`."""
     found = []
@@ -324,7 +372,7 @@ def _row(status: str, detail: str = "") -> dict:
 
 
 def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dict]:
-    """The eight rows of one repository from its facts (no network)."""
+    """The rows of one repository from its facts (no network)."""
     org, branch = facts["org"], facts["branch"]
     unreadable = facts.get("errors") or []
     files = facts.get("files") or {}
@@ -449,6 +497,20 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
         rows["R7"] = _row("FAIL", f"the builder App does not reach {org}: on_red = {on_red} runs as notify; declare notify")
     else:
         rows["R7"] = _row("PASS", f"on_red = {on_red}")
+
+    # R8
+    candidates = {name: text for name, text in (facts.get("all_workflows") or {}).items() if text}
+    for name, text in files.items():
+        if text:
+            candidates.setdefault(name, text)
+    if not candidates:
+        rows["R8"] = _row("FAIL", "workflow files unreadable") if unreadable else _row("SKIP", "no workflows read")
+    else:
+        missed = {name: merge_lane_misses(text) for name, text in sorted(candidates.items())}
+        missed = {name: ids for name, ids in missed.items() if ids}
+        rows["R8"] = need(not missed, "merge-group jobs select the merge lane",
+                          "merge_group job on the pull-request pool without a `-merge` runner: "
+                          + "; ".join(f"{name} ({', '.join(ids)})" for name, ids in missed.items()))
 
     if unreadable:
         for name in ROWS:
