@@ -191,7 +191,7 @@ class ProofTest(unittest.TestCase):
 
     def test_failed_lane_selection_requires_valid_complete_job_evidence(self):
         job = dict(id=300, run_id=9, name="rust", status="completed", conclusion="failure")
-        for invalid in (dict(name=None), dict(name=""), dict(name="rust,other"), dict(name="rust\nother"),
+        for invalid in (dict(name=None), dict(name=""), dict(name="rust\nother"),
                         dict(run_id=None), dict(run_id=8), dict(status="mystery"),
                         dict(status="in_progress"), dict(conclusion=None), dict(conclusion="mystery")):
             with self.subTest(invalid=invalid), patch.object(proof, "paged", return_value=[dict(job, **invalid)]):
@@ -199,6 +199,12 @@ class ProofTest(unittest.TestCase):
                     proof.failed_lanes(REPO, "9")
         with patch.object(proof, "paged", return_value=[job, dict(job, id=301, name="lint", conclusion="success")]):
             self.assertEqual(proof.failed_lanes(REPO, "9"), "rust")
+        # A comma only matters in a lane that is joined into the list: a passing
+        # lane may carry one, and a failing one is written with ';'.
+        with patch.object(proof, "paged", return_value=[job, dict(job, id=301, name="a (b, c)", conclusion="success")]):
+            self.assertEqual(proof.failed_lanes(REPO, "9"), "rust")
+        with patch.object(proof, "paged", return_value=[dict(job, name="a (b, c)")]):
+            self.assertEqual(proof.failed_lanes(REPO, "9"), "a (b; c)")
         with patch.object(proof, "api", return_value={"total_count": 2, "jobs": []}):
             with self.assertRaisesRegex(ValueError, "inconsistent"):
                 proof.failed_lanes(REPO, "9")

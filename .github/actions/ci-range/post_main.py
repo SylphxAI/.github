@@ -210,7 +210,6 @@ def failed_lanes(repo, identity):
     for job in jobs:
         name = job.get("name")
         if (not isinstance(name, str) or not name.strip()
-                or re.search(r"[,\x00-\x1f\x7f]", name)
                 or type(job.get("run_id")) is not int or job["run_id"] != int(identity)
                 or job.get("status") != "completed"
                 or job.get("conclusion") not in
@@ -218,7 +217,13 @@ def failed_lanes(repo, identity):
                  "action_required", "startup_failure", "stale")):
             raise ValueError("previous-run lane evidence unavailable or invalid")
         if job["conclusion"] in ("failure", "timed_out"):
-            lanes.append(name)
+            # Only a joined name must survive the comma-separated list. A comma
+            # in a lane that passed (or was skipped) cannot break the join, so
+            # it never blocks the confirmation; one in a failing lane is written
+            # as ';', the same way the current run's lanes are written.
+            if re.search(r"[\x00-\x1f\x7f]", name):
+                raise ValueError(f"failed lane name has a control character: {name!r}")
+            lanes.append(name.replace(",", ";"))
     return ",".join(lanes)
 
 
