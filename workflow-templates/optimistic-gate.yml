@@ -30,11 +30,28 @@ permissions:
   contents: read
   actions: read
   checks: read
+  pull-requests: read
 
 jobs:
   # Merge-group jobs run on the merge lane (`-merge` runners, never behind the
   # pull-request backlog); pull requests on the ordinary pool. An xlarge job
   # uses the same form with sylphx-linux-xlarge-merge / sylphx-linux-xlarge.
+  # Stop the line: while the trunk's newest conclusive Verify run is red and its
+  # way back is in motion (a newer Verify run is running, or a revert or fix
+  # pull request is open), a merge group is admitted only for a revert, a
+  # live-outage fix or a pull request labelled `main-red-fix`; anything else
+  # leaves the queue until the trunk is green. Merge groups only.
+  # Ships in `observe` (prints what it would refuse, refuses nothing): read a
+  # few merge groups, including one on a red trunk, then set `mode: enforce`.
+  main-state:
+    if: github.event_name == 'merge_group'
+    runs-on: sylphx-linux-standard-merge
+    timeout-minutes: 5
+    steps:
+      - uses: SylphxAI/.github/.github/actions/main-red-gate@main
+        with:
+          mode: observe
+
   # Which lanes this change affects. A change under .github/ runs them all.
   plan:
     runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
@@ -105,7 +122,7 @@ jobs:
   # suite (a dispatch run) never turns a red check green.
   ci-ok:
     if: always()
-    needs: [plan, lint, test, migrations, suite]
+    needs: [main-state, plan, lint, test, migrations, suite]
     # The reserved gate pool (Kueue queue scale-set-gate, never lends): an
     # `if: always()` verdict still runs after its run is cancelled, and that run
     # keeps its concurrency group until it does, so on a busy build pool a
