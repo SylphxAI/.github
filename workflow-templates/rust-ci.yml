@@ -1,0 +1,52 @@
+# Rust CI on the organization's shared compile cache (docs/rust-ci.md in
+# SylphxAI/.github). Copy to .github/workflows/ci.yml (or merge the `rust`
+# job into an existing gate) and replace `@main` with the commit of
+# SylphxAI/.github main you adopt: callers pin by commit.
+#
+# The push to main is what keeps the cache warm: every pull request and merge
+# group reads the entries the last main run wrote. Keep it.
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+# A new push supersedes a pull request's run; a main or merge-group run is
+# never cancelled, so it always finishes writing the cache.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    uses: SylphxAI/.github/.github/workflows/rust-ci.yml@main
+    with:
+      workspace: .
+      # apt-packages: libasound2-dev pkg-config
+      # clippy-args: --workspace --all-targets --all-features -- -D warnings
+      # test-args: --workspace
+      # Private git dependencies, one OWNER/REPO per line, read through your
+      # own reader App (GIT_DEPS_APP_ID / GIT_DEPS_APP_KEY below).
+      # git-deps: |
+      #   OWNER/REPO
+    secrets:
+      SYLPHX_CI_CACHE_ACCESS_KEY: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
+      SYLPHX_CI_CACHE_SECRET_KEY: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
+      # GIT_DEPS_APP_ID: ${{ secrets.YOUR_READER_APP_ID }}
+      # GIT_DEPS_APP_KEY: ${{ secrets.YOUR_READER_APP_KEY }}
+
+  # The one required check.
+  ci-ok:
+    if: always()
+    needs: [rust]
+    runs-on: sylphx-linux-control
+    timeout-minutes: 5
+    steps:
+      - uses: SylphxAI/.github/.github/actions/needs-pass@main
+        with:
+          needs: ${{ toJSON(needs) }}
