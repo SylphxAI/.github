@@ -228,7 +228,7 @@ class RedMainOnlyOnFailureTest(unittest.TestCase):
         caller = yaml.safe_load((ROOT / "workflow-templates" / "red-main.yml").read_text())
         condition = " ".join(caller["jobs"]["red-main"]["if"].split())
         self.assertIn("github.event.workflow_run.conclusion == 'failure'", condition)
-        self.assertIn("github.event.workflow_run.head_branch == 'main'", condition)
+        self.assertIn("github.event.workflow_run.head_branch == github.event.repository.default_branch", condition)
         self.assertEqual(caller[True]["workflow_run"]["workflows"], ["Verify"])  # yaml reads `on` as True
 
     def test_handler_quiets_only_authenticated_success_or_ineligible_producer(self) -> None:
@@ -239,7 +239,7 @@ class RedMainOnlyOnFailureTest(unittest.TestCase):
         self.assertIn('proof=$(read_proof run', handler)
         # Manual event selection cannot take a diagnostic or merge-group run;
         # whole-workflow failure is not proof (optional publishing may fail).
-        self.assertIn("runs?event=push&branch=main", handler)
+        self.assertIn("runs?event=push&branch=$TRUNK", handler)
         self.assertNotIn("runs?branch=main&status=failure", handler)
 
 

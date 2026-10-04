@@ -4,7 +4,7 @@
   "orgs": ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"],
   "pin_floor": {
     "repo": "SylphxAI/.github",
-    "sha": "3f5ec7d2c084f7bafb57a56973a2236dc5eae447",
+    "sha": "6533cb5cc43517cdb9f8734d57f98fe0d8f05c54",
     "note": "A red-main caller or main-red-gate pin is conformant when it is this commit or a descendant of it. Move the floor forward when a fix every caller needs lands."
   },
   "writer_app_orgs": ["SylphxAI"],

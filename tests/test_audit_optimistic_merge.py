@@ -46,7 +46,7 @@ def conformant(org: str = "SylphxAI", name: str = "tool", branch: str = "main", 
         "org": org, "repo": f"{org}/{name}", "name": name, "fork": False, "private": True, "branch": branch,
         "errors": [], "toml": f'version = "1"\n\n[ci]\nmerge = "optimistic"\non_red = "{on_red}"\n',
         "files": {"ci.yml": starter("optimistic-gate.yml"), "verify.yml": verify,
-                  "red-main.yml": red_main().replace("== 'main'", f"== '{branch}'")},
+                  "red-main.yml": red_main()},
         "all_workflows": {"ci.yml": "", "verify.yml": "", "red-main.yml": ""},
         "merge_queue": True, "rules_error": None,
         "rulesets": [{"enforcement": "ACTIVE", "target": "BRANCH", "include": ["~DEFAULT_BRANCH"], "exclude": [],
@@ -97,7 +97,8 @@ class ConformantTest(unittest.TestCase):
     def test_master_trunk_with_main_hardcoded_fails_caller_and_verify(self) -> None:
         facts = conformant("Cubeage", "big2-tycoon-keel", branch="master")
         facts["files"]["verify.yml"] = starter("optimistic-verify.yml")  # push: [main]
-        facts["files"]["red-main.yml"] = red_main()  # if: ... == 'main'
+        facts["files"]["red-main.yml"] = red_main().replace(
+            "== github.event.repository.default_branch", "== 'main'")
         rows = run_rows(facts)
         self.assertEqual(failing(rows), {"R3", "R4"})
         self.assertIn("master", rows["R4"]["detail"])
@@ -105,8 +106,7 @@ class ConformantTest(unittest.TestCase):
     def test_default_branch_expression_in_the_starter_is_conformant_on_any_trunk(self) -> None:
         facts = conformant("Cubeage", "x", branch="master")
         facts["files"]["red-main.yml"] = red_main()
-        facts["files"]["red-main.yml"] = facts["files"]["red-main.yml"].replace(
-            "== 'main'", "== github.event.repository.default_branch")
+        self.assertIn("== github.event.repository.default_branch", facts["files"]["red-main.yml"])
         self.assertNotIn("R4", failing(run_rows(facts)))
 
 
