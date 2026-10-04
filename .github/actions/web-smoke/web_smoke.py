@@ -228,7 +228,7 @@ def brotli_module():
         return brotli
     except ImportError:
         pass
-    p = run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "--break-system-packages", "brotli"])
+    p = run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "--break-system-packages", "brotli==1.1.0"])
     if p.returncode != 0:
         raise Refused("the served-size check needs the Python brotli module and pip could not install it:\n" + p.stderr[-400:])
     import importlib
