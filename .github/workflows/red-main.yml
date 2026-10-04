@@ -40,6 +40,15 @@ name: Red main
 # it a revert is opened but not armed. `on_red = "notify"` never pushes a
 # branch or opens a pull request; it comments and files issues only.
 #
+# The candidates are the commits since a per-unit baseline: when the confirm step
+# names failing units (a junit test, else a lane) that failed on two consecutive
+# runs, the baseline is the head of the newest earlier completed push run where
+# one of them did not fail (WINDOW_PY), so a unit that breaks inside an already
+# red trunk is traced over the commits since it last passed. The candidate runs
+# then cover only those units' lanes and count as failed only when one of those
+# units failed. No such run in the last 100 keeps the last fully verified
+# commit as the baseline.
+#
 # The culprit is the OLDEST candidate whose run concluded `failure`, provided
 # every older candidate concluded `success`. A cancelled, startup_failure,
 # timed_out, or not-finished-by-the-deadline run is inconclusive and never
@@ -1350,8 +1359,229 @@ jobs:
         runs.sort(key=lambda row: timestamp(row["created_at"]), reverse=True)
         if runs:
             print(f"{runs[0]['id']}\t{runs[0]['conclusion']}\t{runs[0].get('html_url', '')}")
+      # The regression window of a confirmed failing unit, and the judge of a
+      # trace candidate against it (see the text of the script).
+      WINDOW_PY: |
+        """The regression window of a red trunk, per failing unit (Findit-style).
+
+        A unit that newly fails inside an already-red trunk is traced from the newest
+        earlier completed verify run in which that unit did not fail, not from the last
+        commit where everything passed. Units are `kind<TAB>name<TAB>job` rows, the same
+        as junit.py writes: a `test` row is a failing test of a job, a `lane` row is a
+        job with no junit (it stands for every test of that job).
+
+          window.py window <repo> <branch> <workflow> <created> <aggregate> <confirmed.tsv> <targets.tsv>
+              Prints `base <sha> <run id> <unit count>` and writes the units whose
+              baseline that is, or prints `none <why>`. Walks the verify runs on the
+              branch, newest first, from the run before the failing one; the first run
+              that clears any confirmed unit decides, so the window is the narrowest
+              one. A run clears a unit when its job succeeded, or when the job failed
+              but its junit shows the test did not (a producer that lists passing tests
+              must list this one). A job that was skipped, cancelled or absent clears
+              nothing. The aggregate job (`verified`) is not a unit.
+          window.py judge <targets.tsv> <failing.tsv>
+              Prints `fail <why>` when a unit of targets failed in a candidate run
+              whose failing units are failing.tsv (a lane row counts for every test of
+              its job), else `pass <why>`.
+        """
+        import os
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        import xml.etree.ElementTree as ElementTree
+        from datetime import datetime
+        from urllib.parse import urlencode
+
+        WALK_RUNS = 100
+        SETTLED = ("success", "failure", "timed_out")
+        FAILED = ("failure", "timed_out")
+
+
+        def timestamp(value):
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("workflow history timestamp lacks timezone")
+            return parsed
+
+
+        def read_units(path):
+            rows = []
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    for line in fh:
+                        parts = line.rstrip("\n").split("\t")
+                        if len(parts) == 3 and all(parts):
+                            rows.append(tuple(parts))
+            except OSError:
+                pass
+            return rows
+
+
+        def earlier_runs(rows, created, is_eligible):
+            """Completed, settled, genuine push runs created before `created`, newest first."""
+            before = timestamp(created)
+            runs = [
+                row for row in rows
+                if isinstance(row, dict) and row.get("status") == "completed"
+                and row.get("conclusion") in SETTLED and timestamp(row["created_at"]) < before
+                and is_eligible(row)
+            ]
+            runs.sort(key=lambda row: (timestamp(row["created_at"]), row["id"]), reverse=True)
+            return runs
+
+
+        def read_junit(root):
+            """(failing, passing, covered) from junit-<job>/*.xml under root: sets of
+            (classname::name, job) pairs, and the jobs that published any testcase."""
+            failing, passing, covered = set(), set(), set()
+            if not os.path.isdir(root):
+                return failing, passing, covered
+            for dirpath, _dirs, files in os.walk(root):
+                lane = os.path.basename(dirpath)
+                lane = lane[len("junit-"):] if lane.startswith("junit-") else lane
+                for filename in files:
+                    if not filename.endswith(".xml"):
+                        continue
+                    try:
+                        tree = ElementTree.parse(os.path.join(dirpath, filename))
+                    except Exception:
+                        continue
+                    for case in tree.iter("testcase"):
+                        name = " ".join((case.get("name") or "").split())[:300]
+                        klass = " ".join((case.get("classname") or "").split())[:300]
+                        full = f"{klass}::{name}" if klass else name
+                        if not full:
+                            continue
+                        kinds = {child.tag for child in case}
+                        covered.add(lane)
+                        if kinds & {"failure", "error"}:
+                            failing.add((full, lane))
+                        elif "skipped" not in kinds:
+                            passing.add((full, lane))
+            return failing, passing, covered
+
+
+        class Evidence:
+            """What one earlier run shows: its job conclusions, and (read only when a
+            unit needs it) its junit."""
+
+            def __init__(self, jobs, junit):
+                self.jobs = jobs
+                self._junit = junit
+                self._cache = None
+
+            def junit(self):
+                if self._cache is None:
+                    self._cache = self._junit()
+                return self._cache
+
+
+        def clears(unit, evidence):
+            kind, name, job = unit
+            conclusion = evidence.jobs.get(job)
+            if conclusion == "success":
+                return True
+            if conclusion not in FAILED or kind != "test":
+                return False
+            failing, passing, covered = evidence.junit()
+            if job not in covered or (name, job) in failing:
+                return False
+            if any(lane == job for _name, lane in passing):
+                return (name, job) in passing
+            # The producer lists failures only: a test it does not list did not fail.
+            return True
+
+
+        def find_window(units, runs, load, limit=WALK_RUNS):
+            """(run, cleared units, runs read) for the newest run that clears any unit."""
+            read = 0
+            for run in runs[:limit]:
+                read += 1
+                evidence = load(run)
+                cleared = [unit for unit in units if clears(unit, evidence)]
+                if cleared:
+                    return run, cleared, read
+            return None, [], read
+
+
+        def judge(targets, failing):
+            tests = {(name, job) for kind, name, job in failing if kind == "test"}
+            lanes = {job for kind, _name, job in failing if kind == "lane"}
+            jobs = {job for _kind, _name, job in failing}
+            for kind, name, job in sorted(targets):
+                if kind == "test" and ((name, job) in tests or job in lanes):
+                    return f"fail the target {name} ({job}) failed in the candidate"
+                if kind == "lane" and job in jobs:
+                    return f"fail the target job {job} failed in the candidate"
+            return "pass none of the target units failed in the candidate"
+
+
+        def live_loader(proof, repo):
+            def load(run):
+                try:
+                    rows = proof.paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
+                except Exception:
+                    rows = []
+                jobs = {}
+                for row in rows:
+                    name = row.get("name")
+                    if (isinstance(name, str) and name.strip() and row.get("run_id") == run["id"]
+                            and row.get("status") == "completed"):
+                        jobs[name.replace(",", ";")] = row.get("conclusion")
+
+                def junit():
+                    work = tempfile.mkdtemp(prefix="junit-window-")
+                    try:
+                        env = dict(os.environ)
+                        env["GH_TOKEN"] = env.get("ACTIONS_TOKEN") or env.get("GH_TOKEN", "")
+                        subprocess.run(["gh", "run", "download", str(run["id"]), "--repo", repo,
+                                        "--pattern", "junit-*", "--dir", work],
+                                       env=env, capture_output=True, timeout=120)
+                        return read_junit(work)
+                    except Exception:
+                        return set(), set(), set()
+                    finally:
+                        shutil.rmtree(work, ignore_errors=True)
+
+                return Evidence(jobs, junit)
+            return load
+
+
+        def main():
+            command = sys.argv[1]
+            if command == "judge":
+                print(judge(read_units(sys.argv[2]), read_units(sys.argv[3])))
+                return
+            repo, branch, workflow, created, aggregate, confirmed, out = sys.argv[2:9]
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import proof
+            units = [u for u in read_units(confirmed) if u[2] != aggregate]
+            if not units:
+                print("none no confirmed unit besides the aggregate job")
+                return
+            history = proof.paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?"
+                                  + urlencode({"event": "push", "branch": branch}), "workflow_runs")
+            runs = earlier_runs(history, created,
+                                lambda row: proof.producer_origin(row, repo, branch, workflow) == "eligible")
+            run, cleared, read = find_window(units, runs, live_loader(proof, repo))
+            if run is None:
+                print(f"none no earlier completed run clears a failing unit (read {read} of {len(runs)})")
+                return
+            with open(out, "w", encoding="utf-8") as fh:
+                for kind, name, job in cleared:
+                    fh.write(f"{kind}\t{name}\t{job}\n")
+            print(f"base {run['head_sha']} {run['id']} {len(cleared)} (read {read} run(s))")
+
+
+        if __name__ == "__main__":
+            try:
+                main()
+            except Exception as error:
+                print(f"none the per-unit window is unavailable: {error}")
       # Same failing unit on the previous completed verify run? Args: the
-      # previous run's conclusion, its failing-units file, this run's. Prints
+      # previous run's conclusion, its failing-units file, this run's, and
+      # optionally a file that receives this run's confirmed units. Prints
       # `yes <why>` or `no <why>`. Units are `kind<TAB>name<TAB>job`; a lane
       # row (a job with no junit) counts on the JOB NAME ALONE, so it matches
       # any unit of the same job, however different the underlying test. A
@@ -1389,6 +1619,18 @@ jobs:
 
         common = tests(prev) & tests(cur)
         lane_hit = (lanes(prev) & jobs(cur)) | (lanes(cur) & jobs(prev))
+        # The units of THIS run that the previous run confirms (a test seen on
+        # both runs, or any unit of a job one run failed as a lane); the trace
+        # reads them from the optional fourth argument.
+        if len(sys.argv) > 4:
+            confirmed = [
+                (kind, name, job) for kind, name, job in cur
+                if (kind == "test" and ((name, job) in tests(prev) or job in lanes(prev)))
+                or (kind == "lane" and job in jobs(prev))
+            ]
+            with open(sys.argv[4], "w", encoding="utf-8") as fh:
+                for row in confirmed:
+                    fh.write("\t".join(row) + "\n")
         if common:
             name, job = sorted(common)[0]
             print(f"yes the same unit failed on both runs: {name} ({job})")
@@ -1478,6 +1720,7 @@ jobs:
           printf '%s\n' "$MIGRATION_PY" >"$RUNNER_TEMP/red-main/migration.py"
           printf '%s\n' "$HOLD_PY" >"$RUNNER_TEMP/red-main/hold.py"
           printf '%s\n' "$PREV_PY" >"$RUNNER_TEMP/red-main/prev.py"
+          printf '%s\n' "$WINDOW_PY" >"$RUNNER_TEMP/red-main/window.py"
           chmod 700 "$RUNNER_TEMP/red-main"
 
       # ---------------------------------------------------------------------
@@ -1891,7 +2134,8 @@ jobs:
             fi
             python3 "$RUNNER_TEMP/red-main/junit.py" "$WORK_DIR/junit-previous" "$WORK_DIR/previous-failing-tests.tsv" "$prev_lanes" >/dev/null
           fi
-          answer=$(python3 "$RUNNER_TEMP/red-main/confirm.py" "$prev_conclusion" "$WORK_DIR/previous-failing-tests.tsv" "$WORK_DIR/failing-tests.tsv")
+          : >"$WORK_DIR/confirmed-units.tsv"
+          answer=$(python3 "$RUNNER_TEMP/red-main/confirm.py" "$prev_conclusion" "$WORK_DIR/previous-failing-tests.tsv" "$WORK_DIR/failing-tests.tsv" "$WORK_DIR/confirmed-units.tsv")
           case "$answer" in
             yes\ *)
               echo "confirmed=yes" >>"$GITHUB_OUTPUT"
@@ -1917,6 +2161,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
+          RUN_ID: ${{ steps.run.outputs.run-id }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
           TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
@@ -1958,6 +2203,41 @@ jobs:
             say "**No action:** \`$HEAD_SHA\` is itself the newest passing commit, so no unverified commit is a candidate."
             exit 0
           fi
+          # Per-unit baseline. A unit that newly fails inside a trunk that was
+          # already red is traced from the newest earlier completed run it did
+          # not fail in, not from the last fully verified commit (which can be
+          # hundreds of commits back). Any doubt keeps the fully verified
+          # baseline above; the lanes of the candidate runs then narrow to the
+          # jobs of those units, and each candidate is judged on them alone.
+          dispatch_lanes="$FAILED_LANES"
+          unit_mode=no
+          unit_why="no confirmed unit"
+          if [ -s "$WORK_DIR/confirmed-units.tsv" ]; then
+            unit_why="the run history could not be read"
+            if created_at=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.created_at' 2>/dev/null) \
+              && unit=$(python3 "$RUNNER_TEMP/red-main/window.py" window "$REPO" main "$VERIFY_WORKFLOW" "$created_at" \
+                "$VERIFY_CHECK_NAME" "$WORK_DIR/confirmed-units.tsv" "$WORK_DIR/target-units.tsv" 2>"$WORK_DIR/window.err"); then
+              case "$unit" in
+                base\ *)
+                  read -r _ unit_base unit_run unit_count _ <<<"$unit"
+                  unit_state=$(gh api "repos/$REPO/compare/$unit_base...$HEAD_SHA" --jq '.status' 2>/dev/null || true)
+                  if [[ "$unit_base" =~ ^[a-f0-9]{40}$ && "$unit_run" =~ ^[1-9][0-9]*$ && "$unit_state" = ahead ]]; then
+                    unit_mode=yes
+                    dispatch_lanes=$(cut -f3 "$WORK_DIR/target-units.tsv" | sort -u | paste -sd, -)
+                    state_set base-unit-run "$unit_run"
+                    say "Per-unit baseline: $unit_count failing unit(s) (\`$(cut -f2 "$WORK_DIR/target-units.tsv" | head -3 | paste -sd, -)\`) last did not fail in verify run $unit_run at \`${unit_base:0:9}\`; the last fully verified commit is \`${base:0:9}\`."
+                    base="$unit_base"
+                    state_set base "$base"
+                  else
+                    unit_why="the per-unit baseline \`${unit_base:0:9}\` is not an ancestor of the failing commit"
+                  fi ;;
+                *) unit_why="${unit#none }" ;;
+              esac
+            fi
+            if [ "$unit_mode" = no ]; then
+              say "Per-unit baseline unavailable ($unit_why): using the last fully verified commit."
+            fi
+          fi
           compare=$(gh api "repos/$REPO/compare/$base...$HEAD_SHA" \
             --jq '.total_commits, (.commits[] | [.sha, (.commit.message | split("\n")[0])] | @tsv)' 2>"$WORK_DIR/compare.err") || {
             say "**No action:** the commits between \`$base\` and \`$HEAD_SHA\` could not be listed ($(head -c 200 "$WORK_DIR/compare.err" | tr '\n' ' ')); a person must decide."
@@ -1994,8 +2274,8 @@ jobs:
           fi
           dispatch() {
             local ref="$1" payload
-            if [ -n "$FAILED_LANES" ] && [ -n "$LANE_INPUT" ]; then
-              payload=$(jq -n --arg ref "$ref" --arg key "$LANE_INPUT" --arg value "$FAILED_LANES" \
+            if [ -n "$dispatch_lanes" ] && [ -n "$LANE_INPUT" ]; then
+              payload=$(jq -n --arg ref "$ref" --arg key "$LANE_INPUT" --arg value "$dispatch_lanes" \
                 '{ref: $ref, inputs: {($key): $value}}')
             else
               payload=$(jq -n --arg ref "$ref" '{ref: $ref}')
@@ -2083,6 +2363,32 @@ jobs:
                 exit 0 ;;
             esac
           done
+          # Per-unit baseline: a candidate that failed is a failure of the
+          # units being traced only if one of them failed in it. A candidate
+          # whose own failing units cannot be read stays inconclusive.
+          if [ "$unit_mode" = yes ]; then
+            for sha in "${order[@]}"; do
+              [ "${conclusion_of[$sha]}" = failure ] || continue
+              candidate_dir="$WORK_DIR/junit-candidate-${run_of[$sha]}"
+              mkdir -p "$candidate_dir"
+              gha run download "${run_of[$sha]}" --repo "$REPO" --pattern 'junit-*' --dir "$candidate_dir" 2>/dev/null || true
+              if ! candidate_lanes=$(python3 "$RUNNER_TEMP/red-main/proof.py" failed-lanes "$REPO" main "$VERIFY_WORKFLOW" "${run_of[$sha]}" 2>/dev/null); then
+                conclusion_of[$sha]=inconclusive
+                say "Candidate \`${sha:0:9}\` failed, but its failing jobs could not be read: inconclusive for the traced units."
+                continue
+              fi
+              python3 "$RUNNER_TEMP/red-main/junit.py" "$candidate_dir" "$WORK_DIR/candidate-failing.tsv" "$candidate_lanes" >/dev/null
+              judged=$(python3 "$RUNNER_TEMP/red-main/window.py" judge "$WORK_DIR/target-units.tsv" "$WORK_DIR/candidate-failing.tsv")
+              if [ "${judged%% *}" = pass ]; then
+                conclusion_of[$sha]=success
+                say "Candidate \`${sha:0:9}\` failed other units only: it counts as passed for the traced units."
+              fi
+            done
+            : >"$WORK_DIR/candidates.tsv"
+            for sha in "${order[@]}"; do
+              printf '%s\t%s\n' "$sha" "${conclusion_of[$sha]}" >>"$WORK_DIR/candidates.tsv"
+            done
+          fi
           decision=$(python3 "$RUNNER_TEMP/red-main/culprit.py" <"$WORK_DIR/candidates.tsv")
           verdict=$(head -1 <<<"$decision")
           case "$verdict" in
@@ -2149,8 +2455,13 @@ jobs:
             say "**Unverified:** no trusted baseline authorizes this revert."
             exit 1
           fi
-          base_proof=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$base" "$VERIFY_CHECK_NAME")
-          [ "$base_proof" = success ] || { say "**Unverified:** the baseline no longer has authenticated success; no revert authorization."; exit 1; }
+          # A per-unit baseline is a commit whose verify run cleared the traced
+          # units while other lanes were red, so it has no `verified` success
+          # to re-read; the trace admitted it from authenticated run history.
+          if [ -z "$(state_get base-unit-run)" ]; then
+            base_proof=$(read_proof sha "$REPO" main "$VERIFY_WORKFLOW" "$base" "$VERIFY_CHECK_NAME")
+            [ "$base_proof" = success ] || { say "**Unverified:** the baseline no longer has authenticated success; no revert authorization."; exit 1; }
+          fi
           culprit=$(state_get culprit)
           revert_all=$(cat "$STATE_DIR/revert-all.json" 2>/dev/null || true)
           if [ -z "$culprit" ] && [ -z "$revert_all" ]; then
