@@ -98,14 +98,8 @@ runs:
             echo "::add-mask::$SYLPHX_SCCACHE_SESSION_TOKEN"
             ;;
           static)
-            bucket_url="${SCCACHE_ENDPOINT%/}/$SCCACHE_BUCKET"
-            sign=(--aws-sigv4 "aws:amz:us-east-1:s3" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY")
-            if ! curl -sS -o /dev/null --max-time 10 -w '%{http_code}' "${sign[@]}" -I "$bucket_url" | grep -q '^200$'; then
-              curl -sS --max-time 10 "${sign[@]}" -X PUT "$bucket_url" -o /dev/null || true
-              lifecycle='<LifecycleConfiguration><Rule><ID>expire</ID><Filter><Prefix></Prefix></Filter><Status>Enabled</Status><Expiration><Days>14</Days></Expiration></Rule></LifecycleConfiguration>'
-              md5="$(printf '%s' "$lifecycle" | openssl dgst -md5 -binary | base64)"
-              curl -sS --max-time 10 "${sign[@]}" -X PUT -H "Content-MD5: $md5" --data "$lifecycle" "$bucket_url?lifecycle" -o /dev/null || true
-            fi
+            # Fails the step, with the status code, when the bucket cannot be created.
+            bash "$GITHUB_ACTION_PATH/ensure-bucket.sh"
             {
               echo "SCCACHE_BUCKET=$SCCACHE_BUCKET"
               echo "SCCACHE_ENDPOINT=$SCCACHE_ENDPOINT"
