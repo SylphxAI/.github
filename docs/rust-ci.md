@@ -26,6 +26,13 @@ generated code) keeps its own jobs and uses the same cache directly: the
 the first cargo command, on every Rust job, with a `push: branches: [main]`
 run of those jobs.
 
+Add the [`rust-sccache-report`](../.github/actions/rust-sccache-report/action.yml)
+step last, with `if: always()` and `backend: ${{ steps.<id>.outputs.backend }}`:
+it prints the hit rate and warns (it never fails the job) when cache writes
+fail or never happen. On the `static` backend the `rust-sccache` step itself
+fails, with the HTTP status and S3 error code, when the cache bucket cannot be
+created, and warns when the bucket exists but refuses a write.
+
 ## Inputs
 
 Every input is optional. The contract the rollout repositories adopt:
