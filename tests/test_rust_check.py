@@ -8,6 +8,8 @@ import subprocess
 import re
 import unittest
 
+import yaml
+
 WORKFLOW = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "rust-check.yml"
 
 
@@ -29,20 +31,36 @@ class RustCheckWorkflow(unittest.TestCase):
     def test_sccache_through_the_action_then_rust_cache(self) -> None:
         sccache = re.search(r"- name: Compile cache \(sccache\)\n((?:        .*\n)+)", self.text)
         self.assertIsNotNone(sccache)
-        self.assertIn("uses: SylphxAI/.github/.github/actions/rust-sccache@05e861fb0ad737ad552d900d23358a4cb2f9e205", sccache.group(1))
+        self.assertIn("uses: SylphxAI/.github/.github/actions/rust-sccache@d4305368ad744cdb047d8cdfd7588d99618cb5b5", sccache.group(1))
         self.assertIn("actions-cache: 'false'", sccache.group(1))
         self.assertIn("secrets.SYLPHX_CI_CACHE_ACCESS_KEY", sccache.group(1))
         step = re.search(r"- name: Compile cache on GitHub Actions cache\n((?:        .*\n)+)", self.text)
         self.assertIsNotNone(step)
         body = step.group(1)
         self.assertIn(
-            "if: steps.sccache.outputs.backend != 'org' && steps.sccache.outputs.backend != 'static'", body
+            "if: steps.sccache.outputs.backend != 'buildcache' && steps.sccache.outputs.backend != 'static'", body
         )
         self.assertRegex(body, r"uses: Swatinem/rust-cache@[0-9a-f]{40} # v\d+\.\d+\.\d+")
         self.assertIn("cache-on-failure: true", body)
         self.assertLess(self.text.index("- name: Rust toolchain"), self.text.index("Compile cache (sccache)"))
         self.assertLess(self.text.index("Compile cache (sccache)"), self.text.index("Compile cache on GitHub"))
         self.assertLess(self.text.index("Compile cache on GitHub"), self.text.index("- name: cargo check"))
+
+    def test_job_may_request_an_oidc_token_and_nothing_else_beyond_read(self) -> None:
+        # BuildCache authenticates the job by its GitHub OIDC identity.
+        spec = yaml.safe_load(self.text)
+        self.assertEqual(spec["permissions"], {"contents": "read"})
+        self.assertEqual(spec["jobs"]["check"]["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertNotRegex(self.text, r"(?m)^\s+(?!contents|id-token)[a-z-]+: write\s*$")
+
+    def test_remote_backend_conditions_name_buildcache_and_not_the_removed_org_backend(self) -> None:
+        conditions = re.findall(r"^\s+if: (.*steps\.sccache\.outputs\.backend.*)$", self.text, re.M)
+        self.assertEqual(len(conditions), 2, conditions)
+        for condition in conditions:
+            self.assertIn("'buildcache'", condition)
+            self.assertIn("'static'", condition)
+            self.assertNotIn("'org'", condition)
+        self.assertNotIn("'org'", self.text)
 
     def test_never_uses_the_platform_ci_sccache_key(self) -> None:
         job = "\n".join(

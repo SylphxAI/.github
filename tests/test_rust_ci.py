@@ -70,6 +70,9 @@ class RustCiWorkflow(unittest.TestCase):
     def test_one_org_wide_namespace_through_the_shared_action(self) -> None:
         cache = step("Compile cache (sccache)")
         self.assertRegex(cache["uses"], r"^SylphxAI/\.github/\.github/actions/rust-sccache@[0-9a-f]{40}$")
+        # The pin carries the buildcache backend (the runner-carried "org" backend is gone).
+        self.assertIn("rust-sccache@d4305368ad744cdb047d8cdfd7588d99618cb5b5", cache["uses"])
+        self.assertNotIn("'org'", self.text)
         self.assertEqual(cache["with"]["key-prefix"], "${{ inputs.key-prefix }}")
         spec = yaml.safe_load(self.text)[True]["workflow_call"]["inputs"]
         self.assertEqual(spec["key-prefix"]["default"], "rustc")
