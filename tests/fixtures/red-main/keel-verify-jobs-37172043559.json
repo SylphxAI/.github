@@ -1,0 +1,208 @@
+{
+  "total_count": 29,
+  "jobs": [
+    {
+      "conclusion": "success",
+      "id": 111347795654,
+      "name": "Plan",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347795735,
+      "name": "Native code changes",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878322,
+      "name": "Test",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878325,
+      "name": "Registry release (local)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878333,
+      "name": "Atomic storage",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878382,
+      "name": "Features (engine)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "failure",
+      "id": 111347878396,
+      "name": "Features (gpu)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878413,
+      "name": "Features (infer)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878434,
+      "name": "Features (commerce)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878445,
+      "name": "Features (assets)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878457,
+      "name": "Features (ui)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878465,
+      "name": "Features (app)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878483,
+      "name": "Features (platform-net-audio)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878684,
+      "name": "gate / Check and clippy",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878694,
+      "name": "gate / Format and scans",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878712,
+      "name": "gate / Identifiers",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878735,
+      "name": "gate / wasm32 clippy",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878745,
+      "name": "desktop / Desktop native adapters (linux)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878779,
+      "name": "desktop / Desktop native adapters (windows, cross-compiled)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347878835,
+      "name": "gate / Changed paths",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347901603,
+      "name": "Android app assembles with every store service",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347901611,
+      "name": "Release build and smoke",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "failure",
+      "id": 111347901649,
+      "name": "Web release and smoke",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111347901712,
+      "name": "iOS app builds with every store service",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111348278661,
+      "name": "gate / Web size",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111348278665,
+      "name": "gate / Tests (affected crates)",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111351138533,
+      "name": "gate / ci-ok",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "failure",
+      "id": 111351606936,
+      "name": "verified",
+      "run_id": 37172043559,
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 111351721273,
+      "name": "Red-main alert",
+      "run_id": 37172043559,
+      "status": "completed"
+    }
+  ]
+}

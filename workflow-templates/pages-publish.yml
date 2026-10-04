@@ -1,0 +1,66 @@
+name: Pages publish
+
+# Deploys a title's web preview from every Verify (or CI) run that passed on main, through a non-regress
+# gate: publish only when the run's commit is ahead of the commit the preview serves now. A busy main
+# finishes its checks after newer commits have landed, so "is this run still the main tip" skips most
+# runs and freezes the preview; "ahead of what is served" never goes back and always ships the newest
+# verified commit. GitHub supersedes older pending runs of a group, so the newest run always survives.
+# Copy to .github/workflows/pages-publish.yml, replace the commit placeholder with the pinned commit of
+# SylphxAI/.github, set `workflows:` to the name of the workflow that gates main (Verify or CI), and
+# replace the "Pack" and "Publish" steps with the title's own (the ones its CI and Pages deploy run).
+# See docs/pages-publish-gate.md.
+on:
+  workflow_run:
+    workflows: ["Verify"]
+    types: [completed]
+    branches: [main]
+  # A manual run publishes the commit it is started on without the gate (the way out of a stuck preview).
+  workflow_dispatch:
+
+# One deploy at a time and never cancelled mid-publish; a newer run waits and the gate makes an older one a no-op.
+concurrency:
+  group: pages-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Only a run that passed on a push to main, or a manual start.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 45
+    env:
+      RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      PREVIEW_URL: https://TITLE.pages.dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RUN_SHA }}
+          persist-credentials: false
+
+      - id: gate
+        if: github.event_name != 'workflow_dispatch'
+        uses: SylphxAI/.github/.github/actions/pages-publish-gate@PINNED_COMMIT_SHA
+        with:
+          run-sha: ${{ env.RUN_SHA }}
+          # The preview's identity file: JSON with git_sha (product.meta.json), or a GIT_SHA.txt.
+          served-sha-url: ${{ env.PREVIEW_URL }}/product.meta.json
+
+      - name: Pack the web build
+        if: github.event_name == 'workflow_dispatch' || steps.gate.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          keel pack --profile web --out dist/web
+
+      - name: Publish
+        if: github.event_name == 'workflow_dispatch' || steps.gate.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          # The title's own Pages upload.
+          ./scripts/deploy_pages.sh

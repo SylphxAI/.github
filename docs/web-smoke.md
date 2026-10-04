@@ -48,7 +48,8 @@ action stops with an error before it does anything.
 | `tap` | empty | Accessibility-mirror id of the start control to touch-tap once. |
 | `viewport` | `390x844,touch` | Boot check viewport. |
 | `budget-s` | `10` | Seconds to a ready frame (and for the bar to move on Slow 3G). |
-| `ignore-console` | `blocked by CORS policy` | Console errors to ignore, one regular expression per line. The pack is served from `127.0.0.1`, which the title's API does not allow as an origin. |
+| `ignore-console` | empty | Console errors to ignore, one regular expression per line. Empty: a failed request, a CORS block, a panic or an uncaught exception fails the check. |
+| `offline-dependencies` | `api\.cubeage\.com/cubeage\.v1\.AuthService/` | Endpoints the title calls at boot that the smoke cannot reach, one regular expression per line. The pack is served from `127.0.0.1`, which the Cubeage API does not allow as an origin, so the guest sign-in is CORS-blocked; a network or CORS failure naming one is skipped and listed in the output. A 5xx, a console error from the title, any other endpoint and a missing frame still fail. Setting it replaces the default (list the default too to add an entry); empty means none. |
 | `max-served-ratio` | `1.03` | Largest served/q11 a wasm module may have. |
 | `require-precompressed` | `false` | `true` fails a wasm module that has no precompressed `.br` copy in the pack. Run the title's precompress step before the action, then set it. |
 | `chrome-version` | pinned in `action.yml` | Chrome for Testing version; cached in the runner's tool cache. |

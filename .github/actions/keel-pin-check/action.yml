@@ -1,0 +1,70 @@
+name: keel-pin-check
+description: >
+  Fails a pull request that moves a repository's Keel pin to a commit that is not on Keel main, a branch,
+  or a second commit, and warns when the pinned commit is not a keel-verified-* or keel-weekly-* tag
+  (the consumer guide: a title pins a weekly tag, never a moving main and never an arbitrary commit).
+  Reads the pin where titles keep it (KEEL_PIN, keel-ref, deps/keel.rev, Cargo.toml, Cargo.lock,
+  .cargo/config.toml, vendor/), fetches Keel's main and tags (commits only) with a read-only App token,
+  and asks git whether each pin is an ancestor of main. A pin set the pull request leaves alone is only
+  warned about, so a repository that already forks Keel stays green until someone moves its pin.
+  Needs a checkout with fetch-depth: 2 (persist-credentials: false) so the pull request's base is
+  readable; run it on our own runners only. See docs/keel-pin-check.md.
+
+inputs:
+  reader-app-id:
+    description: Read-only GitHub App id that can read the Keel repository (the CUBEAGE_CI_READER_APP_ID secret for Cubeage titles).
+    required: true
+  reader-app-key:
+    description: Private key of the read-only App.
+    required: true
+  base:
+    description: >
+      Revision the pin set is compared with. "auto" (default) is the first parent of a merge commit, which
+      is a pull request's base on the default checkout. Empty enforces every rule, for a push or a full audit.
+    default: auto
+  head:
+    description: Revision whose pins are judged.
+    default: HEAD
+
+runs:
+  using: composite
+  steps:
+    - name: Refuse a GitHub-hosted runner
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ runner.environment }}
+      run: |
+        set -euo pipefail
+        if [ "$ENVIRONMENT" = github-hosted ]; then
+          echo "::error::keel-pin-check runs on our own runners only (GitHub spend is zero)"
+          exit 1
+        fi
+
+    - name: Mint read-only Keel token
+      id: keel-token
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.reader-app-id }}
+        private-key: ${{ inputs.reader-app-key }}
+        owner: SylphxAI
+        repositories: keel
+        permission-contents: read
+
+    - name: Check the Keel pins
+      shell: bash
+      env:
+        KEEL_TOKEN: ${{ steps.keel-token.outputs.token }}
+        ACTION_PATH: ${{ github.action_path }}
+        KEEL_DIR: ${{ runner.temp }}/keel-pin-check
+        BASE: ${{ inputs.base }}
+        HEAD_REV: ${{ inputs.head }}
+      run: |
+        set -euo pipefail
+        : "${KEEL_TOKEN:?missing read token for the Keel repository}"
+        # The token travels in the environment only, never in an argument.
+        export GIT_CONFIG_COUNT=1
+        export GIT_CONFIG_KEY_0="url.https://x-access-token:${KEEL_TOKEN}@github.com/SylphxAI/keel.insteadOf"
+        export GIT_CONFIG_VALUE_0="https://github.com/SylphxAI/keel"
+        rm -rf "$KEEL_DIR"
+        python3 "$ACTION_PATH/keel_pin_check.py" check --head "$HEAD_REV" --base "$BASE" \
+          --keel-dir "$KEEL_DIR" --keel-remote https://github.com/SylphxAI/keel

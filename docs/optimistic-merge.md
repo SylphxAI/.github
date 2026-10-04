@@ -48,8 +48,9 @@ proofs - is a suite lane.
 3. **`.github/workflows/verify.yml`** from
    [`workflow-templates/optimistic-verify.yml`](../workflow-templates/optimistic-verify.yml):
    the suite lanes and the aggregate job named exactly `verified`. Each lane
-   that runs tests uploads a JUnit report as `junit-<lane>`; the handler names
-   flaky tests from it.
+   that runs tests uploads a JUnit report as `junit-<lane>` (failing and passing
+   testcases); the handler names failing tests and each test's trace window
+   from it.
 4. **`.github/workflows/red-main.yml`** from
    [`workflow-templates/red-main.yml`](../workflow-templates/red-main.yml),
    unchanged. In the organization that holds the builder App
@@ -301,6 +302,17 @@ leaves the alert open; no parallel writer should edit lifecycle markers.
   reports a window on its pull requests instead; one whose suite lanes run
   longer than 20 minutes raises `candidate-timeout-minutes` (at most 60), or
   every trace ends inconclusive.
+- The trace window of a unit that breaks inside an already red trunk starts at
+  the newest earlier completed push run of the verify workflow where that unit
+  did not fail, not at the last fully verified commit. A job that succeeded
+  clears its units; a job that failed clears a test only when its `junit-<lane>`
+  report shows the test passing (a report that lists failures only clears a
+  test it does not list). Only units that failed on two consecutive runs count,
+  the aggregate `verified` job is not a unit, the candidate runs dispatch only
+  those units' lanes, and a candidate counts as failed only if one of those
+  units failed in it. With no such run in the last 100, the fully verified
+  commit stays the baseline. A lane that publishes no `junit-<lane>` report is
+  traced at lane granularity.
 - A flake is quarantined first, in its own source (`#[ignore = "quarantined
   <date>: <reason> (<issue>, owner <lane>)"]`, or a comment above
   `test.skip(`), never retried in the queue.
