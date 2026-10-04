@@ -47,13 +47,34 @@ inputs:
     default: "10"
   ignore-console:
     description: >
-      Console errors to ignore, one regular expression per line. The pack is served from 127.0.0.1, which
-      is not an origin the title's API allows, so CORS blocks are ignored by default; a panic, an uncaught
-      exception or a failed request is still a failure.
-    default: blocked by CORS policy
+      Console errors to ignore, one regular expression per line. Empty by default: a failed request, a
+      CORS block, a panic or an uncaught exception fails the check. A request the smoke cannot make
+      belongs in offline-dependencies, which skips only its network or CORS failure.
+    default: ""
+  offline-dependencies:
+    description: >
+      Endpoints the title calls at boot that the smoke cannot reach, one regular expression per line,
+      matched against the console line. The pack is served from 127.0.0.1, an origin the Cubeage API does
+      not allow, so the guest sign-in is CORS-blocked there: the default is the Cubeage auth service. A
+      network or CORS failure naming one is skipped and listed in the output; a 5xx, a console error from
+      the title, any other endpoint and a missing frame still fail. Setting it replaces the default (list
+      the default too to add an entry); an empty value means no offline dependency.
+    default: 'api\.cubeage\.com/cubeage\.v1\.AuthService/'
   chrome-version:
     description: Chrome for Testing version (headless shell and chromedriver).
     default: 153.0.8010.52
+  max-served-ratio:
+    description: >
+      Largest served/q11 a wasm module may have: the size of its precompressed `<file>.br` (what a host with
+      brotli_static or a precompressed-asset worker sends to `Accept-Encoding: br`) over brotli quality 11 of
+      the module. 1.03 is the web boot standard; a host compressing on the fly sends about 1.25.
+    default: "1.03"
+  require-precompressed:
+    description: >
+      "true" fails a wasm module that has no precompressed `<file>.br` in the pack (the host would compress
+      it on the fly). Set it for a title whose pack step runs its precompress step before this action.
+      "false" (default) reports such a module and does not fail it.
+    default: "false"
   timeout-s:
     description: Seconds each check may take before it fails.
     default: "300"
@@ -122,6 +143,9 @@ runs:
         VIEWPORT: ${{ inputs.viewport }}
         BUDGET_S: ${{ inputs.budget-s }}
         IGNORE_CONSOLE: ${{ inputs.ignore-console }}
+        OFFLINE_DEPENDENCIES: ${{ inputs.offline-dependencies }}
+        MAX_SERVED_RATIO: ${{ inputs.max-served-ratio }}
+        REQUIRE_PRECOMPRESSED: ${{ inputs.require-precompressed }}
         TIMEOUT_S: ${{ inputs.timeout-s }}
         ACTION_PATH: ${{ github.action_path }}
         REPORT: ${{ runner.temp }}/web-smoke-report.json
@@ -129,8 +153,14 @@ runs:
         set -euo pipefail
         args=(run --keel "$KEEL_DIR" --pack "$PACK" --chrome "$CHROME_DIR" --ref "$KEEL_REF"
               --slow-3g-splash "$SLOW_3G" --splash-budget-ms "$SPLASH_BUDGET_MS" --tap "$TAP"
-              --viewport "$VIEWPORT" --budget-s "$BUDGET_S" --timeout-s "$TIMEOUT_S" --report "$REPORT")
+              --viewport "$VIEWPORT" --budget-s "$BUDGET_S" --timeout-s "$TIMEOUT_S" --report "$REPORT"
+              --max-served-ratio "$MAX_SERVED_RATIO" --require-precompressed "$REQUIRE_PRECOMPRESSED")
         while IFS= read -r pattern; do
           if [ -n "$pattern" ]; then args+=(--ignore-console "$pattern"); fi
         done <<< "$IGNORE_CONSOLE"
+        # Always pass the flag, even for an empty input, so an empty list is "none" and not "the default".
+        args+=(--offline-dependency "")
+        while IFS= read -r pattern; do
+          if [ -n "$pattern" ]; then args+=(--offline-dependency "$pattern"); fi
+        done <<< "$OFFLINE_DEPENDENCIES"
         python3 "$ACTION_PATH/web_smoke.py" "${args[@]}"

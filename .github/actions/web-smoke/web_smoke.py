@@ -14,7 +14,17 @@ usage: web_smoke.py ref    [--ref REF] [--pin-file FILE]
   2. `--live`: the title draws a ready frame within the budget with no boot failure and a quiet
      console (a black screen never gets a ready frame), and, with --tap, takes one touch tap.
 
-Both always run; the exit status is 1 when either fails. Self-hosted runners only.
+A title's boot may call an endpoint the smoke cannot reach: the page is served from 127.0.0.1, an origin
+the title's API does not allow, so its guest sign-in is CORS-blocked. Those are the *offline
+dependencies* (`--offline-dependency`, default: the Cubeage auth endpoints): a network or CORS failure
+that names one is skipped and listed in the output. Every other failed request, a console error, a
+panic and a missing frame still fail the check.
+
+Both always run, then a third check reads the pack's wasm modules the way a host sends them with
+`Accept-Encoding: br`: a module that has a precompressed `<file>.br` beside it is sent as that file, so
+its size over brotli quality 11 of the module (served/q11) must stay within the bound (1.03). A module
+with no `.br` is compressed on the fly by the host (about +25 %); that fails only with
+`--require-precompressed`. The exit status is 1 when any check fails. Self-hosted runners only.
 """
 
 from __future__ import annotations
@@ -172,6 +182,26 @@ def supports(keel: str, flag: str) -> bool:
     return flag in (p.stdout + p.stderr)
 
 
+DEFAULT_OFFLINE = [r"api\.cubeage\.com/cubeage\.v1\.AuthService/"]
+# What a browser logs when a request fails before an answer: the CORS refusal and the bare network line.
+NETWORK_FAILURE = r"blocked by CORS policy|net::ERR_"
+
+
+def offline_ignores(dependencies) -> list[str]:
+    """Console-ignore regexes for a network or CORS failure naming a known offline dependency.
+
+    A line is skipped only when it names the dependency AND is a network or CORS failure, so a 500 or
+    an error the title itself logs for the same endpoint still fails.
+    """
+    out = []
+    for dep in dependencies:
+        dep = dep.strip()
+        if dep:
+            re.compile(dep)  # a bad pattern is the title's mistake: fail loudly, not silently pass
+            out.append(r"(?s)^(?=.*(?:%s))(?=.*(?:%s))" % (dep, NETWORK_FAILURE))
+    return out
+
+
 def smoke_commands(keel: str, chrome: str, url: str, opts) -> list[tuple[str, list[str]]]:
     script = os.path.join(keel, "scripts", "browser_smoke.py")
     commands = []
@@ -183,7 +213,7 @@ def smoke_commands(keel: str, chrome: str, url: str, opts) -> list[tuple[str, li
             "--budget-s", str(opts.budget_s)]
     if opts.tap:
         live += ["--tap", opts.tap]
-    for pattern in opts.ignore_console:
+    for pattern in [*opts.ignore_console, *offline_ignores(opts.offline_dependency)]:
         live += ["--ignore-console", pattern]
     if opts.report:
         live += ["--report", opts.report]
@@ -191,7 +221,65 @@ def smoke_commands(keel: str, chrome: str, url: str, opts) -> list[tuple[str, li
     return commands
 
 
-def summary_text(results: list[tuple[str, bool, str]], url: str, ref: str) -> str:
+def brotli_module():
+    """The `brotli` Python module; installed for the runner's user when it is missing."""
+    try:
+        import brotli  # type: ignore
+        return brotli
+    except ImportError:
+        pass
+    p = run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "--break-system-packages", "brotli"])
+    if p.returncode != 0:
+        raise Refused("the served-size check needs the Python brotli module and pip could not install it:\n" + p.stderr[-400:])
+    import importlib
+    import site
+    importlib.invalidate_caches()
+    site.addsitedir(site.getusersitepackages())
+    import brotli  # type: ignore
+    return brotli
+
+
+def q11_size(brotli, data: bytes) -> int:
+    return len(brotli.compress(data, quality=11, lgwin=24, mode=brotli.MODE_GENERIC))
+
+
+def served_q11(pack: Path, max_ratio: float, require_precompressed: bool, brotli=None) -> tuple[bool, str]:
+    """served/q11 of every wasm module in the pack, as a host that sends `<file>.br` serves it."""
+    modules = sorted(f for f in pack.rglob("*.wasm") if f.relative_to(pack).parts[0] != "assets")
+    if not modules:
+        return True, "served-q11: the pack holds no wasm module"
+    lines, failed = [], False
+    for f in modules:
+        rel = f.relative_to(pack).as_posix()
+        sibling = Path(str(f) + ".br")
+        if not sibling.is_file() and not require_precompressed:
+            # Nothing to measure, and the brotli module is only fetched when something is.
+            lines.append("note %s: no precompressed %s.br in the pack; served/q11 not measured" % (rel, rel))
+            continue
+        brotli = brotli or brotli_module()
+        best = q11_size(brotli, f.read_bytes())
+        if sibling.is_file():
+            wire = sibling.stat().st_size
+            if brotli.decompress(sibling.read_bytes()) != f.read_bytes():
+                lines.append("FAIL %s: %s.br does not decode to the module" % (rel, rel))
+                failed = True
+                continue
+            ratio = wire / best
+            verdict = "ok"
+            if ratio > max_ratio:
+                verdict = "FAIL"
+                failed = True
+            lines.append("%s %s: served/q11 %.3f (%d B served, %d B at q11)%s"
+                         % (verdict, rel, ratio, wire, best,
+                            "" if verdict == "ok" else ", over the bound of %.2f" % max_ratio))
+        else:
+            lines.append("FAIL %s: no precompressed %s.br; a host compresses it on the fly at about +25 %% over q11 (%d B)"
+                         % (rel, rel, best))
+            failed = True
+    return not failed, "\n".join(lines)
+
+
+def summary_text(results: list[tuple[str, bool, str]], url: str, ref: str, offline=()) -> str:
     lines = ["### web-smoke", "", "Pack served from `%s`, checked with Keel `%s`." % (url, ref), "",
              "| Check | Result |", "| --- | --- |"]
     for name, ok, _ in results:
@@ -200,6 +288,9 @@ def summary_text(results: list[tuple[str, bool, str]], url: str, ref: str) -> st
         if not ok:
             fails = [l for l in out.splitlines() if l.startswith("FAIL")] or out.strip().splitlines()[-5:]
             lines += ["", "`%s`:" % name, "", "```", *fails, "```"]
+    if offline:
+        lines += ["", "Offline dependencies (a network or CORS failure naming one is skipped): %s."
+                  % ", ".join("`%s`" % d for d in offline)]
     lines += ["", "A desk-class browser on a software GPU, not a phone: it proves the title shows a splash and starts, "
               "not how fast it draws."]
     return "\n".join(lines) + "\n"
@@ -214,10 +305,23 @@ def cmd_run(opts) -> int:
     if opts.slow_3g_splash and not supports(opts.keel, "--slow-3g-splash"):
         raise Refused("the Keel scripts used here (%s) have no --slow-3g-splash: they predate the web boot standard. "
                       "Repin the title, or pass a newer keel-ref." % opts.ref)
+    deps = [d.strip() for d in opts.offline_dependency if d.strip()]
+    try:
+        offline_ignores(deps)
+    except re.error as e:
+        raise Refused("offline-dependencies holds a bad regular expression: %s" % e)
+    print("offline dependencies (network or CORS failures skipped, anything else fails): %s"
+          % (", ".join(deps) or "none"))
     port = free_port()
+    served_ok, served_out = served_q11(pack, opts.max_served_ratio, opts.require_precompressed)
+    print("::group::served-q11")
+    print(served_out)
+    print("::endgroup::")
+    if not served_ok:
+        print("::error title=web-smoke served-q11::%s" % next((l for l in served_out.splitlines() if l.startswith("FAIL")), "failed"))
     host = start_host(opts.keel, str(pack), port)
     url = "http://127.0.0.1:%d/index.html" % port
-    results = []
+    results = [("served-q11", served_ok, served_out)]
     try:
         for name, cmd in smoke_commands(opts.keel, opts.chrome, url, opts):
             print("::group::%s" % name)
@@ -237,7 +341,7 @@ def cmd_run(opts) -> int:
             host.wait(timeout=10)
         except subprocess.TimeoutExpired:
             host.kill()
-    text = summary_text(results, url, opts.ref)
+    text = summary_text(results, url, opts.ref, deps)
     target = os.environ.get("GITHUB_STEP_SUMMARY")
     if target:
         with open(target, "a") as f:
@@ -268,9 +372,14 @@ def main(argv=None) -> int:
     u.add_argument("--splash-budget-ms", type=float, default=1000.0)
     u.add_argument("--slow-3g-splash", type=lambda v: v.lower() != "false", default=True)
     u.add_argument("--ignore-console", action="append", default=[])
+    u.add_argument("--offline-dependency", action="append", default=None)
     u.add_argument("--report", default="")
+    u.add_argument("--max-served-ratio", type=float, default=1.03)
+    u.add_argument("--require-precompressed", type=lambda v: v.lower() == "true", default=False)
     u.add_argument("--timeout-s", type=int, default=300)
     opts = parser.parse_args(argv)
+    if getattr(opts, "offline_dependency", 0) is None:  # by hand: the default list; the action always passes the input
+        opts.offline_dependency = list(DEFAULT_OFFLINE)
     try:
         if opts.cmd == "ref":
             set_output("ref", resolve_ref(opts.ref, opts.pin_file))

@@ -32,19 +32,43 @@ STATIC_HOST = textwrap.dedent("""
 """)
 
 # browser_smoke.py reduced to its command line: it records how it was called and exits as the
-# pack says (a pack whose index.html holds "BLACK" is a black boot: both modes fail on it).
+# pack says (a pack whose index.html holds "BLACK" is a black boot: both modes fail on it). A line
+# "CONSOLE: <text>" in the page is a line the browser logged; the live mode judges them with Keel's own
+# console_problems (copied from scripts/browser_smoke.py, including --ignore-console) and, like Keel's
+# check, fails on any problem.
 BROWSER_SMOKE = textwrap.dedent("""
     import sys, urllib.request, os
     argv = sys.argv[1:]
     if "--help" in argv:
         print("usage: browser_smoke.py ... " + os.environ.get("STUB_FLAGS", "--slow-3g-splash --live"))
         sys.exit(0)
+    import re
+    def console_problems(lines, ignore=()):
+        problems = []
+        for line in lines:
+            if any(re.search(p, line) for p in ignore):
+                continue
+            if "panicked at" in line or "RuntimeError: unreachable" in line:
+                kind = "panic"
+            elif "blocked by CORS policy" in line or "net::ERR_FAILED" in line:
+                kind = "CORS-blocked or failed request"
+            else:
+                kind = "console error"
+            problems.append("%s: %s" % (kind, line[:400]))
+        return problems
     mode = "slow-3g-splash" if "--slow-3g-splash" in argv else "live"
     open(os.environ["STUB_LOG"], "a").write(mode + " " + " ".join(argv) + "\\n")
     body = urllib.request.urlopen(argv[-1]).read().decode()
     if "BLACK" in body:
         print("FAIL: nothing painted on Slow 3G within 10 s" if mode == "slow-3g-splash" else "FAIL: no ready frame within 10 s")
         sys.exit(1)
+    if mode == "live":
+        ignore = [argv[i + 1] for i, a in enumerate(argv) if a == "--ignore-console"]
+        logged = [l[len("CONSOLE: "):] for l in body.splitlines() if l.startswith("CONSOLE: ")]
+        found = console_problems(logged, ignore)
+        if found:
+            print("FAIL: " + found[0])
+            sys.exit(1)
     print("%s ok" % mode)
 """)
 
@@ -59,7 +83,7 @@ def make_keel(base: pathlib.Path) -> pathlib.Path:
 
 def make_pack(base: pathlib.Path, body: str) -> pathlib.Path:
     pack = base / "dist"
-    pack.mkdir()
+    pack.mkdir(exist_ok=True)
     (pack / "index.html").write_text(body)
     return pack
 
@@ -67,8 +91,9 @@ def make_pack(base: pathlib.Path, body: str) -> pathlib.Path:
 class Options:
     def __init__(self, **kw):
         self.__dict__.update(dict(tap="", viewport="390x844,touch", budget_s=10.0, splash_budget_ms=1000.0,
-                                  slow_3g_splash=True, ignore_console=["blocked by CORS policy"],
-                                  report="", timeout_s=60, ref=SHA, chrome="/chrome"))
+                                  slow_3g_splash=True, ignore_console=[], offline_dependency=list(web_smoke.DEFAULT_OFFLINE),
+                                  report="", timeout_s=60, ref=SHA, chrome="/chrome",
+                                  max_served_ratio=1.03, require_precompressed=False))
         self.__dict__.update(kw)
 
 
@@ -132,13 +157,26 @@ class Commands(unittest.TestCase):
         self.assertEqual(slow[slow.index("--splash-budget-ms") + 1], "1000.0")
         self.assertIn("--live", live)
         self.assertEqual(live[live.index("--tap") + 1], "begin")
-        self.assertEqual(live[live.index("--ignore-console") + 1], "blocked by CORS policy")
+        # Nothing is ignored by default but the network or CORS failure of the known offline dependency.
+        ignored = [live[i + 1] for i, a in enumerate(live) if a == "--ignore-console"]
+        self.assertEqual(len(ignored), 1)
+        self.assertIn(r"api\.cubeage\.com/cubeage\.v1\.AuthService/", ignored[0])
         self.assertEqual(live[live.index("--viewport") + 1], "390x844,touch")
         self.assertEqual(live[-1], "http://h/index.html")
 
     def test_slow_3g_can_be_switched_off(self):
         names = [n for n, _ in web_smoke.smoke_commands("/k", "/c", "u", Options(slow_3g_splash=False))]
         self.assertEqual(names, ["boot"])
+
+
+class OfflineIgnores(unittest.TestCase):
+    def test_an_empty_list_ignores_nothing(self):
+        self.assertEqual(web_smoke.offline_ignores([]), [])
+        self.assertEqual(web_smoke.offline_ignores(["", "  "]), [])
+
+    def test_a_bad_pattern_is_an_error_not_a_pass(self):
+        with self.assertRaises(Exception):
+            web_smoke.offline_ignores(["("])
 
 
 class Fetch(unittest.TestCase):
@@ -245,6 +283,149 @@ class RunAgainstAStandIn(unittest.TestCase):
         rc, out = self.run_it("<html>ok</html>", timeout_s=1)
         self.assertEqual(rc, 1)
         self.assertIn("did not finish", out)
+
+
+try:
+    import brotli
+except ImportError:  # the check installs it on a runner; the tests need it here
+    brotli = None
+
+
+def wasm_bytes() -> bytes:
+    """Compressible but not trivial, so q11 and a lower quality differ clearly."""
+    import random
+    rnd = random.Random(7)
+    words = [bytes(rnd.randrange(256) for _ in range(rnd.randrange(3, 12))) for _ in range(400)]
+    return b"\0asm" + b"".join(rnd.choice(words) for _ in range(40000))
+
+
+@unittest.skipIf(brotli is None, "needs the brotli module")
+class ServedQ11(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.pack = pathlib.Path(self.tmp.name)
+        self.wasm = wasm_bytes()
+        (self.pack / "title_bg.wasm").write_bytes(self.wasm)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def precompress(self, quality):
+        (self.pack / "title_bg.wasm.br").write_bytes(brotli.compress(self.wasm, quality=quality, lgwin=24))
+
+    def test_a_q11_copy_passes(self):
+        self.precompress(11)
+        ok, out = web_smoke.served_q11(self.pack, 1.03, True)
+        self.assertTrue(ok, out)
+        self.assertIn("served/q11 1.000", out)
+
+    def test_a_weaker_copy_fails_over_the_bound(self):
+        self.precompress(4)
+        ok, out = web_smoke.served_q11(self.pack, 1.03, False)
+        self.assertFalse(ok)
+        self.assertIn("FAIL title_bg.wasm: served/q11", out)
+
+    def test_a_copy_that_does_not_decode_to_the_module_fails(self):
+        (self.pack / "title_bg.wasm.br").write_bytes(brotli.compress(b"something else", quality=11))
+        ok, out = web_smoke.served_q11(self.pack, 1.03, False)
+        self.assertFalse(ok)
+        self.assertIn("does not decode", out)
+
+    def test_no_copy_is_a_note_unless_precompressed_is_required(self):
+        ok, out = web_smoke.served_q11(self.pack, 1.03, False)
+        self.assertTrue(ok)
+        self.assertIn("note title_bg.wasm", out)
+        ok, out = web_smoke.served_q11(self.pack, 1.03, True)
+        self.assertFalse(ok)
+        self.assertIn("compresses it on the fly", out)
+
+    def test_assets_and_a_pack_without_wasm_are_left_alone(self):
+        (self.pack / "title_bg.wasm").unlink()
+        (self.pack / "assets").mkdir()
+        (self.pack / "assets" / "model.wasm").write_bytes(self.wasm)
+        ok, out = web_smoke.served_q11(self.pack, 1.03, True)
+        self.assertTrue(ok)
+        self.assertIn("no wasm module", out)
+
+
+@unittest.skipIf(brotli is None, "needs the brotli module")
+class ServedQ11InTheRun(RunAgainstAStandIn):
+    def run_with(self, quality, **kw):
+        pack = make_pack(self.base, "<html>splash</html>")
+        wasm = wasm_bytes()
+        (pack / "title_bg.wasm").write_bytes(wasm)
+        if quality:
+            (pack / "title_bg.wasm.br").write_bytes(brotli.compress(wasm, quality=quality, lgwin=24))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = web_smoke.cmd_run(Options(keel=str(self.keel), pack=str(pack), **kw))
+        return rc, out.getvalue()
+
+    def test_a_precompressed_q11_title_passes_and_the_row_is_in_the_summary(self):
+        rc, out = self.run_with(11, require_precompressed=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("| served-q11 | pass |", (self.base / "summary.md").read_text())
+
+    def test_an_on_the_fly_title_fails_when_precompressed_is_required(self):
+        rc, out = self.run_with(None, require_precompressed=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("::error title=web-smoke served-q11::", out)
+        self.assertEqual([c.split()[0] for c in self.calls()], ["slow-3g-splash", "live"])  # the browser checks still ran
+
+    def test_the_default_does_not_fail_a_pack_with_no_copy(self):
+        rc, out = self.run_with(None)
+        self.assertEqual(rc, 0, out)
+
+
+GUEST = "https://api.cubeage.com/cubeage.v1.AuthService/Guest"
+# What headless Chrome logs when the page's fetch to the Cubeage API is refused for its 127.0.0.1 origin.
+CORS_LINES = (
+    "CONSOLE: Access to fetch at '%s' from origin 'http://127.0.0.1:41529' has been blocked by CORS policy: "
+    "No 'Access-Control-Allow-Origin' header is present on the requested resource.\n"
+    "CONSOLE: %s - Failed to load resource: net::ERR_FAILED\n" % (GUEST, GUEST))
+
+
+class OfflineDependencyInTheRun(RunAgainstAStandIn):
+    """A title whose boot signs in as a guest against an API that refuses the smoke's origin."""
+
+    def test_a_good_boot_with_the_cors_blocked_sign_in_passes(self):
+        rc, out = self.run_it("<html>splash\n" + CORS_LINES + "</html>")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("offline dependencies", out)
+        self.assertIn("AuthService", (self.base / "summary.md").read_text())
+
+    def test_a_black_boot_with_the_cors_blocked_sign_in_still_fails(self):
+        rc, out = self.run_it("<html>BLACK\n" + CORS_LINES + "</html>")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("| boot | FAIL |", (self.base / "summary.md").read_text())
+
+    def test_another_endpoint_failing_still_fails(self):
+        other = "https://api.cubeage.com/cubeage.v1.LeaderboardService/Top"
+        rc, out = self.run_it("<html>splash\nCONSOLE: %s - Failed to load resource: net::ERR_FAILED\n</html>" % other)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("CORS-blocked or failed request: " + other, out)
+
+    def test_the_sign_in_answering_with_an_error_still_fails(self):
+        line = "CONSOLE: %s - Failed to load resource: the server responded with a status of 500 ()\n" % GUEST
+        rc, out = self.run_it("<html>splash\n" + line + "</html>")
+        self.assertEqual(rc, 1, out)
+
+    def test_a_panic_still_fails_beside_the_sign_in(self):
+        rc, out = self.run_it("<html>splash\n" + CORS_LINES + "CONSOLE: panicked at src/boot.rs:1\n</html>")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("panic", out)
+
+    def test_a_title_can_remove_the_default(self):
+        rc, out = self.run_it("<html>splash\n" + CORS_LINES + "</html>", offline_dependency=[""])
+        self.assertEqual(rc, 1, out)
+
+    def test_a_title_can_add_its_own(self):
+        other = "https://api.example.test/v1/Profile"
+        page = "<html>splash\n%sCONSOLE: %s - Failed to load resource: net::ERR_FAILED\n</html>" % (CORS_LINES, other)
+        rc, out = self.run_it(page)
+        self.assertEqual(rc, 1, out)
+        rc, out = self.run_it(page, offline_dependency=[*web_smoke.DEFAULT_OFFLINE, r"api\.example\.test/v1/Profile"])
+        self.assertEqual(rc, 0, out)
 
 
 if __name__ == "__main__":

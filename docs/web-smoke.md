@@ -7,12 +7,13 @@ the [Keel repin bot](keel-repin.md) requires before it merges a repin.
 The check itself is Keel's (`scripts/browser_smoke.py`, from the title's own `KEEL_PIN`). The
 `web-smoke` action here fetches that script, installs Chrome for Testing, serves the pack as a static
 host does (Keel's `static_host.py`, so the pack's `_headers` and Content Security Policy apply) and runs
-two checks, always both:
+three checks, always all:
 
 | Check | Passes when |
 | --- | --- |
 | `slow-3g-splash` | a cold load (empty cache) on Chrome's "Slow 3G" (400 ms round trip, 400 kbit/s) paints the title's splash within 1 s, the splash holds the title's name, shows no failure, and its progress bar then moves. This is the web boot standard: no black page while the title downloads. |
 | `boot` (`--live`) | the title draws a ready frame (`data-keel-ready`) within 10 s with no boot failure, the console holds no error (a panic, an uncaught exception, a failed request), no synchronous wasm instance, large module compile or XHR on the main thread, and, with `tap`, one touch tap on that control changes the accessibility mirror. A black screen never gets a ready frame, so it fails here. |
+| `served-q11` | every wasm module in the pack that has a precompressed `<file>.br` beside it is within 3 % of brotli quality 11 of the module (served/q11 at most 1.03), and the copy decodes to the module. This is what a host with brotli_static, or a worker that serves the `.br` copies, sends to `Accept-Encoding: br`; a host that compresses on the fly sends about 1.25. A module with no `.br` copy is reported, and fails only with `require-precompressed: "true"`. |
 
 The browser is a runner's headless Chrome on a software GPU, not a phone: it proves a title shows a
 splash and starts and answers a touch, not how fast it draws. Frame times are judged on devices.
@@ -47,7 +48,10 @@ action stops with an error before it does anything.
 | `tap` | empty | Accessibility-mirror id of the start control to touch-tap once. |
 | `viewport` | `390x844,touch` | Boot check viewport. |
 | `budget-s` | `10` | Seconds to a ready frame (and for the bar to move on Slow 3G). |
-| `ignore-console` | `blocked by CORS policy` | Console errors to ignore, one regular expression per line. The pack is served from `127.0.0.1`, which the title's API does not allow as an origin. |
+| `ignore-console` | empty | Console errors to ignore, one regular expression per line. Empty: a failed request, a CORS block, a panic or an uncaught exception fails the check. |
+| `offline-dependencies` | `api\.cubeage\.com/cubeage\.v1\.AuthService/` | Endpoints the title calls at boot that the smoke cannot reach, one regular expression per line. The pack is served from `127.0.0.1`, which the Cubeage API does not allow as an origin, so the guest sign-in is CORS-blocked; a network or CORS failure naming one is skipped and listed in the output. A 5xx, a console error from the title, any other endpoint and a missing frame still fail. Setting it replaces the default (list the default too to add an entry); empty means none. |
+| `max-served-ratio` | `1.03` | Largest served/q11 a wasm module may have. |
+| `require-precompressed` | `false` | `true` fails a wasm module that has no precompressed `.br` copy in the pack. Run the title's precompress step before the action, then set it. |
 | `chrome-version` | pinned in `action.yml` | Chrome for Testing version; cached in the runner's tool cache. |
 
 Output: `keel-ref`, the Keel revision used. A run writes its verdict to the job summary.
@@ -59,6 +63,7 @@ Output: `keel-ref`, the Keel revision used. A run writes its verdict to the job 
 - `the page has no #keel-splash`: the pack predates the web boot standard. Repin.
 - `no ready frame` or a boot failure: the title does not start. The log shows the page's own message
   and the console error.
+- `served/q11 ... over the bound` or `no precompressed ... .br`: the pack's brotli copy of a wasm module is weaker than quality 11, or missing. Re-run the title's precompress step at quality 11 (`lgwin` 24) and point the host at the copies.
 - A console error: a panic, an exception or a failed request on the page.
 
 Nothing here edits the title: a red check is a title to fix, not a check to skip. If the smoke itself is
