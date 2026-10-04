@@ -40,6 +40,13 @@
       "review": "2026-11-30"
     },
     {
+      "class": "suite-is-gate",
+      "repos": ["SylphxAI/work", "SylphxAI/desk-watchdog", "SylphxAI/header-canary"],
+      "reason": "Measured job run time (lifecycle events, 14 days, read 2026-10-04): work `test` p50 207 s, p90 258 s, max 301 s over 72 runs (merge group p90 261 s) with `ci-ok` 17 s; desk-watchdog `check` p50 34 s, p90 150 s, max 348 s over 12 runs; header-canary install, build and test 10 s warm on the desk (no run history yet). The pull-request wall time above 5 minutes is runner wait (p90 382 s work, 1090 s desk-watchdog), not suite length, so the merge gate already is the full suite. R6 stays open until desk-watchdog has a merge queue with `ci-ok` required, and header-canary the same once its gate workflow lands.",
+      "owner": "Build",
+      "review": "2026-11-30"
+    },
+    {
       "class": "no-build",
       "repos": ["Cubeage/cubeage-preview-router", "Cubeage/rank-system", "Cubeage/unity-runner", "Cubeage/h5-sdk-backend", "Cubeage/Info", "Cubeage/Policy", "Cubeage/app-ads.txt", "Cubeage/brand", "Cubeage/renovate-config", "Cubeage/solar2d-*", "Cubeage/.github",
                 "EpiowAI/.github", "EpiowAI/brand", "EpiowAI/hris-public", "EpiowAI/renovate-config",
