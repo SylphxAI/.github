@@ -14,7 +14,6 @@ Use one from another repository with
 | --- | --- |
 | [metadata-sync](.github/actions/metadata-sync/README.md) | Offline required-region/field patching with whole-plan validation and deterministic check/write; caller owns rendering ([anymd/repomap adoption](.github/actions/metadata-sync/README.md#adoption-in-anymd-and-repomap)) |
 | [brand](.github/actions/brand/README.md) | Builds brand assets or checks provenance hashes and surface copies, with caller-owned masters and data |
-| [review-stamp-gate](.github/actions/review-stamp-gate/README.md) | Requires trusted successful head reviews; data maps platform and security/money/migration classes to Ops and other changes to the owning lane's independent final reviewer |
 | [ci-ok](.github/actions/ci-ok/action.yml) | One required check that waits for every other GitHub Actions check on the commit and fails if any failed, a workflow failed to start, or no check ran |
 | [main-red-gate](.github/actions/main-red-gate/action.yml) | Stop the line: while the trunk's newest conclusive Verify run is red and its way back is in motion, a merge group is admitted only for a revert, a live-outage fix or a pull request labelled `main-red-fix`; a red trunk with nothing in motion admits with a warning |
 | [needs-pass](.github/actions/needs-pass/action.yml) | The aggregate verdict of a workflow. A skipped job never counts as passing a required check outside `merge_group`: list PR-time jobs in `required-unless-merge-group` so a `workflow_dispatch` run cannot post a green check over a red one |
