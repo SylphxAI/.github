@@ -2,7 +2,10 @@
   "version": 1,
   "doc": "docs/merge-queue-settings.md. The one source for the merge queue rule of every repository ruleset. Applied by scripts/apply_merge_queue.py (dry-run by default). GitHub does not allow a merge_queue rule in an organization or enterprise ruleset, so it is applied per repository from here.",
   "orgs": [
-    "SylphxAI"
+    "SylphxAI",
+    "Cubeage",
+    "EpiowAI",
+    "OzyrixLtd"
   ],
   "settings": {
     "merge_method": "SQUASH",
@@ -26,6 +29,10 @@
     {
       "repo": "SylphxAI/openclaw-sylphx",
       "reason": "Hosted stopgap: no fixes."
+    },
+    {
+      "repo": "Cubeage/cubeage-platform",
+      "reason": "Platform repository of Cubeage: its merge queue is changed only by its own team."
     }
   ],
   "overrides": [],
