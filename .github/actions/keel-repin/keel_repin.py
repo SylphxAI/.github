@@ -44,6 +44,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -409,6 +410,18 @@ def compare_status(old, new, token):
     return p.stdout.strip()
 
 
+def unmatched_commits(remote, tag_sha, pin):
+    """Commits on `pin` whose change the tag does not already hold (`git cherry`: '+' lines, patch-id based, as `git rebase` decides), and the branches whose tip is the pin."""
+    with tempfile.TemporaryDirectory() as d:
+        run(["git", "init", "-q", "--bare", d])
+        run(["git", "-C", d, "fetch", "-q", "--no-tags", remote, tag_sha, pin])
+        out = run(["git", "-C", d, "cherry", tag_sha, pin]).stdout
+        heads = run(["git", "ls-remote", "--heads", remote]).stdout
+    unmatched = [l.split()[1][:9] for l in out.splitlines() if l.startswith("+")]
+    branches = [l.split()[1].removeprefix("refs/heads/") for l in heads.splitlines() if l.split()[0] == pin]
+    return unmatched, branches
+
+
 def pr_exists(branch):
     """A pull request from this branch exists in any state (open, closed or merged)."""
     p = run([*gh_bin(), "pr", "list", "--head", branch, "--state", "all", "--json", "number", "--jq", "length"], check=False)
@@ -440,7 +453,18 @@ def cmd_poll(args):
     else:
         token = os.environ.get("KEEL_API_TOKEN", "")
         behind = [(o, compare_status(o, sha, token)) for o in old if o != sha]
-        bad = [f"{o[:9]} is {st}" for o, st in behind if st != "ahead"]
+        bad = []
+        for o, st in behind:
+            if st == "ahead":
+                continue
+            if st == "diverged":
+                unmatched, branches = unmatched_commits(args.remote, sha, o)
+                if unmatched:
+                    raise Refused(
+                        f"the Keel pin {o[:9]} (branch {', '.join(branches) or 'unknown'}) has commits the tag {tag} does not hold: "
+                        + ", ".join(unmatched))
+                continue  # every commit of the pin is already on the tag: the tag is ahead
+            bad.append(f"{o[:9]} is {st}")
         if bad:
             out["reason"] = "the tag is not ahead of the pin (" + ", ".join(bad) + ")"
         else:
