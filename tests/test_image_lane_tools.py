@@ -186,6 +186,110 @@ class GitHubOidcTests(unittest.TestCase):
                 mint._fetch_github_oidc_token(5)
 
 
+class RegistryMintRetryTests(unittest.TestCase):
+    """One issuer blip (connect timeout, 5xx) must not fail an image build;
+    a refusal (4xx) must fail at once."""
+
+    REPOSITORY = "library/sylphx-hands"
+
+    def registry_token(self) -> str:
+        now = int(time.time())
+        return jwt({
+            "aud": [mint.REGISTRY_TOKEN_SERVICE], "iat": now, "exp": now + 300,
+            "access": [{"type": "repository", "name": self.REPOSITORY, "actions": ["pull", "push"]}],
+        })
+
+    def response(self):
+        token = self.registry_token()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def geturl(self):
+                return mint.DEFAULT_MINT_URL + "?x=1"
+
+            def read(self):
+                return json.dumps({"token": token}).encode()
+
+        return Response()
+
+    def run_mint(self, outcomes):
+        calls = []
+        sleeps = []
+
+        def urlopen(request, timeout):
+            calls.append(timeout)
+            outcome = outcomes[len(calls) - 1]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        with mock.patch.object(mint.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(mint.time, "sleep", sleeps.append):
+            try:
+                result = mint._mint_registry_token(
+                    "svid", "gha:1", self.REPOSITORY, mint.DEFAULT_REGISTRY_HOST, 20
+                )
+            except RuntimeError as error:
+                result = error
+        return result, calls, sleeps
+
+    @staticmethod
+    def http_error(code: int):
+        return mint.urllib.error.HTTPError(mint.DEFAULT_MINT_URL, code, "x", {}, None)
+
+    def test_first_attempt_timeout_then_success(self) -> None:
+        connect_timeout = mint.urllib.error.URLError(TimeoutError("timed out"))
+        result, calls, sleeps = self.run_mint([connect_timeout, self.response()])
+        self.assertIsInstance(result, str)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sleeps, [mint.MINT_BACKOFF_SECONDS[0]])
+
+    def test_read_timeout_and_5xx_are_retried(self) -> None:
+        result, calls, _ = self.run_mint([TimeoutError("read"), self.http_error(503), self.response()])
+        self.assertIsInstance(result, str)
+        self.assertEqual(len(calls), 3)
+
+    def test_gives_up_after_bounded_attempts(self) -> None:
+        blips = [self.http_error(502)] * (mint.MINT_ATTEMPTS + 2)
+        result, calls, sleeps = self.run_mint(blips)
+        self.assertIsInstance(result, RuntimeError)
+        self.assertEqual(len(calls), mint.MINT_ATTEMPTS)
+        self.assertEqual(len(sleeps), mint.MINT_ATTEMPTS - 1)
+        self.assertIn("HTTP 502", str(result))
+        self.assertIn(f"{mint.MINT_ATTEMPTS} attempts", str(result))
+
+    def test_refusal_is_not_retried(self) -> None:
+        for code in (400, 401, 403, 404, 429):
+            result, calls, sleeps = self.run_mint([self.http_error(code), self.response()])
+            self.assertIsInstance(result, RuntimeError)
+            self.assertIn(f"HTTP {code}", str(result))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(sleeps, [])
+
+    def test_invalid_json_is_not_retried(self) -> None:
+        class Bad:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def geturl(self):
+                return mint.DEFAULT_MINT_URL
+
+            def read(self):
+                return b"not json"
+
+        result, calls, _ = self.run_mint([Bad(), self.response()])
+        self.assertIsInstance(result, RuntimeError)
+        self.assertEqual(len(calls), 1)
+
+
 class PerGrantSvidTests(unittest.TestCase):
     GRANT = mint.SPIFFE_ID + "/grant/gha-hands-publish/repository/library/sylphx-hands"
 
