@@ -5,7 +5,7 @@
   "pin_floor": {
     "repo": "SylphxAI/.github",
     "sha": "6533cb5cc43517cdb9f8734d57f98fe0d8f05c54",
-    "note": "A red-main caller or main-red-gate pin is conformant when it is this commit or a descendant of it. Move the floor forward when a fix every caller needs lands."
+    "note": "A red-main caller or main-red-gate pin is conformant when it is this commit or a descendant of it, or when the component's files (red-main.yml for R4, .github/actions/main-red-gate for R5) are identical at the pin and at the floor. Move the floor forward when a fix every caller needs lands."
   },
   "writer_app_orgs": ["SylphxAI"],
   "writer_app_repos": [],
@@ -65,8 +65,8 @@
     },
     {
       "class": "hands-off",
-      "repos": ["SylphxAI/bgca", "Cubeage/hk-mahjong-tycoon", "SylphxAI/openclaw-sylphx"],
-      "reason": "Delivered customer repository (bgca), protected original (hk-mahjong-tycoon) and the hosted stopgap (openclaw-sylphx): no work unless their owner asks.",
+      "repos": ["SylphxAI/bgca", "Cubeage/hk-mahjong-tycoon", "SylphxAI/openclaw-sylphx", "Cubeage/cubeage-platform"],
+      "reason": "Delivered customer repository (bgca), protected original (hk-mahjong-tycoon), the hosted stopgap (openclaw-sylphx) and cubeage-platform, which hosts original HKMT's shared login: every change there needs the HKMT ops review, so the handler must never auto-revert. No work unless the owner asks.",
       "owner": "CEO",
       "review": "2027-04-04"
     },
@@ -76,6 +76,27 @@
       "reason": "Declare on_red revert, but the builder App does not reach the Cubeage organization, so the handler runs as notify (tenant organizations lack the writer App).",
       "owner": "Ops",
       "review": "2026-12-31"
+    },
+    {
+      "class": "suite-is-gate",
+      "repos": ["SylphxAI/Google-Photos-Delete-Tool", "SylphxAI/lockdocs", "SylphxAI/mcp-kit", "SylphxAI/readme-mark", "SylphxAI/talos-images"],
+      "reason": "Public repositories on free GitHub-hosted runners. Measured `CI` workflow run time on pull_request and merge_group runs (gh run list, last 40 runs, read 2026-10-05 20:47Z, run time from start to finish): Google-Photos-Delete-Tool p90 39 s (8 runs), lockdocs p90 126 s (17), mcp-kit p90 139 s (22), readme-mark p90 106 s (25), talos-images p90 101 s (14). All at or under about 5 minutes, so the merge gate already is the full suite.",
+      "owner": "Build",
+      "review": "2026-11-30"
+    },
+    {
+      "class": "suite-is-gate",
+      "repos": ["SylphxAI/.github"],
+      "reason": "Its tests are the gate. Measured job run time (desk CI data github_ci_jobs, 30 days, read 2026-10-05 20:51Z): `tests` p90 52 s over 33 runs, `pytest` p90 60 s over 4, `ci-ok` p90 8 s over 36.",
+      "owner": "Build",
+      "review": "2026-11-30"
+    },
+    {
+      "class": "no-build",
+      "repos": ["SylphxAI/configs", "SylphxAI/homebrew-tap", "SylphxAI/scoop-bucket", "SylphxAI/gpdt-test-library", "SylphxAI/owner"],
+      "reason": "Nothing to build or deploy: shared configuration (configs `ci` job p90 51 s on the desk, 9 runs, read 2026-10-05 20:51Z), package manifests (homebrew-tap, scoop-bucket), a test fixture library with no pull-request CI (gpdt-test-library, 1 run in the last 40, read 2026-10-05 20:47Z) and the company notebook, documents only (owner).",
+      "owner": "Build",
+      "review": "2027-04-04"
     }
   ]
 }
