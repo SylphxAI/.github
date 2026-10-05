@@ -107,6 +107,15 @@ class ConfirmTest(unittest.TestCase):
     def test_unusable_lane_evidence_still_fails_closed(self):
         broken = copy.deepcopy(jobs(PREVIOUS))
         broken[0]["status"] = "in_progress"
+        # An unfinished job is ignored only once the run itself reads back as
+        # completed; while the run is active the evidence is incomplete.
+        with patch.object(proof, "api", return_value={"id": int(PREVIOUS), "status": "in_progress"}):
+            with self.assertRaises(ValueError):
+                lanes_of(broken, PREVIOUS)
+        with patch.object(proof, "api", return_value={"id": int(PREVIOUS), "status": "completed"}):
+            self.assertEqual(lanes_of(broken, PREVIOUS), lanes_of(jobs(PREVIOUS), PREVIOUS))
+        broken = copy.deepcopy(jobs(PREVIOUS))
+        broken[0]["status"] = "mystery"
         with self.assertRaises(ValueError):
             lanes_of(broken, PREVIOUS)
         broken = copy.deepcopy(jobs(PREVIOUS))

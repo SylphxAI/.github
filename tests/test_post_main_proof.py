@@ -4,9 +4,15 @@ import copy
 import importlib.util
 import io
 import json
+import os
 import pathlib
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
+
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / ".github/actions/ci-range/post_main.py"
@@ -193,7 +199,7 @@ class ProofTest(unittest.TestCase):
         job = dict(id=300, run_id=9, name="rust", status="completed", conclusion="failure")
         for invalid in (dict(name=None), dict(name=""), dict(name="rust\nother"),
                         dict(run_id=None), dict(run_id=8), dict(status="mystery"),
-                        dict(status="in_progress"), dict(conclusion=None), dict(conclusion="mystery")):
+                        dict(conclusion=None), dict(conclusion="mystery")):
             with self.subTest(invalid=invalid), patch.object(proof, "paged", return_value=[dict(job, **invalid)]):
                 with self.assertRaises(ValueError):
                     proof.failed_lanes(REPO, "9")
@@ -208,6 +214,77 @@ class ProofTest(unittest.TestCase):
         with patch.object(proof, "api", return_value={"total_count": 2, "jobs": []}):
             with self.assertRaisesRegex(ValueError, "inconsistent"):
                 proof.failed_lanes(REPO, "9")
+
+    def test_previous_run_reader_ignores_an_in_progress_non_lane_job(self):
+        failed = dict(id=300, run_id=9, name="rust", status="completed", conclusion="failure")
+        alert = dict(id=302, run_id=9, name="Red-main alert", status="in_progress", conclusion=None)
+        queued = dict(id=303, run_id=9, name="publish", status="queued", conclusion=None)
+        done = {"id": 9, "status": "completed", "conclusion": "failure"}
+        with patch.object(proof, "paged", return_value=[alert, failed, queued]), \
+                patch.object(proof, "api", return_value=done) as read:
+            self.assertEqual(proof.failed_lanes(REPO, "9"), "rust")
+            read.assert_called_once_with(f"repos/{REPO}/actions/runs/9")
+        # No pending job: the run is not read again.
+        with patch.object(proof, "paged", return_value=[failed]), \
+                patch.object(proof, "api") as read:
+            self.assertEqual(proof.failed_lanes(REPO, "9"), "rust")
+            read.assert_not_called()
+
+    def test_previous_run_reader_errors_when_the_run_is_still_active_or_unreadable(self):
+        failed = dict(id=300, run_id=9, name="rust", status="completed", conclusion="failure")
+        alert = dict(id=302, run_id=9, name="Red-main alert", status="in_progress", conclusion=None)
+        for run in ({"id": 9, "status": "in_progress"}, {"id": 8, "status": "completed"}, None, []):
+            with self.subTest(run=run), patch.object(proof, "paged", return_value=[failed, alert]), \
+                    patch.object(proof, "api", return_value=run):
+                with self.assertRaisesRegex(ValueError, "still active"):
+                    proof.failed_lanes(REPO, "9")
+        with patch.object(proof, "paged", return_value=[failed, alert]), \
+                patch.object(proof, "api", side_effect=OSError("down")):
+            with self.assertRaises(OSError):
+                proof.failed_lanes(REPO, "9")
+
+    def fake_gh(self, jobs, run=None):
+        """Run the shipped CLI against a fake `gh` that serves one run and its jobs."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        bin_dir = pathlib.Path(temp.name)
+        responses = {"jobs": {"total_count": len(jobs), "jobs": jobs}, "run": run}
+        (bin_dir / "responses.json").write_text(json.dumps(responses))
+        (bin_dir / "gh").write_text(
+            "#!/usr/bin/env python3\nimport json, sys\n"
+            f"r = json.load(open({str(bin_dir / 'responses.json')!r}))\n"
+            "path = sys.argv[2]\n"
+            "body = r['jobs'] if '/jobs' in path else r['run']\n"
+            "if body is None:\n    sys.exit(1)\n"
+            "print(json.dumps(body))\n")
+        (bin_dir / "gh").chmod(0o755)
+        env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", GH_TOKEN="x")
+        return subprocess.run([sys.executable, str(SOURCE), "failed-lanes", REPO, "main", "verify.yml", "9"],
+                              capture_output=True, text=True, env=env, timeout=60)
+
+    def test_cli_returns_failed_lanes_past_an_in_progress_non_lane_job(self):
+        jobs = [dict(id=300, run_id=9, name="rust", status="completed", conclusion="failure"),
+                dict(id=301, run_id=9, name="lint", status="completed", conclusion="success"),
+                dict(id=302, run_id=9, name="Red-main alert", status="in_progress", conclusion=None)]
+        done = self.fake_gh(jobs, run={"id": 9, "status": "completed", "conclusion": "failure"})
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "rust"), done.stderr)
+
+    def test_cli_reader_error_exits_non_zero_so_the_handler_alert_pages(self):
+        jobs = [dict(id=300, run_id=9, name="rust", status="mystery", conclusion=None)]
+        done = self.fake_gh(jobs)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("post-main proof unavailable", done.stderr)
+        # An active run with a pending job is also an error, not a partial list.
+        jobs = [dict(id=300, run_id=9, name="rust", status="completed", conclusion="failure"),
+                dict(id=302, run_id=9, name="Red-main alert", status="in_progress", conclusion=None)]
+        done = self.fake_gh(jobs, run={"id": 9, "status": "in_progress"})
+        self.assertEqual(done.returncode, 1)
+        # The handler pages on any failed step: the confirm step has no continue-on-error.
+        workflow = yaml.safe_load((ROOT / ".github/workflows/red-main.yml").read_text())
+        steps = {step["name"]: step for step in workflow["jobs"]["red-main"]["steps"]}
+        self.assertEqual(steps["Alert that the red-main handler itself failed"]["if"], "failure()")
+        self.assertNotIn("continue-on-error",
+                         steps["Confirm the same unit failed on two consecutive completed runs"])
 
     def test_check_id_cli_uses_the_same_strict_link_for_annotations(self):
         job, _ = objects(run())
