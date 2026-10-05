@@ -38,7 +38,13 @@ permissions:
 
 jobs:
   check:
-    uses: SylphxAI/.github/.github/workflows/rust-check.yml@13890e5cc13e308f376748fd23f626b637a47771 # SylphxAI/.github #122
+    # id-token: the compile cache knows the job by its GitHub OIDC identity
+    # (a called workflow can only narrow what its caller grants, and GitHub
+    # refuses to start the run when the called job asks for more).
+    permissions:
+      contents: read
+      id-token: write
+    uses: SylphxAI/.github/.github/workflows/rust-check.yml@9e3c87761ba19fe892295e176c19aabb5203fef0 # SylphxAI/.github #177
     with:
       ref: ${{ inputs.ref }}
       packages: ${{ inputs.packages }}
