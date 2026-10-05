@@ -607,8 +607,8 @@ def node_for(facts: dict, with_workflows: bool) -> dict:
 
 
 class FakeGh:
-    def __init__(self, repos: dict[str, dict[str, dict]], statuses: dict | None = None):
-        self.repos, self.statuses = repos, statuses or {}
+    def __init__(self, repos: dict[str, dict[str, dict]], statuses: dict | None = None, files: dict | None = None):
+        self.repos, self.statuses, self.files = repos, statuses or {}, files or {}
         self.queries: list[str] = []
         self.compares: list[str] = []
 
@@ -630,9 +630,13 @@ class FakeGh:
         return {"data": data}
 
     def rest(self, path: str) -> dict:
+        # The reader compares pin...floor; `statuses` and `files` are keyed by pin and
+        # say where the pin stands against the floor, as GitHub would put floor...pin.
         self.compares.append(path)
-        pin = path.rsplit("...", 1)[1]
-        return {"status": self.statuses.get(pin, "ahead")}
+        pin = path.rsplit("/", 1)[1].split("...", 1)[0]
+        status = self.statuses.get(pin, "ahead")
+        flipped = {"ahead": "behind", "behind": "ahead"}.get(status, status)
+        return {"status": flipped, "files": [{"filename": f} for f in self.files.get(pin, [])]}
 
 
 class CollectTest(unittest.TestCase):
@@ -687,7 +691,22 @@ class CollectTest(unittest.TestCase):
         collected = audit.collect(gh, ["SylphxAI"], POLICY, TODAY)
         report = audit.evaluate(collected, POLICY, audit.Comparer(FLOOR, audit.compare_reader(gh, POLICY)), TODAY)
         self.assertEqual(report["summary"]["FAIL"], 0, report)
-        self.assertEqual(gh.compares, [f"repos/SylphxAI/.github/compare/{FLOOR}...{NEWER}"])
+        self.assertEqual(gh.compares, [f"repos/SylphxAI/.github/compare/{NEWER}...{FLOOR}"])
+
+    def test_reader_lists_the_changes_between_a_behind_pin_and_the_floor(self) -> None:
+        # GitHub diffs the merge base against the head: only pin...floor shows what a
+        # pin behind the floor misses. A changed red-main.yml there is a FAIL.
+        gh = FakeGh({}, statuses={NEWER: "behind"}, files={NEWER: [".github/workflows/red-main.yml"]})
+        compare = audit.Comparer(FLOOR, audit.compare_reader(gh, POLICY))
+        ok, why = compare.at_or_after(NEWER, audit.R4_COMPONENT)
+        self.assertFalse(ok, why)
+        self.assertTrue(compare.at_or_after(NEWER, audit.R5_COMPONENT)[0])
+        self.assertEqual(gh.compares, [f"repos/SylphxAI/.github/compare/{NEWER}...{FLOOR}"])
+
+    def test_reader_never_waives_a_diverged_pin_by_its_file_list(self) -> None:
+        gh = FakeGh({}, statuses={NEWER: "diverged"}, files={NEWER: ["docs/x.md"]})
+        compare = audit.Comparer(FLOOR, audit.compare_reader(gh, POLICY))
+        self.assertFalse(compare.at_or_after(NEWER, audit.R5_COMPONENT)[0])
 
     def test_batched_queries_not_one_per_repository(self) -> None:
         fleet = {"SylphxAI": {}}

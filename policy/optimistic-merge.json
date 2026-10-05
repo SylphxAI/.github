@@ -93,8 +93,8 @@
     },
     {
       "class": "no-build",
-      "repos": ["SylphxAI/configs", "SylphxAI/homebrew-tap", "SylphxAI/scoop-bucket", "SylphxAI/gpdt-test-library", "SylphxAI/owner"],
-      "reason": "Nothing to build or deploy: shared configuration (configs `ci` job p90 51 s on the desk, 9 runs, read 2026-10-05 20:51Z), package manifests (homebrew-tap, scoop-bucket), a test fixture library with no pull-request CI (gpdt-test-library, 1 run in the last 40, read 2026-10-05 20:47Z) and the company notebook, documents only (owner).",
+      "repos": ["SylphxAI/configs", "SylphxAI/homebrew-tap", "SylphxAI/scoop-bucket", "SylphxAI/gpdt-test-library", "SylphxAI/owner", "SylphxAI/terraform-provider-sylphx", "SylphxAI/sylphx-clients"],
+      "reason": "Nothing to build or deploy: shared configuration (configs `ci` job p90 51 s on the desk, 9 runs, read 2026-10-05 20:51Z), package manifests (homebrew-tap, scoop-bucket), a test fixture library with no pull-request CI (gpdt-test-library, 1 run in the last 40, read 2026-10-05 20:47Z) the company notebook, documents only (owner), and two client packages with no pull-request CI at all (terraform-provider-sylphx, sylphx-clients: no run in the last 40, read 2026-10-05 20:47Z); either gets adopted when it gains a suite.",
       "owner": "Build",
       "review": "2027-04-04"
     }

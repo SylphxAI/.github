@@ -794,10 +794,16 @@ def compare_reader(gh, policy: dict):
     repo = policy["pin_floor"]["repo"]
 
     def read(floor: str, pin: str) -> str:
-        got = gh.rest(f"repos/{repo}/compare/{floor}...{pin}")
+        # Compare from the pin to the floor: GitHub diffs the merge base against the
+        # head, so only this direction lists what changed between a pin behind the
+        # floor and the floor (the other direction lists nothing for such a pin).
+        got = gh.rest(f"repos/{repo}/compare/{pin}...{floor}")
+        status = {"ahead": "behind", "behind": "ahead"}.get(got["status"], got["status"])
         files = [f["filename"] for f in got.get("files") or []]
-        # the compare reply lists at most 300 files: a longer change is not a complete list
-        return {"status": got["status"], "files": files if len(files) < 300 else None}
+        # A diverged pin carries changes of its own that this diff does not show, and the
+        # reply lists at most 300 files: neither is a complete list.
+        complete = status == "behind" and len(files) < 300
+        return {"status": status, "files": files if complete else None}
     return read
 
 
