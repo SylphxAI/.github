@@ -205,8 +205,21 @@ class ConfirmTest(unittest.TestCase):
     def test_same_test_different_job(self):
         self.assertTrue(confirm("failure", "test\tt1\tj1\n", "test\tt1\tj2\n").startswith("no "))
 
-    def test_lane_row_matches_same_job(self):
-        self.assertTrue(confirm("failure", "lane\tj\tj\n", "test\tt1\tj\n").startswith("yes "))
+    def test_lane_row_does_not_match_a_test_of_the_same_job(self):
+        # A job with no junit on one run and a failing test on the other is
+        # not the same failure: nothing confirms, the next run decides.
+        self.assertTrue(confirm("failure", "lane\tj\tj\n", "test\tt1\tj\n").startswith("no "))
+
+    def test_lane_rows_match_only_the_same_way_of_failing(self):
+        at_a = "lane\tfailure at A: Process completed with exit code 1.\tj\n"
+        at_b = "lane\tfailure at B: Process completed with exit code 1.\tj\n"
+        self.assertTrue(confirm("failure", at_a, at_a).startswith("yes "))
+        answer = confirm("failure", at_a, at_b)
+        self.assertTrue(answer.startswith("no j failed on both runs, but not the same way"), answer)
+
+    def test_the_aggregate_job_is_never_a_unit(self):
+        verified = "lane\tfailure at Verdict: Process completed with exit code 1.\tverified\n"
+        self.assertTrue(confirm("failure", verified, verified).startswith("no "))
 
     def test_lane_rows_different_job(self):
         self.assertTrue(confirm("failure", "lane\tj1\tj1\n", "lane\tj2\tj2\n").startswith("no "))

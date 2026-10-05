@@ -347,6 +347,22 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.assertIn("previous failing lanes are unavailable", self.summary())
         self.assertFalse((self.root / "git.called").exists())
 
+    def test_unreadable_failed_job_detail_escalates_at_confirmation(self):
+        # How the failed jobs failed (steps, error lines) cannot be read: the
+        # junit step records it and goes on (the infra verdict still runs),
+        # and the confirmation escalates instead of matching job names.
+        (self.work / "junit.py").write_text(HANDLER["env"]["JUNIT_PY"])
+        self.env.update(PROOF_RESULT="exception", FAILED_LANES="rust")
+        read = self.execute("Read the failing tests from the run's junit artifacts")
+        self.assertEqual(read.returncode, 0, read.stderr)
+        self.assertIn("HTTP 502", self.state("units-unavailable"))
+        self.env["PROOF_RESULT"] = "failure"
+        result = self.execute("Confirm the same unit failed on two consecutive completed runs")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed jobs of run 1 failed could not be read", self.summary())
+        output = (self.root / "output").read_text() if (self.root / "output").exists() else ""
+        self.assertNotIn("confirmed=", output)
+
     def test_invalid_previous_status_escalates(self):
         for status in ("", "mystery"):
             self.env["HISTORY_FIXTURE"] = json.dumps(dict(total_count=1, workflow_runs=[dict(
