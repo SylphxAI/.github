@@ -204,8 +204,8 @@ def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=F
 PENDING_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
-def failed_lanes(repo, identity):
-    """Failing lanes of a completed run. Complete, valid jobs establish them.
+def failed_jobs(repo, identity):
+    """Failing jobs of a completed run. Complete, valid jobs establish them.
 
     A job that is still queued or running (a non-lane job such as an alert that
     outlives the run's verdict) cannot have failed, so it is skipped; but only
@@ -216,7 +216,7 @@ def failed_lanes(repo, identity):
     if not isinstance(identity, str) or re.fullmatch(r"[1-9][0-9]*", identity) is None:
         raise ValueError("invalid workflow run identity")
     jobs = paged(f"repos/{repo}/actions/runs/{identity}/jobs?filter=latest", "jobs")
-    lanes, pending = [], []
+    failed, pending = [], []
     for job in jobs:
         name = job.get("name")
         if (not isinstance(name, str) or not name.strip()
@@ -237,13 +237,92 @@ def failed_lanes(repo, identity):
             # as ';', the same way the current run's lanes are written.
             if re.search(r"[\x00-\x1f\x7f]", name):
                 raise ValueError(f"failed lane name has a control character: {name!r}")
-            lanes.append(name.replace(",", ";"))
+            failed.append(job)
     if pending:
         run = api(f"repos/{repo}/actions/runs/{identity}")
         if (not isinstance(run, dict) or run.get("id") != int(identity)
                 or run.get("status") != "completed"):
             raise ValueError("previous-run lane evidence incomplete: the run is still active")
-    return ",".join(lanes)
+    return failed
+
+
+def lane_of(job):
+    return job["name"].replace(",", ";")
+
+
+def failed_lanes(repo, identity):
+    """Failing lanes of a completed run, comma-separated (see failed_jobs)."""
+    return ",".join(lane_of(job) for job in failed_jobs(repo, identity))
+
+
+# Values that change from run to run inside an otherwise identical message: a
+# timestamp, a runner or pod name's hash, a commit, a duration.
+VOLATILE = [
+    (re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b"), "<time>"),
+    (re.compile(r"\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b"), "<hex>"),
+    (re.compile(r"\b\d+\.\d+\s*(?:ms|s|m|h|sec|seconds?|minutes?)?\b"), "<n>"),
+]
+FAILED_STEP = ("failure", "timed_out", "cancelled")
+SIGNATURE_LIMIT = 300
+
+
+def assertion(message):
+    text = " ".join(str(message).split())
+    for pattern, token in VOLATILE:
+        text = pattern.sub(token, text)
+    return text
+
+
+def lane_signature(job, annotations):
+    """What failed in a job: its conclusion, its failed steps, and its error lines.
+
+    The failed steps come from the job (`steps[].conclusion`), the error lines
+    from the job's own failure annotations (every `##[error]` line, including
+    the runner's "Process completed with exit code N."). Two runs failed the
+    same way only when all three match, so one job failing at two different
+    steps, or at one step with two different errors, is two different units.
+    """
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
+        raise ValueError(f"failed job {job.get('name')!r} has no step list")
+    failed = [" ".join(str(step.get("name") or "").split()) for step in steps
+              if step.get("conclusion") in FAILED_STEP]
+    errors = sorted({assertion(note["message"]) for note in annotations
+                     if note.get("annotation_level") == "failure"})
+    text = (f"{job['conclusion']} at {' + '.join(failed) or 'no failed step'}: "
+            + (" | ".join(errors) or "no error line"))
+    return re.sub(r"[\x00-\x1f\x7f]", " ", text)[:SIGNATURE_LIMIT]
+
+
+def check_annotations(repo, check_id):
+    """Every annotation of one check run; an incomplete read is an error."""
+    notes = []
+    for page in range(1, PAGE_LIMIT + 1):
+        batch = api(f"repos/{repo}/check-runs/{check_id}/annotations?per_page=100&page={page}")
+        if not isinstance(batch, list) or not all(
+                isinstance(note, dict) and isinstance(note.get("message"), str)
+                and isinstance(note.get("annotation_level"), str) for note in batch):
+            raise ValueError("failed-job annotations unavailable or invalid")
+        notes.extend(batch)
+        if len(batch) < 100:
+            return notes
+    raise ValueError("failed-job annotations pagination exhausted")
+
+
+def failed_units(repo, identity):
+    """`lane<TAB>signature` per failing job of a completed run (see lane_signature).
+
+    The check run is the one the job links to; its annotations are read through
+    a locally built path. An unreadable job, link or annotation list is an
+    error: the caller escalates, it never compares a partial signature.
+    """
+    rows = []
+    for job in failed_jobs(repo, identity):
+        check_id = linked_check_id(job, repo)
+        if check_id is None:
+            raise ValueError("previous-run lane evidence unavailable or invalid")
+        rows.append(f"{lane_of(job)}\t{lane_signature(job, check_annotations(repo, check_id))}")
+    return "\n".join(rows)
 
 
 def main():
@@ -263,6 +342,8 @@ def main():
         print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
     elif command == "failed-lanes":
         print(failed_lanes(repo, identity))
+    elif command == "failed-units":
+        print(failed_units(repo, identity))
     elif command == "base":
         print(last_verified(repo, branch, workflow, identity, name))
     elif command == "remote-base":

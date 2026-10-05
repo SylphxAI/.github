@@ -316,8 +316,22 @@ leaves the alert open; no parallel writer should edit lifecycle markers.
   the aggregate `verified` job is not a unit, the candidate runs dispatch only
   those units' lanes, and a candidate counts as failed only if one of those
   units failed in it. With no such run in the last 100, the fully verified
-  commit stays the baseline. A lane that publishes no `junit-<lane>` report is
-  traced at lane granularity.
+  commit stays the baseline.
+- A failing unit is a test of a job, from the job's `junit-<lane>` report. A
+  job that publishes no report is one unit named by how it failed: its
+  conclusion, its failed steps and its error lines (the check run's failure
+  annotations, every `##[error]` line, with timestamps, hashes and durations
+  masked). Two runs, or a run and a trace candidate, failed the same way only
+  when the same test failed, or the same job failed at the same step with the
+  same error lines; the job name alone never matches, and the aggregate
+  `verified` job is never a unit. A job that failed both times at different
+  steps (one step stopping the job before the other runs) confirms nothing,
+  and a candidate that failed a traced job some other way is inconclusive,
+  never the culprit. A step that ends in the runner's bare "Process completed
+  with exit code N." is told apart by its step only; print the failing check
+  as an `::error::` line (or publish `junit-<lane>`) so two failures of one
+  step are told apart too. Steps and error lines that cannot be read stop the
+  handler without a revert, as any unread proof does.
 - A flake is quarantined first, in its own source (`#[ignore = "quarantined
   <date>: <reason> (<issue>, owner <lane>)"]`, or a comment above
   `test.skip(`), never retried in the queue.

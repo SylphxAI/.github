@@ -844,8 +844,8 @@ jobs:
         PENDING_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
-        def failed_lanes(repo, identity):
-            """Failing lanes of a completed run. Complete, valid jobs establish them.
+        def failed_jobs(repo, identity):
+            """Failing jobs of a completed run. Complete, valid jobs establish them.
 
             A job that is still queued or running (a non-lane job such as an alert that
             outlives the run's verdict) cannot have failed, so it is skipped; but only
@@ -856,7 +856,7 @@ jobs:
             if not isinstance(identity, str) or re.fullmatch(r"[1-9][0-9]*", identity) is None:
                 raise ValueError("invalid workflow run identity")
             jobs = paged(f"repos/{repo}/actions/runs/{identity}/jobs?filter=latest", "jobs")
-            lanes, pending = [], []
+            failed, pending = [], []
             for job in jobs:
                 name = job.get("name")
                 if (not isinstance(name, str) or not name.strip()
@@ -877,13 +877,92 @@ jobs:
                     # as ';', the same way the current run's lanes are written.
                     if re.search(r"[\x00-\x1f\x7f]", name):
                         raise ValueError(f"failed lane name has a control character: {name!r}")
-                    lanes.append(name.replace(",", ";"))
+                    failed.append(job)
             if pending:
                 run = api(f"repos/{repo}/actions/runs/{identity}")
                 if (not isinstance(run, dict) or run.get("id") != int(identity)
                         or run.get("status") != "completed"):
                     raise ValueError("previous-run lane evidence incomplete: the run is still active")
-            return ",".join(lanes)
+            return failed
+
+
+        def lane_of(job):
+            return job["name"].replace(",", ";")
+
+
+        def failed_lanes(repo, identity):
+            """Failing lanes of a completed run, comma-separated (see failed_jobs)."""
+            return ",".join(lane_of(job) for job in failed_jobs(repo, identity))
+
+
+        # Values that change from run to run inside an otherwise identical message: a
+        # timestamp, a runner or pod name's hash, a commit, a duration.
+        VOLATILE = [
+            (re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b"), "<time>"),
+            (re.compile(r"\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b"), "<hex>"),
+            (re.compile(r"\b\d+\.\d+\s*(?:ms|s|m|h|sec|seconds?|minutes?)?\b"), "<n>"),
+        ]
+        FAILED_STEP = ("failure", "timed_out", "cancelled")
+        SIGNATURE_LIMIT = 300
+
+
+        def assertion(message):
+            text = " ".join(str(message).split())
+            for pattern, token in VOLATILE:
+                text = pattern.sub(token, text)
+            return text
+
+
+        def lane_signature(job, annotations):
+            """What failed in a job: its conclusion, its failed steps, and its error lines.
+
+            The failed steps come from the job (`steps[].conclusion`), the error lines
+            from the job's own failure annotations (every `##[error]` line, including
+            the runner's "Process completed with exit code N."). Two runs failed the
+            same way only when all three match, so one job failing at two different
+            steps, or at one step with two different errors, is two different units.
+            """
+            steps = job.get("steps")
+            if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
+                raise ValueError(f"failed job {job.get('name')!r} has no step list")
+            failed = [" ".join(str(step.get("name") or "").split()) for step in steps
+                      if step.get("conclusion") in FAILED_STEP]
+            errors = sorted({assertion(note["message"]) for note in annotations
+                             if note.get("annotation_level") == "failure"})
+            text = (f"{job['conclusion']} at {' + '.join(failed) or 'no failed step'}: "
+                    + (" | ".join(errors) or "no error line"))
+            return re.sub(r"[\x00-\x1f\x7f]", " ", text)[:SIGNATURE_LIMIT]
+
+
+        def check_annotations(repo, check_id):
+            """Every annotation of one check run; an incomplete read is an error."""
+            notes = []
+            for page in range(1, PAGE_LIMIT + 1):
+                batch = api(f"repos/{repo}/check-runs/{check_id}/annotations?per_page=100&page={page}")
+                if not isinstance(batch, list) or not all(
+                        isinstance(note, dict) and isinstance(note.get("message"), str)
+                        and isinstance(note.get("annotation_level"), str) for note in batch):
+                    raise ValueError("failed-job annotations unavailable or invalid")
+                notes.extend(batch)
+                if len(batch) < 100:
+                    return notes
+            raise ValueError("failed-job annotations pagination exhausted")
+
+
+        def failed_units(repo, identity):
+            """`lane<TAB>signature` per failing job of a completed run (see lane_signature).
+
+            The check run is the one the job links to; its annotations are read through
+            a locally built path. An unreadable job, link or annotation list is an
+            error: the caller escalates, it never compares a partial signature.
+            """
+            rows = []
+            for job in failed_jobs(repo, identity):
+                check_id = linked_check_id(job, repo)
+                if check_id is None:
+                    raise ValueError("previous-run lane evidence unavailable or invalid")
+                rows.append(f"{lane_of(job)}\t{lane_signature(job, check_annotations(repo, check_id))}")
+            return "\n".join(rows)
 
 
         def main():
@@ -903,6 +982,8 @@ jobs:
                 print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
             elif command == "failed-lanes":
                 print(failed_lanes(repo, identity))
+            elif command == "failed-units":
+                print(failed_units(repo, identity))
             elif command == "base":
                 print(last_verified(repo, branch, workflow, identity, name))
             elif command == "remote-base":
@@ -1248,7 +1329,10 @@ jobs:
             raise SystemExit(0)
         print("none")
       # The failing units of a run, from its own junit artifacts (never from
-      # the job logs). A lane that published none is named by its lane.
+      # the job logs). A lane that published none is one `lane` unit, named by
+      # how it failed: its row in the optional fourth argument, a
+      # `lane<TAB>signature` file from `proof.py failed-units` (conclusion,
+      # failed steps, error lines), else by the lane name alone.
       JUNIT_PY: |
         import os
         import sys
@@ -1259,6 +1343,14 @@ jobs:
 
         def clean(value):
             return " ".join((value or "").split())[:300]
+
+        signatures = {}
+        if len(sys.argv) > 4:
+            with open(sys.argv[4], encoding="utf-8") as fh:
+                for line in fh:
+                    lane, _, signature = line.rstrip("\n").partition("\t")
+                    if lane and signature:
+                        signatures[clean(lane)] = clean(signature)
 
         if os.path.isdir(root):
             for dirpath, dirnames, filenames in os.walk(root):
@@ -1285,7 +1377,7 @@ jobs:
         for lane in lanes:
             if lane not in covered and (lane, lane) not in seen:
                 seen.add((lane, lane))
-                rows.append(("lane", clean(lane), clean(lane)))
+                rows.append(("lane", signatures.get(clean(lane), clean(lane)), clean(lane)))
         with open(out, "w", encoding="utf-8") as fh:
             for kind, name, lane in rows:
                 fh.write(f"{kind}\t{name}\t{lane}\n")
@@ -1414,8 +1506,11 @@ jobs:
               nothing. The aggregate job (`verified`) is not a unit.
           window.py judge <targets.tsv> <failing.tsv>
               Prints `fail <why>` when a unit of targets failed in a candidate run
-              whose failing units are failing.tsv (a lane row counts for every test of
-              its job), else `pass <why>`.
+              whose failing units are failing.tsv: the same test of the same job, or
+              the same job failing the same way (a lane row's name is how it failed:
+              its failed steps and error lines). A target's job that failed some
+              other way may hide the target (an earlier step failed, so the target's
+              step never ran), so it prints `inconclusive <why>`; else `pass <why>`.
         """
         import os
         import shutil
@@ -1539,14 +1634,22 @@ jobs:
 
 
         def judge(targets, failing):
-            tests = {(name, job) for kind, name, job in failing if kind == "test"}
-            lanes = {job for kind, _name, job in failing if kind == "lane"}
+            seen = {(kind, name, job) for kind, name, job in failing}
             jobs = {job for _kind, _name, job in failing}
+            # A job that failed without junit (a build error, an earlier step)
+            # can hide any test of it; junit lists a job's failing tests, so
+            # another failing test of the job hides nothing.
+            lanes = {job for kind, _name, job in failing if kind == "lane"}
+            hidden = None
             for kind, name, job in sorted(targets):
-                if kind == "test" and ((name, job) in tests or job in lanes):
-                    return f"fail the target {name} ({job}) failed in the candidate"
-                if kind == "lane" and job in jobs:
-                    return f"fail the target job {job} failed in the candidate"
+                if (kind, name, job) in seen:
+                    what = f"{name} ({job})" if kind == "test" else f"job {job} ({name})"
+                    return f"fail the target {what} failed the same way in the candidate"
+                if hidden is None and job in (lanes if kind == "test" else jobs):
+                    hidden = job
+            if hidden is not None:
+                return (f"inconclusive the target job {hidden} failed in the candidate, "
+                        "but not the same way, so the target may not have run")
             return "pass none of the target units failed in the candidate"
 
 
@@ -1615,14 +1718,20 @@ jobs:
       # Same failing unit on the previous completed verify run? Args: the
       # previous run's conclusion, its failing-units file, this run's, and
       # optionally a file that receives this run's confirmed units. Prints
-      # `yes <why>` or `no <why>`. Units are `kind<TAB>name<TAB>job`; a lane
-      # row (a job with no junit) counts on the JOB NAME ALONE, so it matches
-      # any unit of the same job, however different the underlying test. A
-      # previous run that passed, or an unknown one, confirms nothing.
+      # `yes <why>` or `no <why>`. Units are `kind<TAB>name<TAB>job`: a `test`
+      # row matches the same test of the same job; a `lane` row (a job with no
+      # junit) matches only a lane row of the same job with the same name,
+      # which is how it failed (its failed steps and error lines). A job that
+      # failed on both runs at a different step or with a different error is
+      # two different causes, and confirms nothing. The aggregate job
+      # ($VERIFY_CHECK_NAME) fails whenever anything fails, so it is never a
+      # unit. A previous run that passed, or an unknown one, confirms nothing.
       CONFIRM_PY: |
+        import os
         import sys
 
         prev_conclusion, prev_path, cur_path = sys.argv[1:4]
+        aggregate = os.environ.get("VERIFY_CHECK_NAME") or "verified"
 
         def read(path):
             rows = []
@@ -1630,7 +1739,7 @@ jobs:
                 with open(path, encoding="utf-8") as fh:
                     for line in fh:
                         parts = line.rstrip("\n").split("\t")
-                        if len(parts) == 3:
+                        if len(parts) == 3 and parts[2] != aggregate:
                             rows.append(tuple(parts))
             except OSError:
                 pass
@@ -1641,34 +1750,34 @@ jobs:
             raise SystemExit(0)
         prev, cur = read(prev_path), read(cur_path)
 
-        def tests(rows):
-            return {(name, job) for kind, name, job in rows if kind == "test"}
-
-        def lanes(rows):
-            return {job for kind, _name, job in rows if kind == "lane"}
+        def units(rows, kind):
+            return {(name, job) for k, name, job in rows if k == kind}
 
         def jobs(rows):
             return {job for _kind, _name, job in rows}
 
-        common = tests(prev) & tests(cur)
-        lane_hit = (lanes(prev) & jobs(cur)) | (lanes(cur) & jobs(prev))
-        # The units of THIS run that the previous run confirms (a test seen on
-        # both runs, or any unit of a job one run failed as a lane); the trace
-        # reads them from the optional fourth argument.
+        common_tests = units(prev, "test") & units(cur, "test")
+        common_lanes = units(prev, "lane") & units(cur, "lane")
+        # The units of THIS run that the previous run confirms: the same test,
+        # or the same job failing the same way; the trace reads them from the
+        # optional fourth argument.
         if len(sys.argv) > 4:
-            confirmed = [
-                (kind, name, job) for kind, name, job in cur
-                if (kind == "test" and ((name, job) in tests(prev) or job in lanes(prev)))
-                or (kind == "lane" and job in jobs(prev))
-            ]
+            confirmed = [(kind, name, job) for kind, name, job in cur
+                         if (name, job) in units(prev, kind)]
             with open(sys.argv[4], "w", encoding="utf-8") as fh:
                 for row in confirmed:
                     fh.write("\t".join(row) + "\n")
-        if common:
-            name, job = sorted(common)[0]
+        if common_tests:
+            name, job = sorted(common_tests)[0]
             print(f"yes the same unit failed on both runs: {name} ({job})")
-        elif lane_hit:
-            print(f"yes the same job failed on both runs: {sorted(lane_hit)[0]}")
+        elif common_lanes:
+            name, job = sorted(common_lanes)[0]
+            print(f"yes the same job failed the same way on both runs: {job} ({name})")
+        elif jobs(prev) & jobs(cur):
+            job = sorted(jobs(prev) & jobs(cur))[0]
+            before = next(name for _kind, name, j in prev if j == job)
+            now = next(name for _kind, name, j in cur if j == job)
+            print(f"no {job} failed on both runs, but not the same way (previous run: {before}; this run: {now})")
         else:
             print("no the previous completed run failed a different unit")
     steps:
@@ -2045,9 +2154,18 @@ jobs:
           if gha run download "$RUN_ID" --repo "$REPO" --pattern 'junit-*' --dir "$WORK_DIR/junit" 2>"$WORK_DIR/junit.err"; then
             echo "downloaded the run's junit artifacts"
           else
-            say "The run published no \`junit-*\` artifact, so a failing lane is named by its lane rather than by a test."
+            say "The run published no \`junit-*\` artifact, so a failing lane is named by how it failed (its failed steps and error lines) rather than by a test."
           fi
-          python3 "$RUNNER_TEMP/red-main/junit.py" "$WORK_DIR/junit" "$WORK_DIR/failing-tests.tsv" "$FAILED_LANES"
+          # How each failed job failed: a lane unit is its job, failed steps
+          # and error lines, so one job failing two different ways is two
+          # units. Unreadable is unverified, never a bare job-name match: the
+          # confirmation below escalates instead of comparing.
+          if ! python3 "$RUNNER_TEMP/red-main/proof.py" failed-units "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$RUN_ID" \
+              >"$WORK_DIR/lane-signatures.tsv" 2>"$WORK_DIR/units.err"; then
+            state_set units-unavailable "$(head -c 200 "$WORK_DIR/units.err" | tr '\n' ' ')"
+            echo "::warning::the failed jobs' steps and error lines could not be read"
+          fi
+          python3 "$RUNNER_TEMP/red-main/junit.py" "$WORK_DIR/junit" "$WORK_DIR/failing-tests.tsv" "$FAILED_LANES" "$WORK_DIR/lane-signatures.tsv"
           count=$(wc -l <"$WORK_DIR/failing-tests.tsv" | tr -d ' ')
           say "Failing units: $count."
 
@@ -2116,10 +2234,12 @@ jobs:
           say "The failure stands as red (proof \`$INITIAL_PROOF\`): acting on it as \`[ci] on_red\` says."
 
       # ---------------------------------------------------------------------
-      # A revert needs two consecutive COMPLETED failures of the same unit
-      # (job + test). Cancelled and skipped runs are not runs: a superseded
-      # verify run neither confirms nor breaks the count. The trace below then
-      # names the first-bad commit across both runs' commits.
+      # A revert needs two consecutive COMPLETED failures of the same unit:
+      # the same test of a job, or the same job failing at the same step with
+      # the same error lines (never the job name alone). Cancelled and
+      # skipped runs are not runs: a superseded verify run neither confirms
+      # nor breaks the count. The trace below then names the first-bad commit
+      # across both runs' commits.
       # ---------------------------------------------------------------------
       - name: Confirm the same unit failed on two consecutive completed runs
         id: confirm
@@ -2133,6 +2253,11 @@ jobs:
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
+          if [ -n "$(state_get units-unavailable)" ]; then
+            say "**Unverified:** how the failed jobs of run $RUN_ID failed could not be read ($(state_get units-unavailable)); escalating without confirmation or revert authorization."
+            echo "::error::failed-job steps and error lines unavailable"
+            exit 1
+          fi
           if ! created=$(gha api "repos/$REPO/actions/runs/$RUN_ID" --jq '.created_at'); then
             say "**Unverified:** current-run history metadata is unavailable; escalating without confirmation or revert authorization."
             echo "::error::confirmation metadata unavailable"
@@ -2160,12 +2285,15 @@ jobs:
           if [ "$prev_conclusion" = failure ] || [ "$prev_conclusion" = timed_out ]; then
             mkdir -p "$WORK_DIR/junit-previous"
             gha run download "$prev_id" --repo "$REPO" --pattern 'junit-*' --dir "$WORK_DIR/junit-previous" 2>/dev/null || true
-            if ! prev_lanes=$(python3 "$RUNNER_TEMP/red-main/proof.py" failed-lanes "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$prev_id"); then
+            if ! python3 "$RUNNER_TEMP/red-main/proof.py" failed-units "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$prev_id" \
+                >"$WORK_DIR/previous-lane-signatures.tsv"; then
               say "**Unverified:** previous failing lanes are unavailable; escalating without confirmation."
               echo "::error::previous-run failed lanes unavailable"
               exit 1
             fi
-            python3 "$RUNNER_TEMP/red-main/junit.py" "$WORK_DIR/junit-previous" "$WORK_DIR/previous-failing-tests.tsv" "$prev_lanes" >/dev/null
+            prev_lanes=$(cut -f1 "$WORK_DIR/previous-lane-signatures.tsv" | paste -sd, -)
+            python3 "$RUNNER_TEMP/red-main/junit.py" "$WORK_DIR/junit-previous" "$WORK_DIR/previous-failing-tests.tsv" "$prev_lanes" \
+              "$WORK_DIR/previous-lane-signatures.tsv" >/dev/null
           fi
           : >"$WORK_DIR/confirmed-units.tsv"
           answer=$(python3 "$RUNNER_TEMP/red-main/confirm.py" "$prev_conclusion" "$WORK_DIR/previous-failing-tests.tsv" "$WORK_DIR/failing-tests.tsv" "$WORK_DIR/confirmed-units.tsv")
@@ -2396,26 +2524,41 @@ jobs:
                 exit 0 ;;
             esac
           done
-          # Per-unit baseline: a candidate that failed is a failure of the
-          # units being traced only if one of them failed in it. A candidate
-          # whose own failing units cannot be read stays inconclusive.
-          if [ "$unit_mode" = yes ]; then
+          # A candidate that failed is a failure of the units being traced
+          # only if one of them failed in it the same way: the same test, or
+          # the same job at the same step with the same error. A candidate
+          # whose own failing units cannot be read, or that failed a traced
+          # job some other way (which can hide the traced step), stays
+          # inconclusive and never names a culprit on its own. Without a
+          # per-unit baseline the traced units are the confirmed ones.
+          if [ "$unit_mode" = no ]; then
+            awk -F'\t' -v aggregate="$VERIFY_CHECK_NAME" 'NF == 3 && $3 != aggregate' \
+              "$WORK_DIR/confirmed-units.tsv" >"$WORK_DIR/target-units.tsv" 2>/dev/null || : >"$WORK_DIR/target-units.tsv"
+          fi
+          if [ -s "$WORK_DIR/target-units.tsv" ]; then
             for sha in "${order[@]}"; do
               [ "${conclusion_of[$sha]}" = failure ] || continue
               candidate_dir="$WORK_DIR/junit-candidate-${run_of[$sha]}"
               mkdir -p "$candidate_dir"
               gha run download "${run_of[$sha]}" --repo "$REPO" --pattern 'junit-*' --dir "$candidate_dir" 2>/dev/null || true
-              if ! candidate_lanes=$(python3 "$RUNNER_TEMP/red-main/proof.py" failed-lanes "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "${run_of[$sha]}" 2>/dev/null); then
+              if ! python3 "$RUNNER_TEMP/red-main/proof.py" failed-units "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "${run_of[$sha]}" \
+                  >"$WORK_DIR/candidate-signatures.tsv" 2>/dev/null; then
                 conclusion_of[$sha]=inconclusive
                 say "Candidate \`${sha:0:9}\` failed, but its failing jobs could not be read: inconclusive for the traced units."
                 continue
               fi
-              python3 "$RUNNER_TEMP/red-main/junit.py" "$candidate_dir" "$WORK_DIR/candidate-failing.tsv" "$candidate_lanes" >/dev/null
+              candidate_lanes=$(cut -f1 "$WORK_DIR/candidate-signatures.tsv" | paste -sd, -)
+              python3 "$RUNNER_TEMP/red-main/junit.py" "$candidate_dir" "$WORK_DIR/candidate-failing.tsv" "$candidate_lanes" \
+                "$WORK_DIR/candidate-signatures.tsv" >/dev/null
               judged=$(python3 "$RUNNER_TEMP/red-main/window.py" judge "$WORK_DIR/target-units.tsv" "$WORK_DIR/candidate-failing.tsv")
-              if [ "${judged%% *}" = pass ]; then
-                conclusion_of[$sha]=success
-                say "Candidate \`${sha:0:9}\` failed other units only: it counts as passed for the traced units."
-              fi
+              case "${judged%% *}" in
+                pass)
+                  conclusion_of[$sha]=success
+                  say "Candidate \`${sha:0:9}\` failed other units only: it counts as passed for the traced units." ;;
+                inconclusive)
+                  conclusion_of[$sha]=inconclusive
+                  say "Candidate \`${sha:0:9}\`: ${judged#inconclusive }; inconclusive for the traced units." ;;
+              esac
             done
             : >"$WORK_DIR/candidates.tsv"
             for sha in "${order[@]}"; do
