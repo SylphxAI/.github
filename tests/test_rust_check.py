@@ -28,6 +28,16 @@ class RustCheckWorkflow(unittest.TestCase):
         for marker in ("@@sylphx-check-begin", "@@sylphx-check-end", "@@sylphx-check-exit="):
             self.assertIn(f'echo "{marker}', self.text)
 
+    def test_reports_the_hit_rate_and_warns_when_writes_fail(self) -> None:
+        stats = re.search(r"- name: sccache stats\n((?:        .*\n|\n)+)", self.text)
+        self.assertIsNotNone(stats)
+        body = stats.group(1)
+        self.assertIn("always()", body)
+        self.assertIn("GITHUB_STEP_SUMMARY", body)
+        self.assertIn("Cache hits rate", body)
+        self.assertIn("Cache write errors", body)
+        self.assertIn("::warning", body)
+
     def test_sccache_through_the_action_then_rust_cache(self) -> None:
         sccache = re.search(r"- name: Compile cache \(sccache\)\n((?:        .*\n)+)", self.text)
         self.assertIsNotNone(sccache)
