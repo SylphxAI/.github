@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "doc": "docs/merge-queue-settings.md. The one source for the merge queue rule of every repository ruleset. Applied by scripts/apply_merge_queue.py (dry-run by default). GitHub does not allow a merge_queue rule in an organization or enterprise ruleset, so it is applied per repository from here.",
+  "orgs": [
+    "SylphxAI"
+  ],
+  "settings": {
+    "merge_method": "SQUASH",
+    "grouping_strategy": "HEADGREEN",
+    "max_entries_to_build": 5,
+    "min_entries_to_merge": 1,
+    "max_entries_to_merge": 20,
+    "min_entries_to_merge_wait_minutes": 0,
+    "check_response_timeout_minutes": 60
+  },
+  "fast_gate": {
+    "context": "ci-ok",
+    "integration_id": 15368,
+    "note": "The required check of the queue is the fast gate only; the full suite runs after the merge (docs/optimistic-merge.md). The tool reports a ruleset that does not require it and never adds a check itself: requiring a check that no workflow reports would stop the queue."
+  },
+  "exclude": [
+    {
+      "repo": "SylphxAI/bgca",
+      "reason": "Delivered customer repository: no work unless the customer asks through Kyle."
+    },
+    {
+      "repo": "SylphxAI/openclaw-sylphx",
+      "reason": "Hosted stopgap: no fixes."
+    }
+  ],
+  "overrides": [],
+  "fast_gate_overrides": [
+    {
+      "repo": "SylphxAI/cloud",
+      "ruleset": "sylphx-deploy-pins",
+      "context": "pin-ok",
+      "reason": "The deploy/pins branch is gated by its own check, pin-ok, not by the code gate."
+    }
+  ],
+  "_overrides_shape": "overrides: [{\"repo\": \"org/name\", \"ruleset\": \"<ruleset name>\", \"settings\": {\"max_entries_to_build\": 2}, \"reason\": \"...\"}]. fast_gate_overrides: [{\"repo\": \"org/name\", \"ruleset\": \"<ruleset name>\", \"context\": \"pin-ok\", \"reason\": \"...\"}]. Every entry needs a reason; the settings keys are those under settings."
+}

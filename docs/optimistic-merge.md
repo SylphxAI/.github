@@ -92,7 +92,8 @@ proofs - is a suite lane.
    see [rust-check.md](rust-check.md).
 8. **Ruleset**: `ci-ok` stays the only required check. `verified` is never a
    required check: it exists only after a merge, so requiring it deadlocks
-   the queue.
+   the queue. The queue's own parameters (HEADGREEN and the rest) come from
+   [merge-queue-settings.md](merge-queue-settings.md), not from the ruleset by hand.
 
 `verified` needs only the gating suite lanes. A report-only lane (for example
 one that runs only quarantined tests) stays out of its `needs` and uses
