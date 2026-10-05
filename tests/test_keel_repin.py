@@ -320,7 +320,7 @@ class PollTest(unittest.TestCase):
             remote, sha = make_keel_remote(base)
             pinned = make_title(base, {"deps/keel.rev": sha + "\n", "Cargo.toml": f'k = {{ git = "https://github.com/SylphxAI/keel", rev = "{sha}" }}\n'})
             self.assertEqual(self.poll(pinned, remote, {})[1]["needed"], "false")
-        for answer, expect in (("behind", "not ahead"), ("diverged", "not ahead")):
+        for answer, expect in (("behind", "not ahead"),):
             with tempfile.TemporaryDirectory() as d:
                 base = pathlib.Path(d)
                 remote, sha = make_keel_remote(base)
@@ -334,6 +334,52 @@ class PollTest(unittest.TestCase):
             repo = make_title(base, TITLE)
             rc, out = self.poll(repo, remote, {"pr list": "1"})
             self.assertEqual((out["needed"], "exists" in out["reason"]), ("false", True))
+
+    def diverged_remote(self, base, pin_commit_file):
+        """A Keel stand-in where the tag holds a backport's patch as a new commit (same change, other id) and the pin sits on a backport branch."""
+        work = base / "keel-work"
+        work.mkdir()
+        git(work, "init", "-q", "-b", "main")
+        (work / "f").write_text("keel\n")
+        git(work, "add", "f")
+        git(work, "commit", "-q", "-m", "base")
+        git(work, "checkout", "-q", "-b", "backport/x")
+        (work / pin_commit_file).write_text("patch\n")
+        git(work, "add", pin_commit_file)
+        git(work, "commit", "-q", "-m", "backport")
+        pin = git(work, "rev-parse", "HEAD")
+        git(work, "checkout", "-q", "main")
+        (work / "other").write_text("main moved\n")
+        git(work, "add", "other")
+        git(work, "commit", "-q", "-m", "main moves")
+        if pin_commit_file == "p":  # the same change lands on main as a different commit
+            (work / "p").write_text("patch\n")
+            git(work, "add", "p")
+            git(work, "commit", "-q", "-m", "patch on main")
+        git(work, "tag", "-a", NEW_TAG, "-m", "tag")
+        bare = base / "keel.git"
+        git(base, "clone", "-q", "--bare", str(work), str(bare))
+        return str(bare), git(work, "rev-parse", "HEAD"), pin
+
+    def diverged_title(self, base, pin):
+        return make_title(base, {"deps/keel.rev": pin + "\n", "Cargo.toml": f'k = {{ git = "https://github.com/SylphxAI/keel", rev = "{pin}" }}\n'})
+
+    def test_a_pin_whose_commits_are_all_on_the_tag_is_repinned(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, sha, pin = self.diverged_remote(base, "p")
+            repo = self.diverged_title(base, pin)
+            rc, out = self.poll(repo, remote, {"pr list": "0", "api repos/SylphxAI/keel/compare/" + pin + "..." + sha: "diverged"})
+            self.assertEqual((rc, out["needed"]), (0, "true"))
+
+    def test_a_pin_with_a_commit_the_tag_lacks_fails_the_poll(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, sha, pin = self.diverged_remote(base, "q")
+            repo = self.diverged_title(base, pin)
+            rc, out = self.poll(repo, remote, {"pr list": "0", "api repos/SylphxAI/keel/compare/" + pin + "..." + sha: "diverged"})
+            self.assertEqual(rc, 1)
+            self.assertNotIn("needed", out)
 
     def test_a_failed_compare_is_an_error_not_a_silent_skip(self):
         with tempfile.TemporaryDirectory() as d:
