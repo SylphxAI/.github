@@ -56,13 +56,20 @@ scripts/apply_merge_queue.py --dry-run                    # diff of every rulese
 scripts/apply_merge_queue.py --repo SylphxAI/desk-tools   # one repository
 scripts/apply_merge_queue.py --check                      # exit 1 on any drift (for a schedule)
 scripts/apply_merge_queue.py --apply --backup-dir DIR     # write; saves each ruleset in DIR first
-scripts/apply_merge_queue.py --rollback DIR               # put the saved rulesets back
+scripts/apply_merge_queue.py --rollback DIR               # put the saved merge_queue parameters back
 ```
 
 Reads are one GraphQL query per 100 repositories. Writes are one `PUT` per
 drifted ruleset, a second apart, read back, and stop at the first 403. The
 credential needs repository administration on each repository. Running
-`--apply` twice writes nothing the second time. `cloud` also pins its queue in
+`--apply` twice writes nothing the second time.
+`--apply` refuses a backup directory that already holds a backup of a ruleset it
+would change, so the first backup stays the true "before"; use a new directory
+for each run. `--rollback` reads each ruleset as it is now and puts back only the
+saved `merge_queue` parameters, so any other edit made since the apply stays.
+The organizations are SylphxAI, Cubeage, EpiowAI and OzyrixLtd (read with the
+same login as the optimistic-merge audit); `Cubeage/cubeage-platform` and the
+hands-off repositories are excluded. `cloud` also pins its queue in
 `.github/branch-protection-contract.json`, which its guard compares with the live
 ruleset; when this policy changes a value for cloud, change that file in the
 same step.

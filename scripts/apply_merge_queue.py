@@ -14,7 +14,7 @@ without --apply.
   scripts/apply_merge_queue.py --dry-run --json    # the same, machine-readable
   scripts/apply_merge_queue.py --repo SylphxAI/desk-tools
   scripts/apply_merge_queue.py --apply --backup-dir DIR [--repo ORG/NAME ...]
-  scripts/apply_merge_queue.py --rollback DIR      # put the saved rulesets back
+  scripts/apply_merge_queue.py --rollback DIR      # put the saved merge_queue parameters back
   scripts/apply_merge_queue.py --check             # exit 1 when any ruleset drifts
 
 What it manages: the parameters of the `merge_queue` rule of every ruleset that
@@ -24,7 +24,9 @@ same ruleset, and the strict flag. It never adds a required check, because a
 check no workflow reports would stop the queue.
 
 Reads are one GraphQL query per 100 repositories of an organization. Writes are
-paced one second apart, are read back, and stop at the first HTTP 403.
+paced one second apart, are read back, and stop at the first HTTP 403. --apply refuses a
+backup directory that already holds a backup of a ruleset it would change; --rollback puts
+back only the merge_queue parameters, onto the ruleset as it is then.
 """
 from __future__ import annotations
 
@@ -267,16 +269,25 @@ def queue_params(ruleset: dict) -> dict:
     return {k: rule["parameters"][k] for k in PARAMS}
 
 
+def backup_path(backup_dir: Path, row: dict) -> Path:
+    return backup_dir / f"{row['repo'].replace('/', '__')}__{row['id']}.json"
+
+
 def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | None = None) -> list[dict]:
     """Write every DRIFT row; the pre-change ruleset is saved first and the write is read back."""
+    drifted = [r for r in rows if r["status"] == "DRIFT"]
+    taken = [backup_path(backup_dir, r).name for r in drifted if backup_path(backup_dir, r).exists()]
+    if taken:
+        # The first backup is the true "before"; a second apply must not replace it with a half-changed ruleset.
+        raise ValueError(f"{backup_dir} already holds a backup for {', '.join(taken)}: use a new --backup-dir")
     backup_dir.mkdir(parents=True, exist_ok=True)
     results = []
-    for row in [r for r in rows if r["status"] == "DRIFT"]:
+    for row in drifted:
         path = f"repos/{row['repo']}/rulesets/{row['id']}"
         outcome = {"repo": row["repo"], "id": row["id"], "ruleset": row["ruleset"]}
         try:
             before = gh.rest(path)
-            (backup_dir / f"{row['repo'].replace('/', '__')}__{row['id']}.json").write_text(json.dumps(before, indent=2) + "\n")
+            backup_path(backup_dir, row).write_text(json.dumps(before, indent=2) + "\n")
             want = desired_settings(policy, row["repo"], row["ruleset"])
             after = gh.rest(path, "PUT", with_queue(before, want))
             if queue_params(after) != want:
@@ -304,7 +315,11 @@ def rollback(gh, backup_dir: Path, pause: float | None = None) -> list[dict]:
         path = f"repos/{repo}/rulesets/{saved['id']}"
         outcome = {"repo": repo, "id": saved["id"], "ruleset": saved["name"]}
         try:
-            after = gh.rest(path, "PUT", put_body(saved))
+            # Only the queue parameters go back, onto the ruleset as it is now: any other edit made since --apply stays.
+            current = gh.rest(path)
+            if not any(r["type"] == "merge_queue" for r in current["rules"]):
+                raise RuntimeError("the ruleset no longer has a merge_queue rule")
+            after = gh.rest(path, "PUT", with_queue(current, queue_params(saved)))
             outcome["result"] = "RESTORED" if queue_params(after) == queue_params(saved) else "FAILED: read back differs"
         except Forbidden as exc:
             outcome["result"] = f"STOPPED: {exc}"
@@ -327,7 +342,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="print the diff, write nothing (the default)")
     mode.add_argument("--apply", action="store_true", help="write the drifted rulesets")
-    mode.add_argument("--rollback", metavar="DIR", help="put the rulesets saved in DIR by --apply back")
+    mode.add_argument("--rollback", metavar="DIR", help="put the merge_queue parameters saved in DIR by --apply back")
     ap.add_argument("--backup-dir", help="where --apply saves each ruleset before writing it (required with --apply)")
     ap.add_argument("--check", action="store_true", help="exit 1 when any ruleset drifts")
     ap.add_argument("--json", action="store_true")

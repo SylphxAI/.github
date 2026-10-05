@@ -48,6 +48,8 @@ class FakeGh:
         self.queries += 1
         nodes = []
         for repo, rs in self.rulesets.items():
+            if f'organization(login:"{repo.split("/")[0]}")' not in query:
+                continue
             camel = {amq.PARAMS[k]: v for k, v in amq.queue_params(rs).items()}
             checks = next(r for r in rs["rules"] if r["type"] == "required_status_checks")["parameters"]
             nodes.append({"name": repo.split("/")[1], "rulesets": {"nodes": [
@@ -198,6 +200,54 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             for repo in gh.rulesets:
                 self.assertEqual(amq.queue_params(gh.rulesets[repo]), OLD)
+
+    def test_apply_refuses_an_existing_backup_and_keeps_it(self):
+        gh = self.fake()
+        with tempfile.TemporaryDirectory() as d:
+            amq.WRITE_PAUSE_SECONDS = 0
+            self.run_main(gh, "--apply", "--backup-dir", d)
+            first = (pathlib.Path(d) / "SylphxAI__desk-tools__10.json").read_text()
+            # The ruleset drifts again (a hand edit); a second apply into the same directory must not run.
+            gh.rulesets["SylphxAI/desk-tools"] = ruleset(10, "sylphx-merge-queue", OLD)
+            gh.puts.clear()
+            rc, _ = self.run_main(gh, "--apply", "--backup-dir", d)
+            self.assertEqual((rc, gh.puts), (2, []))
+            self.assertEqual((pathlib.Path(d) / "SylphxAI__desk-tools__10.json").read_text(), first)
+            self.assertEqual(amq.queue_params(gh.rulesets["SylphxAI/desk-tools"]), OLD)
+
+    def test_rollback_restores_only_the_queue_parameters(self):
+        gh = self.fake()
+        with tempfile.TemporaryDirectory() as d:
+            amq.WRITE_PAUSE_SECONDS = 0
+            self.run_main(gh, "--apply", "--backup-dir", d)
+            # An unrelated edit made after the apply: a second approval and a new bypass actor.
+            rs = gh.rulesets["SylphxAI/desk-tools"]
+            rs["rules"][2]["parameters"] = {"required_approving_review_count": 2}
+            rs["bypass_actors"] = [{"actor_id": 5, "actor_type": "Team", "bypass_mode": "always"}]
+            gh.puts.clear()
+            rc, _ = self.run_main(gh, "--rollback", d)
+            self.assertEqual(rc, 0)
+            now = gh.rulesets["SylphxAI/desk-tools"]
+            self.assertEqual(amq.queue_params(now), OLD)
+            self.assertEqual(now["rules"][2]["parameters"], {"required_approving_review_count": 2})
+            self.assertEqual(now["bypass_actors"][0]["actor_id"], 5)
+
+    def test_rollback_fails_when_the_queue_rule_is_gone(self):
+        gh = self.fake()
+        with tempfile.TemporaryDirectory() as d:
+            amq.WRITE_PAUSE_SECONDS = 0
+            self.run_main(gh, "--apply", "--backup-dir", d)
+            gh.rulesets["SylphxAI/desk-tools"]["rules"] = [r for r in gh.rulesets["SylphxAI/desk-tools"]["rules"] if r["type"] != "merge_queue"]
+            gh.puts.clear()
+            rc, out = self.run_main(gh, "--rollback", d)
+            self.assertEqual(rc, 1)
+            self.assertNotIn("SylphxAI/desk-tools", [r for r, _ in gh.puts])
+
+    def test_all_four_organizations_and_the_platform_repo_are_covered(self):
+        self.assertEqual(POLICY["orgs"], ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"])
+        skip = amq.excluded(POLICY, amq.hands_off_repos())
+        for repo in ("Cubeage/cubeage-platform", "Cubeage/hk-mahjong-tycoon", "SylphxAI/bgca"):
+            self.assertIn(repo, skip)
 
     def test_first_403_stops_the_run(self):
         gh = self.fake(fail={"SylphxAI/desk-tools": amq.Forbidden("HTTP 403")})
