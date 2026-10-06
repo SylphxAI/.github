@@ -70,6 +70,16 @@ inputs:
       lands, space separated (a merge by the workflow token starts no push run, so a title that
       deploys on push lists its deploy workflow here).
     default: ""
+  live-url:
+    description: >
+      settle: the deployed title's host (for example https://lanewarden.play.cubeage.com). When set, a merged
+      repin is settled only once the live <live-url>/VERSION.json `keel` field is the commit of the newest
+      merged repin pull request; a missing or different field fails the run after live-grace-minutes from
+      the merge, and the pull request gets one comment per wrong live value. Empty: no live check.
+    default: ""
+  live-grace-minutes:
+    description: "settle: minutes after the merge the deploy has before a wrong live Keel fails the run."
+    default: "60"
   label:
     description: >
       Label for the pull request. Empty: the repository's single `owner:*` label, if it has exactly one.
@@ -210,9 +220,12 @@ runs:
         MAX_WAIT: ${{ inputs.max-wait-minutes }}
         AFTER_MERGE: ${{ inputs.after-merge-workflows }}
         BASE: ${{ inputs.base }}
+        LIVE_URL: ${{ inputs.live-url }}
+        LIVE_GRACE: ${{ inputs.live-grace-minutes }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
         set -euo pipefail
-        args=(settle --required "$REQUIRED" --owner "$OWNER_MENTION" --max-wait-minutes "$MAX_WAIT" --after-merge "$AFTER_MERGE" --base "$BASE")
+        args=(settle --required "$REQUIRED" --owner "$OWNER_MENTION" --max-wait-minutes "$MAX_WAIT" --after-merge "$AFTER_MERGE" --base "$BASE"
+              --live-url "$LIVE_URL" --live-grace-minutes "$LIVE_GRACE")
         [ "$DRY_RUN" = true ] && args+=(--dry-run)
         python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"

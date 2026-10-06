@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import pathlib
 import tempfile
 import textwrap
 import unittest
+import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
@@ -426,6 +428,74 @@ class OfflineDependencyInTheRun(RunAgainstAStandIn):
         self.assertEqual(rc, 1, out)
         rc, out = self.run_it(page, offline_dependency=[*web_smoke.DEFAULT_OFFLINE, r"api\.example\.test/v1/Profile"])
         self.assertEqual(rc, 0, out)
+
+
+class LiveKeel(unittest.TestCase):
+    """The live title's VERSION.json keel field: recorded, and with --expect-keel it must be the pinned commit."""
+
+    HOST = "https://title.example.invalid"
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def opener(self, body):
+        def fake(req, timeout=None):
+            self.assertEqual(req.full_url, self.HOST + "/VERSION.json")
+            if isinstance(body, Exception):
+                raise body
+            return self.Response(body)
+        return fake
+
+    def live(self, body):
+        return web_smoke.live_keel(self.HOST, opener=self.opener(body))
+
+    def version(self, **fields):
+        return json.dumps({"version": "1.0.0", "commit": "f" * 40, "built_at": "2027-01-15T05:10:00Z", **fields}).encode()
+
+    def test_url_forms(self):
+        self.assertEqual(web_smoke.version_url("title.example.invalid"), "https://title.example.invalid/VERSION.json")
+        self.assertEqual(web_smoke.version_url("https://h.invalid/"), "https://h.invalid/VERSION.json")
+        self.assertEqual(web_smoke.version_url("https://h.invalid/VERSION.json"), "https://h.invalid/VERSION.json")
+
+    def test_the_keel_field_is_recorded(self):
+        self.assertEqual(self.live(self.version(keel=SHA.upper()))[0], SHA)
+
+    def test_a_missing_or_unusable_field_is_none(self):
+        for body in (self.version(), self.version(keel="unknown"), self.version(keel=SHA[:9]), b"[]", b"<html>",
+                     urllib.error.URLError("refused")):
+            keel, why = self.live(body)
+            self.assertIsNone(keel, body)
+            self.assertIn("VERSION.json", why)
+
+    def test_the_verdict_fails_on_a_mismatching_or_missing_field(self):
+        self.assertTrue(web_smoke.keel_verdict(SHA, "", SHA)[0])
+        self.assertFalse(web_smoke.keel_verdict("b" * 40, "", SHA)[0])
+        self.assertFalse(web_smoke.keel_verdict(None, "no keel field", SHA)[0])
+
+    def run_live(self, body, expect):
+        out = io.StringIO()
+        real = web_smoke.live_keel
+        with tempfile.TemporaryDirectory() as d, redirect_stdout(out), \
+                mock.patch.dict(os.environ, {"GITHUB_OUTPUT": d + "/out", "GITHUB_STEP_SUMMARY": d + "/sum"}), \
+                mock.patch.object(web_smoke, "live_keel", lambda url: real(url, opener=self.opener(body))):
+            args = ["live", "--url", self.HOST] + (["--expect-keel", expect] if expect else [])
+            rc = web_smoke.main(args)
+            return rc, pathlib.Path(d + "/out").read_text(), out.getvalue()
+
+    def test_live_records_and_only_fails_when_a_commit_is_expected(self):
+        rc, outputs, _ = self.run_live(self.version(keel=SHA), "")
+        self.assertEqual((rc, outputs), (0, "keel=%s\n" % SHA))
+        rc, outputs, _ = self.run_live(self.version(), "")
+        self.assertEqual((rc, outputs), (0, "keel=\n"))
+        self.assertEqual(self.run_live(self.version(keel=SHA), SHA)[0], 0)
+        rc, _, out = self.run_live(self.version(keel="b" * 40), SHA)
+        self.assertEqual(rc, 1)
+        self.assertIn("::error title=web-smoke live keel::", out)
+        self.assertEqual(self.run_live(self.version(), SHA)[0], 1)
 
 
 if __name__ == "__main__":
