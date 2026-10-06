@@ -15,10 +15,8 @@ import json
 import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
-
-import yaml
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LANE_IMAGE = "registry.sylphx.com/library/sylphx-hands"
@@ -386,65 +384,31 @@ class ReadbackResolvesWrapperTests(unittest.TestCase):
         self.assertIn("application/vnd.oci.image.index.v1+json", self.workflow)
 
 
-class CacheTransferTests(unittest.TestCase):
-    """The compile -> publish transfer never spends the artifact quota.
+class ImageLaneNoArtifactTests(unittest.TestCase):
+    """The lane hands nothing between jobs through GitHub Actions artifacts.
 
-    Live 2026-10-06 14:30Z (cloud run 37478912835, Notify Intake Image): the
-    organization's artifact storage quota, metered in accrued GB-hours per
-    billing cycle, was spent by multi-GiB OCI transfers, and every image lane
-    failed with `Artifact storage quota has been hit`.
+    Artifact storage is a metered org quota (GB-hours per billing cycle). The
+    lane once moved multi-GiB OCI layouts compile -> publish as artifacts; on
+    2026-10-06 the quota was spent and every platform image build failed at
+    upload ("Artifact storage quota has been hit", SylphxAI/cloud runs
+    37478912835 and 37478912897). One job now builds, pushes and reads back.
     """
 
     def setUp(self) -> None:
         self.workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
-        self.jobs = yaml.safe_load(self.workflow)["jobs"]
 
-    def steps(self, job: str) -> list[dict]:
-        return self.jobs[job]["steps"]
+    def test_no_artifact_upload_or_download(self) -> None:
+        for action in ("actions/upload-artifact", "actions/download-artifact", "actions/cache"):
+            self.assertNotIn(action, self.workflow, f"the lane must not use {action}")
 
-    def test_no_job_downloads_an_artifact_or_uploads_a_transfer(self) -> None:
-        for job in ("compile", "publish"):
-            for step in self.steps(job):
-                uses = step.get("uses", "")
-                self.assertNotIn("download-artifact", uses, step.get("name"))
-        for step in self.steps("compile"):
-            self.assertNotIn("upload-artifact", step.get("uses", ""), step.get("name"))
+    def test_one_job_builds_and_publishes(self) -> None:
+        jobs = self.workflow.split("\njobs:\n", 1)[1]
+        names = [line.strip().rstrip(":") for line in jobs.split("\n") if line.startswith("  ") and not line.startswith("   ") and line.strip().endswith(":")]
+        self.assertEqual(names, ["preflight", "publish"])
 
-    def test_publish_restores_exactly_the_paths_and_keys_compile_saved(self) -> None:
-        saved = {
-            s["with"]["key"].replace("steps.name.outputs.", ""): s["with"]["path"]
-            for s in self.steps("compile")
-            if s.get("uses", "").startswith("actions/cache/save@")
-        }
-        restored = {
-            s["with"]["key"].replace("needs.compile.outputs.", ""): s["with"]["path"]
-            for s in self.steps("publish")
-            if s.get("uses", "").startswith("actions/cache/restore@")
-        }
-        self.assertEqual(len(saved), 2)
-        self.assertEqual(saved, restored)
-        for step in self.steps("publish"):
-            if step.get("uses", "").startswith("actions/cache/restore@"):
-                self.assertIs(step["with"].get("fail-on-cache-miss"), True)
-
-    def test_publish_reads_the_restored_paths(self) -> None:
-        self.assertIn("printf 'OCI_DIR=%s\\n' \"${LANE_ROOT}/image-oci\"", self.workflow)
-        self.assertIn("printf 'BUILD_EVIDENCE_DIR=%s\\n' \"${LANE_ROOT}/evidence\"", self.workflow)
-        self.assertIn("printf 'BUILD_EVIDENCE_OCI_DIR=%s\\n' \"${LANE_ROOT}/evidence-oci\"", self.workflow)
-
-    def test_the_transfer_key_names_the_image_run_and_attempt(self) -> None:
-        self.assertIn(
-            "image_transfer=image-lane-image-%s-%s-%s-%s\\n' \"${LANE_KEY}\" \"${LANE_SOURCE_SHA}\" \"${LANE_RUN_ID}\" \"${LANE_RUN_ATTEMPT}\"",
-            self.workflow,
-        )
-
-    def test_receipt_uploads_never_fail_a_published_image(self) -> None:
-        uploads = [
-            s for s in self.steps("publish") if s.get("uses", "").startswith("actions/upload-artifact@")
-        ]
-        self.assertEqual(len(uploads), 2)
-        for step in uploads:
-            self.assertIs(step.get("continue-on-error"), True, step.get("name"))
+    def test_the_receipt_is_a_job_output(self) -> None:
+        self.assertIn("value: ${{ jobs.publish.outputs.verify_receipt }}", self.workflow)
+        self.assertIn("printf 'verify_receipt=%s\\n'", self.workflow)
 
 
 if __name__ == "__main__":

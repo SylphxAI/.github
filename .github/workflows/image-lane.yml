@@ -4,8 +4,8 @@ name: Image lane
 #
 # This is the single definition of the image lane. A caller keeps a thin
 # workflow that owns its candidate admission (quality) and its deploy pin;
-# every mechanism below — runner class selection, build engine, immutable OCI
-# transfer, registry identity, evidence packaging, digest capture — exists once,
+# every mechanism below — runner class selection, build engine, registry
+# identity, evidence packaging, digest capture — exists once,
 # here, in a public repository any project may call.
 #
 # Properties (owner: platform delivery):
@@ -20,9 +20,14 @@ name: Image lane
 #     job only when its caller workflow, ref, event and this lane's pinned ref
 #     match a declared publisher (SylphxAI/infra registry-v2 README, "Trusted
 #     publishing"), so a pull request, another workflow or another branch gets
-#     nothing. Publish jobs run on the ordinary runner class; no special
+#     nothing. The lane runs on the ordinary runner class; no special
 #     runner or workload identity is involved. A caller grants
 #     `id-token: write` to the job that calls this lane.
+#   * the built OCI layout never leaves its runner: one job builds, pushes
+#     and reads back, and the registry is the only hand-off. The lane uploads
+#     no GitHub Actions artifact (a metered org quota that, once used up,
+#     stopped every image build on 2026-10-06); the verification receipt
+#     reaches the caller as the `verify_receipt` output.
 #   * the publisher pre-flight mints the real repository credential BEFORE the
 #     compile starts, so an undeclared publisher or a declaration for a
 #     different repository fails in seconds instead of after a long build.
@@ -140,7 +145,9 @@ on:
         type: number
         default: 20
       artifact-retention-days:
-        description: "Retention for the readback and verification receipt artifacts (the image and evidence transfer uses the Actions cache, not artifacts)."
+        description: >-
+          Ignored: the lane uploads no workflow artifact. Kept so existing callers keep working;
+          removed once they stop passing it.
         required: false
         type: number
         default: 7
@@ -157,18 +164,12 @@ on:
       evidence_digest:
         description: "Immutable repository digest of the published evidence bundle."
         value: ${{ jobs.publish.outputs.evidence_digest }}
-      image_transfer:
-        description: "Actions cache key holding the immutable image OCI layout for this run."
-        value: ${{ jobs.compile.outputs.image_transfer }}
-      evidence_transfer:
-        description: "Actions cache key holding the evidence bundle and its OCI artifact for this run."
-        value: ${{ jobs.compile.outputs.evidence_transfer }}
-      readback_artifact:
-        description: "Workflow artifact holding the raw registry readback manifests (best effort: absent when the org artifact quota is spent)."
-        value: ${{ jobs.publish.outputs.readback_artifact }}
-      verify_artifact:
-        description: "Workflow artifact holding the caller verification receipt (empty when no verify-command was given; best effort: absent when the org artifact quota is spent)."
-        value: ${{ jobs.publish.outputs.verify_artifact }}
+      verify_receipt:
+        description: >-
+          The caller verification receipt: the files the verify-command left in ${LANE_ROOT}/verify, as a
+          base64 gzip tar (empty when no verify-command was given). Unpack with
+          `printf '%s' "$RECEIPT" | base64 -d | tar -xzf - -C <dir>`.
+        value: ${{ jobs.publish.outputs.verify_receipt }}
     secrets:
       builder-private-key:
         description: "Optional GitHub App private key for the private cross-project source read (see the recorded gap)."
@@ -211,20 +212,43 @@ jobs:
             --probe \
             --timeout-seconds "${LANE_PREFLIGHT_TIMEOUT}"
 
-  compile:
-    name: compile
+
+  # One job builds, pushes and reads back: the OCI layout never leaves the
+  # runner it was built on. The lane used to hand multi-GiB layouts from a
+  # compile job to a publish job as GitHub Actions artifacts; artifact storage
+  # is a metered org quota (GB-hours per billing cycle), and once it was used
+  # up every upload failed and every platform image build stopped (live
+  # 2026-10-06: SylphxAI/cloud runs 37478912835 and 37478912897, "Artifact
+  # storage quota has been hit"). The registry is the only hand-off now, and
+  # the lane uploads no workflow artifact at all (tests/test_image_lane_tools.py
+  # ImageLaneNoArtifactTests is the guard).
+  #
+  # The split existed for a privileged publisher runner class, which trusted
+  # publishing retired (`publisher-label` is ignored). The caller's build runs
+  # in a job holding `id-token: write`; that grants it nothing it lacks, since
+  # it is the caller's own commit on a declared publisher ref building the
+  # very bytes that get pushed, and the registry scopes the token to this one
+  # image repository.
+  publish:
+    name: publish
     needs: preflight
     runs-on: ${{ inputs.runner-class }}
-    timeout-minutes: 150
+    timeout-minutes: 180
     permissions:
       contents: read
       actions: read
+      id-token: write
     outputs:
-      image_transfer: ${{ steps.name.outputs.image_transfer }}
-      evidence_transfer: ${{ steps.name.outputs.evidence_transfer }}
+      image_tag: ${{ steps.readback.outputs.image_tag }}
+      digest: ${{ steps.readback.outputs.digest }}
+      evidence_tag: ${{ steps.readback.outputs.evidence_tag }}
+      evidence_digest: ${{ steps.readback.outputs.evidence_digest }}
+      verify_receipt: ${{ steps.verify.outputs.verify_receipt }}
     steps:
+      # Pinned to the exact built source SHA, not the moving ref tip.
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Check out this lane
@@ -278,7 +302,8 @@ jobs:
           LANE_ROOT="${RUNNER_TEMP}/image-lane"
           BUILD_HOME="${LANE_ROOT}/home"
           mkdir -p "$BUILD_HOME/.docker" "$BUILD_HOME/.cargo-home" "$BUILD_HOME/.rustup-home" \
-            "$BUILD_HOME/.cache" "${LANE_ROOT}/image-oci" "${LANE_ROOT}/evidence" "${LANE_ROOT}/evidence-oci"
+            "$BUILD_HOME/.cache" "${LANE_ROOT}/image-oci" "${LANE_ROOT}/evidence" "${LANE_ROOT}/evidence-oci" \
+            "${LANE_ROOT}/readback"
           case "${LANE_TAG_INPUT}" in
             *[!0-9a-f]*|'') echo "FATAL: tag must be the lowercase hex source SHA (8-64 hex characters), not a mutable name" >&2; exit 1 ;;
           esac
@@ -309,15 +334,9 @@ jobs:
             printf 'EVIDENCE_DIR=%s\n' "${LANE_ROOT}/evidence"
             printf 'BUILD_EVIDENCE_DIR=%s\n' "${LANE_ROOT}/evidence"
             printf 'BUILD_EVIDENCE_OCI_DIR=%s\n' "${LANE_ROOT}/evidence-oci"
+            printf 'READBACK_DIR=%s\n' "${LANE_ROOT}/readback"
             printf 'BUILD_EVIDENCE_TAG=%s-%s-%s-%s\n' "${LANE_EVIDENCE_TAG_PREFIX}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
           } >> "$GITHUB_ENV"
-          # One run may call this lane several times (one per image): the
-          # image's own name keeps each call's transfers apart.
-          LANE_KEY="$(printf '%s' "${LANE_IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')"
-          {
-            printf 'image_transfer=image-lane-image-%s-%s-%s-%s\n' "${LANE_KEY}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
-            printf 'evidence_transfer=image-lane-evidence-%s-%s-%s-%s\n' "${LANE_KEY}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
-          } >> "$GITHUB_OUTPUT"
           echo "lane_context image=${LANE_IMAGE} tag=${LANE_TAG} platforms=${LANE_PLATFORMS}"
 
       # A foreign platform would silently run under emulation (QEMU/binfmt).
@@ -463,34 +482,8 @@ jobs:
           test -n "$(ls -A "${BUILD_EVIDENCE_DIR}")"
           echo "evidence_dir_ok files=$(find "${BUILD_EVIDENCE_DIR}" -type f | wc -l)"
 
-      # The compile -> publish transfer travels through the Actions cache, not
-      # workflow artifacts. Artifact storage is metered per billing cycle in
-      # accrued GB-hours against the organization plan, and with no paid
-      # overage every multi-GiB OCI layout kept for days spends it: live
-      # 2026-10-06 14:30Z (cloud run 37478912835, Notify Intake Image) every
-      # image lane failed with `Artifact storage quota has been hit`, and
-      # deleting artifacts does not refund hours already accrued. The cache is
-      # a separate per-repository allowance that evicts least-recently-used
-      # entries instead of refusing a write. The key carries this run and the
-      # attempt that built it; the publish job restores exactly the key this
-      # job emits (a partial re-run keeps the original compile outputs), and
-      # the publish job still walks every blob by digest before pushing.
-      - name: Save the immutable image OCI layout
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          key: ${{ steps.name.outputs.image_transfer }}
-          path: ${{ runner.temp }}/image-lane/image-oci
-
-      - name: Save the evidence bundle
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          key: ${{ steps.name.outputs.evidence_transfer }}
-          path: |
-            ${{ runner.temp }}/image-lane/evidence
-            ${{ runner.temp }}/image-lane/evidence-oci
-
-      # Runs last in this job by design: earlier placement (round 1 of this
-      # review) removed the credential before the build used it.
+      # Runs after the build and evidence steps, which use the credential, and
+      # before the registry credential is minted, so the two never coexist.
       - name: Remove the job-scoped git credential
         if: ${{ always() }}
         shell: bash
@@ -501,124 +494,16 @@ jobs:
           fi
           echo "git_credential_split_context_cleared"
 
-  publish:
-    name: publish
-    needs: compile
-    runs-on: ${{ inputs.runner-class }}
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-    outputs:
-      image_tag: ${{ steps.readback.outputs.image_tag }}
-      digest: ${{ steps.readback.outputs.digest }}
-      evidence_tag: ${{ steps.readback.outputs.evidence_tag }}
-      evidence_digest: ${{ steps.readback.outputs.evidence_digest }}
-      readback_artifact: ${{ steps.readback.outputs.readback_artifact }}
-      verify_artifact: ${{ steps.verify.outputs.verify_artifact }}
-    steps:
-      # The caller verifier (`verify-command`) is caller-owned shell that runs
-      # in the caller's own checkout (trust-boundary contract at the top of
-      # this file), using caller-relative paths such as `scripts/...`. Without
-      # this checkout the verify step runs in an empty workspace and every
-      # caller verifier fails (live 2026-09-14: hands publish reached
-      # `promotion_boundary_ok` then died with
-      # `can't open file '.../hands/scripts/hands-build-evidence.py'`).
-      # Pinned to the exact built source SHA, not the moving ref tip.
-      - name: Check out the caller
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      # Same nested-checkout guard as the compile job: the lane lives at
-      # `.image-lane` inside this checkout, so a caller verifier that proves
-      # pristine source would trip on the lane's own directory without this.
-      # Best effort (same wording as compile): a caller that cannot be helped
-      # here still fails on its own gate, not on this step.
-      - name: Exclude the lane scratch checkout from caller dirty checks
+      - name: Install the publisher tools
         shell: bash
-        run: |
-          if exclude="$(git rev-parse --git-path info/exclude 2>/dev/null)"; then
-            mkdir -p "$(dirname "$exclude")" 2>/dev/null || true
-            grep -qxF '.image-lane/' "$exclude" 2>/dev/null ||
-              printf '.image-lane/\n' >> "$exclude" 2>/dev/null || true
-          fi
-
-      - name: Check out this lane
-        uses: actions/checkout@v4
-        with:
-          repository: SylphxAI/.github
-          ref: ${{ inputs['lane-ref'] || job.workflow_sha || 'main' }}
-          path: .image-lane
-          persist-credentials: false
-
-      - name: Prepare publisher environment
-        shell: bash
-        env:
-          LANE_IMAGE: ${{ inputs.image }}
-          LANE_TAG_INPUT: ${{ inputs.tag }}
-          LANE_SOURCE_SHA: ${{ github.sha }}
-          LANE_EVIDENCE_TAG_PREFIX: ${{ inputs.evidence-tag-prefix }}
         run: |
           set -euo pipefail
           if ! command -v skopeo >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
             sudo -n apt-get update -qq
             sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq skopeo python3
           fi
-          LANE_ROOT="${RUNNER_TEMP}/image-lane"
-          mkdir -p "${LANE_ROOT}/home" "${LANE_ROOT}/readback"
-          case "${LANE_TAG_INPUT}" in
-            *[!0-9a-f]*|'') echo "FATAL: tag must be the lowercase hex source SHA, not a mutable name" >&2; exit 1 ;;
-          esac
-          LANE_TAG="${LANE_TAG_INPUT:0:8}"
-          {
-            printf 'HOME=%s\n' "${LANE_ROOT}/home"
-            printf 'LANE_ROOT=%s\n' "${LANE_ROOT}"
-            printf 'IMAGE=%s\n' "${LANE_IMAGE}"
-            printf 'IMAGE_TAG=%s\n' "${LANE_TAG}"
-            printf 'SOURCE_SHA=%s\n' "${LANE_SOURCE_SHA}"
-            # The same absolute paths the compile job saved: a cache entry is
-            # restored where it was saved, and its version hashes the paths.
-            printf 'OCI_DIR=%s\n' "${LANE_ROOT}/image-oci"
-            printf 'BUILD_EVIDENCE_DIR=%s\n' "${LANE_ROOT}/evidence"
-            printf 'BUILD_EVIDENCE_OCI_DIR=%s\n' "${LANE_ROOT}/evidence-oci"
-            printf 'READBACK_DIR=%s\n' "${LANE_ROOT}/readback"
-            printf 'BUILD_EVIDENCE_TAG=%s-%s-%s-%s\n' "${LANE_EVIDENCE_TAG_PREFIX}" "${LANE_SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
-          } >> "$GITHUB_ENV"
           skopeo --version
           python3 -c 'import sys; assert sys.version_info >= (3, 11), "evidence tooling requires Python 3.11+"'
-
-      # Restore exactly the transfer the compile job saved (its output names
-      # the run and the attempt that built it, so a partial re-run of this job
-      # still finds it). A miss fails here, before any credential is minted.
-      - name: Restore this run's image transfer
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          key: ${{ needs.compile.outputs.image_transfer }}
-          path: ${{ runner.temp }}/image-lane/image-oci
-          fail-on-cache-miss: true
-
-      # A restore can still extract an incomplete layout, so this walks the
-      # restored layout from index.json through every manifest to every blob by size and
-      # digest: the archive can still be a valid zip of an incomplete layout,
-      # and the push would then find no index.json (live 2026-09-27: the push
-      # failed with no message at all).
-      - name: Verify the image transfer is complete
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 .image-lane/scripts/verify-oci-layout.py "${OCI_DIR}" --label image
-
-      - name: Restore this run's evidence transfer
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          key: ${{ needs.compile.outputs.evidence_transfer }}
-          path: |
-            ${{ runner.temp }}/image-lane/evidence
-            ${{ runner.temp }}/image-lane/evidence-oci
-          fail-on-cache-miss: true
 
       - name: Registry auth (GitHub OIDC -> identitytoken)
         shell: bash
@@ -651,7 +536,7 @@ jobs:
           fail() { echo "::error title=Image push precondition::$*"; exit 1; }
           [[ -n "${IMAGE_TAG:-}" ]] || fail "IMAGE_TAG is empty"
           [[ -f "${OCI_DIR}/index.json" && -f "${OCI_DIR}/oci-layout" ]] \
-            || fail "the image transfer at ${OCI_DIR} is not an OCI layout (see the verify step)"
+            || fail "the built image at ${OCI_DIR} is not an OCI layout"
           [[ -s "${SKOPEO_AUTH_FILE:-}" ]] || fail "registry auth file missing (the auth step did not write it)"
           # skopeo's own errors go to the log; the auth file is read by path
           # and its contents are never printed.
@@ -772,7 +657,6 @@ jobs:
             printf 'digest=%s\n' "${DIGEST}"
             printf 'evidence_tag=%s\n' "${BUILD_EVIDENCE_TAG}"
             printf 'evidence_digest=%s\n' "${EVIDENCE_DIGEST}"
-            printf 'readback_artifact=image-lane-readback-%s-%s-%s-%s\n' "$(printf '%s' "${IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')" "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
           } >> "$GITHUB_OUTPUT"
           {
             printf 'REGISTRY_DIGEST=%s\n' "${DIGEST}"
@@ -785,18 +669,6 @@ jobs:
             fi
           } >> "$GITHUB_ENV"
           echo "promotion_boundary_ok digest=${DIGEST} evidence_digest=${EVIDENCE_DIGEST:-none}"
-
-      - name: Upload registry readback
-        if: ${{ steps.readback.outputs.readback_artifact != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        # A receipt for callers, not an input of this lane: the image is already
-        # published and read back, so a spent artifact quota must not fail it.
-        continue-on-error: true
-        with:
-          name: ${{ steps.readback.outputs.readback_artifact }}
-          path: ${{ env.READBACK_DIR }}
-          if-no-files-found: error
-          retention-days: ${{ inputs.artifact-retention-days }}
 
       # The registry credential is removed before any caller-supplied verifier
       # runs: the readback bytes above are the input, not the credential.
@@ -828,20 +700,16 @@ jobs:
           echo "lane_verify=custom"
           bash -lc "${VERIFY_COMMAND}"
           test -n "$(ls -A "${LANE_ROOT}/verify")"
-          printf 'verify_artifact=image-lane-verification-%s-%s-%s-%s\n' "$(printf '%s' "${IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')" "${SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
-          echo "verify_dir_ok files=$(find "${LANE_ROOT}/verify" -type f | wc -l)"
-
-      - name: Upload verification receipt
-        if: ${{ steps.verify.outputs.verify_artifact != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        # A receipt for callers, not an input of this lane: the image is already
-        # published and read back, so a spent artifact quota must not fail it.
-        continue-on-error: true
-        with:
-          name: ${{ steps.verify.outputs.verify_artifact }}
-          path: ${{ env.LANE_ROOT }}/verify
-          if-no-files-found: error
-          retention-days: ${{ inputs.artifact-retention-days }}
+          # The receipt travels to the caller's pin job as a job output (a
+          # gzip tar, base64), not as an artifact. Job outputs are capped at
+          # 1 MB per job; a receipt is a few KB, and a large one fails here.
+          receipt="$(tar -C "${LANE_ROOT}/verify" -czf - . | base64 -w0)"
+          if [ "${#receipt}" -gt 524288 ]; then
+            echo "FATAL: verification receipt is ${#receipt} bytes encoded (limit 524288)" >&2
+            exit 1
+          fi
+          printf 'verify_receipt=%s\n' "${receipt}" >> "$GITHUB_OUTPUT"
+          echo "verify_dir_ok files=$(find "${LANE_ROOT}/verify" -type f | wc -l) receipt_bytes=${#receipt}"
 
       - name: Remove registry credentials
         if: ${{ always() }}
