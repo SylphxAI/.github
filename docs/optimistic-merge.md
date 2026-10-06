@@ -23,7 +23,9 @@ contract drift, the unit tests the change affects, and - only when the change
 touches the repository's migration globs - the migration lanes: lint and
 integrity (atlas lint and `atlas.sum`, drizzle checks) and the database-backed
 migration tests. DDL cannot be undone by a revert, so a migration is
-exercised before it reaches the trunk. Everything else -
+exercised before it reaches the trunk. A change to `sylphx.toml`, a `package.json`, a
+Dockerfile or the stack baseline also runs the stack-conformance lane
+([stack-conformance.md](stack-conformance.md)). Everything else -
 integration and database tests, browser and device matrices, release builds,
 proofs - is a suite lane.
 

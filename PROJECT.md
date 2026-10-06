@@ -19,6 +19,7 @@ Public surfaces:
 - `.github/workflows/publish-npm.yml`
 - `.github/workflows/red-main.yml`
 - `.github/actions/*`
+  ([docs/stack-conformance.md](docs/stack-conformance.md) for `stack-conformance`)
 - `workflow-templates/` (starter workflows; [docs/optimistic-merge.md](docs/optimistic-merge.md))
 - `templates/`, `brand/`, and `COMPANY.md`
 

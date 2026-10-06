@@ -1,0 +1,34 @@
+name: stack-conformance
+description: >
+  Fails a change that adds a departure from the default stack (SylphxAI/owner
+  standards/stack.md): a backend service on a runtime other than Rust (a
+  TypeScript server framework as a runtime dependency, or a sylphx.toml
+  service built on a Bun or Node image that is not a web app), or a
+  `[database.migrations]` engine other than atlas. Departures a repository
+  already has are listed in its baseline file, which may only shrink: a line
+  the base did not have fails, and so does a line whose departure is gone.
+  A base without the file accepts the head's file as the seed. Reads git
+  objects only; needs a checkout of the head (any depth) and fetches the base
+  commit without blobs when it is missing. See docs/stack-conformance.md.
+
+inputs:
+  base:
+    description: Base commit of the change (the ci-range `base` output). Empty checks the head against its own baseline.
+    default: ""
+  head:
+    description: Head commit to check.
+    default: HEAD
+  baseline:
+    description: Baseline file, relative to the repository root.
+    default: .github/stack-departures.txt
+
+runs:
+  using: composite
+  steps:
+    - name: No new departure from the default stack
+      shell: bash
+      env:
+        BASE: ${{ inputs.base }}
+        HEAD_REV: ${{ inputs.head }}
+        BASELINE: ${{ inputs.baseline }}
+      run: python3 "$GITHUB_ACTION_PATH/stack_conformance.py" check --base "$BASE" --head "$HEAD_REV" --baseline "$BASELINE"
