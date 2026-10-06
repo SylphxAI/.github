@@ -53,6 +53,36 @@ every repository with a desk checkout (136 repositories): only SylphxAI/agents
 has instances. Its expiry, 2026-11-30, leaves room after the agent app's switch
 and cleanup items for their estimate to slip.
 
+## Work-engine tables
+
+A company's own work (what its people and agents owe) runs on Work; a
+product's customers' records (tickets, approvals, cases) stay in the product
+(SylphxAI/work
+[ADR 0010](https://github.com/SylphxAI/work/blob/main/docs/adr/0010-group-companies-on-work.md),
+D1 and "Guard for the class"). With a base, the check reads every `.sql` file
+the change adds (not a rename, not a `*.down.sql`) and fails on:
+
+| Line | Found when |
+| --- | --- |
+| `work-obligation-table <file.sql> <table>` | a `CREATE TABLE` has a status column (`status`, `state`, `stage`, or a name with one of them as a word), an assignee column (`assignee*`, `assigned`, `role`, `owner`, `executor`, `executing`, `handler`, `responsible`) and a due column (`due`, `deadline*`, `sla`, `overdue`, `escalat*`), and the comment lines before the file's first statement say neither whose records they are |
+
+The header is one comment line before the first statement:
+
+```sql
+-- Work resource: items (workspace ozyrix, kind operate)
+```
+
+when the rows are the company's own obligations and the migration feeds
+Work, or
+
+```sql
+-- customer records (Work ADR 0010 D1)
+```
+
+when they are the product's customers' records. The header makes the D1 test
+a decision the reviewer sees. Tables already on the base are never checked,
+so adopting needs no baseline; there is no allowance list.
+
 ## The rule at a pull request
 
 The check reads git objects at the base and the head; it needs no second

@@ -24,6 +24,14 @@ ADR-01M495TCCBZGSQ68A4P4G428H2, D5):
                                       tool-call or agent-memory table that no
                                       later SQL file drops
 
+and, in SQL files added since the base, a work-engine table that Work owns
+unless the file's header says whose records it holds (SylphxAI/work
+docs/adr/0010, "Guard for the class"):
+
+  work-obligation-table <file.sql> <table>  a status, an assignee or role and
+                                      a due, deadline, SLA, overdue or
+                                      escalation column
+
 A product repository never records an agent-runtime part in its own baseline:
 the only allowance is policy/agent-runtime.json in SylphxAI/.github, one entry
 per existing instance with an expiry date, after which the entry stops
@@ -369,6 +377,133 @@ def agent_runtime(tree) -> list[str]:
     return sorted(found)
 
 
+# A hand-rolled work engine (SylphxAI/work docs/adr/0010, "Guard for the
+# class"): a new table with a status, an assignee or role, and a due date,
+# deadline, SLA, overdue or escalation column. Its migration's header must say
+# whose records the rows are: the Work resource they feed, or the product's
+# customers' records (ADR 0010 D1).
+WORK_DECISION = "SylphxAI/work docs/adr/0010-group-companies-on-work.md"
+WORK_RESOURCE_HEADER = re.compile(r"\bwork[ \t]+resource[ \t]*:[ \t]*[^\s*/]", re.IGNORECASE)
+CUSTOMER_RECORDS_HEADER = "customer records (work adr 0010 d1)"
+_CONSTRAINT_WORDS = frozenset({"constraint", "primary", "unique", "foreign", "check", "exclude",
+                               "like", "index", "key", "period"})
+
+
+def _status_word(words: list[str]) -> bool:
+    return any(w in ("status", "state", "stage") for w in words)
+
+
+def _assignee_word(words: list[str]) -> bool:
+    return any(w in ("role", "assigned", "owner", "executor", "executing", "handler", "responsible")
+               or w.startswith("assignee") for w in words)
+
+
+def _due_word(words: list[str]) -> bool:
+    return any(w in ("due", "sla", "overdue") or w.startswith(("deadline", "escalat"))
+               for w in words)
+
+
+def _split_top(body: str) -> list[str]:
+    parts, depth, cur = [], 0, []
+    for ch in body:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur))
+    return parts
+
+
+def table_columns(statement: str) -> tuple[str, list[str]] | None:
+    """The table and column names of one CREATE TABLE statement, or None."""
+    created = SQL_CREATE.match(statement)
+    if not created:
+        return None
+    rest = statement[created.end():].lstrip()
+    if not rest.startswith("("):
+        return None  # CREATE TABLE ... AS / PARTITION OF: no column list here
+    depth, end = 0, None
+    for i, ch in enumerate(rest):
+        depth += ch == "("
+        depth -= ch == ")"
+        if depth == 0:
+            end = i
+            break
+    columns = []
+    for element in _split_top(rest[1:end if end is not None else len(rest)]):
+        m = re.match(r"\s*(\"[^\"]+\"|`[^`]+`|[A-Za-z_][\w$]*)", element)
+        if not m:
+            continue
+        name = m.group(1)
+        if name[0] not in '"`' and name.lower() in _CONSTRAINT_WORDS:
+            continue
+        columns.append(name.strip('"`').lower())
+    return sql_table(created.group(1)), columns
+
+
+def is_obligation_table(columns: list[str]) -> bool:
+    words = [c.split("_") for c in columns]
+    return (any(_status_word(w) for w in words) and any(_assignee_word(w) for w in words)
+            and any(_due_word(w) for w in words))
+
+
+def header_names_owner(text: str) -> bool:
+    """True when the comment lines before the file's first statement name the
+    Work resource the table feeds or say it holds customers' records."""
+    header, in_block = [], False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if in_block:
+            header.append(line)
+            in_block = "*/" not in line
+        elif line.startswith("--"):
+            header.append(line)
+        elif line.startswith("/*"):
+            header.append(line)
+            in_block = "*/" not in line
+        elif line:
+            break
+    words = [re.sub(r"^(?:--|/\*|\*(?!/))+|\*/$", "", line).strip() for line in header]
+    return any(WORK_RESOURCE_HEADER.search(w) for w in words) or CUSTOMER_RECORDS_HEADER in " ".join(
+        " ".join(words).lower().split())
+
+
+def obligation_tables(path: str, text: str) -> list[str]:
+    """`work-obligation-table <path> <table>` for each work-engine table that a
+    SQL file creates without a header saying whose records its rows are. A
+    down migration only restores an earlier schema and is not checked."""
+    if path.lower().endswith(".down.sql") or header_names_owner(text):
+        return []
+    body = re.sub(r"/\*.*?\*/", "", re.sub(r"--[^\n]*", "", text), flags=re.DOTALL)
+    found = []
+    for statement in body.split(";"):
+        parsed = table_columns(statement)
+        if parsed and is_obligation_table(parsed[1]):
+            found.append(f"work-obligation-table {path} {parsed[0]}")
+    return found
+
+
+def added_sql(repo: str, base: str, head: str) -> list[str]:
+    """SQL files added between base and head (renames are not additions)."""
+    out = git(repo, "diff", "--name-only", "--diff-filter=A", "-M", "-z", base, head, "--")
+    return sorted(p for p in out.split("\0")
+                  if p and p.lower().endswith(".sql") and not skipped(p))
+
+
+def decide_obligations(found: list[str]) -> list[str]:
+    return [f"new work-engine table: '{line}' has a status, an assignee or role and a due date, "
+            "deadline, SLA or escalation. A company's own work (what its people or agents owe) "
+            "runs on Work: create items there and name the resource in the migration's header "
+            "('-- Work resource: <resource>'). If the rows are the product's customers' records, "
+            "say so in the header ('-- customer records (Work ADR 0010 D1)'). "
+            f"({WORK_DECISION}, D1)" for line in found]
+
+
 def load_agent_runtime_policy(path=AGENT_RUNTIME_POLICY) -> dict:
     try:
         return json.loads(pathlib.Path(path).read_text())
@@ -472,12 +607,18 @@ def cmd_check(args) -> int:
         datetime.timezone.utc).date()
     runtime_errors, notices = decide_agent_runtime(runtime, args.repository, policy, today)
     errors += runtime_errors
+    obligations: list[str] = []
+    if args.base:
+        for path in added_sql(args.repo, args.base, args.head):
+            obligations += obligation_tables(path, head.read(path) or "")
+    errors += decide_obligations(obligations)
     for n in notices:
         print(f"::notice::{n}")
     for e in errors:
         print(f"::error::{e}")
     print(f"{len(found)} departure(s) found, {len(head_baseline or ())} recorded in {args.baseline}; "
-          f"{len(runtime)} agent-runtime part(s) found in {args.repository or 'this repository'}")
+          f"{len(runtime)} agent-runtime part(s) found in {args.repository or 'this repository'}; "
+          f"{len(obligations)} new work-engine table(s) without an owner header")
     if errors:
         print(f"Move the change onto the default stack. A departure is recorded only through a "
               f"company decision, by the owner of {args.baseline}.")
