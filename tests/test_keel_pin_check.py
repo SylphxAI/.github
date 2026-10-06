@@ -11,6 +11,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ACTION = ROOT / ".github" / "actions" / "keel-pin-check"
@@ -246,6 +247,25 @@ class PinCheckTest(unittest.TestCase):
         errors, _, _ = run_check(self.fx, self.title({"KEEL_PIN": self.fx.x1 + "\n"}), base="auto")
         self.assertEqual(len(errors), 1)
 
+    def test_auto_base_on_a_squashed_merge_group_commit_uses_its_parent(self):
+        # A squash merge queue builds the group as one commit on top of main: one parent, still the base.
+        repo = self.title({"KEEL_PIN": self.fx.x1 + "\n"})
+        Fixture.write(repo, {"README": "squashed pull request\n"})
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "squashed group")
+        with unittest.mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "merge_group"}):
+            errors, warnings, _ = run_check(self.fx, repo, base="auto")
+            self.assertEqual(errors, [])
+            self.assertEqual(len(warnings), 1)
+            moved = self.title({"KEEL_PIN": self.fx.c3 + "\n"})
+            Fixture.write(moved, {"KEEL_PIN": self.fx.x1 + "\n"})
+            git(moved, "commit", "-q", "-am", "moves the pin off main")
+            self.assertEqual(len(run_check(self.fx, moved, base="auto")[0]), 1)
+            # The first commit of a repository has no parent: nothing to compare, so every rule stands.
+            self.assertEqual(len(run_check(self.fx, self.title({"KEEL_PIN": self.fx.x1 + "\n"}), base="auto")[0]), 1)
+        with unittest.mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "push"}):
+            self.assertEqual(len(run_check(self.fx, repo, base="auto")[0]), 1)
+
     def test_missing_base_enforces_with_a_note(self):
         errors, _, notes = run_check(self.fx, self.title({"KEEL_PIN": self.fx.x1 + "\n"}), base="0" * 40)
         self.assertEqual(len(errors), 1)
@@ -326,6 +346,18 @@ class ManifestTest(unittest.TestCase):
         text = (ROOT / "workflow-templates" / "keel-pin-check.yml").read_text()
         self.assertIn("runs-on: sylphx-linux-standard", text)
         self.assertNotIn("ubuntu-latest", text)
+
+    def test_starter_base_is_empty_on_a_manual_run_and_auto_otherwise(self):
+        # Evaluate the starter's `base:` expression as Actions does: && and || return an operand, and ''
+        # is falsy, so `cond && '' || 'auto'` would always be 'auto' and a manual run would never audit.
+        text = (ROOT / "workflow-templates" / "keel-pin-check.yml").read_text()
+        line = next(l for l in text.splitlines() if l.strip().startswith("base:"))
+        expr = line.split("${{", 1)[1].rsplit("}}", 1)[0]
+        self.assertRegex(expr, r"^[\sa-z_.!=&|']+$")  # only the operators translated below
+        py = expr.replace("&&", " and ").replace("||", " or ").replace("!=", " != ").replace("==", " == ")
+        for event, want in (("workflow_dispatch", ""), ("pull_request", "auto"), ("merge_group", "auto")):
+            got = eval(py.replace("github.event_name", repr(event)), {"__builtins__": {}})  # noqa: S307
+            self.assertEqual(got, want, event)
 
 
 if __name__ == "__main__":
