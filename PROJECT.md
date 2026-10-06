@@ -21,6 +21,7 @@ Public surfaces:
 - `.github/workflows/red-main.yml`
 - `.github/workflows/actions-approval-guard.yml` ([docs/actions-approval-guard.md](docs/actions-approval-guard.md))
 - `.github/actions/*`
+  ([docs/stack-conformance.md](docs/stack-conformance.md) for `stack-conformance`)
 - `workflow-templates/` (starter workflows; [docs/optimistic-merge.md](docs/optimistic-merge.md))
 - `templates/`, `brand/`, and `COMPANY.md`
 
