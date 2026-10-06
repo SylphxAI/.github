@@ -59,8 +59,14 @@ class SelectTest(unittest.TestCase):
         run = ci_range.select(LANES, None, "verify / test (linux),verified")
         self.assertEqual(run, {"lint": False, "test": True, "e2e": False})
 
-    def test_only_never_widens_past_the_range(self) -> None:
-        self.assertEqual(ci_range.select(LANES, ["README.md"], "e2e")["e2e"], False)
+    def test_only_runs_a_named_lane_outside_the_range(self) -> None:
+        # A dispatch naming lanes on an already verified head (empty range)
+        # runs those lanes and nothing else.
+        self.assertEqual(ci_range.select(LANES, [], "lint,e2e"), {"lint": True, "test": False, "e2e": True})
+        self.assertEqual(ci_range.select(LANES, ["README.md"], "e2e")["e2e"], True)
+
+    def test_only_drops_a_selected_lane_it_does_not_name(self) -> None:
+        self.assertEqual(ci_range.select(LANES, ["src/a.rs", "web/b.ts"], "e2e"), {"lint": False, "test": False, "e2e": True})
 
     def test_only_with_no_known_lane_runs_the_selection(self) -> None:
         self.assertEqual(ci_range.select(LANES, None, "verified,plan"), {"lint": True, "test": True, "e2e": True})
