@@ -2444,9 +2444,24 @@ jobs:
             else
               payload=$(jq -n --arg ref "$ref" '{ref: $ref, return_run_details: true}')
             fi
-            local id
-            id=$(gha api --method POST "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/dispatches" \
-              --input - <<<"$payload" --jq '.workflow_run_id // empty') || return 1
+            # The temporary ref was created a moment ago and the forge's ref
+            # reads lag a write by seconds: it can answer 422 "No ref found"
+            # for it. That one answer is retried, about 30 s in all; any
+            # other failure stops at once.
+            local id err attempt=1
+            while :; do
+              if id=$(gha api --method POST "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/dispatches" \
+                   --input - <<<"$payload" --jq '.workflow_run_id // empty' 2>"$WORK_DIR/dispatch-try.err"); then
+                break
+              fi
+              err=$(cat "$WORK_DIR/dispatch-try.err")
+              if ! grep -q 'No ref found' <<<"$err" || [ "$attempt" -ge 6 ]; then
+                printf '%s\n' "$err" >&2
+                return 1
+              fi
+              sleep $((attempt * 2))
+              attempt=$((attempt + 1))
+            done
             case "$id" in
               ''|*[!0-9]*) echo "the dispatch returned no run id ('$id')" >&2; return 1 ;;
             esac
