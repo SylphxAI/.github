@@ -9,7 +9,13 @@ description: >
   the base did not have fails, and so does a line whose departure is gone.
   A base without the file accepts the head's file as the seed. Reads git
   objects only; needs a checkout of the head (any depth) and fetches the base
-  commit without blobs when it is missing. See docs/stack-conformance.md.
+  commit without blobs when it is missing. It also fails a product repository
+  that holds an agent-runtime part Sylphx Agents owns (a vault-proxy,
+  egress-guard, credential-crypto or agent-harness package, or a session-log,
+  tool-call or agent-memory table) unless policy/agent-runtime.json in this
+  repository lists it and its expiry date has not passed. A delivered customer
+  repository (custom property sylphx_delivery = delivered) is not checked.
+  See docs/stack-conformance.md.
 
 inputs:
   base:
@@ -21,6 +27,9 @@ inputs:
   baseline:
     description: Baseline file, relative to the repository root.
     default: .github/stack-departures.txt
+  token:
+    description: Token that reads the repository's custom properties (the delivered-customer exclusion).
+    default: ${{ github.token }}
 
 runs:
   using: composite
@@ -31,4 +40,14 @@ runs:
         BASE: ${{ inputs.base }}
         HEAD_REV: ${{ inputs.head }}
         BASELINE: ${{ inputs.baseline }}
-      run: python3 "$GITHUB_ACTION_PATH/stack_conformance.py" check --base "$BASE" --head "$HEAD_REV" --baseline "$BASELINE"
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        # Delivered customer repositories are hands-off; an unreadable property
+        # leaves the check on.
+        delivery="$(gh api "repos/$GITHUB_REPOSITORY/properties/values" \
+          --jq '.[] | select(.property_name == "sylphx_delivery") | .value' 2>/dev/null || true)"
+        if [ "$delivery" = "delivered" ]; then
+          echo "::notice::$GITHUB_REPOSITORY is a delivered customer repository; stack conformance is not checked."
+          exit 0
+        fi
+        python3 "$GITHUB_ACTION_PATH/stack_conformance.py" check --base "$BASE" --head "$HEAD_REV" --baseline "$BASELINE"

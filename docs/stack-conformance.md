@@ -22,6 +22,37 @@ Web apps, tools and scripts on TypeScript and Bun are the default stack, so a
 Next.js server or a static site is not a departure. Paths under
 `node_modules`, `vendor`, `target`, `dist`, `build` and `.next` are skipped.
 
+## Agent-runtime parts
+
+Sylphx Agents is the one owner of agent definitions, session logs, turn loops,
+agent memory, the tool gateway, credential injection and the egress guard
+(SylphxAI/cloud
+[ADR-01M495TCCBZGSQ68A4P4G428H2](https://github.com/SylphxAI/cloud/blob/main/docs/adr/ADR-01M495TCCBZGSQ68A4P4G428H2-sylphx-agents-hosted-agent-runtime.md),
+D5). The same check fails a product repository that holds one of these parts:
+
+| Line | Found when |
+| --- | --- |
+| `agent-runtime-package <manifest> <name>` | a `Cargo.toml` `[package]` or `package.json` name contains `vault-proxy`, `egress-guard`, `credential-crypto` or `agent-harness` (`_` reads as `-`) |
+| `agent-runtime-table <file.sql> <table>` | a `.sql` file creates `session_entries`, `session_turns`, `tool_calls`, `memory_entries` or an `agent_memory*` table, and no later `.sql` file (in path order, the order of timestamped migrations) drops it |
+
+These lines are never recorded in a repository's own baseline. The only
+allowance is [policy/agent-runtime.json](../policy/agent-runtime.json) here:
+one entry per existing instance, each with an expiry date. Until that date the
+check passes; after it, the entry stops applying and the repository's next
+change that touches a manifest or SQL file fails until the part has moved onto
+Sylphx Agents and been deleted. An entry whose part is gone is reported as a
+notice; delete it. Extending a date is a pull request here with its reason.
+
+`owner_repos` (SylphxAI/cloud, where `services/agents` lives) is not checked
+for these parts. A delivered customer repository (organization custom property
+`sylphx_delivery` = `delivered`) is not checked at all; the action reads the
+property with the job token, and an unreadable property leaves the check on.
+
+The baseline was seeded on 2026-10-06 from `scan` over the default branch of
+every repository with a desk checkout (136 repositories): only SylphxAI/agents
+has instances. Its expiry, 2026-11-30, leaves room after the agent app's switch
+and cleanup items for their estimate to slip.
+
 ## The rule at a pull request
 
 The check reads git objects at the base and the head; it needs no second
@@ -45,8 +76,8 @@ checkout.
 2. Add the `stack` lane and job from
    [`workflow-templates/optimistic-gate.yml`](../workflow-templates/optimistic-gate.yml)
    to the repository's gate, pinned by commit, and add `stack` to `ci-ok`'s
-   `needs`. The lane runs when `sylphx.toml`, a `package.json`, a Dockerfile or
-   the baseline changes.
+   `needs`. The lane runs when `sylphx.toml`, a `package.json`, a
+   `Cargo.toml`, a Dockerfile, a `.sql` file or the baseline changes.
 
 ## The portfolio number
 
