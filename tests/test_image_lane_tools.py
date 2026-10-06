@@ -15,7 +15,6 @@ import json
 import tempfile
 import time
 import unittest
-import zipfile
 from unittest import mock
 from pathlib import Path
 
@@ -33,7 +32,6 @@ def load(module_name: str, relative: str):
 
 mint = load("image_lane_mint", "scripts/mint-registry-auth.py")
 pack = load("image_lane_pack", "scripts/pack-image-evidence.py")
-transfer = load("image_lane_transfer", "scripts/resolve-lane-artifact.py")
 
 
 def jwt(claims: dict) -> str:
@@ -386,108 +384,31 @@ class ReadbackResolvesWrapperTests(unittest.TestCase):
         self.assertIn("application/vnd.oci.image.index.v1+json", self.workflow)
 
 
-class TransferResumeTests(unittest.TestCase):
-    """The transfer download resumes across a reset instead of restarting.
+class ImageLaneNoArtifactTests(unittest.TestCase):
+    """The lane hands nothing between jobs through GitHub Actions artifacts.
 
-    Live 2026-09-27/28: the artifact blob edge stopped a 2.1 GiB transfer after
-    21 minutes (exit 0, layout incomplete) and reset a 2.3 GiB one at 7.5
-    minutes with `curl: (56)`. Each attempt must re-resolve a fresh signed URL
-    and continue from the bytes already on disk.
+    Artifact storage is a metered org quota (GB-hours per billing cycle). The
+    lane once moved multi-GiB OCI layouts compile -> publish as artifacts; on
+    2026-10-06 the quota was spent and every platform image build failed at
+    upload ("Artifact storage quota has been hit", SylphxAI/cloud runs
+    37478912835 and 37478912897). One job now builds, pushes and reads back.
     """
 
-    def test_the_resume_header_names_the_bytes_on_disk(self) -> None:
-        self.assertEqual(transfer.range_header(0), {})
-        self.assertEqual(transfer.range_header(1), {"Range": "bytes=1-"})
-        self.assertEqual(
-            transfer.range_header(2_280_056_703),
-            {"Range": "bytes=2280056703-"},
-        )
+    def setUp(self) -> None:
+        self.workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
 
-    def test_the_newest_unexpired_attempt_wins_and_says_so(self) -> None:
-        artifacts = [
-            {"name": "image-lane-image-abc-7-1", "expired": False},
-            {"name": "image-lane-image-abc-7-2", "expired": True},
-            {"name": "image-lane-evidence-abc-7-1", "expired": False},
-        ]
-        record, notes = transfer.select_artifact_record(
-            artifacts, "image-lane-image-abc-7", 2
-        )
-        self.assertEqual(record["name"], "image-lane-image-abc-7-1")
-        self.assertTrue(any("expired" in note for note in notes))
-        name, _ = transfer.select_artifact(artifacts, "image-lane-image-abc-7", 2)
-        self.assertEqual(name, "image-lane-image-abc-7-1")
+    def test_no_artifact_upload_or_download(self) -> None:
+        for action in ("actions/upload-artifact", "actions/download-artifact", "actions/cache"):
+            self.assertNotIn(action, self.workflow, f"the lane must not use {action}")
 
-    def test_an_empty_run_fails_closed(self) -> None:
-        with self.assertRaises(SystemExit):
-            transfer.select_artifact_record([], "image-lane-image-abc-7", 1)
+    def test_one_job_builds_and_publishes(self) -> None:
+        jobs = self.workflow.split("\njobs:\n", 1)[1]
+        names = [line.strip().rstrip(":") for line in jobs.split("\n") if line.startswith("  ") and not line.startswith("   ") and line.strip().endswith(":")]
+        self.assertEqual(names, ["preflight", "publish"])
 
-    def test_a_transfer_without_metadata_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaises(SystemExit):
-                transfer.download_artifact(
-                    {"name": "image-lane-image-abc-7-1"},
-                    Path(temporary) / "out",
-                    "token",
-                    attempts=1,
-                    sleep_seconds=0.0,
-                    timeout=1.0,
-                )
-
-    def test_the_archive_is_hashed_before_extraction(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            archive = Path(temporary) / "artifact.zip"
-            archive.write_bytes(b"hello")
-            self.assertEqual(
-                transfer.sha256_of(archive),
-                "sha256:" + hashlib.sha256(b"hello").hexdigest(),
-            )
-
-
-class TransferExtractionTests(unittest.TestCase):
-    """Extraction empties the destination and refuses unsafe members."""
-
-    def _layout(self, root: Path) -> Path:
-        archive = root / "layout.zip"
-        with zipfile.ZipFile(archive, "w") as bundle:
-            bundle.writestr("index.json", "{}")
-            bundle.writestr("oci-layout", '{"imageLayoutVersion": "1.0.0"}')
-            bundle.writestr("blobs/sha256/" + "a" * 64, b"layer")
-        return archive
-
-    def test_extracts_a_layout_into_an_emptied_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            destination = root / "image"
-            destination.mkdir()
-            stale = destination / "index.json"
-            stale.write_text("old")
-            members = transfer.extract_archive(self._layout(root), destination)
-            self.assertEqual(members, 3)
-            self.assertEqual(
-                stale.read_text(), "{}", "a stale file survived the extraction"
-            )
-            self.assertTrue((destination / "blobs" / "sha256" / ("a" * 64)).is_file())
-
-    def test_refuses_a_member_that_escapes_the_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            archive = root / "bad.zip"
-            with zipfile.ZipFile(archive, "w") as bundle:
-                bundle.writestr("../escape", "x")
-            with self.assertRaises(SystemExit):
-                transfer.extract_archive(archive, root / "out")
-            self.assertFalse((root / "escape").exists())
-
-    def test_refuses_a_symbolic_link_member(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            archive = root / "link.zip"
-            with zipfile.ZipFile(archive, "w") as bundle:
-                info = zipfile.ZipInfo("index.json")
-                info.external_attr = 0o120777 << 16
-                bundle.writestr(info, "target")
-            with self.assertRaises(SystemExit):
-                transfer.extract_archive(archive, root / "out")
+    def test_the_receipt_is_a_job_output(self) -> None:
+        self.assertIn("value: ${{ jobs.publish.outputs.verify_receipt }}", self.workflow)
+        self.assertIn("printf 'verify_receipt=%s\\n'", self.workflow)
 
 
 if __name__ == "__main__":
