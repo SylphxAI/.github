@@ -14,12 +14,10 @@ admission, and Sylphx Enact state stay with their owning repositories.
 Public surfaces:
 
 - `profile/README.md` and `.github/*` community health files
-- `.github/workflows/adr29-admission.yml`
 - `.github/workflows/release.yml`
 - `.github/workflows/rust-check.yml` ([docs/rust-check.md](docs/rust-check.md))
 - `.github/workflows/publish-npm.yml`
 - `.github/workflows/red-main.yml`
-- `.github/workflows/actions-approval-guard.yml` ([docs/actions-approval-guard.md](docs/actions-approval-guard.md))
 - `.github/actions/*`
 - `workflow-templates/` (starter workflows; [docs/optimistic-merge.md](docs/optimistic-merge.md))
 - `templates/`, `brand/`, and `COMPANY.md`
