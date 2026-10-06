@@ -22,6 +22,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -64,6 +65,13 @@ DEFAULT_TIMEOUT_SECONDS = 20
 # the publisher identity") against a 20 s budget. The wait is for identity
 # propagation only; each HTTP call keeps DEFAULT_TIMEOUT_SECONDS.
 DEFAULT_IDENTITY_WAIT_SECONDS = 180
+# The token exchange is retried on a transient failure only: a connect or read
+# timeout, a connection error, or an HTTP 5xx. A 4xx is the issuer's verdict on
+# this publisher and fails at once. Live 2026-10-05 a single 20 s connect
+# timeout to the issuer failed whole main image builds while the issuer itself
+# was healthy. Worst case: MINT_ATTEMPTS x the HTTP timeout plus the backoffs.
+MINT_ATTEMPTS = 3
+MINT_BACKOFF_SECONDS = (2.0, 5.0)
 # Trusted publishing: the job's own GitHub Actions OIDC token, requested for
 # the registry's audience and exchanged at the token service, which matches it
 # against the declared publishers (SylphxAI/infra registry-v2 README).
@@ -257,6 +265,46 @@ def _fetch_svid(
         time.sleep(2)
 
 
+def _request_registry_token(
+    request: urllib.request.Request, mint_url: str, timeout_seconds: float
+) -> Any:
+    """GET the issuer, retrying only transient failures (see MINT_ATTEMPTS)."""
+    for attempt in range(1, MINT_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                if response.geturl().split("?", 1)[0] != mint_url:
+                    raise RuntimeError("registry token issuer redirected away from its fixed authority")
+                raw = response.read()
+            break
+        except urllib.error.HTTPError as error:
+            # Do not include the response body: an unexpected proxy must not
+            # reflect any credential material into CI logs.
+            if error.code < 500:
+                raise RuntimeError(
+                    f"registry token issuer rejected the publisher: HTTP {error.code}"
+                ) from error
+            failure: Exception = error
+            reason = f"HTTP {error.code}"
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            failure = error
+            reason = type(getattr(error, "reason", error)).__name__
+        if attempt == MINT_ATTEMPTS:
+            raise RuntimeError(
+                f"registry token issuer unavailable after {MINT_ATTEMPTS} attempts ({reason})"
+            ) from failure
+        delay = MINT_BACKOFF_SECONDS[min(attempt, len(MINT_BACKOFF_SECONDS)) - 1]
+        print(
+            f"registry token issuer attempt {attempt}/{MINT_ATTEMPTS} failed ({reason}); "
+            f"retrying in {delay:.0f}s",
+            file=sys.stderr,
+        )
+        time.sleep(delay)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("registry token issuer returned invalid JSON") from error
+
+
 def _mint_registry_token(svid: str, account: str, repository: str, host: str, timeout_seconds: float) -> str:
     mint_url = f"https://{host}/token" if host != DEFAULT_REGISTRY_HOST else DEFAULT_MINT_URL
     query = urllib.parse.urlencode(
@@ -272,19 +320,7 @@ def _mint_registry_token(svid: str, account: str, repository: str, host: str, ti
         headers={"Accept": "application/json", "Authorization": f"Bearer {svid}"},
         method="GET",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            if response.geturl().split("?", 1)[0] != mint_url:
-                raise RuntimeError("registry token issuer redirected away from its fixed authority")
-            body = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        # Do not include the response body: an unexpected proxy must not reflect
-        # any credential material into CI logs.
-        raise RuntimeError(
-            f"registry token issuer rejected the publisher: HTTP {error.code}"
-        ) from error
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-        raise RuntimeError("registry token issuer unavailable or returned invalid JSON") from error
+    body = _request_registry_token(request, mint_url, timeout_seconds)
     if not isinstance(body, dict):
         raise RuntimeError("registry token issuer returned a non-object payload")
     token = body.get("token") or body.get("access_token")
