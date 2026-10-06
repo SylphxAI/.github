@@ -39,10 +39,11 @@ scripts/public_repo_consumers.py --json     # machine-readable
 ```
 
 `.github/workflows/public-repo-consumers.yml` runs it every Monday at 03:17 UTC
-(and on demand) with an org-wide GitHub App read token, writes the list to the
-run summary and fails while any repository is missing a consumer. The internal
-work tracker runs the same script weekly and files one keep, merge or archive
-decision per listed repository.
+(and on demand) with the job's own read-only token (public repositories and
+their custom properties are public), writes the list to the run summary and
+fails while any repository is missing a consumer. The internal work tracker
+runs the same script weekly and files one keep, merge or archive decision per
+listed repository.
 
 ## Recording a consumer
 

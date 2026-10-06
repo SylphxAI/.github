@@ -77,5 +77,15 @@ class MissingConsumers(unittest.TestCase):
         self.assertIn("no public repositories", err)
 
 
+class Workflow(unittest.TestCase):
+    def test_reads_with_the_job_token_not_an_app_key(self):
+        # Public repositories and their custom properties are public; an App
+        # key is not shared with this repository, and the mint step failed.
+        text = (ROOT / ".github" / "workflows" / "public-repo-consumers.yml").read_text()
+        self.assertIn("GH_TOKEN: ${{ github.token }}", text)
+        self.assertNotIn("create-github-app-token", text)
+        self.assertNotIn("SYLPHX_BUILDER", text)
+
+
 if __name__ == "__main__":
     unittest.main()
