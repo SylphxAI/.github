@@ -1,0 +1,56 @@
+name: Public repository consumers
+
+# Weekly: every public, unarchived SylphxAI repository records its internal
+# consumer in the `sylphx_consumer` organization property, or it is listed for a
+# keep, merge or archive decision (docs/public-repo-consumers.md).
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    # GitHub-hosted standard runners are free only on a public repository.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Mint an org-wide read token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.SYLPHX_BUILDER_APP_ID }}
+          private-key: ${{ secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+          owner: SylphxAI
+          permission-metadata: read
+      - name: List public repositories with no recorded consumer
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -o pipefail
+          rc=0
+          python3 scripts/public_repo_consumers.py --org SylphxAI > "$RUNNER_TEMP/consumers.txt" || rc=$?
+          {
+            echo "## Public repositories with no recorded consumer"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/consumers.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/consumers.txt"
+          case "$rc" in
+            0) ;;
+            1) echo "::error::public repositories with no sylphx_consumer: record the consumer or decide keep, merge or archive"; exit 1 ;;
+            *) echo "::error::could not read the repository list or its custom properties"; exit "$rc" ;;
+          esac
