@@ -15,6 +15,10 @@ description: >
   tool-call or agent-memory table) unless policy/agent-runtime.json in this
   repository lists it and its expiry date has not passed. A delivered customer
   repository (custom property sylphx_delivery = delivered) is not checked.
+  With a base, it also fails a SQL file added since the base that creates a
+  work-engine table (a status, an assignee or role, and a due date, deadline,
+  SLA, overdue or escalation column) unless the file's header names the Work
+  resource it feeds or says `customer records (Work ADR 0010 D1)`.
   See docs/stack-conformance.md.
 
 inputs:

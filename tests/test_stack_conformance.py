@@ -256,6 +256,64 @@ class AgentRuntimePolicyTest(unittest.TestCase):
             seen.add(key)
 
 
+FIXTURES = ROOT / "tests" / "fixtures" / "work-obligations"
+AGENT_TASKS = (FIXTURES / "0073_agent_tasks.up.sql").read_text()
+MIGRATION = "crates/api/migrations/0073_agent_tasks.up.sql"
+
+
+class ObligationTableGuardTest(unittest.TestCase):
+    """test obligation-table-guard: a new work-engine table must say whose
+    records it holds (SylphxAI/work docs/adr/0010, Guard for the class)."""
+
+    def test_the_fixture_without_a_header_fails(self):
+        self.assertEqual(sc.obligation_tables(MIGRATION, AGENT_TASKS),
+                         [f"work-obligation-table {MIGRATION} agent_tasks"])
+
+    def test_a_work_resource_header_passes(self):
+        text = "-- Work resource: items (workspace ozyrix, kind operate)\n" + AGENT_TASKS
+        self.assertEqual(sc.obligation_tables(MIGRATION, text), [])
+
+    def test_a_customer_records_header_passes(self):
+        text = "-- Rows are tickets our customers own: customer records (Work ADR 0010 D1)\n" + AGENT_TASKS
+        self.assertEqual(sc.obligation_tables(MIGRATION, text), [])
+        block = "/*\n * Helpdesk tickets.\n * customer records\n * (Work ADR 0010 D1)\n */\n" + AGENT_TASKS
+        self.assertEqual(sc.obligation_tables(MIGRATION, block), [])
+
+    def test_a_header_after_the_first_statement_does_not_count(self):
+        text = AGENT_TASKS + "\n-- Work resource: items\n"
+        self.assertEqual(len(sc.obligation_tables(MIGRATION, text)), 1)
+
+    def test_an_empty_work_resource_does_not_count(self):
+        self.assertEqual(len(sc.obligation_tables(MIGRATION, "-- Work resource:\n" + AGENT_TASKS)), 1)
+
+    def test_all_three_column_kinds_are_needed(self):
+        sql = "CREATE TABLE t (id uuid PRIMARY KEY, {cols});"
+        cases = {
+            "status text, assignee_id uuid, due_at timestamptz": True,
+            '"state" text, "executing_principal_id" text, "deadline" timestamptz': True,
+            "stage text, owner_role text, sla_breach_at timestamptz": True,
+            "status text, assigned_to uuid, escalation_level int": True,
+            "status text, customer_id uuid, due_at timestamptz": False,  # an invoice
+            "status text, owner_id uuid, expires_at timestamptz": False,  # a subscription
+            "assignee_id uuid, due_at timestamptz, title text": False,
+            "status text, role text, created_at timestamptz": False,
+        }
+        for cols, expected in cases.items():
+            with self.subTest(cols=cols):
+                self.assertEqual(bool(sc.obligation_tables("m.sql", sql.format(cols=cols))), expected)
+
+    def test_constraints_and_nested_parentheses_are_not_columns(self):
+        sql = ("CREATE TABLE IF NOT EXISTS app.t (id uuid, status text CHECK (status IN ('a', 'b')),\n"
+               "  CONSTRAINT role_due CHECK (deadline > now()), PRIMARY KEY (id), UNIQUE (assignee));")
+        self.assertEqual(sc.obligation_tables("m.sql", sql), [])
+
+    def test_a_down_migration_is_not_checked(self):
+        self.assertEqual(sc.obligation_tables("crates/api/migrations/0090_drop.down.sql", AGENT_TASKS), [])
+
+    def test_create_table_as_is_not_checked(self):
+        self.assertEqual(sc.obligation_tables("m.sql", "CREATE TABLE t AS SELECT * FROM agent_tasks;"), [])
+
+
 class GitTest(unittest.TestCase):
     """check and all against a real repository with a base and a head commit."""
 
@@ -336,6 +394,27 @@ class GitTest(unittest.TestCase):
         rc, out = check(added, recorded)
         self.assertEqual(rc, 1)
         self.assertIn("allowed only by", out)
+
+    def test_obligation_table_guard_over_commits(self):
+        """Only migrations added in the range are checked: a table that is
+        already on the base (current main of an adopting repository) passes."""
+        base = self.commit({MIGRATION: AGENT_TASKS})
+        self.assertEqual(self.check(base, base)[0], 0)
+        same = self.commit({"README.md": "x\n", MIGRATION: AGENT_TASKS + "-- edited\n"})
+        self.assertEqual(self.check(base, same)[0], 0)
+
+        new = "crates/api/migrations/0074_more_tasks.up.sql"
+        added = self.commit({new: AGENT_TASKS.replace("agent_tasks", "more_tasks")})
+        rc, out = self.check(same, added)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"work-obligation-table {new} more_tasks", out)
+        self.assertIn("docs/adr/0010", out)
+
+        headed = self.commit({new: "-- Work resource: items\n" + AGENT_TASKS.replace("agent_tasks", "more_tasks")})
+        self.assertEqual(self.check(same, headed)[0], 0)
+        self.git("mv", MIGRATION, "crates/api/migrations/0073_renamed.up.sql")
+        self.git("commit", "-q", "-m", "rename")
+        self.assertEqual(self.check(headed, self.git("rev-parse", "HEAD"))[0], 0)
 
     def test_all_counts_clean_checkouts(self):
         self.commit({"sylphx.toml": TOML.format(engine="atlas", dockerfile="none")})
