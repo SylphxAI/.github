@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -13,6 +14,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -534,7 +536,10 @@ d = os.environ["FAKE_DIR"]
 sc = json.load(open(d + "/scenario.json"))
 a = sys.argv[1:]
 open(d + "/gh-calls.txt", "a").write(" ".join(a) + "\n")
-if a[:2] == ["pr", "list"]:
+if a[:2] == ["pr", "list"] and "merged" in a:
+    if sc.get("merged"):
+        print(json.dumps(sc["merged"]))
+elif a[:2] == ["pr", "list"]:
     print("\n".join("\t".join(map(str, pr)) for pr in sc["prs"]))
 elif a[:1] == ["api"] and "check-runs" in a[-1] + " ".join(a):
     print("\n".join("\t".join(map(str, r)) for r in sc["runs"]))
@@ -679,6 +684,97 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(self.merges(calls), [])
 
 
+LIVE_URL = "https://title.example.invalid"
+PINNED = "c" * 40
+MERGED_PR = {"number": 4, "headRefName": TAG_BRANCH, "mergedAt": "2027-01-15T05:00:00Z",
+             "body": f"Moves the Keel pin to `{NEW_TAG}`, commit `{PINNED}`.\n"}
+
+
+class FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def serving(body):
+    """An urlopen stand-in for the live host: VERSION.json answers BODY (bytes), or the request fails."""
+    def opener(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else req
+        assert url == LIVE_URL + "/VERSION.json", url
+        if isinstance(body, Exception):
+            raise body
+        return FakeResponse(body)
+    return opener
+
+
+class SettleLiveTest(unittest.TestCase):
+    """A merged repin is settled only when the live VERSION.json keel field is the merged commit."""
+
+    def settle(self, body, merged=MERGED_PR, repeat=1, grace="60", minutes_after_merge=120):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({"prs": [], "emails": [BOT], "runs": [], "merged": merged}))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            now = keel_repin.calendar.timegm((2027, 1, 15, 5, 0, 0)) + minutes_after_merge * 60
+            ws = keel_repin.web_smoke()
+            real = ws.live_keel
+            ws.live_keel = lambda url: real(url, opener=serving(body))
+            rcs = []
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"), \
+                    mock.patch.object(keel_repin, "web_smoke", return_value=ws):
+                for _ in range(repeat):
+                    rcs.append(keel_repin.main(["settle", "--owner", "@o/team", "--now", str(now),
+                                                "--live-url", LIVE_URL, "--live-grace-minutes", grace]))
+            comments = (base / "comments.txt").read_text() if (base / "comments.txt").exists() else ""
+            return rcs, comments
+
+    def version(self, **fields):
+        return json.dumps({"version": "1.0.0", "commit": "f" * 40, "built_at": "2027-01-15T05:10:00Z", **fields}).encode()
+
+    def test_the_live_title_on_the_merged_commit_is_settled(self):
+        rcs, comments = self.settle(self.version(keel=PINNED))
+        self.assertEqual((rcs, comments), ([0], ""))
+
+    def test_a_mismatching_keel_field_fails_and_the_owner_hears_once(self):
+        rcs, comments = self.settle(self.version(keel="d" * 40), repeat=3)
+        self.assertEqual(rcs, [1, 1, 1])
+        self.assertEqual(comments.count(keel_repin.LIVE_MARKER), 1)
+        self.assertIn("@o/team", comments)
+        self.assertIn("runs Keel dddddddddddd, not the pinned cccccccccccc", comments)
+
+    def test_a_missing_keel_field_fails(self):
+        for body in (self.version(), self.version(keel="unknown"), b"<html>not json</html>",
+                     urllib.error.URLError("connection refused")):
+            rcs, comments = self.settle(body)
+            self.assertEqual(rcs, [1], body)
+            self.assertIn("does not say which Keel it runs", comments)
+
+    def test_within_the_deploy_grace_a_mismatch_waits(self):
+        rcs, comments = self.settle(self.version(keel="d" * 40), minutes_after_merge=10)
+        self.assertEqual((rcs, comments), ([0], ""))
+
+    def test_no_merged_repin_compares_nothing(self):
+        rcs, comments = self.settle(self.version(), merged=None)
+        self.assertEqual((rcs, comments), ([0], ""))
+
+    def test_no_live_url_reads_no_merged_pull_request(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({"prs": [], "emails": [BOT], "runs": [], "merged": MERGED_PR}))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"):
+                self.assertEqual(keel_repin.main(["settle"]), 0)
+            self.assertNotIn("merged", (base / "gh-calls.txt").read_text())
+
+
 class ActionContractTest(unittest.TestCase):
     def test_manifest_and_guards(self):
         import yaml
@@ -688,7 +784,8 @@ class ActionContractTest(unittest.TestCase):
         self.assertNotRegex(text, r"(?m)^\s*runs-on:")  # a composite action takes its runner from the caller
         self.assertNotRegex(text, r"(ubuntu|windows|macos)-(latest|\d)")
         for need in ("mode", "tag", "reader-app-id", "reader-app-key", "dry-run", "check-command", "ci-workflows",
-                     "required-checks", "owner", "max-wait-minutes", "after-merge-workflows"):
+                     "required-checks", "owner", "max-wait-minutes", "after-merge-workflows", "live-url",
+                     "live-grace-minutes"):
             self.assertIn(need, action["inputs"])
         for step in action["runs"]["steps"]:
             uses = step.get("uses", "")

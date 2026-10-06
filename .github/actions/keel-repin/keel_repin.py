@@ -29,6 +29,10 @@ Steps, run from the repository root (the action calls them in this order):
       every commit on it is the bot's own. A red pull request is left open with one comment that
       names the failing check and the owner; a pending one is left for the next run. Idempotent:
       it keeps no state, so the title's schedule just runs it again.
+      With --live-url, a merged repin is settled only once the live title runs it: the newest merged
+      repin pull request's commit must equal the `keel` field of <live-url>/VERSION.json. A missing
+      or different field fails the run (after --live-grace-minutes from the merge, the deploy's
+      time), with one comment on that pull request per wrong live value.
 
 What counts as a pin: a `rev = "<40 hex>"` or `tag = "keel-..."` on a Cargo.toml line that
 names the Keel git repository, every `deps/keel.rev`, and the old full or short commit
@@ -67,6 +71,9 @@ LOG_TAIL_CHARS = 5000
 BOT_EMAIL = "keel-repin@users.noreply.github.com"
 RED_CONCLUSIONS = ("failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale")
 RED_MARKER = "<!-- keel-repin-red:"
+LIVE_MARKER = "<!-- keel-repin-live:"
+PIN_IN_BODY = re.compile(r"Moves the Keel pin to `[^`]+`, commit `([0-9a-f]{40})`")
+DEFAULT_LIVE_GRACE_MINUTES = 60
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 UNREADABLE_RE = re.compile(r"git fetch [^\n]*?'https://github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?'")
 DEFAULT_REQUIRED = "ci-ok web-smoke"
@@ -634,6 +641,62 @@ def tell_red(number, tag, sha, owner, problems, draft, dry):
     run([*gh_bin(), "pr", "comment", str(number), "--body", text])
 
 
+def web_smoke():
+    """The web-smoke action's module (its VERSION.json reader), from the same checkout of this repository."""
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "web-smoke" / "web_smoke.py"
+    spec = importlib.util.spec_from_file_location("web_smoke", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def newest_merged_repin():
+    """The newest merged repin pull request as (number, tag, commit, merged_at epoch), or None."""
+    out = gh_json(["pr", "list", "--state", "merged", "--limit", "50", "--json", "number,headRefName,body,mergedAt"],
+                  '[.[] | select(.headRefName | startswith("' + BRANCH_PREFIX + '"))] | max_by(.mergedAt) // empty')
+    if not out.strip():
+        return None
+    pr = json.loads(out)
+    m = PIN_IN_BODY.search(pr.get("body") or "")
+    if not m:
+        raise Refused(f"merged repin pull request #{pr['number']} does not name its Keel commit in its body")
+    merged = calendar.timegm(time.strptime(pr["mergedAt"], "%Y-%m-%dT%H:%M:%SZ"))
+    return str(pr["number"]), pr["headRefName"][len(BRANCH_PREFIX):], m.group(1), merged
+
+
+def settle_live(args, now):
+    """0 when the live title runs the newest merged repin's Keel (or the deploy is still within its grace), else 1."""
+    merged = newest_merged_repin()
+    if merged is None:
+        print("::notice::keel-repin settle: no merged repin pull request; the live Keel is not compared")
+        return 0
+    number, tag, commit, merged_at = merged
+    ws = web_smoke()
+    live, why = ws.live_keel(args.live_url)
+    ok, text = ws.keel_verdict(live, why, commit)
+    age_min = (now - merged_at) / 60
+    if ok:
+        print(f"#{number} {tag}: settled; {text}")
+        return 0
+    if age_min < args.live_grace_minutes:
+        print(f"::notice::#{number} {tag}: merged {int(age_min)} minutes ago, waiting for the deploy: {text}")
+        return 0
+    print(f"::error::#{number} {tag} is merged but not settled: {text}")
+    marker = f"{LIVE_MARKER}{live or 'none'} "
+    out = gh_json(["pr", "view", number, "--json", "comments"], ".comments[].body")
+    if marker not in out:
+        who = f"{args.owner} " if args.owner else ""
+        body = (f"{who}The Keel repin to `{tag}` (`{commit[:9]}`) is merged, but {text}. "
+                "Deploy the default branch, or find why the live build is not the merged one. "
+                f"The bot calls the repin settled only when the live VERSION.json names this commit.\n\n{marker}-->")
+        if args.dry_run:
+            print(f"DRY RUN: would comment on #{number}:\n{body}")
+        else:
+            run([*gh_bin(), "pr", "comment", number, "--body", body])
+    return 1
+
+
 def cmd_settle(args):
     repo = repo_name()
     required = args.required.split()
@@ -681,6 +744,8 @@ def cmd_settle(args):
         if state == "MERGED":
             for wf in args.after_merge.split():
                 run([*gh_bin(), "workflow", "run", wf, "--ref", args.base], check=False)
+    if args.live_url:
+        return settle_live(args, now)
     return 0
 
 
@@ -711,6 +776,9 @@ def main(argv=None):
     t.add_argument("--max-wait-minutes", type=int, default=DEFAULT_MAX_WAIT_MINUTES)
     t.add_argument("--after-merge", default="", help="workflow files started on the base branch after a merge (a merge by the workflow token starts no push run)")
     t.add_argument("--base", default="main")
+    t.add_argument("--live-url", default="", help="the deployed title's host; its VERSION.json keel must be the merged repin's commit")
+    t.add_argument("--live-grace-minutes", type=int, default=DEFAULT_LIVE_GRACE_MINUTES,
+                   help="minutes after the merge the deploy has before a wrong live Keel fails the run")
     t.add_argument("--now", type=float, default=None, help=argparse.SUPPRESS)
     t.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("pr")

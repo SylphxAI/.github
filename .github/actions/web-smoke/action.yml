@@ -78,11 +78,25 @@ inputs:
   timeout-s:
     description: Seconds each check may take before it fails.
     default: "300"
+  live-url:
+    description: >
+      The deployed title's host (for example https://lanewarden.play.cubeage.com). When set, the action also
+      reads <live-url>/VERSION.json and records its `keel` field, the Keel commit the live pack was built
+      with, as the `live-keel` output and in the job summary. Empty (default): no live read.
+    default: ""
+  expect-keel:
+    description: >
+      With live-url: the full Keel commit the live title must run. The check fails when the live `keel`
+      field is missing or names another commit. Empty (default): record only.
+    default: ""
 
 outputs:
   keel-ref:
     description: The Keel revision the check ran with.
     value: ${{ steps.ref.outputs.ref }}
+  live-keel:
+    description: The `keel` commit the live title's VERSION.json reports (empty when live-url is empty or it names none).
+    value: ${{ steps.live.outputs.keel }}
 
 runs:
   using: composite
@@ -164,3 +178,13 @@ runs:
           if [ -n "$pattern" ]; then args+=(--offline-dependency "$pattern"); fi
         done <<< "$OFFLINE_DEPENDENCIES"
         python3 "$ACTION_PATH/web_smoke.py" "${args[@]}"
+
+    - name: Read the live title's Keel
+      id: live
+      if: always() && inputs.live-url != ''
+      shell: bash
+      env:
+        LIVE_URL: ${{ inputs.live-url }}
+        EXPECT_KEEL: ${{ inputs.expect-keel }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: python3 "$ACTION_PATH/web_smoke.py" live --url "$LIVE_URL" --expect-keel "$EXPECT_KEEL"

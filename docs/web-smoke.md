@@ -53,8 +53,11 @@ action stops with an error before it does anything.
 | `max-served-ratio` | `1.03` | Largest served/q11 a wasm module may have. |
 | `require-precompressed` | `false` | `true` fails a wasm module that has no precompressed `.br` copy in the pack. Run the title's precompress step before the action, then set it. |
 | `chrome-version` | pinned in `action.yml` | Chrome for Testing version; cached in the runner's tool cache. |
+| `live-url` | empty | The deployed title's host. When set, the action reads `<live-url>/VERSION.json` and records its `keel` field, the Keel commit the live pack was built with. |
+| `expect-keel` | empty | With `live-url`: the full Keel commit the live title must run. A missing `keel` field (absent, `unknown`, unreadable) or another commit fails the check. Empty: record only. |
 
-Output: `keel-ref`, the Keel revision used. A run writes its verdict to the job summary.
+Outputs: `keel-ref`, the Keel revision used, and `live-keel`, the live title's `keel` commit (empty when
+`live-url` is empty or the title names none). A run writes its verdict to the job summary.
 
 ## When it is red
 

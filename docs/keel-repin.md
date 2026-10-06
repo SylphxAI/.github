@@ -72,6 +72,16 @@ a new one.
 deploys on push lists its deploy workflow in `after-merge-workflows`; the bot starts it on the default
 branch once it reads the pull request as merged.
 
+**Settled means live.** A merge is not the end: the repin is settled only when the deployed title runs
+the merged Keel. With `live-url` set, every `settle` run reads `<live-url>/VERSION.json` (Keel's packer
+writes `keel`, the full commit the pack was built with) and compares it with the commit the newest
+merged repin pull request names in its body. Equal: settled. Missing (no `keel` field, `unknown`, not
+JSON, or the host unreachable) or a different commit: once `live-grace-minutes` (default 60) have
+passed since the merge, the run fails and that pull request gets one comment mentioning `owner`; the
+comment carries the live value, so the same wrong value on every run adds no second comment, and a new
+wrong value gets a new one. Within the grace the deploy is still expected and the run passes with a
+notice. A title with no merged repin pull request is not compared.
+
 ## Permissions
 
 The workflow declares `permissions: {}` at the top and per job:
@@ -121,6 +131,8 @@ check; edits it makes under `.github/workflows/` are discarded.
 | `owner` | settle: who a red comment mentions, such as `@Cubeage/studio`. |
 | `max-wait-minutes` | settle: how long a required check may stay unfinished. Default 360. |
 | `after-merge-workflows` | settle: workflows started on the default branch after the merge. |
+| `live-url` | settle: the deployed title's host; the merged repin is settled only when its `VERSION.json` `keel` field is the merged commit. Empty: no live check. |
+| `live-grace-minutes` | settle: how long after the merge the deploy may take before a wrong live Keel fails the run. Default 60. |
 
 ## Tests
 
