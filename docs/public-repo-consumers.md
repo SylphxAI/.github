@@ -39,11 +39,11 @@ scripts/public_repo_consumers.py --json     # machine-readable
 ```
 
 `.github/workflows/public-repo-consumers.yml` runs it every Monday at 03:17 UTC
-(and on demand) with an org-wide GitHub App read token and the org npm token,
-deprecates the listed npm packages, writes the lists to the run summary and
-fails while anything is still listed. The internal
-work tracker runs the same script weekly and files one keep, merge or archive
-decision per listed repository.
+(and on demand) with the job's own read-only token (public repositories, their
+custom properties and READMEs are public) and the org npm token, deprecates the
+listed npm packages, writes the lists to the run summary and fails while
+anything is still listed. The internal work tracker runs the same script weekly
+and files one keep, merge or archive decision per listed repository.
 
 ## Shut-down projects say so
 

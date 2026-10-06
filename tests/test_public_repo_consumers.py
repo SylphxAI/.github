@@ -87,7 +87,6 @@ class MissingConsumers(unittest.TestCase):
         self.assertIn("no public repositories", err)
 
 
-
 def no_resolve(owner, name):
     raise AssertionError(f"unexpected GitHub read for {owner}/{name}")
 
@@ -181,6 +180,16 @@ class UndeprecatedPackages(unittest.TestCase):
         self.assertEqual(doc["missing"], [])
         self.assertEqual([r["name"] for r in doc["archived_without_notice"]], ["molt"])
         self.assertEqual([p["name"] for p in doc["undeprecated_packages"]], ["@sylphx/molt"])
+
+
+class Workflow(unittest.TestCase):
+    def test_reads_with_the_job_token_not_an_app_key(self):
+        # Public repositories, their custom properties and READMEs are public; an App
+        # key is not shared with this repository, and the mint step failed.
+        text = (ROOT / ".github" / "workflows" / "public-repo-consumers.yml").read_text()
+        self.assertIn("GH_TOKEN: ${{ github.token }}", text)
+        self.assertNotIn("create-github-app-token", text)
+        self.assertNotIn("SYLPHX_BUILDER", text)
 
 
 if __name__ == "__main__":
