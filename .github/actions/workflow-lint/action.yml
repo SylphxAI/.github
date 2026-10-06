@@ -4,8 +4,11 @@ description: >
   checksum-verified actionlint (the gate's "workflow parse" check), using the
   repository's own `.github/actionlint.yaml` for self-hosted runner labels
   (declare labels there, not with an ignore pattern). A broken workflow then
-  fails the pull request instead of the first run on the trunk. Needs a
-  checkout. Linux x86_64.
+  fails the pull request instead of the first run on the trunk. Then refuses
+  a timing or performance budget (PERF_ENFORCE, Lighthouse, hyperfine, k6)
+  in a pull_request, merge_group or reusable workflow: timing gates run after
+  merge. Delivered customer repositories skip that rule. Needs a checkout and
+  python3. Linux x86_64.
 
 inputs:
   ignore:
@@ -55,3 +58,8 @@ runs:
           [ -n "$line" ] && argv+=("$line")
         done <<<"$ARGS"
         "$bin" "${argv[@]}"
+    - name: No timing gate before merge
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: python3 "$GITHUB_ACTION_PATH/perf_gate.py"

@@ -211,6 +211,17 @@ benchmark or nightly) never makes the trunk red here.
       ignore: |
         property "workflow_sha" is not defined
   ```
+
+  It also refuses a timing or performance budget before merge
+  ([`perf_gate.py`](../.github/actions/workflow-lint/perf_gate.py)): in a
+  workflow triggered by `pull_request`, `pull_request_target`, `merge_group`
+  or `workflow_call`, `PERF_ENFORCE` other than `0`, Lighthouse (`lhci`),
+  `hyperfine`, `k6 run` or the chat perf run fail the lint. Shared runners
+  move wall-clock numbers with load, so timing is judged after merge, as a
+  median against a stored baseline; before merge a workflow may only measure
+  and print. A delivered customer repository (`sylphx_delivery` =
+  `delivered`, read from the event payload or the repository's property
+  values) skips this rule.
 - [`red-main.yml`](../.github/workflows/red-main.yml): the reusable handler.
 
 ## Lifecycle-only alerts (no repair)
