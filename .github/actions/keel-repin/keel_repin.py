@@ -19,8 +19,9 @@ Steps, run from the repository root (the action calls them in this order):
 
   keel_repin.py dispatch --branch B --workflows "ci.yml ..."
       Start the title's CI on the branch by workflow_dispatch, in order, waiting for each run to
-      appear on the branch head. A pull request opened with the workflow token starts no
-      pull_request run, so this is what puts the checks on the pull request's head commit.
+      appear on the branch head. A pull request opened with the workflow token gets only a
+      pull_request run held as action_required, so this is what puts the checks on the pull
+      request's head commit.
 
   keel_repin.py settle [--required "ci-ok web-smoke"] [--owner @team] [--dry-run]
       For every open repin pull request: merge it when, and only when, every required check ran on
@@ -66,6 +67,8 @@ LOG_TAIL_CHARS = 5000
 BOT_EMAIL = "keel-repin@users.noreply.github.com"
 RED_CONCLUSIONS = ("failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale")
 RED_MARKER = "<!-- keel-repin-red:"
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+UNREADABLE_RE = re.compile(r"git fetch [^\n]*?'https://github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?'")
 DEFAULT_REQUIRED = "ci-ok web-smoke"
 DEFAULT_MAX_WAIT_MINUTES = 360
 
@@ -201,29 +204,61 @@ def workflow_mentions(root, old_shas):
     return sorted(out)
 
 
+def lock_entries(lock_text):
+    """(name, version, source) of every package Cargo.lock takes from the Keel git source."""
+    out, cur = [], {}
+    for line in lock_text.splitlines() + ["[[package]]"]:
+        if line.startswith("[[package]]"):
+            if cur.get("source") and KEEL_URL.search(cur["source"]):
+                out.append((cur.get("name", ""), cur.get("version", ""), cur["source"]))
+            cur = {}
+        elif " = " in line and line.split(" = ", 1)[0] in ("name", "version", "source"):
+            key, value = line.split(" = ", 1)
+            cur[key] = value.strip().strip('"')
+    return [e for e in out if e[0]]
+
+
 def lock_packages(lock_text):
     """Names of the packages Cargo.lock takes from the Keel git source."""
-    names, name = [], None
-    for line in lock_text.splitlines():
-        if line.startswith("name = "):
-            name = line.split('"')[1]
-        elif line.startswith("source = ") and KEEL_URL.search(line) and name:
-            names.append(name)
-    return sorted(set(names))
+    return sorted({name for name, _, _ in lock_entries(lock_text)})
 
 
-def refresh_locks(root, log):
+def lock_update_specs(lock_text, old_shas=()):
+    """The `cargo update -p` specs that move the Keel crates of one Cargo.lock.
+
+    A name the lock holds once is passed bare. A name it holds from two Keel commits (the title's
+    pin and a dependency's own pin, say cubeage-kit's) is ambiguous to cargo, so each entry at a
+    commit the repin moved gets its full package id (`git+URL?rev=X#name@version`); the other
+    commit belongs to the dependency and is left as it is. With no moved commit among them, every
+    entry of the name is passed.
+    """
+    entries = lock_entries(lock_text)
+    by_name = {}
+    for e in entries:
+        by_name.setdefault(e[0], []).append(e)
+    specs = []
+    for name in sorted(by_name):
+        group = by_name[name]
+        if len(group) == 1:
+            specs.append(name)
+            continue
+        moved = [e for e in group if any(o in e[2].split("#", 1)[0] for o in old_shas)] or group
+        specs += [f"{source.split('#', 1)[0]}#{n}@{version}" for n, version, source in moved]
+    return specs
+
+
+def refresh_locks(root, log, old_shas=()):
     """cargo update for the Keel crates of every tracked Cargo.lock; a failure is returned, not raised."""
     root = Path(root)
     for f in tracked_files(root):
         if Path(f).name != "Cargo.lock" or f.startswith(SKIP_DIRS) or "/vendor/" in f:
             continue
         manifest = (root / f).with_name("Cargo.toml")
-        pkgs = lock_packages((root / f).read_text(errors="replace"))
-        if not pkgs or not manifest.exists():
+        specs = lock_update_specs((root / f).read_text(errors="replace"), old_shas)
+        if not specs or not manifest.exists():
             continue
         cmd = ["cargo", "update", "--manifest-path", str(manifest)]
-        for p in pkgs:
+        for p in specs:
             cmd += ["-p", p]
         proc = run(cmd, cwd=root, check=False)
         log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
@@ -271,7 +306,7 @@ def cmd_run(args):
             stage = "hook"
     else:
         rewrite(root, old, sha, args.tag)
-        stage = refresh_locks(root, log)
+        stage = refresh_locks(root, log, old)
     if stage is None and args.check_command:
         proc = run(["bash", "-c", args.check_command], cwd=Path(root, args.check_dir), check=False)
         log.append(f"$ {args.check_command}\n{proc.stdout}{proc.stderr}")
@@ -295,8 +330,16 @@ def cmd_run(args):
 
 
 def log_tail(log):
+    log = ANSI_RE.sub("", log)
     tail = "\n".join(log.splitlines()[-LOG_TAIL_LINES:])[-LOG_TAIL_CHARS:]
     return tail.replace("```", "'''")
+
+
+def unreadable_repos(log):
+    """Private GitHub repositories the build could not fetch (no token was pointed at them)."""
+    if "could not read Username for 'https://github.com'" not in log:
+        return []
+    return sorted(set(UNREADABLE_RE.findall(ANSI_RE.sub("", log))) - {"SylphxAI/keel"})
 
 
 def pr_text(report):
@@ -322,6 +365,16 @@ def pr_text(report):
             "",
             f"**Draft: {what} fails on this Keel tag.** The pull request is open as a draft so the break is visible. "
             "Fix it on this branch (the bot never touches it again), then mark it ready. CI was not started by the bot.",
+        ]
+        missing = unreadable_repos(report["log"])
+        if missing:
+            lines += [
+                "",
+                "The build could not read " + ", ".join(f"`{r}`" for r in missing) + ": no read token covers it. "
+                "Add it to the repin job's `extra-read-repos` (the reader App must be installed on it), then close this "
+                "pull request and delete the branch so the next poll rebuilds it.",
+            ]
+        lines += [
             "",
             "Last lines of the output:",
             "```",
@@ -331,8 +384,9 @@ def pr_text(report):
     else:
         lines += [
             "",
-            "The build check passed on this pin. A pull request opened with the workflow token starts no pull_request run, "
-            "so the bot starts the repository's CI by workflow_dispatch on this branch; its checks land on this head commit.",
+            "The build check passed on this pin. A pull request opened with the workflow token gets only a held pull_request run "
+            "(`action_required`, with no checks), so the bot starts the repository's CI by workflow_dispatch on this branch instead; "
+            "its checks land on this head commit, and the held run can be left alone.",
         ]
     lines += ["", "Opened by the keel-repin action. It merges this pull request itself once CI and the web smoke are green on this exact head; "
               "a person can merge it earlier, or close it to stop that."]
