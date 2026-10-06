@@ -64,8 +64,9 @@ proofs - is a suite lane.
    leaves its organization. Token split: every Actions call (runs, jobs,
    artifacts, dispatch of the verify workflow) uses the caller's
    `github.token`, so the caller grants `actions: write`; the builder App
-   installation needs no `actions` permission, only contents, issues and
-   pull-requests write, and is used for what must start CI (verify and revert
+   installation needs no `actions` permission, only contents, issues,
+   pull-requests and workflows write (a verify or revert branch can point at
+   a commit with older workflow files), and is used for what must start CI (verify and revert
    branches, pull requests, enqueue). If the App mint or the grant probe
    fails, the handler comments the missing grant on `ops-issue` (the caller
    grants `issues: write`), writes it to the step summary and fails the job;
