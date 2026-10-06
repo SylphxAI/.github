@@ -20,7 +20,8 @@ inputs:
   base:
     description: >
       Revision the pin set is compared with. "auto" (default) is the first parent of a merge commit, which
-      is a pull request's base on the default checkout. Empty enforces every rule, for a push or a full audit.
+      is a pull request's base on the default checkout, or of a merge group's commit (a squash queue leaves
+      it one parent). Empty enforces every rule, for a push or a full audit.
     default: auto
   head:
     description: Revision whose pins are judged.
