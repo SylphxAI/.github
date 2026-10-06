@@ -140,7 +140,7 @@ on:
         type: number
         default: 20
       artifact-retention-days:
-        description: "Retention for the immutable OCI, evidence, and readback transfers."
+        description: "Retention for the readback and verification receipt artifacts (the image and evidence transfer uses the Actions cache, not artifacts)."
         required: false
         type: number
         default: 7
@@ -157,17 +157,17 @@ on:
       evidence_digest:
         description: "Immutable repository digest of the published evidence bundle."
         value: ${{ jobs.publish.outputs.evidence_digest }}
-      image_artifact:
-        description: "Workflow artifact holding the immutable image OCI layout."
-        value: ${{ jobs.compile.outputs.image_artifact }}
-      evidence_artifact:
-        description: "Workflow artifact holding the evidence bundle and its OCI artifact."
-        value: ${{ jobs.compile.outputs.evidence_artifact }}
+      image_transfer:
+        description: "Actions cache key holding the immutable image OCI layout for this run."
+        value: ${{ jobs.compile.outputs.image_transfer }}
+      evidence_transfer:
+        description: "Actions cache key holding the evidence bundle and its OCI artifact for this run."
+        value: ${{ jobs.compile.outputs.evidence_transfer }}
       readback_artifact:
-        description: "Workflow artifact holding the raw registry readback manifests."
+        description: "Workflow artifact holding the raw registry readback manifests (best effort: absent when the org artifact quota is spent)."
         value: ${{ jobs.publish.outputs.readback_artifact }}
       verify_artifact:
-        description: "Workflow artifact holding the caller verification receipt (empty when no verify-command was given)."
+        description: "Workflow artifact holding the caller verification receipt (empty when no verify-command was given; best effort: absent when the org artifact quota is spent)."
         value: ${{ jobs.publish.outputs.verify_artifact }}
     secrets:
       builder-private-key:
@@ -220,8 +220,8 @@ jobs:
       contents: read
       actions: read
     outputs:
-      image_artifact: ${{ steps.name.outputs.image_artifact }}
-      evidence_artifact: ${{ steps.name.outputs.evidence_artifact }}
+      image_transfer: ${{ steps.name.outputs.image_transfer }}
+      evidence_transfer: ${{ steps.name.outputs.evidence_transfer }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -312,11 +312,11 @@ jobs:
             printf 'BUILD_EVIDENCE_TAG=%s-%s-%s-%s\n' "${LANE_EVIDENCE_TAG_PREFIX}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
           } >> "$GITHUB_ENV"
           # One run may call this lane several times (one per image): the
-          # image's own name keeps each call's artifacts apart.
+          # image's own name keeps each call's transfers apart.
           LANE_KEY="$(printf '%s' "${LANE_IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')"
           {
-            printf 'image_artifact=image-lane-image-%s-%s-%s-%s\n' "${LANE_KEY}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
-            printf 'evidence_artifact=image-lane-evidence-%s-%s-%s-%s\n' "${LANE_KEY}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
+            printf 'image_transfer=image-lane-image-%s-%s-%s-%s\n' "${LANE_KEY}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
+            printf 'evidence_transfer=image-lane-evidence-%s-%s-%s-%s\n' "${LANE_KEY}" "${LANE_SOURCE_SHA}" "${LANE_RUN_ID}" "${LANE_RUN_ATTEMPT}"
           } >> "$GITHUB_OUTPUT"
           echo "lane_context image=${LANE_IMAGE} tag=${LANE_TAG} platforms=${LANE_PLATFORMS}"
 
@@ -463,29 +463,31 @@ jobs:
           test -n "$(ls -A "${BUILD_EVIDENCE_DIR}")"
           echo "evidence_dir_ok files=$(find "${BUILD_EVIDENCE_DIR}" -type f | wc -l)"
 
-      - name: Upload immutable image OCI layout
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
-        continue-on-error: ${{ github.event_name == 'merge_group' }}
+      # The compile -> publish transfer travels through the Actions cache, not
+      # workflow artifacts. Artifact storage is metered per billing cycle in
+      # accrued GB-hours against the organization plan, and with no paid
+      # overage every multi-GiB OCI layout kept for days spends it: live
+      # 2026-10-06 14:30Z (cloud run 37478912835, Notify Intake Image) every
+      # image lane failed with `Artifact storage quota has been hit`, and
+      # deleting artifacts does not refund hours already accrued. The cache is
+      # a separate per-repository allowance that evicts least-recently-used
+      # entries instead of refusing a write. The key carries this run and the
+      # attempt that built it; the publish job restores exactly the key this
+      # job emits (a partial re-run keeps the original compile outputs), and
+      # the publish job still walks every blob by digest before pushing.
+      - name: Save the immutable image OCI layout
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: ${{ steps.name.outputs.image_artifact }}
-          path: ${{ env.OCI_DIR }}
-          if-no-files-found: error
-          retention-days: ${{ inputs.artifact-retention-days }}
-          compression-level: 0
+          key: ${{ steps.name.outputs.image_transfer }}
+          path: ${{ runner.temp }}/image-lane/image-oci
 
-      - name: Upload evidence bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
-        continue-on-error: ${{ github.event_name == 'merge_group' }}
+      - name: Save the evidence bundle
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: ${{ steps.name.outputs.evidence_artifact }}
+          key: ${{ steps.name.outputs.evidence_transfer }}
           path: |
-            ${{ env.BUILD_EVIDENCE_DIR }}
-            ${{ env.BUILD_EVIDENCE_OCI_DIR }}
-          if-no-files-found: error
-          retention-days: ${{ inputs.artifact-retention-days }}
-          compression-level: 0
+            ${{ runner.temp }}/image-lane/evidence
+            ${{ runner.temp }}/image-lane/evidence-oci
 
       # Runs last in this job by design: earlier placement (round 1 of this
       # review) removed the credential before the build used it.
@@ -566,7 +568,7 @@ jobs:
             sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq skopeo python3
           fi
           LANE_ROOT="${RUNNER_TEMP}/image-lane"
-          mkdir -p "${LANE_ROOT}/home" "${LANE_ROOT}/publisher-transfer" "${LANE_ROOT}/readback"
+          mkdir -p "${LANE_ROOT}/home" "${LANE_ROOT}/readback"
           case "${LANE_TAG_INPUT}" in
             *[!0-9a-f]*|'') echo "FATAL: tag must be the lowercase hex source SHA, not a mutable name" >&2; exit 1 ;;
           esac
@@ -577,48 +579,29 @@ jobs:
             printf 'IMAGE=%s\n' "${LANE_IMAGE}"
             printf 'IMAGE_TAG=%s\n' "${LANE_TAG}"
             printf 'SOURCE_SHA=%s\n' "${LANE_SOURCE_SHA}"
-            printf 'OCI_DIR=%s\n' "${LANE_ROOT}/publisher-transfer/image"
-            printf 'BUILD_EVIDENCE_DIR=%s\n' "${LANE_ROOT}/publisher-transfer/evidence/evidence"
-            printf 'BUILD_EVIDENCE_OCI_DIR=%s\n' "${LANE_ROOT}/publisher-transfer/evidence/evidence-oci"
+            # The same absolute paths the compile job saved: a cache entry is
+            # restored where it was saved, and its version hashes the paths.
+            printf 'OCI_DIR=%s\n' "${LANE_ROOT}/image-oci"
+            printf 'BUILD_EVIDENCE_DIR=%s\n' "${LANE_ROOT}/evidence"
+            printf 'BUILD_EVIDENCE_OCI_DIR=%s\n' "${LANE_ROOT}/evidence-oci"
             printf 'READBACK_DIR=%s\n' "${LANE_ROOT}/readback"
             printf 'BUILD_EVIDENCE_TAG=%s-%s-%s-%s\n' "${LANE_EVIDENCE_TAG_PREFIX}" "${LANE_SOURCE_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
           } >> "$GITHUB_ENV"
           skopeo --version
           python3 -c 'import sys; assert sys.version_info >= (3, 11), "evidence tooling requires Python 3.11+"'
 
-      # The compile leg uploads attempt-scoped artifacts so a re-run can never
-      # merge bytes from two attempts. The publish leg must therefore resolve
-      # what this run actually produced instead of recomputing
-      # `…-<github.run_attempt>`: a partial re-run ("Re-run failed jobs") only
-      # re-runs the publish job, so the newest artifact still carries the
-      # attempt that built it. Live 2026-09-15 (hands run 34986604012): attempt
-      # 2 looked for `…-34986604012-2` while the run only held `…-1` and failed
-      # with `Unable to download artifact(s): Artifact not found`.
-      #
-      # The download is the resolver's own resumable transfer, not
-      # `actions/download-artifact`: one connection to the artifact blob edge
-      # can end short and still report success (live 2026-09-27: a 2.1 GiB
-      # transfer stopped after 21 minutes, exit 0, and the push then found no
-      # index.json; the same edge reset a 2.3 GiB download at 7.5 minutes on
-      # 2026-09-28). Each attempt re-resolves a fresh signed URL and resumes
-      # from the bytes already on disk, and the archive is checked against the
-      # artifact's size and sha256 digest before one byte is extracted.
-      - name: Download this run's image transfer
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LANE_IMAGE: ${{ inputs.image }}
-        run: |
-          set -euo pipefail
-          LANE_KEY="$(printf '%s' "${LANE_IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')"
-          python3 .image-lane/scripts/resolve-lane-artifact.py \
-            --repo "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" \
-            --attempt "${GITHUB_RUN_ATTEMPT}" \
-            --prefix "image-lane-image-${LANE_KEY}-${{ github.sha }}-${{ github.run_id }}" \
-            --download-to "${OCI_DIR}"
+      # Restore exactly the transfer the compile job saved (its output names
+      # the run and the attempt that built it, so a partial re-run of this job
+      # still finds it). A miss fails here, before any credential is minted.
+      - name: Restore this run's image transfer
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ needs.compile.outputs.image_transfer }}
+          path: ${{ runner.temp }}/image-lane/image-oci
+          fail-on-cache-miss: true
 
-      # The transfer above checks its own bytes, and this walks the extracted
-      # layout from index.json through every manifest to every blob by size and
+      # A restore can still extract an incomplete layout, so this walks the
+      # restored layout from index.json through every manifest to every blob by size and
       # digest: the archive can still be a valid zip of an incomplete layout,
       # and the push would then find no index.json (live 2026-09-27: the push
       # failed with no message at all).
@@ -628,26 +611,14 @@ jobs:
           set -euo pipefail
           python3 .image-lane/scripts/verify-oci-layout.py "${OCI_DIR}" --label image
 
-      - name: Resolve this run's evidence transfer
-        id: evidence_transfer
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LANE_IMAGE: ${{ inputs.image }}
-        run: |
-          set -euo pipefail
-          LANE_KEY="$(printf '%s' "${LANE_IMAGE##*/}" | tr -c 'A-Za-z0-9._-' '-')"
-          artifact="$(python3 .image-lane/scripts/resolve-lane-artifact.py \
-            --repo "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" \
-            --attempt "${GITHUB_RUN_ATTEMPT}" \
-            --prefix "image-lane-evidence-${LANE_KEY}-${{ github.sha }}-${{ github.run_id }}")"
-          printf 'name=%s\n' "${artifact}" >> "${GITHUB_OUTPUT}"
-
-      - name: Download this run's evidence transfer
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: Restore this run's evidence transfer
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: ${{ steps.evidence_transfer.outputs.name }}
-          path: ${{ runner.temp }}/image-lane/publisher-transfer/evidence
+          key: ${{ needs.compile.outputs.evidence_transfer }}
+          path: |
+            ${{ runner.temp }}/image-lane/evidence
+            ${{ runner.temp }}/image-lane/evidence-oci
+          fail-on-cache-miss: true
 
       - name: Registry auth (GitHub OIDC -> identitytoken)
         shell: bash
@@ -818,8 +789,9 @@ jobs:
       - name: Upload registry readback
         if: ${{ steps.readback.outputs.readback_artifact != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
-        continue-on-error: ${{ github.event_name == 'merge_group' }}
+        # A receipt for callers, not an input of this lane: the image is already
+        # published and read back, so a spent artifact quota must not fail it.
+        continue-on-error: true
         with:
           name: ${{ steps.readback.outputs.readback_artifact }}
           path: ${{ env.READBACK_DIR }}
@@ -862,8 +834,9 @@ jobs:
       - name: Upload verification receipt
         if: ${{ steps.verify.outputs.verify_artifact != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
-        continue-on-error: ${{ github.event_name == 'merge_group' }}
+        # A receipt for callers, not an input of this lane: the image is already
+        # published and read back, so a spent artifact quota must not fail it.
+        continue-on-error: true
         with:
           name: ${{ steps.verify.outputs.verify_artifact }}
           path: ${{ env.LANE_ROOT }}/verify
