@@ -481,6 +481,29 @@ class RustSccacheStart(unittest.TestCase):
                 if "GITHUB_ENV" in line:
                     self.assertNotIn("WEBDAV", line, path.name)
 
+    def test_static_applies_expiry_on_every_run_and_retires_the_repo_prefix(self) -> None:
+        curl = self.bin / "curl"
+        curl.write_text(
+            "#!/bin/sh\n"
+            'echo "$*" >> "$FAKE_CURL"\n'
+            'case "$*" in *-I*) printf 200;; esac\n'
+            "exit 0\n"
+        )
+        curl.chmod(0o755)
+        calls = pathlib.Path(self.tmp.name) / "curl.log"
+        self.start({**STATIC, "GITHUB_REPOSITORY_OWNER": "AcmeOrg", "FAKE_CURL": str(calls)})
+        text = calls.read_text()
+        # The bucket exists (HEAD answered 200), so it is not created again ...
+        self.assertNotIn("-X PUT http://127.0.0.1:1/ci-sccache-acmeorg -o", text)
+        # ... but its expiry is still written: the cache namespace after 14 days,
+        # the retired `<owner>/` namespace after 1.
+        life = [l for l in text.splitlines() if "?lifecycle" in l]
+        self.assertEqual(len(life), 1)
+        self.assertIn("<Prefix>org-a/repo-a/</Prefix>", life[0])
+        self.assertIn("<Days>14</Days>", life[0])
+        self.assertIn("<Prefix>AcmeOrg/</Prefix>", life[0])
+        self.assertIn("<Days>1</Days>", life[0])
+
 
 if __name__ == "__main__":
     unittest.main()
