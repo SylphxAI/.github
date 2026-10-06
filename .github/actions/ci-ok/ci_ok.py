@@ -20,6 +20,16 @@ It fails closed when a check never ran:
   on pull_request only, CI_OK_ALLOW_NONE_ON_PR; its merge group still fails);
 - every name in CI_OK_REQUIRED must be present and have succeeded (skipped,
   neutral or missing fails).
+
+Each check is judged by its latest run: the check-runs list keeps the latest
+run per check suite, so a run cancelled by a newer run of the same workflow on
+the same commit (concurrency) is still listed beside the newer one. A run in a
+superseded check suite does not count; without `actions: read`, an older
+cancelled or stale run yields to a newer run of the same name.
+
+It never depends on API budget it does not have: when the token's rate limit
+is spent until after the deadline, the gate fails at once and says so, rather
+than reading green or polling until it times out; a low budget slows polling.
 """
 from __future__ import annotations
 
@@ -29,6 +39,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+class RateLimited(Exception):
+    """The token's API budget is spent; `reset` is when it returns (epoch seconds)."""
+
+    def __init__(self, reset: float) -> None:
+        super().__init__(f"GitHub API rate limit exhausted until {time.strftime('%H:%M:%SZ', time.gmtime(reset))}")
+        self.reset = reset
+
 
 BAD = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
 ACTIONS_APP_ID = 15368  # GitHub Actions; the app every required ci-ok check is pinned to
@@ -57,8 +75,9 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     `suite_events` maps a check suite id to its workflow run's event; a suite
     whose event is known and not a gating event is ignored.
     """
-    relevant = [r for r in runs if r.get("name") not in ignore
-                and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")]
+    relevant = latest_runs([r for r in runs if r.get("name") not in ignore
+                            and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")],
+                           suite_events)
     pending = [r["name"] for r in relevant if r.get("status") != "completed"]
     if pending:
         return "pending", sorted(pending)
@@ -79,10 +98,71 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     return ("fail", sorted(bad)) if bad else ("pass", sorted(r["name"] for r in relevant))
 
 
+def _started(r: dict) -> tuple[str, int]:
+    return (r.get("started_at") or "", r.get("id") or 0)
+
+
+def latest_runs(runs: list[dict], suite_events: dict[int, str] | None) -> list[dict]:
+    """Drop runs that a newer run of the same check replaced on this commit.
+
+    A run whose check suite is superseded (a later run of the same workflow
+    and event) never counts. Without workflow-run data, an older cancelled or
+    stale run yields to a newer run of the same name; any other older run still
+    counts, since two workflows may each have a job of that name.
+    """
+    if suite_events:
+        runs = [r for r in runs if suite_events.get((r.get("check_suite") or {}).get("id")) != "superseded"]
+    newest: dict[str, dict] = {}
+    for r in runs:
+        if r.get("name") not in newest or _started(r) > _started(newest[r["name"]]):
+            newest[r["name"]] = r
+    return [r for r in runs if newest[r["name"]] is r
+            or r.get("conclusion") not in ("cancelled", "stale")]
+
+
+def needs_suite_events(runs: list[dict], ignore: set[str]) -> bool:
+    """True when a check has more than one run and one of them is bad: only
+    the workflow runs tell a superseded run from a second workflow's job."""
+    names: dict[str, int] = {}
+    for r in runs:
+        if r.get("name") not in ignore:
+            names[r["name"]] = names.get(r["name"], 0) + 1
+    return any(names.get(r.get("name"), 0) > 1 and r.get("conclusion") in BAD for r in runs)
+
+
+def rate_limited(exc: urllib.error.HTTPError, now: float | None = None) -> float | None:
+    """When `exc` is a rate-limit response, the epoch second the budget returns."""
+    now = time.time() if now is None else now
+    headers = exc.headers or {}
+    if exc.code in (403, 429) and headers.get("retry-after"):
+        return now + float(headers["retry-after"])
+    if exc.code in (403, 429) and headers.get("x-ratelimit-remaining") == "0":
+        return float(headers.get("x-ratelimit-reset") or now + 60)
+    return None
+
+
+def poll_interval(base: int, remaining: int | None) -> int:
+    """Poll at `base` seconds, and no faster than once a minute on a low budget
+    (the repository's GITHUB_TOKEN budget is shared by every concurrent job)."""
+    return max(base, 60) if remaining is not None and remaining < 200 else base
+
+
+_budget: dict[str, int | None] = {"remaining": None}
+
+
 def _get(url: str, token: str) -> dict:
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
-    return json.load(urllib.request.urlopen(req, timeout=30))
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+    except urllib.error.HTTPError as exc:
+        reset = rate_limited(exc)
+        if reset is not None:
+            raise RateLimited(reset) from exc
+        raise
+    remaining = resp.headers.get("x-ratelimit-remaining")
+    _budget["remaining"] = int(remaining) if remaining and remaining.isdigit() else None
+    return json.load(resp)
 
 
 def fetch(repo: str, sha: str, token: str) -> list[dict]:
@@ -153,13 +233,23 @@ def main() -> int:
     while time.time() < deadline:
         try:
             suites = fetch_suites(repo, sha, token)
-            events = fetch_suite_events(repo, sha, token) if started_badly(suites) else None
-            state, detail = evaluate(fetch(repo, sha, token), ignore,
+            runs = fetch(repo, sha, token)
+            events = (fetch_suite_events(repo, sha, token)
+                      if started_badly(suites) or needs_suite_events(runs, ignore) else None)
+            state, detail = evaluate(runs, ignore,
                                      os.environ.get("CI_OK_ALL_APPS", "false") != "true",
                                      suites, required,
                                      os.environ.get("CI_OK_ALLOW_NONE_ON_PR", "false") == "true"
                                      and os.environ.get("EVENT_NAME") == "pull_request",
                                      events)
+        except RateLimited as exc:
+            if exc.reset >= deadline:
+                print(f"::error::{exc}, past this gate's deadline: ci-ok cannot read the checks "
+                      "and fails closed; re-run it after the reset")
+                return 1
+            print(f"{exc}; waiting for the reset", flush=True)
+            time.sleep(max(0.0, exc.reset - time.time()) + 5)
+            continue
         except Exception as exc:  # transient API error: keep waiting
             print(f"check-runs read failed: {exc}", flush=True)
             time.sleep(interval)
@@ -176,7 +266,7 @@ def main() -> int:
                     return 1
                 print("all checks passed: " + (", ".join(detail) or "(none)"))
                 return 0
-        time.sleep(interval)
+        time.sleep(poll_interval(interval, _budget["remaining"]))
     print("::error::timed out waiting for checks")
     return 1
 

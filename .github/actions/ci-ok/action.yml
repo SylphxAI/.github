@@ -7,8 +7,10 @@ description: >
   when a check never ran: a workflow that failed to start (a GitHub Actions
   check suite with a bad conclusion and no jobs), no other check run at all, or
   a `required` check that is missing or did not succeed. Make the job
-  that runs it the required status check. Where all gating jobs share one
-  workflow, use a plain `needs:` + `if: always()` job instead.
+  that runs it the required status check. Each check is judged by its latest
+  run (a run cancelled by a newer run of its workflow does not count), and an
+  API rate limit spent past the deadline fails the gate at once. Where all
+  gating jobs share one workflow, use a plain `needs:` + `if: always()` job instead.
 
 inputs:
   token:
