@@ -48,7 +48,7 @@
     },
     {
       "class": "no-build",
-      "repos": ["Cubeage/cubeage-preview-router", "Cubeage/rank-system", "Cubeage/unity-runner", "Cubeage/h5-sdk-backend", "Cubeage/Info", "Cubeage/Policy", "Cubeage/app-ads.txt", "Cubeage/brand", "Cubeage/renovate-config", "Cubeage/solar2d-*", "Cubeage/.github",
+      "repos": ["Cubeage/cubeage-preview-router", "Cubeage/rank-system", "Cubeage/unity-runner", "Cubeage/h5-sdk-backend", "Cubeage/Info", "Cubeage/Policy", "Cubeage/app-ads.txt", "Cubeage/brand", "Cubeage/solar2d-*", "Cubeage/.github",
                 "EpiowAI/.github", "EpiowAI/brand", "EpiowAI/hris-public", "EpiowAI/renovate-config",
                 "OzyrixLtd/.github", "OzyrixLtd/brand", "OzyrixLtd/renovate-config",
                 "SylphxAI/brand", "SylphxAI/renovate-config"],
