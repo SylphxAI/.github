@@ -19,8 +19,11 @@ tag) and calls the `keel-repin` action in three modes:
    workflow token and the repository's single `owner:*` label, then starts the title's CI on that
    branch with `workflow_dispatch`.
 
-Why the dispatch: a pull request opened with the workflow token starts no `pull_request` run, so
-nothing would check it. The dispatched run's check runs attach to the branch head, which is the pull
+Why the dispatch: a pull request opened with the workflow token gets only a `pull_request` run
+that GitHub holds for a maintainer (conclusion `action_required`, a check suite with no check
+runs; GitHub's behaviour since 2026-06-11), so nothing would check it unless someone clicks. The
+dispatch needs no click and the held run is left alone: it posts no check run, so `settle` (which
+reads check runs only) neither waits on it nor counts it red. The dispatched run's check runs attach to the branch head, which is the pull
 request head, and a ruleset's required checks match by check name and the GitHub Actions app, not
 by event, so `check` and `ci-ok` on that commit satisfy them. Every workflow named in
 `ci-workflows` must list `workflow_dispatch`; the action waits for each run to appear on the head
@@ -30,7 +33,12 @@ before it starts the next, so an aggregate `ci-ok` workflow listed last sees the
    earned it, and tells its owner when it cannot.
 
 A build that breaks on the new tag (an API change, say) still opens the pull request, as a draft
-with the last lines of the error; CI is not started for it, and it is never merged. The bot calls no
+with the last lines of the error; CI is not started for it, and it is never merged. The two common
+lock-refresh breaks are handled: a crate the lock holds at two Keel commits (the title's pin and a
+title kit's own pin) is updated by its full package id (`git+URL?rev=OLD#name@version`), so cargo
+does not call it ambiguous and the kit's commit is left as it is; and when the build cannot fetch a
+private repository the draft names it, because every private git dependency of every tracked
+`Cargo.lock` (a sub-crate's own lock included) must be in `extra-read-repos`. The bot calls no
 pull-request approval API. A branch that exists is left alone, so a repeat run never overwrites a fix
 someone pushed to it.
 
@@ -106,7 +114,7 @@ check; edits it makes under `.github/workflows/` are discarded.
 | `tag` | A Keel tag, or `latest` (the newest `keel-verified-*`). |
 | `dry-run` | Print the pull request it would open and the workflows it would start; push nothing. Rebuilds even if the branch exists. |
 | `reader-app-id`, `reader-app-key` | A read-only App that can read the private Keel repository. |
-| `extra-read-owner`, `extra-read-repos` | A second private source the build fetches, such as a title kit. |
+| `extra-read-owner`, `extra-read-repos` | Private repositories of one owner that the lock refresh or the build fetches, such as a title kit; list every private git dependency of every tracked `Cargo.lock`. |
 | `check-command`, `check-dir` | The build check. Default `cargo check`. |
 | `ci-workflows` | Workflow files started on the branch, in order. Default `ci.yml`. The web smoke must be among the checks they produce. |
 | `required-checks` | settle: checks that must have succeeded on the head. Default `ci-ok web-smoke`. |
@@ -116,7 +124,9 @@ check; edits it makes under `.github/workflows/` are discarded.
 
 ## Tests
 
-`python -m unittest tests.test_keel_repin`: pin discovery and rewrite, poll (ahead, behind, pinned,
+`python -m unittest tests.test_keel_repin`: pin discovery and rewrite, the lock refresh of a crate
+held at two Keel commits (against real cargo when it is installed), the draft naming a private
+repository the build could not read, poll (ahead, behind, pinned,
 pull request exists), the build check, the draft pull request, supersession of older repin pull
 requests, CI dispatch order, workflow files named and never edited, settle (merges only on every
 required check green on the exact head and pinned to it; waits on a missing or unfinished check; red
