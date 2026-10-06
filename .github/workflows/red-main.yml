@@ -1037,7 +1037,8 @@ jobs:
         require_grant() {
           local verdict
           verdict=$(grant_of "$1")
-          if [ "$verdict" != "granted" ]; then
+          # The probe writes `granted` (token mode) or `granted (<holder>)`.
+          if [ "$verdict" != "granted" ] && [ "${verdict#granted (}" = "$verdict" ]; then
             printf '::error::%s does not grant %s (grant probe: %s); %s was not performed\n' \
               "$GRANT_HOLDER" "$2" "${verdict:-unknown}" "$3" >&2
             state_set blocked "$2"
@@ -2435,14 +2436,21 @@ jobs:
           fi
           dispatch() {
             local ref="$1" payload
+            # return_run_details: without it the forge answers 204 with no
+            # body, the run id is empty and every candidate reads as timed out.
             if [ -n "$dispatch_lanes" ] && [ -n "$LANE_INPUT" ]; then
               payload=$(jq -n --arg ref "$ref" --arg key "$LANE_INPUT" --arg value "$dispatch_lanes" \
-                '{ref: $ref, inputs: {($key): $value}}')
+                '{ref: $ref, inputs: {($key): $value}, return_run_details: true}')
             else
-              payload=$(jq -n --arg ref "$ref" '{ref: $ref}')
+              payload=$(jq -n --arg ref "$ref" '{ref: $ref, return_run_details: true}')
             fi
-            gha api --method POST "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/dispatches" \
-              --input - <<<"$payload" --jq '.workflow_run_id'
+            local id
+            id=$(gha api --method POST "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/dispatches" \
+              --input - <<<"$payload" --jq '.workflow_run_id // empty') || return 1
+            case "$id" in
+              ''|*[!0-9]*) echo "the dispatch returned no run id ('$id')" >&2; return 1 ;;
+            esac
+            printf '%s\n' "$id"
           }
           # Every candidate at once: a branch and a verify run each.
           : >"$WORK_DIR/candidates.tsv"
