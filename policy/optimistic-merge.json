@@ -18,6 +18,10 @@
       "waives": ["*"],
       "meaning": "A shipped original kept as it is; no change flows through its queue."
     },
+    "advisory-fork": {
+      "waives": ["*"],
+      "meaning": "A GitHub security-advisory temporary private fork: its fix lands in the parent repository through the advisory, never through the fork's own queue, and GitHub deletes the fork when the advisory is published or closed."
+    },
     "hands-off": {
       "waives": ["*"],
       "meaning": "A delivered customer repository or a protected original. Its files are never read."
@@ -75,6 +79,13 @@
       "repos": ["SylphxAI/bgca", "Cubeage/hk-mahjong-tycoon", "SylphxAI/openclaw-sylphx"],
       "reason": "Delivered customer repository (bgca), protected original (hk-mahjong-tycoon) and the hosted stopgap (openclaw-sylphx): no work unless their owner asks.",
       "owner": "CEO",
+      "review": "2027-04-04"
+    },
+    {
+      "class": "advisory-fork",
+      "repos": ["SylphxAI/*-ghsa-????-????-????", "Cubeage/*-ghsa-????-????-????", "EpiowAI/*-ghsa-????-????-????", "OzyrixLtd/*-ghsa-????-????-????"],
+      "reason": "GitHub names a security advisory's temporary private fork <repo>-ghsa-<id>; it carries a copy of the parent's workflows and settings but no queue of its own, and the parent's pipeline gates the fix when the advisory merges it.",
+      "owner": "Build",
       "review": "2027-04-04"
     },
     {
