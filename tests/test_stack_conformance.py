@@ -256,6 +256,110 @@ class AgentRuntimePolicyTest(unittest.TestCase):
             seen.add(key)
 
 
+KNOWLEDGE_SQL = "CREATE TABLE knowledge_entities (id uuid PRIMARY KEY, title text);\n"
+
+
+class KnowledgeTableGuardTest(unittest.TestCase):
+    """test knowledge-table-guard: a new knowledge or CRM table fails, because
+    the company's graph and customer records are Sylphx Knowledge
+    (SylphxAI/cloud ADR-01M4AJK2TXTJWZ4X5B06HPT0R4, D6)."""
+
+    def test_the_named_families_are_found(self):
+        cases = {
+            "CREATE TABLE kg_nodes (id uuid);": ["kg_nodes"],
+            "CREATE TABLE knowledge_edges (id uuid);": ["knowledge_edges"],
+            'create table if not exists "crm_accounts" (id uuid);': ["crm_accounts"],
+            "CREATE TABLE entities (id uuid);": ["entities"],
+            "CREATE TABLE relations (id uuid);": ["relations"],
+            "CREATE TABLE contacts (id uuid);": ["contacts"],
+            "CREATE TABLE customer_profiles (id uuid);": ["customer_profiles"],
+            "CREATE UNLOGGED TABLE public.kg_edges (id uuid);": ["kg_edges"],
+        }
+        for sql, tables in cases.items():
+            with self.subTest(sql=sql):
+                found = sc.knowledge_tables("m/1.sql", sql)
+                self.assertEqual(found, [f"knowledge-table m/1.sql {t}" for t in tables])
+
+    def test_everyday_tables_are_not_found(self):
+        for sql in ("CREATE TABLE items (id uuid, status text);",
+                    "CREATE TABLE crmbridge (id uuid);",
+                    "CREATE TABLE knowledge (id uuid);",
+                    "CREATE TABLE contactless (id uuid);",
+                    "CREATE TABLE bot_entities (id uuid);"):
+            with self.subTest(sql=sql):
+                self.assertEqual(sc.knowledge_tables("m/1.sql", sql), [])
+
+    def test_a_new_table_fails_and_a_recorded_one_passes(self):
+        policy = {"owner_repos": ["SylphxAI/cloud"], "baseline": [
+            {"repo": "SylphxAI/agents", "table": "knowledge_entries", "expires": "2026-11-30"}]}
+        today = datetime.date(2026, 10, 7)
+        errors, _ = sc.decide_knowledge(
+            ["knowledge-table m/1.sql knowledge_entries", "knowledge-table m/1.sql crm_accounts"],
+            "SylphxAI/agents", policy, today)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("crm_accounts", errors[0])
+        self.assertIn("new knowledge or CRM table", errors[0])
+
+    def test_an_allowance_expires(self):
+        policy = {"owner_repos": [], "baseline": [
+            {"repo": "o/app", "table": "knowledge_entries", "expires": "2026-11-30"}]}
+        found = ["knowledge-table m/1.sql knowledge_entries"]
+        self.assertEqual(sc.decide_knowledge(found, "o/app", policy, datetime.date(2026, 10, 7)), ([], []))
+        errors, _ = sc.decide_knowledge(found, "o/app", policy, datetime.date(2026, 12, 1))
+        self.assertIn("expired on 2026-11-30", errors[0])
+
+    def test_an_allowance_is_per_repository(self):
+        policy = {"owner_repos": [], "baseline": [
+            {"repo": "o/app", "table": "knowledge_entries", "expires": "2026-11-30"}]}
+        errors, _ = sc.decide_knowledge(
+            ["knowledge-table m/1.sql knowledge_entries"], "o/other", policy, datetime.date(2026, 10, 7))
+        self.assertEqual(len(errors), 1)
+
+    def test_the_platform_owner_is_not_checked(self):
+        policy = {"owner_repos": ["SylphxAI/cloud"], "baseline": []}
+        self.assertEqual(sc.decide_knowledge(
+            ["knowledge-table m/1.sql knowledge_nodes"], "SylphxAI/cloud", policy, datetime.date(2026, 10, 7)),
+            ([], []))
+
+    def test_a_gone_table_is_a_notice(self):
+        policy = {"owner_repos": [], "baseline": [
+            {"repo": "o/app", "table": "knowledge_entries", "expires": "2026-11-30"}]}
+        errors, notices = sc.decide_knowledge([], "o/app", policy, datetime.date(2026, 10, 7),
+                                              present=set())
+        self.assertEqual(errors, [])
+        self.assertIn("no longer found", notices[0])
+
+    def test_a_table_still_on_the_tree_is_not_a_notice(self):
+        policy = {"owner_repos": [], "baseline": [
+            {"repo": "o/app", "table": "knowledge_entries", "expires": "2026-11-30"}]}
+        errors, notices = sc.decide_knowledge([], "o/app", policy, datetime.date(2026, 10, 7),
+                                              present={"knowledge_entries"})
+        self.assertEqual((errors, notices), ([], []))
+
+    def test_a_down_migration_is_not_checked(self):
+        self.assertEqual(sc.knowledge_tables("m/1.down.sql", KNOWLEDGE_SQL), [])
+
+    def test_create_table_as_is_not_checked(self):
+        self.assertEqual(sc.knowledge_tables("m/1.sql", "CREATE TABLE knowledge_entries AS SELECT 1;"), [])
+
+
+class KnowledgeTablePolicyTest(unittest.TestCase):
+    """The shipped policy file is well formed."""
+
+    def test_policy_file(self):
+        policy = json.loads(sc.KNOWLEDGE_POLICY.read_text())
+        self.assertEqual(policy["owner_repos"], ["SylphxAI/cloud"])
+        seen = set()
+        for entry in policy["baseline"]:
+            self.assertRegex(entry["repo"], r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+            self.assertRegex(entry["table"], r"^[a-z_][a-z0-9_]*$")
+            datetime.date.fromisoformat(entry["found"])
+            datetime.date.fromisoformat(entry["expires"])
+            key = (entry["repo"], entry["table"])
+            self.assertNotIn(key, seen)
+            seen.add(key)
+
+
 FIXTURES = ROOT / "tests" / "fixtures" / "work-obligations"
 AGENT_TASKS = (FIXTURES / "0073_agent_tasks.up.sql").read_text()
 MIGRATION = "crates/api/migrations/0073_agent_tasks.up.sql"
@@ -415,6 +519,36 @@ class GitTest(unittest.TestCase):
         self.git("mv", MIGRATION, "crates/api/migrations/0073_renamed.up.sql")
         self.git("commit", "-q", "-m", "rename")
         self.assertEqual(self.check(headed, self.git("rev-parse", "HEAD"))[0], 0)
+
+    def test_knowledge_table_guard_over_commits(self):
+        """A fixture pull request adding a knowledge or CRM table fails; a
+        table already on the base (a recorded instance) passes."""
+        policy = pathlib.Path(self.repo, "..", pathlib.Path(self.repo).name + "-knowledge.json").resolve()
+        policy.write_text(json.dumps({"owner_repos": ["o/platform"], "baseline": [
+            {"repo": "o/app", "table": "knowledge_entries",
+             "found": "2026-10-07", "expires": "2026-11-30"}]}))
+        self.addCleanup(policy.unlink)
+
+        def check(base, head, repository="o/app", today="2026-10-07"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = sc.main(["check", "--repo", self.repo, "--base", base, "--head", head,
+                              "--repository", repository, "--knowledge-policy", str(policy),
+                              "--today", today])
+            return rc, out.getvalue()
+
+        base = self.commit({"db/migrations/1.sql": "CREATE TABLE knowledge_entries (id uuid);\n"})
+        self.assertEqual(check(base, base)[0], 0)
+
+        added = self.commit({"db/migrations/2.sql": "CREATE TABLE crm_accounts (id uuid);\n"})
+        rc, out = check(base, added)
+        self.assertEqual(rc, 1)
+        self.assertIn("knowledge-table db/migrations/2.sql crm_accounts", out)
+        self.assertIn("ADR-01M4AJK2TXTJWZ4X5B06HPT0R4", out)
+        self.assertEqual(check(base, added, repository="o/platform")[0], 0)
+
+        allowed = self.commit({"db/migrations/3.sql": "CREATE TABLE knowledge_entries (id uuid);\n"})
+        self.assertEqual(check(added, allowed)[0], 0)
 
     def test_all_counts_clean_checkouts(self):
         self.commit({"sylphx.toml": TOML.format(engine="atlas", dockerfile="none")})

@@ -115,7 +115,9 @@ jobs:
   # than atlas fails unless .github/stack-departures.txt, which may only
   # shrink, already lists it; an agent-runtime part Sylphx Agents owns fails
   # unless SylphxAI/.github policy/agent-runtime.json allows it until a date;
-  # a new work-engine table needs a header saying whose records it holds.
+  # a new work-engine table needs a header saying whose records it holds; a
+  # knowledge-graph or CRM table fails unless SylphxAI/.github
+  # policy/knowledge-tables.json allows it until a date.
   stack:
     needs: plan
     if: fromJSON(needs.plan.outputs.run).stack
