@@ -40,8 +40,9 @@ scripts/public_repo_consumers.py --json     # machine-readable
 
 `.github/workflows/public-repo-consumers.yml` runs it every Monday at 03:17 UTC
 (and on demand) with the job's own read-only token (public repositories, their
-custom properties and READMEs are public) and the org npm token, deprecates the
-listed npm packages, writes the lists to the run summary and fails while
+custom properties and READMEs are public), the org npm token and the org crates.io
+token (`CARGO_REGISTRY_TOKEN`, shared with this repository), deprecates the
+listed npm packages and yanks the listed crates, writes the lists to the run summary and fails while
 anything is still listed. The internal work tracker runs the same script weekly
 and files one keep, merge or archive decision per listed repository.
 
@@ -67,7 +68,7 @@ The same script lists the exceptions after the consumer list:
 | Line | Meaning | Fix |
 | --- | --- | --- |
 | `NO-NOTICE SylphxAI/<repo>` | archived with no status line | unarchive, prefix the description with `Archived: no longer maintained.` (and the alternative, if any), archive again; an archived repository is read-only |
-| `UNDEPRECATED <registry> <package>` | a package whose source (`repository` URL, renamed owners resolved through GitHub's redirect) is an archived repository, still unmarked | npm: the weekly run deprecates it itself (`--fix-npm`, org `NPM_TOKEN`); pub.dev: a publisher admin marks it discontinued; crates.io: `cargo yank` each version |
+| `UNDEPRECATED <registry> <package>` | a package whose source (`repository` URL, renamed owners resolved through GitHub's redirect) is an archived repository, still unmarked | npm: the weekly run deprecates it itself (`--fix-npm`, org `NPM_TOKEN`); crates.io: the weekly run yanks every version itself (`--fix-crates`, org `CARGO_REGISTRY_TOKEN`; `cargo yank --undo` reverses); pub.dev: a publisher admin marks it discontinued on the package's Admin tab (pub.dev accepts no token for package options) |
 
 Packages are found from the npm organization `sylphx` and its maintainers'
 packages, the pub.dev publisher `sylphx.com`, and the crates.io owner of the

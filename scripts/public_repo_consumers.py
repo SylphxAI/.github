@@ -17,7 +17,7 @@ are hands-off.
 
 Usage:
   scripts/public_repo_consumers.py [--org SylphxAI] [--json] [--input repos.json]
-      [--packages packages.json] [--readmes readmes.json] [--fix-npm]
+      [--packages packages.json] [--readmes readmes.json] [--fix-npm] [--fix-crates]
 
 Reads the organization's repository list with `gh api --paginate` (each repo
 object carries `custom_properties`), or a saved list with --input; the npm,
@@ -25,6 +25,10 @@ pub.dev and crates.io package lists from the registries' public APIs, or a saved
 list with --packages; README text with `gh api repos/<org>/<repo>/readme`, or a
 saved map with --readmes. --fix-npm runs `npm deprecate` on each listed npm
 package (needs an npm token with write access) and reports what is left.
+--fix-crates yanks every unyanked version of each listed crate through the
+crates.io API (token in CARGO_REGISTRY_TOKEN, a crate owner's token with the
+yank scope); `cargo yank --undo` reverses it. pub.dev has no token path for its
+Discontinued option: a publisher admin sets it on the package's Admin tab.
 
 Exit: 0 nothing listed, 1 at least one repository or package is listed
 (MISSING, NO-NOTICE or UNDEPRECATED lines), 2 a list or the properties could not
@@ -35,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -284,6 +289,57 @@ def deprecate_npm(packages: list[dict], org: str) -> list[dict]:
     return left
 
 
+def crates_send(method: str, url: str, token: str) -> int:
+    """One authenticated crates.io call; the HTTP status (0 when unreachable)."""
+    req = urllib.request.Request(url, method=method, headers={
+        "User-Agent": USER_AGENT, "Accept": "application/json", "Authorization": token})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except OSError:
+        return 0
+
+
+def yank_crates(packages: list[dict], token: str | None,
+                versions: Callable[[str], list[dict]] | None = None,
+                send: Callable[[str, str, str], int] = crates_send,
+                pause: float = 1.0) -> list[dict]:
+    """Yank every unyanked version of each listed crate; return the packages still unmarked.
+
+    A crate counts as marked once each of its versions is yanked (crates.io has no
+    crate-level deprecation). Without a token every crate stays listed."""
+    if versions is None:
+        def versions(name: str) -> list[dict]:
+            doc = http_json(f"{CRATES}/crates/{urllib.parse.quote(name)}/versions") or {}
+            return doc.get("versions", [])
+    left = []
+    for p in packages:
+        if p["registry"] != "crates":
+            left.append(p)
+            continue
+        if not token:
+            print(f"public-repo-consumers: no CARGO_REGISTRY_TOKEN, cannot yank {p['name']}", file=sys.stderr)
+            left.append(p)
+            continue
+        ok = True
+        for v in versions(p["name"]):
+            if v.get("yanked"):
+                continue
+            url = f"{CRATES}/crates/{urllib.parse.quote(p['name'])}/{urllib.parse.quote(v['num'])}/yank"
+            status = send("DELETE", url, token)
+            time.sleep(pause)  # crates.io asks for at most one request per second
+            if status == 200:
+                print(f"YANKED crates {p['name']} {v['num']}")
+            else:
+                print(f"public-repo-consumers: yank {p['name']} {v['num']} failed: HTTP {status}", file=sys.stderr)
+                ok = False
+        if not ok:
+            left.append(p)
+    return left
+
+
 def load(path: str) -> object:
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
@@ -296,6 +352,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--packages", help="a saved package list (JSON array of {registry, name, repo_url, marked})")
     ap.add_argument("--readmes", help="a saved README map (JSON object: repository name -> text)")
     ap.add_argument("--fix-npm", action="store_true", help="npm deprecate each listed npm package")
+    ap.add_argument("--fix-crates", action="store_true",
+                    help="yank every version of each listed crate (token in CARGO_REGISTRY_TOKEN)")
     ap.add_argument("--json", action="store_true", help="print the result as JSON")
     args = ap.parse_args(argv)
     try:
@@ -319,6 +377,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.fix_npm and unmarked:
         unmarked = deprecate_npm(unmarked, args.org)
+    if args.fix_crates and unmarked:
+        unmarked = yank_crates(unmarked, os.environ.get("CARGO_REGISTRY_TOKEN"))
     if args.json:
         print(json.dumps({"org": args.org, "property": PROPERTY, "missing": missing,
                           "archived_without_notice": no_notice, "undeprecated_packages": unmarked}, indent=2))
