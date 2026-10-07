@@ -105,7 +105,10 @@ _buildcache() {
   echo "::add-mask::$mint"
   endpoint="$(jq -er '.env.SCCACHE_WEBDAV_ENDPOINT | strings' "$tmp" 2>/dev/null)" || endpoint=""
   rm -f "$tmp"
-  if ! [[ "$endpoint" =~ ^https?://[A-Za-z0-9.:/_~-]+$ ]] || ! [[ "$mint" =~ ^[A-Za-z0-9._~+/=-]{1,8192}$ ]]; then
+  # Length apart from the pattern: macOS's regex library caps a bounded repeat
+  # at 255 (RE_DUP_MAX), so {1,8192} would never match there.
+  if ! [[ "$endpoint" =~ ^https?://[A-Za-z0-9.:/_~-]+$ ]] || [ "${#mint}" -gt 8192 ] \
+    || ! [[ "$mint" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
     _buildcache_warn "token exchange: invalid response"
     return 1
   fi

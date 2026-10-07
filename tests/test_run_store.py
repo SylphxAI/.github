@@ -32,6 +32,7 @@ class Fake:
         self.requests: list[tuple[str, str, str | None]] = []
         self.put_mode = "ok"  # ok | dropped | exists | full
         self.read_misses = 0  # answer this many GETs 404 before serving
+        self.minted = MINTED  # the run token the exchange answers with
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -81,7 +82,10 @@ class Fake:
                 self._reply(
                     200,
                     json.dumps(
-                        {"token": MINTED, "env": {"TURBO_API": base, "TURBO_TOKEN": MINTED, "TURBO_TEAM": "ci"}}
+                        {
+                            "token": owner.minted,
+                            "env": {"TURBO_API": base, "TURBO_TOKEN": owner.minted, "TURBO_TEAM": "ci"},
+                        }
                     ).encode(),
                 )
 
@@ -254,6 +258,14 @@ class RunStoreTest(unittest.TestCase):
         rc, log, _ = self.run_store("put", "a/b", self.dir)
         self.assertEqual(rc, 1)
         self.assertIn("name must be", log)
+
+    def test_minted_token_over_8192_is_refused(self) -> None:
+        self.fake.minted = "t" * 8193
+        src = self.dir / "f.txt"
+        src.write_text("x")
+        rc, log, _ = self.run_store("put", "f", src)
+        self.assertEqual(rc, 1)
+        self.assertIn("token exchange: invalid response", log)
 
 
 if __name__ == "__main__":
