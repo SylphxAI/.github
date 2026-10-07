@@ -13,7 +13,7 @@ the pieces it lacks.
 
 | Piece | Use |
 | --- | --- |
-| [`workflows/changes.yml`](../.github/workflows/changes.yml) | Reusable path filter. Outputs `code`, `docs`, `workflows`. Gate heavy jobs on `needs.changes.outputs.code == 'true'`. Merge groups and pushes report everything changed. Override the `code` input (a JSON array of globs) when the repository's code is narrower. |
+| [`workflows/changes.yml`](../.github/workflows/changes.yml) | Reusable path filter. Outputs `code`, `docs`, `workflows`. Gate heavy jobs on `needs.changes.outputs.code == 'true'`. A merge group is diffed (base to head commit) like its pull request; pushes, and any diff that cannot be computed, report everything changed. Override the `code` input (a JSON array of globs) when the repository's code is narrower. |
 | [`actions/cache-toolchain`](../.github/actions/cache-toolchain/action.yml) | Cache preset keyed per toolchain, OS, arch and lockfile: `cargo` (registry), `bun`, `npm`, `pnpm`, `gradle`, `unity` (Library). |
 | [`actions/rust-sccache`](../.github/actions/rust-sccache/action.yml) | Compiled Rust output cache. Use it with `cache-toolchain` `cargo`. |
 | [`actions/needs-pass`](../.github/actions/needs-pass/action.yml) | The `ci-ok` verdict: skipped passes, failed or cancelled fails. |

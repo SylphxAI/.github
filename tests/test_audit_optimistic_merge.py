@@ -436,6 +436,13 @@ class PolicyTest(unittest.TestCase):
                            ("Cubeage/Big2TycoonHk", "frozen-legacy")):
             self.assertEqual(audit.exemption_for(POLICY, repo, today)[0]["class"], kind, repo)
 
+    def test_a_security_advisory_fork_is_exempt_and_its_parent_is_not(self) -> None:
+        today = datetime.date(2026, 10, 6)
+        self.assertEqual(audit.exemption_for(POLICY, "SylphxAI/puzzled-ghsa-j965-ffwx-7vxf", today)[0]["class"],
+                         "advisory-fork")
+        self.assertIsNone(audit.exemption_for(POLICY, "SylphxAI/puzzled", today)[0])
+        self.assertIsNone(audit.exemption_for(POLICY, "SylphxAI/puzzled-ghsa-notes", today)[0])
+
     def test_an_exemption_needs_reason_owner_and_review(self) -> None:
         for field in ("reason", "owner", "review"):
             path = self.write(lambda p, f=field: p["exemptions"][0].pop(f))

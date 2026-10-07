@@ -11,6 +11,17 @@
    was created, and the forge answered 422 "No ref found" for it (its ref
    reads lag a write by seconds), so the trace stopped with no culprit. That
    one answer is retried briefly; any other failure still stops at once.
+4. The "No ref found" answer was in fact a ref that never existed: the App
+   token lacked `workflows: write`, so the forge refused the ref create for a
+   commit whose workflow files differ from the default branch's, and the
+   create's error was discarded. The token now asks for workflows write, and
+   on the App path a refused create stops with the forge's answer instead of
+   dispatching.
+5. The candidate poll swallowed every status-read error, so a run that could
+   not be read looked like one still running: the trace waited out its whole
+   deadline and every candidate became a timeout. A failed read is retried at
+   the next poll, and three in a row for one run stop the trace with the
+   forge's answer.
 """
 
 from __future__ import annotations
@@ -147,6 +158,164 @@ class DispatchRefLagTest(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(calls, 1)
         self.assertIn("no run id", err)
+
+
+def run_candidate_loop(post: str, patch: str, token_mode: str) -> tuple[int, str, list[str]]:
+    """Run the trace step's candidate loop with stub `gh` answers for the ref POST and PATCH.
+
+    Returns (exit code, summary text, calls made: `gh POST`, `gh PATCH`, `dispatch <ref>`).
+    """
+    trace = step("Trace the culprit among the unverified commits")
+    start = trace.index("          # Every candidate at once")
+    end = trace.index("          # One shared deadline")
+    body = "\n".join(line[10:] for line in trace[start:end].splitlines())
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = f"""
+calls="{tmp}/calls"; : >"$calls"
+answer() {{ case "$1" in ok) return 0 ;; *) printf '%s\\n' "$1" >&2; return 1 ;; esac; }}
+gh() {{
+  echo "gh $3" >>"$calls"
+  case "$3" in POST) answer "$POST_ANSWER" ;; PATCH) answer "$PATCH_ANSWER" ;; esac
+}}
+dispatch() {{ echo "dispatch $1" >>"$calls"; echo 7; }}
+say() {{ printf '%s\\n' "$*" >>"{tmp}/summary.md"; }}
+state_set() {{ :; }}
+REPO=o/r WORK_DIR={tmp} STATE_DIR={tmp} GITHUB_OUTPUT={tmp}/out total=1
+rows=$(printf 'abc123def\\tsubject\\n')
+"""
+        script = "set -euo pipefail\n" + stub + body + "\necho reached-poll\n"
+        env = {**os.environ, "POST_ANSWER": post, "PATCH_ANSWER": patch, "TOKEN_MODE": token_mode}
+        done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+        summary = Path(tmp, "summary.md").read_text() if Path(tmp, "summary.md").exists() else ""
+        calls = Path(tmp, "calls").read_text().split("\n")
+        return done.returncode, summary + done.stdout, [c for c in calls if c]
+
+
+REFUSED = "gh: Resource not accessible by integration (HTTP 403)"
+
+
+class RefCreateTest(unittest.TestCase):
+    def test_the_app_token_asks_for_workflows_write(self) -> None:
+        mint = step("Mint the App token for the caller's repository")
+        for surface in ("contents", "issues", "pull-requests", "workflows"):
+            self.assertIn(f"permission-{surface}: write", mint)
+
+    def test_a_created_ref_is_dispatched(self) -> None:
+        code, out, calls = run_candidate_loop("ok", "ok", "no")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["gh POST", "dispatch refs/heads/sylphx-verify/abc123def"])
+        self.assertIn("reached-poll", out)
+
+    def test_a_stale_ref_is_moved_then_dispatched(self) -> None:
+        code, _out, calls = run_candidate_loop("gh: Reference already exists (HTTP 422)", "ok", "no")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["gh POST", "gh PATCH", "dispatch refs/heads/sylphx-verify/abc123def"])
+
+    def test_a_refused_create_on_the_app_path_stops_with_its_error(self) -> None:
+        code, out, calls = run_candidate_loop(REFUSED, "gh: Reference does not exist (HTTP 422)", "no")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["gh POST", "gh PATCH"])
+        self.assertIn("could not be created", out)
+        self.assertIn("HTTP 403", out)
+        self.assertIn("Reference does not exist", out)
+        self.assertNotIn("reached-poll", out)
+
+    def test_a_refused_create_in_token_mode_skips_the_trace(self) -> None:
+        code, out, calls = run_candidate_loop(REFUSED, REFUSED, "yes")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["gh POST", "gh PATCH"])
+        self.assertIn("Trace skipped", out)
+        self.assertNotIn("reached-poll", out)
+
+
+def run_poll(answers: dict[str, list[str]], timeout_minutes: int = 60, max_polls: int = 50) -> tuple[int, str, dict[str, str]]:
+    """Run the trace step's candidate poll against a stub `gha`.
+
+    `answers` maps a run id to the replies of its successive status reads:
+    `ok <status>\t<conclusion>` or `err <message>`; the last reply repeats.
+    Returns (exit code, summary and stdout, conclusion per run id).
+    """
+    trace = step("Trace the culprit among the unverified commits")
+    start = trace.index("          # One shared deadline")
+    end = trace.index("          for sha in \"${order[@]}\"; do\n            printf")
+    body = "\n".join(line[10:] for line in trace[start:end].splitlines())
+    with tempfile.TemporaryDirectory() as tmp:
+        for run, replies in answers.items():
+            Path(tmp, f"answers-{run}").write_text("\n".join(replies) + "\n")
+        shas = [f"sha{run}" for run in answers]
+        stub = f"""
+echo 0 >"{tmp}/polls"
+gha() {{
+  local run="${{2##*/}}" n polls
+  polls=$(( $(cat "{tmp}/polls") + 1 )); echo "$polls" >"{tmp}/polls"
+  [ "$polls" -le {max_polls} ] || {{ echo "too many polls" >&2; exit 9; }}
+  n=$(( $(cat "{tmp}/n-$run" 2>/dev/null || echo 0) + 1 )); echo "$n" >"{tmp}/n-$run"
+  local total a; total=$(wc -l <"{tmp}/answers-$run")
+  [ "$n" -le "$total" ] || n=$total
+  a=$(sed -n "${{n}}p" "{tmp}/answers-$run")
+  case "$a" in
+    ok\\ *) printf '%b\\n' "${{a#ok }}" ;;
+    *) printf '%s\\n' "${{a#err }}" >&2; return 1 ;;
+  esac
+}}
+sleep() {{ SECONDS=$((SECONDS + $1)); }}
+say() {{ printf '%s\\n' "$*" >>"{tmp}/summary.md"; }}
+REPO=o/r WORK_DIR={tmp} CANDIDATE_TIMEOUT_MINUTES={timeout_minutes}
+declare -A run_of=() conclusion_of=()
+order=({" ".join(shas)})
+"""
+        stub += "".join(f"run_of[sha{run}]={run}\n" for run in answers)
+        tail = "\nfor sha in \"${order[@]}\"; do echo \"result ${run_of[$sha]} ${conclusion_of[$sha]}\"; done\n"
+        script = "set -euo pipefail\n" + stub + body + tail
+        done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        summary = Path(tmp, "summary.md").read_text() if Path(tmp, "summary.md").exists() else ""
+        results = {}
+        for line in done.stdout.splitlines():
+            if line.startswith("result "):
+                parts = line.split(" ", 2)
+                results[parts[1]] = parts[2] if len(parts) > 2 else ""
+        return done.returncode, summary + done.stdout + done.stderr, results
+
+
+DONE_OK = "ok completed\\tsuccess"
+DONE_RED = "ok completed\\tfailure"
+RUNNING = "ok in_progress\\t"
+GONE = "err gh: Not Found (HTTP 404)"
+
+
+class CandidatePollTest(unittest.TestCase):
+    def test_concluded_runs_are_read(self) -> None:
+        code, _out, results = run_poll({"11": [RUNNING, DONE_OK], "12": [DONE_RED]})
+        self.assertEqual(code, 0)
+        self.assertEqual(results, {"11": "success", "12": "failure"})
+
+    def test_one_failed_read_is_retried(self) -> None:
+        code, _out, results = run_poll({"11": [GONE, DONE_OK]})
+        self.assertEqual(code, 0)
+        self.assertEqual(results, {"11": "success"})
+
+    def test_a_run_that_cannot_be_read_stops_the_trace_with_its_error(self) -> None:
+        code, out, results = run_poll({"11": [DONE_OK], "12": [GONE]})
+        self.assertEqual(code, 1)
+        self.assertIn("could not be read three times in a row", out)
+        self.assertIn("HTTP 404", out)
+        self.assertIn("verify run 12", out)
+        self.assertEqual(results, {})
+
+    def test_failures_must_be_consecutive(self) -> None:
+        code, _out, results = run_poll({"11": [GONE, GONE, RUNNING, GONE, GONE, DONE_OK]})
+        self.assertEqual(code, 0)
+        self.assertEqual(results, {"11": "success"})
+
+    def test_an_answer_without_a_status_counts_as_a_failed_read(self) -> None:
+        code, out, _results = run_poll({"11": ["ok \\t"]})
+        self.assertEqual(code, 1)
+        self.assertIn("could not be read", out)
+
+    def test_a_run_still_running_at_the_deadline_is_a_timeout(self) -> None:
+        code, _out, results = run_poll({"11": [RUNNING], "12": [DONE_OK]}, timeout_minutes=2)
+        self.assertEqual(code, 0)
+        self.assertEqual(results, {"11": "timeout", "12": "success"})
 
 
 if __name__ == "__main__":

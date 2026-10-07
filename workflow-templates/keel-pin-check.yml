@@ -34,5 +34,6 @@ jobs:
         with:
           reader-app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
           reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
-          # A manual run audits every pin; a pull request or merge group is judged against its base.
-          base: ${{ github.event_name == 'workflow_dispatch' && '' || 'auto' }}
+          # A manual run audits every pin (empty base); a pull request or merge group is judged against its
+          # base. The empty string must be the last operand: `cond && '' || x` always yields x, since '' is falsy.
+          base: ${{ github.event_name != 'workflow_dispatch' && 'auto' || '' }}

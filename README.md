@@ -20,9 +20,13 @@ Use one from another repository with
 | [secret-scan](.github/actions/secret-scan/action.yml) | Runs gitleaks over only the commits a push or pull request adds |
 | [plain-language](.github/actions/plain-language/action.yml) | Warns about coined terms on the lines a pull request adds |
 | [identifiers](.github/actions/identifiers/action.yml) | Fails when a change adds an id generator, or a text or serial primary key, that is not a UUIDv7 |
+| [chat-senders](.github/actions/chat-senders/README.md) | Fails when a change adds a direct Telegram, Slack or Discord chat-API host outside the action's allow-list; products send chat through Notify |
+| [stack-conformance](docs/stack-conformance.md) | Fails a change that adds a departure from the default stack, or an agent-runtime part Sylphx Agents owns that `policy/agent-runtime.json` does not allow until a date |
 | [zh-hant](.github/actions/zh-hant/action.yml) | Fails when a change adds a Simplified-only character to Traditional Chinese text |
 | [git-app-credentials](.github/actions/git-app-credentials/action.yml) | Creates a job-scoped GitHub App token for private git and cargo fetches |
 | [cache-toolchain](.github/actions/cache-toolchain/action.yml) | Dependency cache keyed per toolchain (cargo, bun, npm, pnpm, gradle, unity) |
+| [run-store](docs/run-store.md) | Hands a file or directory between the jobs of a run through the BuildCache gateway, keyed by run id; CI never depends on GitHub artifact storage |
+| [setup-keel-tools](docs/setup-keel-tools.md) | The keel CLI at the title's `KEEL_PIN` and the wasm-bindgen CLI at its `Cargo.lock` version, cached per pin so a warm run takes seconds |
 | [setup-sylphx-cli](.github/actions/setup-sylphx-cli/action.yml) | Installs a pinned `@sylphx/cli` |
 | [setup-changesets-publisher](.github/actions/setup-changesets-publisher/action.yml) | Installs the Changesets publish command used by release workflows |
 

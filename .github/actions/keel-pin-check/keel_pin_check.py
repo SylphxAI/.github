@@ -18,7 +18,8 @@ commits only):
            branch or no revision at all (a moving main), or the files pin more than one Keel commit
   warn     a pinned commit is not the commit of a keel-verified-* / keel-weekly-* tag
 
-Ratchet: with --base (or "auto": the first parent of a merge commit, which is a pull request's base), the
+Ratchet: with --base (or "auto": the first parent of a merge commit, which is a pull request's base, or of
+any merge group commit when GITHUB_EVENT_NAME=merge_group, since a squash queue leaves one parent), the
 failures only stand when the pull request changes the set of Keel commits the repository pins. A pin set
 the pull request leaves alone is reported as warnings, so existing forks are not turned red; they turn red
 the moment someone moves a pin. Without a base (a push, a manual run) every failure stands.
@@ -337,7 +338,10 @@ def resolve_base(root, head, base, notes):
         return ""
     if base == "auto":
         parents = git(["rev-list", "--parents", "-n", "1", head], root).stdout.split()[1:]
-        if len(parents) < 2:
+        # A merge queue squash-merges or rebases, so a merge group's commit can have one parent; that
+        # parent is still the base the group is built on (the default branch or the entry before it).
+        merge_group = os.environ.get("GITHUB_EVENT_NAME") == "merge_group"
+        if len(parents) < 2 and not (merge_group and parents):
             return ""  # not a merge commit: a push or a manual run
         base = parents[0]
     if git(["cat-file", "-e", base + "^{commit}"], root, check=False).returncode != 0:

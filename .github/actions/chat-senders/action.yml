@@ -1,0 +1,55 @@
+name: Chat senders
+description: >
+  Fails a change that adds a direct chat-API host (api.telegram.org,
+  hooks.slack.com, slack.com/api/chat.postMessage, discord.com/api/webhooks,
+  discordapp.com/api/webhooks) outside the allow-list this action owns:
+  chat messages go through Notify; chat administration, conversational agents,
+  platform paging, tests and fixtures are listed. Checks only the lines this
+  pull request, merge group or push adds. The calling job checks out with
+  `fetch-depth: 0`.
+
+inputs:
+  mode:
+    description: >
+      `fail` fails the job; `warn` annotates hits and passes.
+    required: false
+    default: fail
+
+runs:
+  using: composite
+  steps:
+    - name: Check added lines for direct chat-API hosts
+      shell: bash
+      env:
+        CHECK_REPOSITORY: ${{ github.repository }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        GIT_SHA: ${{ github.sha }}
+        MODE: ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        case "$EVENT_NAME" in
+          pull_request)
+            # Diff from the merge base with the current base branch so only the
+            # pull request's own lines are checked.
+            base="$PR_BASE_SHA"
+            if git fetch --quiet --no-tags origin "$PR_BASE_REF" 2>/dev/null; then
+              base="$(git merge-base FETCH_HEAD "$PR_HEAD_SHA")"
+            fi
+            range="${base}..${PR_HEAD_SHA}" ;;
+          merge_group) range="${MG_BASE_SHA}..${MG_HEAD_SHA}" ;;
+          *)
+            before="${PUSH_BEFORE:-}"
+            # A new branch reports an all-zero before; check the tip commit.
+            if [ -z "$before" ] || [ "$before" = 0000000000000000000000000000000000000000 ]; then
+              before="${GIT_SHA}~1"
+            fi
+            range="${before}..${GIT_SHA}" ;;
+        esac
+        export CHAT_SENDERS_MODE="${MODE:-fail}"
+        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/allow-list.tsv"

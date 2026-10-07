@@ -71,6 +71,7 @@ jobs:
             lint:
             test: src/* tests/*
             migrations: migrations/*
+            stack: *sylphx.toml *package.json *Cargo.toml *Dockerfile* *.sql .github/stack-departures.txt
 
   lint:
     needs: plan
@@ -109,6 +110,25 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - run: echo "migration lint, integrity, and the database-backed migration tests"
 
+  # No new departure from the default stack (docs/stack-conformance.md in
+  # SylphxAI/.github): a backend service off Rust or a migration engine other
+  # than atlas fails unless .github/stack-departures.txt, which may only
+  # shrink, already lists it; an agent-runtime part Sylphx Agents owns fails
+  # unless SylphxAI/.github policy/agent-runtime.json allows it until a date;
+  # a new work-engine table needs a header saying whose records it holds.
+  stack:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.run).stack
+    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          filter: blob:none
+      - uses: SylphxAI/.github/.github/actions/stack-conformance@main
+        with:
+          base: ${{ needs.plan.outputs.base }}
+
   # The full suite on a pull request that is ready: the same lanes verify.yml
   # runs after merge, selected by this change. Never in a merge group or a
   # draft; it also runs on workflow_dispatch, where the aggregator requires it.
@@ -123,7 +143,7 @@ jobs:
   # a red check green.
   ci-ok:
     if: always()
-    needs: [main-state, plan, lint, test, migrations, suite]
+    needs: [main-state, plan, lint, test, migrations, stack, suite]
     # The reserved gate pool (Kueue queue scale-set-gate, never lends): an
     # `if: always()` verdict still runs after its run is cancelled, and that run
     # keeps its concurrency group until it does, so on a busy build pool a
