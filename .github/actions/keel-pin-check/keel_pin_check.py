@@ -27,6 +27,9 @@ the moment someone moves a pin. Without a base (a push, a manual run) every fail
 Usage (from the repository):
   keel_pin_check.py check --keel-dir DIR [--keel-remote URL] [--head HEAD] [--base auto|REV]
                           [--keel-main refs/heads/main] [--summary FILE]
+Before rolling the check out, audit each target's default branch with every rule enforced (what a manual run
+does), so the rollout never lands the check on a branch that already fails it:
+  keel_pin_check.py audit --keel-dir DIR --keel-remote URL --work-dir DIR REPO_URL...
 Exit status: 0 pass (warnings allowed), 1 a failure, 2 the check itself could not run.
 """
 
@@ -379,9 +382,45 @@ def summary_md(findings, notes):
     return "\n".join(lines) + "\n"
 
 
+def audit(remotes, work_dir, keel, out=None):
+    """Judge each repository's default branch with every rule enforced. Returns the worst exit status.
+
+    Each repository is cloned at depth 1 with blobs over 2 MB left out: every pin file is small, so the
+    check never needs a lazy fetch, and large assets are never downloaded."""
+    out = out or sys.stdout
+    worst = 0
+    for n, remote in enumerate(remotes):
+        root = os.path.join(work_dir, f"{n}-" + re.sub(r"[^A-Za-z0-9._-]+", "_", remote.rstrip("/").split("/")[-1]))
+        try:
+            if os.path.exists(root):
+                raise Refused(f"{root} already exists; use an empty --work-dir")
+            git(["clone", "-q", "--depth", "1", "--filter=blob:limit=2m", "--no-checkout", remote, root], work_dir)
+            sha = git(["rev-parse", "HEAD"], root).stdout.strip()
+            findings, notes, _ = check(root, "HEAD", "", keel)
+        except Refused as e:
+            print(f"{remote}: COULD NOT RUN: {e}", file=out)
+            worst = max(worst, 2)
+            continue
+        errors = [m for lvl, _, m in findings if lvl == "error"]
+        warnings = [m for lvl, _, m in findings if lvl == "warning"]
+        verdict = "FAIL" if errors else "pass"
+        print(f"{remote} @ {sha[:12]}: {verdict} ({len(errors)} failure(s), {len(warnings)} warning(s))", file=out)
+        for msg in notes:
+            print(f"  note: {msg}", file=out)
+        for msg in errors:
+            print(f"  failure: {msg}", file=out)
+        for msg in warnings:
+            print(f"  warning: {msg}", file=out)
+        if errors:
+            worst = max(worst, 1)
+    return worst
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=["check"])
+    ap.add_argument("command", choices=["check", "audit"])
+    ap.add_argument("repos", nargs="*", help="audit: clone URLs of the repositories whose default branch is judged")
+    ap.add_argument("--work-dir", default="", help="audit: empty directory the repositories are cloned into")
     ap.add_argument("--root", default=".", help="the repository being checked")
     ap.add_argument("--head", default="HEAD", help="revision whose pins are judged")
     ap.add_argument("--base", default="", help='revision to compare pins with: "auto" (first parent of a merge commit), a revision, or empty to enforce')
@@ -394,6 +433,11 @@ def main(argv=None):
         if args.keel_remote:
             ensure_keel(args.keel_dir, args.keel_remote, args.keel_main)
         keel = Keel(args.keel_dir, args.keel_main)
+        if args.command == "audit":
+            if not args.repos or not args.work_dir:
+                raise Refused("audit needs --work-dir and at least one repository URL")
+            os.makedirs(args.work_dir, exist_ok=True)
+            return audit(args.repos, args.work_dir, keel)
         findings, notes, _ = check(args.root, args.head, args.base, keel)
     except Refused as e:
         print(f"::error::keel pin check could not run: {esc(str(e))}")

@@ -312,6 +312,43 @@ class PinCheckTest(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("could not run", out.getvalue())
 
+    def test_audit_judges_each_default_branch_strictly(self):
+        # A fork that pull requests only warn about (the ratchet) fails the audit, as a manual run does:
+        # rolling the check out onto that branch would leave it red on the first pin move.
+        fork = self.title({"KEEL_PIN": self.fx.x1 + "\n"}, parent_files={"KEEL_PIN": self.fx.x1 + "\n"})
+        self.assertEqual(run_check(self.fx, fork, base="auto")[0], [])
+        clean = self.title({"KEEL_PIN": self.fx.c3 + "\n"})
+        work = pathlib.Path(self._tmp.name) / f"audit{self.n}"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = kpc.main(["audit", f"file://{clean}", f"file://{fork}", "--work-dir", str(work),
+                           "--keel-dir", self.fx.keel_dir, "--summary", ""])
+        self.assertEqual(rc, 1)
+        lines = out.getvalue().splitlines()
+        self.assertRegex(lines[0], r"^file://.*: pass \(0 failure\(s\), 0 warning\(s\)\)$")
+        self.assertRegex(lines[1], r"^file://.*: FAIL \(1 failure\(s\)")
+        self.assertIn(self.fx.x1, lines[2])
+
+    def test_audit_all_clean_passes_and_an_unreachable_repo_exits_2(self):
+        clean = self.title({"KEEL_PIN": self.fx.c3 + "\n"})
+        work = pathlib.Path(self._tmp.name) / f"audit{self.n}"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = kpc.main(["audit", f"file://{clean}", "--work-dir", str(work), "--keel-dir", self.fx.keel_dir])
+        self.assertEqual(rc, 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = kpc.main(["audit", f"file://{clean}", f"file://{work}/missing", "--work-dir", str(work) + "-2",
+                           "--keel-dir", self.fx.keel_dir])
+        self.assertEqual(rc, 2)
+        self.assertIn("COULD NOT RUN", out.getvalue())
+
+    def test_audit_needs_a_work_dir_and_a_repository(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = kpc.main(["audit", "--keel-dir", self.fx.keel_dir])
+        self.assertEqual(rc, 2)
+
     def test_fetch_brings_main_and_tags_but_not_other_branches(self):
         keel = self.fx.keel
         self.assertTrue(keel.on_main(self.fx.c5))
