@@ -4,7 +4,7 @@
   "orgs": ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"],
   "pin_floor": {
     "repo": "SylphxAI/.github",
-    "sha": "b55b38c4c806962bbf6de8af6c6e1c0d2b5bac49",
+    "sha": "9a3cf653cbc96accd822176d9fa8c3b2d984192e",
     "note": "A red-main caller or main-red-gate pin is conformant when it is this commit or a descendant of it. Move the floor forward when a fix every caller needs lands. b55b38c: R3b refuses a gate workflow outside ci.yml (a merge group cannot be admitted before its check reports), so every repository pinning an older SylphxAI/.github must repin to get it."
   },
   "writer_app_orgs": ["SylphxAI"],
