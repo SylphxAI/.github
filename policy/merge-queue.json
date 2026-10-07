@@ -20,7 +20,8 @@
   },
   "review": {
     "required_approving_review_count": 0,
-    "note": "Every repository ruleset's pull_request rule requires no approving review: ci-ok is the gate, and an approval finds nothing it did not (owner standards: ONE CHECK). The enterprise ruleset already requires 0."
+    "require_extra_approval_for_unattributed_changes": false,
+    "note": "Every repository ruleset's pull_request rule requires no approving review: ci-ok is the gate, and an approval finds nothing it did not (owner standards: ONE CHECK). The enterprise ruleset already requires 0. require_extra_approval_for_unattributed_changes adds one more approving review when a pull request carries commits GitHub cannot attribute to a user (every desk App's), so it holds every bot pull request for an approval ci-ok already made; it is false here too."
   },
   "exclude": [
     {

@@ -23,7 +23,7 @@ OLD = {"merge_method": "SQUASH", "grouping_strategy": "ALLGREEN", "max_entries_t
        "max_entries_to_merge": 10, "min_entries_to_merge_wait_minutes": 0, "check_response_timeout_minutes": 60}
 
 
-def ruleset(rid: int, name: str, params: dict | None, checks=("ci-ok",), reviews: int | None = 1) -> dict:
+def ruleset(rid: int, name: str, params: dict | None, checks=("ci-ok",), reviews: int | None = 1, extra: bool = False) -> dict:
     """A repository ruleset; params=None has no merge_queue rule, reviews=None no pull_request rule."""
     rules = []
     if params is not None:
@@ -35,7 +35,8 @@ def ruleset(rid: int, name: str, params: dict | None, checks=("ci-ok",), reviews
         rules.append({"type": "pull_request", "parameters": {
             "required_approving_review_count": reviews, "dismiss_stale_reviews_on_push": False,
             "require_code_owner_review": False, "require_last_push_approval": False,
-            "required_review_thread_resolution": False}})
+            "required_review_thread_resolution": False,
+            "require_extra_approval_for_unattributed_changes": extra}})
     return {
         "id": rid, "name": name, "target": "branch", "enforcement": "active", "source_type": "Repository",
         "bypass_actors": [], "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
@@ -63,7 +64,9 @@ class FakeGh:
                 "strictRequiredStatusChecksPolicy": checks["strict_required_status_checks_policy"],
                 "requiredStatusChecks": [{"context": c["context"], "integrationId": 15368} for c in checks["required_status_checks"]]}})
             if amq.review_count(rs) is not None:
-                rules.append({"type": "PULL_REQUEST", "parameters": {"requiredApprovingReviewCount": amq.review_count(rs)}})
+                rules.append({"type": "PULL_REQUEST", "parameters": {
+                    "requiredApprovingReviewCount": amq.review_count(rs),
+                    "requireExtraApprovalForUnattributedChanges": amq.extra_approval(rs)}})
             nodes.append({"name": repo.split("/")[1], "rulesets": {"nodes": [
                 {"databaseId": rs["id"], "name": rs["name"], "enforcement": "ACTIVE", "target": "BRANCH",
                  "conditions": {"refName": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
@@ -75,7 +78,7 @@ class FakeGh:
 
     def rest(self, path: str, method: str = "GET", body: dict | None = None) -> dict:
         repo = "/".join(path.split("/")[1:3])
-        if repo in self.fail:
+        if method == "PUT" and repo in self.fail:
             raise self.fail[repo]
         rs = self.rulesets[repo]
         if method == "PUT":
@@ -91,6 +94,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_shipped_policy_requires_no_approving_review(self):
         self.assertEqual(POLICY["review"]["required_approving_review_count"], 0)
+        self.assertIs(POLICY["review"]["require_extra_approval_for_unattributed_changes"], False)
 
     def test_rejects_unknown_and_bad_values(self):
         for edit in (lambda p: p["settings"].pop("merge_method"),
@@ -100,7 +104,8 @@ class PolicyTests(unittest.TestCase):
                      lambda p: p["exclude"].append({"repo": "a/b"}),
                      lambda p: p.pop("review"),
                      lambda p: p["review"].update(required_approving_review_count=-1),
-                     lambda p: p["review"].update(required_approving_review_count=True)):
+                     lambda p: p["review"].update(required_approving_review_count=True),
+                     lambda p: p["review"].update(require_extra_approval_for_unattributed_changes="no")):
             p = copy.deepcopy(json.loads((ROOT / "policy" / "merge-queue.json").read_text()))
             edit(p)
             with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
@@ -152,6 +157,17 @@ class PlanTests(unittest.TestCase):
         self.assertEqual((row["status"], row["changes"], row["notes"]),
                          ("DRIFT", {"required_approving_review_count": [1, 0]}, []))
 
+    def test_extra_approval_on_an_app_held_ruleset_drifts_off(self):
+        self.fleet = amq.read_org(FakeGh({
+            "SylphxAI/.github": ruleset(10, "sylphx-merge-queue", {**OLD, **POLICY["settings"]}, reviews=0, extra=True),
+            "SylphxAI/cloud": ruleset(11, "sylphx-merge-queue", {**OLD, **POLICY["settings"]}, reviews=0, extra=False),
+        }), "SylphxAI")
+        rows = self.rows()
+        self.assertEqual(rows["SylphxAI/.github"]["status"], "DRIFT")
+        self.assertEqual(rows["SylphxAI/.github"]["changes"],
+                         {"require_extra_approval_for_unattributed_changes": [True, False]})
+        self.assertEqual(rows["SylphxAI/cloud"]["status"], "OK")
+
     def test_diff_matches_headgreen(self):
         row = self.rows()["SylphxAI/desk-tools"]
         self.assertEqual(row["status"], "DRIFT")
@@ -181,7 +197,7 @@ class PlanTests(unittest.TestCase):
 
 class ApplyTests(unittest.TestCase):
     def fake(self, **kw):
-        return FakeGh({"SylphxAI/desk-tools": ruleset(10, "sylphx-merge-queue", OLD),
+        return FakeGh({"SylphxAI/desk-tools": ruleset(10, "sylphx-merge-queue", OLD, extra=True),
                        "SylphxAI/work": ruleset(11, "sylphx-merge-queue", OLD),
                        "SylphxAI/janus": ruleset(12, "ci-must-pass", None)}, **kw)
 
@@ -218,6 +234,7 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual({r["type"] for r in body["rules"]}, {"merge_queue", "required_status_checks", "pull_request"})
             review = body["rules"][2]["parameters"]
             self.assertEqual(review["required_approving_review_count"], 0)
+            self.assertIs(review["require_extra_approval_for_unattributed_changes"], False)
             self.assertFalse(review["require_code_owner_review"])  # the rest of the rule is carried through
             self.assertEqual(body["rules"][1], ruleset(10, "x", OLD)["rules"][1])
             self.assertEqual(body["conditions"], gh.rulesets[repo]["conditions"])

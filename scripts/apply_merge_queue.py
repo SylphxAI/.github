@@ -18,16 +18,20 @@ without --apply.
   scripts/apply_merge_queue.py --check             # exit 1 when any ruleset drifts
 
 What it manages: the parameters of the `merge_queue` rule of every ruleset that
-has one, and the required approving review count of the `pull_request` rule of
-every repository ruleset that has one (policy `review`: 0, because `ci-ok` is
-the gate and an approval checks nothing it did not). Everything else in a
+has one, and the required approving review count and the extra-approval flag of
+the `pull_request` rule of every repository ruleset that has one (policy
+`review`: 0 and false, because `ci-ok` is the gate and an approval checks
+nothing it did not; `require_extra_approval_for_unattributed_changes` would
+otherwise hold every App-authored pull request for one). Everything else in a
 ruleset is carried through unchanged on a write.
 What it only reports: whether the fast gate (`ci-ok`) is a required check of the
 same ruleset, and the strict flag. It never adds a required check, because a
 check no workflow reports would stop the queue.
 
-Reads are one GraphQL query per 100 repositories of an organization. Writes are
-paced one second apart, are read back, and stop at the first HTTP 403.
+Reads are one GraphQL query per 100 repositories, plus one REST read of each
+ruleset that has a `pull_request` rule (its extra-approval flag is not in the
+GraphQL schema). Writes are paced one second apart, are read back, and stop at
+the first HTTP 403.
 """
 from __future__ import annotations
 
@@ -42,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "policy" / "merge-queue.json"
 HANDS_OFF_POLICY = ROOT / "policy" / "optimistic-merge.json"
 REVIEW_KEY = "required_approving_review_count"
+EXTRA_APPROVAL_KEY = "require_extra_approval_for_unattributed_changes"
 
 # REST (snake_case) <-> GraphQL (camelCase) names of the merge queue parameters.
 PARAMS = {
@@ -82,6 +87,9 @@ def load_policy(path: Path) -> dict:
     count = policy.get("review", {}).get(REVIEW_KEY)
     if not isinstance(count, int) or isinstance(count, bool) or count < 0:
         raise ValueError(f"review.{REVIEW_KEY} must be a non-negative integer")
+    extra = policy.get("review", {}).get(EXTRA_APPROVAL_KEY)
+    if not isinstance(extra, bool):
+        raise ValueError(f"review.{EXTRA_APPROVAL_KEY} must be a boolean")
     for key, fields in (("exclude", ("repo", "reason")), ("overrides", ("repo", "ruleset", "settings", "reason")),
                         ("fast_gate_overrides", ("repo", "ruleset", "context", "reason"))):
         for entry in policy.get(key, []):
@@ -194,14 +202,18 @@ def read_org(gh, org: str) -> list[dict]:
                     continue
                 checks = next((r for r in rules if r["type"] == "REQUIRED_STATUS_CHECKS"), None)
                 cparams = (checks or {}).get("parameters") or {}
+                repo = f"{org}/{node['name']}"
                 out.append({
-                    "repo": f"{org}/{node['name']}",
+                    "repo": repo,
                     "id": rs["databaseId"],
                     "ruleset": rs["name"],
                     "enforcement": rs["enforcement"],
                     "refs": (rs.get("conditions") or {}).get("refName", {}).get("include", []),
                     "live": {k: queue["parameters"][g] for k, g in PARAMS.items()} if queue else None,
                     "review": (review.get("parameters") or {}).get("requiredApprovingReviewCount", 0) if review else None,
+                    # require_extra_approval_for_unattributed_changes is in the REST schema only (GraphQL's
+                    # PullRequestParameters does not carry it), so it is read from the ruleset detail.
+                    "extra_approval": extra_approval(gh.rest(f"repos/{repo}/rulesets/{rs['databaseId']}")) if review else None,
                     "required": [c["context"] for c in cparams.get("requiredStatusChecks", [])] if checks else None,
                     "strict": cparams.get("strictRequiredStatusChecksPolicy") if checks else None,
                 })
@@ -230,6 +242,9 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
         count = policy["review"][REVIEW_KEY]
         if item["review"] is not None and item["review"] != count:
             changes[REVIEW_KEY] = [item["review"], count]
+        extra = policy["review"][EXTRA_APPROVAL_KEY]
+        if item["extra_approval"] is not None and item["extra_approval"] != extra:
+            changes[EXTRA_APPROVAL_KEY] = [item["extra_approval"], extra]
         if item["live"] is None:
             row.update(status="DRIFT" if changes else "OK", changes=changes, notes=[])
             rows.append(row)
@@ -272,14 +287,15 @@ def put_body(ruleset: dict) -> dict:
     return {k: ruleset[k] for k in PUT_KEYS if k in ruleset}
 
 
-def with_rules(ruleset: dict, settings: dict, review_count: int) -> dict:
+def with_rules(ruleset: dict, settings: dict, review_count: int, extra_approval: bool) -> dict:
     body = put_body(ruleset)
     rules = []
     for rule in body["rules"]:
         if rule["type"] == "merge_queue":
             rule = {"type": "merge_queue", "parameters": {**rule["parameters"], **settings}}
         elif rule["type"] == "pull_request":
-            rule = {"type": "pull_request", "parameters": {**rule.get("parameters", {}), REVIEW_KEY: review_count}}
+            rule = {"type": "pull_request", "parameters": {**rule.get("parameters", {}), REVIEW_KEY: review_count,
+                                                           EXTRA_APPROVAL_KEY: extra_approval}}
         rules.append(rule)
     body["rules"] = rules
     return body
@@ -295,9 +311,14 @@ def review_count(ruleset: dict) -> int | None:
     return (rule.get("parameters") or {}).get(REVIEW_KEY, 0) if rule else None
 
 
+def extra_approval(ruleset: dict) -> bool | None:
+    rule = next((r for r in ruleset["rules"] if r["type"] == "pull_request"), None)
+    return bool((rule.get("parameters") or {}).get(EXTRA_APPROVAL_KEY, False)) if rule else None
+
+
 def managed(ruleset: dict) -> tuple:
-    """The part of a ruleset this tool writes: the queue parameters and the review count."""
-    return queue_params(ruleset), review_count(ruleset)
+    """The part of a ruleset this tool writes: the queue parameters, the review count and the extra-approval flag."""
+    return queue_params(ruleset), review_count(ruleset), extra_approval(ruleset)
 
 
 def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | None = None) -> list[dict]:
@@ -312,9 +333,11 @@ def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | N
             (backup_dir / f"{row['repo'].replace('/', '__')}__{row['id']}.json").write_text(json.dumps(before, indent=2) + "\n")
             settings = desired_settings(policy, row["repo"], row["ruleset"])
             count = policy["review"][REVIEW_KEY]
+            extra = policy["review"][EXTRA_APPROVAL_KEY]
             want = (settings if queue_params(before) is not None else None,
-                    count if review_count(before) is not None else None)
-            after = gh.rest(path, "PUT", with_rules(before, settings, count))
+                    count if review_count(before) is not None else None,
+                    extra if extra_approval(before) is not None else None)
+            after = gh.rest(path, "PUT", with_rules(before, settings, count, extra))
             if managed(after) != want:
                 after = gh.rest(path)
             if managed(after) != want:
