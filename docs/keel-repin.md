@@ -12,8 +12,10 @@ tag) and calls the `keel-repin` action in three modes:
 
 1. **poll** (a cheap job: checkout, read Keel's tags with the read-only reader App). A repin is
    needed when the newest `keel-verified-*` tag is not already the pin, Keel reports the tag
-   **ahead** of the pin (never a downgrade), and no pull request from `chore/keel-repin-<tag>`
-   exists in any state (a closed one is never reopened).
+   **ahead** of the pin (never a downgrade), the branch `chore/keel-repin-<tag>` does not exist, and
+   no open or merged pull request from it exists. A closed pull request stops its tag only while its
+   branch exists: close it to stop the repin; close it and delete the branch to have the next poll
+   rebuild it.
 2. **repin** (only when needed): moves every pin, refreshes `Cargo.lock` for the Keel crates, runs
    the title's build check, pushes `chore/keel-repin-<tag>`, opens the pull request with the
    workflow token and the repository's single `owner:*` label, then starts the title's CI on that
