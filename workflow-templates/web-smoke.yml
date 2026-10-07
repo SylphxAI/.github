@@ -6,6 +6,11 @@ name: Web smoke
 # SylphxAI/.github, and replace the "Pack the web build" step with this repository's own pack steps
 # (the ones its CI and Pages deploy run); the action only judges what they write to `pack-dir`.
 # Add `web-smoke.yml` to the repin workflow's `ci-workflows` so the bot starts it on a repin branch.
+# Adopting optimistic merge (docs/optimistic-merge.md): the gate's `ci-ok` needs only the jobs of ci.yml,
+# so call this file from .github/workflows/ci.yml and list its job in `ci-ok`'s `needs:`. Required on its
+# own, a check GitHub has not seen on the head is admitted and the queue can merge before this finishes.
+# Where the check should not gate the merge, keep it standalone and add the line
+# `# optimistic-merge: gate-external` (audit row R3b).
 # See docs/web-smoke.md.
 on:
   pull_request:

@@ -53,6 +53,12 @@ secrets the repin and web-smoke workflows already use. The checkout needs `fetch
 our runners only (the action refuses a GitHub-hosted one). Once a title's pin is clean, add the
 `keel-pin-check` job to its required checks.
 
+On [optimistic merge](optimistic-merge.md) the job also becomes a job of the gate: call the file from
+`.github/workflows/ci.yml` and list the job in `ci-ok`'s `needs:` (docs/optimistic-merge.md, "The pull
+request"). Required on its own, a check GitHub has not seen on the head is admitted, so the queue can
+merge before this check finishes. A title where the pin check should not gate the merge keeps it
+standalone and carries `# optimistic-merge: gate-external`.
+
 The Keel repin bot ([keel-repin.md](keel-repin.md)) only pins a `keel-verified-*` tag's commit, so its
 pull requests pass; listing this workflow in its `ci-workflows` puts the check on them too.
 

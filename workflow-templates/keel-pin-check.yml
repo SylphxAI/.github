@@ -8,6 +8,11 @@ name: Keel pin check
 # SylphxAI/.github. Add the job (`keel-pin-check`) to the ruleset's required checks, or to the aggregate
 # check, once the repository's pin is clean. The Keel repin bot's pull requests pin a verified tag, so
 # list this workflow in its `ci-workflows` only if it should run on them too.
+# Adopting optimistic merge (docs/optimistic-merge.md): the gate's `ci-ok` needs only the jobs of ci.yml,
+# so call this file from .github/workflows/ci.yml and list its job in `ci-ok`'s `needs:`. Required on its
+# own, a check GitHub has not seen on the head is admitted and the queue can merge before this finishes.
+# Where the check should not gate the merge, keep it standalone and add the line
+# `# optimistic-merge: gate-external` (audit row R3b).
 on:
   pull_request:
   merge_group:

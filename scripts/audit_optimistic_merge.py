@@ -13,7 +13,10 @@ Rows, per non-archived repository of the policy's organizations:
        and never cancels a running trunk verify (cancel-in-progress is not true)
   R3b  every other workflow that runs on push to the default branch is called
        from verify.yml or marked `# optimistic-merge: advisory`, else its red
-       never reaches the red-main handler
+       never reaches the red-main handler; and every other workflow that runs
+       on merge_group is called from ci.yml or marked `# optimistic-merge:
+       gate-external`, else it is a gate step no check requires and the merge
+       queue admits the change without it
   R4   red-main.yml calls the shared handler pinned (full SHA) at or after the
        policy floor, and its `if:` follows the repository's default branch
   R5   ci.yml has a `main-state` job on `main-red-gate` pinned at or after the
@@ -55,6 +58,7 @@ ON_RED = ("revert", "revert_pr_unarmed", "notify")
 # Personal repositories are never read, whatever the policy says.
 NEVER_READ_OWNERS = ("tsefamily", "shtse8")
 ADVISORY = re.compile(r"^\s*#\s*optimistic-merge:\s*advisory\b", re.M | re.I)
+GATE_EXTERNAL = re.compile(r"^\s*#\s*optimistic-merge:\s*gate-external\b", re.M | re.I)
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 WORKFLOW_KEYS = ("ci.yml", "verify.yml", "red-main.yml")
 
@@ -426,16 +430,32 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
         rows["R3b"] = _row("SKIP", "no verify.yml")
     elif facts.get("all_workflows") is None:
         rows["R3b"] = _row("FAIL", "workflow files unreadable")
+    elif ci is None:
+        rows["R3b"] = _row("SKIP", "no ci.yml")
     else:
         called = set(re.findall(r"uses\s*:\s*\./\.github/workflows/([\w.-]+)", verify))
+        ci_called = set(re.findall(r"uses\s*:\s*\./\.github/workflows/([\w.-]+)", ci or ""))
         loose = []
+        unguarded = []
         for name, text in sorted(facts["all_workflows"].items()):
-            if name in WORKFLOW_KEYS or name in called or ADVISORY.search(text or ""):
+            if name in WORKFLOW_KEYS or not text:
                 continue
-            if text and push_covers(text, branch):
+            if name not in called and not ADVISORY.search(text) and push_covers(text, branch):
                 loose.append(name)
-        rows["R3b"] = need(not loose, "every push workflow is in verify.yml or advisory",
-                           "runs on push to " + branch + " outside verify.yml: " + ", ".join(loose))
+            # A gate step in its own workflow runs in the merge group, but
+            # `ci-ok` needs only ci.yml's jobs, so `ci-ok` can pass before it
+            # finishes: the required check no longer waits for it. Called from
+            # ci.yml, or marked gate-external for a check the merge queue does
+            # not gate on, it is not admitted without its verdict.
+            if name not in ci_called and not GATE_EXTERNAL.search(text) and "merge_group" in triggers(text):
+                unguarded.append(name)
+        bad = []
+        if loose:
+            bad.append("runs on push to " + branch + " outside verify.yml: " + ", ".join(loose))
+        if unguarded:
+            bad.append("runs on merge_group outside ci.yml (its verdict never reaches ci-ok): " + ", ".join(unguarded))
+        rows["R3b"] = need(not bad, "every push workflow is in verify.yml or advisory; every merge-group workflow is in ci.yml or gate-external",
+                           "; ".join(bad))
 
     # R4
     if redmain is None:

@@ -29,7 +29,14 @@ splash and starts and answers a touch, not how fast it draws. Frame times are ju
    step requires a check run of exactly that name.
 3. Add `web-smoke.yml` to the repin workflow's `ci-workflows` so the bot starts it on the repin branch
    (the workflow lists `workflow_dispatch`, as the template does).
-4. Add `web-smoke` to the repository's required checks.
+4. Add `web-smoke` to the repository's required checks. On
+   [optimistic merge](optimistic-merge.md) also call the file from
+   `.github/workflows/ci.yml` and list the job in `ci-ok`'s `needs:`
+   (docs/optimistic-merge.md, "The pull request"): required on its own, a check
+   GitHub has not seen yet is admitted, so the queue can merge before the smoke
+   finishes, and a run that finishes after `ci-ok` is not seen at all. A title
+   where the smoke should not gate the merge keeps it standalone and carries
+   `# optimistic-merge: gate-external`.
 
 The job needs `CUBEAGE_CI_READER_APP_ID` and `CUBEAGE_CI_READER_APP_KEY` (the read-only App that can read
 SylphxAI/keel) as the other Keel jobs do. It runs on our own runners only: on a GitHub-hosted runner the
