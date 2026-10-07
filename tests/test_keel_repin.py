@@ -405,11 +405,26 @@ class PollTest(unittest.TestCase):
                 rc, out = self.poll(repo, remote, {"api repos/SylphxAI/keel/compare/" + OLD + "..." + sha: answer, "pr list": "0"})
                 self.assertEqual(out["needed"], "false")
                 self.assertIn(expect, out["reason"])
-        with tempfile.TemporaryDirectory() as d:  # a closed or merged pull request for the tag is never reopened
+        for states in ("OPEN\n", "MERGED\n", "CLOSED\nOPEN\n"):  # an open or merged pull request for the tag stops the poll
+            with tempfile.TemporaryDirectory() as d:
+                base = pathlib.Path(d)
+                remote, sha = make_keel_remote(base)
+                repo = make_title(base, TITLE)
+                rc, out = self.poll(repo, remote, {"pr list": states})
+                self.assertEqual((out["needed"], "exists" in out["reason"]), ("false", True), states)
+
+    def test_a_closed_pull_request_stops_the_poll_only_while_its_branch_exists(self):
+        """Closing a repin pull request and keeping its branch stops that tag; deleting the branch too rebuilds it."""
+        with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
             remote, sha = make_keel_remote(base)
             repo = make_title(base, TITLE)
-            rc, out = self.poll(repo, remote, {"pr list": "1"})
+            answers = {"pr list": "CLOSED\n", "api repos/SylphxAI/keel/compare/" + OLD + "..." + sha: "ahead"}
+            rc, out = self.poll(repo, remote, answers)
+            self.assertEqual((rc, out["needed"]), (0, "true"))
+            git(repo, "push", "-q", "origin", "HEAD:refs/heads/" + keel_repin.BRANCH_PREFIX + NEW_TAG)
+            (base / "out.txt").unlink()
+            rc, out = self.poll(repo, remote, answers)
             self.assertEqual((out["needed"], "exists" in out["reason"]), ("false", True))
 
     def diverged_remote(self, base, pin_commit_file):
