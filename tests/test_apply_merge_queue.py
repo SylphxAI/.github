@@ -54,6 +54,7 @@ class FakeGh:
         self.queries += 1
         nodes = []
         self.last_query = query
+        inherited = None  # one enterprise ruleset, listed under every repository, as GitHub does
         for repo, rs in self.rulesets.items():
             checks = next(r for r in rs["rules"] if r["type"] == "required_status_checks")["parameters"]
             rules = []
@@ -64,12 +65,17 @@ class FakeGh:
                 "requiredStatusChecks": [{"context": c["context"], "integrationId": 15368} for c in checks["required_status_checks"]]}})
             if amq.review_count(rs) is not None:
                 rules.append({"type": "PULL_REQUEST", "parameters": {"requiredApprovingReviewCount": amq.review_count(rs)}})
+            if inherited is None:
+                inherited = {"databaseId": 1, "name": "agent-native-queued-trunk-base", "enforcement": "ACTIVE",
+                             "target": "BRANCH", "source": {"__typename": "Enterprise"}, "conditions": None,
+                             "rules": {"nodes": [{"type": "PULL_REQUEST", "parameters": {"requiredApprovingReviewCount": 0}},
+                                                 {"type": "DELETION", "parameters": None}]}}
             nodes.append({"name": repo.split("/")[1], "rulesets": {"nodes": [
                 {"databaseId": rs["id"], "name": rs["name"], "enforcement": "ACTIVE", "target": "BRANCH",
+                 "source": {"__typename": "Repository"},
                  "conditions": {"refName": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
                  "rules": {"nodes": rules}},
-                {"databaseId": 1, "name": "enterprise", "enforcement": "ACTIVE", "target": "BRANCH",
-                 "conditions": None, "rules": {"nodes": [{"type": "DELETION", "parameters": None}]}},
+                inherited,
             ]}})
         return {"organization": {"repositories": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}
 
@@ -127,16 +133,21 @@ class PlanTests(unittest.TestCase):
             "SylphxAI/bgca": ruleset(12, "sylphx-merge-queue", OLD),
             "SylphxAI/other": ruleset(13, "sylphx-merge-queue", OLD, checks=("lint",)),
             "SylphxAI/janus": ruleset(14, "ci-must-pass", None),
-            "SylphxAI/plain": ruleset(15, "required-ci", None, reviews=None),
         }), "SylphxAI")
 
     def rows(self):
         return {r["repo"]: r for r in amq.plan(self.fleet, POLICY, amq.excluded(POLICY, amq.hands_off_repos()))}
 
     def test_rulesets_with_a_queue_or_a_review_rule_are_read(self):
-        self.assertEqual(sorted(i["repo"] for i in self.fleet),
-                         ["SylphxAI/bgca", "SylphxAI/cloud", "SylphxAI/desk-tools", "SylphxAI/janus", "SylphxAI/other"])
-
+        # The one enterprise ruleset is inherited by every repository, so it is listed once per repository in the
+        # read; the repository's own ruleset is the other entry.
+        self.assertEqual(sorted({(i["repo"], i["ruleset"]) for i in self.fleet}),
+                         [("SylphxAI/bgca", "agent-native-queued-trunk-base"), ("SylphxAI/bgca", "sylphx-merge-queue"),
+                          ("SylphxAI/cloud", "agent-native-queued-trunk-base"), ("SylphxAI/cloud", "sylphx-merge-queue"),
+                          ("SylphxAI/desk-tools", "agent-native-queued-trunk-base"), ("SylphxAI/desk-tools", "sylphx-merge-queue"),
+                          ("SylphxAI/janus", "agent-native-queued-trunk-base"), ("SylphxAI/janus", "ci-must-pass"),
+                          ("SylphxAI/other", "agent-native-queued-trunk-base"), ("SylphxAI/other", "sylphx-merge-queue")])
+        self.assertTrue(all(i["ruleset"] != "agent-native-queued-trunk-base" or i["id"] is None for i in self.fleet))
     def test_only_the_repositorys_own_rulesets_are_read(self):
         gh = FakeGh({})
         amq.read_org(gh, "SylphxAI")
@@ -147,10 +158,20 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(rows["SylphxAI/desk-tools"]["changes"]["required_approving_review_count"], [1, 0])
         self.assertEqual(rows["SylphxAI/cloud"]["changes"], {"required_approving_review_count": [1, 0]})
 
-    def test_review_only_ruleset_drifts_without_queue_notes(self):
+    def test_a_ruleset_without_a_queue_but_with_a_review_rule_is_converged(self):
+        # The bug this guards: the plan loop skipped the review check for a ruleset with no queue, so a new
+        # repository's require-review ruleset kept required_approving_review_count=1 forever.
         row = self.rows()["SylphxAI/janus"]
         self.assertEqual((row["status"], row["changes"], row["notes"]),
                          ("DRIFT", {"required_approving_review_count": [1, 0]}, []))
+
+    def test_an_inherited_ruleset_is_read_but_never_written(self):
+        # An enterprise ruleset has no repository path; the read appends it per repository and it must not appear
+        # as drift or take part in a write.
+        inherited = [i for i in self.fleet if i["id"] is None]
+        self.assertTrue(inherited)
+        self.assertTrue(all(i["ruleset"] == "agent-native-queued-trunk-base" for i in inherited))
+        self.assertTrue(all(i["review"] == 0 for i in inherited))
 
     def test_diff_matches_headgreen(self):
         row = self.rows()["SylphxAI/desk-tools"]
