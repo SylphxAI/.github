@@ -10,12 +10,12 @@ needs on `PATH`:
   `wasm-bindgen` crate; the CLI and the crate must match exactly.
 
 Both are installed into one root under `$RUNNER_TEMP/keel-tools`, cached per
-runner OS and arch, Keel commit, wasm-bindgen version and the installer's
-hash. A warm key restores the root and logs `keel tools from cache` in
-seconds; a new pin builds both from source once (about five minutes) and saves
-the cache straight after the build, so a later failing step still leaves it
-for the next run. The root carries a stamp written last, so a half-built root
-never counts as warm.
+runner OS and arch, Keel commit, wasm-bindgen version, `features` and the
+installer's hash. A warm key restores the root and logs `keel tools from
+cache` in seconds; a new pin builds both from source once (about five
+minutes) and saves the cache straight after the build, so a later failing step
+still leaves it for the next run. The root carries a stamp written last, so a
+half-built root never counts as warm.
 
 ## Use
 
@@ -35,9 +35,16 @@ Inputs, all optional:
 | `wasm-bindgen` | `auto` | `auto` reads `cargo-lock`; `none` skips it; or an exact `x.y.z`. |
 | `cargo-lock` | `Cargo.lock` | Lockfile read when `wasm-bindgen` is `auto`. |
 | `keel-src` | empty | An existing Keel checkout at the pin to build from; empty clones SylphxAI/keel. |
+| `features` | empty | Extra cargo features for the keel CLI; a title whose `keel.toml` encodes GPU textures needs `texture-encoder`. |
 | `working-directory` | `.` | Directory holding `pin-file` and `cargo-lock`. |
 
 Outputs: `bin` (the directory on `PATH`) and `cache-hit`.
+
+A title that packs GPU textures sets `features: texture-encoder`, because
+`cargo install` without it builds the keel CLI without that feature (a weight
+one, `opt-level = 1` in Keel's workspace profile). Two shapes of the same pin
+are two cache entries and two builds, so a title asks for the features all of
+its pack jobs need rather than one shape per job.
 
 This replaces each title's own copy: an inline `cargo install --path
 .../crates/keel-cli` step, a local `.github/actions/keel-cli`, a separate

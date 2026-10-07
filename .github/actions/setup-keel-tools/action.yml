@@ -26,6 +26,12 @@ inputs:
   keel-src:
     description: An existing Keel checkout at the pin to build from; empty clones SylphxAI/keel.
     default: ""
+  features:
+    description: >
+      Extra cargo features for the keel CLI, on top of its defaults, as `cargo
+      install --features` takes them (space or comma separated). A title whose
+      keel.toml encodes GPU textures needs `texture-encoder`.
+    default: ""
   working-directory:
     description: Directory that holds pin-file and cargo-lock.
     default: .
@@ -69,6 +75,7 @@ runs:
         WASM_BINDGEN: ${{ inputs.wasm-bindgen }}
         CARGO_LOCK: ${{ inputs.cargo-lock }}
         KEEL_SRC: ${{ inputs.keel-src }}
+        KEEL_FEATURES: ${{ inputs.features }}
         CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         INSTALLER: ${{ github.action_path }}/install-keel-tools.sh
         ROOT: ${{ steps.key.outputs.root }}

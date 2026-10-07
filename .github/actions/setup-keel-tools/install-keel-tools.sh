@@ -18,6 +18,8 @@
 #   CARGO_LOCK      default: Cargo.lock
 #   KEEL_SRC        an existing Keel checkout at the pin (skips the clone)
 #   KEEL_REPO       default: https://github.com/SylphxAI/keel
+#   KEEL_FEATURES   extra cargo features for the keel CLI, space or comma
+#                   separated; empty builds it with its defaults
 set -euo pipefail
 mode="${1:-}"
 [ "$mode" = key ] || [ "$mode" = install ] || { echo "usage: $0 key | install DIR" >&2; exit 2; }
@@ -40,7 +42,12 @@ fi
 [ "$bindgen" = none ] || [[ "$bindgen" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { echo "the wasm-bindgen version is not x.y.z: '$bindgen'" >&2; exit 1; }
 
+features="${KEEL_FEATURES:-}"
+features="${features//,/ }"
+features="$(printf '%s' "$features" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')"
+
 stamp="keel=$pin wasm-bindgen=$bindgen"
+[ -z "$features" ] || stamp="$stamp features=$features"
 if [ "$mode" = key ]; then
   echo "keel-$pin-wasm-bindgen-$bindgen"
   exit 0
@@ -68,7 +75,9 @@ else
     cloned=1
   fi
   [ "$(git -C "$src" rev-parse HEAD)" = "$pin" ] || { echo "the Keel checkout $src is not at the pin $pin" >&2; exit 1; }
-  cargo install --path "$src/crates/keel-cli" --locked --root "$dir"
+  feature_args=()
+  if [ -n "$features" ]; then feature_args=(--features "$features"); fi
+  cargo install --path "$src/crates/keel-cli" --locked --root "$dir" "${feature_args[@]}"
   if [ -n "$cloned" ]; then rm -rf "$src"; fi
   printf '%s' "$stamp" > "$dir/stamp"
 fi

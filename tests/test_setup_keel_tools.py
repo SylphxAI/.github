@@ -89,7 +89,7 @@ class InstallerTest(unittest.TestCase):
         self.env = {**os.environ, **GIT_ENV, "PATH": f"{fakebin}:{os.environ['PATH']}",
                     "CARGO_LOG": str(self.cargo_log), "KEEL_REPO": str(self.keel_repo),
                     "RUNNER_TEMP": str(base / "runner"), "GITHUB_PATH": str(self.github_path)}
-        for k in ("KEEL_PIN", "KEEL_PIN_FILE", "WASM_BINDGEN", "CARGO_LOCK", "KEEL_SRC"):
+        for k in ("KEEL_PIN", "KEEL_PIN_FILE", "WASM_BINDGEN", "CARGO_LOCK", "KEEL_SRC", "KEEL_FEATURES"):
             self.env.pop(k, None)
 
     def tearDown(self):
@@ -154,6 +154,21 @@ class InstallerTest(unittest.TestCase):
         (self.title / "KEEL_PIN").unlink()
         r = self.run_installer("key", KEEL_PIN=self.pin)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_features_are_passed_and_stamped(self):
+        r = self.run_installer("install", str(self.root), KEEL_FEATURES="texture-encoder")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.builds()[-1].endswith("--features texture-encoder"), self.builds()[-1])
+        self.assertIn("features=texture-encoder", (self.root / "stamp").read_text())
+        built = len(self.builds())
+        # The same features are the warm cache; other features are another entry.
+        self.assertIn("keel tools from cache", self.run_installer("install", str(self.root),
+                                                                  KEEL_FEATURES=" texture-encoder ").stdout)
+        self.assertEqual(len(self.builds()), built)
+        r = self.run_installer("install", str(self.root), KEEL_FEATURES="texture-encoder,foo")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("building keel tools", r.stdout)
+        self.assertTrue(self.builds()[-1].endswith("--features texture-encoder foo"), self.builds()[-1])
 
     def test_rejects_short_pin_and_missing_bindgen(self):
         (self.title / "KEEL_PIN").write_text("abc123\n")
