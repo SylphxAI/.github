@@ -360,6 +360,15 @@ Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
 (`-xlarge-merge` for xlarge jobs), so a merge group never waits behind the
 pull-request backlog. The gate starter already uses it.
 
+A repository whose own policy check reads a static runner label (for example
+`check-owned-ci-runners.ts` in `EpiowAI/epiow-legacy` or
+`check-owned-runner-profiles.py` in `EpiowAI/korvana`) refuses the dynamic
+expression: name the label that repository already allows (`runs-on:
+sylphx-linux-standard`, or the profile's label of the same size class) on every
+gate lane. R8 reads a static label as a FAIL, so list such a repository in
+[`policy/optimistic-merge.json`](../policy/optimistic-merge.json) under an
+exemption that waives R8, with its class, reason, owner and review date.
+
 The verdict jobs (`ci-ok`, `verified`) run on `sylphx-linux-control`, the
 reserved gate pool, on every event; it has no `-merge` twin. A verdict keeps
 `if: always()`, so a cancelled run still reports a failure instead of a
@@ -392,7 +401,7 @@ exemption and writes the whole report with `--json`.
 | R5 | `ci.yml` has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
 | R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
 | R7 | `on_red` is `revert` (or `revert_pr_unarmed`) where the builder App reaches the repository, `notify` elsewhere |
-| R8 | in every workflow that runs on `merge_group`, each job on `sylphx-linux-standard` or `sylphx-linux-xlarge` selects its `-merge` twin on `merge_group` (the expression under Runners); verdict jobs on `sylphx-linux-control`, jobs whose `if:` keeps `merge_group` out, and runners chosen by `matrix`/`inputs` are out of scope |
+| R8 | in every workflow that runs on `merge_group`, each job on `sylphx-linux-standard` or `sylphx-linux-xlarge` selects its `-merge` twin on `merge_group` (the expression under Runners); verdict jobs on `sylphx-linux-control`, jobs whose `if:` keeps `merge_group` out, and runners chosen by `matrix`/`inputs` are out of scope. A repository whose own policy check reads a static runner label (see Runners) declares it in a named exemption |
 
 Unreadable is FAIL. A repository whose rows are waived by a policy
 exemption reports EXEMPT; an exemption carries a class, reason, owner and a
