@@ -221,4 +221,20 @@ jobs:
           exit "$code"
       - name: sccache stats
         if: always() && (steps.sccache.outputs.backend == 'buildcache' || steps.sccache.outputs.backend == 'static')
-        run: sccache --show-stats
+        env:
+          BACKEND: ${{ steps.sccache.outputs.backend }}
+        run: |
+          stats="$(sccache --show-stats 2>&1)" || stats="sccache stats unavailable"
+          printf '%s\n' "$stats"
+          {
+            echo "### Rust compile cache ($BACKEND, $GITHUB_EVENT_NAME)"
+            echo '```'
+            printf '%s\n' "$stats" | grep -E '^(Compile requests|Cache hits|Cache misses|Cache hits rate|Cache write errors|Non-cacheable calls|Cache location)' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Every miss followed by a failed write means the cache never fills
+          # and the hit rate stays at zero: say so on the run, not only in the log.
+          werr="$(printf '%s\n' "$stats" | awk '/^Cache write errors/ {print $4}')"
+          if [ "${werr:-0}" -gt 0 ]; then
+            echo "::warning title=sccache cannot write::${werr} cache writes failed on backend ${BACKEND}; the next run will miss again"
+          fi

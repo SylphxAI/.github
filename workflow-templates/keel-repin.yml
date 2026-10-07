@@ -95,3 +95,6 @@ jobs:
           owner: "@OWNER_TEAM"
           # Workflows to start on the default branch after the merge (it starts no push run).
           after-merge-workflows: ""
+          # The deployed title's host: a merged repin is settled only once its VERSION.json keel field
+          # is the merged commit (empty: no live check).
+          live-url: ""

@@ -26,6 +26,8 @@ SHA = re.compile(r"^[0-9a-f]{7,40}$")
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 API = "https://api.github.com"
 TIMEOUT = 30
+# Cloudflare Pages (*.pages.dev) answers urllib's default "Python-urllib/3.x" with HTTP 403.
+USER_AGENT = "sylphx-pages-publish-gate/1 (+https://github.com/SylphxAI/.github)"
 
 
 class ReadError(Exception):
@@ -34,7 +36,7 @@ class ReadError(Exception):
 
 def http_get(url: str, headers: dict[str, str] | None = None) -> tuple[int, str]:
     """(status, body). An HTTP error status is returned; a network failure raises ReadError."""
-    req = urllib.request.Request(url, headers=headers or {})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310 - https URLs from the caller
             return resp.status, resp.read(1 << 20).decode("utf-8", "replace")

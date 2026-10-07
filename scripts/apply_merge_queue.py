@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Converge the merge queue rule of every repository ruleset on policy/merge-queue.json.
+"""Converge the merge queue and review rules of every repository ruleset on policy/merge-queue.json.
 
 GitHub does not accept a `merge_queue` rule in an organization or enterprise
 ruleset (REST: only the repository rule schema carries it; docs: "Require merge
@@ -18,7 +18,10 @@ without --apply.
   scripts/apply_merge_queue.py --check             # exit 1 when any ruleset drifts
 
 What it manages: the parameters of the `merge_queue` rule of every ruleset that
-has one. Everything else in a ruleset is carried through unchanged on a write.
+has one, and the required approving review count of the `pull_request` rule of
+every repository ruleset that has one (policy `review`: 0, because `ci-ok` is
+the gate and an approval checks nothing it did not). Everything else in a
+ruleset is carried through unchanged on a write.
 What it only reports: whether the fast gate (`ci-ok`) is a required check of the
 same ruleset, and the strict flag. It never adds a required check, because a
 check no workflow reports would stop the queue.
@@ -38,6 +41,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "policy" / "merge-queue.json"
 HANDS_OFF_POLICY = ROOT / "policy" / "optimistic-merge.json"
+REVIEW_KEY = "required_approving_review_count"
 
 # REST (snake_case) <-> GraphQL (camelCase) names of the merge queue parameters.
 PARAMS = {
@@ -75,6 +79,9 @@ def load_policy(path: Path) -> dict:
     gate = policy.get("fast_gate", {})
     if not gate.get("context") or not isinstance(gate.get("integration_id"), int):
         raise ValueError("fast_gate needs a context and an integer integration_id")
+    count = policy.get("review", {}).get(REVIEW_KEY)
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        raise ValueError(f"review.{REVIEW_KEY} must be a non-negative integer")
     for key, fields in (("exclude", ("repo", "reason")), ("overrides", ("repo", "ruleset", "settings", "reason")),
                         ("fast_gate_overrides", ("repo", "ruleset", "context", "reason"))):
         for entry in policy.get(key, []):
@@ -160,17 +167,20 @@ def _failure(what: str, result: subprocess.CompletedProcess) -> Exception:
 
 QUERY = (
     'query{organization(login:"%s"){repositories(first:100,isArchived:false%s){pageInfo{hasNextPage endCursor} nodes{'
-    "name isFork defaultBranchRef{name} rulesets(first:30){nodes{databaseId name enforcement target "
+    "name isFork defaultBranchRef{name} rulesets(first:30,includeParents:false){nodes{databaseId name enforcement target "
     "conditions{refName{include exclude}} rules(first:40){nodes{type parameters{"
     "... on MergeQueueParameters{mergeMethod groupingStrategy maxEntriesToBuild minEntriesToMerge maxEntriesToMerge "
     "minEntriesToMergeWaitMinutes checkResponseTimeoutMinutes} "
-    "... on RequiredStatusChecksParameters{strictRequiredStatusChecksPolicy requiredStatusChecks{context integrationId}}"
+    "... on RequiredStatusChecksParameters{strictRequiredStatusChecksPolicy requiredStatusChecks{context integrationId}} "
+    "... on PullRequestParameters{requiredApprovingReviewCount}"
     "}}}}}}}}}"
 )
 
 
 def read_org(gh, org: str) -> list[dict]:
-    """Every ruleset that carries a merge_queue rule, one entry each: the live state."""
+    """Every repository ruleset that carries a merge_queue or a pull_request rule, one entry each: the live state.
+
+    `live` is None when the ruleset has no queue; `review` is None when it has no pull_request rule."""
     out: list[dict] = []
     after = ""
     while True:
@@ -179,7 +189,8 @@ def read_org(gh, org: str) -> list[dict]:
             for rs in node["rulesets"]["nodes"]:
                 rules = rs["rules"]["nodes"]
                 queue = next((r for r in rules if r["type"] == "MERGE_QUEUE"), None)
-                if queue is None:
+                review = next((r for r in rules if r["type"] == "PULL_REQUEST"), None)
+                if queue is None and review is None:
                     continue
                 checks = next((r for r in rules if r["type"] == "REQUIRED_STATUS_CHECKS"), None)
                 cparams = (checks or {}).get("parameters") or {}
@@ -189,7 +200,8 @@ def read_org(gh, org: str) -> list[dict]:
                     "ruleset": rs["name"],
                     "enforcement": rs["enforcement"],
                     "refs": (rs.get("conditions") or {}).get("refName", {}).get("include", []),
-                    "live": {k: queue["parameters"][g] for k, g in PARAMS.items()},
+                    "live": {k: queue["parameters"][g] for k, g in PARAMS.items()} if queue else None,
+                    "review": (review.get("parameters") or {}).get("requiredApprovingReviewCount", 0) if review else None,
                     "required": [c["context"] for c in cparams.get("requiredStatusChecks", [])] if checks else None,
                     "strict": cparams.get("strictRequiredStatusChecksPolicy") if checks else None,
                 })
@@ -211,8 +223,17 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
             row.update(status="EXCLUDED", reason=skip[item["repo"]], changes={})
             rows.append(row)
             continue
-        want = desired_settings(policy, item["repo"], item["ruleset"])
-        changes = {k: [item["live"][k], want[k]] for k in PARAMS if item["live"][k] != want[k]}
+        changes = {}
+        if item["live"] is not None:
+            want = desired_settings(policy, item["repo"], item["ruleset"])
+            changes = {k: [item["live"][k], want[k]] for k in PARAMS if item["live"][k] != want[k]}
+        count = policy["review"][REVIEW_KEY]
+        if item["review"] is not None and item["review"] != count:
+            changes[REVIEW_KEY] = [item["review"], count]
+        if item["live"] is None:
+            row.update(status="DRIFT" if changes else "OK", changes=changes, notes=[])
+            rows.append(row)
+            continue
         gate = expected_gate(policy, item["repo"], item["ruleset"])
         notes = []
         if item["required"] is None:
@@ -251,20 +272,32 @@ def put_body(ruleset: dict) -> dict:
     return {k: ruleset[k] for k in PUT_KEYS if k in ruleset}
 
 
-def with_queue(ruleset: dict, settings: dict) -> dict:
+def with_rules(ruleset: dict, settings: dict, review_count: int) -> dict:
     body = put_body(ruleset)
     rules = []
     for rule in body["rules"]:
         if rule["type"] == "merge_queue":
             rule = {"type": "merge_queue", "parameters": {**rule["parameters"], **settings}}
+        elif rule["type"] == "pull_request":
+            rule = {"type": "pull_request", "parameters": {**rule.get("parameters", {}), REVIEW_KEY: review_count}}
         rules.append(rule)
     body["rules"] = rules
     return body
 
 
-def queue_params(ruleset: dict) -> dict:
-    rule = next(r for r in ruleset["rules"] if r["type"] == "merge_queue")
-    return {k: rule["parameters"][k] for k in PARAMS}
+def queue_params(ruleset: dict) -> dict | None:
+    rule = next((r for r in ruleset["rules"] if r["type"] == "merge_queue"), None)
+    return {k: rule["parameters"][k] for k in PARAMS} if rule else None
+
+
+def review_count(ruleset: dict) -> int | None:
+    rule = next((r for r in ruleset["rules"] if r["type"] == "pull_request"), None)
+    return (rule.get("parameters") or {}).get(REVIEW_KEY, 0) if rule else None
+
+
+def managed(ruleset: dict) -> tuple:
+    """The part of a ruleset this tool writes: the queue parameters and the review count."""
+    return queue_params(ruleset), review_count(ruleset)
 
 
 def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | None = None) -> list[dict]:
@@ -277,11 +310,14 @@ def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | N
         try:
             before = gh.rest(path)
             (backup_dir / f"{row['repo'].replace('/', '__')}__{row['id']}.json").write_text(json.dumps(before, indent=2) + "\n")
-            want = desired_settings(policy, row["repo"], row["ruleset"])
-            after = gh.rest(path, "PUT", with_queue(before, want))
-            if queue_params(after) != want:
+            settings = desired_settings(policy, row["repo"], row["ruleset"])
+            count = policy["review"][REVIEW_KEY]
+            want = (settings if queue_params(before) is not None else None,
+                    count if review_count(before) is not None else None)
+            after = gh.rest(path, "PUT", with_rules(before, settings, count))
+            if managed(after) != want:
                 after = gh.rest(path)
-            if queue_params(after) != want:
+            if managed(after) != want:
                 outcome["result"] = "FAILED: read back differs"
             else:
                 outcome["result"] = "APPLIED"
@@ -305,7 +341,7 @@ def rollback(gh, backup_dir: Path, pause: float | None = None) -> list[dict]:
         outcome = {"repo": repo, "id": saved["id"], "ruleset": saved["name"]}
         try:
             after = gh.rest(path, "PUT", put_body(saved))
-            outcome["result"] = "RESTORED" if queue_params(after) == queue_params(saved) else "FAILED: read back differs"
+            outcome["result"] = "RESTORED" if managed(after) == managed(saved) else "FAILED: read back differs"
         except Forbidden as exc:
             outcome["result"] = f"STOPPED: {exc}"
             results.append(outcome)

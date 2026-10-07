@@ -36,11 +36,14 @@ sits in a tag's history, because the guide asks a title to pin the tag itself.
 ## The ratchet
 
 A failure only stands when the pull request **changes the set of Keel commits the repository pins**,
-comparing the pull request's merge commit with its first parent (the base). A pull request that leaves
+comparing the pull request's merge commit with its first parent (the base). On a `merge_group` run the
+base is the first parent of the group's commit even when it has only one (a squash or rebase queue), so a
+pin that `main` already carries does not turn the queue red. A pull request that leaves
 the pin alone gets the same findings as warnings marked `[existing]`, so a title that already forks Keel
 is not turned red by an unrelated change; the moment someone moves a pin, everything must be clean
 (which also makes the pull request that repairs a fork pass). A push, a manual run (`base:` empty) or a
-base that is not in the checkout judges every pin strictly.
+base that is not in the checkout judges every pin strictly. The starter passes `base: ''` on
+`workflow_dispatch`, so a manual run is the full every-pin audit.
 
 ## Using it
 

@@ -27,10 +27,19 @@ while :; do
     sign=(--aws-sigv4 "aws:amz:us-east-1:s3" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY")
     if ! curl -sS -o /dev/null --max-time 10 -w '%{http_code}' "${sign[@]}" -I "$bucket_url" | grep -q '^200$'; then
       curl -sS --max-time 10 "${sign[@]}" -X PUT "$bucket_url" -o /dev/null || true
-      lifecycle='<LifecycleConfiguration><Rule><ID>expire</ID><Filter><Prefix></Prefix></Filter><Status>Enabled</Status><Expiration><Days>14</Days></Expiration></Rule></LifecycleConfiguration>'
-      md5="$(printf '%s' "$lifecycle" | openssl dgst -md5 -binary | base64)"
-      curl -sS --max-time 10 "${sign[@]}" -X PUT -H "Content-MD5: $md5" --data "$lifecycle" "$bucket_url?lifecycle" -o /dev/null || true
     fi
+    # Expiry, applied on every run so a bucket made earlier gets it too (a
+    # bucket that was made before the one-namespace prefix kept objects under
+    # `<owner>/<repo>/` that no run reads again, filled the user's quota, and
+    # RGW then refused every cache write with 403 QuotaExceeded): the cache
+    # namespace expires after 14 days, the retired `<owner>/` namespace after 1.
+    lifecycle="<LifecycleConfiguration><Rule><ID>expire</ID><Filter><Prefix>${SCCACHE_S3_KEY_PREFIX}/</Prefix></Filter><Status>Enabled</Status><Expiration><Days>14</Days></Expiration></Rule>"
+    if [ -n "${GITHUB_REPOSITORY_OWNER:-}" ] && [ "${GITHUB_REPOSITORY_OWNER}" != "$SCCACHE_S3_KEY_PREFIX" ]; then
+      lifecycle="$lifecycle<Rule><ID>expire-retired-repo-prefix</ID><Filter><Prefix>${GITHUB_REPOSITORY_OWNER}/</Prefix></Filter><Status>Enabled</Status><Expiration><Days>1</Days></Expiration></Rule>"
+    fi
+    lifecycle="$lifecycle</LifecycleConfiguration>"
+    md5="$(printf '%s' "$lifecycle" | openssl dgst -md5 -binary | base64)"
+    curl -sS --max-time 10 "${sign[@]}" -X PUT -H "Content-MD5: $md5" --data "$lifecycle" "$bucket_url?lifecycle" -o /dev/null || true
   fi
   export SCCACHE_IDLE_TIMEOUT=0
   if SCCACHE_LOG=warn sccache --start-server; then

@@ -23,7 +23,9 @@ contract drift, the unit tests the change affects, and - only when the change
 touches the repository's migration globs - the migration lanes: lint and
 integrity (atlas lint and `atlas.sum`, drizzle checks) and the database-backed
 migration tests. DDL cannot be undone by a revert, so a migration is
-exercised before it reaches the trunk. Everything else -
+exercised before it reaches the trunk. A change to `sylphx.toml`, a `package.json`, a
+Dockerfile or the stack baseline also runs the stack-conformance lane
+([stack-conformance.md](stack-conformance.md)). Everything else -
 integration and database tests, browser and device matrices, release builds,
 proofs - is a suite lane.
 
@@ -62,8 +64,9 @@ proofs - is a suite lane.
    leaves its organization. Token split: every Actions call (runs, jobs,
    artifacts, dispatch of the verify workflow) uses the caller's
    `github.token`, so the caller grants `actions: write`; the builder App
-   installation needs no `actions` permission, only contents, issues and
-   pull-requests write, and is used for what must start CI (verify and revert
+   installation needs no `actions` permission, only contents, issues,
+   pull-requests and workflows write (a verify or revert branch can point at
+   a commit with older workflow files), and is used for what must start CI (verify and revert
    branches, pull requests, enqueue). If the App mint or the grant probe
    fails, the handler comments the missing grant on `ops-issue` (the caller
    grants `issues: write`), writes it to the step summary and fails the job;
@@ -211,6 +214,17 @@ benchmark or nightly) never makes the trunk red here.
       ignore: |
         property "workflow_sha" is not defined
   ```
+
+  It also refuses a timing or performance budget before merge
+  ([`perf_gate.py`](../.github/actions/workflow-lint/perf_gate.py)): in a
+  workflow triggered by `pull_request`, `pull_request_target`, `merge_group`
+  or `workflow_call`, `PERF_ENFORCE` other than `0`, Lighthouse (`lhci`),
+  `hyperfine`, `k6 run` or the chat perf run fail the lint. Shared runners
+  move wall-clock numbers with load, so timing is judged after merge, as a
+  median against a stored baseline; before merge a workflow may only measure
+  and print. A delivered customer repository (`sylphx_delivery` =
+  `delivered`, read from the event payload or the repository's property
+  values) skips this rule.
 - [`red-main.yml`](../.github/workflows/red-main.yml): the reusable handler.
 
 ## Lifecycle-only alerts (no repair)

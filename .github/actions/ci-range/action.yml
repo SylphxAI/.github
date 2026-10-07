@@ -40,8 +40,10 @@ inputs:
     default: ""
   only:
     description: >
-      Comma-separated lanes to narrow to (the verify workflow's dispatch
-      input, which the red-main handler fills with the failed job names).
+      Comma-separated lanes to run, whatever the range selected (the verify
+      workflow's dispatch input, which the red-main handler fills with the
+      failed job names). Names that are not lanes are ignored; if none is a
+      lane, the range's selection runs.
     default: ""
   token:
     description: Token that can read this repository's workflow runs and check runs.

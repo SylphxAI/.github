@@ -108,6 +108,79 @@ class CiOkTest(unittest.TestCase):
         state, detail = ci_ok.evaluate(runs, set(), required={"a", "b", "c"})
         self.assertEqual((state, detail), ("fail", ["b=skipped (required)", "c=missing (required)"]))
 
+    def test_cancelled_run_superseded_by_a_later_run_of_the_same_check_passes(self) -> None:
+        # Cubeage/big2-tycoon#15 @575a2304: plain-language was cancelled at
+        # 18:53 by a newer run of its workflow, which succeeded at 19:58 on the
+        # same head; the check-runs list returns both, and ci-ok failed twice.
+        old = dict(run("plain-language", conclusion="cancelled"), id=10, check_suite={"id": 1},
+                   started_at="2026-10-04T18:50:00Z")
+        new = dict(run("plain-language"), id=20, check_suite={"id": 2}, started_at="2026-10-04T19:55:00Z")
+        wr = [{"check_suite_id": 1, "path": ".github/workflows/plain.yml", "event": "pull_request",
+               "created_at": "2026-10-04T18:50:00Z"},
+              {"check_suite_id": 2, "path": ".github/workflows/plain.yml", "event": "pull_request",
+               "created_at": "2026-10-04T19:55:00Z"}]
+        events = ci_ok.suite_events(wr)
+        self.assertEqual(ci_ok.evaluate([old, new, run("a")], set(), suite_events=events),
+                         ("pass", ["a", "plain-language"]))
+        # Without `actions: read` the older cancelled run of the same name still yields.
+        self.assertEqual(ci_ok.evaluate([old, new, run("a")], set())[0], "pass")
+        # The newest run is what counts: a later failure still fails.
+        self.assertEqual(ci_ok.evaluate([dict(old, conclusion="success"), dict(new, conclusion="failure")],
+                                        set(), suite_events=events)[0], "fail")
+        self.assertTrue(ci_ok.needs_suite_events([old, new], set()))
+        self.assertFalse(ci_ok.needs_suite_events([new, run("a")], set()))
+
+    def test_same_named_jobs_of_two_live_workflows_both_count(self) -> None:
+        # Two workflows that each have a `build` job: neither is superseded.
+        a = dict(run("build", conclusion="failure"), id=1, check_suite={"id": 1}, started_at="2026-10-04T18:00:00Z")
+        b = dict(run("build"), id=2, check_suite={"id": 2}, started_at="2026-10-04T18:01:00Z")
+        wr = [{"check_suite_id": 1, "path": ".github/workflows/ci.yml", "event": "pull_request",
+               "created_at": "2026-10-04T18:00:00Z"},
+              {"check_suite_id": 2, "path": ".github/workflows/web.yml", "event": "pull_request",
+               "created_at": "2026-10-04T18:01:00Z"}]
+        self.assertEqual(ci_ok.evaluate([a, b], set(), suite_events=ci_ok.suite_events(wr))[0], "fail")
+        self.assertEqual(ci_ok.evaluate([a, b], set())[0], "fail")
+
+    def test_exhausted_api_budget_fails_closed_before_the_deadline(self) -> None:
+        # With the token's rate limit spent past the deadline, the gate fails
+        # at once with a clear message instead of polling until it times out.
+        import io, email.message, urllib.error
+        headers = email.message.Message()
+        headers["x-ratelimit-remaining"] = "0"
+        headers["x-ratelimit-reset"] = "5000"
+        err = urllib.error.HTTPError("https://api.github.com/x", 403, "rate limit", headers, io.BytesIO(b""))
+        limited = ci_ok.rate_limited(err, now=1000.0)
+        self.assertEqual(limited, 5000.0)
+        other = urllib.error.HTTPError("https://api.github.com/x", 403, "forbidden", email.message.Message(),
+                                       io.BytesIO(b""))
+        self.assertIsNone(ci_ok.rate_limited(other, now=1000.0))
+        retry = email.message.Message()
+        retry["retry-after"] = "60"
+        self.assertEqual(ci_ok.rate_limited(
+            urllib.error.HTTPError("u", 429, "slow down", retry, io.BytesIO(b"")), now=1000.0), 1060.0)
+
+        calls = []
+
+        def fetch_limited(*_a, **_k):
+            calls.append(1)
+            raise ci_ok.RateLimited(ci_ok.time.time() + 86400)
+
+        env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0", "CI_OK_INTERVAL": "0",
+               "CI_OK_TIMEOUT_MINUTES": "1"}
+        out = io.StringIO()
+        from unittest import mock
+        import contextlib
+        with mock.patch.dict(ci_ok.os.environ, env), mock.patch.object(ci_ok, "fetch_suites", fetch_limited), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 1)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("rate limit", out.getvalue())
+
+    def test_low_api_budget_slows_polling(self) -> None:
+        self.assertEqual(ci_ok.poll_interval(20, remaining=5000), 20)
+        self.assertEqual(ci_ok.poll_interval(20, remaining=None), 20)
+        self.assertEqual(ci_ok.poll_interval(20, remaining=150), 60)
+
 
 if __name__ == "__main__":
     unittest.main()

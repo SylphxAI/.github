@@ -1,0 +1,19 @@
+# Repository <TAB> path pattern <TAB> why this path may name a chat-API host.
+# The repository is the exact owner/name GitHub reports for the run, or * for
+# every repository. The path pattern is a Perl regular expression matched
+# against the repository-relative path. Everything else sends chat through
+# Notify (cloud docs/adr/ADR-01M495XFM4158579XRYVC92M6S-notify-chat-channel.md,
+# decision 7 and the Guard section).
+*	(^|/)(tests?|__tests__|__mocks__|fixtures|testdata|e2e)/	tests and fixtures
+*	[._-](test|spec)\.[A-Za-z0-9]+$	tests
+*	(^|/)test_[^/]*\.py$	tests
+*	\.(md|mdx)$	documentation names hosts and sends nothing
+SylphxAI/cloud	^services/notify/	Notify's chat sender
+SylphxAI/cloud	^services/ai/.*/telegram_operator_bot/	conversational agent: the AI service's operator bot
+SylphxAI/agents	^crates/spiron-channels/	conversational agent: channel adapters
+SylphxAI/agents	^crates/spiron-api/src/ingress/	conversational agent: channel ingress
+SylphxAI/agents	^scripts/egress-client-allowlist\.json$	egress policy that admits the chat hosts
+SylphxAI/work	^src/(main|v2_act)\.rs$	chat administration with the bot's own rights (topics, pins, bans)
+SylphxAI/infra	^status/worker/	platform paging: the out-of-cell status worker
+SylphxAI/infra	^infra/addons/monitoring/	platform paging: Alertmanager receiver, alert digest and alert tickets
+SylphxAI/.github	^\.github/actions/chat-senders/	this check's own host list
