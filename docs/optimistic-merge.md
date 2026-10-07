@@ -52,7 +52,9 @@ proofs - is a suite lane.
    the suite lanes and the aggregate job named exactly `verified`. Each lane
    that runs tests uploads a JUnit report as `junit-<lane>` (failing and passing
    testcases); the handler names failing tests and each test's trace window
-   from it.
+   from it. The upload is a diagnostic: it carries `continue-on-error: true`
+   and `retention-days: 3`, so a spent organization artifact quota never turns
+   a passing lane red ([run-store](run-store.md)).
 4. **`.github/workflows/red-main.yml`** from
    [`workflow-templates/red-main.yml`](../workflow-templates/red-main.yml),
    unchanged. In the organization that holds the builder App
