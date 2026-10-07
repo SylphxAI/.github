@@ -386,7 +386,7 @@ exemption and writes the whole report with `--json`.
 | R2 | `ci.yml` runs on `merge_group` and has the `ci-ok` job |
 | R3 | `verify.yml` runs on push to the default branch, has a `verified` job and does not cancel a trunk run |
 | R3b | every other workflow that runs on push to the default branch is called from `verify.yml`, or carries the comment `# optimistic-merge: advisory`; otherwise its red never reaches the handler |
-| R4 | `red-main.yml` calls the shared handler pinned to a full SHA at or after the policy floor, and its `if:` follows the default branch |
+| R4 | `red-main.yml` calls the shared handler pinned to a full SHA at or after the policy floor, its `if:` follows the default branch, and its verify workflow has a `workflow_dispatch` trigger declaring the `lane-input` input (default `lanes`; `lane-input: ""` when the workflow takes no inputs), else every candidate dispatch is refused with HTTP 422 |
 | R5 | `ci.yml` has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
 | R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
 | R7 | `on_red` is `revert` (or `revert_pr_unarmed`) where the builder App reaches the repository, `notify` elsewhere |

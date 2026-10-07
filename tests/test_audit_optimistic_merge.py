@@ -260,6 +260,37 @@ class RowFailureTest(unittest.TestCase):
         self.assertEqual(failing(rows), {"R4"})
         self.assertIn("could not be compared", rows["R4"]["detail"])
 
+    def test_r4_default_lane_input_needs_a_lanes_dispatch_input(self) -> None:
+        # The anymd shape: the caller keeps the handler's default lane-input
+        # (lanes) while verify.yml's workflow_dispatch declares no inputs, so
+        # every candidate dispatch is refused with HTTP 422.
+        facts = conformant()
+        facts["files"]["verify.yml"] = re.sub(
+            r"  workflow_dispatch:\n    inputs:\n(?:      .*\n)+", "  workflow_dispatch:\n", facts["files"]["verify.yml"])
+        self.assertEqual(audit.dispatch_inputs(facts["files"]["verify.yml"]), set())
+        self.only(facts, "R4", "lane-input `lanes` is not a workflow_dispatch input of `verify.yml`")
+        facts["files"]["red-main.yml"] = red_main() + '      lane-input: ""\n'
+        self.assertNotIn("R4", failing(run_rows(facts)))
+
+    def test_r4_a_named_lane_input_must_be_declared(self) -> None:
+        facts = conformant()
+        self.assertEqual(audit.dispatch_inputs(facts["files"]["verify.yml"]), {"lanes"})
+        facts["files"]["red-main.yml"] = red_main() + "      lane-input: suites # the verify input\n"
+        self.only(facts, "R4", "lane-input `suites`")
+        facts["files"]["red-main.yml"] = red_main() + "      lane-input: 'lanes'\n"
+        self.assertNotIn("R4", failing(run_rows(facts)))
+
+    def test_r4_the_verify_workflow_must_be_dispatchable_and_readable(self) -> None:
+        facts = conformant()
+        facts["files"]["verify.yml"] = facts["files"]["verify.yml"].replace("  workflow_dispatch:\n", "  pull_request:\n")
+        self.assertIsNone(audit.dispatch_inputs(facts["files"]["verify.yml"]))
+        self.assertIn("no workflow_dispatch trigger", run_rows(facts)["R4"]["detail"])
+        facts = conformant()
+        facts["files"]["red-main.yml"] = red_main().replace("verify-workflow: verify.yml", "verify-workflow: suite.yml")
+        self.only(facts, "R4", "`suite.yml` is unreadable")
+        facts["all_workflows"]["suite.yml"] = facts["files"]["verify.yml"]
+        self.assertNotIn("R4", failing(run_rows(facts)))
+
     def test_r5_main_state_job_pin_and_need(self) -> None:
         facts = conformant()
         facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
