@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "doc": "docs/stack-conformance.md#knowledge-and-crm-tables. Read by .github/actions/stack-conformance. A product's knowledge graph, its memory spaces and its CRM customer graph are Sylphx Knowledge (SylphxAI/cloud docs/adr/ADR-01M4AJK2TXTJWZ4X5B06HPT0R4-sylphx-knowledge-permission-aware-graph.md, D6): one permission space per record, provenance, bi-temporal relations. A product does not hold one of these tables locally. The instances already on a repository's default branch when the rule shipped are recorded here with the date each was found and an expiry date; after that date the entry stops applying and every pull request in that repository fails until the table has moved onto Sylphx Knowledge and been deleted. Delete an entry when its table is gone; extend a date only with a reason in the pull request.",
+  "decision": "SylphxAI/cloud docs/adr/ADR-01M4AJK2TXTJWZ4X5B06HPT0R4-sylphx-knowledge-permission-aware-graph.md, D6",
+  "owner_repos": ["SylphxAI/cloud"],
+  "baseline": [
+    {"repo": "SylphxAI/agents", "table": "knowledge_entries", "found": "2026-10-07", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/agents", "table": "knowledge_relations", "found": "2026-10-07", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/agents", "table": "relations", "found": "2026-10-07", "expires": "2026-11-30"}
+  ]
+}
