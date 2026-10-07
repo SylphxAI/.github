@@ -108,7 +108,10 @@ exchange() {
   token="$(json_field "$work/tok" env.TURBO_TOKEN)" || token="$(json_field "$work/tok" token)" || token=""
   api="$(json_field "$work/tok" env.TURBO_API)" || api=""
   rm -f "$work/tok"
-  if ! [[ "$token" =~ ^[A-Za-z0-9._~+/=-]{1,8192}$ ]] || ! [[ "$api" =~ ^https?://[A-Za-z0-9.:/_~-]+$ ]]; then
+  # The length is checked apart from the pattern: macOS's regex library caps a
+  # bounded repeat at 255 (RE_DUP_MAX), so {1,8192} would never match there.
+  if [ -z "$token" ] || [ "${#token}" -gt 8192 ] || ! [[ "$token" =~ ^[A-Za-z0-9._~+/=-]+$ ]] \
+    || ! [[ "$api" =~ ^https?://[A-Za-z0-9.:/_~-]+$ ]]; then
     token=""
     reason="token exchange: invalid response"
     return 1
