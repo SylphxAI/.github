@@ -49,7 +49,11 @@ features="$(printf '%s' "$features" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e
 stamp="keel=$pin wasm-bindgen=$bindgen"
 [ -z "$features" ] || stamp="$stamp features=$features"
 if [ "$mode" = key ]; then
-  echo "keel-$pin-wasm-bindgen-$bindgen"
+  # The cache key carries the features too, or two shapes of one pin restore
+  # each other's root, find a different stamp, rebuild and then never save
+  # (cache-hit is true), so each shape rebuilds on every run. Commas would
+  # split the key's parts, and line 46 already replaced them with spaces.
+  echo "keel-$pin-wasm-bindgen-$bindgen${features:+ features=$features}"
   exit 0
 fi
 

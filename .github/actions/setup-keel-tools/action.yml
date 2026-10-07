@@ -55,6 +55,7 @@ runs:
         KEEL_PIN_FILE: ${{ inputs.pin-file }}
         WASM_BINDGEN: ${{ inputs.wasm-bindgen }}
         CARGO_LOCK: ${{ inputs.cargo-lock }}
+        KEEL_FEATURES: ${{ inputs.features }}
         INSTALLER: ${{ github.action_path }}/install-keel-tools.sh
       run: |
         set -euo pipefail

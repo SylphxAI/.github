@@ -109,6 +109,23 @@ class InstallerTest(unittest.TestCase):
         r = self.run_installer("key", WASM_BINDGEN="none")
         self.assertEqual(r.stdout.strip(), f"keel-{self.pin}-wasm-bindgen-none")
 
+    def test_key_carries_the_features(self):
+        # Two shapes of one pin are two cache entries: without this, a warm key
+        # from the other shape restores a root whose stamp differs, rebuilds,
+        # and the save step is skipped (cache-hit is true), so it never warms.
+        plain = self.run_installer("key")
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+        r = self.run_installer("key", KEEL_FEATURES="texture-encoder")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), plain.stdout.strip() + " features=texture-encoder")
+        # Spaces and commas name the same shape, so they are the same entry; a
+        # comma would split the key's parts.
+        self.assertEqual(self.run_installer("key", KEEL_FEATURES=" texture-encoder ").stdout.strip(),
+                         r.stdout.strip())
+        self.assertEqual(self.run_installer("key", KEEL_FEATURES="texture-encoder,foo").stdout.strip(),
+                         plain.stdout.strip() + " features=texture-encoder foo")
+        self.assertNotIn(",", r.stdout)
+
     def test_cold_builds_then_warm_is_from_cache(self):
         r = self.run_installer("install", str(self.root))
         self.assertEqual(r.returncode, 0, r.stderr)
