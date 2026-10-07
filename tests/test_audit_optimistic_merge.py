@@ -73,6 +73,15 @@ def compare_fake(statuses: dict | None = None):
     return audit.Comparer(FLOOR, read), calls
 
 
+def compare_files_fake(status: str, files: list):
+    calls = []
+
+    def read(floor, pin):
+        calls.append(pin)
+        return {"status": status, "files": files}
+    return audit.Comparer(FLOOR, read), calls
+
+
 def run_rows(facts: dict, compare=None) -> dict:
     return audit.evaluate_rows(facts, POLICY, compare or compare_fake()[0])
 
@@ -260,6 +269,47 @@ class RowFailureTest(unittest.TestCase):
         self.assertEqual(failing(rows), {"R4"})
         self.assertIn("could not be compared", rows["R4"]["detail"])
 
+    def test_r4_a_pin_behind_the_floor_passes_when_red_main_is_unchanged(self) -> None:
+        facts = conformant()
+        facts["files"]["red-main.yml"] = red_main(OLDER)
+        compare, _ = compare_files_fake("behind", [".github/actions/main-red-gate/action.yml", "docs/x.md"])
+        self.assertEqual(failing(run_rows(facts, compare)), set())
+        compare, _ = compare_files_fake("diverged", [".github/workflows/red-main.yml"])
+        rows = run_rows(facts, compare)
+        self.assertEqual(failing(rows), {"R4"})
+        self.assertIn("diverged", rows["R4"]["detail"])
+
+    def test_r5_a_pin_behind_the_floor_passes_when_the_gate_action_is_unchanged(self) -> None:
+        facts = conformant()
+        facts["files"]["ci.yml"] = starter("optimistic-gate.yml", OLDER)
+        compare, _ = compare_files_fake("behind", [".github/workflows/red-main.yml"])
+        self.assertEqual(failing(run_rows(facts, compare)), set())
+        compare, _ = compare_files_fake("behind", [".github/actions/main-red-gate/action.yml"])
+        rows = run_rows(facts, compare)
+        self.assertEqual(failing(rows), {"R5"})
+        self.assertIn("behind", rows["R5"]["detail"])
+
+    def test_a_compare_without_a_file_list_still_fails_a_pin_behind_the_floor(self) -> None:
+        facts = conformant()
+        facts["files"]["red-main.yml"] = red_main(OLDER)
+        self.only(facts, "R4", "behind")
+
+    def test_the_gate_may_be_any_workflow_with_merge_group_and_ci_ok(self) -> None:
+        facts = conformant()
+        gate = facts["files"]["ci.yml"]
+        facts["files"]["ci.yml"] = None
+        facts["all_workflows"]["ci-ok.yml"] = gate
+        self.assertEqual(failing(run_rows(facts)), set())
+        facts["all_workflows"]["ci-ok.yml"] = gate.replace("needs: [main-state, plan,", "needs: [plan,")
+        self.only(facts, "R5", "ci-ok.yml")
+        facts["all_workflows"]["ci-ok.yml"] = gate.replace("  merge_group:\n", "")
+        self.assertIn("R2", failing(run_rows(facts)))
+
+    def test_ci_yml_is_the_gate_when_it_qualifies(self) -> None:
+        facts = conformant()
+        facts["all_workflows"]["other.yml"] = "on:\n  merge_group:\njobs:\n  ci-ok:\n    runs-on: x\n"
+        self.assertEqual(audit.gate_workflow(facts)[0], "ci.yml")
+
     def test_r5_main_state_job_pin_and_need(self) -> None:
         facts = conformant()
         facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
@@ -433,7 +483,9 @@ class PolicyTest(unittest.TestCase):
         for repo, kind in (("Cubeage/big2-tycoon", "suite-is-gate"), ("Cubeage/cubeage-studio", "suite-is-gate"),
                            ("Cubeage/fun-big2-hk", "on-red-notify"), ("Cubeage/fun-big2-tw", "on-red-notify"),
                            ("SylphxAI/bgca", "hands-off"), ("Cubeage/hk-mahjong-tycoon", "hands-off"),
-                           ("Cubeage/Big2TycoonHk", "frozen-legacy")):
+                           ("Cubeage/Big2TycoonHk", "frozen-legacy"), ("Cubeage/cubeage-platform", "hands-off"),
+                           ("SylphxAI/lockdocs", "suite-is-gate"), ("SylphxAI/homebrew-tap", "no-build"),
+                           ("SylphxAI/owner", "no-build"), ("SylphxAI/.github", "suite-is-gate")):
             self.assertEqual(audit.exemption_for(POLICY, repo, today)[0]["class"], kind, repo)
 
     def test_a_security_advisory_fork_is_exempt_and_its_parent_is_not(self) -> None:
@@ -562,8 +614,8 @@ def node_for(facts: dict, with_workflows: bool) -> dict:
 
 
 class FakeGh:
-    def __init__(self, repos: dict[str, dict[str, dict]], statuses: dict | None = None):
-        self.repos, self.statuses = repos, statuses or {}
+    def __init__(self, repos: dict[str, dict[str, dict]], statuses: dict | None = None, files: dict | None = None):
+        self.repos, self.statuses, self.files = repos, statuses or {}, files or {}
         self.queries: list[str] = []
         self.compares: list[str] = []
 
@@ -585,9 +637,13 @@ class FakeGh:
         return {"data": data}
 
     def rest(self, path: str) -> dict:
+        # The reader compares pin...floor; `statuses` and `files` are keyed by pin and
+        # say where the pin stands against the floor, as GitHub would put floor...pin.
         self.compares.append(path)
-        pin = path.rsplit("...", 1)[1]
-        return {"status": self.statuses.get(pin, "ahead")}
+        pin = path.rsplit("/", 1)[1].split("...", 1)[0]
+        status = self.statuses.get(pin, "ahead")
+        flipped = {"ahead": "behind", "behind": "ahead"}.get(status, status)
+        return {"status": flipped, "files": [{"filename": f} for f in self.files.get(pin, [])]}
 
 
 class CollectTest(unittest.TestCase):
@@ -642,7 +698,22 @@ class CollectTest(unittest.TestCase):
         collected = audit.collect(gh, ["SylphxAI"], POLICY, TODAY)
         report = audit.evaluate(collected, POLICY, audit.Comparer(FLOOR, audit.compare_reader(gh, POLICY)), TODAY)
         self.assertEqual(report["summary"]["FAIL"], 0, report)
-        self.assertEqual(gh.compares, [f"repos/SylphxAI/.github/compare/{FLOOR}...{NEWER}"])
+        self.assertEqual(gh.compares, [f"repos/SylphxAI/.github/compare/{NEWER}...{FLOOR}"])
+
+    def test_reader_lists_the_changes_between_a_behind_pin_and_the_floor(self) -> None:
+        # GitHub diffs the merge base against the head: only pin...floor shows what a
+        # pin behind the floor misses. A changed red-main.yml there is a FAIL.
+        gh = FakeGh({}, statuses={NEWER: "behind"}, files={NEWER: [".github/workflows/red-main.yml"]})
+        compare = audit.Comparer(FLOOR, audit.compare_reader(gh, POLICY))
+        ok, why = compare.at_or_after(NEWER, audit.R4_COMPONENT)
+        self.assertFalse(ok, why)
+        self.assertTrue(compare.at_or_after(NEWER, audit.R5_COMPONENT)[0])
+        self.assertEqual(gh.compares, [f"repos/SylphxAI/.github/compare/{NEWER}...{FLOOR}"])
+
+    def test_reader_never_waives_a_diverged_pin_by_its_file_list(self) -> None:
+        gh = FakeGh({}, statuses={NEWER: "diverged"}, files={NEWER: ["docs/x.md"]})
+        compare = audit.Comparer(FLOOR, audit.compare_reader(gh, POLICY))
+        self.assertFalse(compare.at_or_after(NEWER, audit.R5_COMPONENT)[0])
 
     def test_batched_queries_not_one_per_repository(self) -> None:
         fleet = {"SylphxAI": {}}

@@ -8,16 +8,19 @@ reads, never a write.
 Rows, per non-archived repository of the policy's organizations:
 
   R1   sylphx.toml declares [ci] merge = "optimistic" with an explicit on_red
-  R2   ci.yml runs on merge_group and defines the `ci-ok` job
+  R2   the gate workflow (ci.yml, else any workflow) runs on merge_group and
+       defines the `ci-ok` job
   R3   verify.yml runs on push to the default branch, defines a `verified` job
        and never cancels a running trunk verify (cancel-in-progress is not true)
   R3b  every other workflow that runs on push to the default branch is called
        from verify.yml or marked `# optimistic-merge: advisory`, else its red
        never reaches the red-main handler
   R4   red-main.yml calls the shared handler pinned (full SHA) at or after the
-       policy floor, and its `if:` follows the repository's default branch
-  R5   ci.yml has a `main-state` job on `main-red-gate` pinned at or after the
-       floor, and `ci-ok` needs it
+       policy floor, or at a commit where red-main.yml is identical to the
+       floor's, and its `if:` follows the repository's default branch
+  R5   the gate workflow has a `main-state` job on `main-red-gate` pinned at or
+       after the floor (or with the action's files identical to the floor's),
+       and `ci-ok` needs it
   R6   the default branch has a merge queue, `ci-ok` is a required check
        (where R2 applies) and `verified` never is
   R7   on_red is `revert` or `revert_pr_unarmed` only where the builder App
@@ -346,27 +349,59 @@ def is_check(context: str, name: str) -> bool:
 
 
 class Comparer:
-    """`pin >= floor`, one read per distinct pin. An unreadable pin is None."""
+    """`pin >= floor`, one read per distinct pin. An unreadable pin is None.
+
+    `read(floor, pin)` returns the compare status, or a dict with `status` and
+    the changed `files` between the two commits. A pin behind the floor is still
+    conformant for a component whose files did not change in between."""
 
     def __init__(self, floor: str, read):
         self.floor, self.read, self.cache = floor, read, {}
 
-    def at_or_after(self, pin: str) -> tuple[bool | None, str]:
+    def _compare(self, pin: str) -> dict:
+        if pin not in self.cache:
+            try:
+                got = self.read(self.floor, pin)
+                self.cache[pin] = got if isinstance(got, dict) else {"status": got, "files": None}
+            except Exception as err:  # noqa: BLE001 - unreadable is a FAIL, whatever the reason
+                self.cache[pin] = {"status": f"error: {err}", "files": None}
+        return self.cache[pin]
+
+    def at_or_after(self, pin: str, component=None) -> tuple[bool | None, str]:
+        """`component(path) -> bool` selects the files that matter for this pin."""
         if not SHA40.match(pin):
             return False, f"pin `{pin[:20]}` is not a full 40-hex commit SHA"
         if pin == self.floor:
             return True, ""
-        if pin not in self.cache:
-            try:
-                self.cache[pin] = self.read(self.floor, pin)
-            except Exception as err:  # noqa: BLE001 - unreadable is a FAIL, whatever the reason
-                self.cache[pin] = f"error: {err}"
-        status = self.cache[pin]
+        got = self._compare(pin)
+        status = got["status"]
         if status in ("ahead", "identical"):
             return True, ""
         if status in ("behind", "diverged"):
+            files = got.get("files")
+            if component is not None and files is not None and not any(component(f) for f in files):
+                return True, ""
             return False, f"pin {pin[:9]} is {status} the floor {self.floor[:9]}"
         return None, f"pin {pin[:9]} could not be compared with the floor ({status})"
+
+
+R4_COMPONENT = lambda path: path == ".github/workflows/red-main.yml"  # noqa: E731
+R5_COMPONENT = lambda path: path.startswith(".github/actions/main-red-gate/")  # noqa: E731
+
+
+def gate_workflow(facts: dict) -> tuple[str | None, str | None]:
+    """The workflow that runs on merge_group and defines `ci-ok`: ci.yml first, else any such one.
+    Returns (name, text); with none qualifying, ci.yml (or None) so the row says what is missing."""
+    files = facts.get("files") or {}
+    texts = {name: text for name, text in (facts.get("all_workflows") or {}).items() if text}
+    for name, text in files.items():
+        if text:
+            texts.setdefault(name, text)
+    order = (["ci.yml"] if "ci.yml" in texts else []) + sorted(n for n in texts if n != "ci.yml")
+    for name in order:
+        if "merge_group" in triggers(texts[name]) and has_job(texts[name], "ci-ok"):
+            return name, texts[name]
+    return ("ci.yml", texts["ci.yml"]) if "ci.yml" in texts else (None, None)
 
 
 def _row(status: str, detail: str = "") -> dict:
@@ -378,7 +413,8 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
     org, branch = facts["org"], facts["branch"]
     unreadable = facts.get("errors") or []
     files = facts.get("files") or {}
-    ci, verify, redmain = files.get("ci.yml"), files.get("verify.yml"), files.get("red-main.yml")
+    ci_name, ci = gate_workflow(facts)
+    verify, redmain = files.get("verify.yml"), files.get("red-main.yml")
     declared = toml_ci(facts.get("toml"))
     rows: dict[str, dict] = {}
 
@@ -400,7 +436,7 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
     else:
         missing = [what for what, ok in (("merge_group trigger", "merge_group" in triggers(ci)),
                                          ("ci-ok job", has_job(ci, "ci-ok"))) if not ok]
-        rows["R2"] = need(not missing, "merge_group and ci-ok", "ci.yml lacks " + " and ".join(missing))
+        rows["R2"] = need(not missing, "merge_group and ci-ok", f"{ci_name} lacks " + " and ".join(missing))
 
     # R3
     if verify is None:
@@ -446,7 +482,7 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
         if not pins:
             bad.append("no caller of the shared red-main handler")
         for pin in pins:
-            ok, why = compare.at_or_after(pin)
+            ok, why = compare.at_or_after(pin, R4_COMPONENT)
             if ok is not True:
                 bad.append(why)
         literal = re.findall(r"head_branch\s*==\s*'([^']+)'", "\n".join(_code_lines(redmain)))
@@ -457,7 +493,7 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
 
     # R5
     if ci is None:
-        rows["R5"] = _row("FAIL", "no ci.yml")
+        rows["R5"] = _row("FAIL", "no gate workflow")
     else:
         pins = uses_refs(ci, r"\.github/actions/main-red-gate")
         bad = []
@@ -465,11 +501,11 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
             bad.append("no main-state job on main-red-gate")
         else:
             for pin in pins:
-                ok, why = compare.at_or_after(pin)
+                ok, why = compare.at_or_after(pin, R5_COMPONENT)
                 if ok is not True:
                     bad.append(why)
             if "main-state" not in job_needs(ci, "ci-ok"):
-                bad.append("ci-ok does not need main-state")
+                bad.append(f"ci-ok in {ci_name} does not need main-state")
         rows["R5"] = need(not bad, "main-state pinned at or after the floor", "; ".join(bad))
 
     # R6
@@ -758,7 +794,16 @@ def compare_reader(gh, policy: dict):
     repo = policy["pin_floor"]["repo"]
 
     def read(floor: str, pin: str) -> str:
-        return gh.rest(f"repos/{repo}/compare/{floor}...{pin}")["status"]
+        # Compare from the pin to the floor: GitHub diffs the merge base against the
+        # head, so only this direction lists what changed between a pin behind the
+        # floor and the floor (the other direction lists nothing for such a pin).
+        got = gh.rest(f"repos/{repo}/compare/{pin}...{floor}")
+        status = {"ahead": "behind", "behind": "ahead"}.get(got["status"], got["status"])
+        files = [f["filename"] for f in got.get("files") or []]
+        # A diverged pin carries changes of its own that this diff does not show, and the
+        # reply lists at most 300 files: neither is a complete list.
+        complete = status == "behind" and len(files) < 300
+        return {"status": status, "files": files if complete else None}
     return read
 
 
