@@ -71,7 +71,7 @@ jobs:
             lint:
             test: src/* tests/*
             migrations: migrations/*
-            stack: *sylphx.toml *package.json *Dockerfile* .github/stack-departures.txt
+            stack: *sylphx.toml *package.json *Cargo.toml *Dockerfile* *.sql .github/stack-departures.txt
 
   lint:
     needs: plan
@@ -113,7 +113,9 @@ jobs:
   # No new departure from the default stack (docs/stack-conformance.md in
   # SylphxAI/.github): a backend service off Rust or a migration engine other
   # than atlas fails unless .github/stack-departures.txt, which may only
-  # shrink, already lists it.
+  # shrink, already lists it; an agent-runtime part Sylphx Agents owns fails
+  # unless SylphxAI/.github policy/agent-runtime.json allows it until a date;
+  # a new work-engine table needs a header saying whose records it holds.
   stack:
     needs: plan
     if: fromJSON(needs.plan.outputs.run).stack
