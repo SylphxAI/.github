@@ -30,6 +30,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
+Row R9 of the [conformance check](optimistic-merge.md#conformance-check)
+reports every pull-request workflow without it.
+
 ## Triggers
 
 `pull_request`, `merge_group` and `push: branches: [main]` only. A bare `push`
