@@ -2517,20 +2517,39 @@ jobs:
             exit 0
           fi
           # One shared deadline; one poll per still-running run every 30 s.
+          # A status read that fails is not "still running": a run that cannot
+          # be read (a wrong id, a refused token) would otherwise wait out the
+          # whole deadline and turn every candidate into a timeout. One failed
+          # read is retried at the next poll; three in a row for the same run
+          # stop the trace with the forge's answer.
           deadline=$((SECONDS + CANDIDATE_TIMEOUT_MINUTES * 60))
           pending=("${order[@]}")
+          declare -A read_failures=()
           while [ "${#pending[@]}" -gt 0 ]; do
             still=()
             for sha in "${pending[@]}"; do
-              status="" conclusion=""
-              IFS=$'\t' read -r status conclusion < <(
-                gha api "repos/$REPO/actions/runs/${run_of[$sha]}" --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null || true
-              ) || true
-              if [ "$status" = "completed" ]; then
-                conclusion_of[$sha]="${conclusion:-unknown}"
-              else
-                still+=("$sha")
+              status="" conclusion="" answer=""
+              if answer=$(gha api "repos/$REPO/actions/runs/${run_of[$sha]}" \
+                   --jq '[.status, (.conclusion // "")] | @tsv' 2>"$WORK_DIR/poll.err"); then
+                IFS=$'\t' read -r status conclusion <<<"$answer" || true
               fi
+              case "$status" in
+                completed)
+                  read_failures[$sha]=0
+                  conclusion_of[$sha]="${conclusion:-unknown}" ;;
+                queued|in_progress|waiting|requested|pending|action_required)
+                  read_failures[$sha]=0
+                  still+=("$sha") ;;
+                *)
+                  read_failures[$sha]=$(( ${read_failures[$sha]:-0} + 1 ))
+                  if [ "${read_failures[$sha]}" -ge 3 ]; then
+                    why=$(head -c 300 "$WORK_DIR/poll.err" | tr '\n' ' ')
+                    say "**Stopped:** the status of candidate \`${sha:0:9}\` (verify run ${run_of[$sha]}) could not be read three times in a row (${why:-the answer had no run status: $status}); no culprit is named."
+                    echo "::error::candidate run ${run_of[$sha]} status unreadable: ${why:-the answer had no run status: $status}"
+                    exit 1
+                  fi
+                  still+=("$sha") ;;
+              esac
             done
             pending=("${still[@]}")
             [ "${#pending[@]}" -gt 0 ] || break
