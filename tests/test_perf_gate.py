@@ -180,7 +180,7 @@ class ActionStepTest(unittest.TestCase):
     def run_step(self, tmp: str, properties: dict) -> subprocess.CompletedProcess:
         import yaml
         action = yaml.safe_load((ACTION / "action.yml").read_text())
-        step = next(s for s in action["runs"]["steps"] if s.get("name") == "No timing gate before merge")
+        step = next(s for s in action["runs"]["steps"] if s.get("name") == "No non-deterministic gate before merge")
         root = repo(tmp, {"ci.yml": LIGHTHOUSE_PR})
         event = pathlib.Path(tmp, "event.json")
         event.write_text(json.dumps({"repository": {"custom_properties": properties}}))

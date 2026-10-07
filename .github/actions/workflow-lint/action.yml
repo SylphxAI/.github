@@ -61,7 +61,7 @@ runs:
           [ -n "$line" ] && argv+=("$line")
         done <<<"$ARGS"
         "$bin" "${argv[@]}"
-    - name: No timing gate before merge
+    - name: No non-deterministic gate before merge
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
