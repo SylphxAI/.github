@@ -49,12 +49,19 @@ class FakeGh:
         self.puts: list[tuple[str, dict]] = []
         self.queries = 0
         self.fail = fail or {}
+        self.orgs = POLICY["orgs"]
 
     def graphql(self, query: str) -> dict:
         self.queries += 1
         nodes = []
         self.last_query = query
+        # The fake serves one organization per query, found in the query text, so the
+        # list of orgs names each organization its own repositories. A query for an
+        # organization with no repository here is empty, as GitHub answers.
+        org = next((o for o in self.orgs if f'login:"{o}"' in query), "")
         for repo, rs in self.rulesets.items():
+            if repo.split("/")[0] != org:
+                continue
             checks = next(r for r in rs["rules"] if r["type"] == "required_status_checks")["parameters"]
             rules = []
             if amq.queue_params(rs) is not None:
@@ -91,6 +98,18 @@ class PolicyTests(unittest.TestCase):
 
     def test_shipped_policy_requires_no_approving_review(self):
         self.assertEqual(POLICY["review"]["required_approving_review_count"], 0)
+
+    def test_shipped_policy_covers_every_organization_that_carries_a_ruleset(self):
+        # Every organization of the fleet carries a repository ruleset with a
+        # pull_request rule, so the review count must reach all four, not only the
+        # one whose policy the first tool run listed.
+        self.assertEqual(POLICY["orgs"], ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"])
+
+    def test_the_fleet_organizations_match_the_audited_optimistic_merge_policy(self):
+        # policy/optimistic-merge.json is the one list of the fleet's organizations
+        # (its audit test pins the four); the merge queue policy covers the same set.
+        audited = json.loads((ROOT / "policy" / "optimistic-merge.json").read_text())
+        self.assertEqual(POLICY["orgs"], audited["orgs"])
 
     def test_rejects_unknown_and_bad_values(self):
         for edit in (lambda p: p["settings"].pop("merge_method"),
