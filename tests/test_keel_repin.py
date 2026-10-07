@@ -405,7 +405,7 @@ class PollTest(unittest.TestCase):
                 rc, out = self.poll(repo, remote, {"api repos/SylphxAI/keel/compare/" + OLD + "..." + sha: answer, "pr list": "0"})
                 self.assertEqual(out["needed"], "false")
                 self.assertIn(expect, out["reason"])
-        for states in ("OPEN\n", "MERGED\n", "CLOSED\nOPEN\n"):  # an open or merged pull request for the tag stops the poll
+        for states in ("OPEN", "MERGED", "CLOSED OPEN"):  # an open or merged pull request for the tag stops the poll
             with tempfile.TemporaryDirectory() as d:
                 base = pathlib.Path(d)
                 remote, sha = make_keel_remote(base)
@@ -419,7 +419,7 @@ class PollTest(unittest.TestCase):
             base = pathlib.Path(d)
             remote, sha = make_keel_remote(base)
             repo = make_title(base, TITLE)
-            answers = {"pr list": "CLOSED\n", "api repos/SylphxAI/keel/compare/" + OLD + "..." + sha: "ahead"}
+            answers = {"pr list": "CLOSED", "api repos/SylphxAI/keel/compare/" + OLD + "..." + sha: "ahead"}
             rc, out = self.poll(repo, remote, answers)
             self.assertEqual((rc, out["needed"]), (0, "true"))
             git(repo, "push", "-q", "origin", "HEAD:refs/heads/" + keel_repin.BRANCH_PREFIX + NEW_TAG)
