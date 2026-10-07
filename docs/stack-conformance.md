@@ -83,6 +83,43 @@ when they are the product's customers' records. The header makes the D1 test
 a decision the reviewer sees. Tables already on the base are never checked,
 so adopting needs no baseline; there is no allowance list.
 
+## Knowledge and CRM tables
+
+The company's knowledge graph, its memory spaces and its CRM customer graph
+are Sylphx Knowledge, a platform service with one permission space per record
+(SylphxAI/cloud
+[ADR-01M4AJK2TXTJWZ4X5B06HPT0R4](https://github.com/SylphxAI/cloud/blob/main/docs/adr/ADR-01M4AJK2TXTJWZ4X5B06HPT0R4-sylphx-knowledge-permission-aware-graph.md),
+D6). A product does not hold one of these tables in its own repository. With a
+base, the check reads every `.sql` file the change adds (not a rename, not a
+`*.down.sql`) and fails on:
+
+| Line | Found when |
+| --- | --- |
+| `knowledge-table <file.sql> <table>` | a `CREATE TABLE` names a knowledge-graph or CRM record: a table whose name starts `kg_`, `knowledge_` or `crm_`, or is `entities`, `entity`, `relations`, `relation`, `contacts`, `contact` or `customer_profiles` |
+
+Tables the base already has are the existing instances of the widened rule.
+They are recorded in [policy/knowledge-tables.json](../policy/knowledge-tables.json),
+one entry per table with the `found` date and an expiry date; until the expiry
+a repository with a recorded table passes, and after it the entry stops
+applying and its next change that touches a SQL file fails until the table has
+moved onto Sylphx Knowledge and been deleted. An entry whose table is gone is
+a notice; delete it. Extending a date is a pull request here with its reason.
+
+The baseline was seeded on 2026-10-07 from a scan of the default branch of
+every repository with a desk checkout: only SylphxAI/agents has instances
+(`knowledge_entries`, `knowledge_relations` and the `bots_graph.relations`
+projection). Its expiry, 2026-11-30, leaves room after the knowledge migration
+items for their estimate to slip.
+
+The fixture that proves the rule is a SQL file added by a change that creates
+one of these tables; it fails with the `knowledge-table` line and the ADR, and
+passes again once the table is recorded for that repository or the file makes
+no such table.
+
+`owner_repos` (SylphxAI/cloud, where the service lives) is not checked for
+these tables. A delivered customer repository (`sylphx_delivery` = `delivered`)
+is not checked at all, as for the agent-runtime parts.
+
 ## The rule at a pull request
 
 The check reads git objects at the base and the head; it needs no second

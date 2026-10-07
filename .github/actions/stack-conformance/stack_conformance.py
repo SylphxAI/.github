@@ -32,10 +32,25 @@ docs/adr/0010, "Guard for the class"):
                                       a due, deadline, SLA, overdue or
                                       escalation column
 
+and, in SQL files added since the base, a knowledge-graph or CRM table that
+Sylphx Knowledge owns (SylphxAI/cloud
+ADR-01M4AJK2TXTJWZ4X5B06HPT0R4, D6):
+
+  knowledge-table <file.sql> <table>  a table named like a knowledge-graph or
+                                      CRM record (kg_*, knowledge_*, entities,
+                                      relations, contacts, crm_*,
+                                      customer_profiles)
+
 A product repository never records an agent-runtime part in its own baseline:
 the only allowance is policy/agent-runtime.json in SylphxAI/.github, one entry
 per existing instance with an expiry date, after which the entry stops
 applying. The platform owner's repository is not checked for them.
+
+A knowledge or CRM table the base already has is an existing instance of the
+widened rule, not a new departure, so it is recorded - with the date it was
+found - in this repository's policy/knowledge-tables.json, one entry per table
+with an expiry date; until the date passes the repository passes, and after it
+the entry stops applying. An entry whose table no longer exists is a notice.
 
 Subcommands:
 
@@ -73,6 +88,19 @@ BASELINE = ".github/stack-departures.txt"
 # The company-level allowance for agent-runtime parts: this repository's
 # policy/agent-runtime.json, three levels above this action's directory.
 AGENT_RUNTIME_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy" / "agent-runtime.json"
+
+# The company-level record of knowledge and CRM tables already on a
+# repository's default branch, with the date each was found and an expiry
+# date, so the widened rule ships without failing every repository at once.
+KNOWLEDGE_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy" / "knowledge-tables.json"
+
+KNOWLEDGE_DECISION = ("SylphxAI/cloud docs/adr/"
+                      "ADR-01M4AJK2TXTJWZ4X5B06HPT0R4-sylphx-knowledge-permission-aware-graph.md, D6")
+# The names Sylphx Knowledge owns: the knowledge graph (knowledge_*), its
+# short forms and the CRM customer graph (kg_*, crm_*, customer_profiles),
+# and the bare entity and relation tables a product-local copy is named.
+KNOWLEDGE_TABLE = re.compile(
+    r"^(?:kg_|knowledge_|crm_)\w*$|^(?:entities|entity|relations|relation|contacts|contact|customer_profiles)$")
 
 AGENT_RUNTIME = "agent-runtime-"
 AGENT_RUNTIME_PACKAGE = re.compile(r"vault-proxy|egress-guard|credential-crypto|agent-harness")
@@ -488,6 +516,20 @@ def obligation_tables(path: str, text: str) -> list[str]:
     return found
 
 
+def knowledge_tables(path: str, text: str) -> list[str]:
+    """`knowledge-table <path> <table>` for each knowledge or CRM table a SQL
+    file creates. A down migration only restores an earlier schema and is not
+    checked."""
+    if path.lower().endswith(".down.sql"):
+        return []
+    found = []
+    for statement in re.sub(r"/\*.*?\*/", "", re.sub(r"--[^\n]*", "", text), flags=re.DOTALL).split(";"):
+        parsed = table_columns(statement)
+        if parsed and KNOWLEDGE_TABLE.match(parsed[0]):
+            found.append(f"knowledge-table {path} {parsed[0]}")
+    return found
+
+
 def added_sql(repo: str, base: str, head: str) -> list[str]:
     """SQL files added between base and head (renames are not additions)."""
     out = git(repo, "diff", "--name-only", "--diff-filter=A", "-M", "-z", base, head, "--")
@@ -539,6 +581,60 @@ def decide_agent_runtime(found: list[str], repository: str, policy: dict,
     for line in sorted(set(allowed) - set(found)):
         notices.append(f"agent-runtime allowance '{line}' is no longer found; delete its entry in "
                        "SylphxAI/.github policy/agent-runtime.json")
+    return errors, notices
+
+
+def load_knowledge_policy(path=KNOWLEDGE_POLICY) -> dict:
+    try:
+        return json.loads(pathlib.Path(path).read_text())
+    except FileNotFoundError:
+        return {"owner_repos": [], "baseline": []}
+
+
+def knowledge_tables_in(tree) -> set[str]:
+    """Every knowledge or CRM table the whole tree creates, for the notice on a
+    policy entry whose table is gone."""
+    tables: set[str] = set()
+    for path in sorted(p for p in tree.paths() if p.lower().endswith(".sql") and not skipped(p)):
+        tables |= {line.rsplit(" ", 1)[-1] for line in knowledge_tables(path, tree.read(path) or "")}
+    return tables
+
+
+def decide_knowledge(found: list[str], repository: str, policy: dict,
+                     today: datetime.date, present: set[str] | None = None) -> tuple[list[str], list[str]]:
+    """Errors and notices for the knowledge and CRM tables of one repository.
+
+    The platform owner is not checked. Elsewhere a table passes only while
+    policy/knowledge-tables.json records it for this repository and its expiry
+    date has not passed: the instances the widened rule found on the default
+    branch when it shipped."""
+    if repository in policy.get("owner_repos", []):
+        return [], []
+    allowed: dict[str, str] = {}
+    for entry in policy.get("baseline", []):
+        if entry.get("repo") == repository:
+            allowed[" ".join(entry["table"].split())] = entry["expires"]
+    decision = policy.get("decision", KNOWLEDGE_DECISION)
+    errors, notices = [], []
+    for line in found:
+        table = line.rsplit(" ", 1)[-1]
+        expires = allowed.get(table)
+        if expires is None:
+            errors.append(f"new knowledge or CRM table: '{line}'. The company's knowledge graph, "
+                          f"its memory spaces and its customer graph are Sylphx Knowledge, a "
+                          f"platform service with one permission space per record; a product's "
+                          f"knowledge and CRM records live there, not in a table of its own. Use "
+                          f"its API instead, or record the table in SylphxAI/.github "
+                          f"policy/knowledge-tables.json when the base already has it ({decision})")
+        elif today > datetime.date.fromisoformat(expires):
+            errors.append(f"knowledge-table allowance expired on {expires}: '{line}'. Move it onto "
+                          f"Sylphx Knowledge with its history and delete it, or extend its date in "
+                          f"SylphxAI/.github policy/knowledge-tables.json with a reason "
+                          f"({decision})")
+    still_there = present if present is not None else {line.rsplit(" ", 1)[-1] for line in found}
+    for table in sorted(set(allowed) - still_there):
+        notices.append(f"knowledge-table allowance '{table}' is no longer found; delete its entry "
+                       "in SylphxAI/.github policy/knowledge-tables.json")
     return errors, notices
 
 
@@ -608,17 +704,26 @@ def cmd_check(args) -> int:
     runtime_errors, notices = decide_agent_runtime(runtime, args.repository, policy, today)
     errors += runtime_errors
     obligations: list[str] = []
+    knowledge: list[str] = []
     if args.base:
         for path in added_sql(args.repo, args.base, args.head):
-            obligations += obligation_tables(path, head.read(path) or "")
+            text = head.read(path) or ""
+            obligations += obligation_tables(path, text)
+            knowledge += knowledge_tables(path, text)
     errors += decide_obligations(obligations)
+    knowledge_errors, knowledge_notices = decide_knowledge(
+        knowledge, args.repository, load_knowledge_policy(args.knowledge_policy), today,
+        present=knowledge_tables_in(head))
+    errors += knowledge_errors
+    notices += knowledge_notices
     for n in notices:
         print(f"::notice::{n}")
     for e in errors:
         print(f"::error::{e}")
     print(f"{len(found)} departure(s) found, {len(head_baseline or ())} recorded in {args.baseline}; "
           f"{len(runtime)} agent-runtime part(s) found in {args.repository or 'this repository'}; "
-          f"{len(obligations)} new work-engine table(s) without an owner header")
+          f"{len(obligations)} new work-engine table(s) without an owner header; "
+          f"{len(knowledge)} new knowledge or CRM table(s)")
     if errors:
         print(f"Move the change onto the default stack. A departure is recorded only through a "
               f"company decision, by the owner of {args.baseline}.")
@@ -662,6 +767,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""),
                    help="owner/name of the checked repository (default $GITHUB_REPOSITORY)")
     c.add_argument("--agent-runtime-policy", default=str(AGENT_RUNTIME_POLICY))
+    c.add_argument("--knowledge-policy", default=str(KNOWLEDGE_POLICY))
     c.add_argument("--today", default="", help="YYYY-MM-DD; default today in UTC (tests)")
     s = sub.add_parser("scan")
     s.add_argument("--repo", default=".")

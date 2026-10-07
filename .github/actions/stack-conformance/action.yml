@@ -18,7 +18,11 @@ description: >
   With a base, it also fails a SQL file added since the base that creates a
   work-engine table (a status, an assignee or role, and a due date, deadline,
   SLA, overdue or escalation column) unless the file's header names the Work
-  resource it feeds or says `customer records (Work ADR 0010 D1)`.
+  resource it feeds or says `customer records (Work ADR 0010 D1)`; and a
+  knowledge-graph or CRM table (a name starting kg_, knowledge_ or crm_, or
+  entities, entity, relations, relation, contacts, contact or
+  customer_profiles) unless policy/knowledge-tables.json here records it for
+  the repository and its expiry date has not passed.
   See docs/stack-conformance.md.
 
 inputs:
