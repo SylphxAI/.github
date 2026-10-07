@@ -224,6 +224,27 @@ class StarterWorkflowTest(unittest.TestCase):
         self.assertIn("workflow_dispatch", gate[True])
         self.assertIn("pull_request", gate["jobs"]["suite"]["if"])
 
+    def test_starter_artifact_uploads_never_fail_a_job(self) -> None:
+        # Artifact storage is an organization quota; once it is spent every
+        # upload fails ("Artifact storage quota has been hit") and a passing
+        # suite went red (docs/run-store.md). A starter's upload is a
+        # diagnostic, so it may not fail its job and keeps a short retention.
+        import yaml
+        seen = 0
+        for path in (ROOT / "workflow-templates").glob("*.yml"):
+            workflow = yaml.safe_load(path.read_text())
+            for job_name, job in (workflow.get("jobs") or {}).items():
+                for step in job.get("steps") or []:
+                    if not str(step.get("uses", "")).startswith("actions/upload-artifact@"):
+                        continue
+                    seen += 1
+                    where = f"{path.name} {job_name} {step.get('with', {}).get('name')}"
+                    self.assertIs(step.get("continue-on-error"), True, where)
+                    retention = (step.get("with") or {}).get("retention-days")
+                    self.assertIsInstance(retention, int, where)
+                    self.assertLessEqual(retention, 3, where)
+        self.assertGreater(seen, 0)
+
 
 class RedMainOnlyOnFailureTest(unittest.TestCase):
     """A cancelled, superseded or timed-out run is never a red trunk: only a

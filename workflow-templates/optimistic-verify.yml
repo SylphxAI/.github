@@ -68,12 +68,18 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - run: echo "the full test suite; write a JUnit report"
       # The red-main handler names flaky tests from `junit-<lane>` artifacts.
+      # The report is a diagnostic: when the organization's artifact storage
+      # quota is spent the upload fails, and that must never turn a passing
+      # suite red (docs/run-store.md). Without it the handler falls back to
+      # naming the lane.
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
+        continue-on-error: true
         with:
           name: junit-integration
           path: junit.xml
           if-no-files-found: ignore
+          retention-days: 3
 
   e2e:
     needs: plan
