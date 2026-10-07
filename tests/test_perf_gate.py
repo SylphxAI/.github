@@ -71,6 +71,47 @@ class ScanTest(unittest.TestCase):
                 text = f"on:\n  {trigger}:\njobs:\n  a:\n    steps:\n      - {body}\n"
                 self.assertEqual(len(problems(text)), 1, (trigger, run))
 
+    def test_dependency_audits_fail_for_every_pre_merge_trigger(self) -> None:
+        for trigger in perf_gate.PRE_MERGE:
+            for command in ("bun audit --audit-level=high --prod", "npm audit --omit=dev",
+                            "pnpm audit --prod", "yarn audit", "yarn npm audit",
+                            "npm --production audit", "bun audit || true"):
+                with self.subTest(trigger=trigger, command=command):
+                    text = f"on: {trigger}\njobs:\n  a:\n    steps:\n      - run: {command}\n"
+                    found = problems(text)
+                    self.assertEqual(len(found), 1)
+                    self.assertIn("dependency audit", found[0][2])
+
+    def test_dependency_audits_belong_to_a_separate_default_branch_workflow(self) -> None:
+        text = ("on:\n  schedule:\n    - cron: '17 6 * * *'\n"
+                "  push:\n    branches: [main]\n  workflow_dispatch:\njobs:\n  a:\n"
+                "    steps:\n      - run: bun audit --audit-level=high --prod\n")
+        self.assertEqual(problems(text), [])
+        self.assertTrue(problems(text.replace("  workflow_dispatch:", "  pull_request:")))
+
+    def test_audit_comments_names_and_secret_scans_are_not_dependency_audits(self) -> None:
+        text = ("on: pull_request\njobs:\n  a:\n    steps:\n"
+                "      - name: bun audit is deferred\n"
+                "        run: trufflehog git file://. --only-verified --fail\n"
+                "      # run: npm audit\n"
+                "      - run: bun run test # bun audit later\n")
+        self.assertEqual(problems(text), [])
+
+    def test_audit_gate_uses_the_existing_delivered_exemption(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            text = "on: pull_request\njobs:\n  a:\n    steps:\n      - run: bun audit\n"
+            root = repo(tmp, {"ci.yml": text})
+            normal = {"GITHUB_EVENT_PATH": self.event_path(tmp, {})}
+            self.assertEqual(perf_gate.main(normal, root), 1)
+            done = {"GITHUB_EVENT_PATH": self.event_path(tmp, {"sylphx_delivery": "delivered"})}
+            self.assertEqual(perf_gate.main(done, root), 0)
+
+    @staticmethod
+    def event_path(tmp: str, properties: dict) -> str:
+        path = pathlib.Path(tmp, "event.json")
+        path.write_text(json.dumps({"repository": {"custom_properties": properties}}))
+        return str(path)
+
     def test_perf_enforce_env_at_every_level(self) -> None:
         text = ("on: merge_group\nenv:\n  PERF_ENFORCE: '1'\njobs:\n  a:\n    env:\n      PERF_ENFORCE: true\n"
                 "    steps:\n      - run: echo\n        env:\n          PERF_ENFORCE: ${{ vars.X }}\n")

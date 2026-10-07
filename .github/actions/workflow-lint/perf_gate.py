@@ -12,7 +12,10 @@ pull_request_target or merge_group, or is reusable (workflow_call), since a
 pre-merge workflow may call it. In such a workflow this refuses:
   - PERF_ENFORCE set to anything but 0 (an env key or inline PERF_ENFORCE=1);
   - a line that runs a timing gate: Lighthouse (or lhci), hyperfine, k6 run,
-    or the chat perf run (perf:web, --perf-only).
+    or the chat perf run (perf:web, --perf-only);
+  - a package-manager vulnerability audit: its mutable advisory database can
+    fail unchanged code. Launched products audit the default branch in a
+    separate scheduled workflow; unlaunched products defer to the launch gate.
 
 Standard library only: the runner may have no YAML module. The workflows have
 already passed actionlint's parse, so an indentation scan of the block-style
@@ -37,6 +40,8 @@ from typing import Callable, NamedTuple
 PRE_MERGE = ("pull_request", "pull_request_target", "merge_group", "workflow_call")
 
 GATES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:bun|npm|pnpm|yarn)\s+(?:--[^\s]+\s+)*audit\b"),
+     "a mutable-registry dependency audit"),
     (re.compile(r"\bperf:web\b"), "the chat timing gate (perf:web)"),
     (re.compile(r"--perf-only\b"), "the chat timing gate (--perf-only)"),
     (re.compile(r"\bPERF_ENFORCE=(?![\"']?0\b)"), "PERF_ENFORCE set inline"),
@@ -209,12 +214,14 @@ def main(env: dict[str, str] | None = None, root: pathlib.Path | None = None,
         return 0
     findings = scan_dir(root or pathlib.Path.cwd())
     if not findings:
-        print("perf-gate: no timing gate in a pull request, merge-queue or reusable workflow")
+        print("perf-gate: no timing or dependency-audit gate before merge")
         return 0
     for f in findings:
         print(f"::error file={f.file},line={f.line}::{f.where}: {f.problem}")
-    print(f"perf-gate: {len(findings)} timing gate(s) before merge. Print the numbers there and "
-          "judge them after merge, as a median against a stored baseline.", file=sys.stderr)
+    print(f"perf-gate: {len(findings)} non-deterministic gate(s) before merge. "
+          "Judge timing after merge against a stored baseline. Dependency audits belong "
+          "in a separate scheduled default-branch workflow for launched products; "
+          "defer unlaunched audits to the launch gate. See docs/dependency-audits.md.", file=sys.stderr)
     return 1
 
 

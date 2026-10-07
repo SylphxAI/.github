@@ -7,7 +7,10 @@ description: >
   fails the pull request instead of the first run on the trunk. Then refuses
   a timing or performance budget (PERF_ENFORCE, Lighthouse, hyperfine, k6)
   in a pull_request, merge_group or reusable workflow: timing gates run after
-  merge. Delivered customer repositories skip that rule. Needs a checkout and
+  merge. Also refuses mutable-registry package-manager audits before merge:
+  launched products audit the default branch on a separate schedule, and
+  unlaunched products defer audits to launch. Delivered customer repositories
+  skip these rules. Needs a checkout and
   python3. Linux x86_64.
 
 inputs:
