@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import pathlib
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -141,6 +144,68 @@ class PinsTest(unittest.TestCase):
         )
         self.assertEqual(keel_repin.lock_packages(lock), ["keel-net"])
 
+    def test_a_name_locked_at_two_keel_commits_gets_its_full_package_id(self):
+        # The title pins one Keel commit and a dependency (a title kit) pins another, so the lock
+        # holds keel-ai twice and `cargo update -p keel-ai` is ambiguous.
+        kit = "e" * 40
+        src = 'source = "git+https://github.com/SylphxAI/keel?rev=%s#%s"\n'
+        lock = (
+            '[[package]]\nname = "keel-ai"\nversion = "0.1.0"\n' + src % (kit, kit) + "\n"
+            '[[package]]\nname = "keel-ai"\nversion = "0.1.0"\n' + src % (OLD, OLD) + "\n"
+            '[[package]]\nname = "keel-net"\nversion = "0.2.0"\n' + src % (OLD, OLD) + "\n"
+            '[[package]]\nname = "serde"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n'
+        )
+        self.assertEqual(keel_repin.lock_update_specs(lock, [OLD]),
+                         [f"git+https://github.com/SylphxAI/keel?rev={OLD}#keel-ai@0.1.0", "keel-net"])
+        # No moved commit among them: every entry of the ambiguous name is named exactly.
+        self.assertEqual(keel_repin.lock_update_specs(lock, []), [
+            f"git+https://github.com/SylphxAI/keel?rev={kit}#keel-ai@0.1.0",
+            f"git+https://github.com/SylphxAI/keel?rev={OLD}#keel-ai@0.1.0", "keel-net"])
+
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "needs cargo")
+    def test_the_full_package_id_is_one_cargo_accepts(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            revs = {}
+            for lib in ("kit-keel", "title-keel"):
+                w = base / lib
+                (w / "src").mkdir(parents=True)
+                (w / "Cargo.toml").write_text('[package]\nname = "keel-ai"\nversion = "0.1.0"\nedition = "2021"\n')
+                (w / "src" / "lib.rs").write_text("")
+                git(w, "init", "-q", "-b", "main")
+                git(w, "add", "-A")
+                git(w, "commit", "-q", "-m", "one")
+                revs[lib] = [git(w, "rev-parse", "HEAD")]
+                (w / "src" / "lib.rs").write_text("// two\n")
+                git(w, "commit", "-q", "-am", "two")
+                revs[lib].append(git(w, "rev-parse", "HEAD"))
+            def manifest(name, deps):
+                (base / name / "src").mkdir(parents=True, exist_ok=True)
+                (base / name / "src" / "lib.rs").write_text("")
+                (base / name / "Cargo.toml").write_text(
+                    f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\n' + deps)
+            manifest("kit", f'keel-ai = {{ git = "file://{base}/kit-keel", rev = "{revs["kit-keel"][0]}" }}\n')
+            manifest("app", f'keel-ai = {{ git = "file://{base}/title-keel", rev = "{revs["title-keel"][0]}" }}\n'
+                            'kit = { path = "../kit" }\n')
+            env = {**os.environ, "CARGO_HOME": str(base / "cargo-home"), "CARGO_NET_OFFLINE": "false"}
+            app = base / "app"
+            subprocess.run(["cargo", "generate-lockfile", "-q"], cwd=app, env=env, check=True, capture_output=True)
+            lock = (app / "Cargo.lock").read_text()
+            # lock_entries keys on the Keel URL; stand the local remotes in for it.
+            shown = lock.replace(f"file://{base}/title-keel", "https://github.com/SylphxAI/keel")
+            self.assertEqual(len([e for e in keel_repin.lock_entries(shown) if e[0] == "keel-ai"]), 1)
+            old, new = revs["title-keel"]
+            (app / "Cargo.toml").write_text((app / "Cargo.toml").read_text().replace(old, new))
+            specs = [f"git+file://{base}/title-keel?rev={old}#keel-ai@0.1.0"]
+            p = subprocess.run(["cargo", "update", "-p", "keel-ai"], cwd=app, env=env, capture_output=True, text=True)
+            self.assertNotEqual(p.returncode, 0)
+            self.assertIn("ambiguous", p.stderr)
+            subprocess.run(["cargo", "update", *sum((["-p", x] for x in specs), [])], cwd=app, env=env, check=True,
+                           capture_output=True)
+            lock = (app / "Cargo.lock").read_text()
+            self.assertIn(f"title-keel?rev={new}", lock)
+            self.assertIn(f"kit-keel?rev={revs['kit-keel'][0]}", lock)  # the kit's own Keel commit is left as it is
+
 
 class RunTest(unittest.TestCase):
     def run_cmd(self, repo, remote, check, extra=()):
@@ -231,6 +296,18 @@ class PullRequestTest(unittest.TestCase):
         self.assertIn("CI was not started by the bot", body)
         self.assertIn("`.github/workflows/ci.yml`", body)  # a workflow file the token cannot edit is named, not edited
 
+    def test_a_private_repository_the_build_could_not_read_is_named(self):
+        log = ("\x1b[1m\x1b[92m    Updating\x1b[0m git repository `https://github.com/Cubeage/warden-keel`\n"
+               "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n"
+               "\x1b[1m\x1b[33mwarning\x1b[0m: spurious network error (3 tries remaining): process didn't exit successfully: "
+               "`git fetch --no-tags --force --update-head-ok 'https://github.com/Cubeage/warden-keel' '+65b2:refs/commit/65b2'` (exit status: 128)\n")
+        _, body = keel_repin.pr_text({**self.report("failed", "lock"), "log": log})
+        self.assertIn("could not read `Cubeage/warden-keel`", body)
+        self.assertIn("extra-read-repos", body)
+        self.assertNotIn("\x1b", body)  # cargo's colour codes are stripped from the quoted output
+        _, body = keel_repin.pr_text(self.report("failed", "check"))
+        self.assertNotIn("could not read", body)
+
     def fake_gh(self, base: pathlib.Path) -> pathlib.Path:
         calls = base / "gh-calls.txt"
         gh = base / "gh"
@@ -320,7 +397,7 @@ class PollTest(unittest.TestCase):
             remote, sha = make_keel_remote(base)
             pinned = make_title(base, {"deps/keel.rev": sha + "\n", "Cargo.toml": f'k = {{ git = "https://github.com/SylphxAI/keel", rev = "{sha}" }}\n'})
             self.assertEqual(self.poll(pinned, remote, {})[1]["needed"], "false")
-        for answer, expect in (("behind", "not ahead"), ("diverged", "not ahead")):
+        for answer, expect in (("behind", "not ahead"),):
             with tempfile.TemporaryDirectory() as d:
                 base = pathlib.Path(d)
                 remote, sha = make_keel_remote(base)
@@ -334,6 +411,52 @@ class PollTest(unittest.TestCase):
             repo = make_title(base, TITLE)
             rc, out = self.poll(repo, remote, {"pr list": "1"})
             self.assertEqual((out["needed"], "exists" in out["reason"]), ("false", True))
+
+    def diverged_remote(self, base, pin_commit_file):
+        """A Keel stand-in where the tag holds a backport's patch as a new commit (same change, other id) and the pin sits on a backport branch."""
+        work = base / "keel-work"
+        work.mkdir()
+        git(work, "init", "-q", "-b", "main")
+        (work / "f").write_text("keel\n")
+        git(work, "add", "f")
+        git(work, "commit", "-q", "-m", "base")
+        git(work, "checkout", "-q", "-b", "backport/x")
+        (work / pin_commit_file).write_text("patch\n")
+        git(work, "add", pin_commit_file)
+        git(work, "commit", "-q", "-m", "backport")
+        pin = git(work, "rev-parse", "HEAD")
+        git(work, "checkout", "-q", "main")
+        (work / "other").write_text("main moved\n")
+        git(work, "add", "other")
+        git(work, "commit", "-q", "-m", "main moves")
+        if pin_commit_file == "p":  # the same change lands on main as a different commit
+            (work / "p").write_text("patch\n")
+            git(work, "add", "p")
+            git(work, "commit", "-q", "-m", "patch on main")
+        git(work, "tag", "-a", NEW_TAG, "-m", "tag")
+        bare = base / "keel.git"
+        git(base, "clone", "-q", "--bare", str(work), str(bare))
+        return str(bare), git(work, "rev-parse", "HEAD"), pin
+
+    def diverged_title(self, base, pin):
+        return make_title(base, {"deps/keel.rev": pin + "\n", "Cargo.toml": f'k = {{ git = "https://github.com/SylphxAI/keel", rev = "{pin}" }}\n'})
+
+    def test_a_pin_whose_commits_are_all_on_the_tag_is_repinned(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, sha, pin = self.diverged_remote(base, "p")
+            repo = self.diverged_title(base, pin)
+            rc, out = self.poll(repo, remote, {"pr list": "0", "api repos/SylphxAI/keel/compare/" + pin + "..." + sha: "diverged"})
+            self.assertEqual((rc, out["needed"]), (0, "true"))
+
+    def test_a_pin_with_a_commit_the_tag_lacks_fails_the_poll(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, sha, pin = self.diverged_remote(base, "q")
+            repo = self.diverged_title(base, pin)
+            rc, out = self.poll(repo, remote, {"pr list": "0", "api repos/SylphxAI/keel/compare/" + pin + "..." + sha: "diverged"})
+            self.assertEqual(rc, 1)
+            self.assertNotIn("needed", out)
 
     def test_a_failed_compare_is_an_error_not_a_silent_skip(self):
         with tempfile.TemporaryDirectory() as d:
@@ -413,7 +536,10 @@ d = os.environ["FAKE_DIR"]
 sc = json.load(open(d + "/scenario.json"))
 a = sys.argv[1:]
 open(d + "/gh-calls.txt", "a").write(" ".join(a) + "\n")
-if a[:2] == ["pr", "list"]:
+if a[:2] == ["pr", "list"] and "merged" in a:
+    if sc.get("merged"):
+        print(json.dumps(sc["merged"]))
+elif a[:2] == ["pr", "list"]:
     print("\n".join("\t".join(map(str, pr)) for pr in sc["prs"]))
 elif a[:1] == ["api"] and "check-runs" in a[-1] + " ".join(a):
     print("\n".join("\t".join(map(str, r)) for r in sc["runs"]))
@@ -558,6 +684,97 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(self.merges(calls), [])
 
 
+LIVE_URL = "https://title.example.invalid"
+PINNED = "c" * 40
+MERGED_PR = {"number": 4, "headRefName": TAG_BRANCH, "mergedAt": "2027-01-15T05:00:00Z",
+             "body": f"Moves the Keel pin to `{NEW_TAG}`, commit `{PINNED}`.\n"}
+
+
+class FakeResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def serving(body):
+    """An urlopen stand-in for the live host: VERSION.json answers BODY (bytes), or the request fails."""
+    def opener(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else req
+        assert url == LIVE_URL + "/VERSION.json", url
+        if isinstance(body, Exception):
+            raise body
+        return FakeResponse(body)
+    return opener
+
+
+class SettleLiveTest(unittest.TestCase):
+    """A merged repin is settled only when the live VERSION.json keel field is the merged commit."""
+
+    def settle(self, body, merged=MERGED_PR, repeat=1, grace="60", minutes_after_merge=120):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({"prs": [], "emails": [BOT], "runs": [], "merged": merged}))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            now = keel_repin.calendar.timegm((2027, 1, 15, 5, 0, 0)) + minutes_after_merge * 60
+            ws = keel_repin.web_smoke()
+            real = ws.live_keel
+            ws.live_keel = lambda url: real(url, opener=serving(body))
+            rcs = []
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"), \
+                    mock.patch.object(keel_repin, "web_smoke", return_value=ws):
+                for _ in range(repeat):
+                    rcs.append(keel_repin.main(["settle", "--owner", "@o/team", "--now", str(now),
+                                                "--live-url", LIVE_URL, "--live-grace-minutes", grace]))
+            comments = (base / "comments.txt").read_text() if (base / "comments.txt").exists() else ""
+            return rcs, comments
+
+    def version(self, **fields):
+        return json.dumps({"version": "1.0.0", "commit": "f" * 40, "built_at": "2027-01-15T05:10:00Z", **fields}).encode()
+
+    def test_the_live_title_on_the_merged_commit_is_settled(self):
+        rcs, comments = self.settle(self.version(keel=PINNED))
+        self.assertEqual((rcs, comments), ([0], ""))
+
+    def test_a_mismatching_keel_field_fails_and_the_owner_hears_once(self):
+        rcs, comments = self.settle(self.version(keel="d" * 40), repeat=3)
+        self.assertEqual(rcs, [1, 1, 1])
+        self.assertEqual(comments.count(keel_repin.LIVE_MARKER), 1)
+        self.assertIn("@o/team", comments)
+        self.assertIn("runs Keel dddddddddddd, not the pinned cccccccccccc", comments)
+
+    def test_a_missing_keel_field_fails(self):
+        for body in (self.version(), self.version(keel="unknown"), b"<html>not json</html>",
+                     urllib.error.URLError("connection refused")):
+            rcs, comments = self.settle(body)
+            self.assertEqual(rcs, [1], body)
+            self.assertIn("does not say which Keel it runs", comments)
+
+    def test_within_the_deploy_grace_a_mismatch_waits(self):
+        rcs, comments = self.settle(self.version(keel="d" * 40), minutes_after_merge=10)
+        self.assertEqual((rcs, comments), ([0], ""))
+
+    def test_no_merged_repin_compares_nothing(self):
+        rcs, comments = self.settle(self.version(), merged=None)
+        self.assertEqual((rcs, comments), ([0], ""))
+
+    def test_no_live_url_reads_no_merged_pull_request(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({"prs": [], "emails": [BOT], "runs": [], "merged": MERGED_PR}))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"):
+                self.assertEqual(keel_repin.main(["settle"]), 0)
+            self.assertNotIn("merged", (base / "gh-calls.txt").read_text())
+
+
 class ActionContractTest(unittest.TestCase):
     def test_manifest_and_guards(self):
         import yaml
@@ -567,7 +784,8 @@ class ActionContractTest(unittest.TestCase):
         self.assertNotRegex(text, r"(?m)^\s*runs-on:")  # a composite action takes its runner from the caller
         self.assertNotRegex(text, r"(ubuntu|windows|macos)-(latest|\d)")
         for need in ("mode", "tag", "reader-app-id", "reader-app-key", "dry-run", "check-command", "ci-workflows",
-                     "required-checks", "owner", "max-wait-minutes", "after-merge-workflows"):
+                     "required-checks", "owner", "max-wait-minutes", "after-merge-workflows", "live-url",
+                     "live-grace-minutes"):
             self.assertIn(need, action["inputs"])
         for step in action["runs"]["steps"]:
             uses = step.get("uses", "")

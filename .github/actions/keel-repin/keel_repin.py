@@ -19,8 +19,9 @@ Steps, run from the repository root (the action calls them in this order):
 
   keel_repin.py dispatch --branch B --workflows "ci.yml ..."
       Start the title's CI on the branch by workflow_dispatch, in order, waiting for each run to
-      appear on the branch head. A pull request opened with the workflow token starts no
-      pull_request run, so this is what puts the checks on the pull request's head commit.
+      appear on the branch head. A pull request opened with the workflow token gets only a
+      pull_request run held as action_required, so this is what puts the checks on the pull
+      request's head commit.
 
   keel_repin.py settle [--required "ci-ok web-smoke"] [--owner @team] [--dry-run]
       For every open repin pull request: merge it when, and only when, every required check ran on
@@ -28,6 +29,10 @@ Steps, run from the repository root (the action calls them in this order):
       every commit on it is the bot's own. A red pull request is left open with one comment that
       names the failing check and the owner; a pending one is left for the next run. Idempotent:
       it keeps no state, so the title's schedule just runs it again.
+      With --live-url, a merged repin is settled only once the live title runs it: the newest merged
+      repin pull request's commit must equal the `keel` field of <live-url>/VERSION.json. A missing
+      or different field fails the run (after --live-grace-minutes from the merge, the deploy's
+      time), with one comment on that pull request per wrong live value.
 
 What counts as a pin: a `rev = "<40 hex>"` or `tag = "keel-..."` on a Cargo.toml line that
 names the Keel git repository, every `deps/keel.rev`, and the old full or short commit
@@ -44,6 +49,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -65,6 +71,11 @@ LOG_TAIL_CHARS = 5000
 BOT_EMAIL = "keel-repin@users.noreply.github.com"
 RED_CONCLUSIONS = ("failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale")
 RED_MARKER = "<!-- keel-repin-red:"
+LIVE_MARKER = "<!-- keel-repin-live:"
+PIN_IN_BODY = re.compile(r"Moves the Keel pin to `[^`]+`, commit `([0-9a-f]{40})`")
+DEFAULT_LIVE_GRACE_MINUTES = 60
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+UNREADABLE_RE = re.compile(r"git fetch [^\n]*?'https://github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?'")
 DEFAULT_REQUIRED = "ci-ok web-smoke"
 DEFAULT_MAX_WAIT_MINUTES = 360
 
@@ -200,29 +211,61 @@ def workflow_mentions(root, old_shas):
     return sorted(out)
 
 
+def lock_entries(lock_text):
+    """(name, version, source) of every package Cargo.lock takes from the Keel git source."""
+    out, cur = [], {}
+    for line in lock_text.splitlines() + ["[[package]]"]:
+        if line.startswith("[[package]]"):
+            if cur.get("source") and KEEL_URL.search(cur["source"]):
+                out.append((cur.get("name", ""), cur.get("version", ""), cur["source"]))
+            cur = {}
+        elif " = " in line and line.split(" = ", 1)[0] in ("name", "version", "source"):
+            key, value = line.split(" = ", 1)
+            cur[key] = value.strip().strip('"')
+    return [e for e in out if e[0]]
+
+
 def lock_packages(lock_text):
     """Names of the packages Cargo.lock takes from the Keel git source."""
-    names, name = [], None
-    for line in lock_text.splitlines():
-        if line.startswith("name = "):
-            name = line.split('"')[1]
-        elif line.startswith("source = ") and KEEL_URL.search(line) and name:
-            names.append(name)
-    return sorted(set(names))
+    return sorted({name for name, _, _ in lock_entries(lock_text)})
 
 
-def refresh_locks(root, log):
+def lock_update_specs(lock_text, old_shas=()):
+    """The `cargo update -p` specs that move the Keel crates of one Cargo.lock.
+
+    A name the lock holds once is passed bare. A name it holds from two Keel commits (the title's
+    pin and a dependency's own pin, say cubeage-kit's) is ambiguous to cargo, so each entry at a
+    commit the repin moved gets its full package id (`git+URL?rev=X#name@version`); the other
+    commit belongs to the dependency and is left as it is. With no moved commit among them, every
+    entry of the name is passed.
+    """
+    entries = lock_entries(lock_text)
+    by_name = {}
+    for e in entries:
+        by_name.setdefault(e[0], []).append(e)
+    specs = []
+    for name in sorted(by_name):
+        group = by_name[name]
+        if len(group) == 1:
+            specs.append(name)
+            continue
+        moved = [e for e in group if any(o in e[2].split("#", 1)[0] for o in old_shas)] or group
+        specs += [f"{source.split('#', 1)[0]}#{n}@{version}" for n, version, source in moved]
+    return specs
+
+
+def refresh_locks(root, log, old_shas=()):
     """cargo update for the Keel crates of every tracked Cargo.lock; a failure is returned, not raised."""
     root = Path(root)
     for f in tracked_files(root):
         if Path(f).name != "Cargo.lock" or f.startswith(SKIP_DIRS) or "/vendor/" in f:
             continue
         manifest = (root / f).with_name("Cargo.toml")
-        pkgs = lock_packages((root / f).read_text(errors="replace"))
-        if not pkgs or not manifest.exists():
+        specs = lock_update_specs((root / f).read_text(errors="replace"), old_shas)
+        if not specs or not manifest.exists():
             continue
         cmd = ["cargo", "update", "--manifest-path", str(manifest)]
-        for p in pkgs:
+        for p in specs:
             cmd += ["-p", p]
         proc = run(cmd, cwd=root, check=False)
         log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
@@ -270,7 +313,7 @@ def cmd_run(args):
             stage = "hook"
     else:
         rewrite(root, old, sha, args.tag)
-        stage = refresh_locks(root, log)
+        stage = refresh_locks(root, log, old)
     if stage is None and args.check_command:
         proc = run(["bash", "-c", args.check_command], cwd=Path(root, args.check_dir), check=False)
         log.append(f"$ {args.check_command}\n{proc.stdout}{proc.stderr}")
@@ -294,8 +337,16 @@ def cmd_run(args):
 
 
 def log_tail(log):
+    log = ANSI_RE.sub("", log)
     tail = "\n".join(log.splitlines()[-LOG_TAIL_LINES:])[-LOG_TAIL_CHARS:]
     return tail.replace("```", "'''")
+
+
+def unreadable_repos(log):
+    """Private GitHub repositories the build could not fetch (no token was pointed at them)."""
+    if "could not read Username for 'https://github.com'" not in log:
+        return []
+    return sorted(set(UNREADABLE_RE.findall(ANSI_RE.sub("", log))) - {"SylphxAI/keel"})
 
 
 def pr_text(report):
@@ -321,6 +372,16 @@ def pr_text(report):
             "",
             f"**Draft: {what} fails on this Keel tag.** The pull request is open as a draft so the break is visible. "
             "Fix it on this branch (the bot never touches it again), then mark it ready. CI was not started by the bot.",
+        ]
+        missing = unreadable_repos(report["log"])
+        if missing:
+            lines += [
+                "",
+                "The build could not read " + ", ".join(f"`{r}`" for r in missing) + ": no read token covers it. "
+                "Add it to the repin job's `extra-read-repos` (the reader App must be installed on it), then close this "
+                "pull request and delete the branch so the next poll rebuilds it.",
+            ]
+        lines += [
             "",
             "Last lines of the output:",
             "```",
@@ -330,8 +391,9 @@ def pr_text(report):
     else:
         lines += [
             "",
-            "The build check passed on this pin. A pull request opened with the workflow token starts no pull_request run, "
-            "so the bot starts the repository's CI by workflow_dispatch on this branch; its checks land on this head commit.",
+            "The build check passed on this pin. A pull request opened with the workflow token gets only a held pull_request run "
+            "(`action_required`, with no checks), so the bot starts the repository's CI by workflow_dispatch on this branch instead; "
+            "its checks land on this head commit, and the held run can be left alone.",
         ]
     lines += ["", "Opened by the keel-repin action. It merges this pull request itself once CI and the web smoke are green on this exact head; "
               "a person can merge it earlier, or close it to stop that."]
@@ -409,6 +471,18 @@ def compare_status(old, new, token):
     return p.stdout.strip()
 
 
+def unmatched_commits(remote, tag_sha, pin):
+    """Commits on `pin` whose change the tag does not already hold (`git cherry`: '+' lines, patch-id based, as `git rebase` decides), and the branches whose tip is the pin."""
+    with tempfile.TemporaryDirectory() as d:
+        run(["git", "init", "-q", "--bare", d])
+        run(["git", "-C", d, "fetch", "-q", "--no-tags", remote, tag_sha, pin])
+        out = run(["git", "-C", d, "cherry", tag_sha, pin]).stdout
+        heads = run(["git", "ls-remote", "--heads", remote]).stdout
+    unmatched = [l.split()[1][:9] for l in out.splitlines() if l.startswith("+")]
+    branches = [l.split()[1].removeprefix("refs/heads/") for l in heads.splitlines() if l.split()[0] == pin]
+    return unmatched, branches
+
+
 def pr_exists(branch):
     """A pull request from this branch exists in any state (open, closed or merged)."""
     p = run([*gh_bin(), "pr", "list", "--head", branch, "--state", "all", "--json", "number", "--jq", "length"], check=False)
@@ -440,7 +514,18 @@ def cmd_poll(args):
     else:
         token = os.environ.get("KEEL_API_TOKEN", "")
         behind = [(o, compare_status(o, sha, token)) for o in old if o != sha]
-        bad = [f"{o[:9]} is {st}" for o, st in behind if st != "ahead"]
+        bad = []
+        for o, st in behind:
+            if st == "ahead":
+                continue
+            if st == "diverged":
+                unmatched, branches = unmatched_commits(args.remote, sha, o)
+                if unmatched:
+                    raise Refused(
+                        f"the Keel pin {o[:9]} (branch {', '.join(branches) or 'unknown'}) has commits the tag {tag} does not hold: "
+                        + ", ".join(unmatched))
+                continue  # every commit of the pin is already on the tag: the tag is ahead
+            bad.append(f"{o[:9]} is {st}")
         if bad:
             out["reason"] = "the tag is not ahead of the pin (" + ", ".join(bad) + ")"
         else:
@@ -556,6 +641,62 @@ def tell_red(number, tag, sha, owner, problems, draft, dry):
     run([*gh_bin(), "pr", "comment", str(number), "--body", text])
 
 
+def web_smoke():
+    """The web-smoke action's module (its VERSION.json reader), from the same checkout of this repository."""
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "web-smoke" / "web_smoke.py"
+    spec = importlib.util.spec_from_file_location("web_smoke", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def newest_merged_repin():
+    """The newest merged repin pull request as (number, tag, commit, merged_at epoch), or None."""
+    out = gh_json(["pr", "list", "--state", "merged", "--limit", "50", "--json", "number,headRefName,body,mergedAt"],
+                  '[.[] | select(.headRefName | startswith("' + BRANCH_PREFIX + '"))] | max_by(.mergedAt) // empty')
+    if not out.strip():
+        return None
+    pr = json.loads(out)
+    m = PIN_IN_BODY.search(pr.get("body") or "")
+    if not m:
+        raise Refused(f"merged repin pull request #{pr['number']} does not name its Keel commit in its body")
+    merged = calendar.timegm(time.strptime(pr["mergedAt"], "%Y-%m-%dT%H:%M:%SZ"))
+    return str(pr["number"]), pr["headRefName"][len(BRANCH_PREFIX):], m.group(1), merged
+
+
+def settle_live(args, now):
+    """0 when the live title runs the newest merged repin's Keel (or the deploy is still within its grace), else 1."""
+    merged = newest_merged_repin()
+    if merged is None:
+        print("::notice::keel-repin settle: no merged repin pull request; the live Keel is not compared")
+        return 0
+    number, tag, commit, merged_at = merged
+    ws = web_smoke()
+    live, why = ws.live_keel(args.live_url)
+    ok, text = ws.keel_verdict(live, why, commit)
+    age_min = (now - merged_at) / 60
+    if ok:
+        print(f"#{number} {tag}: settled; {text}")
+        return 0
+    if age_min < args.live_grace_minutes:
+        print(f"::notice::#{number} {tag}: merged {int(age_min)} minutes ago, waiting for the deploy: {text}")
+        return 0
+    print(f"::error::#{number} {tag} is merged but not settled: {text}")
+    marker = f"{LIVE_MARKER}{live or 'none'} "
+    out = gh_json(["pr", "view", number, "--json", "comments"], ".comments[].body")
+    if marker not in out:
+        who = f"{args.owner} " if args.owner else ""
+        body = (f"{who}The Keel repin to `{tag}` (`{commit[:9]}`) is merged, but {text}. "
+                "Deploy the default branch, or find why the live build is not the merged one. "
+                f"The bot calls the repin settled only when the live VERSION.json names this commit.\n\n{marker}-->")
+        if args.dry_run:
+            print(f"DRY RUN: would comment on #{number}:\n{body}")
+        else:
+            run([*gh_bin(), "pr", "comment", number, "--body", body])
+    return 1
+
+
 def cmd_settle(args):
     repo = repo_name()
     required = args.required.split()
@@ -603,6 +744,8 @@ def cmd_settle(args):
         if state == "MERGED":
             for wf in args.after_merge.split():
                 run([*gh_bin(), "workflow", "run", wf, "--ref", args.base], check=False)
+    if args.live_url:
+        return settle_live(args, now)
     return 0
 
 
@@ -633,6 +776,9 @@ def main(argv=None):
     t.add_argument("--max-wait-minutes", type=int, default=DEFAULT_MAX_WAIT_MINUTES)
     t.add_argument("--after-merge", default="", help="workflow files started on the base branch after a merge (a merge by the workflow token starts no push run)")
     t.add_argument("--base", default="main")
+    t.add_argument("--live-url", default="", help="the deployed title's host; its VERSION.json keel must be the merged repin's commit")
+    t.add_argument("--live-grace-minutes", type=int, default=DEFAULT_LIVE_GRACE_MINUTES,
+                   help="minutes after the merge the deploy has before a wrong live Keel fails the run")
     t.add_argument("--now", type=float, default=None, help=argparse.SUPPRESS)
     t.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("pr")

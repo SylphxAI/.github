@@ -39,10 +39,22 @@ another check (cloud's `deploy/pins` branch by `pin-ok`). `exclude` lists
 repositories never read or written; the hands-off repositories of
 `policy/optimistic-merge.json` are always excluded.
 
+## Required approving reviews: none
+
+Every repository ruleset with a `pull_request` rule requires 0 approving
+reviews (policy `review`). The fast gate `ci-ok` is the check; an approval
+added after it checks nothing `ci-ok` did not, and a required approval only
+made desk bots approve green pull requests to satisfy it. GitHub cannot scope
+a review rule to file paths, so the count is 0 for every path. The enterprise
+ruleset `agent-native-queued-trunk-base` already requires 0; repository
+rulesets are converged here. A pull request can still be reviewed; it is no
+longer held for an approval.
+
 ## What the tool manages
 
 It manages the parameters of the `merge_queue` rule of every ruleset that has
-one, and nothing else: on a write the rest of the ruleset (conditions, bypass
+one and the required approving review count of every repository ruleset with a
+`pull_request` rule, and nothing else: on a write the rest of the ruleset (conditions, bypass
 actors, the other rules) is sent back unchanged. It only reports whether the
 fast gate is among the ruleset's required checks, and the strict flag. It never
 adds a required check, because requiring a check that no workflow reports would

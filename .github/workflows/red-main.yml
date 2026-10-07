@@ -270,8 +270,8 @@ concurrency:
 # `checks: read`. The github.token is never handed to anything that runs
 # pull-request-controlled code. A caller with the builder App also has the
 # handler push and open pull requests through the App installation token,
-# which needs contents, issues and pull-requests write and no `actions`
-# permission. A tenant caller without the App also grants `pull-requests:
+# which needs contents, issues, pull-requests and workflows write and no
+# `actions` permission. A tenant caller without the App also grants `pull-requests:
 # write` and the handler notifies on its own token.
 
 jobs:
@@ -1037,7 +1037,8 @@ jobs:
         require_grant() {
           local verdict
           verdict=$(grant_of "$1")
-          if [ "$verdict" != "granted" ]; then
+          # The probe writes `granted` (token mode) or `granted (<holder>)`.
+          if [ "$verdict" != "granted" ] && [ "${verdict#granted (}" = "$verdict" ]; then
             printf '::error::%s does not grant %s (grant probe: %s); %s was not performed\n' \
               "$GRANT_HOLDER" "$2" "${verdict:-unknown}" "$3" >&2
             state_set blocked "$2"
@@ -1893,9 +1894,13 @@ jobs:
           fi
 
       # ---------------------------------------------------------------------
-      # App token, narrowed to the calling repository, carrying the three
-      # permissions the handler writes through: contents, issues and
-      # pull-requests. It asks for no `actions` permission: the builder App
+      # App token, narrowed to the calling repository, carrying the four
+      # permissions the handler writes through: contents, issues,
+      # pull-requests and workflows. Workflows write is needed because a
+      # `sylphx-verify/<sha>` or revert branch points at a commit whose
+      # `.github/workflows` differ from the default branch's (an older pin),
+      # and the forge refuses that ref write from an App without it. It asks
+      # for no `actions` permission: the builder App
       # installation does not hold one, and a request above the installation's
       # grant fails the whole mint. Actions calls use the caller's
       # `github.token` (see `gha` in the helpers). The App token stays for what
@@ -1917,6 +1922,7 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+          permission-workflows: write
 
       # ---------------------------------------------------------------------
       # Probe the grant before anything acts. Actions is read through the
@@ -1950,7 +1956,7 @@ jobs:
             fail "simulated mint failure (test hook): the App token mint for $REPO was reported as refused"
           fi
           if [ "$KEY_PRESENT" = yes ] && [ "$APP_MINTED" != yes ]; then
-            fail "the App token was not minted on $REPO: the builder App installation does not grant contents, issues and pull-requests write, or the App id and key are empty, or the App has no installation on $REPO"
+            fail "the App token was not minted on $REPO: the builder App installation does not grant contents, issues, pull-requests and workflows write, or the App id and key are empty, or the App has no installation on $REPO"
           fi
           run_path="repos/$REPO/actions/runs?per_page=1"
           if [ -n "$EVENT_RUN_ID" ]; then run_path="repos/$REPO/actions/runs/$EVENT_RUN_ID"; fi
@@ -2004,7 +2010,7 @@ jobs:
             reason=$(cat "$RUNNER_TEMP/red-main/state/grant-failure")
           fi
           if [ -z "$reason" ]; then
-            reason="the App token mint for $REPO failed: the builder App installation does not grant contents, issues and pull-requests write, or has no installation on this repository"
+            reason="the App token mint for $REPO failed: the builder App installation does not grant contents, issues, pull-requests and workflows write, or has no installation on this repository"
           fi
           body="Red main handler could not act on \`$REPO\`: $reason. No bisect or revert was performed. Run: $RUN_URL"
           {
@@ -2435,14 +2441,36 @@ jobs:
           fi
           dispatch() {
             local ref="$1" payload
+            # return_run_details: without it the forge answers 204 with no
+            # body, the run id is empty and every candidate reads as timed out.
             if [ -n "$dispatch_lanes" ] && [ -n "$LANE_INPUT" ]; then
               payload=$(jq -n --arg ref "$ref" --arg key "$LANE_INPUT" --arg value "$dispatch_lanes" \
-                '{ref: $ref, inputs: {($key): $value}}')
+                '{ref: $ref, inputs: {($key): $value}, return_run_details: true}')
             else
-              payload=$(jq -n --arg ref "$ref" '{ref: $ref}')
+              payload=$(jq -n --arg ref "$ref" '{ref: $ref, return_run_details: true}')
             fi
-            gha api --method POST "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/dispatches" \
-              --input - <<<"$payload" --jq '.workflow_run_id'
+            # The temporary ref was created a moment ago and the forge's ref
+            # reads lag a write by seconds: it can answer 422 "No ref found"
+            # for it. That one answer is retried, about 30 s in all; any
+            # other failure stops at once.
+            local id err attempt=1
+            while :; do
+              if id=$(gha api --method POST "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/dispatches" \
+                   --input - <<<"$payload" --jq '.workflow_run_id // empty' 2>"$WORK_DIR/dispatch-try.err"); then
+                break
+              fi
+              err=$(cat "$WORK_DIR/dispatch-try.err")
+              if ! grep -q 'No ref found' <<<"$err" || [ "$attempt" -ge 6 ]; then
+                printf '%s\n' "$err" >&2
+                return 1
+              fi
+              sleep $((attempt * 2))
+              attempt=$((attempt + 1))
+            done
+            case "$id" in
+              ''|*[!0-9]*) echo "the dispatch returned no run id ('$id')" >&2; return 1 ;;
+            esac
+            printf '%s\n' "$id"
           }
           # Every candidate at once: a branch and a verify run each.
           : >"$WORK_DIR/candidates.tsv"
@@ -2452,11 +2480,21 @@ jobs:
           while IFS=$'\t' read -r sha subject; do
             [ -n "$sha" ] || continue
             candidate_branch="sylphx-verify/$sha"
+            # Create the branch, or move it if a stale one is left over. Both
+            # errors are kept: on the App path a refused write stops the trace
+            # with the forge's answer, since a dispatch on a ref that does not
+            # exist can only answer "No ref found".
             if ! gh api --method POST "repos/$REPO/git/refs" \
-                 --field "ref=refs/heads/$candidate_branch" --field "sha=$sha" >/dev/null 2>&1; then
-              gh api --method PATCH "repos/$REPO/git/refs/heads/$candidate_branch" \
-                --field "sha=$sha" --field force=true >/dev/null 2>&1 \
-                || { [ "$TOKEN_MODE" != yes ] || refs_refused=yes; }
+                 --field "ref=refs/heads/$candidate_branch" --field "sha=$sha" >/dev/null 2>"$WORK_DIR/ref.err"; then
+              if ! gh api --method PATCH "repos/$REPO/git/refs/heads/$candidate_branch" \
+                   --field "sha=$sha" --field force=true >/dev/null 2>>"$WORK_DIR/ref.err"; then
+                if [ "$TOKEN_MODE" = yes ]; then
+                  refs_refused=yes
+                else
+                  say "**No action:** the temporary branch \`$candidate_branch\` could not be created ($(head -c 400 "$WORK_DIR/ref.err" | tr '\n' ' ')); a person must decide."
+                  exit 0
+                fi
+              fi
             fi
             if [ "$refs_refused" = yes ]; then break; fi
             printf '%s\n' "$candidate_branch" >>"$WORK_DIR/temp-branches"
@@ -2479,20 +2517,39 @@ jobs:
             exit 0
           fi
           # One shared deadline; one poll per still-running run every 30 s.
+          # A status read that fails is not "still running": a run that cannot
+          # be read (a wrong id, a refused token) would otherwise wait out the
+          # whole deadline and turn every candidate into a timeout. One failed
+          # read is retried at the next poll; three in a row for the same run
+          # stop the trace with the forge's answer.
           deadline=$((SECONDS + CANDIDATE_TIMEOUT_MINUTES * 60))
           pending=("${order[@]}")
+          declare -A read_failures=()
           while [ "${#pending[@]}" -gt 0 ]; do
             still=()
             for sha in "${pending[@]}"; do
-              status="" conclusion=""
-              IFS=$'\t' read -r status conclusion < <(
-                gha api "repos/$REPO/actions/runs/${run_of[$sha]}" --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null || true
-              ) || true
-              if [ "$status" = "completed" ]; then
-                conclusion_of[$sha]="${conclusion:-unknown}"
-              else
-                still+=("$sha")
+              status="" conclusion="" answer=""
+              if answer=$(gha api "repos/$REPO/actions/runs/${run_of[$sha]}" \
+                   --jq '[.status, (.conclusion // "")] | @tsv' 2>"$WORK_DIR/poll.err"); then
+                IFS=$'\t' read -r status conclusion <<<"$answer" || true
               fi
+              case "$status" in
+                completed)
+                  read_failures[$sha]=0
+                  conclusion_of[$sha]="${conclusion:-unknown}" ;;
+                queued|in_progress|waiting|requested|pending|action_required)
+                  read_failures[$sha]=0
+                  still+=("$sha") ;;
+                *)
+                  read_failures[$sha]=$(( ${read_failures[$sha]:-0} + 1 ))
+                  if [ "${read_failures[$sha]}" -ge 3 ]; then
+                    why=$(head -c 300 "$WORK_DIR/poll.err" | tr '\n' ' ')
+                    say "**Stopped:** the status of candidate \`${sha:0:9}\` (verify run ${run_of[$sha]}) could not be read three times in a row (${why:-the answer had no run status: $status}); no culprit is named."
+                    echo "::error::candidate run ${run_of[$sha]} status unreadable: ${why:-the answer had no run status: $status}"
+                    exit 1
+                  fi
+                  still+=("$sha") ;;
+              esac
             done
             pending=("${still[@]}")
             [ "${#pending[@]}" -gt 0 ] || break

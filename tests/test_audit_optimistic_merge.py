@@ -483,10 +483,23 @@ class PolicyTest(unittest.TestCase):
         for repo, kind in (("Cubeage/big2-tycoon", "suite-is-gate"), ("Cubeage/cubeage-studio", "suite-is-gate"),
                            ("Cubeage/fun-big2-hk", "on-red-notify"), ("Cubeage/fun-big2-tw", "on-red-notify"),
                            ("SylphxAI/bgca", "hands-off"), ("Cubeage/hk-mahjong-tycoon", "hands-off"),
-                           ("Cubeage/Big2TycoonHk", "frozen-legacy"), ("Cubeage/cubeage-platform", "hands-off"),
+                           ("Cubeage/Big2TycoonHk", "frozen-legacy"),
                            ("SylphxAI/lockdocs", "suite-is-gate"), ("SylphxAI/homebrew-tap", "no-build"),
                            ("SylphxAI/owner", "no-build"), ("SylphxAI/.github", "suite-is-gate")):
             self.assertEqual(audit.exemption_for(POLICY, repo, today)[0]["class"], kind, repo)
+
+    def test_a_repaired_repository_is_audited_again(self) -> None:
+        # Cubeage/cubeage-platform was hands-off, then came under repair (its own
+        # ownership item), so it is audited again rather than exempt forever.
+        today = datetime.date(2026, 10, 7)
+        self.assertIsNone(audit.exemption_for(POLICY, "Cubeage/cubeage-platform", today)[0])
+
+    def test_a_security_advisory_fork_is_exempt_and_its_parent_is_not(self) -> None:
+        today = datetime.date(2026, 10, 6)
+        self.assertEqual(audit.exemption_for(POLICY, "SylphxAI/puzzled-ghsa-j965-ffwx-7vxf", today)[0]["class"],
+                         "advisory-fork")
+        self.assertIsNone(audit.exemption_for(POLICY, "SylphxAI/puzzled", today)[0])
+        self.assertIsNone(audit.exemption_for(POLICY, "SylphxAI/puzzled-ghsa-notes", today)[0])
 
     def test_an_exemption_needs_reason_owner_and_review(self) -> None:
         for field in ("reason", "owner", "review"):

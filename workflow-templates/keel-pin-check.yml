@@ -4,6 +4,8 @@ name: Keel pin check
 # second commit, and warns when the pin is not a keel-verified-* / keel-weekly-* tag. A pull request that
 # leaves the pin alone is only warned about, so an existing fork stays green until its pin moves
 # (SylphxAI/.github docs/keel-pin-check.md).
+# Before adding it, audit the repository's main with every rule enforced (`keel_pin_check.py audit`, see the
+# guide's "Rolling it out"): a main that fails gets its pin fix in the same pull request, or is skipped.
 # Copy to .github/workflows/keel-pin-check.yml and replace the commit placeholder with the pinned commit of
 # SylphxAI/.github. Add the job (`keel-pin-check`) to the ruleset's required checks, or to the aggregate
 # check, once the repository's pin is clean. The Keel repin bot's pull requests pin a verified tag, so
@@ -34,5 +36,6 @@ jobs:
         with:
           reader-app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
           reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
-          # A manual run audits every pin; a pull request or merge group is judged against its base.
-          base: ${{ github.event_name == 'workflow_dispatch' && '' || 'auto' }}
+          # A manual run audits every pin (empty base); a pull request or merge group is judged against its
+          # base. The empty string must be the last operand: `cond && '' || x` always yields x, since '' is falsy.
+          base: ${{ github.event_name != 'workflow_dispatch' && 'auto' || '' }}

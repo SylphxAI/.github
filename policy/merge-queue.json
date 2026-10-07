@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "doc": "docs/merge-queue-settings.md. The one source for the merge queue rule of every repository ruleset. Applied by scripts/apply_merge_queue.py (dry-run by default). GitHub does not allow a merge_queue rule in an organization or enterprise ruleset, so it is applied per repository from here.",
+  "doc": "docs/merge-queue-settings.md. The one source for the merge queue rule and the required approving review count of every repository ruleset. Applied by scripts/apply_merge_queue.py (dry-run by default). GitHub does not allow a merge_queue rule in an organization or enterprise ruleset, so it is applied per repository from here.",
   "orgs": [
     "SylphxAI"
   ],
@@ -17,6 +17,10 @@
     "context": "ci-ok",
     "integration_id": 15368,
     "note": "The required check of the queue is the fast gate only; the full suite runs after the merge (docs/optimistic-merge.md). The tool reports a ruleset that does not require it and never adds a check itself: requiring a check that no workflow reports would stop the queue."
+  },
+  "review": {
+    "required_approving_review_count": 0,
+    "note": "Every repository ruleset's pull_request rule requires no approving review: ci-ok is the gate, and an approval finds nothing it did not (owner standards: ONE CHECK). The enterprise ruleset already requires 0."
   },
   "exclude": [
     {

@@ -1,0 +1,56 @@
+name: Public repository consumers
+
+# Weekly: every public, unarchived SylphxAI repository records its internal
+# consumer in the `sylphx_consumer` organization property, or it is listed for a
+# keep, merge or archive decision; every archived public repository says so in
+# its description or README, and every package published from it is deprecated
+# (npm packages are deprecated by this run) (docs/public-repo-consumers.md).
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    # GitHub-hosted standard runners are free only on a public repository.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: List public repositories with no recorded consumer, and shut-down ones that do not say so
+        # Public repositories, their custom properties and READMEs are readable
+        # by anyone, so the job's own read-only token is enough: no App key.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -o pipefail
+          # npm expands ${NPM_TOKEN} from the environment; the token itself never touches disk.
+          echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > "$RUNNER_TEMP/.npmrc"
+          export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc"
+          rc=0
+          python3 scripts/public_repo_consumers.py --org SylphxAI --fix-npm > "$RUNNER_TEMP/consumers.txt" || rc=$?
+          {
+            echo "## Public repositories with no consumer, archived ones with no notice, undeprecated packages"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/consumers.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/consumers.txt"
+          case "$rc" in
+            0) ;;
+            1) echo "::error::listed repositories or packages: record the consumer or decide keep, merge or archive (MISSING); add a status line (NO-NOTICE); deprecate, discontinue or yank (UNDEPRECATED)"; exit 1 ;;
+            *) echo "::error::could not read the repository list, its custom properties, a README or a package registry"; exit "$rc" ;;
+          esac

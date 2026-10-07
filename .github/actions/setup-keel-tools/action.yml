@@ -1,0 +1,89 @@
+name: setup-keel-tools
+description: >
+  Puts the keel CLI, built from the Keel rev a title pins, and the wasm-bindgen
+  CLI, at the version the title's Cargo.lock pins, on PATH. Both live in one
+  root cached per runner OS and arch, Keel rev, wasm-bindgen version and this
+  action's installer, so they are compiled only when the pin moves; a warm run
+  logs "keel tools from cache" and takes seconds. Run it after checkout and the
+  Rust toolchain (and rust-sccache, which speeds the cold build). See
+  docs/setup-keel-tools.md.
+
+inputs:
+  pin:
+    description: The Keel commit (40 hex). Empty reads pin-file.
+    default: ""
+  pin-file:
+    description: File holding the Keel commit, relative to working-directory.
+    default: KEEL_PIN
+  wasm-bindgen:
+    description: >
+      "auto" installs the version Cargo.lock pins for the wasm-bindgen crate,
+      "none" skips it, or an exact x.y.z.
+    default: auto
+  cargo-lock:
+    description: Lockfile read when wasm-bindgen is auto, relative to working-directory.
+    default: Cargo.lock
+  keel-src:
+    description: An existing Keel checkout at the pin to build from; empty clones SylphxAI/keel.
+    default: ""
+  features:
+    description: >
+      Extra cargo features for the keel CLI, on top of its defaults, as `cargo
+      install --features` takes them (space or comma separated). A title whose
+      keel.toml encodes GPU textures needs `texture-encoder`.
+    default: ""
+  working-directory:
+    description: Directory that holds pin-file and cargo-lock.
+    default: .
+
+outputs:
+  bin:
+    description: The directory holding keel and wasm-bindgen (already on PATH).
+    value: ${{ steps.key.outputs.root }}/bin
+  cache-hit:
+    description: '"true" when the tools came from the cache.'
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        KEEL_PIN: ${{ inputs.pin }}
+        KEEL_PIN_FILE: ${{ inputs.pin-file }}
+        WASM_BINDGEN: ${{ inputs.wasm-bindgen }}
+        CARGO_LOCK: ${{ inputs.cargo-lock }}
+        KEEL_FEATURES: ${{ inputs.features }}
+        INSTALLER: ${{ github.action_path }}/install-keel-tools.sh
+      run: |
+        set -euo pipefail
+        part="$(bash "$INSTALLER" key)"
+        script="$(sha256sum "$INSTALLER" | cut -c1-12)"
+        echo "key=keel-tools-${RUNNER_OS}-${RUNNER_ARCH}-${part}-${script}" >> "$GITHUB_OUTPUT"
+        echo "root=${RUNNER_TEMP}/keel-tools" >> "$GITHUB_OUTPUT"
+    - id: restore
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.key.outputs.root }}
+        key: ${{ steps.key.outputs.key }}
+    - shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        KEEL_PIN: ${{ inputs.pin }}
+        KEEL_PIN_FILE: ${{ inputs.pin-file }}
+        WASM_BINDGEN: ${{ inputs.wasm-bindgen }}
+        CARGO_LOCK: ${{ inputs.cargo-lock }}
+        KEEL_SRC: ${{ inputs.keel-src }}
+        KEEL_FEATURES: ${{ inputs.features }}
+        CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        INSTALLER: ${{ github.action_path }}/install-keel-tools.sh
+        ROOT: ${{ steps.key.outputs.root }}
+      run: bash "$INSTALLER" install "$ROOT"
+    # Saved right after a build, so a later failing step still leaves it for the next run.
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.key.outputs.root }}
+        key: ${{ steps.key.outputs.key }}

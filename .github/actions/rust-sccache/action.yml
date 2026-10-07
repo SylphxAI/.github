@@ -34,7 +34,7 @@ inputs:
   s3-bucket:
     description: >
       S3 bucket. Empty means `ci-sccache-<organization, lowercase>`, created on
-      first use with a 14-day expiry so the cache stays bounded.
+      first use; its expiry (14 days; 1 day for the retired `<owner>/` namespace) is applied on every run so the cache stays bounded.
     default: ""
   key-prefix:
     description: >

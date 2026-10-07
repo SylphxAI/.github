@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "doc": "docs/stack-conformance.md#agent-runtime-parts. Read by .github/actions/stack-conformance. Agent definitions, sessions, memory, the tool gateway, credential injection and the egress guard belong to Sylphx Agents. A product repository's existing part is listed here with an expiry date; after that date the entry stops applying and every pull request in that repository fails until the part has moved onto Sylphx Agents and is deleted. Delete an entry when its part is gone; extend a date only with a reason in the pull request.",
+  "decision": "SylphxAI/cloud docs/adr/ADR-01M495TCCBZGSQ68A4P4G428H2-sylphx-agents-hosted-agent-runtime.md, D5",
+  "owner_repos": ["SylphxAI/cloud"],
+  "baseline": [
+    {"repo": "SylphxAI/agents", "departure": "agent-runtime-package crates/egress-guard/Cargo.toml egress-guard", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/agents", "departure": "agent-runtime-package crates/spiron-credential-crypto/Cargo.toml spiron-credential-crypto", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/agents", "departure": "agent-runtime-package crates/spiron-vault-proxy/Cargo.toml spiron-vault-proxy", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/agents", "departure": "agent-runtime-table packages/db/migrations/20260306000000_initial.sql session_entries", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/agents", "departure": "agent-runtime-table packages/db/migrations/20260722234500_session_turn_settlement_authority.sql session_turns", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/agents", "departure": "agent-runtime-table packages/db/migrations/20260925010000_mind_compaction.sql agent_memory_items", "expires": "2026-11-30"}
+  ]
+}

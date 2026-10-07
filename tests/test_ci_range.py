@@ -59,8 +59,14 @@ class SelectTest(unittest.TestCase):
         run = ci_range.select(LANES, None, "verify / test (linux),verified")
         self.assertEqual(run, {"lint": False, "test": True, "e2e": False})
 
-    def test_only_never_widens_past_the_range(self) -> None:
-        self.assertEqual(ci_range.select(LANES, ["README.md"], "e2e")["e2e"], False)
+    def test_only_runs_a_named_lane_outside_the_range(self) -> None:
+        # A dispatch naming lanes on an already verified head (empty range)
+        # runs those lanes and nothing else.
+        self.assertEqual(ci_range.select(LANES, [], "lint,e2e"), {"lint": True, "test": False, "e2e": True})
+        self.assertEqual(ci_range.select(LANES, ["README.md"], "e2e")["e2e"], True)
+
+    def test_only_drops_a_selected_lane_it_does_not_name(self) -> None:
+        self.assertEqual(ci_range.select(LANES, ["src/a.rs", "web/b.ts"], "e2e"), {"lint": False, "test": False, "e2e": True})
 
     def test_only_with_no_known_lane_runs_the_selection(self) -> None:
         self.assertEqual(ci_range.select(LANES, None, "verified,plan"), {"lint": True, "test": True, "e2e": True})
@@ -217,6 +223,27 @@ class StarterWorkflowTest(unittest.TestCase):
         # A bot-opened pull request gets its ci-ok from a dispatched run.
         self.assertIn("workflow_dispatch", gate[True])
         self.assertIn("pull_request", gate["jobs"]["suite"]["if"])
+
+    def test_starter_artifact_uploads_never_fail_a_job(self) -> None:
+        # Artifact storage is an organization quota; once it is spent every
+        # upload fails ("Artifact storage quota has been hit") and a passing
+        # suite went red (docs/run-store.md). A starter's upload is a
+        # diagnostic, so it may not fail its job and keeps a short retention.
+        import yaml
+        seen = 0
+        for path in (ROOT / "workflow-templates").glob("*.yml"):
+            workflow = yaml.safe_load(path.read_text())
+            for job_name, job in (workflow.get("jobs") or {}).items():
+                for step in job.get("steps") or []:
+                    if not str(step.get("uses", "")).startswith("actions/upload-artifact@"):
+                        continue
+                    seen += 1
+                    where = f"{path.name} {job_name} {step.get('with', {}).get('name')}"
+                    self.assertIs(step.get("continue-on-error"), True, where)
+                    retention = (step.get("with") or {}).get("retention-days")
+                    self.assertIsInstance(retention, int, where)
+                    self.assertLessEqual(retention, 3, where)
+        self.assertGreater(seen, 0)
 
 
 class RedMainOnlyOnFailureTest(unittest.TestCase):
