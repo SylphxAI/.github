@@ -46,6 +46,7 @@ import tempfile
 import time
 import urllib.request
 import zipfile
+from html.parser import HTMLParser
 from pathlib import Path
 
 CFT_BASE = "https://storage.googleapis.com/chrome-for-testing-public/%s/linux64"
@@ -236,21 +237,47 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def start_host(keel: str, pack: str, port: int) -> subprocess.Popen:
+def pack_base(index: Path) -> str:
+    class BaseParser(HTMLParser):
+        base = "/"
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "base":
+                href = dict(attrs).get("href")
+                if href is not None:
+                    self.base = "/" + href.strip("/") + "/" if href.strip("/") else "/"
+
+    parser = BaseParser()
+    parser.feed(index.read_text())
+    return parser.base
+
+
+def start_host(keel: str, pack: str, port: int, base: str = "/") -> subprocess.Popen:
     host = os.path.join(keel, "scripts", "static_host.py")
-    proc = subprocess.Popen([sys.executable, host, "--dir", pack, str(port)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    url = "http://127.0.0.1:%d/index.html" % port
-    for _ in range(100):
-        if proc.poll() is not None:
-            raise Refused("the static host exited with status %s" % proc.returncode)
+    cmd = [sys.executable, host, "--dir", pack]
+    # Old pins need no new host flag when the pack is served at the root.
+    if base != "/":
+        cmd += ["--base", base]
+    url = "http://127.0.0.1:%d%sindex.html" % (port, base)
+    with tempfile.TemporaryFile(mode="w+") as log:
+        proc = subprocess.Popen([*cmd, str(port)], stdout=log, stderr=subprocess.STDOUT)
+        for _ in range(100):
+            if proc.poll() is not None:
+                log.seek(0)
+                raise Refused("the static host exited with status %s:\n%s" % (proc.returncode, log.read()[-4000:]))
+            try:
+                urllib.request.urlopen(url, timeout=2).close()
+                return proc
+            except Exception:
+                time.sleep(0.2)
+        proc.terminate()
         try:
-            urllib.request.urlopen(url, timeout=2).close()
-            return proc
-        except Exception:
-            time.sleep(0.2)
-    proc.terminate()
-    raise Refused("the static host did not serve %s in 20 s" % url)
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        log.seek(0)
+        raise Refused("the static host did not serve %s in 20 s:\n%s" % (url, log.read()[-4000:]))
 
 
 def supports(keel: str, flag: str) -> bool:
@@ -395,8 +422,9 @@ def cmd_run(opts) -> int:
     print("::endgroup::")
     if not served_ok:
         print("::error title=web-smoke served-q11::%s" % next((l for l in served_out.splitlines() if l.startswith("FAIL")), "failed"))
-    host = start_host(opts.keel, str(pack), port)
-    url = "http://127.0.0.1:%d/index.html" % port
+    base = pack_base(index)
+    host = start_host(opts.keel, str(pack), port, base)
+    url = "http://127.0.0.1:%d%sindex.html" % (port, base)
     results = [("served-q11", served_ok, served_out)]
     try:
         for name, cmd in smoke_commands(opts.keel, opts.chrome, url, opts):
