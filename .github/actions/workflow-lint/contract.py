@@ -44,7 +44,7 @@ def dependencies(job):
 
 
 def masks_failure(command):
-    lexer = shlex.shlex(command.replace("\\\n", ""), posix=True, punctuation_chars="|&;")
+    lexer = shlex.shlex(command.replace("\\\n", ""), posix=False, punctuation_chars="|&;")
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
@@ -52,7 +52,7 @@ def masks_failure(command):
         # Non-shell run bodies can contain unmatched shell quotes. Still check
         # the explicit failure-swallowing idiom without making shell syntax a gate.
         return "|| true" in command or "||true" in command
-    return any(a == "||" and b == "true" for a, b in zip(tokens, tokens[1:]))
+    return any(a == "||" and b.strip("\"'") == "true" for a, b in zip(tokens, tokens[1:]))
 
 
 def required_jobs(jobs):

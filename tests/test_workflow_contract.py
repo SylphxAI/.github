@@ -52,7 +52,7 @@ class ContractTest(unittest.TestCase):
             self.assertEqual(len(self.scan(workflow(steps=f"      - run: |\n          {command}"))), 1)
 
     def test_comments_and_quoted_text_are_not_commands(self):
-        for command in ("echo 'pytest || true'", "pytest # || true"):
+        for command in ("echo 'pytest || true'", "echo '||' true", "pytest # || true"):
             self.assertEqual(self.scan(workflow(steps=f"      - run: |\n          {command}")), [])
 
     def test_transitive_needs_block_sequence_and_scalar(self):
