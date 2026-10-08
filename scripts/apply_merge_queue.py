@@ -21,7 +21,9 @@ What it manages: the parameters of the `merge_queue` rule of every ruleset that
 has one, and the required approving review count of the `pull_request` rule of
 every repository ruleset that has one (policy `review`: 0, because `ci-ok` is
 the gate and an approval checks nothing it did not). Everything else in a
-ruleset is carried through unchanged on a write.
+ruleset is carried through unchanged on a write. An inherited organization or
+enterprise ruleset is reported as INHERITED and never written: it has no
+repository path.
 What it only reports: whether the fast gate (`ci-ok`) is a required check of the
 same ruleset, and the strict flag. It never adds a required check, because a
 check no workflow reports would stop the queue.
@@ -167,7 +169,8 @@ def _failure(what: str, result: subprocess.CompletedProcess) -> Exception:
 
 QUERY = (
     'query{organization(login:"%s"){repositories(first:100,isArchived:false%s){pageInfo{hasNextPage endCursor} nodes{'
-    "name isFork defaultBranchRef{name} rulesets(first:30,includeParents:false){nodes{databaseId name enforcement target "
+    "name isFork defaultBranchRef{name} rulesets(first:30,includeParents:false){nodes{databaseId name enforcement "
+    "target source{__typename} "
     "conditions{refName{include exclude}} rules(first:40){nodes{type parameters{"
     "... on MergeQueueParameters{mergeMethod groupingStrategy maxEntriesToBuild minEntriesToMerge maxEntriesToMerge "
     "minEntriesToMergeWaitMinutes checkResponseTimeoutMinutes} "
@@ -180,7 +183,8 @@ QUERY = (
 def read_org(gh, org: str) -> list[dict]:
     """Every repository ruleset that carries a merge_queue or a pull_request rule, one entry each: the live state.
 
-    `live` is None when the ruleset has no queue; `review` is None when it has no pull_request rule."""
+    `live` is None when the ruleset has no queue; `review` is None when it has no pull_request rule.
+    `id` is None when the ruleset belongs to another source than Repository, so it is not written."""
     out: list[dict] = []
     after = ""
     while True:
@@ -194,9 +198,13 @@ def read_org(gh, org: str) -> list[dict]:
                     continue
                 checks = next((r for r in rules if r["type"] == "REQUIRED_STATUS_CHECKS"), None)
                 cparams = (checks or {}).get("parameters") or {}
+                # An inherited ruleset (`source` not `Repository`) is not a repository one: REST has no path
+                # to write it (`repos/{repo}/rulesets/{id}` writes repository rulesets only), so it is
+                # reported, never written.
+                repo_ruleset = (rs.get("source") or {}).get("__typename") == "Repository"
                 out.append({
                     "repo": f"{org}/{node['name']}",
-                    "id": rs["databaseId"],
+                    "id": rs["databaseId"] if repo_ruleset else None,
                     "ruleset": rs["name"],
                     "enforcement": rs["enforcement"],
                     "refs": (rs.get("conditions") or {}).get("refName", {}).get("include", []),
@@ -221,6 +229,12 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
         row = {k: item[k] for k in ("repo", "id", "ruleset", "enforcement", "refs")}
         if item["repo"] in skip:
             row.update(status="EXCLUDED", reason=skip[item["repo"]], changes={})
+            rows.append(row)
+            continue
+        if item["id"] is None:
+            # An inherited (organization or enterprise) ruleset has no repository path to write, so it is
+            # reported and never converged here.
+            row.update(status="INHERITED", reason="organization or enterprise ruleset: read-only here", changes={})
             rows.append(row)
             continue
         changes = {}
@@ -256,12 +270,15 @@ def render(rows: list[dict], skipped_orgs: list[str] | None = None) -> str:
         lines.append(head)
         if r["status"] == "EXCLUDED":
             lines.append(f"           excluded: {r['reason']}")
+        elif r["status"] == "INHERITED":
+            lines.append(f"           not managed: {r['reason']}")
         for key, (old, new) in r["changes"].items():
             lines.append(f"           {key}: {old} -> {new}")
         for note in r.get("notes", []):
             lines.append(f"           note: {note}")
     count = lambda s: sum(1 for r in rows if r["status"] == s)
-    lines.append(f"rulesets {len(rows)}: drift {count('DRIFT')}, ok {count('OK')}, excluded {count('EXCLUDED')}")
+    lines.append(f"rulesets {len(rows)}: drift {count('DRIFT')}, ok {count('OK')}, excluded {count('EXCLUDED')}, "
+                 f"inherited {count('INHERITED')}")
     return "\n".join(lines)
 
 

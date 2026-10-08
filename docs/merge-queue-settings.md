@@ -61,6 +61,12 @@ adds a required check, because requiring a check that no workflow reports would
 stop the queue; moving a repository's required check to `ci-ok` belongs with the
 change that makes the repository report it.
 
+A ruleset inherited from an organization or enterprise ruleset (GraphQL `source`
+not `Repository`) is reported `INHERITED` and never written: REST has no path to
+write it, and the enterprise ruleset already requires 0 approvals. A new
+repository therefore needs no manual step for the review count; the next run
+reads whatever repository ruleset it carries, queue or not.
+
 ## Commands
 
 ```sh
