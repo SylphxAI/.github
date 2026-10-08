@@ -16,8 +16,11 @@ inputs:
   mode:
     description: poll, repin or settle.
     required: true
+  layer:
+    description: Source to repin, keel (verified tags), kit (cubeage-kit main), or engine (tycoon-engine main).
+    default: keel
   tag:
-    description: The Keel tag (keel-verified-YYYY-MM-DD-N), or latest for the newest keel-verified-* tag.
+    description: The Keel tag, or latest. For kit/engine, latest follows main; a full SHA freezes the poll's target.
     default: latest
   dry-run:
     description: Print the pull request that would be opened and the workflows it would start; push and open nothing.
@@ -59,7 +62,7 @@ inputs:
       build lists only its own aggregate check.
     default: ci-ok web-smoke
   owner:
-    description: "settle: who a red repin comment addresses, such as @Cubeage/studio. Empty: nobody is mentioned."
+    description: "Who a failed build draft or red settle comment addresses, such as @Cubeage/studio. Empty: nobody is mentioned."
     default: ""
   max-wait-minutes:
     description: "settle: a required check that has not finished this long after the pull request opened turns it red."
@@ -107,6 +110,17 @@ runs:
         repositories: keel
         permission-contents: read
 
+    - name: Mint read-only shared-layer token
+      id: layer-token
+      if: inputs.mode != 'settle' && inputs.layer != 'keel'
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.reader-app-id }}
+        private-key: ${{ inputs.reader-app-key }}
+        owner: Cubeage
+        repositories: ${{ inputs.layer == 'kit' && 'cubeage-kit' || 'tycoon-engine' }}
+        permission-contents: read
+
     - name: Mint read-only token for the extra repositories
       id: extra-token
       if: inputs.mode == 'repin' && inputs.extra-read-owner != ''
@@ -123,6 +137,8 @@ runs:
       shell: bash
       env:
         KEEL_TOKEN: ${{ steps.keel-token.outputs.token }}
+        LAYER_TOKEN: ${{ steps.layer-token.outputs.token }}
+        LAYER: ${{ inputs.layer }}
         EXTRA_TOKEN: ${{ steps.extra-token.outputs.token }}
         EXTRA_OWNER: ${{ inputs.extra-read-owner }}
         EXTRA_REPOS: ${{ inputs.extra-read-repos }}
@@ -138,6 +154,13 @@ runs:
           n=$((n + 1))
         }
         add "https://github.com/SylphxAI/keel" "$KEEL_TOKEN"
+        if [ "$LAYER" != keel ]; then
+          : "${LAYER_TOKEN:?missing shared-layer read token}"
+          case "$LAYER" in
+            kit) add "https://github.com/Cubeage/cubeage-kit" "$LAYER_TOKEN" ;;
+            engine) add "https://github.com/Cubeage/tycoon-engine" "$LAYER_TOKEN" ;;
+          esac
+        fi
         if [ -n "$EXTRA_OWNER" ] && [ -n "$EXTRA_TOKEN" ]; then
           while read -r repo; do
             [ -n "$repo" ] && add "https://github.com/$EXTRA_OWNER/$repo" "$EXTRA_TOKEN"
@@ -155,25 +178,28 @@ runs:
       shell: bash
       env:
         TAG: ${{ inputs.tag }}
+        LAYER: ${{ inputs.layer }}
         ACTION_PATH: ${{ github.action_path }}
         GH_TOKEN: ${{ inputs.token }}
         KEEL_API_TOKEN: ${{ steps.keel-token.outputs.token }}
-      run: python3 "$ACTION_PATH/keel_repin.py" poll --tag "$TAG"
+      run: python3 "$ACTION_PATH/keel_repin.py" poll --layer "$LAYER" --tag "$TAG"
 
     - name: Repin
       if: inputs.mode == 'repin'
       shell: bash
       env:
         TAG: ${{ inputs.tag }}
+        LAYER: ${{ inputs.layer }}
         CHECK_COMMAND: ${{ inputs.check-command }}
         CHECK_DIR: ${{ inputs.check-dir }}
+        OWNER_MENTION: ${{ inputs.owner }}
         ACTION_PATH: ${{ github.action_path }}
         REPORT: ${{ runner.temp }}/keel-repin-report.json
         # A dry run rebuilds even when the branch exists, so it always shows the pull request.
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
         set -euo pipefail
-        args=(run --tag "$TAG" --check-command "$CHECK_COMMAND" --check-dir "$CHECK_DIR" --report "$REPORT")
+        args=(run --layer "$LAYER" --tag "$TAG" --owner "$OWNER_MENTION" --check-command "$CHECK_COMMAND" --check-dir "$CHECK_DIR" --report "$REPORT")
         [ "$DRY_RUN" = true ] && args+=(--ignore-branch)
         python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"
 

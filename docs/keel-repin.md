@@ -118,6 +118,44 @@ A title that needs more (re-vendored sources, a patch block) keeps `tools/repin_
 When that file exists the action runs it instead of the rewrite and the lock refresh, then runs the
 check; edits it makes under `.github/workflows/` are discarded.
 
+## Shared kit and engine layers
+
+The same action follows shared-layer main commits with `layer: kit` (Cubeage/cubeage-kit)
+or `layer: engine` (Cubeage/tycoon-engine). Keep `layer` identical in the poll and
+repin calls, and pass the poll's `tag` output into repin: it is the full main SHA,
+so the build uses the commit that was polled even if main moves meanwhile.
+The default `layer: keel` keeps the existing verified-tag flow unchanged.
+
+Poll fetches the source commits and requires main to be ahead of every consumer pin.
+Each target has one branch, `chore/keel-repin-kit-<sha>` or
+`chore/keel-repin-engine-<sha>`; an existing branch or open/merged PR stops a repeat.
+A newer layer PR closes older PRs of the same layer only after checking ancestry;
+kit repins never close engine or Keel-tag repins.
+The reader App must also be installed on the selected Cubeage source repository;
+the action mints a read-only source token for both poll and repin. Other private
+build dependencies still belong in `extra-read-repos`.
+
+- **Kit:** reads the Keel revision from the target kit commit, then moves the kit
+  and that Keel revision together. With `tools/repin_keel.sh`, invokes the existing
+  tuple contract, `tools/repin_keel.sh <keel-sha> <kit-sha>`. Otherwise rewrites the
+  tracked Cargo rev rows, `deps/kit.rev`, Keel pins and their tracked references,
+  and refreshes the layer and Keel packages in each non-vendored `Cargo.lock`.
+  A lock containing a different or second Keel commit makes the PR a failed draft.
+- **Engine:** rewrites Cargo rev rows and `ENGINE_REV`, then invokes
+  `tools/vendor_engine.sh` or `scripts/vendor-private.sh` with no arguments, after
+  the pins move. `ENGINE_REPO` points at a temporary checkout of the target engine
+  for hooks that export from a local clone. Cargo git locks are refreshed too.
+  The hook owns the vendored tree; no generic vendor exporter is added.
+
+A failed hook, lock refresh or build still opens a draft with the error tail and
+mentions `owner`. Settle uses the same exact-head CI gate for all three sources.
+Its optional live Keel check includes kit tuples (which name their Keel commit)
+and excludes engine-only repins, which do not change the live Keel revision.
+
+`python3 -m unittest discover -s tests -p test_layer_repin.py` exercises local
+main commits, a real Cargo kit/Keel lock resolution with one Keel, both engine
+hook paths, one PR on repeat and an owned draft on a failed build.
+
 ## Inputs worth knowing
 
 | Input | Meaning |

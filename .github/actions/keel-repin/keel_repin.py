@@ -279,13 +279,173 @@ def remote_branch_exists(root, branch):
     return run(["git", "ls-remote", "--exit-code", "--heads", "origin", branch], cwd=root, check=False).returncode == 0
 
 
+LAYER_REPOS = {"kit": "Cubeage/cubeage-kit", "engine": "Cubeage/tycoon-engine"}
+
+
+def layer_pins(root, layer):
+    """Cargo git revisions and the title's explicit layer revision files."""
+    repo = re.compile(re.escape(LAYER_REPOS[layer]) + r"(?:\.git)?(?![\w-])")
+    found = []
+    for f in tracked_files(root):
+        if f.endswith("Cargo.toml") and not f.startswith(SKIP_DIRS) and "/vendor/" not in f:
+            for line in (Path(root) / f).read_text(errors="replace").splitlines():
+                if repo.search(line):
+                    found += REV_RE.findall(line)
+        elif (layer == "kit" and (f == "deps/kit.rev" or f.endswith("/deps/kit.rev"))) or (layer == "engine" and Path(f).name == "ENGINE_REV"):
+            pin = (Path(root) / f).read_text().strip()
+            if SHA_RE.fullmatch(pin):
+                found.append(pin)
+    return sorted(set(found))
+
+
+def layer_target(args):
+    if SHA_RE.fullmatch(args.tag):
+        return args.tag
+    if args.tag not in ("", "latest", "main"):
+        raise Refused("a shared layer target must be main, latest or a full commit SHA")
+    out = run(["git", "ls-remote", args.remote, "refs/heads/main"]).stdout.split()
+    if not out or not SHA_RE.fullmatch(out[0]):
+        raise Refused(f"no main commit at {args.remote}")
+    return out[0]
+
+
+def checkout_layer(remote, sha, directory):
+    run(["git", "init", "-q", directory])
+    run(["git", "-C", directory, "fetch", "-q", "--no-tags", remote, sha])
+    run(["git", "-C", directory, "checkout", "-q", "FETCH_HEAD"])
+
+
+def layer_ahead(remote, sha, old):
+    with tempfile.TemporaryDirectory() as d:
+        run(["git", "init", "-q", "--bare", d])
+        run(["git", "-C", d, "fetch", "-q", "--no-tags", remote, sha, *old])
+        return all(run(["git", "-C", d, "merge-base", "--is-ancestor", pin, sha], check=False).returncode == 0 for pin in old)
+
+
+def cmd_layer_poll(args):
+    root = Path(args.root).resolve()
+    sha = layer_target(args)
+    branch = BRANCH_PREFIX + args.layer + "-" + sha
+    old = layer_pins(root, args.layer)
+    if not old:
+        raise Refused(f"no {args.layer} pin found")
+    out = {"tag": sha, "sha": sha, "needed": "false", "reason": ""}
+    if old == [sha]:
+        out["reason"] = "already pinned"
+    elif pr_exists(branch) or remote_branch_exists(root, branch):
+        out["reason"] = "a pull request or branch for this commit exists"
+    else:
+        ahead = layer_ahead(args.remote, sha, old)
+        out["needed"] = "true" if ahead else "false"
+        out["reason"] = "" if ahead else "main is not ahead of every pin"
+    write_outputs(out)
+    return 0
+
+
+def refresh_layer_locks(root, layer, log):
+    """Update the layer and its transitive pins in one Cargo resolution."""
+    repo = LAYER_REPOS[layer]
+    for f in tracked_files(root):
+        if Path(f).name != "Cargo.lock" or f.startswith(SKIP_DIRS) or "/vendor/" in f:
+            continue
+        lock = (Path(root) / f).read_text()
+        names = sorted(set(re.findall(r'\[\[package\]\]\s+name = "([^"]+)"\s+version = "[^"]+"\s+source = "git\+https://github.com/' + re.escape(repo) + r'(?:\.git)?[?\"]', lock)))
+        manifest = (Path(root) / f).with_name("Cargo.toml")
+        if not names or not manifest.exists():
+            continue
+        cmd = ["cargo", "update", "--manifest-path", str(manifest)]
+        for name in names:
+            cmd += ["-p", name]
+        proc = run(cmd, cwd=root, check=False)
+        log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
+        if proc.returncode:
+            return "lock"
+    return None
+
+
+def cmd_layer_run(args):
+    root = Path(args.root).resolve()
+    sha = layer_target(args)
+    old = layer_pins(root, args.layer)
+    if not old:
+        raise Refused(f"no {args.layer} pin found")
+    branch = BRANCH_PREFIX + args.layer + "-" + sha
+    report = {"layer": args.layer, "remote": args.remote, "tag": sha, "sha": sha, "branch": branch, "status": "unchanged",
+              "stage": "", "changed": [], "old": old, "manual": [], "log": "", "owner": args.owner}
+    if old == [sha] or (not args.ignore_branch and remote_branch_exists(root, branch)):
+        if old != [sha]:
+            report["status"] = "branch-exists"
+        Path(args.report).write_text(json.dumps(report, indent=2))
+        return 0
+    log, stage = [], None
+    keel_old = find_pins(root) if args.layer == "kit" else []
+    with tempfile.TemporaryDirectory() as d:
+        checkout_layer(args.remote, sha, d)
+        if args.layer == "kit":
+            pins = find_pins(d)
+            if len(pins) != 1:
+                raise Refused("cubeage-kit must pin exactly one Keel commit")
+            report["keel_sha"] = pins[0]
+            if (root / HOOK).exists():
+                cmd = ["bash", HOOK, pins[0], sha]
+                proc = run(cmd, cwd=root, check=False)
+                log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
+                stage = "hook" if proc.returncode else None
+            else:
+                rewrite(root, old, sha, sha)
+                # A layer tuple uses a rev, not a Keel release tag.
+                for f in pin_files(tracked_files(root))[0]:
+                    p = root / f
+                    p.write_text("\n".join(
+                        TAG_PIN_RE.sub(lambda m: 'rev = "' + pins[0] + '"', line) if KEEL_URL.search(line) else line
+                        for line in p.read_text().split("\n")))
+                rewrite(root, keel_old, pins[0], pins[0])
+                stage = refresh_layer_locks(root, args.layer, log)
+                if stage is None:
+                    stage = refresh_locks(root, log)
+        else:
+            rewrite(root, old, sha, sha)
+            for f in tracked_files(root):
+                if Path(f).name == "ENGINE_REV":
+                    (root / f).write_text(sha + "\n")
+            hook = next((h for h in ("tools/vendor_engine.sh", "scripts/vendor-private.sh") if (root / h).exists()), None)
+            if hook:
+                proc = run(["bash", hook], cwd=root, check=False, env={**os.environ, "ENGINE_REPO": d})
+                log.append(f"$ bash {hook}\n{proc.stdout}{proc.stderr}")
+                stage = "hook" if proc.returncode else None
+            if stage is None:
+                stage = refresh_layer_locks(root, args.layer, log)
+    if stage is None and args.layer == "kit":
+        for f in tracked_files(root):
+            if Path(f).name == "Cargo.lock" and not f.startswith(SKIP_DIRS) and "/vendor/" not in f:
+                sources = {source for _, _, source in lock_entries((root / f).read_text())}
+                commits = {source.rsplit("#", 1)[-1] for source in sources}
+                if sources and (len(sources) != 1 or commits != {report["keel_sha"]}):
+                    stage = "lock"
+                    log.append(f"{f}: expected one Keel commit {report['keel_sha']} from one source, found {', '.join(sorted(sources))}")
+    if stage is None and args.check_command:
+        proc = run(["bash", "-c", args.check_command], cwd=root / args.check_dir, check=False)
+        log.append(f"$ {args.check_command}\n{proc.stdout}{proc.stderr}")
+        stage = "check" if proc.returncode else None
+    report["manual"] = workflow_mentions(root, old + keel_old)
+    run(["git", "checkout", "--", WORKFLOWS.rstrip("/")], cwd=root, check=False)
+    report["changed"] = sorted(e[3:] for e in run(["git", "status", "--porcelain", "-z"], cwd=root).stdout.split("\0") if len(e) > 3)
+    if any(f.startswith("target/") or "/target/" in f for f in report["changed"]):
+        raise Refused("build output (target/) is not ignored by git in this repository; add it to .gitignore")
+    report.update(status=("failed" if stage else "ok") if report["changed"] else "unchanged", stage=stage or "", log="\n".join(log))
+    Path(args.report).write_text(json.dumps(report, indent=2))
+    return 0
+
+
 def cmd_run(args):
+    if args.layer != "keel":
+        return cmd_layer_run(args)
     root = Path(args.root).resolve()
     if args.tag in ("", "latest"):
         args.tag = newest_verified_tag(args.remote)
     sha = resolve_tag(args.tag, args.remote)
     branch = BRANCH_PREFIX + args.tag
-    report = {"tag": args.tag, "sha": sha, "branch": branch, "status": "unchanged", "stage": "", "changed": [], "old": [], "manual": [], "log": ""}
+    report = {"tag": args.tag, "sha": sha, "branch": branch, "status": "unchanged", "stage": "", "changed": [], "old": [], "manual": [], "log": "", "owner": args.owner}
 
     def save():
         Path(args.report).write_text(json.dumps(report, indent=2))
@@ -353,12 +513,17 @@ def unreadable_repos(log):
 def pr_text(report):
     tag, sha = report["tag"], report["sha"]
     old = report["old"]
-    title = f"chore(keel): repin Keel to {tag} ({sha[:9]})"
-    lines = [f"Moves the Keel pin to `{tag}`, commit `{sha}`."]
+    layer = report.get("layer", "keel")
+    name = LAYER_REPOS[layer].split("/")[1] if layer != "keel" else "Keel"
+    title = f"chore({layer}): repin {name} to {tag} ({sha[:9]})"
+    lines = [f"Moves the {name} pin to `{tag}`, commit `{sha}`."]
+    if report.get("keel_sha"):
+        lines.append(f"Moves the Keel pin to `kit-{sha}`, commit `{report['keel_sha']}`.")
     if old:
         lines.append("")
         lines.append("Old pin: " + ", ".join(f"`{o}`" for o in old))
-        lines.append(f"Keel changes: https://github.com/SylphxAI/keel/compare/{old[0]}...{sha} (private repository)")
+        repo = LAYER_REPOS[layer] if layer != "keel" else "SylphxAI/keel"
+        lines.append(f"{name} changes: https://github.com/{repo}/compare/{old[0]}...{sha} (private repository)")
     if report["changed"]:
         lines += ["", "Files changed:", *[f"- `{f}`" for f in report["changed"][:60]]]
     if report.get("manual"):
@@ -371,9 +536,11 @@ def pr_text(report):
         what = {"hook": "the repository's repin script", "lock": "the Cargo.lock refresh", "check": "the build check"}[report["stage"]]
         lines += [
             "",
-            f"**Draft: {what} fails on this Keel tag.** The pull request is open as a draft so the break is visible. "
+            f"**Draft: {what} fails on this {'Keel tag' if layer == 'keel' else name + ' commit'}.** The pull request is open as a draft so the break is visible. "
             "Fix it on this branch (the bot never touches it again), then mark it ready. CI was not started by the bot.",
         ]
+        if report.get("owner"):
+            lines.append(f"Owner: {report['owner']}")
         missing = unreadable_repos(report["log"])
         if missing:
             lines += [
@@ -453,7 +620,13 @@ def cmd_pr(args):
         if head == branch or not head.startswith(BRANCH_PREFIX):
             continue
         other = tag_key(head[len(BRANCH_PREFIX):])
-        if other and mine and other < mine:
+        superseded = bool(other and mine and other < mine)
+        layer = report.get("layer", "keel")
+        if layer != "keel" and head.startswith(BRANCH_PREFIX + layer + "-"):
+            previous = head[len(BRANCH_PREFIX + layer + "-"):]
+            superseded = bool(SHA_RE.fullmatch(previous) and previous != report["sha"]
+                              and layer_ahead(report["remote"], report["sha"], [previous]))
+        if superseded:
             run([*gh, "pr", "close", num, "--delete-branch", "--comment", f"Superseded by the repin to `{report['tag']}` (`{branch}`)."], cwd=root, check=False)
             print(f"closed superseded #{num} ({head})")
     return 0
@@ -501,6 +674,8 @@ def write_outputs(pairs):
 
 
 def cmd_poll(args):
+    if args.layer != "keel":
+        return cmd_layer_poll(args)
     root = Path(args.root).resolve()
     tag = newest_verified_tag(args.remote) if args.tag in ("", "latest") else args.tag
     sha = resolve_tag(tag, args.remote)
@@ -656,7 +831,8 @@ def web_smoke():
 def newest_merged_repin():
     """The newest merged repin pull request as (number, tag, commit, merged_at epoch), or None."""
     out = gh_json(["pr", "list", "--state", "merged", "--limit", "50", "--json", "number,headRefName,body,mergedAt"],
-                  '[.[] | select(.headRefName | startswith("' + BRANCH_PREFIX + '"))] | max_by(.mergedAt) // empty')
+                  '[.[] | select((.headRefName | startswith("' + BRANCH_PREFIX + '")) and '
+                  '(.headRefName | startswith("' + BRANCH_PREFIX + 'engine-") | not))] | max_by(.mergedAt) // empty')
     if not out.strip():
         return None
     pr = json.loads(out)
@@ -755,17 +931,20 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--tag", required=True)
+    r.add_argument("--tag", default="latest")
+    r.add_argument("--layer", choices=("keel", "kit", "engine"), default="keel")
+    r.add_argument("--owner", default="")
     r.add_argument("--root", default=".")
-    r.add_argument("--remote", default=os.environ.get("KEEL_REMOTE", DEFAULT_REMOTE))
+    r.add_argument("--remote", default=None)
     r.add_argument("--check-command", default="cargo check")
     r.add_argument("--check-dir", default=".")
     r.add_argument("--report", required=True)
     r.add_argument("--ignore-branch", action="store_true", help="rebuild even when the branch exists (dry runs)")
     q = sub.add_parser("poll")
     q.add_argument("--tag", default="latest")
+    q.add_argument("--layer", choices=("keel", "kit", "engine"), default="keel")
     q.add_argument("--root", default=".")
-    q.add_argument("--remote", default=os.environ.get("KEEL_REMOTE", DEFAULT_REMOTE))
+    q.add_argument("--remote", default=None)
     d = sub.add_parser("dispatch")
     d.add_argument("--report", required=True)
     d.add_argument("--workflows", default="ci.yml", help="workflow files, space separated, started in order")
@@ -790,6 +969,9 @@ def main(argv=None):
     p.add_argument("--label", default="")
     p.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+    if args.cmd in ("run", "poll") and not args.remote:
+        args.remote = (os.environ.get("KEEL_REMOTE", DEFAULT_REMOTE) if args.layer == "keel"
+                       else "https://github.com/" + LAYER_REPOS[args.layer])
     try:
         return {"run": cmd_run, "pr": cmd_pr, "poll": cmd_poll, "dispatch": cmd_dispatch, "settle": cmd_settle}[args.cmd](args)
     except Refused as e:
