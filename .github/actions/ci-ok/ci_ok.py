@@ -12,9 +12,10 @@ It fails closed when a check never ran:
 - a GitHub Actions check suite that completed with a bad conclusion and no
   check runs is a workflow that failed to start (invalid YAML, a reusable
   workflow or permission it cannot get); it posts no check run, so the
-  check-run list alone would read green. Only a pull_request, merge_group or
-  pull_request_target workflow counts (read through `actions: read`); when the
-  event cannot be read, every such suite counts;
+  check-run list alone would read green. A pull_request, merge_group or
+  pull_request_target workflow counts (read through `actions: read`); PR gates
+  also count push-event rejections, since GitHub reports invalid PR workflows
+  at push time. When the event cannot be read, every such suite counts;
 - no other check run at all on the commit fails: a gate over nothing is not
   a pass (a repository whose every workflow is path-filtered may allow that
   on pull_request only, CI_OK_ALLOW_NONE_ON_PR; its merge group still fails);
@@ -53,7 +54,8 @@ ACTIONS_APP_ID = 15368  # GitHub Actions; the app every required ci-ok check is 
 # Events whose workflows gate a change. A workflow_run or push workflow that
 # fails to start on the same commit (a broken red-main.yml on main lands on the
 # merge-group SHA) is not a check this gate waits for, and counting it would
-# fail every merge group, including the one that fixes it.
+# fail every merge group, including the one that fixes it. PR gates do count
+# push rejections: GitHub validates an invalid PR workflow on push, with no jobs.
 GATING_EVENTS = {"pull_request", "pull_request_target", "merge_group"}
 
 
@@ -61,7 +63,9 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
              suites: list[dict] | None = None,
              required: frozenset[str] | set[str] = frozenset(),
              allow_none: bool = False,
-             suite_events: dict[int, str] | None = None) -> tuple[str, list[str]]:
+             suite_events: dict[int, str] | None = None,
+             event_name: str = "",
+             suite_names: dict[int, str] | None = None) -> tuple[str, list[str]]:
     """Return ('pending'|'fail'|'pass', details) for the given check runs.
 
     By default only GitHub Actions check runs count: other apps post deploy
@@ -73,7 +77,8 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     and fails the gate. `required` names must be present and have succeeded.
     No other check run fails unless `allow_none` (pull_request opt-in only).
     `suite_events` maps a check suite id to its workflow run's event; a suite
-    whose event is known and not a gating event is ignored.
+    whose event is known and not a gating event is ignored, except push-event
+    startup rejections when this aggregate runs for a PR.
     """
     relevant = latest_runs([r for r in runs if r.get("name") not in ignore
                             and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")],
@@ -86,9 +91,11 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
         event = (suite_events or {}).get(suite.get("id"))
         if (suite.get("status") == "completed" and suite.get("conclusion") in BAD
                 and not suite.get("latest_check_runs_count")
-                and (event is None or event in GATING_EVENTS)):
+                and (event is None or event in GATING_EVENTS
+                     or (event == "push" and event_name in {"pull_request", "pull_request_target"}))):
+            name = (suite_names or {}).get(suite.get("id"), "unknown workflow")
             bad.append(f'workflow failed to start (check suite {suite.get("id")}, '
-                       f'conclusion {suite.get("conclusion")}, 0 jobs)')
+                       f'conclusion {suite.get("conclusion")}, 0 jobs): {name}')
     concluded = {r["name"]: r.get("conclusion") for r in relevant}
     for name in sorted(required):
         if concluded.get(name) != "success":
@@ -193,7 +200,8 @@ def started_badly(suites: list[dict]) -> bool:
                and not s.get("latest_check_runs_count") for s in suites)
 
 
-def fetch_suite_events(repo: str, sha: str, token: str) -> dict[int, str] | None:
+def fetch_suite_events(repo: str, sha: str, token: str,
+                       names: dict[int, str] | None = None) -> dict[int, str] | None:
     """check_suite_id -> event of the commit's workflow runs; None when unreadable
     (no `actions: read`), so every failed empty suite then counts."""
     try:
@@ -204,7 +212,11 @@ def fetch_suite_events(repo: str, sha: str, token: str) -> dict[int, str] | None
                   "every workflow that failed to start counts", flush=True)
             return None
         raise
-    return suite_events(data.get("workflow_runs", []))
+    workflow_runs = data.get("workflow_runs", [])
+    if names is not None:
+        names.update({r["check_suite_id"]: r.get("path") or r.get("name") or "unknown workflow"
+                      for r in workflow_runs})
+    return suite_events(workflow_runs)
 
 
 def suite_events(workflow_runs: list[dict]) -> dict[int, str]:
@@ -234,14 +246,15 @@ def main() -> int:
         try:
             suites = fetch_suites(repo, sha, token)
             runs = fetch(repo, sha, token)
-            events = (fetch_suite_events(repo, sha, token)
+            names: dict[int, str] = {}
+            events = (fetch_suite_events(repo, sha, token, names)
                       if started_badly(suites) or needs_suite_events(runs, ignore) else None)
             state, detail = evaluate(runs, ignore,
                                      os.environ.get("CI_OK_ALL_APPS", "false") != "true",
                                      suites, required,
                                      os.environ.get("CI_OK_ALLOW_NONE_ON_PR", "false") == "true"
                                      and os.environ.get("EVENT_NAME") == "pull_request",
-                                     events)
+                                     events, os.environ.get("EVENT_NAME", ""), names)
         except RateLimited as exc:
             if exc.reset >= deadline:
                 print(f"::error::{exc}, past this gate's deadline: ci-ok cannot read the checks "
