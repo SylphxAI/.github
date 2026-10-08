@@ -77,13 +77,13 @@ jobs:
       # organization's metered quota and holds its CI down. Files another job
       # of this run needs are a hand-over - use run-store, never an artifact.
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: always()
+        if: failure()
         continue-on-error: true
         with:
           name: junit-integration
           path: junit.xml
           if-no-files-found: ignore
-          retention-days: 3
+          retention-days: 1
 
   e2e:
     needs: plan
