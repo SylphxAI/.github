@@ -72,6 +72,10 @@ jobs:
       # quota is spent the upload fails, and that must never turn a passing
       # suite red (docs/run-store.md). Without it the handler falls back to
       # naming the lane.
+      # Keep `path` on the report file: a working tree copied with it, a
+      # `**/*.bundle` or a blob added here and uploaded spends the whole
+      # organization's metered quota and holds its CI down. Files another job
+      # of this run needs are a hand-over - use run-store, never an artifact.
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         continue-on-error: true

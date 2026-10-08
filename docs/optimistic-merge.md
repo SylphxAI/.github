@@ -54,7 +54,15 @@ proofs - is a suite lane.
    testcases); the handler names failing tests and each test's trace window
    from it. The upload is a diagnostic: it carries `continue-on-error: true`
    and `retention-days: 3`, so a spent organization artifact quota never turns
-   a passing lane red ([run-store](run-store.md)).
+   a passing lane red ([run-store](run-store.md)). Its input `path` is the
+   report file only: a working tree copied with it, a `**/*.bundle` or a
+   hand-entry that drops a large blob in `workflow-templates` and uploads it,
+   *does* spend the quota and holds the whole organization's CI down until the
+   window recalculates (OzyrixLtd, 2026-10-07). This document is the complete
+   set of steps that stand between the copy and a working pipeline; a lane's own
+   material is the caller's, install steps included, and is never added here.
+   A file or directory another job of the same run needs is a hand-over: use
+   [`run-store`](run-store.md), never `upload-artifact`.
 4. **`.github/workflows/red-main.yml`** from
    [`workflow-templates/red-main.yml`](../workflow-templates/red-main.yml),
    unchanged. In the organization that holds the builder App
