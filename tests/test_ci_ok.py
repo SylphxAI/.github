@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import pathlib
 import unittest
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location(
     "ci_ok", pathlib.Path(__file__).resolve().parents[1] / ".github" / "actions" / "ci-ok" / "ci_ok.py")
@@ -76,6 +79,37 @@ class CiOkTest(unittest.TestCase):
         self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={7: "merge_group"})[0], "fail")
         self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events={})[0], "fail")
         self.assertEqual(ci_ok.evaluate(runs, set(), suites=[broken], suite_events=None)[0], "fail")
+
+    def test_push_startup_rejection_fails_pr_but_not_merge_group(self) -> None:
+        # redmain-drill#11: invalid PR workflow is reported as a push run
+        # with zero jobs, while the PR aggregate's control check succeeds.
+        broken = {"id": 7, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        for event in ("pull_request", "pull_request_target"):
+            state, detail = ci_ok.evaluate([run("control")], set(), suites=[broken],
+                                            suite_events={7: "push"}, event_name=event,
+                                            suite_names={7: ".github/workflows/ci.yml"})
+            self.assertEqual(state, "fail")
+            self.assertIn(".github/workflows/ci.yml", detail[0])
+        self.assertEqual(ci_ok.evaluate([run("control")], set(), suites=[broken],
+                                        suite_events={7: "push"}, event_name="merge_group")[0], "pass")
+        self.assertEqual(ci_ok.evaluate([run("control")], set(), suites=[broken],
+                                        suite_events={7: "superseded"}, event_name="pull_request")[0], "pass")
+        self.assertEqual(ci_ok.evaluate([run("control")], set(), suites=[broken],
+                                        suite_events={7: "workflow_run"}, event_name="pull_request")[0], "pass")
+
+    def test_pr_main_reports_rejected_workflow_path(self) -> None:
+        broken = {"id": 7, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        workflow = {"check_suite_id": 7, "path": ".github/workflows/ci.yml", "event": "push"}
+        output = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, {"REPO": "owner/repo", "SHA": "head", "TOKEN": "test",
+                                                "EVENT_NAME": "pull_request"}, clear=True), \
+                mock.patch.object(ci_ok, "fetch_suites", return_value=[broken]), \
+                mock.patch.object(ci_ok, "fetch", return_value=[run("control")]), \
+                mock.patch.object(ci_ok, "_get", return_value={"workflow_runs": [workflow]}), \
+                mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(output):
+            self.assertEqual(ci_ok.main(), 1)
+        self.assertIn("::error::failed checks: workflow failed to start", output.getvalue())
+        self.assertIn(".github/workflows/ci.yml", output.getvalue())
 
     def test_startup_failure_superseded_by_a_later_run_is_ignored(self) -> None:
         # Cubeage/block-sort-keel#2: ci.yml failed to start at 16:23, then a
