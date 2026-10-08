@@ -1,6 +1,6 @@
 name: keel-repin
 description: >
-  Polls Keel's tags and, when a new keel-verified-* tag is ahead of this repository's pin, opens
+  Polls Keel's verified tags or a shared kit/engine main commit and, when it is ahead of this repository's pin, opens
   the pull request `chore/keel-repin-<tag>` with the workflow token (contents:write and
   pull-requests:write on this repository only) and starts the repository's CI on that branch by
   workflow_dispatch (actions:write), so the checks land on the pull request head. Three modes of
@@ -93,7 +93,7 @@ outputs:
     description: "poll: true when a repin pull request should be opened."
     value: ${{ steps.poll.outputs.needed }}
   tag:
-    description: "poll: the tag a repin would move to."
+    description: "poll: the Keel tag or shared-layer main SHA a repin would move to."
     value: ${{ steps.poll.outputs.tag }}
 
 runs:

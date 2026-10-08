@@ -140,7 +140,9 @@ build dependencies still belong in `extra-read-repos`.
   tuple contract, `tools/repin_keel.sh <keel-sha> <kit-sha>`. Otherwise rewrites the
   tracked Cargo rev rows, `deps/kit.rev`, Keel pins and their tracked references,
   and refreshes the layer and Keel packages in each non-vendored `Cargo.lock`.
-  A lock containing a different or second Keel commit makes the PR a failed draft.
+  When present, `scripts/vendor-private.sh` runs after that default tuple rewrite
+  and lock refresh. A lock containing a different or second Keel source makes
+  the PR a failed draft.
 - **Engine:** rewrites Cargo rev rows and `ENGINE_REV`, then invokes
   `tools/vendor_engine.sh` or `scripts/vendor-private.sh` with no arguments, after
   the pins move. `ENGINE_REPO` points at a temporary checkout of the target engine
@@ -161,14 +163,15 @@ hook paths, one PR on repeat and an owned draft on a failed build.
 | Input | Meaning |
 | --- | --- |
 | `mode` | `poll`, `repin` or `settle`. |
-| `tag` | A Keel tag, or `latest` (the newest `keel-verified-*`). |
+| `layer` | `keel` (default), `kit` or `engine`; use the same source for poll and repin. |
+| `tag` | A Keel tag, or `latest` (the newest `keel-verified-*`); for shared layers, `latest` follows main and a full SHA freezes the target. |
 | `dry-run` | Print the pull request it would open and the workflows it would start; push nothing. Rebuilds even if the branch exists. |
 | `reader-app-id`, `reader-app-key` | A read-only App that can read the private Keel repository. |
 | `extra-read-owner`, `extra-read-repos` | Private repositories of one owner that the lock refresh or the build fetches, such as a title kit; list every private git dependency of every tracked `Cargo.lock`. |
 | `check-command`, `check-dir` | The build check. Default `cargo check`. |
 | `ci-workflows` | Workflow files started on the branch, in order. Default `ci.yml`. The web smoke must be among the checks they produce. |
 | `required-checks` | settle: checks that must have succeeded on the head. Default `ci-ok web-smoke`. |
-| `owner` | settle: who a red comment mentions, such as `@Cubeage/studio`. |
+| `owner` | Who a failed-build draft or red settle comment mentions, such as `@Cubeage/studio`. |
 | `max-wait-minutes` | settle: how long a required check may stay unfinished. Default 360. |
 | `after-merge-workflows` | settle: workflows started on the default branch after the merge. |
 | `live-url` | settle: the deployed title's host; the merged repin is settled only when its `VERSION.json` `keel` field is the merged commit. Empty: no live check. |

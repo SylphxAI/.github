@@ -403,6 +403,10 @@ def cmd_layer_run(args):
                 stage = refresh_layer_locks(root, args.layer, log)
                 if stage is None:
                     stage = refresh_locks(root, log)
+                if stage is None and (root / "scripts/vendor-private.sh").exists():
+                    proc = run(["bash", "scripts/vendor-private.sh"], cwd=root, check=False)
+                    log.append(f"$ bash scripts/vendor-private.sh\n{proc.stdout}{proc.stderr}")
+                    stage = "hook" if proc.returncode else None
         else:
             rewrite(root, old, sha, sha)
             for f in tracked_files(root):

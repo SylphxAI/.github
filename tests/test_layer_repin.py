@@ -66,7 +66,9 @@ class LayerTest(unittest.TestCase):
                 "Cargo.toml": ('[package]\nname = "title"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\n'
                                f'cubeage-kit = {{ git = "https://github.com/Cubeage/cubeage-kit", rev = "{old_kit}" }}\n'
                                f'keel-net = {{ git = "https://github.com/SylphxAI/keel", rev = "{old_keel}" }}\n'),
-                "deps/kit.rev": old_kit + "\n", "KEEL_PIN": old_keel + "\n", "src/lib.rs": ""})
+                "deps/kit.rev": old_kit + "\n", "KEEL_PIN": old_keel + "\n", "src/lib.rs": "",
+                "vendor/tuple": "old tuple\n",
+                "scripts/vendor-private.sh": 'set -eu\nread -r kit < deps/kit.rev\nread -r keel < KEEL_PIN\nprintf "%s %s\\n" "$kit" "$keel" > vendor/tuple\n'})
             gh = fixtures.fake_gh(base, {"label list": "owner:games\n", "pr create": "https://example.invalid/pull/1\n"})
             env = {"GH_TOKEN": "fixture", "KEEL_REPIN_GH": str(gh), "CARGO_HOME": str(base / "cargo"),
                    "CARGO_NET_GIT_FETCH_WITH_CLI": "true", "GIT_CONFIG_COUNT": "2",
@@ -82,6 +84,7 @@ class LayerTest(unittest.TestCase):
                 self.assertIn(new_kit, (title / "Cargo.toml").read_text())
                 self.assertIn(new_keel, (title / "Cargo.toml").read_text())
                 self.assertEqual((title / "KEEL_PIN").read_text().strip(), new_keel)
+                self.assertEqual((title / "vendor/tuple").read_text().strip(), f"{new_kit} {new_keel}")
                 sources = {entry[2].split("#")[-1] for entry in repin.lock_entries((title / "Cargo.lock").read_text())}
                 self.assertEqual(sources, {new_keel})
                 self.assertIn(new_kit, (title / "Cargo.lock").read_text())
