@@ -232,7 +232,19 @@ benchmark or nightly) never makes the trunk red here.
   `hyperfine`, `k6 run` or the chat perf run fail the lint. Shared runners
   move wall-clock numbers with load, so timing is judged after merge, as a
   median against a stored baseline; before merge a workflow may only measure
-  and print. A delivered customer repository (`sylphx_delivery` =
+  and print. The scanner inspects executable `run`/`uses` fields, not job ids,
+  `needs` references or artifact names. A job in a reusable workflow may keep
+  a post-merge budget when its job-level `if` explicitly excludes all three
+  pre-merge events with `&&` (no `||`):
+
+  ```yaml
+  if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && github.event_name != 'merge_group'
+  ```
+
+  This uses the caller's event: GitHub documents that a reusable workflow's
+  [`github` context is associated with the caller](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations)
+  (read 2026-10-09). Unknown or partial conditions remain checked; a step-level
+  condition never exempts the job. A delivered customer repository (`sylphx_delivery` =
   `delivered`, read from the event payload or the repository's property
   values) skips this rule.
 - [`red-main.yml`](../.github/workflows/red-main.yml): the reusable handler.

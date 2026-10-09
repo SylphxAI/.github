@@ -130,6 +130,48 @@ class ScanTest(unittest.TestCase):
         ):
             self.assertEqual(problems(text), [], text)
 
+    def test_post_merge_job_in_reusable_workflow_is_allowed(self) -> None:
+        condition = ("github.event_name != 'pull_request' && "
+                     "github.event_name != 'pull_request_target' && "
+                     "github.event_name != 'merge_group' && fromJSON(needs.plan.outputs.run).build")
+        for wrapped in (condition, "${{ " + condition + " }}"):
+            for trigger in perf_gate.PRE_MERGE:
+                with self.subTest(trigger=trigger, wrapped=wrapped):
+                    text = (f"on: {trigger}\njobs:\n  lighthouse:\n"
+                            f"    if: {wrapped}\n    steps:\n      - run: bun run lighthouse\n"
+                            "  verified:\n    needs: [lighthouse]\n    steps:\n"
+                            "      - run: echo verified\n")
+                    self.assertEqual(problems(text), [])
+                    self.assertTrue(problems(text + "      - run: npm audit\n"))
+
+    def test_partial_or_disjunctive_exclusions_are_not_proven(self) -> None:
+        safe = ("github.event_name != 'pull_request' && "
+                "github.event_name != 'pull_request_target' && github.event_name != 'merge_group'")
+        for condition in ("github.event_name != 'pull_request'", safe + " || true",
+                          "!(" + safe + ")", "true", "${{ inputs.post_merge }}"):
+            text = ("on: workflow_call\njobs:\n  lighthouse:\n"
+                    f"    if: {condition}\n    steps:\n      - run: bun run lighthouse\n")
+            self.assertEqual(len(problems(text)), 1, condition)
+
+    def test_only_executable_fields_are_commands(self) -> None:
+        text = ("on: workflow_call\njobs:\n  lighthouse:\n    steps:\n"
+                "      - run: |\n          echo report\n"
+                "        working-directory: lighthouse\n"
+                "      - uses: actions/upload-artifact@v4\n"
+                "        with:\n          path: .lighthouseci\n"
+                "  verified:\n    needs: [lighthouse]\n    steps:\n"
+                "      - run: echo verified\n")
+        self.assertEqual(problems(text), [])
+        self.assertEqual(len(problems(text.replace("          echo report", "          npm audit"))), 1)
+
+    def test_step_condition_does_not_exempt_other_commands(self) -> None:
+        safe = ("github.event_name != 'pull_request' && "
+                "github.event_name != 'pull_request_target' && github.event_name != 'merge_group'")
+        text = ("on: workflow_call\njobs:\n  a:\n    steps:\n"
+                f"      - if: {safe}\n        run: echo skipped\n"
+                "      - run: npm audit\n")
+        self.assertEqual(len(problems(text)), 1)
+
     def test_this_repository_has_no_timing_gate_before_merge(self) -> None:
         self.assertEqual(perf_gate.scan_dir(ROOT), [])
 

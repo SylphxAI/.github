@@ -52,8 +52,7 @@ GATES: tuple[tuple[re.Pattern[str], str], ...] = (
 
 KEY = re.compile(r"""^(\s*)(?:-\s+)?(["']?)([A-Za-z0-9_.-]+)\2\s*:(?:\s+|$)(.*)$""")
 ENV_KEY = re.compile(r"""^\s*(?:-\s+)?(["']?)PERF_ENFORCE\1\s*:\s*(.*)$""")
-# Lines that label a step rather than run anything.
-LABELS = ("name", "description")
+# Only executable run/uses fields are timing or audit commands.
 
 
 class Finding(NamedTuple):
@@ -116,6 +115,22 @@ def triggers(lines: list[str]) -> list[str]:
     return []
 
 
+def excludes_pre_merge(condition: str) -> bool:
+    """Prove a conjunction excludes every caller event; unknown forms stay gated."""
+    condition = condition.strip()
+    if condition.startswith("${{") and condition.endswith("}}"):
+        condition = condition[3:-2].strip()
+    if "||" in condition:
+        return False
+    terms = condition.split("&&")
+    excluded = set()
+    for term in terms:
+        match = re.fullmatch(r"\s*github\.event_name\s*!=\s*(['\"])([a-z_]+)\1\s*", term)
+        if match:
+            excluded.add(match.group(2))
+    return set(PRE_MERGE) - {"workflow_call"} <= excluded
+
+
 def scan_workflow(file: str, text: str) -> list[Finding]:
     lines = text.splitlines()
     pre = [t for t in triggers(lines) if t in PRE_MERGE]
@@ -126,6 +141,8 @@ def scan_workflow(file: str, text: str) -> list[Finding]:
     section = ""
     job = ""
     job_indent: int | None = None
+    post_merge_job = False
+    run_indent: int | None = None
     for n, raw in enumerate(lines, 1):
         line = _strip_comment(raw)
         if not line.strip():
@@ -135,12 +152,30 @@ def scan_workflow(file: str, text: str) -> list[Finding]:
         if ind == 0:
             section = km.group(3) if km else ""
             job, job_indent = "", None
+            post_merge_job, run_indent = False, None
             continue
         if section == "jobs" and km and not line.lstrip().startswith("-"):
             job_indent = ind if job_indent is None else job_indent
             if ind == job_indent:
                 job = km.group(3)
+                post_merge_job, run_indent = False, None
+                # A job-level if can appear after its steps. Read the whole job
+                # before deciding whether any command can gate a pre-merge caller.
+                for child in lines[n:]:
+                    child = _strip_comment(child)
+                    if not child.strip():
+                        continue
+                    if _indent(child) <= ind:
+                        break
+                    child_key = KEY.match(child)
+                    if (child_key and _indent(child) == ind + 2
+                            and child_key.group(3) == "if"):
+                        post_merge_job = excludes_pre_merge(child_key.group(4))
                 continue
+        if post_merge_job:
+            continue
+        if run_indent is not None and ind <= run_indent:
+            run_indent = None
         where = f"job {job}" if job else f"{section or 'workflow'}"
         em = ENV_KEY.match(line)
         if em:
@@ -150,7 +185,12 @@ def scan_workflow(file: str, text: str) -> list[Finding]:
                                    f"PERF_ENFORCE is {json.dumps(_unquote(em.group(2)))}; "
                                    "a pre-merge workflow may only set it to '0'"))
             continue
-        if km and km.group(3) in LABELS:
+        # Job ids, needs references, artifact paths and labels do not execute
+        # gates. Inspect commands/actions and their multiline run bodies only.
+        if km and km.group(3) == "run":
+            if km.group(4).strip() in ("|", ">", "|-", ">-", "|+", ">+"):
+                run_indent = ind + (2 if line.lstrip().startswith("- ") else 0)
+        elif not (km and km.group(3) == "uses") and run_indent is None:
             continue
         for pattern, what in GATES:
             if pattern.search(line):
