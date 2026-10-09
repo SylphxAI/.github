@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report every repository against the optimistic-merge conformance rows R1-R8.
+"""Report every repository against the optimistic-merge conformance rows R1-R9.
 
 Contract: docs/optimistic-merge.md. Policy: policy/optimistic-merge.json (the
 pin floor and the named exemptions). Read-only: GraphQL queries and compare
@@ -30,6 +30,12 @@ Rows, per non-archived repository of the policy's organizations:
        `-merge` twin on merge_group, so a merge group never queues behind the
        pull-request backlog (verdict jobs on `sylphx-linux-control` and jobs
        that skip merge_group are out of scope)
+  R9   superseded runs (docs/ci-template.md, Concurrency): every workflow that
+       runs on pull_request has a workflow-level `concurrency:` that cancels a
+       superseded pull-request run and never a merge-group or trunk run, i.e.
+       `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`
+       (a literal `true` only where neither merge_group nor a push to the
+       default branch starts the workflow)
 
 A row is PASS, FAIL, EXEMPT (waived by a named, unexpired exemption) or SKIP
 (nothing to check). Anything the audit could not read is a FAIL, never a pass.
@@ -53,7 +59,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "policy" / "optimistic-merge.json"
-ROWS = ("R1", "R2", "R3", "R3b", "R4", "R5", "R6", "R7", "R8")
+ROWS = ("R1", "R2", "R3", "R3b", "R4", "R5", "R6", "R7", "R8", "R9")
 ON_RED = ("revert", "revert_pr_unarmed", "notify")
 # Personal repositories are never read, whatever the policy says.
 NEVER_READ_OWNERS = ("tsefamily", "shtse8")
@@ -280,6 +286,38 @@ def merge_lane_misses(text: str) -> list[str]:
             continue  # decided at run time, or never a merge-group job
         misses.append(job_id)
     return misses
+
+
+PR_ONLY_CANCEL = re.compile(r"""^\$\{\{\s*github\.event_name\s*==\s*'pull_request'\s*\}\}$""")
+
+
+def concurrency_miss(text: str, branch: str) -> str | None:
+    """Why a pull_request workflow breaks the template's concurrency rule, or None when it follows it."""
+    on = triggers(text)
+    if "pull_request" not in on:
+        return None
+    lines = _code_lines(text)
+    for i, line in enumerate(lines):
+        match = re.match(r"^concurrency\s*:\s*(.*)$", line)
+        if match:
+            break
+    else:
+        return "no workflow-level concurrency"
+    cancel = None
+    if not match.group(1).split(" #", 1)[0].strip():
+        for sub in _sub_block(lines, i):
+            found = re.match(r"^\s*cancel-in-progress\s*:\s*(.+?)\s*(?:#.*)?$", sub)
+            if found:
+                cancel = found.group(1).strip().strip("'\"").strip()
+    if cancel is None or cancel.lower() in ("false", "no", "0"):
+        return "a superseded pull-request run is never cancelled"
+    if PR_ONLY_CANCEL.match(cancel):
+        return None
+    trunk = [what for what, hit in (("merge_group", "merge_group" in on), (f"push to {branch}", push_covers(text, branch)))
+             if hit]
+    if cancel.lower() in ("true", "yes", "1"):
+        return f"cancel-in-progress: true also cancels {' and '.join(trunk)} runs" if trunk else None
+    return f"cancel-in-progress `{cancel[:60]}` is not `${{{{ github.event_name == 'pull_request' }}}}`"
 
 
 def uses_refs(text: str, path_pattern: str) -> list[str]:
@@ -550,6 +588,15 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
                           "merge_group job on the pull-request pool without a `-merge` runner: "
                           + "; ".join(f"{name} ({', '.join(ids)})" for name, ids in missed.items()))
 
+    # R9
+    if not candidates:
+        rows["R9"] = _row("FAIL", "workflow files unreadable") if unreadable else _row("SKIP", "no workflows read")
+    else:
+        misses = {name: concurrency_miss(text, branch) for name, text in sorted(candidates.items())}
+        misses = {name: why for name, why in misses.items() if why}
+        rows["R9"] = need(not misses, "pull-request runs cancel when superseded, merge-group and trunk runs never",
+                          "; ".join(f"{name}: {why}" for name, why in misses.items()))
+
     if unreadable:
         for name in ROWS:
             if rows[name]["status"] == "FAIL":
@@ -774,8 +821,8 @@ def collect(gh, orgs: list[str], policy: dict, today: datetime.date, batch: int 
             for base in chunk:
                 node, errors = result[base["name"]]
                 by_name[base["name"]] = _facts(org, base["name"], base, node, errors)
-        # second pass: every workflow's text, only where a verify.yml exists (R3b)
-        need_all = [b for b in wanted if by_name[b["name"]]["files"].get("verify.yml") is not None]
+        # second pass: every workflow's text (R3b, R8, R9), where the repository has any workflow
+        need_all = [b for b in wanted if by_name[b["name"]].get("workflow_names")]
         for start in range(0, len(need_all), 3):
             chunk = need_all[start:start + 3]
             result = _query_batch(gh, org, chunk, True)

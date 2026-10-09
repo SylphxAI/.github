@@ -69,9 +69,17 @@ DEFAULT_IDENTITY_WAIT_SECONDS = 180
 # timeout, a connection error, or an HTTP 5xx. A 4xx is the issuer's verdict on
 # this publisher and fails at once. Live 2026-10-05 a single 20 s connect
 # timeout to the issuer failed whole main image builds while the issuer itself
-# was healthy. Worst case: MINT_ATTEMPTS x the HTTP timeout plus the backoffs.
-MINT_ATTEMPTS = 3
-MINT_BACKOFF_SECONDS = (2.0, 5.0)
+# was healthy.
+#
+# Live 2026-10-07 the blip was not single: a runner pool's connect to the
+# issuer timed out for whole minutes at a time (Notify Intake Image failed
+# 04:43Z, 11:42Z and 16:36Z, each after 3 attempts; a run 4 min after a failure
+# passed), and every attempt of the 3-attempt/67 s budget fell inside the same
+# window, so the build still failed. The budget must span such a window, and it
+# stays inside the pre-flight job's 6-minute limit. Worst case: MINT_ATTEMPTS x
+# the HTTP timeout plus the backoffs = 6 x 20 s + 2/5/10/15/30 s = 3.0 min.
+MINT_ATTEMPTS = 6
+MINT_BACKOFF_SECONDS = (2.0, 5.0, 10.0, 15.0, 30.0)
 # Trusted publishing: the job's own GitHub Actions OIDC token, requested for
 # the registry's audience and exchanged at the token service, which matches it
 # against the declared publishers (SylphxAI/infra registry-v2 README).

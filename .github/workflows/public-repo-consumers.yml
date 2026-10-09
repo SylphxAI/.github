@@ -4,7 +4,8 @@ name: Public repository consumers
 # consumer in the `sylphx_consumer` organization property, or it is listed for a
 # keep, merge or archive decision; every archived public repository says so in
 # its description or README, and every package published from it is deprecated
-# (npm packages are deprecated by this run) (docs/public-repo-consumers.md).
+# (npm packages are deprecated and crates yanked by this run; pub.dev's
+# Discontinued option has no token path) (docs/public-repo-consumers.md).
 
 on:
   schedule:
@@ -34,13 +35,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -o pipefail
           # npm expands ${NPM_TOKEN} from the environment; the token itself never touches disk.
           echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > "$RUNNER_TEMP/.npmrc"
           export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc"
           rc=0
-          python3 scripts/public_repo_consumers.py --org SylphxAI --fix-npm > "$RUNNER_TEMP/consumers.txt" || rc=$?
+          python3 scripts/public_repo_consumers.py --org SylphxAI --fix-npm --fix-crates > "$RUNNER_TEMP/consumers.txt" || rc=$?
           {
             echo "## Public repositories with no consumer, archived ones with no notice, undeprecated packages"
             echo

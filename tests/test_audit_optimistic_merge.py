@@ -190,7 +190,8 @@ class RowFailureTest(unittest.TestCase):
             "tags.yml": "on:\n  push:\n    tags: ['v*']\njobs:\n  a:\n    runs-on: x\n",
             "nightly.yml": "on:\n  schedule:\n    - cron: '0 1 * * *'\njobs:\n  a:\n    runs-on: x\n",
             "other.yml": "on:\n  push:\n    branches: [develop]\njobs:\n  a:\n    runs-on: x\n",
-            "inline.yml": "on: [pull_request, workflow_dispatch]\njobs:\n  a:\n    runs-on: x\n",
+            "inline.yml": "on: [pull_request, workflow_dispatch]\nconcurrency:\n  group: g\n"
+                          "  cancel-in-progress: true\njobs:\n  a:\n    runs-on: x\n",
         })
         self.assertEqual(failing(run_rows(facts)), set())
         facts["all_workflows"]["inline.yml"] = "on: [push]\njobs:\n  a:\n    runs-on: x\n"
@@ -241,6 +242,42 @@ class RowFailureTest(unittest.TestCase):
         facts["all_workflows"]["lst.yml"] = ("on:\n  merge_group:\njobs:\n  a:\n    runs-on:\n"
                                               "      - self-hosted\n      - sylphx-linux-standard\n")
         self.only(facts, "R8", "lst.yml (a)")
+
+    def test_r9_pull_request_workflows_cancel_only_pull_request_runs(self) -> None:
+        head = "on:\n  pull_request:\n  merge_group:\n"
+        cases = {
+            head + "jobs:\n  a:\n    runs-on: x\n": "no workflow-level concurrency",
+            head + "concurrency: lint\njobs: {}\n": "never cancelled",
+            head + "concurrency:\n  group: g\n  cancel-in-progress: false\njobs: {}\n": "never cancelled",
+            head + "concurrency:\n  group: g\n  cancel-in-progress: true\njobs: {}\n": "merge_group",
+            "# optimistic-merge: advisory\non:\n  pull_request:\n  push:\n    branches: [main]\nconcurrency:\n"
+            "  group: g\n  cancel-in-progress: true\n": "push to main",
+            head + "concurrency:\n  group: g\n  cancel-in-progress: ${{ github.event_name != 'merge_group' }}\n":
+                "is not",
+        }
+        for text, why in cases.items():
+            facts = conformant()
+            facts["all_workflows"]["lint.yml"] = text
+            self.only(facts, "R9", "lint.yml: ")
+            self.assertIn(why, run_rows(facts)["R9"]["detail"])
+
+    def test_r9_passes_the_template_and_a_pull_request_only_true(self) -> None:
+        facts = conformant()
+        facts["all_workflows"].update({
+            "a.yml": "on:\n  pull_request:\n  merge_group:\n  push:\n    branches: [main]\nconcurrency:\n  group: g\n"
+                     "  cancel-in-progress: \"${{ github.event_name == 'pull_request' }}\"  # template\n",
+            "b.yml": "on:\n  pull_request:\n  push:\n    branches: [feat/x]\nconcurrency:\n  group: g\n"
+                     "  cancel-in-progress: true\n",
+            "c.yml": "on:\n  push:\n    branches: [main]\njobs: {}\n",
+            "d.yml": "on:\n  pull_request:\njobs:\n  a:\n    concurrency:\n      group: x\n"
+                     "concurrency:\n  group: g\n  cancel-in-progress: true\n",
+        })
+        self.assertNotIn("R9", failing(run_rows(facts)))
+
+    def test_r9_every_shipped_pull_request_starter_follows_the_template(self) -> None:
+        for path in sorted(STARTERS.glob("*.yml")):
+            with self.subTest(path.name):
+                self.assertIsNone(audit.concurrency_miss(path.read_text(), "main"))
 
     def test_r4_pin_behind_floor_or_not_a_full_sha_or_missing(self) -> None:
         facts = conformant()
