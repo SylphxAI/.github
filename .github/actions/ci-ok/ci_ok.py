@@ -73,12 +73,18 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     and fails the gate. `required` names must be present and have succeeded.
     No other check run fails unless `allow_none` (pull_request opt-in only).
     `suite_events` maps a check suite id to its workflow run's event; a suite
-    whose event is known and not a gating event is ignored.
+    whose event is known and not a gating event is ignored. An unfinished empty
+    suite with a known gating event waits for its jobs, including replacements
+    of superseded suites.
     """
     relevant = latest_runs([r for r in runs if r.get("name") not in ignore
                             and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")],
                            suite_events)
     pending = [r["name"] for r in relevant if r.get("status") != "completed"]
+    pending += [f'workflow has no jobs yet (check suite {s.get("id")})'
+                for s in suites or []
+                if s.get("status") != "completed" and not s.get("latest_check_runs_count")
+                and (suite_events or {}).get(s.get("id")) in GATING_EVENTS]
     if pending:
         return "pending", sorted(pending)
     bad = [f'{r["name"]}={r.get("conclusion")}' for r in relevant if r.get("conclusion") in BAD]
@@ -188,9 +194,11 @@ def fetch_suites(repo: str, sha: str, token: str) -> list[dict]:
         page += 1
 
 
-def started_badly(suites: list[dict]) -> bool:
-    return any(s.get("status") == "completed" and s.get("conclusion") in BAD
-               and not s.get("latest_check_runs_count") for s in suites)
+def needs_workflow_events(suites: list[dict]) -> bool:
+    """Identify empty suites whose pending or failed workflow may gate the change."""
+    return any(not s.get("latest_check_runs_count")
+               and (s.get("status") != "completed" or s.get("conclusion") in BAD)
+               for s in suites)
 
 
 def fetch_suite_events(repo: str, sha: str, token: str) -> dict[int, str] | None:
@@ -235,7 +243,7 @@ def main() -> int:
             suites = fetch_suites(repo, sha, token)
             runs = fetch(repo, sha, token)
             events = (fetch_suite_events(repo, sha, token)
-                      if started_badly(suites) or needs_suite_events(runs, ignore) else None)
+                      if needs_workflow_events(suites) or needs_suite_events(runs, ignore) else None)
             state, detail = evaluate(runs, ignore,
                                      os.environ.get("CI_OK_ALL_APPS", "false") != "true",
                                      suites, required,

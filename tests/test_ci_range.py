@@ -224,6 +224,25 @@ class StarterWorkflowTest(unittest.TestCase):
         self.assertIn("workflow_dispatch", gate[True])
         self.assertIn("pull_request", gate["jobs"]["suite"]["if"])
 
+    def test_verify_starter_hand_over_keeps_a_bounded_size(self) -> None:
+        # docs/optimistic-merge.md: a heavy hand-over between jobs of a run
+        # uses `run-store` (the org's BuildCache), never GitHub artifact
+        # storage, which is a metered organization quota ("Artifact storage
+        # quota has been hit", fb#4348). A raw platform bundle left in the
+        # starter is copied into a caller and uploaded there.
+        import yaml
+        text = (ROOT / "workflow-templates" / "optimistic-verify.yml").read_text()
+        raw = sum(path.stat().st_size for path in (ROOT / "workflow-templates").glob("*.bundle"))
+        self.assertLess(raw, 4 * 1024, "a raw bundle in workflow-templates")
+        verify = yaml.safe_load(text)
+        for job_name, job in (verify.get("jobs") or {}).items():
+            for step in job.get("steps") or []:
+                if "path" in (step.get("with") or {}):
+                    self.assertNotIn("*", str(step["with"]["path"]), f"{job_name} {step.get('name')}")
+        guide = (ROOT / "docs" / "optimistic-merge.md").read_text()
+        self.assertIn("never `upload-artifact`", guide)
+        self.assertIn("complete\n   set of steps", guide)
+
     def test_starter_artifact_uploads_never_fail_a_job(self) -> None:
         # Artifact storage is an organization quota; once it is spent every
         # upload fails ("Artifact storage quota has been hit") and a passing
