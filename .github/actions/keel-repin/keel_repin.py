@@ -172,7 +172,7 @@ def is_text(path):
 
 
 def rewrite(root, old_shas, new_sha, tag):
-    """Move every pin to new_sha and the tag; returns the changed file list."""
+    """Move matching commits; rewrite Keel tags only when tag is supplied."""
     root = Path(root)
     prefix = re.compile("|".join(f"(?<![0-9a-f]){re.escape(o[:n])}(?![0-9a-f])" for o in old_shas for n in (12, 8, 7)) or "(?!)")
     changed = []
@@ -187,7 +187,7 @@ def rewrite(root, old_shas, new_sha, tag):
         for old in old_shas:
             new = new.replace(old, new_sha)
         new = prefix.sub(lambda m: new_sha[: len(m.group(0))], new)
-        if f.endswith("Cargo.toml"):
+        if tag is not None and f.endswith("Cargo.toml"):
             new = "\n".join(
                 TAG_PIN_RE.sub(lambda m: f"{m.group(1)}{tag}{m.group(2)}", line) if KEEL_URL.search(line) else line
                 for line in new.split("\n")
@@ -399,7 +399,7 @@ def cmd_layer_run(args):
                     p.write_text("\n".join(
                         TAG_PIN_RE.sub(lambda m: 'rev = "' + pins[0] + '"', line) if KEEL_URL.search(line) else line
                         for line in p.read_text().split("\n")))
-                rewrite(root, old, sha, sha)
+                rewrite(root, old, sha, None)
                 rewrite(root, keel_old, pins[0], pins[0])
                 for f in tracked_files(root):
                     if Path(f).name == "KEEL_PIN":
@@ -412,7 +412,7 @@ def cmd_layer_run(args):
                     log.append(f"$ bash scripts/vendor-private.sh\n{proc.stdout}{proc.stderr}")
                     stage = "hook" if proc.returncode else None
         else:
-            rewrite(root, old, sha, sha)
+            rewrite(root, old, sha, None)
             for f in tracked_files(root):
                 if Path(f).name == "ENGINE_REV":
                     (root / f).write_text(sha + "\n")

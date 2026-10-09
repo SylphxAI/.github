@@ -162,14 +162,24 @@ class LayerTest(unittest.TestCase):
                 self.assertEqual(self.poll(base, title, "engine", engine)["needed"], "false")
 
     def test_engine_hook_moves_revision_and_vendor_and_red_build_opens_owned_draft(self):
-        for hook in ("tools/vendor_engine.sh", "scripts/vendor-private.sh"):
-            with self.subTest(hook=hook), tempfile.TemporaryDirectory() as d:
+        for hook, tag in (
+            (hook, tag)
+            for hook in ("tools/vendor_engine.sh", "scripts/vendor-private.sh")
+            for tag in ("keel-verified-2026-10-03-1", "keel-weekly-2026-10-03")
+        ):
+            with self.subTest(hook=hook, tag=tag), tempfile.TemporaryDirectory() as d:
                 base = Path(d)
                 engine, old = source(base, "engine", {"tree": "old\n"})
                 new = advance(engine, "tree", "new\n")
+                keel_dependency = f'keel-net = {{ git = "https://github.com/SylphxAI/keel", tag = "{tag}" }}\n'
+                keel_comment = f'# Keel tag: {tag}\n'
+                keel_lock = ('[[package]]\nname = "keel-net"\nversion = "0.1.0"\n'
+                             f'source = "git+https://github.com/SylphxAI/keel?tag={tag}#{fixtures.OLD}"\n')
                 title = fixtures.make_title(base, {
                     "server/ENGINE_REV": old + "\n", "server/vendor/tycoon-engine/tree": "old\n",
-                    "server/Cargo.toml": f'engine = {{ git = "https://github.com/Cubeage/tycoon-engine", rev = "{old}" }}\n',
+                    "KEEL_PIN": fixtures.OLD + "\n", "server/Cargo.lock": keel_lock,
+                    "server/Cargo.toml": (f'engine = {{ git = "https://github.com/Cubeage/tycoon-engine", rev = "{old}" }}\n'
+                                          + keel_dependency + keel_comment),
                     hook: 'set -eu\nrev=$(tr -d "[:space:]" < server/ENGINE_REV)\n'
                           'git -C "$ENGINE_REPO" show "$rev:tree" > server/vendor/tycoon-engine/tree\n'})
                 gh = fixtures.fake_gh(base, {"label list": "owner:games\n", "pr create": "https://example.invalid/pull/2\n"})
@@ -179,7 +189,12 @@ class LayerTest(unittest.TestCase):
                     self.assertEqual((report["status"], report["stage"]), ("failed", "check"))
                     self.assertEqual((title / "server/ENGINE_REV").read_text().strip(), new)
                     self.assertEqual((title / "server/vendor/tycoon-engine/tree").read_text(), "new\n")
-                    self.assertIn(new, (title / "server/Cargo.toml").read_text())
+                    manifest = (title / "server/Cargo.toml").read_text()
+                    self.assertIn(new, manifest)
+                    self.assertIn(keel_dependency, manifest)
+                    self.assertIn(keel_comment, manifest)
+                    self.assertEqual((title / "KEEL_PIN").read_text(), fixtures.OLD + "\n")
+                    self.assertEqual((title / "server/Cargo.lock").read_text(), keel_lock)
                     calls = (base / "gh-calls.txt").read_text()
                     self.assertEqual(calls.count("pr create"), 1)
                     self.assertIn("--draft", calls)
