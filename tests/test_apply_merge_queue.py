@@ -44,18 +44,26 @@ def ruleset(rid: int, name: str, params: dict | None, checks=("ci-ok",), reviews
 
 
 class FakeGh:
-    def __init__(self, repos: dict[str, dict], fail: dict[str, Exception] | None = None):
+    def __init__(self, repos: dict[str, dict], fail: dict[str, Exception] | None = None,
+                 properties: dict[str, list | Exception] | None = None):
         self.rulesets = repos  # "org/name" -> ruleset body
         self.puts: list[tuple[str, dict]] = []
         self.queries = 0
         self.fail = fail or {}
+        self.orgs = POLICY["orgs"]
+        self.properties = properties or {}
+        self.property_reads = []
 
     def graphql(self, query: str) -> dict:
         self.queries += 1
         nodes = []
         self.last_query = query
+        # Serve only the organization requested, including its inherited ruleset.
+        org = next((o for o in self.orgs if f'login:"{o}"' in query), "")
         inherited = None  # one enterprise ruleset, listed under every repository, as GitHub does
         for repo, rs in self.rulesets.items():
+            if repo.split("/")[0] != org:
+                continue
             checks = next(r for r in rs["rules"] if r["type"] == "required_status_checks")["parameters"]
             rules = []
             if amq.queue_params(rs) is not None:
@@ -81,6 +89,12 @@ class FakeGh:
 
     def rest(self, path: str, method: str = "GET", body: dict | None = None) -> dict:
         repo = "/".join(path.split("/")[1:3])
+        if path.endswith("/properties/values"):
+            self.property_reads.append(repo)
+            value = self.properties.get(repo, [])
+            if isinstance(value, Exception):
+                raise value
+            return copy.deepcopy(value)
         if repo in self.fail:
             raise self.fail[repo]
         rs = self.rulesets[repo]
@@ -97,6 +111,18 @@ class PolicyTests(unittest.TestCase):
 
     def test_shipped_policy_requires_no_approving_review(self):
         self.assertEqual(POLICY["review"]["required_approving_review_count"], 0)
+
+    def test_shipped_policy_covers_every_organization_that_carries_a_ruleset(self):
+        # Every organization of the fleet carries a repository ruleset with a
+        # pull_request rule, so the review count must reach all four, not only the
+        # one whose policy the first tool run listed.
+        self.assertEqual(POLICY["orgs"], ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"])
+
+    def test_the_fleet_organizations_match_the_audited_optimistic_merge_policy(self):
+        # policy/optimistic-merge.json is the one list of the fleet's organizations
+        # (its audit test pins the four); the merge queue policy covers the same set.
+        audited = json.loads((ROOT / "policy" / "optimistic-merge.json").read_text())
+        self.assertEqual(POLICY["orgs"], audited["orgs"])
 
     def test_rejects_unknown_and_bad_values(self):
         for edit in (lambda p: p["settings"].pop("merge_method"),
@@ -218,6 +244,34 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual((rc, gh.puts), (0, []))
         self.assertIn("grouping_strategy: ALLGREEN -> HEADGREEN", out)
         self.assertNotIn("SylphxAI/work", out)
+
+    def test_delivered_and_unreadable_properties_exclude_before_planning(self):
+        for properties in ([{"property_name": "sylphx_delivery", "value": "delivered"}],
+                           RuntimeError("HTTP 404"), RuntimeError("timeout")):
+            with self.subTest(properties=properties), tempfile.TemporaryDirectory() as d:
+                gh = self.fake(properties={"SylphxAI/desk-tools": properties})
+                rc, out = self.run_main(gh, "--apply", "--backup-dir", d,
+                                        "--repo", "SylphxAI/desk-tools", "--json")
+                self.assertEqual((rc, gh.puts), (0, []))
+                self.assertTrue(all(row["status"] == "EXCLUDED" and row["changes"] == {}
+                                    for row in json.loads(out)["plan"]))
+                self.assertEqual(gh.property_reads, ["SylphxAI/desk-tools"])
+                self.assertEqual(list(pathlib.Path(d).glob("*.json")), [])
+
+    def test_undelivered_property_allows_apply(self):
+        gh = self.fake(properties={"SylphxAI/desk-tools": [
+            {"property_name": "sylphx_delivery", "value": "in_progress"}]})
+        with tempfile.TemporaryDirectory() as d:
+            amq.WRITE_PAUSE_SECONDS = 0
+            rc, _ = self.run_main(gh, "--apply", "--backup-dir", d, "--repo", "SylphxAI/desk-tools")
+        self.assertEqual(rc, 0)
+        self.assertEqual([repo for repo, _ in gh.puts], ["SylphxAI/desk-tools"])
+
+    def test_property_403_stops_before_any_put(self):
+        gh = self.fake(properties={"SylphxAI/desk-tools": amq.Forbidden("HTTP 403")})
+        with tempfile.TemporaryDirectory() as d:
+            rc, _ = self.run_main(gh, "--apply", "--backup-dir", d)
+        self.assertEqual((rc, gh.puts), (2, []))
 
     def test_check_exits_one_on_drift(self):
         self.assertEqual(self.run_main(self.fake(), "--check")[0], 1)

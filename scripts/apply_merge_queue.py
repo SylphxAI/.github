@@ -28,7 +28,9 @@ What it only reports: whether the fast gate (`ci-ok`) is a required check of the
 same ruleset, and the strict flag. It never adds a required check, because a
 check no workflow reports would stop the queue.
 
-Reads are one GraphQL query per 100 repositories of an organization. Writes are
+Reads are one GraphQL query per 100 repositories of an organization, then one
+custom-property read per selected, non-excluded repository. Delivered repositories
+and unreadable delivery properties are excluded before planning. Writes are
 paced one second apart, are read back, and stop at the first HTTP 403.
 """
 from __future__ import annotations
@@ -394,7 +396,20 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         policy = load_policy(Path(args.policy))
         skip = excluded(policy, hands_off_repos())
         fleet = [item for org in policy["orgs"] for item in read_org(gh, org)]
-        rows = plan(fleet, policy, skip, set(args.repo) or None)
+        only = set(args.repo)
+        for repo in sorted({item["repo"] for item in fleet}):
+            if repo in skip or (only and repo not in only):
+                continue
+            try:
+                properties = gh.rest(f"repos/{repo}/properties/values")
+                if any(p.get("property_name") == "sylphx_delivery" and p.get("value") == "delivered"
+                       for p in properties):
+                    skip[repo] = "sylphx_delivery=delivered"
+            except Forbidden:
+                raise
+            except (RuntimeError, ValueError, OSError) as exc:
+                skip[repo] = f"delivery properties unreadable: {exc}"
+        rows = plan(fleet, policy, skip, only or None)
         if args.apply:
             if not args.backup_dir:
                 ap.error("--apply needs --backup-dir")
