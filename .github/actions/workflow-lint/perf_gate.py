@@ -161,14 +161,21 @@ def scan_workflow(file: str, text: str) -> list[Finding]:
                 post_merge_job, run_indent = False, None
                 # A job-level if can appear after its steps. Read the whole job
                 # before deciding whether any command can gate a pre-merge caller.
+                property_indent: int | None = None
                 for child in lines[n:]:
                     child = _strip_comment(child)
                     if not child.strip():
                         continue
                     if _indent(child) <= ind:
                         break
+                    # YAML child mappings need not use two-space nesting.
+                    # The first nonblank child establishes the property depth;
+                    # deeper step conditions must never exempt the whole job.
+                    if property_indent is None:
+                        property_indent = _indent(child)
                     child_key = KEY.match(child)
-                    if (child_key and _indent(child) == ind + 2
+                    if (child_key and _indent(child) == property_indent
+                            and not child.lstrip().startswith("-")
                             and child_key.group(3) == "if"):
                         post_merge_job = excludes_pre_merge(child_key.group(4))
                 continue
@@ -188,7 +195,8 @@ def scan_workflow(file: str, text: str) -> list[Finding]:
         # Job ids, needs references, artifact paths and labels do not execute
         # gates. Inspect commands/actions and their multiline run bodies only.
         if km and km.group(3) == "run":
-            if km.group(4).strip() in ("|", ">", "|-", ">-", "|+", ">+"):
+            # YAML allows indentation and chomping indicators in either order.
+            if re.fullmatch(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?", km.group(4).strip()):
                 run_indent = ind + (2 if line.lstrip().startswith("- ") else 0)
         elif not (km and km.group(3) == "uses") and run_indent is None:
             continue

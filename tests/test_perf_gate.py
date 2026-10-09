@@ -164,6 +164,49 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(problems(text), [])
         self.assertEqual(len(problems(text.replace("          echo report", "          npm audit"))), 1)
 
+    def test_all_yaml_block_scalar_headers_scan_executable_bodies(self) -> None:
+        import yaml
+
+        for style in ("|", ">"):
+            for chomp in ("", "-", "+"):
+                for indicator in ("", *map(str, range(1, 10))):
+                    for suffix in {indicator + chomp, chomp + indicator}:
+                        for sequence_run in (False, True):
+                            with self.subTest(style=style, suffix=suffix, sequence_run=sequence_run):
+                                prefix = "      - run: " if sequence_run else "      - name: report\n        run: "
+                                # The scalar is relative to the run key, not the dash.
+                                body_indent = 8 + int(indicator or "2")
+                                text = ("on: pull_request\njobs:\n  a:\n    steps:\n" + prefix
+                                        + style + suffix + " # valid YAML header\n"
+                                        + " " * body_indent + "npm audit\n"
+                                        + "        working-directory: lighthouse\n"
+                                        + "      - run: echo finished\n")
+                                parsed = yaml.safe_load(text)
+                                self.assertEqual(parsed["jobs"]["a"]["steps"][0]["run"].strip(), "npm audit")
+                                found = problems(text)
+                                self.assertEqual(len(found), 1)
+                                self.assertIn("dependency audit", found[0][2])
+
+    def test_job_exclusions_follow_mapping_depth_not_two_spaces(self) -> None:
+        safe = ("github.event_name != 'pull_request' && "
+                "github.event_name != 'pull_request_target' && github.event_name != 'merge_group'")
+        for job_depth in (2, 4):
+            for child_depth in (1, 2, 4):
+                for condition_first in (False, True):
+                    with self.subTest(job_depth=job_depth, child_depth=child_depth, first=condition_first):
+                        j, p = " " * job_depth, " " * (job_depth + child_depth)
+                        steps = f"{p}steps:\n{p}  - run: npm audit\n"
+                        condition = f"{p}if: {safe}\n"
+                        text = (f"on: workflow_call\njobs:\n{j}post_merge:\n"
+                                + "# ignore comments when finding property depth\n\n"
+                                + (condition + steps if condition_first else steps + condition))
+                        self.assertEqual(problems(text), [])
+                        self.assertEqual(len(problems(text + f"{j}pre_merge:\n" + steps)), 1)
+                        nested = (f"on: workflow_call\njobs:\n{j}a:\n{p}steps:\n"
+                                  f"{p}  - if: {safe}\n{p}    run: npm audit\n")
+                        self.assertEqual(len(problems(nested)), 1)
+                        self.assertEqual(len(problems(text.replace(" && ", " || "))), 1)
+
     def test_step_condition_does_not_exempt_other_commands(self) -> None:
         safe = ("github.event_name != 'pull_request' && "
                 "github.event_name != 'pull_request_target' && github.event_name != 'merge_group'")
