@@ -5,8 +5,9 @@ Steps, run from the repository root (the action calls them in this order):
 
   keel_repin.py poll [--tag latest]
       Resolve the tag, and write `tag`, `sha` and `needed` to $GITHUB_OUTPUT. Nothing is needed when
-      the pin is already the tag, the tag is not ahead of the pin, or a pull request for the tag
-      exists in any state (a closed one is never reopened by a later poll).
+      the pin is already the tag, the tag is not ahead of the pin, the tag's branch exists, or an
+      open or merged pull request for the tag exists. A closed pull request stops the tag only while
+      its branch exists: close it to stop the repin, close it and delete the branch to rebuild it.
 
   keel_repin.py run --tag keel-verified-2026-10-03-1|latest [--check-command CMD] [--report FILE]
       Resolve the tag to its commit, rewrite every Keel pin, refresh Cargo.lock for the
@@ -396,7 +397,7 @@ def pr_text(report):
             "its checks land on this head commit, and the held run can be left alone.",
         ]
     lines += ["", "Opened by the keel-repin action. It merges this pull request itself once CI and the web smoke are green on this exact head; "
-              "a person can merge it earlier, or close it to stop that."]
+              "a person can merge it earlier, or close it (keeping the branch) to stop that."]
     return title, "\n".join(lines) + "\n"
 
 
@@ -484,9 +485,10 @@ def unmatched_commits(remote, tag_sha, pin):
 
 
 def pr_exists(branch):
-    """A pull request from this branch exists in any state (open, closed or merged)."""
-    p = run([*gh_bin(), "pr", "list", "--head", branch, "--state", "all", "--json", "number", "--jq", "length"], check=False)
-    return p.returncode == 0 and p.stdout.strip() not in ("", "0")
+    """An open or merged pull request from this branch exists. A closed, unmerged one does not count: whether
+    it still stops the tag is decided by its branch (kept: stopped; deleted: the next poll rebuilds it)."""
+    p = run([*gh_bin(), "pr", "list", "--head", branch, "--state", "all", "--json", "state", "--jq", ".[].state"], check=False)
+    return p.returncode == 0 and bool({"OPEN", "MERGED"} & set(p.stdout.split()))
 
 
 def write_outputs(pairs):

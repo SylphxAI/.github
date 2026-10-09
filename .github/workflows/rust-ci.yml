@@ -252,7 +252,7 @@ jobs:
         # One namespace per organization; the backend is the action's choice
         # (docs/adr/0004-fleet-rust-compile-cache.md).
         id: sccache
-        uses: SylphxAI/.github/.github/actions/rust-sccache@d4305368ad744cdb047d8cdfd7588d99618cb5b5 # main after #171
+        uses: SylphxAI/.github/.github/actions/rust-sccache@b051405836fcc2346300b21bd5f3af9e8eae5419 # main after #217
         with:
           s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
           s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}

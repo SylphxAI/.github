@@ -252,6 +252,17 @@ class RegistryMintRetryTests(unittest.TestCase):
         self.assertIsInstance(result, str)
         self.assertEqual(len(calls), 3)
 
+    def test_sustained_connect_outage_longer_than_the_old_budget_is_ridden_out(self) -> None:
+        # Live 2026-10-07: a runner pool's connect to the issuer timed out for
+        # whole minutes, so every attempt of the old 3-attempt/67 s budget fell
+        # inside the same window and the build failed. Four consecutive connect
+        # timeouts (past that old budget) must now reach a success.
+        connect_timeout = mint.urllib.error.URLError(TimeoutError("timed out"))
+        result, calls, sleeps = self.run_mint([connect_timeout] * 4 + [self.response()])
+        self.assertIsInstance(result, str)
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(sleeps, list(mint.MINT_BACKOFF_SECONDS[:4]))
+
     def test_gives_up_after_bounded_attempts(self) -> None:
         blips = [self.http_error(502)] * (mint.MINT_ATTEMPTS + 2)
         result, calls, sleeps = self.run_mint(blips)

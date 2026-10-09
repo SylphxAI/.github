@@ -4,6 +4,11 @@ Starter callers for the reusable workflows in `.github/workflows/`. Copy one
 into a repository's `.github/workflows/`, replace the commit placeholder or pin
 with the commit you have reviewed, and pass secrets by name.
 
+Rolling a new check out to many repositories: run it on each target's default branch first, with every
+rule enforced (a manual run, or the check's own audit command, such as `keel_pin_check.py audit`). A target
+that already fails gets the fix in the same pull request that adds the check, or is skipped and listed;
+adding a check alone to a branch that fails it turns that branch red.
+
 | Template | Reusable workflow | Guide |
 | --- | --- | --- |
 | `optimistic-gate.yml`, `optimistic-verify.yml`, `red-main.yml` | merge-queue gate, post-merge verify, red-main handler | [optimistic-merge.md](../docs/optimistic-merge.md) |

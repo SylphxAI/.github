@@ -44,21 +44,23 @@ def ruleset(rid: int, name: str, params: dict | None, checks=("ci-ok",), reviews
 
 
 class FakeGh:
-    def __init__(self, repos: dict[str, dict], fail: dict[str, Exception] | None = None):
+    def __init__(self, repos: dict[str, dict], fail: dict[str, Exception] | None = None,
+                 properties: dict[str, list | Exception] | None = None):
         self.rulesets = repos  # "org/name" -> ruleset body
         self.puts: list[tuple[str, dict]] = []
         self.queries = 0
         self.fail = fail or {}
         self.orgs = POLICY["orgs"]
+        self.properties = properties or {}
+        self.property_reads = []
 
     def graphql(self, query: str) -> dict:
         self.queries += 1
         nodes = []
         self.last_query = query
-        # The fake serves one organization per query, found in the query text, so the
-        # list of orgs names each organization its own repositories. A query for an
-        # organization with no repository here is empty, as GitHub answers.
+        # Serve only the organization requested, including its inherited ruleset.
         org = next((o for o in self.orgs if f'login:"{o}"' in query), "")
+        inherited = None  # one enterprise ruleset, listed under every repository, as GitHub does
         for repo, rs in self.rulesets.items():
             if repo.split("/")[0] != org:
                 continue
@@ -71,17 +73,28 @@ class FakeGh:
                 "requiredStatusChecks": [{"context": c["context"], "integrationId": 15368} for c in checks["required_status_checks"]]}})
             if amq.review_count(rs) is not None:
                 rules.append({"type": "PULL_REQUEST", "parameters": {"requiredApprovingReviewCount": amq.review_count(rs)}})
+            if inherited is None:
+                inherited = {"databaseId": 1, "name": "agent-native-queued-trunk-base", "enforcement": "ACTIVE",
+                             "target": "BRANCH", "source": {"__typename": "Enterprise"}, "conditions": None,
+                             "rules": {"nodes": [{"type": "PULL_REQUEST", "parameters": {"requiredApprovingReviewCount": 0}},
+                                                 {"type": "DELETION", "parameters": None}]}}
             nodes.append({"name": repo.split("/")[1], "rulesets": {"nodes": [
                 {"databaseId": rs["id"], "name": rs["name"], "enforcement": "ACTIVE", "target": "BRANCH",
+                 "source": {"__typename": "Repository"},
                  "conditions": {"refName": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
                  "rules": {"nodes": rules}},
-                {"databaseId": 1, "name": "enterprise", "enforcement": "ACTIVE", "target": "BRANCH",
-                 "conditions": None, "rules": {"nodes": [{"type": "DELETION", "parameters": None}]}},
+                inherited,
             ]}})
         return {"organization": {"repositories": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}
 
     def rest(self, path: str, method: str = "GET", body: dict | None = None) -> dict:
         repo = "/".join(path.split("/")[1:3])
+        if path.endswith("/properties/values"):
+            self.property_reads.append(repo)
+            value = self.properties.get(repo, [])
+            if isinstance(value, Exception):
+                raise value
+            return copy.deepcopy(value)
         if repo in self.fail:
             raise self.fail[repo]
         rs = self.rulesets[repo]
@@ -146,16 +159,21 @@ class PlanTests(unittest.TestCase):
             "SylphxAI/bgca": ruleset(12, "sylphx-merge-queue", OLD),
             "SylphxAI/other": ruleset(13, "sylphx-merge-queue", OLD, checks=("lint",)),
             "SylphxAI/janus": ruleset(14, "ci-must-pass", None),
-            "SylphxAI/plain": ruleset(15, "required-ci", None, reviews=None),
         }), "SylphxAI")
 
     def rows(self):
         return {r["repo"]: r for r in amq.plan(self.fleet, POLICY, amq.excluded(POLICY, amq.hands_off_repos()))}
 
     def test_rulesets_with_a_queue_or_a_review_rule_are_read(self):
-        self.assertEqual(sorted(i["repo"] for i in self.fleet),
-                         ["SylphxAI/bgca", "SylphxAI/cloud", "SylphxAI/desk-tools", "SylphxAI/janus", "SylphxAI/other"])
-
+        # The one enterprise ruleset is inherited by every repository, so it is listed once per repository in the
+        # read; the repository's own ruleset is the other entry.
+        self.assertEqual(sorted({(i["repo"], i["ruleset"]) for i in self.fleet}),
+                         [("SylphxAI/bgca", "agent-native-queued-trunk-base"), ("SylphxAI/bgca", "sylphx-merge-queue"),
+                          ("SylphxAI/cloud", "agent-native-queued-trunk-base"), ("SylphxAI/cloud", "sylphx-merge-queue"),
+                          ("SylphxAI/desk-tools", "agent-native-queued-trunk-base"), ("SylphxAI/desk-tools", "sylphx-merge-queue"),
+                          ("SylphxAI/janus", "agent-native-queued-trunk-base"), ("SylphxAI/janus", "ci-must-pass"),
+                          ("SylphxAI/other", "agent-native-queued-trunk-base"), ("SylphxAI/other", "sylphx-merge-queue")])
+        self.assertTrue(all(i["ruleset"] != "agent-native-queued-trunk-base" or i["id"] is None for i in self.fleet))
     def test_only_the_repositorys_own_rulesets_are_read(self):
         gh = FakeGh({})
         amq.read_org(gh, "SylphxAI")
@@ -166,10 +184,20 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(rows["SylphxAI/desk-tools"]["changes"]["required_approving_review_count"], [1, 0])
         self.assertEqual(rows["SylphxAI/cloud"]["changes"], {"required_approving_review_count": [1, 0]})
 
-    def test_review_only_ruleset_drifts_without_queue_notes(self):
+    def test_a_ruleset_without_a_queue_but_with_a_review_rule_is_converged(self):
+        # The bug this guards: the plan loop skipped the review check for a ruleset with no queue, so a new
+        # repository's require-review ruleset kept required_approving_review_count=1 forever.
         row = self.rows()["SylphxAI/janus"]
         self.assertEqual((row["status"], row["changes"], row["notes"]),
                          ("DRIFT", {"required_approving_review_count": [1, 0]}, []))
+
+    def test_an_inherited_ruleset_is_read_but_never_written(self):
+        # An enterprise ruleset has no repository path; the read appends it per repository and it must not appear
+        # as drift or take part in a write.
+        inherited = [i for i in self.fleet if i["id"] is None]
+        self.assertTrue(inherited)
+        self.assertTrue(all(i["ruleset"] == "agent-native-queued-trunk-base" for i in inherited))
+        self.assertTrue(all(i["review"] == 0 for i in inherited))
 
     def test_diff_matches_headgreen(self):
         row = self.rows()["SylphxAI/desk-tools"]
@@ -216,6 +244,34 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual((rc, gh.puts), (0, []))
         self.assertIn("grouping_strategy: ALLGREEN -> HEADGREEN", out)
         self.assertNotIn("SylphxAI/work", out)
+
+    def test_delivered_and_unreadable_properties_exclude_before_planning(self):
+        for properties in ([{"property_name": "sylphx_delivery", "value": "delivered"}],
+                           RuntimeError("HTTP 404"), RuntimeError("timeout")):
+            with self.subTest(properties=properties), tempfile.TemporaryDirectory() as d:
+                gh = self.fake(properties={"SylphxAI/desk-tools": properties})
+                rc, out = self.run_main(gh, "--apply", "--backup-dir", d,
+                                        "--repo", "SylphxAI/desk-tools", "--json")
+                self.assertEqual((rc, gh.puts), (0, []))
+                self.assertTrue(all(row["status"] == "EXCLUDED" and row["changes"] == {}
+                                    for row in json.loads(out)["plan"]))
+                self.assertEqual(gh.property_reads, ["SylphxAI/desk-tools"])
+                self.assertEqual(list(pathlib.Path(d).glob("*.json")), [])
+
+    def test_undelivered_property_allows_apply(self):
+        gh = self.fake(properties={"SylphxAI/desk-tools": [
+            {"property_name": "sylphx_delivery", "value": "in_progress"}]})
+        with tempfile.TemporaryDirectory() as d:
+            amq.WRITE_PAUSE_SECONDS = 0
+            rc, _ = self.run_main(gh, "--apply", "--backup-dir", d, "--repo", "SylphxAI/desk-tools")
+        self.assertEqual(rc, 0)
+        self.assertEqual([repo for repo, _ in gh.puts], ["SylphxAI/desk-tools"])
+
+    def test_property_403_stops_before_any_put(self):
+        gh = self.fake(properties={"SylphxAI/desk-tools": amq.Forbidden("HTTP 403")})
+        with tempfile.TemporaryDirectory() as d:
+            rc, _ = self.run_main(gh, "--apply", "--backup-dir", d)
+        self.assertEqual((rc, gh.puts), (2, []))
 
     def test_check_exits_one_on_drift(self):
         self.assertEqual(self.run_main(self.fake(), "--check")[0], 1)

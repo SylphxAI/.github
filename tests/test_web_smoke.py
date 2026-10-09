@@ -27,9 +27,16 @@ SHA = "a" * 40
 STATIC_HOST = textwrap.dedent("""
     import argparse, functools, http.server
     p = argparse.ArgumentParser()
-    p.add_argument("--dir"); p.add_argument("port", type=int)
+    p.add_argument("--dir"); p.add_argument("--base", default="/"); p.add_argument("port", type=int)
     a = p.parse_args()
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=a.dir)
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if not self.path.startswith(a.base):
+                self.send_error(404)
+                return
+            self.path = "/" + self.path[len(a.base):]
+            super().do_GET()
+    handler = functools.partial(Handler, directory=a.dir)
     http.server.ThreadingHTTPServer(("127.0.0.1", a.port), handler).serve_forever()
 """)
 
@@ -203,6 +210,17 @@ class Fetch(unittest.TestCase):
         self.assertIn("SECRET", seen[0][1]["GIT_CONFIG_KEY_0"])
 
 
+class HostStartup(unittest.TestCase):
+    def test_startup_error_includes_stderr(self):
+        with tempfile.TemporaryDirectory() as d:
+            keel = make_keel(pathlib.Path(d))
+            (keel / "scripts" / "static_host.py").write_text(
+                'import sys\nsys.exit("unsupported host option")\n')
+            with self.assertRaises(web_smoke.Refused) as error:
+                web_smoke.start_host(str(keel), d, web_smoke.free_port())
+            self.assertIn("unsupported host option", str(error.exception))
+
+
 class RunAgainstAStandIn(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -236,6 +254,14 @@ class RunAgainstAStandIn(unittest.TestCase):
         summary = (self.base / "summary.md").read_text()
         self.assertIn("| slow-3g-splash | pass |", summary)
         self.assertIn("| boot | pass |", summary)
+
+    def test_pack_base_is_used_by_host_and_both_browsers(self):
+        rc, out = self.run_it('<html><head><base href="/mygame/"></head>splash</html>')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.calls()), 2)
+        for call in self.calls():
+            self.assertTrue(call.endswith("/mygame/index.html"), call)
+        self.assertIn("/mygame/index.html", (self.base / "summary.md").read_text())
 
     def test_a_black_boot_fails_and_says_which_check(self):
         rc, out = self.run_it("<html>BLACK</html>")

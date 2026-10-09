@@ -58,7 +58,10 @@ that has a `pull_request` rule but no queue (a tags or non-default-branch
 ruleset) is converged too, because the rule holds a review before every merge.
 The hands-off repositories of `policy/optimistic-merge.json` are excluded and
 keep their rule as it is: `SylphxAI/bgca`, `Cubeage/hk-mahjong-tycoon` and
-`SylphxAI/openclaw-sylphx`.
+`SylphxAI/openclaw-sylphx`. Before planning, the tool also reads each selected,
+non-excluded repository's custom properties. It excludes `sylphx_delivery=delivered`
+and unreadable properties, so neither can produce a ruleset write. A property
+read answering HTTP 403 stops the run before any write.
 
 One run reaches all four: `orgs` is read as `[org for org in policy["orgs"] for
 item in read_org(gh, org)]`, one GraphQL page per organization.
@@ -74,6 +77,12 @@ adds a required check, because requiring a check that no workflow reports would
 stop the queue; moving a repository's required check to `ci-ok` belongs with the
 change that makes the repository report it.
 
+A ruleset inherited from an organization or enterprise ruleset (GraphQL `source`
+not `Repository`) is reported `INHERITED` and never written: REST has no path to
+write it, and the enterprise ruleset already requires 0 approvals. A new
+repository therefore needs no manual step for the review count; the next run
+reads whatever repository ruleset it carries, queue or not.
+
 ## Commands
 
 ```sh
@@ -84,7 +93,8 @@ scripts/apply_merge_queue.py --apply --backup-dir DIR     # write; saves each ru
 scripts/apply_merge_queue.py --rollback DIR               # put the saved rulesets back
 ```
 
-Reads are one GraphQL query per 100 repositories. Writes are one `PUT` per
+Reads are one GraphQL query per 100 repositories plus one custom-property read
+per selected, non-excluded repository. Writes are one `PUT` per
 drifted ruleset, a second apart, read back, and stop at the first 403. The
 credential needs repository administration on each repository. Running
 `--apply` twice writes nothing the second time. `cloud` also pins its queue in
