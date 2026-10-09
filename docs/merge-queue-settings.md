@@ -50,6 +50,22 @@ ruleset `agent-native-queued-trunk-base` already requires 0; repository
 rulesets are converged here. A pull request can still be reviewed; it is no
 longer held for an approval.
 
+The count reaches every repository ruleset of every organization in `orgs`,
+which is the same four-organization fleet as `policy/optimistic-merge.json`:
+`SylphxAI`, `Cubeage`, `EpiowAI` and `OzyrixLtd`. An approval held by any of
+them blocked a merge the fast gate had already passed. A repository ruleset
+that has a `pull_request` rule but no queue (a tags or non-default-branch
+ruleset) is converged too, because the rule holds a review before every merge.
+The hands-off repositories of `policy/optimistic-merge.json` are excluded and
+keep their rule as it is: `SylphxAI/bgca`, `Cubeage/hk-mahjong-tycoon` and
+`SylphxAI/openclaw-sylphx`. Before planning, the tool also reads each selected,
+non-excluded repository's custom properties. It excludes `sylphx_delivery=delivered`
+and unreadable properties, so neither can produce a ruleset write. A property
+read answering HTTP 403 stops the run before any write.
+
+One run reaches all four: `orgs` is read as `[org for org in policy["orgs"] for
+item in read_org(gh, org)]`, one GraphQL page per organization.
+
 ## What the tool manages
 
 It manages the parameters of the `merge_queue` rule of every ruleset that has
@@ -77,7 +93,8 @@ scripts/apply_merge_queue.py --apply --backup-dir DIR     # write; saves each ru
 scripts/apply_merge_queue.py --rollback DIR               # put the saved rulesets back
 ```
 
-Reads are one GraphQL query per 100 repositories. Writes are one `PUT` per
+Reads are one GraphQL query per 100 repositories plus one custom-property read
+per selected, non-excluded repository. Writes are one `PUT` per
 drifted ruleset, a second apart, read back, and stop at the first 403. The
 credential needs repository administration on each repository. Running
 `--apply` twice writes nothing the second time. `cloud` also pins its queue in
