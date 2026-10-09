@@ -17,9 +17,9 @@ pre-merge workflow may call it. In such a workflow this refuses:
     fail unchanged code. Launched products audit the default branch in a
     separate scheduled workflow; unlaunched products defer to the launch gate.
 
-Standard library only: the runner may have no YAML module. The workflows have
-already passed actionlint's parse, so an indentation scan of the block-style
-keys GitHub workflows use is enough.
+The action supplies a pinned YAML parser. Inspect composed BaseLoader nodes:
+scalar values have already been decoded, keys such as `on` stay strings, and
+source marks remain available without constructing tagged Python objects.
 
 A delivered customer repository (organization custom property
 sylphx_delivery = delivered) gets no new automated rule: the check is skipped
@@ -37,6 +37,9 @@ import sys
 import urllib.request
 from typing import Callable, NamedTuple
 
+import yaml
+from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
+
 PRE_MERGE = ("pull_request", "pull_request_target", "merge_group", "workflow_call")
 
 GATES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -50,8 +53,6 @@ GATES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bk6\s+run\b"), "a k6 load test"),
 )
 
-KEY = re.compile(r"""^(\s*)(?:-\s+)?(["']?)([A-Za-z0-9_.-]+)\2\s*:(?:\s+|$)(.*)$""")
-ENV_KEY = re.compile(r"""^\s*(?:-\s+)?(["']?)PERF_ENFORCE\1\s*:\s*(.*)$""")
 # Only executable run/uses fields are timing or audit commands.
 
 
@@ -68,51 +69,28 @@ def _strip_comment(line: str) -> str:
     return re.sub(r"\s+#.*$", "", line)
 
 
-def _indent(line: str) -> int:
-    return len(line) - len(line.lstrip(" "))
+def mapping(node: Node | None) -> dict[str, Node]:
+    if not isinstance(node, MappingNode):
+        return {}
+    return {key.value: value for key, value in node.value if isinstance(key, ScalarNode)}
 
 
-def _unquote(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
-    return value
+def scalar(node: Node | None) -> str:
+    return node.value if isinstance(node, ScalarNode) else ""
+
+
+def event_names(root: Node | None) -> list[str]:
+    event = mapping(root).get("on")
+    if isinstance(event, MappingNode):
+        return list(mapping(event))
+    if isinstance(event, SequenceNode):
+        return [scalar(child) for child in event.value]
+    return [scalar(event)] if event is not None else []
 
 
 def triggers(lines: list[str]) -> list[str]:
-    """The event names under the top-level `on:` key."""
-    for i, raw in enumerate(lines):
-        line = _strip_comment(raw)
-        m = KEY.match(line)
-        if not m or m.group(1) or m.group(3) != "on" or line.lstrip().startswith("-"):
-            continue
-        inline = m.group(4).strip()
-        if inline.startswith("[") or inline.startswith("{"):
-            body = inline.strip("[]{}")
-            return [_unquote(p.split(":", 1)[0]) for p in body.split(",") if p.strip()]
-        if inline:
-            return [_unquote(inline)]
-        found: list[str] = []
-        child = None
-        for raw_child in lines[i + 1:]:
-            text = _strip_comment(raw_child)
-            if not text.strip():
-                continue
-            ind = _indent(text)
-            if ind == 0:
-                break
-            child = ind if child is None else child
-            if ind != child:
-                continue
-            item = text.strip()
-            if item.startswith("- "):
-                found.append(_unquote(item[2:]))
-            else:
-                km = KEY.match(text)
-                if km:
-                    found.append(km.group(3))
-        return found
-    return []
+    """The event names under the top-level `on:` key, without bool coercion."""
+    return event_names(yaml.compose("\n".join(lines), Loader=yaml.BaseLoader))
 
 
 def excludes_pre_merge(condition: str) -> bool:
@@ -132,78 +110,46 @@ def excludes_pre_merge(condition: str) -> bool:
 
 
 def scan_workflow(file: str, text: str) -> list[Finding]:
-    lines = text.splitlines()
-    pre = [t for t in triggers(lines) if t in PRE_MERGE]
+    root = yaml.compose(text, Loader=yaml.BaseLoader)
+    pre = [t for t in event_names(root) if t in PRE_MERGE]
     if not pre:
         return []
     kind = "/".join(pre)
     out: list[Finding] = []
-    section = ""
-    job = ""
-    job_indent: int | None = None
-    post_merge_job = False
-    run_indent: int | None = None
-    for n, raw in enumerate(lines, 1):
-        line = _strip_comment(raw)
-        if not line.strip():
-            continue
-        ind = _indent(line)
-        km = KEY.match(line)
-        if ind == 0:
-            section = km.group(3) if km else ""
-            job, job_indent = "", None
-            post_merge_job, run_indent = False, None
-            continue
-        if section == "jobs" and km and not line.lstrip().startswith("-"):
-            job_indent = ind if job_indent is None else job_indent
-            if ind == job_indent:
-                job = km.group(3)
-                post_merge_job, run_indent = False, None
-                # A job-level if can appear after its steps. Read the whole job
-                # before deciding whether any command can gate a pre-merge caller.
-                property_indent: int | None = None
-                for child in lines[n:]:
-                    child = _strip_comment(child)
-                    if not child.strip():
-                        continue
-                    if _indent(child) <= ind:
-                        break
-                    # YAML child mappings need not use two-space nesting.
-                    # The first nonblank child establishes the property depth;
-                    # deeper step conditions must never exempt the whole job.
-                    if property_indent is None:
-                        property_indent = _indent(child)
-                    child_key = KEY.match(child)
-                    if (child_key and _indent(child) == property_indent
-                            and not child.lstrip().startswith("-")
-                            and child_key.group(3) == "if"):
-                        post_merge_job = excludes_pre_merge(child_key.group(4))
+
+    def inspect(fields: dict[str, Node], where: str) -> None:
+        enforce = mapping(fields.get("env")).get("PERF_ENFORCE")
+        if enforce is not None and scalar(enforce).strip().lower() not in ("0", "false"):
+            out.append(Finding(file, enforce.start_mark.line + 1, where,
+                               f"PERF_ENFORCE is {json.dumps(scalar(enforce).strip())}; "
+                               "a pre-merge workflow may only set it to '0'"))
+        for key in ("run", "uses"):
+            node = fields.get(key)
+            if not isinstance(node, ScalarNode):
                 continue
-        if post_merge_job:
+            # YAML folding/escapes are resolved before matching. Shell comments
+            # remain non-executable; YAML comments were removed by the parser.
+            command = "\n".join(_strip_comment(line) for line in node.value.splitlines())
+            for pattern, what in GATES:
+                if pattern.search(command):
+                    out.append(Finding(file, node.start_mark.line + 1, where,
+                                       f"runs {what} in a {kind} workflow"))
+                    break
+
+    workflow = mapping(root)
+    inspect({"env": workflow["env"]} if "env" in workflow else {}, "env")
+    for job, node in mapping(workflow.get("jobs")).items():
+        fields = mapping(node)
+        # A job-level condition can appear anywhere in the mapping. Conditions
+        # on steps never exempt the job or its other commands.
+        if excludes_pre_merge(scalar(fields.get("if"))):
             continue
-        if run_indent is not None and ind <= run_indent:
-            run_indent = None
-        where = f"job {job}" if job else f"{section or 'workflow'}"
-        em = ENV_KEY.match(line)
-        if em:
-            value = _unquote(em.group(2)).lower()
-            if value not in ("0", "false"):
-                out.append(Finding(file, n, where,
-                                   f"PERF_ENFORCE is {json.dumps(_unquote(em.group(2)))}; "
-                                   "a pre-merge workflow may only set it to '0'"))
-            continue
-        # Job ids, needs references, artifact paths and labels do not execute
-        # gates. Inspect commands/actions and their multiline run bodies only.
-        if km and km.group(3) == "run":
-            # YAML allows indentation and chomping indicators in either order.
-            if re.fullmatch(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?", km.group(4).strip()):
-                run_indent = ind + (2 if line.lstrip().startswith("- ") else 0)
-        elif not (km and km.group(3) == "uses") and run_indent is None:
-            continue
-        for pattern, what in GATES:
-            if pattern.search(line):
-                out.append(Finding(file, n, where, f"runs {what} in a {kind} workflow"))
-                break
+        where = f"job {job}"
+        inspect(fields, where)
+        steps = fields.get("steps")
+        if isinstance(steps, SequenceNode):
+            for step in steps.value:
+                inspect(mapping(step), where)
     return out
 
 

@@ -57,6 +57,16 @@ these workflow/pin changes to roll back; do not rewrite lockfiles or data.
 The guard's tests cover Bun, npm, pnpm and Yarn audits across every pre-merge
 trigger, mixed trigger workflows, the allowed separate scheduled workflow,
 comments/step names, unchanged secret detection and delivered-customer skips.
+The action supplies PyYAML 6.0.3 in a private Python target when the runner
+lacks that version. The scanner composes BaseLoader nodes, preserving string
+keys and source locations without constructing tagged objects. It scans decoded
+scalar values, including plain/quoted continuations, folded/literal blocks and
+quoted escapes; job exclusions are read from the job mapping, not indentation
+or physical lines. Regression matrices cover these forms, source locations,
+flow mappings, sibling jobs and unsafe or step-only conditions.
+[PyYAML's node API](https://pyyaml.org/wiki/PyYAMLDocumentation) and
+[YAML scalar folding](https://yaml.org/spec/1.2.2/) are the primary references
+(read 2026-10-09).
 A consumer invocation at the new action SHA proves adoption; the launch gate
 separately proves scheduled failure ownership and bot repair creation.
 

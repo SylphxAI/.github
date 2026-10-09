@@ -11,7 +11,7 @@ description: >
   launched products audit the default branch on a separate schedule, and
   unlaunched products defer audits to launch. Delivered customer repositories
   skip these rules. Needs a checkout and
-  python3. Linux x86_64.
+  python3 with pip (the scalar scanner supplies pinned PyYAML). Linux x86_64.
 
 inputs:
   ignore:
@@ -65,4 +65,13 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
-      run: python3 "$GITHUB_ACTION_PATH/perf_gate.py"
+      run: |
+        set -euo pipefail
+        # Decode YAML scalars with one pinned parser, not physical-line guesses.
+        # A private target works on externally managed runner Python installs.
+        deps="$RUNNER_TEMP/workflow-lint-pyyaml-6.0.3"
+        if ! PYTHONPATH="$deps" python3 -c 'import yaml; assert yaml.__version__ == "6.0.3"' 2>/dev/null; then
+          python3 -m pip install --disable-pip-version-check --no-input \
+            --only-binary=:all: --target "$deps" 'PyYAML==6.0.3'
+        fi
+        PYTHONPATH="$deps" python3 "$GITHUB_ACTION_PATH/perf_gate.py"

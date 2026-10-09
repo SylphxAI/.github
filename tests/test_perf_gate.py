@@ -207,6 +207,60 @@ class ScanTest(unittest.TestCase):
                         self.assertEqual(len(problems(nested)), 1)
                         self.assertEqual(len(problems(text.replace(" && ", " || "))), 1)
 
+    def test_decoded_multiline_commands_cannot_bypass_scanning(self) -> None:
+        # Exercise actual scalar semantics, not merely a header/indent match.
+        values = (
+            "echo preparing &&\n          npx lhci autorun",
+            "'echo preparing &&\n          npx lhci autorun'",
+            '"echo preparing &&\n          npx lhci autorun"',
+            ">-\n          npm\n          audit --prod",
+            "'npm\n          audit --prod'",
+            '"npm\\x20audit --prod"',
+            '"npm\\u0020audit --prod"',
+            '"npm \\\n          audit --prod"',
+            "|\n          echo preparing\n          npm audit --prod",
+        )
+        for trigger in perf_gate.PRE_MERGE:
+            for value in values:
+                with self.subTest(trigger=trigger, value=value):
+                    text = (f"on: {trigger}\njobs:\n  a:\n    steps:\n"
+                            f"      - run: {value}\n        working-directory: lighthouse\n"
+                            "      - run: echo finished\n")
+                    found = problems(text)
+                    self.assertEqual(len(found), 1)
+                    self.assertEqual(found[0][0], 6)
+
+    def test_decoded_multiline_job_conditions_exempt_only_safe_jobs(self) -> None:
+        terms = [f"github.event_name != '{event}'" for event in perf_gate.PRE_MERGE[:-1]]
+        safe = " && ".join(terms)
+        folded = " &&\n      ".join(terms)
+        for value in (
+            ">-\n      " + folded,
+            "|\n      " + folded,
+            "${{ " + folded + " }}",
+            '"' + folded + '"',
+            "'" + folded.replace("'", "''") + "'",
+            '"' + safe.replace(" && ", "\\x20&&\\x20") + '"',
+        ):
+            with self.subTest(value=value):
+                text = ("on: workflow_call\njobs:\n  post_merge:\n    steps:\n"
+                        "      - run: npm audit\n    if: " + value + "\n"
+                        "  pre_merge:\n    steps:\n      - run: echo finished\n")
+                self.assertEqual(problems(text), [])
+                self.assertEqual(len(problems(text.replace("echo finished", "npm audit"))), 1)
+                self.assertEqual(len(problems(text.replace("&&", "||"))), 1)
+                self.assertEqual(len(problems(text.replace("pull_request_target", "push"))), 1)
+
+    def test_structural_fields_and_decoded_env_values(self) -> None:
+        text = ("on: [pull_request, merge_group]\nenv: {PERF_ENFORCE: '0'}\njobs:\n"
+                "  a:\n    env: {PERF_ENFORCE: false}\n    steps:\n"
+                "      - {run: 'npm audit', name: deferred}\n"
+                "      - run: echo done\n        env:\n          PERF_ENFORCE: >-\n            0\n")
+        found = problems(text)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0][0], 6)
+        self.assertEqual(len(problems(text.replace("            0", "            1"))), 2)
+
     def test_step_condition_does_not_exempt_other_commands(self) -> None:
         safe = ("github.event_name != 'pull_request' && "
                 "github.event_name != 'pull_request_target' && github.event_name != 'merge_group'")
@@ -270,7 +324,7 @@ class ActionStepTest(unittest.TestCase):
         event = pathlib.Path(tmp, "event.json")
         event.write_text(json.dumps({"repository": {"custom_properties": properties}}))
         env = dict(os.environ, GITHUB_ACTION_PATH=str(ACTION), GITHUB_EVENT_PATH=str(event),
-                   GITHUB_ACTIONS="true")
+                   GITHUB_ACTIONS="true", RUNNER_TEMP=tmp)
         return subprocess.run(["bash", "-c", step["run"]], cwd=root, env=env, capture_output=True, text=True)
 
     def test_a_pull_request_workflow_running_lighthouse_fails(self) -> None:
