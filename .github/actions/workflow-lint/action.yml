@@ -7,10 +7,16 @@ description: >
   fails the pull request instead of the first run on the trunk. Then refuses
   a timing or performance budget (PERF_ENFORCE, Lighthouse, hyperfine, k6)
   in a pull_request, merge_group or reusable workflow: timing gates run after
-  merge. Delivered customer repositories skip that rule. Needs a checkout and
-  python3. Linux x86_64.
+  merge. Also requires job timeouts and forbids failure masking on required
+  needs paths. Delivered customer repositories skip these contract rules.
+  Needs a checkout, python3 and pip. Linux x86_64.
 
 inputs:
+  contract-mode:
+    description: >
+      enforce fails contract violations; report-only emits warnings for the
+      initial rollout inventory. Actionlint always fails syntax/reference errors.
+    default: report-only
   ignore:
     description: >
       Findings to ignore, one regular expression per line, each passed to
@@ -63,3 +69,11 @@ runs:
       env:
         GITHUB_TOKEN: ${{ github.token }}
       run: python3 "$GITHUB_ACTION_PATH/perf_gate.py"
+    - name: Required workflow contract
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        CONTRACT_MODE: ${{ inputs.contract-mode }}
+      run: |
+        python3 -m pip install --quiet --target "$RUNNER_TEMP/workflow-contract" PyYAML==6.0.3
+        PYTHONPATH="$RUNNER_TEMP/workflow-contract" python3 "$GITHUB_ACTION_PATH/contract.py"

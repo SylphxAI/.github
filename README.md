@@ -17,6 +17,7 @@ Use one from another repository with
 | [ci-ok](.github/actions/ci-ok/action.yml) | One required check that waits for every other GitHub Actions check on the commit and fails if any failed, a workflow failed to start, or no check ran |
 | [main-red-gate](.github/actions/main-red-gate/action.yml) | Stop the line: while the trunk's newest conclusive Verify run is red and its way back is in motion, a merge group is admitted only for a revert, a live-outage fix or a pull request labelled `main-red-fix`; a red trunk with nothing in motion admits with a warning |
 | [needs-pass](.github/actions/needs-pass/action.yml) | The aggregate verdict of a workflow. A skipped job never counts as passing a required check outside `merge_group`: list PR-time jobs in `required-unless-merge-group` so a `workflow_dispatch` run cannot post a green check over a red one |
+| [workflow-lint](.github/actions/workflow-lint/README.md) | Actionlint syntax/reference checks, pre-merge performance rules, and job timeout/required-path failure contracts (report-only inventory or enforce) |
 | [secret-scan](.github/actions/secret-scan/action.yml) | Runs gitleaks over only the commits a push or pull request adds |
 | [plain-language](.github/actions/plain-language/action.yml) | Warns about coined terms on the lines a pull request adds |
 | [identifiers](.github/actions/identifiers/action.yml) | Fails when a change adds an id generator, or a text or serial primary key, that is not a UUIDv7 |
