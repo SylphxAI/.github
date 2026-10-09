@@ -401,6 +401,7 @@ exemption and writes the whole report with `--json`.
 | R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
 | R7 | `on_red` is `revert` (or `revert_pr_unarmed`) where the builder App reaches the repository, `notify` elsewhere |
 | R8 | in every workflow that runs on `merge_group`, each job on `sylphx-linux-standard` or `sylphx-linux-xlarge` selects its `-merge` twin on `merge_group` (the expression under Runners); verdict jobs on `sylphx-linux-control`, jobs whose `if:` keeps `merge_group` out, and runners chosen by `matrix`/`inputs` are out of scope |
+| R9 | every workflow that runs on `pull_request` has a workflow-level `concurrency:` whose `cancel-in-progress` is `${{ github.event_name == 'pull_request' }}` ([ci-template.md](ci-template.md#concurrency)): a superseded pull-request run is cancelled, a merge-group or trunk run never is; a literal `true` holds only where neither `merge_group` nor a push to the default branch starts the workflow |
 
 Unreadable is FAIL. A repository whose rows are waived by a policy
 exemption reports EXEMPT; an exemption carries a class, reason, owner and a
