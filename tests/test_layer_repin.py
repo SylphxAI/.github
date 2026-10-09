@@ -52,11 +52,23 @@ class LayerTest(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("cargo"), "needs cargo")
     def test_kit_main_moves_kit_and_keel_as_one_tuple_with_one_lock_source(self):
+        self.check_kit_tuple()
+
+    @unittest.skipUnless(shutil.which("cargo"), "needs cargo")
+    def test_tagged_kit_consumers_move_to_one_keel_rev(self):
+        for tag in ("keel-verified-2026-10-03-1", "keel-weekly-2026-10-03"):
+            with self.subTest(tag=tag):
+                self.check_kit_tuple(tag)
+
+    def check_kit_tuple(self, tag=None):
         with tempfile.TemporaryDirectory() as d:
             base = Path(d)
             keel, old_keel = source(base, "keel", {
                 "Cargo.toml": '[package]\nname = "keel-net"\nversion = "0.1.0"\nedition = "2021"\n',
                 "src/lib.rs": "// old\n"})
+            if tag:
+                git(keel, "tag", tag)
+            keel_pin = f'tag = "{tag}"' if tag else f'rev = "{old_keel}"'
             new_keel = advance(keel, "src/lib.rs", "// new\n")
             kit_manifest = ('[package]\nname = "cubeage-kit"\nversion = "0.1.0"\nedition = "2021"\n'
                             '[dependencies]\nkeel-net = { git = "https://github.com/SylphxAI/keel", rev = "%s" }\n')
@@ -65,7 +77,7 @@ class LayerTest(unittest.TestCase):
             title = fixtures.make_title(base, {
                 "Cargo.toml": ('[package]\nname = "title"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\n'
                                f'cubeage-kit = {{ git = "https://github.com/Cubeage/cubeage-kit", rev = "{old_kit}" }}\n'
-                               f'keel-net = {{ git = "https://github.com/SylphxAI/keel", rev = "{old_keel}" }}\n'),
+                               f'keel-net = {{ git = "https://github.com/SylphxAI/keel", {keel_pin} }}\n'),
                 "deps/kit.rev": old_kit + "\n", "KEEL_PIN": old_keel + "\n", "src/lib.rs": "",
                 "vendor/tuple": "old tuple\n",
                 "scripts/vendor-private.sh": 'set -eu\nread -r kit < deps/kit.rev\nread -r keel < KEEL_PIN\nprintf "%s %s\\n" "$kit" "$keel" > vendor/tuple\n'})
@@ -82,11 +94,13 @@ class LayerTest(unittest.TestCase):
                 report = self.run_pr(base, title, "kit", kit)
                 self.assertEqual(report["status"], "ok", report["log"])
                 self.assertIn(new_kit, (title / "Cargo.toml").read_text())
-                self.assertIn(new_keel, (title / "Cargo.toml").read_text())
+                self.assertIn(f'rev = "{new_keel}"', (title / "Cargo.toml").read_text())
+                self.assertNotIn('tag = "', (title / "Cargo.toml").read_text())
                 self.assertEqual((title / "KEEL_PIN").read_text().strip(), new_keel)
                 self.assertEqual((title / "vendor/tuple").read_text().strip(), f"{new_kit} {new_keel}")
-                sources = {entry[2].split("#")[-1] for entry in repin.lock_entries((title / "Cargo.lock").read_text())}
-                self.assertEqual(sources, {new_keel})
+                sources = {entry[2] for entry in repin.lock_entries((title / "Cargo.lock").read_text())}
+                self.assertEqual(len(sources), 1)
+                self.assertEqual({source.split("#")[-1] for source in sources}, {new_keel})
                 self.assertIn(new_kit, (title / "Cargo.lock").read_text())
                 self.assertEqual(self.poll(base, title, "kit", kit)["needed"], "false")
                 git(title, "checkout", "-q", "main")

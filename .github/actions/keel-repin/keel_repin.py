@@ -392,13 +392,14 @@ def cmd_layer_run(args):
                 log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
                 stage = "hook" if proc.returncode else None
             else:
-                rewrite(root, old, sha, sha)
+                # Convert Keel tags before rewrite can replace them with the kit SHA.
                 # A layer tuple uses a rev, not a Keel release tag.
                 for f in pin_files(tracked_files(root))[0]:
                     p = root / f
                     p.write_text("\n".join(
                         TAG_PIN_RE.sub(lambda m: 'rev = "' + pins[0] + '"', line) if KEEL_URL.search(line) else line
                         for line in p.read_text().split("\n")))
+                rewrite(root, old, sha, sha)
                 rewrite(root, keel_old, pins[0], pins[0])
                 stage = refresh_layer_locks(root, args.layer, log)
                 if stage is None:
