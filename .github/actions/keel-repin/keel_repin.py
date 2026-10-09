@@ -401,6 +401,9 @@ def cmd_layer_run(args):
                         for line in p.read_text().split("\n")))
                 rewrite(root, old, sha, sha)
                 rewrite(root, keel_old, pins[0], pins[0])
+                for f in tracked_files(root):
+                    if Path(f).name == "KEEL_PIN":
+                        (root / f).write_text(pins[0] + "\n")
                 stage = refresh_layer_locks(root, args.layer, log)
                 if stage is None:
                     stage = refresh_locks(root, log)
