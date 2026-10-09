@@ -182,6 +182,42 @@ class UndeprecatedPackages(unittest.TestCase):
         self.assertEqual([p["name"] for p in doc["undeprecated_packages"]], ["@sylphx/molt"])
 
 
+class YankCrates(unittest.TestCase):
+    LISTED = [{"registry": "crates", "name": "kernox", "repo": "kernox"},
+              {"registry": "pub", "name": "effect_dart", "repo": "effect"}]
+
+    def test_yanks_each_unyanked_version_and_keeps_other_registries(self):
+        calls = []
+
+        def send(method, url, token):
+            calls.append((method, url, token))
+            return 200
+
+        versions = lambda name: [{"num": "0.0.1", "yanked": False}, {"num": "0.0.0", "yanked": True}]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            left = prc.yank_crates(self.LISTED, "tok", versions, send, pause=0)
+        self.assertEqual([p["name"] for p in left], ["effect_dart"])
+        self.assertEqual(calls, [("DELETE", "https://crates.io/api/v1/crates/kernox/0.0.1/yank", "tok")])
+        self.assertIn("YANKED crates kernox 0.0.1", out.getvalue())
+
+    def test_failed_yank_stays_listed(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            left = prc.yank_crates(self.LISTED, "tok", lambda n: [{"num": "0.0.1", "yanked": False}],
+                                   lambda m, u, t: 403, pause=0)
+        self.assertEqual([p["name"] for p in left], ["kernox", "effect_dart"])
+        self.assertIn("HTTP 403", err.getvalue())
+
+    def test_no_token_calls_nothing_and_stays_listed(self):
+        def boom(*a):
+            raise AssertionError("no call without a token")
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            left = prc.yank_crates(self.LISTED, None, boom, boom, pause=0)
+        self.assertEqual(len(left), 2)
+
+
 class Workflow(unittest.TestCase):
     def test_reads_with_the_job_token_not_an_app_key(self):
         # Public repositories, their custom properties and READMEs are public; an App
@@ -190,6 +226,11 @@ class Workflow(unittest.TestCase):
         self.assertIn("GH_TOKEN: ${{ github.token }}", text)
         self.assertNotIn("create-github-app-token", text)
         self.assertNotIn("SYLPHX_BUILDER", text)
+
+    def test_weekly_run_yanks_crates_with_the_org_token(self):
+        text = (ROOT / ".github" / "workflows" / "public-repo-consumers.yml").read_text()
+        self.assertIn("CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}", text)
+        self.assertIn("--fix-crates", text)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,11 @@ the [Keel repin bot](keel-repin.md) requires before it merges a repin.
 The check itself is Keel's (`scripts/browser_smoke.py`, from the title's own `KEEL_PIN`). The
 `web-smoke` action here fetches that script, installs Chrome for Testing, serves the pack as a static
 host does (Keel's `static_host.py`, so the pack's `_headers` and Content Security Policy apply) and runs
-three checks, always all:
+three checks, always all. The host and both browser checks use the pack's `<base href>` path
+(`/` when absent), so a title packed with a non-root `[web] base` is checked where its assets live.
+A host startup failure includes its output in the job log, including an unsupported option from an
+older Keel pin:
+
 
 | Check | Passes when |
 | --- | --- |
