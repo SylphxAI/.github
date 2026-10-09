@@ -148,7 +148,7 @@ class ScanTest(unittest.TestCase):
         safe = ("github.event_name != 'pull_request' && "
                 "github.event_name != 'pull_request_target' && github.event_name != 'merge_group'")
         for condition in ("github.event_name != 'pull_request'", safe + " || true",
-                          "!(" + safe + ")", "true", "${{ inputs.post_merge }}"):
+                          "${{ !(" + safe + ") }}", "true", "${{ inputs.post_merge }}"):
             text = ("on: workflow_call\njobs:\n  lighthouse:\n"
                     f"    if: {condition}\n    steps:\n      - run: bun run lighthouse\n")
             self.assertEqual(len(problems(text)), 1, condition)
@@ -228,7 +228,9 @@ class ScanTest(unittest.TestCase):
                             "      - run: echo finished\n")
                     found = problems(text)
                     self.assertEqual(len(found), 1)
-                    self.assertEqual(found[0][0], 6)
+                    # Findings point to the scalar's physical source line,
+                    # even when its command is folded from later lines.
+                    self.assertEqual(found[0][0], 5)
 
     def test_decoded_multiline_job_conditions_exempt_only_safe_jobs(self) -> None:
         terms = [f"github.event_name != '{event}'" for event in perf_gate.PRE_MERGE[:-1]]
@@ -258,7 +260,7 @@ class ScanTest(unittest.TestCase):
                 "      - run: echo done\n        env:\n          PERF_ENFORCE: >-\n            0\n")
         found = problems(text)
         self.assertEqual(len(found), 1)
-        self.assertEqual(found[0][0], 6)
+        self.assertEqual(found[0][0], 7)
         self.assertEqual(len(problems(text.replace("            0", "            1"))), 2)
 
     def test_step_condition_does_not_exempt_other_commands(self) -> None:
