@@ -61,6 +61,14 @@ every ready pull request (a device matrix, a store build) is gated on
 workflow: a skipped heavy job is only safe when something still runs it before
 release.
 
+## Dependency advisory checks
+
+Package-manager audits read a mutable registry and must not gate pull requests
+or merge groups. Unlaunched products defer them to launch; launched products
+use the existing update bot's advisory repairs and a separate scheduled
+default-branch audit. See [dependency-audits.md](dependency-audits.md) for
+ownership, adoption and the `workflow-lint` guard.
+
 ## Runners
 
 - Light jobs (`changes`, lint, docs, scripts): `sylphx-linux-standard`.
