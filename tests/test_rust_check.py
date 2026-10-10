@@ -174,6 +174,11 @@ class StarterTemplate(unittest.TestCase):
             ["git", "-C", str(root), "show", f"{sha}:.github/workflows/rust-check.yml"],
             capture_output=True, text=True,
         )
-        if shown.returncode != 0:
-            self.skipTest(f"{sha} is not in this clone (shallow checkout)")
+        # Fails, never skips, when the commit is missing: CI checks out full
+        # history (project-control.yml), so a missing commit is a bad pin.
+        self.assertEqual(
+            shown.returncode, 0,
+            f"the starter pins {sha}, which is not in this clone's history (a pin must be a commit on main; "
+            "a shallow clone needs `git fetch --unshallow`)",
+        )
         self.assertEqual(SCCACHE_PIN.findall(shown.stdout), SCCACHE_PIN.findall(WORKFLOW.read_text()))
