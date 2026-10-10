@@ -405,11 +405,11 @@ exemption and writes the whole report with `--json`.
 | Row | Holds when |
 | --- | --- |
 | R1 | `sylphx.toml` has `[ci] merge = "optimistic"` and an explicit `on_red` |
-| R2 | `ci.yml` runs on `merge_group` and has the `ci-ok` job |
+| R2 | the gate workflow (`ci.yml`, else any workflow) runs on `merge_group` and has the `ci-ok` job |
 | R3 | `verify.yml` runs on push to the default branch, has a `verified` job and does not cancel a trunk run |
 | R3b | every other workflow that runs on push to the default branch is called from `verify.yml`, or carries the comment `# optimistic-merge: advisory`; otherwise its red never reaches the handler |
 | R4 | `red-main.yml` calls the shared handler pinned to a full SHA at or after the policy floor, and its `if:` follows the default branch |
-| R5 | `ci.yml` has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
+| R5 | the gate workflow has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
 | R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
 | R7 | `on_red` is `revert` (or `revert_pr_unarmed`) where the builder App reaches the repository, `notify` elsewhere |
 | R8 | in every workflow that runs on `merge_group`, each job on `sylphx-linux-standard` or `sylphx-linux-xlarge` selects its `-merge` twin on `merge_group` (the expression under Runners); verdict jobs on `sylphx-linux-control`, jobs whose `if:` keeps `merge_group` out, and runners chosen by `matrix`/`inputs` are out of scope |
@@ -420,7 +420,7 @@ exemption reports EXEMPT; an exemption carries a class, reason, owner and a
 review date, and one past its date stops applying. Hands-off repositories
 and fully waived ones are listed by name only; their files are not read.
 Move `pin_floor` forward in the policy when a fix every caller needs lands:
-every pin behind it then fails R4 and R5 until it is repinned.
+every pin behind it then fails R4 and R5 until it is repinned, unless the component's own files (`red-main.yml` for R4, `.github/actions/main-red-gate/` for R5) are identical at the pin and at the floor.
 
 ## Read back after landing
 
