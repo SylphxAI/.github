@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import runpy
 from pathlib import Path
 import tempfile
 import unittest
@@ -32,7 +33,7 @@ class JunitDiscoveryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.entries([{'run_id': 44, 'steps': [{'name': 'run-store put junit-../../escape'}]}], 44)
 
-    def exercise_fetch(self, miss=False):
+    def exercise_fetch(self, miss=False, cli=False):
         calls, gets = [], []
         first = [{'run_id': 44, 'name': 'rust-test (1)', 'steps': []} for _ in range(100)]
         first[0]['steps'] = [{'name': 'run-store put junit-a'}]
@@ -49,7 +50,15 @@ class JunitDiscoveryTest(unittest.TestCase):
             Path(env['GITHUB_OUTPUT']).write_text('found=false\n' if miss and env['NAME'] == 'junit-b' else 'found=true\n')
         with tempfile.TemporaryDirectory() as tmp, patch.object(store, 'api', api), patch.object(store.subprocess, 'run', run), patch.dict(os.environ, {'GITHUB_OUTPUT': str(Path(tmp) / 'out'), 'REPO_ID': 'wrong-source-id'}):
             dest = Path(tmp) / 'reports'
-            self.assertEqual(store.fetch('tenant/project', '44', str(dest)), not miss)
+            if cli:
+                # Exercise the same entrypoint red-main invokes, with transport
+                # fixtures only; importing fetch alone misses CLI-only defects.
+                with patch.object(sys, 'argv', [str(SCRIPT), 'tenant/project', '44', str(dest)]), patch.object(store.subprocess, 'check_output', lambda args, **kwargs: json.dumps(api(args[-1]))):
+                    with self.assertRaises(SystemExit) as exit_result:
+                        runpy.run_path(str(SCRIPT), run_name='__main__')
+                    self.assertEqual(exit_result.exception.code, 1 if miss else 0)
+            else:
+                self.assertEqual(store.fetch('tenant/project', '44', str(dest)), not miss)
             self.assertEqual(dest.exists(), not miss)
             if not miss:
                 self.assertTrue((dest / 'junit-b/junit.xml').exists())
@@ -61,6 +70,12 @@ class JunitDiscoveryTest(unittest.TestCase):
 
     def test_pagination_target_repository_and_exact_keys(self):
         self.exercise_fetch()
+
+    def test_consumer_entrypoint_fetches_exact_cross_run_shards(self):
+        self.exercise_fetch(cli=True)
+
+    def test_consumer_entrypoint_reports_unavailable_partial_shards(self):
+        self.exercise_fetch(miss=True, cli=True)
 
     def test_partial_shard_fetch_is_not_passing_evidence(self):
         self.exercise_fetch(miss=True)
@@ -77,7 +92,7 @@ class JunitDiscoveryTest(unittest.TestCase):
             output = root / 'units.tsv'
             with patch.object(sys, 'argv', ['junit.py', str(root), str(output), 'rust-test (701)']):
                 exec(compile(env['JUNIT_PY'], 'junit.py', 'exec'), {})
-            self.assertEqual(output.read_text(), 'test\\tsuite::broken\\trust-test (701)\\n')
+            self.assertEqual(output.read_text(), 'test\tsuite::broken\trust-test (701)\n')
             namespace = {'__name__': 'fixture'}
             exec(compile(env['WINDOW_PY'], 'window.py', 'exec'), namespace)
             failed, passed, covered = namespace['read_junit'](str(root))
