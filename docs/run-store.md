@@ -105,6 +105,27 @@ dev consumers can read protected entries but cannot overwrite them. Missing,
 expired or unavailable diagnostics retain the handler's lane-evidence fallback;
 they never become proof that a failed test passed.
 
+## Authenticated consumer check
+
+Project control publishes two real nested JUnit fixture shards (1 and 701) through
+run-store. Its completion triggers `junit-consumer-control.yml`, which invokes
+`junit-consumer.yml` in a different run with `actions: read` and `id-token: write`.
+The reusable consumer checks out shared source at `job.workflow_sha`, calls the
+unmocked discovery command and verifies both red-main parsers against the exact
+matrix job names and passing/failing test identities. No GitHub artifact is used.
+Publication, authentication, a missing shard or an identity mismatch fails this
+check rather than silently skipping it. The summary records source SHA, producer
+run URL and producer SHA for the consumer invocation evidence.
+
+To exercise a replacement PR head before merge, first let its normal Project
+control run finish publishing the fixtures. Dispatch the existing
+`project-control.yml` workflow at that PR branch with `junit-producer-run` set to
+that completed producer run ID. The dispatch calls the reusable consumer at the
+selected branch, and `ci-ok` includes its verdict. The automatic completion
+consumer does not duplicate this dispatch. The pre-merge dispatch is necessary
+for a newly added workflow: completion triggers load the default-branch caller.
+These checks need no builder App secret or manually copied credential.
+
 ## Behaviour
 
 - The key is `run-store.v1.<repository id>.<run id>.<name>`. Re-running only
