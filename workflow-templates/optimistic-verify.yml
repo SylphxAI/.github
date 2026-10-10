@@ -39,6 +39,7 @@ permissions:
   contents: read
   actions: read
   checks: read
+  id-token: write
 
 jobs:
   plan:
@@ -67,23 +68,18 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - run: echo "the full test suite; write a JUnit report"
-      # The red-main handler names flaky tests from `junit-<lane>` artifacts.
-      # The report is a diagnostic: when the organization's artifact storage
-      # quota is spent the upload fails, and that must never turn a passing
-      # suite red (docs/run-store.md). Without it the handler falls back to
-      # naming the lane.
-      # Keep `path` on the report file: a working tree copied with it, a
-      # `**/*.bundle` or a blob added here and uploaded spends the whole
-      # organization's metered quota and holds its CI down. Files another job
-      # of this run needs are a hand-over - use run-store, never an artifact.
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: failure()
+      # Keep this explicit step name equal to "run-store put <name>".
+      # red-main discovers exact names (including matrix shards) from run jobs.
+      # Diagnostics remain optional; a missing report falls back to lane evidence.
+      - name: run-store put junit-integration
+        uses: SylphxAI/.github/.github/actions/run-store@main
+        if: always()
         continue-on-error: true
         with:
+          mode: put
           name: junit-integration
           path: junit.xml
-          if-no-files-found: ignore
-          retention-days: 1
+          required: "false"
 
   e2e:
     needs: plan

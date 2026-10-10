@@ -74,6 +74,37 @@ Outputs: `key`, `found` (get), `bytes`.
 Like `actions/upload-artifact`, a directory's contents are stored (not the
 directory itself), and a single file is unpacked as `<path>/<file name>`.
 
+## JUnit discovery across runs
+
+The gateway has no wildcard/list API. Diagnostic producers MUST explicitly name
+their top-level step `run-store put <name>`, with the same `name` input beginning
+with `junit-`. For matrix jobs expand the same matrix value in both fields, for
+example `run-store put junit-rust-test-${{ matrix.shard }}` and
+`name: junit-rust-test-${{ matrix.shard }}`. Publish passing and failing testcases
+with `if: always()`, `required: "false"` and `continue-on-error: true`.
+
+The action's `get-junit.py <owner/repo> <run-id> <destination>` helper pages the
+authenticated run jobs API (`filter=latest`), validates the run identity and
+discovers exact keys from these step names, excluding skipped producers. It then
+uses the existing exact-name get contract, unpacking each entry into its own
+`<name>` directory. No static lane list or shard limit is assumed.
+The repository id comes from the target repository API, not the shared workflow
+source repository; run ids are always the producer's, including previous and
+candidate runs. Callers need `actions: read`, `contents: read`, `id-token: write`
+and `GH_TOKEN` (or `ACTIONS_TOKEN`) for those metadata reads.
+
+The helper also writes `.run-store-lanes.json`, mapping each stored name to its
+authenticated GitHub job name. Both failed-unit and regression-window parsers
+use that mapping for sharded reports (including nested XML paths), so a test is
+attributed to the actual matrix job rather than a guessed suffix. A partial
+shard fetch publishes no reports: unread diagnostics cannot clear a failed test.
+
+The handler checks out this helper at its own `job.workflow_sha`, never at a
+failing run's commit. BuildCache's event-scoped token remains authoritative:
+dev consumers can read protected entries but cannot overwrite them. Missing,
+expired or unavailable diagnostics retain the handler's lane-evidence fallback;
+they never become proof that a failed test passed.
+
 ## Behaviour
 
 - The key is `run-store.v1.<repository id>.<run id>.<name>`. Re-running only

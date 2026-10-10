@@ -50,16 +50,16 @@ proofs - is a suite lane.
 3. **`.github/workflows/verify.yml`** from
    [`workflow-templates/optimistic-verify.yml`](../workflow-templates/optimistic-verify.yml):
    the suite lanes and the aggregate job named exactly `verified`. Each lane
-   that runs tests uploads a JUnit report as `junit-<lane>` (failing and passing
-   testcases); the handler names failing tests and each test's trace window
-   from it. The upload is a diagnostic: it carries `continue-on-error: true`
-   and `retention-days: 3`, so a spent organization artifact quota never turns
-   a passing lane red ([run-store](run-store.md)). Its input `path` is the
-   report file only: a working tree copied with it, a `**/*.bundle` or a
-   hand-entry that drops a large blob in `workflow-templates` and uploads it,
-   *does* spend the quota and holds the whole organization's CI down until the
-   window recalculates (OzyrixLtd, 2026-10-07). This document is the complete
-   set of steps that stand between the copy and a working pipeline; a lane's own
+   that runs tests stores a JUnit report as `junit-<lane>` (failing and passing
+   testcases) through [run-store](run-store.md); the handler names failing tests
+   and each test's trace window from it. Its top-level producer step is named
+   exactly `run-store put <name>` with the same expanded name input, including
+   matrix shard suffixes. This is the explicit discovery contract for exact
+   cross-run keys; the gateway does not support wildcard listing. Publish with
+   `if: always()`, `continue-on-error: true` and `required: "false"` so missing
+   optional diagnostics never turn a passing lane red. Producers and handler
+   callers grant `id-token: write`; keep `path` on the report file only.
+   This document is the complete set of steps between the copy and a working pipeline; a lane's own
    material is the caller's, install steps included, and is never added here.
    A file or directory another job of the same run needs is a hand-over: use
    [`run-store`](run-store.md), never `upload-artifact`.
@@ -72,8 +72,9 @@ proofs - is a suite lane.
    token mode: a comment on the affected pull requests,
    never a pull request of its own - a person reverts. The App key never
    leaves its organization. Token split: every Actions call (runs, jobs,
-   artifacts, dispatch of the verify workflow) uses the caller's
-   `github.token`, so the caller grants `actions: write`; the builder App
+   dispatch of the verify workflow) uses the caller's
+   `github.token`, so the caller grants `actions: write` and `id-token: write`
+   for run-store diagnostic reads; the builder App
    installation needs no `actions` permission, only contents, issues,
    pull-requests and workflows write (a verify or revert branch can point at
    a commit with older workflow files), and is used for what must start CI (verify and revert

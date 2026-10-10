@@ -31,6 +31,11 @@ Copy [`workflow-templates/ios-release.yml`](../workflow-templates/ios-release.ym
 Pin the workflow by commit. There is no `secrets:` block and no
 `secrets: inherit`: the signing job names a GitHub environment and reads the
 secrets from it (see Secrets).
+The caller grants `permissions: id-token: write` as well as `contents: read`.
+All job handovers use [`run-store`](run-store.md): the prepared workspace,
+Xcode export and signed IPA are ephemeral seven-day entries, not GitHub
+artifacts. This workflow uploads the final IPA to TestFlight; it is not a
+durable archive or audit-evidence store.
 
 Build mode, Xcode repository:
 
@@ -44,12 +49,12 @@ jobs:
       project: MyApp.xcodeproj
 ```
 
-Build mode, Unity (an earlier job exports Xcode on Linux and uploads the
-artifact `ios-build`; this job `needs:` it):
+Build mode, Unity (an earlier job exports Xcode on Linux and stores the
+run-store entry `ios-build`; this job `needs:` it):
 
 ```yaml
 jobs:
-  export:  # Linux: Unity export, then actions/upload-artifact name: ios-build
+  export:  # Linux: Unity export, then run-store mode: put, name: ios-build
   testflight:
     needs: export
     uses: SylphxAI/.github/.github/workflows/ios-release.yml@<commit>
@@ -63,8 +68,8 @@ jobs:
       xcode-version: '26.3'
 ```
 
-Prebuilt mode, Solar2D (an earlier job builds and signs the `.ipa` and uploads
-it as the artifact `ipa`; this job `needs:` it):
+Prebuilt mode, Solar2D (an earlier job builds and signs the `.ipa` and stores
+it as the run-store entry `ipa`; this job `needs:` it):
 
 ```yaml
 jobs:
@@ -82,8 +87,8 @@ jobs:
 | --- | --- | --- | --- |
 | `bundle-id` | string, required | | App bundle id; selects the archive profile (build) or must equal the `.ipa`'s `CFBundleIdentifier` (prebuilt) |
 | `environment` | string | `ios-release` | Environment of the signing job; must not be empty |
-| `ipa-artifact` | string | `''` | Prebuilt mode: artifact holding exactly one signed `.ipa`, from an earlier job of the same run |
-| `xcode-artifact` | string | `''` | Build mode: artifact holding an exported Xcode project, downloaded before the build |
+| `ipa-artifact` | string | `''` | Prebuilt mode: run-store entry holding exactly one signed `.ipa`, from an earlier job of the same run |
+| `xcode-artifact` | string | `''` | Build mode: run-store entry holding an exported Xcode project, fetched before the build |
 | `artifact-path` | string | `.` | Repo-relative directory the `xcode-artifact` is downloaded into |
 | `pre-build-script` | string | `''` | Build mode: script run with `bash` in the `prepare` job, before any secret exists (relative to the artifact directory if `xcode-artifact` is set, else the repository root) |
 | `post-archive-script` | string | `''` | Build mode: same rules; runs after archive and before export, in a step with no signing secrets. The temporary keychain exists at that point (partition list `codesign:` only) |
@@ -126,16 +131,16 @@ them. These names match the Cubeage organization secrets.
 
 1. `prepare` (no environment, no secret; the caller's own pre-build code runs
    here): checks out the ref, selects `xcode-version`, downloads
-   `xcode-artifact`, runs `pre-build-script`, and uploads the prepared
-   workspace as an artifact (one day retention). In prebuilt mode it only
+   `xcode-artifact`, runs `pre-build-script`, and stores the prepared
+   workspace in run-store (seven-day expiry). In prebuilt mode it only
    validates the inputs.
 2. `sign` (build mode only; environment; holds ONLY the four signing secrets):
-   the build steps below, then uploads the exported `.ipa` as an artifact (one
-   day retention). Caller code runs in this job (Run Script phases, package
+   the build steps below, then stores the exported `.ipa` in run-store (seven-day
+   expiry). Caller code runs in this job (Run Script phases, package
    plugins, the post-archive script), so it never references an App Store
    Connect secret.
 3. `upload` (environment; the ONLY job with the `APP_STORE_CONNECT_*`
-   secrets): on a fresh machine it downloads the `.ipa` (the `sign` artifact,
+   secrets): on a fresh machine it fetches the `.ipa` (the `sign` entry,
    or `ipa-artifact` in prebuilt mode), validates it, runs a process check,
    then writes the key and uploads.
 
