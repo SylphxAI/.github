@@ -320,16 +320,6 @@ args = sys.argv[1:]
 repo = fx["repo"]
 def jq():
     return args[args.index("--jq") + 1] if "--jq" in args else ""
-if args[0] == "run" and args[1] == "download":
-    rid, dest = args[2], args[args.index("--dir") + 1]
-    for lane, xml in fx["junit"].get(rid, {}).items():
-        d = pathlib.Path(dest, "junit-" + lane)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "junit.xml").write_text(xml)
-    if not fx["junit"].get(rid):
-        print("no artifact matches", file=sys.stderr)
-        sys.exit(1)
-    sys.exit(0)
 path = next(a for a in args if a.startswith("repos/"))
 method = args[args.index("--method") + 1] if "--method" in args else "GET"
 base = f"repos/{repo}/"
@@ -376,6 +366,18 @@ else:
     sys.exit(1)
 '''
 
+FAKE_JUNIT = r'''
+import json, os, pathlib, sys
+fx = json.load(open(os.environ["FIXTURE"]))
+repo, rid, dest = sys.argv[1:]
+assert repo == fx["repo"]
+for lane, xml in fx["junit"].get(rid, {}).items():
+    d = pathlib.Path(dest, "junit-" + lane)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "junit.xml").write_text(xml)
+sys.exit(0 if fx["junit"].get(rid) else 1)
+'''
+
 WRAPPED_PROOF = (ROOT / ".github/actions/ci-range/post_main.py").read_text().replace(
     'if __name__ == "__main__":',
     'last_verified = lambda *a, **k: os.environ["VERIFIED_BASE"]\n\n\nif __name__ == "__main__":')
@@ -403,6 +405,8 @@ class TraceStepTest(unittest.TestCase):
         gh.write_text(f"#!{sys.executable}\n" + FAKE_GH)
         gh.chmod(0o755)
         self.fixture = self.root / "fixture.json"
+        self.junit = self.root / "get-junit.py"
+        self.junit.write_text(FAKE_JUNIT)
 
     def run_trace(self, scenario, confirmed, candidates, candidate_junit=None, verified_base=0, failed_lanes="",
                   mode="revert", annotations=None):
@@ -433,6 +437,7 @@ class TraceStepTest(unittest.TestCase):
                    RUN_ID=str(run_id(scenario.last)), RUN_URL="u", FAILED_LANES=failed_lanes,
                    TOKEN_MODE="no", MODE=mode, ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
                    VERIFIED_BASE=sha(verified_base))
+        env["RUN_STORE_JUNIT"] = str(self.junit)
         done = subprocess.run(["bash", "-c", TRACE], env=env, cwd=self.root, capture_output=True,
                               text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)

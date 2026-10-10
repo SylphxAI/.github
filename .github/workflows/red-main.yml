@@ -265,9 +265,9 @@ concurrency:
 # GITHUB_TOKEN carries, and a called workflow can only narrow that grant (an
 # explicit request above it fails the call), so this handler requests nothing.
 # Every caller grants `actions: write` (dispatch of the verify workflow,
-# runs, jobs and artifacts, all through `github.token`) and `issues: write`
-# (the notice when a mint or probe fails), plus `contents: read` and
-# `checks: read`. The github.token is never handed to anything that runs
+# runs and jobs, all through `github.token`) and `issues: write`
+# (the notice when a mint or probe fails), plus `contents: read`,
+# `id-token: write` (run-store reads) and `checks: read`. The github.token is never handed to anything that runs
 # pull-request-controlled code. A caller with the builder App also has the
 # handler push and open pull requests through the App installation token,
 # which needs contents, issues, pull-requests and workflows write and no
@@ -623,6 +623,7 @@ jobs:
       # own default branch from the event payload, else `main`.
       TRUNK: ${{ inputs.trunk || github.event.repository.default_branch || 'main' }}
       REPO: ${{ github.repository }}
+      RUN_STORE_JUNIT: ${{ github.workspace }}/.red-main-store/.github/actions/run-store/get-junit.py
       VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
       VERIFY_CHECK_NAME: ${{ inputs.verify-check-name || 'verified' }}
       MAX_CANDIDATES: ${{ inputs.max-candidates }}
@@ -1335,6 +1336,7 @@ jobs:
       # `lane<TAB>signature` file from `proof.py failed-units` (conclusion,
       # failed steps, error lines), else by the lane name alone.
       JUNIT_PY: |
+        import json
         import os
         import sys
         import xml.etree.ElementTree as ElementTree
@@ -1353,6 +1355,11 @@ jobs:
                     if lane and signature:
                         signatures[clean(lane)] = clean(signature)
 
+        lane_map = {}
+        mapping = os.path.join(root, ".run-store-lanes.json")
+        if os.path.isfile(mapping):
+            with open(mapping) as fh:
+                lane_map = json.load(fh)
         if os.path.isdir(root):
             for dirpath, dirnames, filenames in os.walk(root):
                 for filename in filenames:
@@ -1360,6 +1367,8 @@ jobs:
                         continue
                     lane = os.path.basename(dirpath)
                     lane = lane[len("junit-"):] if lane.startswith("junit-") else lane
+                    entry = os.path.relpath(dirpath, root).split(os.sep)[0]
+                    lane = lane_map.get(entry, lane)
                     try:
                         tree = ElementTree.parse(os.path.join(dirpath, filename))
                     except Exception:
@@ -1513,6 +1522,7 @@ jobs:
               other way may hide the target (an earlier step failed, so the target's
               step never ran), so it prints `inconclusive <why>`; else `pass <why>`.
         """
+        import json
         import os
         import shutil
         import subprocess
@@ -1566,9 +1576,16 @@ jobs:
             failing, passing, covered = set(), set(), set()
             if not os.path.isdir(root):
                 return failing, passing, covered
+            lane_map = {}
+            mapping = os.path.join(root, ".run-store-lanes.json")
+            if os.path.isfile(mapping):
+                with open(mapping) as fh:
+                    lane_map = json.load(fh)
             for dirpath, _dirs, files in os.walk(root):
                 lane = os.path.basename(dirpath)
                 lane = lane[len("junit-"):] if lane.startswith("junit-") else lane
+                entry = os.path.relpath(dirpath, root).split(os.sep)[0]
+                lane = lane_map.get(entry, lane)
                 for filename in files:
                     if not filename.endswith(".xml"):
                         continue
@@ -1672,9 +1689,8 @@ jobs:
                     try:
                         env = dict(os.environ)
                         env["GH_TOKEN"] = env.get("ACTIONS_TOKEN") or env.get("GH_TOKEN", "")
-                        subprocess.run(["gh", "run", "download", str(run["id"]), "--repo", repo,
-                                        "--pattern", "junit-*", "--dir", work],
-                                       env=env, capture_output=True, timeout=120)
+                        subprocess.run(["python3", env["RUN_STORE_JUNIT"], repo, str(run["id"]), work],
+                                       env=env, capture_output=True, timeout=600)
                         return read_junit(work)
                     except Exception:
                         return set(), set(), set()
@@ -1845,6 +1861,16 @@ jobs:
       # ---------------------------------------------------------------------
       # The helpers, on disk for the steps that follow.
       # ---------------------------------------------------------------------
+      - name: Read canonical run-store consumer
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ job.workflow_sha }}
+          path: .red-main-store
+          persist-credentials: false
+          sparse-checkout: .github/actions/run-store
+
       - name: Prepare the handler helpers
         id: helpers
         if: steps.gate.outputs.proceed == 'true'
@@ -2157,10 +2183,10 @@ jobs:
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           mkdir -p "$WORK_DIR/junit"
-          if gha run download "$RUN_ID" --repo "$REPO" --pattern 'junit-*' --dir "$WORK_DIR/junit" 2>"$WORK_DIR/junit.err"; then
-            echo "downloaded the run's junit artifacts"
+          if python3 "$RUN_STORE_JUNIT" "$REPO" "$RUN_ID" "$WORK_DIR/junit" 2>"$WORK_DIR/junit.err"; then
+            echo "read the run's junit entries from run-store"
           else
-            say "The run published no \`junit-*\` artifact, so a failing lane is named by how it failed (its failed steps and error lines) rather than by a test."
+            say "The run published no readable \`junit-*\` run-store entry, so a failing lane is named by how it failed (its failed steps and error lines) rather than by a test."
           fi
           # How each failed job failed: a lane unit is its job, failed steps
           # and error lines, so one job failing two different ways is two
@@ -2290,7 +2316,7 @@ jobs:
           : >"$WORK_DIR/previous-failing-tests.tsv"
           if [ "$prev_conclusion" = failure ] || [ "$prev_conclusion" = timed_out ]; then
             mkdir -p "$WORK_DIR/junit-previous"
-            gha run download "$prev_id" --repo "$REPO" --pattern 'junit-*' --dir "$WORK_DIR/junit-previous" 2>/dev/null || true
+            python3 "$RUN_STORE_JUNIT" "$REPO" "$prev_id" "$WORK_DIR/junit-previous" 2>/dev/null || true
             if ! python3 "$RUNNER_TEMP/red-main/proof.py" failed-units "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$prev_id" \
                 >"$WORK_DIR/previous-lane-signatures.tsv"; then
               say "**Unverified:** previous failing lanes are unavailable; escalating without confirmation."
@@ -2597,7 +2623,7 @@ jobs:
               [ "${conclusion_of[$sha]}" = failure ] || continue
               candidate_dir="$WORK_DIR/junit-candidate-${run_of[$sha]}"
               mkdir -p "$candidate_dir"
-              gha run download "${run_of[$sha]}" --repo "$REPO" --pattern 'junit-*' --dir "$candidate_dir" 2>/dev/null || true
+              python3 "$RUN_STORE_JUNIT" "$REPO" "${run_of[$sha]}" "$candidate_dir" 2>/dev/null || true
               if ! python3 "$RUNNER_TEMP/red-main/proof.py" failed-units "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "${run_of[$sha]}" \
                   >"$WORK_DIR/candidate-signatures.tsv" 2>/dev/null; then
                 conclusion_of[$sha]=inconclusive

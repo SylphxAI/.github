@@ -1,0 +1,36 @@
+name: JUnit run-store consumer
+
+on:
+  workflow_call:
+    inputs:
+      producer-run:
+        description: Completed Project control run containing the two JUnit fixture shards.
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+jobs:
+  consume:
+    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      # Same source binding as red-main: never execute a producer commit.
+      - name: Read canonical run-store consumer
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          path: consumer-shared
+      - name: Install parser dependency
+        run: python3 -m pip install --quiet pyyaml
+      - name: Fetch exact cross-run JUnit and verify identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN: ${{ inputs.producer-run }}
+          CONSUMER_SOURCE: ${{ job.workflow_sha }}
+        run: python3 consumer-shared/scripts/check-junit-consumer.py

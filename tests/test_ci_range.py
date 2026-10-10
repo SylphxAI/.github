@@ -241,27 +241,32 @@ class StarterWorkflowTest(unittest.TestCase):
                     self.assertNotIn("*", str(step["with"]["path"]), f"{job_name} {step.get('name')}")
         guide = (ROOT / "docs" / "optimistic-merge.md").read_text()
         self.assertIn("never `upload-artifact`", guide)
-        self.assertIn("complete\n   set of steps", guide)
+        self.assertIn("complete set of steps", " ".join(guide.split()))
 
-    def test_starter_artifact_uploads_never_fail_a_job(self) -> None:
-        # Artifact storage is an organization quota; once it is spent every
-        # upload fails ("Artifact storage quota has been hit") and a passing
-        # suite went red (docs/run-store.md). A starter's upload is a
-        # diagnostic, so it may not fail its job and keeps a short retention.
+    def test_starter_diagnostics_use_optional_run_store_not_github_artifacts(self) -> None:
+        # Starters must not copy GitHub's metered artifact dependency into a
+        # caller. Optional JUnit diagnostics use the run-store discovery
+        # contract and must never turn a passing test job red.
         import yaml
         seen = 0
         for path in (ROOT / "workflow-templates").glob("*.yml"):
             workflow = yaml.safe_load(path.read_text())
             for job_name, job in (workflow.get("jobs") or {}).items():
                 for step in job.get("steps") or []:
-                    if not str(step.get("uses", "")).startswith("actions/upload-artifact@"):
+                    uses = str(step.get("uses", ""))
+                    where = f"{path.name} {job_name} {step.get('with', {}).get('name')}"
+                    self.assertFalse(uses.startswith(("actions/upload-artifact@", "actions/download-artifact@")), where)
+                    inputs = step.get("with") or {}
+                    if "/actions/run-store@" not in uses or not str(inputs.get("name", "")).startswith("junit-"):
                         continue
                     seen += 1
-                    where = f"{path.name} {job_name} {step.get('with', {}).get('name')}"
+                    self.assertEqual(inputs.get("mode"), "put", where)
+                    self.assertEqual(step.get("name"), f"run-store put {inputs['name']}", where)
+                    self.assertEqual(step.get("if"), "always()", where)
                     self.assertIs(step.get("continue-on-error"), True, where)
-                    retention = (step.get("with") or {}).get("retention-days")
-                    self.assertIsInstance(retention, int, where)
-                    self.assertLessEqual(retention, 3, where)
+                    self.assertEqual(inputs.get("required"), "false", where)
+                    permissions = job.get("permissions", workflow.get("permissions", {}))
+                    self.assertEqual(permissions.get("id-token"), "write", where)
         self.assertGreater(seen, 0)
 
 

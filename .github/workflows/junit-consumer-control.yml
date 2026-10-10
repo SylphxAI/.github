@@ -1,0 +1,19 @@
+name: Cross-run JUnit consumer control
+
+on:
+  workflow_run:
+    workflows: [Project control]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+jobs:
+  consumer:
+    # Dispatch already calls the same consumer at the selected PR ref.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'workflow_dispatch'
+    uses: ./.github/workflows/junit-consumer.yml
+    with:
+      producer-run: ${{ format('{0}', github.event.workflow_run.id) }}

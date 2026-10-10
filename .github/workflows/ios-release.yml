@@ -25,17 +25,17 @@ on:
     inputs:
       ipa-artifact:
         description: >
-          Prebuilt mode. Name of an artifact holding exactly one signed .ipa,
-          uploaded by an earlier job of the caller's same run (which this job
+          Prebuilt mode. Name of a run-store entry holding exactly one signed .ipa,
+          stored by an earlier job of the caller's same run (which this job
           `needs:`). When set, checkout, keychain, archive and export are skipped.
         required: false
         type: string
         default: ''
       xcode-artifact:
         description: >
-          Build mode only. Name of an artifact holding an exported Xcode
-          project (for example Unity's export from Linux), uploaded by an
-          earlier job of the caller's same run. Downloaded into the checkout
+          Build mode only. Name of a run-store entry holding an exported Xcode
+          project (for example Unity's export from Linux), stored by an
+          earlier job of the caller's same run. Fetched into the checkout
           at artifact-path before the build.
         required: false
         type: string
@@ -125,6 +125,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   prepare:
@@ -207,11 +208,12 @@ jobs:
           echo "::error::Xcode $IN_XCODE_VERSION is not installed; installed:${installed:- none}"
           exit 1
 
-      - name: Download Xcode project artifact
+      - name: Download Xcode project entry
         if: inputs.ipa-artifact == '' && inputs.xcode-artifact != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: SylphxAI/.github/.github/actions/run-store@c46a1cd933a242b1471afb26850ff5d8f5d52800
         timeout-minutes: 10
         with:
+          mode: get
           name: ${{ inputs.xcode-artifact }}
           path: ${{ inputs.artifact-path }}
 
@@ -240,15 +242,12 @@ jobs:
 
       - name: Upload prepared workspace
         if: inputs.ipa-artifact == ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
-        continue-on-error: ${{ github.event_name == 'merge_group' }}
+        uses: SylphxAI/.github/.github/actions/run-store@c46a1cd933a242b1471afb26850ff5d8f5d52800
         timeout-minutes: 15
         with:
+          mode: put
           name: ios-workspace-${{ inputs.bundle-id }}
           path: ${{ runner.temp }}/ios-workspace.tar
-          retention-days: 1
-          if-no-files-found: error
 
 
   sign:
@@ -438,9 +437,10 @@ jobs:
           exit 1
 
       - name: Download prepared workspace
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: SylphxAI/.github/.github/actions/run-store@c46a1cd933a242b1471afb26850ff5d8f5d52800
         timeout-minutes: 15
         with:
+          mode: get
           name: ios-workspace-${{ inputs.bundle-id }}
           path: ${{ runner.temp }}/ios-signing/workspace-dl
 
@@ -606,14 +606,11 @@ jobs:
 
       - name: Upload exported .ipa
         timeout-minutes: 15
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        # Quota exhaustion must never eject a merge_group entry; elsewhere a failed upload stays loud.
-        continue-on-error: ${{ github.event_name == 'merge_group' }}
+        uses: SylphxAI/.github/.github/actions/run-store@c46a1cd933a242b1471afb26850ff5d8f5d52800
         with:
+          mode: put
           name: ios-ipa-${{ inputs.bundle-id }}
-          path: ${{ runner.temp }}/ios-signing/export/*.ipa
-          retention-days: 1
-          if-no-files-found: error
+          path: ${{ runner.temp }}/ios-signing/export
 
       - name: Cleanup (keychain, profiles, API key, temporary files)
         if: always()
@@ -806,9 +803,10 @@ jobs:
           done
 
       - name: Download .ipa
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: SylphxAI/.github/.github/actions/run-store@c46a1cd933a242b1471afb26850ff5d8f5d52800
         timeout-minutes: 10
         with:
+          mode: get
           name: ${{ inputs.ipa-artifact != '' && inputs.ipa-artifact || format('ios-ipa-{0}', inputs.bundle-id) }}
           path: ${{ runner.temp }}/ios-signing/export
 

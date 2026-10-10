@@ -115,6 +115,7 @@ class UnavailableHandlerTest(unittest.TestCase):
         git.write_text('#!/bin/bash\ntouch "$RUNNER_TEMP/git.called"\nexit 1\n')
         git.chmod(0o755)
         self.env = dict(os.environ, RUNNER_TEMP=str(self.root),
+                        RUN_STORE_JUNIT=str(ROOT / ".github/actions/run-store/get-junit.py"),
                         PATH=f"{binaries}:{os.environ['PATH']}",
                         GITHUB_OUTPUT=str(self.root / "output"),
                         TRUNK="main", REPO="SylphxAI/cloud", VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME="verified",
