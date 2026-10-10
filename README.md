@@ -34,6 +34,11 @@ Reusable workflows are in [.github/workflows](.github/workflows); the CI fast-pa
 [disarm-auto-merge-on-push](docs/disarm-automerge-on-push.md) clears an
 arm predating a new push without dequeuing an entry already on that head.
 
+The image lane accepts `source-sha` for post-verification dispatches. Pass the
+verified commit both as `source-sha` and `tag`; checkout and build evidence bind
+that commit even when the dispatch runs after `main` advances. An omitted
+`source-sha` keeps the triggering commit as the source.
+
 ## Repository settings
 
 Company repositories delete a pull request's head branch when it merges

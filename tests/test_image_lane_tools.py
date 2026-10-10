@@ -41,6 +41,16 @@ def jwt(claims: dict) -> str:
 
     return f"{segment({'alg': 'ES256'})}.{segment(claims)}.signature"
 
+class ImageLaneSourceContractTests(unittest.TestCase):
+    def test_dispatched_source_binds_checkout_and_evidence(self) -> None:
+        workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
+        source = "${{ inputs.source-sha || github.sha }}"
+        self.assertIn("      source-sha:\n", workflow)
+        self.assertIn(f"          ref: {source}\n", workflow)
+        self.assertIn(f"          LANE_SOURCE_SHA: {source}\n", workflow)
+        self.assertNotIn("          LANE_SOURCE_SHA: ${{ github.sha }}", workflow)
+
+
 
 class SplitImageReferenceTests(unittest.TestCase):
     def test_splits_host_and_repository(self) -> None:
