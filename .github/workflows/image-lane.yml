@@ -59,6 +59,13 @@ on:
           and refuses anything else, so mutable names like `latest` cannot be published.
         required: true
         type: string
+      source-sha:
+        description: >-
+          Exact source commit to build when a verified commit dispatches the lane after main has moved.
+          Empty uses the triggering commit. The checkout and evidence use this same revision.
+        required: false
+        type: string
+        default: ""
       lane-ref:
         description: >-
           Optional ref of this lane repository to check out for the lane's own tooling. Leave empty to use
@@ -248,7 +255,7 @@ jobs:
       # Pinned to the exact built source SHA, not the moving ref tip.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source-sha || github.sha }}
           persist-credentials: false
 
       - name: Check out this lane
@@ -293,7 +300,7 @@ jobs:
           LANE_PLATFORMS: ${{ inputs.platforms }}
           LANE_DOCKERFILE: ${{ inputs.dockerfile }}
           LANE_CONTEXT: ${{ inputs.context }}
-          LANE_SOURCE_SHA: ${{ github.sha }}
+          LANE_SOURCE_SHA: ${{ inputs.source-sha || github.sha }}
           LANE_RUN_ID: ${{ github.run_id }}
           LANE_RUN_ATTEMPT: ${{ github.run_attempt }}
           LANE_EVIDENCE_TAG_PREFIX: ${{ inputs.evidence-tag-prefix }}
