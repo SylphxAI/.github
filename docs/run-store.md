@@ -88,7 +88,13 @@ directory itself), and a single file is unpacked as `<path>/<file name>`.
   as a failure, and reads the entry back with `HEAD` before it succeeds.
 - A get retries three times, a miss included (a gateway whose store is down
   answers reads 404), then fails with the key and run it looked for.
+- A get validates every tar member before it writes anything: a name that
+  escapes `path` (`..` or absolute), a symlink or hardlink, and a special file
+  (fifo, device, socket) are refused, so an untrusted bundle (a pull request's
+  cache, or another run's entry) can never overwrite a trusted file or reach
+  outside the destination. A bundle of regular files and directories unpacks as
+  before.
 - Entries expire with the gateway's bucket after 7 days and count toward the
   organization's BuildCache byte cap (50 GiB by default).
-- Linux and macOS runners; `jq` is used when present, otherwise `python3`.
+- Linux and macOS runners; `python3` is required (`jq` is used when present).
   Both tokens are masked first and passed to curl on stdin only.
