@@ -30,13 +30,13 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: SylphxAI/.github/.github/workflows/rust-ci.yml@main
+    uses: SylphxAI/.github/.github/workflows/rust-ci.yml@5713130404f6c64a1e938fce26169c01d2a9eba3
     with:
       workspace: .
       # toolchain: 1.85.0            # default: rust-toolchain.toml, else stable
       # features: all                # all, or a comma list; default: crate defaults
       # key-prefix: rustc            # leave: one namespace per organization
-      # runner-class: standard       # xlarge only after a measured need
+      # runner-class: standard       # 2xlarge only after a measured need
       # fmt: true
       # apt-packages: libasound2-dev pkg-config
       # clippy-args: --workspace --all-targets --all-features -- -D warnings
