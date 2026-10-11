@@ -1,0 +1,721 @@
+{
+  "scope": "Available canonical SylphxAI repositories; workflows, actionlint, sylphx.toml, and scripts Build size declarations. Non-Linux/private hosted runner policy is unchanged.",
+  "aliases": {
+    "ai": "SylphxAI/models",
+    "apps": "SylphxAI/cloud",
+    "bots": "SylphxAI/agents",
+    "citra": "SylphxAI/anymd"
+  },
+  "unresolved": [
+    {
+      "checkout": "workspace",
+      "result": "UNRESOLVED gh: Not Found (HTTP 404)"
+    }
+  ],
+  "repositories": [
+    {
+      "repository": "SylphxAI/.github",
+      "sourceHead": "021dedc8c8ecf4a4322c0e6b6a39b059f75b0634",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/changes.yml",
+        ".github/workflows/disarm-automerge-on-push.yml",
+        ".github/workflows/image-lane.yml",
+        ".github/workflows/ios-release.yml",
+        ".github/workflows/project-control.yml",
+        ".github/workflows/public-repo-consumers.yml",
+        ".github/workflows/publish-npm.yml",
+        ".github/workflows/red-main.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/rust-check.yml",
+        ".github/workflows/rust-ci.yml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/Google-Photos-Delete-Tool",
+      "sourceHead": "61bf47fa5419740a89c2344c39e55b7ccba7c012",
+      "configs": [
+        ".github/workflows/bench-engine.yml",
+        ".github/workflows/bootstrap-amo.yml",
+        ".github/workflows/canary.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/pages.yml",
+        ".github/workflows/publish-cws.yml",
+        ".github/workflows/publish-stores.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/store-publish.yml",
+        ".github/workflows/store-retry.yml",
+        ".github/workflows/update-cws-listing.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/agents",
+      "sourceHead": "7dd9a0e1069540b5d3b9a8f50c03ab02cee6aa0a",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/bench.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/publish-spiron-cli-crates.yml",
+        ".github/workflows/red-main.yml",
+        ".github/workflows/verify.yml",
+        ".github/workflows/web-perf.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/alpha-foundry",
+      "sourceHead": "f5b0c157cda8f0f060ad8612d65f3fe5ae78e4cb",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/anymd",
+      "sourceHead": "00a6f8f3d4e61bed71692fdab11cc57cf9c601b6",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/asr-benchmark.yml",
+        ".github/workflows/benchmark.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/docs.yml",
+        ".github/workflows/docvlm.yml",
+        ".github/workflows/navigation.yml",
+        ".github/workflows/omnidocbench.yml",
+        ".github/workflows/plugin-scan.yml",
+        ".github/workflows/red-main.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/scorecard.yml",
+        ".github/workflows/verify.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/api-kit",
+      "sourceHead": "2c24230caf872b43222bf76fedf67706eb3c597e",
+      "configs": [
+        ".github/workflows/ci.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/bgca",
+      "sourceHead": "3d1868b2d7ca1a0c9423c46a84338be12f4402cd",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy-customer.yml",
+        ".github/workflows/deploy.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/brand",
+      "sourceHead": "b48e09578b23f1d0250744ea615aeae568871107",
+      "configs": [
+        ".github/workflows/ci.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/build",
+      "sourceHead": "c5da4ba99d82cafcd7f84f00fb6b0695c9e125b2",
+      "configs": [],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/build-samples",
+      "sourceHead": "96c431876ab2cf2d3e2837b42261fdd390077391",
+      "configs": [],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/cloud",
+      "sourceHead": "1c9bedb5d2b2ea8f60d8619e696394452d410159",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/ai-live-journeys.yml",
+        ".github/workflows/ci-burst-drill.yml",
+        ".github/workflows/ci-scaleset-canary-dogfood.yml",
+        ".github/workflows/ci-scaleset-prod-dual-dogfood.yml",
+        ".github/workflows/ci-scaleset-shadow-dogfood.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/cli-image.yml",
+        ".github/workflows/data-edge-image.yml",
+        ".github/workflows/hands-image.yml",
+        ".github/workflows/linux-2xlarge-runner-canary.yml",
+        ".github/workflows/macos-runner-canary.yml",
+        ".github/workflows/merge-queue-report.yml",
+        ".github/workflows/merge-queue-sweep.yml",
+        ".github/workflows/mirror-publish.yml",
+        ".github/workflows/product-journeys.yml",
+        ".github/workflows/red-main.yml",
+        ".github/workflows/regenerate-apply.yml",
+        ".github/workflows/regenerate.yml",
+        ".github/workflows/release-clients.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/sandboxes-image.yml",
+        ".github/workflows/temporal-image-mirror.yml",
+        ".github/workflows/verify.yml",
+        ".github/workflows/wiring-coverage.yml",
+        ".github/workflows/workflows-engine-image.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "parent-owned cloud cutover"
+    },
+    {
+      "repository": "SylphxAI/cluster-api-provider-hetzner-robot",
+      "sourceHead": "9cd91ee553296c0ae8c5fbaf9028750cac9f8405",
+      "configs": [
+        ".github/workflows/build.yml",
+        ".github/workflows/ci.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/commerce",
+      "sourceHead": "dcc39b5b8b0dd872f70616325bf89ace0e68fd56",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/clients.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/compute",
+      "sourceHead": "611d317144d521df80d76709531c1f779b7fce8c",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-sdk-cli.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/cue",
+      "sourceHead": "3b780e25fa0a356b52895b90ba7bd8e4d8705a99",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deprecate-transitional-npm.yml",
+        ".github/workflows/docs.yml",
+        ".github/workflows/native-multiarch.yml",
+        ".github/workflows/publish-brand-alias.yml",
+        ".github/workflows/publish-mcp-registry.yml",
+        ".github/workflows/publish-npm-package.yml",
+        ".github/workflows/publish-platform-natives.yml",
+        ".github/workflows/release.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/data",
+      "sourceHead": "6fc3b1c0d7c655e176339160d65ff0699c0f49df",
+      "configs": [
+        ".github/workflows/ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/data-edge",
+      "sourceHead": "d28dd929bd28de74a95c3fd2154014d87f4ec3c0",
+      "configs": [
+        ".github/workflows/build.yaml",
+        ".github/workflows/quality.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/desk-tools",
+      "sourceHead": "cf8c9aa28b807033719635c288f5c9d9bc789503",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/red-main.yml",
+        ".github/workflows/verify.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/desk-watchdog",
+      "sourceHead": "43f4fe971b4f0710987987af30fe91c898719228",
+      "configs": [
+        ".github/workflows/ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/events",
+      "sourceHead": "a099a866f52ca0020762a6db1c9aa20940e23b2a",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/clients.yml",
+        ".github/workflows/hardening.yml",
+        ".github/workflows/publish-clients.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/firestore_odm",
+      "sourceHead": "5a23bdc7a88e87c1087e7f5d94f87c609635a198",
+      "configs": [
+        ".github/workflows/benchmarks.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy-docs.yml",
+        ".github/workflows/release.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/growth",
+      "sourceHead": "0195ea6950ba2760ed79b2d9a348a810241fec7e",
+      "configs": [
+        ".github/workflows/content-checks.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/hands",
+      "sourceHead": "896a2239000ed7010f44cca6260bd254032ea96e",
+      "configs": [
+        ".github/workflows/build.yaml",
+        ".github/workflows/quality.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/hosting",
+      "sourceHead": "a4c114c191ba262ac80ea306a47d110350328c80",
+      "configs": [],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/identity",
+      "sourceHead": "743a9748c3d9ff7b82af25b829efff004e34d4af",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-sdk-cli.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/infra",
+      "sourceHead": "447620fd1c2bf25e50414286416a616c53ffc607",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/cilium-operator-image.yml",
+        ".github/workflows/full-suite.yml",
+        ".github/workflows/infra-scan.yml",
+        ".github/workflows/infra-tests.yml",
+        ".github/workflows/red-main.yml",
+        ".github/workflows/ruleset-drift.yml",
+        ".github/workflows/shared-path-window.yml",
+        ".github/workflows/status-worker.yml",
+        ".github/workflows/synthetic-browser-image.yml",
+        ".github/workflows/verify.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/iris",
+      "sourceHead": "0d6cd1dd57c0fa0e8220c775476f54e7beb91971",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deprecate-transitional-npm.yml",
+        ".github/workflows/docs.yml",
+        ".github/workflows/native-multiarch.yml",
+        ".github/workflows/publish-brand-alias.yml",
+        ".github/workflows/publish-mcp-registry.yml",
+        ".github/workflows/publish-npm-package.yml",
+        ".github/workflows/publish-platform-natives.yml",
+        ".github/workflows/release.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/janus",
+      "sourceHead": "b566746e754c4a49ff686aee32f9c804ec935eb9",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/jit-runner",
+      "sourceHead": "aa64da72b009d042a8c5d4b776681f16a9f73de0",
+      "configs": [
+        ".github/workflows/build.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/kalkas",
+      "sourceHead": "2a2ccb8e17b9cc1f17c95f09476c22150c3f5c22",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/plain-language.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/keel",
+      "sourceHead": "cae44203adf731ed138687a744ab4ed1cb61d841",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/desktop.yml",
+        ".github/workflows/nightly-alert.yml",
+        ".github/workflows/platforms.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/web-bench.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/keel-website",
+      "sourceHead": "6ae6bc891187dd1e08d84737a34c237f8979dc8e",
+      "configs": [
+        ".github/workflows/pages-publish.yml",
+        ".github/workflows/product-quality.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/kernox",
+      "sourceHead": "b252c25ba05371710e88d5ef53c334e017934410",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/extended.yml",
+        ".github/workflows/release.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/korvana",
+      "sourceHead": "bb743f604baa15130952ccf7e1236ff1af36c9b3",
+      "configs": [
+        ".github/workflows/ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/lockdocs",
+      "sourceHead": "55823c90acff27473f69ebfd76a9cd979a759bb3",
+      "configs": [
+        ".github/workflows/bench.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/demo.yml",
+        ".github/workflows/docs.yml",
+        ".github/workflows/release.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/locus",
+      "sourceHead": "32ed73384415ad3f2891923f7995ed557bde7c16",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deprecate-transitional-npm.yml",
+        ".github/workflows/docs.yml",
+        ".github/workflows/native-build.yml",
+        ".github/workflows/publish-brand-alias.yml",
+        ".github/workflows/publish-core-npm.yml",
+        ".github/workflows/publish-mcp-multiarch.yml",
+        ".github/workflows/publish-mcp-npm.yml",
+        ".github/workflows/publish-mcp-registry.yml",
+        ".github/workflows/release.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/lookout",
+      "sourceHead": "6bc4e0103e52f055e862879689d0f07f88f3711c",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/docs.yml",
+        ".github/workflows/publish-mcp-registry.yml",
+        ".github/workflows/publish-npm-package.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/luzzy",
+      "sourceHead": "3a986c1681f7d54d3afb2c5ee3d9ec11cd3a78ab",
+      "configs": [
+        ".github/workflows/ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/mcp-kit",
+      "sourceHead": "322f9e9adcc2bd611f7426c28231e01de683b97e",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/publish.yml",
+        ".github/workflows/release.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/models",
+      "sourceHead": "39efa0c0edff4dff8f47d89b4a452f2f1ec4fd57",
+      "configs": [
+        ".github/workflows/atlas-chain-guard.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/publish-ai-clients.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/network",
+      "sourceHead": "35f431f5465005c762b6c6db19a6490c5a46bdca",
+      "configs": [],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/notify",
+      "sourceHead": "0aded2d51c742080cb89ccb24b98dc81aa7af9ef",
+      "configs": [],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/number-grove-keel",
+      "sourceHead": "de9d3ccdf78d07c4df9bc5ee61574ae53ca7ffd3",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/content-checks.yml",
+        ".github/workflows/pages.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/observability",
+      "sourceHead": "9d3ba3ff417cebd4f50bf4bdfb7ec95f533cac69",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/publish-clients.yml",
+        ".github/workflows/release-clients.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/openclaw",
+      "sourceHead": "132d07a377566159983f36bfbebea256b2725748",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/auto-response.yml",
+        ".github/workflows/build-base.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/docker-release.yml",
+        ".github/workflows/formal-conformance.yml",
+        ".github/workflows/install-smoke.yml",
+        ".github/workflows/labeler.yml",
+        ".github/workflows/stale.yml",
+        ".github/workflows/workflow-sanity.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/openclaw-sylphx",
+      "sourceHead": "eebe3b818a2eb889e0bd64b4b2fec56f68b65229",
+      "configs": [
+        ".github/workflows/build-base.yml",
+        ".github/workflows/image-mirror.yml",
+        ".github/workflows/test.yml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/owner",
+      "sourceHead": "861409ec6eb343a82466f026f6e8aeab84c79d65",
+      "configs": [],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/publisher-pages",
+      "sourceHead": "29e076320a951bec32de1bf2c021d0af1b16d650",
+      "configs": [
+        ".github/workflows/ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/puzzled",
+      "sourceHead": "83a7eb895537d4cdfb3ad02c5626a629904528ec",
+      "configs": [
+        ".github/workflows/ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/readme-mark",
+      "sourceHead": "f7f0a7565195d09f88fc37309dd96c81c8ece229",
+      "configs": [
+        ".github/workflows/bench.yml",
+        ".github/workflows/ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/repomap",
+      "sourceHead": "ae40b64dbc1405564e21676871a53812e2cf4ad5",
+      "configs": [
+        ".github/workflows/bench.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/docs.yml",
+        ".github/workflows/release.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/runners",
+      "sourceHead": "fed46472b3e57f943d477e34696ff3a383f59330",
+      "configs": [],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/sandboxes",
+      "sourceHead": "bd55713ed281e7f5707701666a7ab830df1cffea",
+      "configs": [],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/skills",
+      "sourceHead": "82f2be7f607e713c3ca8968f38f07f790a3f26a4",
+      "configs": [
+        ".github/workflows/check.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/sportbet",
+      "sourceHead": "463f02a1d3969a82d5dfed1af87558e522d870c0",
+      "configs": [
+        ".github/workflows/source-ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/tachyn",
+      "sourceHead": "36cb582c31b98cdabb4214f4743dd1b432725fd2",
+      "configs": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/macos-app.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/talos-fleet-controller",
+      "sourceHead": "44f6a8d269b01d062b3c69f6a39702176754b404",
+      "configs": [
+        ".github/workflows/build.yml",
+        ".github/workflows/lint.yml",
+        ".github/workflows/test-e2e.yml",
+        ".github/workflows/test.yml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/tryit",
+      "sourceHead": "e0677fd94985b7599669fc47f876f4bfc9fcc79b",
+      "configs": [
+        ".github/workflows/ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/value-horizon",
+      "sourceHead": "432dffa28914037bdba7ee41fa13df3729b36288",
+      "configs": [
+        ".github/workflows/verify.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/viszy",
+      "sourceHead": "b7eb6095cabebaad993d59328bfdbf5092db74d6",
+      "configs": [],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/viszy.ai",
+      "sourceHead": "4a7429d6d47fca069a72e248b4ff72dfef5b4cd3",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/image-smoke.yml",
+        ".github/workflows/money-catalogue.yml",
+        ".github/workflows/red-main.yml",
+        ".github/workflows/sylphx-check.yml",
+        ".github/workflows/verify.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/vm-images",
+      "sourceHead": "eed8d55aa5d49a747a3d617c85697d49c5667581",
+      "configs": [
+        ".github/workflows/ci.yml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    },
+    {
+      "repository": "SylphxAI/work",
+      "sourceHead": "4388d6dfb7f05b6bbeb01c61c9a77949faa5f678",
+      "configs": [
+        ".github/actionlint.yaml",
+        ".github/workflows/ci.yml",
+        "sylphx.toml"
+      ],
+      "disposition": "canonical tier config migration in independent clone"
+    },
+    {
+      "repository": "SylphxAI/ws-hold-test",
+      "sourceHead": "e818117d3966df34ac76c79efc728b565c0b10a8",
+      "configs": [
+        "sylphx.toml"
+      ],
+      "disposition": "no retired own tier declaration identified in available checkout"
+    }
+  ],
+  "selection": {
+    "standard": "standard",
+    "old heavy xlarge": "2xlarge",
+    "control": "nano",
+    "merge suffix": "canonical tier; job-event priority remains independent"
+  },
+  "measuredPeakMemoryGiB": {
+    "standard": 3.113,
+    "oldHeavyXlarge": 17.397
+  },
+  "verification": "Not run; main agent owns one remote verification"
+}

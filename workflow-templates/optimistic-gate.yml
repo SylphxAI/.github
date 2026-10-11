@@ -35,7 +35,7 @@ permissions:
 jobs:
   # Merge-group jobs run on the merge lane (`-merge` runners, never behind the
   # pull-request backlog); pull requests on the ordinary pool. An xlarge job
-  # uses the same form with sylphx-linux-xlarge-merge / sylphx-linux-xlarge.
+  # uses the same form with sylphx-linux-2xlarge / sylphx-linux-2xlarge.
   # Stop the line: while the trunk's newest conclusive Verify run is red and its
   # way back is in motion (a newer Verify run is running, or a revert or fix
   # pull request is open), a merge group is admitted only for a revert, a
@@ -45,7 +45,7 @@ jobs:
   # few merge groups, including one on a red trunk, then set `mode: enforce`.
   main-state:
     if: github.event_name == 'merge_group'
-    runs-on: sylphx-linux-standard-merge
+    runs-on: sylphx-linux-standard
     timeout-minutes: 5
     steps:
       - uses: SylphxAI/.github/.github/actions/main-red-gate@main
@@ -54,7 +54,7 @@ jobs:
 
   # Which lanes this change affects. A change under .github/ runs them all.
   plan:
-    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+    runs-on: sylphx-linux-standard
     timeout-minutes: 10
     outputs:
       base: ${{ steps.range.outputs.base }}
@@ -75,7 +75,7 @@ jobs:
 
   lint:
     needs: plan
-    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+    runs-on: sylphx-linux-standard
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -88,7 +88,7 @@ jobs:
   test:
     needs: plan
     if: fromJSON(needs.plan.outputs.run).test
-    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+    runs-on: sylphx-linux-standard
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -104,7 +104,7 @@ jobs:
   migrations:
     needs: plan
     if: fromJSON(needs.plan.outputs.run).migrations
-    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+    runs-on: sylphx-linux-standard
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -121,7 +121,7 @@ jobs:
   stack:
     needs: plan
     if: fromJSON(needs.plan.outputs.run).stack
-    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+    runs-on: sylphx-linux-standard
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -148,7 +148,7 @@ jobs:
     needs: [main-state, plan, lint, test, migrations, stack, suite]
     # The current workflow's verdict has a reserved seat; superseded workflows
     # must not publish a stale red aggregate beside their replacement.
-    runs-on: sylphx-linux-control
+    runs-on: sylphx-linux-nano
     timeout-minutes: 5
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main

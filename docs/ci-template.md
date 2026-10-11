@@ -77,17 +77,18 @@ ownership, adoption and the `workflow-lint` guard.
 - Light jobs (`changes`, lint, docs, scripts): `sylphx-linux-standard`.
   Never `-xlarge` or `-2xlarge`.
 - Every verdict job (`ci-ok`, `verified`, any `source-ci/pass` alias) uses
-  `if: always() && !cancelled()` and runs on `sylphx-linux-control`, the reserved
-  gate pool. `always()` preserves failure reporting; `!cancelled()` prevents a
+  `if: always() && !cancelled()` and runs on canonical `sylphx-linux-nano`.
+  `always()` preserves failure reporting; `!cancelled()` prevents a
   superseded workflow from posting a stale red aggregate beside its replacement
   or holding the workflow's concurrency group while waiting for a verdict seat.
   Merge-group and trunk runs are never superseded by PR concurrency. Do not
   change needs-pass to treat cancelled dependencies as success.
-- Merge-group runs use the `-merge` lane (`sylphx-linux-standard-merge`,
-  `sylphx-linux-xlarge-merge`) so they never queue behind the pull-request
-  backlog: `runs-on: ${{ github.event_name == 'merge_group' && '...-merge' || '...' }}`.
-- xlarge only per job, after a measured need (a compile that is CPU-bound and
-  more than 10 minutes on standard).
+- Merge-group priority comes from job-event classification, independently of
+  machine size. Request `sylphx-linux-standard` or `sylphx-linux-2xlarge` on
+  every event; there are no public `-merge` tier aliases.
+- Heavy jobs previously on the old xlarge profile use canonical 2xlarge:
+  the measured 17.397 GiB peak exceeds xlarge's 16 GiB memory limit and fits
+  2xlarge's 32 GiB limit. Optimize concurrency/cache rather than enlarging tiers.
 - Set `timeout-minutes` on every job.
 
 ## Cache keys
@@ -102,3 +103,8 @@ cache is keyed by `Packages/manifest.json`, `packages-lock.json` and
 
 Pin by full commit SHA with the version in a trailing comment. Callers pin this
 repository's workflows and actions by commit too.
+
+## Declared-config inventory
+
+[`policy/machine-tier-consumers.json`](../policy/machine-tier-consumers.json) inventories 64 available canonical repositories and 254 declared workflow/actionlint/`sylphx.toml` configs, with source base heads before this migration. GitHub redirects (`apps` to `cloud`, `citra` to `anymd`, `ai` to `models`, `bots` to `agents`) are deduplicated. The unavailable `workspace` repository is recorded explicitly rather than counted as scanned canonical source. Unchanged standard jobs, hosted/non-Linux policies and canonical existing machine selections stay unchanged. Cloud is integrated by its owning change; external config migrations use independent clones.
+

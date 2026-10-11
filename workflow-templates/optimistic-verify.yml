@@ -102,7 +102,7 @@ jobs:
     needs: [plan, integration, e2e]
     # The current workflow's verdict has a reserved seat; cancelled workflows
     # must not publish a stale aggregate after their cancellation.
-    runs-on: sylphx-linux-control
+    runs-on: sylphx-linux-nano
     timeout-minutes: 5
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main

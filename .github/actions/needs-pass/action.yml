@@ -7,8 +7,8 @@ description: >
   gate, `verified` in the post-merge verify workflow (docs/optimistic-merge.md)
   - with `if: always() && !cancelled()` on that job so dependency failures
   produce a verdict but a superseded/cancelled workflow does not post a stale
-  failure beside its replacement. Use `runs-on: sylphx-linux-control` so the
-  current workflow's verdict never waits for a build seat. This job condition
+  failure beside its replacement. Use canonical `runs-on: sylphx-linux-nano`
+  for the small verdict job; queue priority is independent of size. This condition
   does not turn cancelled dependency results into success inside needs-pass.
 
 inputs:

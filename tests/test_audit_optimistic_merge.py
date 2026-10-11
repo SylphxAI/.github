@@ -193,33 +193,28 @@ class RowFailureTest(unittest.TestCase):
         facts["all_workflows"] = None
         self.only(facts, "R3b", "unreadable")
 
-    def test_r8_merge_group_job_on_the_pull_request_pool_fails(self) -> None:
+    def test_r8_rejects_merge_tier_alias(self) -> None:
         facts = conformant()
         facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
-            "${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}",
-            "sylphx-linux-standard", 1)
+            "sylphx-linux-standard", "sylphx-linux-standard-merge", 1)
         rows = run_rows(facts)
         self.assertEqual(failing(rows), {"R8"}, rows)
         self.assertIn("ci.yml", rows["R8"]["detail"])
-        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
-            "runs-on: sylphx-linux-standard\n", "runs-on: ${{ github.event_name == 'merge_group' && "
-            "'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}\n", 1)
-        self.assertEqual(failing(run_rows(facts)), set())
 
-    def test_r8_xlarge_and_other_workflows_with_a_merge_group_trigger(self) -> None:
+    def test_r8_canonical_heavy_jobs_keep_merge_priority_orthogonal(self) -> None:
         facts = conformant()
-        wf = "on:\n  merge_group:\njobs:\n  build:\n    runs-on: sylphx-linux-xlarge\n    steps: []\n"
+        wf = "on:\n  merge_group:\njobs:\n  build:\n    runs-on: sylphx-linux-2xlarge\n    steps: []\n"
         facts["all_workflows"]["heavy.yml"] = wf
-        self.only(facts, "R8", "heavy.yml (build)")
-        facts["all_workflows"]["heavy.yml"] = wf.replace("xlarge", "xlarge-merge")
         self.assertEqual(failing(run_rows(facts)), set())
+        facts["all_workflows"]["heavy.yml"] = wf.replace("2xlarge", "2xlarge-merge")
+        self.only(facts, "R8", "heavy.yml (build)")
 
     def test_r8_leaves_verdicts_pr_only_jobs_and_workflows_without_merge_group(self) -> None:
         facts = conformant()
         facts["all_workflows"].update({
             "pr.yml": "on: [pull_request]\njobs:\n  a:\n    runs-on: sylphx-linux-standard\n",
             "push.yml": "# optimistic-merge: advisory\non:\n  push:\n    branches: [main]\njobs:\n  a:\n    runs-on: sylphx-linux-standard\n",
-            "ctl.yml": "on:\n  merge_group:\njobs:\n  ci-ok:\n    runs-on: sylphx-linux-control\n",
+            "ctl.yml": "on:\n  merge_group:\njobs:\n  ci-ok:\n    runs-on: sylphx-linux-nano\n",
             "prjob.yml": "on:\n  pull_request:\n  merge_group:\njobs:\n  lint:\n"
                          "    if: github.event_name == 'pull_request'\n    runs-on: sylphx-linux-standard\n",
             "matrix.yml": "on:\n  merge_group:\njobs:\n  m:\n    runs-on: ${{ matrix.runner }}\n",
@@ -231,7 +226,7 @@ class RowFailureTest(unittest.TestCase):
     def test_r8_block_list_runs_on(self) -> None:
         facts = conformant()
         facts["all_workflows"]["lst.yml"] = ("on:\n  merge_group:\njobs:\n  a:\n    runs-on:\n"
-                                              "      - self-hosted\n      - sylphx-linux-standard\n")
+                                              "      - self-hosted\n      - sylphx-linux-control\n")
         self.only(facts, "R8", "lst.yml (a)")
 
     def test_r9_pull_request_workflows_cancel_only_pull_request_runs(self) -> None:

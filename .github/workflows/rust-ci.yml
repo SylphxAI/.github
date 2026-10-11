@@ -19,8 +19,8 @@ name: Rust CI
 # identity (`id-token: write`, granted to the job below and by the caller's
 # `rust` job in the starter); the organization secrets are the fallback.
 #
-# Spend: Sylphx runners only. `runner-class` picks a Sylphx label, and a merge
-# group runs on that class's -merge lane; no GitHub-hosted label is reachable.
+# Spend: canonical Sylphx machine tiers only. Merge-group priority is derived
+# from the job event independently of the requested machine size.
 #
 # Trust boundary: caller inputs never reach a shell body. They travel through
 # `env:` and are validated against a strict pattern before use.
@@ -57,7 +57,7 @@ on:
         type: string
         default: rustc
       runner-class:
-        description: standard or xlarge (xlarge only after a measured need).
+        description: standard or 2xlarge (2xlarge only after a measured need).
         required: false
         type: string
         default: standard
@@ -127,7 +127,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on: ${{ format('sylphx-linux-{0}{1}', inputs.runner-class == 'xlarge' && 'xlarge' || 'standard', github.event_name == 'merge_group' && '-merge' || '') }}
+    runs-on: ${{ format('sylphx-linux-{0}', inputs.runner-class == '2xlarge' && '2xlarge' || 'standard') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
       GIT_CONFIG_SYSTEM: /dev/null
@@ -151,7 +151,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$IN_WORKSPACE" =~ ^[A-Za-z0-9_./-]{1,200}$ && "$IN_WORKSPACE" != /* && "$IN_WORKSPACE" != *..* ]] || { echo "bad workspace"; exit 2; }
-          [[ "$IN_CLASS" == standard || "$IN_CLASS" == xlarge ]] || { echo "bad runner-class"; exit 2; }
+          [[ "$IN_CLASS" == standard || "$IN_CLASS" == 2xlarge ]] || { echo "bad runner-class"; exit 2; }
           [[ "$IN_TOOLCHAIN" =~ ^[A-Za-z0-9._-]{0,64}$ ]] || { echo "bad toolchain"; exit 2; }
           [[ "$IN_FEATURES" =~ ^[A-Za-z0-9_,/-]{0,200}$ ]] || { echo "bad features"; exit 2; }
           [[ "$IN_PREFIX" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "bad key-prefix"; exit 2; }

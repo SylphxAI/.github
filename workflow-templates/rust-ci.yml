@@ -55,7 +55,7 @@ jobs:
   ci-ok:
     if: always() && !cancelled()
     needs: [rust]
-    runs-on: sylphx-linux-control
+    runs-on: sylphx-linux-nano
     timeout-minutes: 5
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main

@@ -22,11 +22,9 @@ Rows, per non-archived repository of the policy's organizations:
        (where R2 applies) and `verified` never is
   R7   on_red is `revert` or `revert_pr_unarmed` only where the builder App
        reaches the repository (policy writer_app_orgs), `notify` elsewhere
-  R8   merge lane: in a workflow that runs on merge_group, every job on the
-       `sylphx-linux-standard` or `sylphx-linux-xlarge` pool selects its
-       `-merge` twin on merge_group, so a merge group never queues behind the
-       pull-request backlog (verdict jobs on `sylphx-linux-control` and jobs
-       that skip merge_group are out of scope)
+  R8   runner sizes use canonical catalog names; control and -merge tier
+       aliases are rejected. Merge-group priority is job classification,
+       independent of the requested machine tier.
   R9   superseded runs (docs/ci-template.md, Concurrency): every workflow that
        runs on pull_request has a workflow-level `concurrency:` that cancels a
        superseded pull-request run and never a merge-group or trunk run, i.e.
@@ -242,8 +240,7 @@ def job_needs(text: str, job: str) -> list[str]:
     return []
 
 
-BUILD_POOL = re.compile(r"sylphx-linux-(?:standard|xlarge)(?![\w-])")
-MERGE_LANE = re.compile(r"sylphx-linux-(?:standard|xlarge)-merge(?![\w-])")
+RETIRED_RUNNER_LABEL = re.compile(r"sylphx-linux-(?:control|[\w-]+-merge)(?![\w-])")
 
 
 def job_runs_on(body: list[str]) -> str | None:
@@ -259,30 +256,12 @@ def job_runs_on(body: list[str]) -> str | None:
     return None
 
 
-def job_skips_merge_group(body: list[str]) -> bool:
-    """A single-line `if:` that only lets pull_request (or anything but merge_group) run the job."""
-    for line in body:
-        match = re.match(r"^\s*if\s*:\s*(.*)$", line)
-        if match:
-            cond = match.group(1)
-            return bool(re.search(r"event_name\s*!=\s*'merge_group'|event_name\s*==\s*'(?:pull_request|push|schedule|workflow_dispatch)'", cond)
-                        and not re.search(r"event_name\s*==\s*'merge_group'", cond))
-    return False
 
 
-def merge_lane_misses(text: str) -> list[str]:
-    """Jobs of a merge_group workflow on the shared build pool without the `-merge` selector."""
-    if "merge_group" not in triggers(text):
-        return []
-    misses = []
-    for job_id, body in jobs(text).items():
-        runs_on = job_runs_on(body)
-        if runs_on is None or not BUILD_POOL.search(runs_on) or MERGE_LANE.search(runs_on):
-            continue
-        if re.search(r"\$\{\{[^}]*(?:matrix|inputs)\.", runs_on) or job_skips_merge_group(body):
-            continue  # decided at run time, or never a merge-group job
-        misses.append(job_id)
-    return misses
+def retired_runner_jobs(text: str) -> list[str]:
+    """Jobs selecting a retired tier alias instead of an orthogonal queue role."""
+    return [job_id for job_id, body in jobs(text).items()
+            if RETIRED_RUNNER_LABEL.search(job_runs_on(body) or "")]
 
 
 PR_ONLY_CANCEL = re.compile(r"""^\$\{\{\s*github\.event_name\s*==\s*'pull_request'\s*\}\}$""")
@@ -546,10 +525,10 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
     if not candidates:
         rows["R8"] = _row("FAIL", "workflow files unreadable") if unreadable else _row("SKIP", "no workflows read")
     else:
-        missed = {name: merge_lane_misses(text) for name, text in sorted(candidates.items())}
+        missed = {name: retired_runner_jobs(text) for name, text in sorted(candidates.items())}
         missed = {name: ids for name, ids in missed.items() if ids}
-        rows["R8"] = need(not missed, "merge-group jobs select the merge lane",
-                          "merge_group job on the pull-request pool without a `-merge` runner: "
+        rows["R8"] = need(not missed, "runner jobs use canonical catalog tiers",
+                          "job selects a retired control or -merge tier alias: "
                           + "; ".join(f"{name} ({', '.join(ids)})" for name, ids in missed.items()))
 
     # R9

@@ -80,7 +80,7 @@ Every input is optional. The contract the rollout repositories adopt:
 | `test-args` | `--workspace` | Lane: arguments after `cargo test --locked`; empty skips the lane |
 | `locked` | `true` | `--locked` on clippy and test (needs a committed `Cargo.lock`) |
 | `workspace` | `.` | Cargo workspace directory, relative to the checkout |
-| `runner-class` | `standard` | `standard` or `xlarge` (only after a measured need). A merge group runs on the class's `-merge` lane. No other label is reachable |
+| `runner-class` | `standard` | `standard` or `2xlarge` (only after a measured need). Merge-group priority is classified independently of machine size; no public `-merge` label is reachable |
 | `apt-packages` | empty | Debian packages the build needs |
 | `git-deps` | empty | Private git dependencies, one `OWNER/REPO` per line, read through your own reader App; see [rust-check.md](rust-check.md) |
 | `timeout-minutes` | `45` | Job timeout |

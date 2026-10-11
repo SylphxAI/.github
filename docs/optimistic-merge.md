@@ -375,13 +375,13 @@ leaves the alert open; no parallel writer should edit lifecycle markers.
 
 ## Runners
 
-Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
-'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}`
-(`-xlarge-merge` for xlarge jobs), so a merge group never waits behind the
-pull-request backlog. The gate starter already uses it.
+Merge-group jobs request the same canonical machine tier as pull-request jobs:
+`sylphx-linux-standard` for ordinary jobs and `sylphx-linux-2xlarge` for the
+existing heavy jobs. The runner's job-event classification promotes merge
+work independently of size; there are no public `-merge` tier aliases.
 
-The verdict jobs (`ci-ok`, `verified`) run on `sylphx-linux-control`, the
-reserved gate pool; it has no `-merge` twin. Use `if: always() && !cancelled()`:
+Verdict jobs (`ci-ok`, `verified`) request canonical `sylphx-linux-nano`.
+Use `if: always() && !cancelled()`:
 real dependency failures still produce a red verdict, but a workflow cancelled
 by PR concurrency must not report a stale red aggregate beside the replacement
 run for the same head. Cancellation also must not hold the concurrency group
@@ -390,7 +390,7 @@ about failed/cancelled dependencies whenever a current-run verdict executes;
 this is lifecycle suppression, not a successful verdict for cancelled work.
 
 Private repositories run every job on our runners: `sylphx-linux-standard`
-for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`
+for most lanes, `sylphx-linux-2xlarge` for heavy compiles, `sylphx-linux-large`
 between. Public repositories may use GitHub's standard hosted runners, which
 are free for them. Never larger or GPU hosted runners.
 
@@ -413,7 +413,7 @@ exemption and writes the whole report with `--json`.
 | R5 | `ci.yml` has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
 | R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
 | R7 | `on_red` is `revert` (or `revert_pr_unarmed`) where the builder App reaches the repository, `notify` elsewhere |
-| R8 | in every workflow that runs on `merge_group`, each job on `sylphx-linux-standard` or `sylphx-linux-xlarge` selects its `-merge` twin on `merge_group` (the expression under Runners); verdict jobs on `sylphx-linux-control`, jobs whose `if:` keeps `merge_group` out, and runners chosen by `matrix`/`inputs` are out of scope |
+| R8 | every runner job uses canonical tier labels rather than retired `control` or `-merge` aliases; merge-group priority is independent job classification |
 | R9 | every workflow that runs on `pull_request` has a workflow-level `concurrency:` whose `cancel-in-progress` is `${{ github.event_name == 'pull_request' }}` ([ci-template.md](ci-template.md#concurrency)): a superseded pull-request run is cancelled, a merge-group or trunk run never is; a literal `true` holds only where neither `merge_group` nor a push to the default branch starts the workflow |
 
 Unreadable is FAIL. A repository whose rows are waived by a policy

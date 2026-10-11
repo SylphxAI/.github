@@ -55,9 +55,9 @@ class RustCiWorkflow(unittest.TestCase):
 
     def test_only_sylphx_runner_labels_are_reachable(self) -> None:
         runs_on = job()["runs-on"]
-        self.assertIn("sylphx-linux-{0}{1}", runs_on)
-        self.assertIn("inputs.runner-class == 'xlarge' && 'xlarge' || 'standard'", runs_on)
-        self.assertIn("github.event_name == 'merge_group' && '-merge' || ''", runs_on)
+        self.assertIn("sylphx-linux-{0}", runs_on)
+        self.assertIn("inputs.runner-class == '2xlarge' && '2xlarge' || 'standard'", runs_on)
+        self.assertNotIn("-merge", runs_on)
         self.assertNotRegex(self.text, r"(ubuntu|macos|windows)-(latest|\d)")
 
     def test_job_may_request_an_oidc_token_and_nothing_else_beyond_read(self) -> None:
@@ -169,7 +169,7 @@ class Template(unittest.TestCase):
     def test_calls_the_reusable_workflow(self) -> None:
         jobs = yaml.safe_load(TEMPLATE.read_text())["jobs"]
         self.assertTrue(jobs["rust"]["uses"].startswith("SylphxAI/.github/.github/workflows/rust-ci.yml@"))
-        self.assertEqual(jobs["ci-ok"]["runs-on"], "sylphx-linux-control")
+        self.assertEqual(jobs["ci-ok"]["runs-on"], "sylphx-linux-nano")
 
 
 if __name__ == "__main__":
