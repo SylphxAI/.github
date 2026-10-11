@@ -534,7 +534,9 @@
         ".github/workflows/workflow-sanity.yml",
         "sylphx.toml"
       ],
-      "disposition": "canonical tier config migration in independent clone"
+      "archived": true,
+      "unpublishedMigrationHead": "0e7011882e624b1819a14af7c761a89c99009a7a",
+      "disposition": "archived read-only repository; dedicated clone migration committed, normal desk-publish refused HTTP 403; no unarchive attempted"
     },
     {
       "repository": "SylphxAI/openclaw-sylphx",
@@ -639,7 +641,9 @@
         ".github/workflows/test-e2e.yml",
         ".github/workflows/test.yml"
       ],
-      "disposition": "canonical tier config migration in independent clone"
+      "archived": true,
+      "unpublishedMigrationHead": "85070a41636147d9b330f0f7347adae0ce6b325c",
+      "disposition": "archived read-only repository; dedicated clone migration committed, normal desk-publish refused HTTP 403; no unarchive attempted"
     },
     {
       "repository": "SylphxAI/tryit",
