@@ -381,12 +381,13 @@ Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
 pull-request backlog. The gate starter already uses it.
 
 The verdict jobs (`ci-ok`, `verified`) run on `sylphx-linux-control`, the
-reserved gate pool, on every event; it has no `-merge` twin. A verdict keeps
-`if: always()`, so a cancelled run still reports a failure instead of a
-skipped check, which GitHub counts as passing. It therefore runs after every
-cancel, and the cancelled run holds its concurrency group until it has: on a
-busy build pool that left a pull request's next run pending with no jobs
-(SylphxAI/agents#4222, 2026-10-02).
+reserved gate pool; it has no `-merge` twin. Use `if: always() && !cancelled()`:
+real dependency failures still produce a red verdict, but a workflow cancelled
+by PR concurrency must not report a stale red aggregate beside the replacement
+run for the same head. Cancellation also must not hold the concurrency group
+while the old verdict waits for a runner. The needs-pass action remains strict
+about failed/cancelled dependencies whenever a current-run verdict executes;
+this is lifecycle suppression, not a successful verdict for cancelled work.
 
 Private repositories run every job on our runners: `sylphx-linux-standard`
 for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`

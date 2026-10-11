@@ -158,6 +158,22 @@ class NeedsPassTest(unittest.TestCase):
     def test_advisory_never_fails(self) -> None:
         self.assertEqual(needs_pass.verdict({"quarantine": {"result": "failure"}}, set(), {"quarantine"}), [])
 
+    def test_verdict_templates_skip_cancelled_workflows_not_failed_dependencies(self) -> None:
+        import yaml
+        for name, job in (("ci-fast-path.yml", "ci-ok"),
+                          ("optimistic-gate.yml", "ci-ok"),
+                          ("optimistic-verify.yml", "verified"),
+                          ("rust-ci.yml", "ci-ok")):
+            with self.subTest(template=name):
+                workflow = yaml.safe_load((ROOT / "workflow-templates" / name).read_text())
+                gate = workflow["jobs"][job]
+                self.assertEqual(gate["if"], "always() && !cancelled()")
+                self.assertTrue(gate["needs"])
+                self.assertIn("needs-pass@", gate["steps"][0]["uses"])
+        # The lifecycle guard never weakens the aggregate's failure semantics.
+        self.assertTrue(needs_pass.verdict({"test": {"result": "failure"}}, {"test"}, set()))
+        self.assertTrue(needs_pass.verdict({"test": {"result": "cancelled"}}, {"test"}, set()))
+
 
 class ActionManifestExpressionTest(unittest.TestCase):
     """The runner evaluates `${{ }}` anywhere in a composite action.yml, even in
