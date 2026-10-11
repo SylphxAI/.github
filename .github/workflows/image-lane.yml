@@ -567,16 +567,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${READBACK_DIR}"
-          skopeo inspect --authfile "${SKOPEO_AUTH_FILE}" --raw \
-            "docker://${LANE_IMAGE}:${IMAGE_TAG}" > "${READBACK_DIR}/image.json"
-          DIGEST="sha256:$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "${READBACK_DIR}/image.json")"
+          DIGEST="$(python3 .image-lane/scripts/read-registry-manifest.py \
+            --image "${LANE_IMAGE}" --reference "${IMAGE_TAG}" \
+            --auth-file "${SKOPEO_AUTH_FILE}" --output "${READBACK_DIR}/image.json")"
           # Content equality, not byte equality: the registry may normalize the
           # envelope (OCI index vs Docker list, whitespace, key order), and a
           # single-platform push may be stored as one manifest while the local
           # layout keeps its index wrapper (live 2026-09-14: byte comparison
           # refused a correct push, e7f9ee94.. vs 90580359..). Compare the
-          # referenced content digests exactly; the promotion digest stays the
-          # registry's own bytes so nothing is pinned from an unverified read.
+          # referenced content digests exactly; promotion uses the authenticated
+          # HEAD identity whose digest GET returned these exact registry bytes.
           python3 - "${READBACK_DIR}/image.json" "${OCI_DIR}" <<'PY'
           import json, sys
           from pathlib import Path
@@ -653,10 +653,12 @@ jobs:
               print("readback_ok single-manifest", file=sys.stderr)
           PY
           EVIDENCE_DIGEST=""
-          if skopeo inspect --authfile "${SKOPEO_AUTH_FILE}" --raw \
-              "docker://${LANE_IMAGE}:${BUILD_EVIDENCE_TAG}" > "${READBACK_DIR}/evidence.json"; then
-            EVIDENCE_DIGEST="sha256:$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "${READBACK_DIR}/evidence.json")"
+          if EVIDENCE_DIGEST="$(python3 .image-lane/scripts/read-registry-manifest.py \
+              --image "${LANE_IMAGE}" --reference "${BUILD_EVIDENCE_TAG}" \
+              --auth-file "${SKOPEO_AUTH_FILE}" --output "${READBACK_DIR}/evidence.json")"; then
+            test -s "${READBACK_DIR}/evidence.json"
           else
+            EVIDENCE_DIGEST=""
             rm -f -- "${READBACK_DIR}/evidence.json"
           fi
           {
