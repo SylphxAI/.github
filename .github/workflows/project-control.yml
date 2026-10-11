@@ -164,7 +164,7 @@ jobs:
 
   template-verdict:
     needs: template-plan
-    if: always() && github.event_name != 'push'
+    if: always() && !cancelled() && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -180,7 +180,7 @@ jobs:
   # pass; failed or cancelled jobs fail.
   ci-ok:
     needs: [project-control, tests, template-plan, template-verdict]
-    if: always()
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

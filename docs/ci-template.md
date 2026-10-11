@@ -45,10 +45,13 @@ workflow never reports, which blocks the merge; a skipped job does report.
 1. `changes` first (seconds, standard runner).
 2. Cheap gate - format, lint, typecheck, unit tests - `needs: changes`.
 3. Heavy jobs - release build, e2e, iOS, Android, matrices - `needs: [changes, gate]`, so a lint failure never pays for a build.
-4. `ci-ok`: `if: always()`, `needs:` every job above, then `needs-pass`. Make
-   it the only required check. Skipped jobs (a docs-only change) count as
-   success; a failed or cancelled one fails; list `changes` as `required` so a
-   broken filter never reads as green.
+4. `ci-ok`: `if: always() && !cancelled()`, `needs:` every job above, then
+   `needs-pass`. Make it the only required check. Dependency failures still
+   produce a red verdict; cancellation of the workflow suppresses its stale
+   verdict so the replacement run alone decides the current head. Skipped jobs
+   (a docs-only change) count as success; failed/cancelled dependencies fail
+   whenever the verdict runs. List `changes` as `required` so a broken filter
+   never reads as green.
 
 ## Which events run the heavy jobs
 
@@ -73,13 +76,13 @@ ownership, adoption and the `workflow-lint` guard.
 
 - Light jobs (`changes`, lint, docs, scripts): `sylphx-linux-standard`.
   Never `-xlarge` or `-2xlarge`.
-- Every `if: always()` verdict job (`ci-ok`, `verified`, any `source-ci/pass`
-  alias) runs on `sylphx-linux-control`, the reserved gate pool, on every
-  event: it still runs after its run is cancelled, and the run keeps its
-  concurrency group until it does, so on a busy build pool it holds the next
-  run. Keep `always()`; never `!cancelled()` on a verdict (a skipped required
-  check counts as passing). Any other job that would run after a cancel uses
-  `!cancelled()`.
+- Every verdict job (`ci-ok`, `verified`, any `source-ci/pass` alias) uses
+  `if: always() && !cancelled()` and runs on `sylphx-linux-control`, the reserved
+  gate pool. `always()` preserves failure reporting; `!cancelled()` prevents a
+  superseded workflow from posting a stale red aggregate beside its replacement
+  or holding the workflow's concurrency group while waiting for a verdict seat.
+  Merge-group and trunk runs are never superseded by PR concurrency. Do not
+  change needs-pass to treat cancelled dependencies as success.
 - Merge-group runs use the `-merge` lane (`sylphx-linux-standard-merge`,
   `sylphx-linux-xlarge-merge`) so they never queue behind the pull-request
   backlog: `runs-on: ${{ github.event_name == 'merge_group' && '...-merge' || '...' }}`.
