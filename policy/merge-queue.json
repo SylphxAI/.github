@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "doc": "docs/merge-queue-settings.md. The one source for the merge queue rule and the required approving review count of every repository ruleset. Applied by scripts/apply_merge_queue.py (dry-run by default). GitHub does not allow a merge_queue rule in an organization or enterprise ruleset, so it is applied per repository from here.",
+  "version": 2,
+  "doc": "docs/merge-queue-settings.md. The one source for merge queue settings, approving review count and explicitly scoped required checks. Applied by scripts/apply_merge_queue.py (dry-run by default). Required checks roll out only after their producer is installed, backfilled and observed on PR heads and merge groups.",
   "orgs": [
     "SylphxAI",
     "Cubeage",
@@ -19,11 +19,11 @@
   "fast_gate": {
     "context": "ci-ok",
     "integration_id": 15368,
-    "note": "The required check of the queue is the fast gate only; the full suite runs after the merge (docs/optimistic-merge.md). The tool reports a ruleset that does not require it and never adds a check itself: requiring a check that no workflow reports would stop the queue."
+    "note": "ci-ok is the CI gate. The tool reports it fleet-wide and adds or binds checks only for the explicit required_checks targets below; all other required checks are preserved."
   },
   "review": {
     "required_approving_review_count": 0,
-    "note": "Every repository ruleset's pull_request rule requires no approving review: ci-ok is the gate, and an approval finds nothing it did not (owner standards: ONE CHECK). The enterprise ruleset already requires 0."
+    "note": "Human approving reviews remain at zero. The exact-head, App-bound review-ok status is the independent review gate on explicitly rolled-out repositories."
   },
   "exclude": [
     {
@@ -36,6 +36,28 @@
     }
   ],
   "overrides": [],
+  "required_checks": [
+    {
+      "repo": "SylphxAI/cloud",
+      "ruleset": "sylphx-merge-queue",
+      "ruleset_id": 20321070,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "First review gate rollout: preserve CI and bind independent review to its sole App. Apply only after the documented readiness gates and the cloud contract update."
+    },
+    {
+      "repo": "SylphxAI/infra",
+      "ruleset": "infra-main-required-ci",
+      "ruleset_id": 23689347,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "First review gate rollout after producer installation, backfill, live posting and alert readiness."
+    }
+  ],
   "fast_gate_overrides": [
     {
       "repo": "SylphxAI/cloud",
