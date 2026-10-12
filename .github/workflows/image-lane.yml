@@ -35,6 +35,11 @@ name: Image lane
 #     GitHub, is held only by the lane's own tool steps (mint, push, readback),
 #     is deleted before any caller-supplied verifier runs, and is removed again
 #     on every terminal path.
+#   * every published digest is signed (cosign layout, the platform's
+#     `artifact-signing` key) right after the readback, by the Sylphx api's
+#     publisher door, which signs only for a job the registry admits as a
+#     publisher of that repository. Deploys verify the signature (Kyverno
+#     `verify-sylphx-artifact-signatures`); a lane that cannot sign fails.
 #
 # Trust boundary: `build-command`, `evidence-command` and `verify-command` are
 # caller-owned shell executed in the caller's own checkout on the runners this
@@ -678,6 +683,22 @@ jobs:
             fi
           } >> "$GITHUB_ENV"
           echo "promotion_boundary_ok digest=${DIGEST} evidence_digest=${EVIDENCE_DIGEST:-none}"
+
+      # Every published digest is signed before anything can pin it: the
+      # platform signer (Sylphx api, `artifact-signing` key) signs IMAGE@digest
+      # when the registry token service admits this job as a publisher of the
+      # repository, which is the same check the push passed. Kyverno's
+      # verify-on-deploy policy refuses an unsigned registry.sylphx.com image,
+      # so a lane that cannot sign fails here instead of producing a pin that
+      # cannot deploy. A rerun signs the same digest again (same content).
+      - name: Sign the published digest
+        shell: bash
+        env:
+          LANE_IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          python3 .image-lane/scripts/request-image-signature.py \
+            --image "${LANE_IMAGE}" --digest "${REGISTRY_DIGEST}"
 
       # The registry credential is removed before any caller-supplied verifier
       # runs: the readback bytes above are the input, not the credential.

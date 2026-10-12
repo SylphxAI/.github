@@ -585,3 +585,111 @@ class PublisherIdentityWaitTest(unittest.TestCase):
         self.assertGreaterEqual(mint.DEFAULT_IDENTITY_WAIT_SECONDS, 120)
         self.assertLess(mint.DEFAULT_TIMEOUT_SECONDS, mint.DEFAULT_IDENTITY_WAIT_SECONDS)
 
+
+sign = load("image_lane_sign", "scripts/request-image-signature.py")
+DIGEST = "sha256:" + "a" * 64
+
+
+class ImageSignatureTests(unittest.TestCase):
+    """Every published digest is signed by the platform signer before a pin."""
+
+    def response(self, payload: dict):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def geturl(self):
+                return sign.SIGNATURE_URL
+
+            def read(self):
+                return json.dumps(payload).encode()
+
+        return Response()
+
+    @staticmethod
+    def http_error(code: int, payload: dict | None = None):
+        import io
+
+        body = io.BytesIO(json.dumps(payload or {}).encode())
+        return sign.urllib.error.HTTPError(sign.SIGNATURE_URL, code, "x", {}, body)
+
+    def run_sign(self, outcomes):
+        calls = []
+        sleeps = []
+
+        def urlopen(request, timeout):
+            calls.append(request)
+            outcome = outcomes[len(calls) - 1]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        request = sign.signature_request(LANE_IMAGE, DIGEST, "oidc-token")
+        with mock.patch.object(sign.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(sign.time, "sleep", sleeps.append):
+            try:
+                result = sign.request_signature(request, 5)
+            except RuntimeError as error:
+                result = error
+        return result, calls, sleeps
+
+    def test_posts_the_digest_pinned_image_with_the_job_token(self) -> None:
+        request = sign.signature_request(LANE_IMAGE, DIGEST, "oidc-token")
+        self.assertEqual(request.full_url, "https://api.sylphx.com/v1/registry/signatures")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Authorization"), "Bearer oidc-token")
+        self.assertEqual(json.loads(request.data), {"image": f"{LANE_IMAGE}@{DIGEST}"})
+
+    def test_refuses_a_tag_or_a_malformed_digest(self) -> None:
+        for image, digest in [
+            (LANE_IMAGE, "sha256:abc"),
+            (LANE_IMAGE, "latest"),
+            (f"{LANE_IMAGE}:v1", DIGEST),
+            (f"{LANE_IMAGE}@{DIGEST}", DIGEST),
+        ]:
+            with self.subTest(image=image, digest=digest):
+                with self.assertRaises(ValueError):
+                    sign.signature_request(image, digest, "t")
+
+    def test_a_signature_is_returned(self) -> None:
+        result, calls, _ = self.run_sign([self.response({"signature": "ref", "signing_key": "k"})])
+        self.assertEqual(result["signature"], "ref")
+        self.assertEqual(len(calls), 1)
+
+    def test_unavailability_is_retried(self) -> None:
+        timeout = sign.urllib.error.URLError(TimeoutError("timed out"))
+        result, calls, sleeps = self.run_sign(
+            [timeout, self.http_error(503), self.response({"signature": "ref"})]
+        )
+        self.assertEqual(result["signature"], "ref")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, list(sign.BACKOFF_SECONDS[:2]))
+
+    def test_a_refusal_fails_at_once_with_the_door_verdict(self) -> None:
+        refusal = self.http_error(403, {"error": "not_a_publisher", "detail": "no push"})
+        result, calls, sleeps = self.run_sign([refusal, self.response({"signature": "ref"})])
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("HTTP 403 not_a_publisher: no push", str(result))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sleeps, [])
+
+    def test_gives_up_after_bounded_attempts(self) -> None:
+        result, calls, _ = self.run_sign([self.http_error(502)] * (sign.ATTEMPTS + 1))
+        self.assertIsInstance(result, RuntimeError)
+        self.assertEqual(len(calls), sign.ATTEMPTS)
+
+    def test_a_response_without_a_signature_fails(self) -> None:
+        result, _, _ = self.run_sign([self.response({})])
+        self.assertIsInstance(result, RuntimeError)
+
+    def test_the_lane_signs_after_the_readback_and_before_any_caller_verifier(self) -> None:
+        workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
+        readback_step = workflow.index("- name: Capture registry readback")
+        sign_step = workflow.index("- name: Sign the published digest")
+        drop_step = workflow.index("- name: Drop registry credentials before the caller verifier")
+        self.assertLess(readback_step, sign_step)
+        self.assertLess(sign_step, drop_step)
+        self.assertIn('--image "${LANE_IMAGE}" --digest "${REGISTRY_DIGEST}"', workflow)
