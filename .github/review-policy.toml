@@ -1,0 +1,16 @@
+# Review policy, read by the review gate (desk-tools coordinator/lanes/qa/bin/review_gate.py) from the base branch,
+# so a pull request cannot lower its own tier. Globs: `*` stays in one path segment, `**/` is any number of directories.
+# This file itself is always reviewed. Bump `version` with every change; a tier-0 change that is later reverted moves
+# its glob out of tier0 in the same change (the tighten trigger).
+version = 1
+
+# Fleet-wide CI and policy: nothing here is tier 0. Carry-over (same patch, generated-only, formatter-only, revert)
+# still applies.
+[tier0]
+paths = []
+
+[review]
+paths = []
+
+[generated]
+paths = []
