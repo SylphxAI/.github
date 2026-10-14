@@ -16,8 +16,12 @@ tag) and calls the `keel-repin` action in three modes:
    no open or merged pull request from it exists. A closed pull request stops its tag only while its
    branch exists: close it to stop the repin; close it and delete the branch to have the next poll
    rebuild it.
-2. **repin** (only when needed): moves every pin, refreshes `Cargo.lock` for the Keel crates, runs
-   the title's build check, pushes `chore/keel-repin-<tag>`, opens the pull request with the
+2. **repin** (only when needed): moves every pin, refreshes `Cargo.lock` for the Keel crates,
+   downloads the target tag's prebuilt CLI through its `scripts/install_cli.sh`, and runs
+   `keel migrate --check` from the title repository root before the title's build check.
+   A migration failure, including `[mobile.android]` without `[mobile.android.signing]`
+   (Keel #5144), opens a failed draft with the migration diagnostic instead of passing
+   the build preflight. The action then pushes `chore/keel-repin-<tag>`, opens the pull request with the
    workflow token and the repository's single `owner:*` label, then starts the title's CI on that
    branch with `workflow_dispatch`.
 

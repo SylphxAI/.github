@@ -34,13 +34,22 @@ def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, text=True, capture_output=True).stdout.strip()
 
 
-def make_keel_remote(base: pathlib.Path) -> tuple[str, str]:
-    """A bare repository standing in for the Keel repository, with one annotated tag."""
+def make_keel_remote(base: pathlib.Path, cli: str = "exit 0\n") -> tuple[str, str]:
+    """A tagged Keel repository with a stand-in release installer and CLI."""
     work = base / "keel-work"
     work.mkdir()
     git(work, "init", "-q", "-b", "main")
     (work / "f").write_text("keel")
-    git(work, "add", "f")
+    (work / "scripts").mkdir()
+    (work / "scripts/install_cli.sh").write_text(
+        '#!/bin/sh\nset -eu\n'
+        f'test "$2" = "{NEW_TAG}"\n'
+        'mkdir -p "$3"\n'
+        'cat > "$3/keel" <<\'CLI\'\n'
+        '#!/bin/sh\nset -eu\n'
+        'test "$*" = "migrate --check"\n' + cli +
+        'CLI\nchmod +x "$3/keel"\n')
+    git(work, "add", ".")
     git(work, "commit", "-q", "-m", "keel")
     sha = git(work, "rev-parse", "HEAD")
     git(work, "tag", "-a", NEW_TAG, "-m", "tag")
@@ -228,6 +237,25 @@ class RunTest(unittest.TestCase):
             self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "check"))
             self.assertIn("SavePort", rep["log"])
             self.assertIn("Cargo.toml", rep["changed"])  # the pin still moves; the break is the content of the draft
+
+    def test_android_signing_migration_failure_stops_the_repin_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, _ = make_keel_remote(base, (
+                'test -f app/keel.toml\n'
+                'echo "Android signing identity migration (#5144): add [mobile.android.signing] key_alias"\n'
+                'exit 1\n'))
+            config = '[mobile.android]\npackage = "com.example.game"\n'
+            repo = make_title(base, {**TITLE, "app/keel.toml": config})
+            rc, rep = self.run_cmd(repo, remote, "touch build-checked", ["--check-dir", "app"])
+            self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "migrate"))
+            self.assertIn("#5144", rep["log"])
+            self.assertIn("[mobile.android.signing]", rep["log"])
+            self.assertFalse((repo / "app/build-checked").exists())
+            self.assertEqual((repo / "app/keel.toml").read_text(), config)
+            _, body = keel_repin.pr_text(rep)
+            self.assertIn("Draft: the migration check fails", body)
+            self.assertIn("#5144", body)
 
     def test_already_pinned_and_branch_exists_and_no_pin(self):
         with tempfile.TemporaryDirectory() as d:
