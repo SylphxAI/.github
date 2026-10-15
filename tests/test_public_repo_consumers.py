@@ -227,10 +227,14 @@ class Workflow(unittest.TestCase):
         self.assertNotIn("create-github-app-token", text)
         self.assertNotIn("SYLPHX_BUILDER", text)
 
-    def test_weekly_run_yanks_crates_with_the_org_token(self):
+    def test_scheduled_sweep_reads_no_long_lived_registry_token(self):
+        # Yanking a crate from an archived repository is a one-off run with an
+        # owner token, not a scheduled job: the sweep must not park a
+        # long-lived crates.io token in the workflow.
         text = (ROOT / ".github" / "workflows" / "public-repo-consumers.yml").read_text()
-        self.assertIn("CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}", text)
-        self.assertIn("--fix-crates", text)
+        self.assertNotIn("secrets.CARGO_REGISTRY_TOKEN", text)
+        self.assertNotIn("--fix-crates", text)
+        self.assertIn("--fix-npm", text)
 
 
 if __name__ == "__main__":
