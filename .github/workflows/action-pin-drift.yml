@@ -1,10 +1,10 @@
 name: Shared-action pin drift
 
 # Weekly, and on demand: every repository's pins of the shared SylphxAI/.github actions must be within
-# DRIFT_DAYS of .github main, and every red trunk must have drawn a non-skipped Red main run within
-# 30 minutes. Both failures are silent otherwise - a stale commit still resolves, and a skipped red-main
-# run looks like a handled trunk - so they are checked here rather than found by an unrelated incident
-# (docs/action-pin-drift-check.md).
+# DRIFT_DAYS of .github main, and every red trunk must have drawn a Red main run that reached its repair
+# step within 30 minutes. Both failures are silent otherwise - a stale commit still resolves, and a
+# red-main run that ends green at classification (or is skipped) looks like a handled trunk - so they are
+# checked here rather than found by an unrelated incident (docs/action-pin-drift-check.md).
 
 on:
   schedule:
@@ -79,6 +79,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           case "$rc" in
             0) ;;
-            1) echo "::error::a red trunk has no non-skipped red-main run; the red-main safety net is broken there"; exit 1 ;;
+            1) echo "::error::a red trunk has no red-main run that reached its repair step; the red-main safety net is broken there"; exit 1 ;;
             *) echo "::error::could not read a repository's runs"; exit "$rc" ;;
           esac

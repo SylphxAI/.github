@@ -41,25 +41,40 @@ hands-off repositories (the same policy `workflow_pin_check.py` uses), and exits
 
 The same script has a second audit, `watcher`, for a different silent failure:
 `red-main` is the fleet's safety net for a red trunk, and it is a shared
-`.github` workflow, so one mistake can disarm it everywhere at once. A caller
-that triggers it on `workflow_run` still records a run when every job skips — a
-run with conclusion `skipped` looks like the trunk was handled when nothing ran.
+`.github` workflow, so one mistake can disarm it everywhere at once.
 
-`watcher --org ORG` fails a repository whose trunk had a `Verify` run conclude
-`failure` with no non-skipped `Red main` run inside `RED_MAIN_WINDOW_MINUTES`
-(30) minutes of it. On 2026-10-14 `SylphxAI/keel` had three consecutive trunk
-`Verify` failures and every `Red main` run since was `skipped`; the
-same shape was present on a handful of other repositories.
+The caller's guard is exactly:
 
-`red-main` is a `workflow_call` handler that takes a `mode` input; a caller that
-passes none skips every job while still recording a run. The check anchors its
-window on `run_started_at` (the moment the `Verify` run began, queue waits
-excluded), so a merely queued or slow run does not read as unhandled.
+```
+github.event_name == 'workflow_dispatch'
+|| (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_branch == 'main')
+```
+
+so a run appears for a manual dispatch or for a `Verify` that concluded
+`failure` on the trunk. But **a green conclusion is not a repair**: the
+classification step can emit `verdict=infra`, or the handler can stop on an
+already-in-hand revert, after which the repair steps are skipped and the run
+still ends `success`. A run can also be recorded with conclusion `skipped`,
+which is not a response at all.
+
+`watcher --org ORG` therefore keys on the repair, not the conclusion. It fails a
+repository whose trunk had a `Verify` run conclude `failure` with no `Red main`
+run that reached its repair step (`Revert the culprit or report it`, which runs a
+revert or the report path for a migration hold, a protected pull request or an
+infra verdict) inside `RED_MAIN_WINDOW_MINUTES` (30) minutes of it. On
+2026-10-14 `SylphxAI/keel` had three consecutive trunk `Verify` failures, and
+every `Red main` run since either was `skipped` or ended green at classification
+without a repair; the same shape was present on other repositories.
+
+The window anchors on `run_started_at` (the moment the `Verify` run began, queue
+waits excluded), so a merely queued or slow run does not read as unhandled. One
+`actions/runs/<id>/jobs` read per candidate run is what proves the repair.
 
 ## Tests
 
 `tests/test_action_pin_drift_check.py` runs on a fake GitHub: a pin past the
 limit fails with file, line and days; a pin at or inside the limit passes; the
 head commit is never behind; an unknown commit fails; each distinct pin is read
-once; a red trunk with only skipped `Red main` fails; a non-skipped `Red main`
-inside the window passes.
+once; a red trunk with only a skipped `Red main` fails; a green `Red main` that
+stopped at classification is not a repair and fails; a run that reached the
+repair step inside the window passes; a late repair outside the window fails.

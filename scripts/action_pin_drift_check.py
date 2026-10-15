@@ -154,16 +154,38 @@ def render_offenders(offenders: list[dict]) -> str:
                      for o in offenders)
 
 
-# --- watch the watcher: a red trunk must draw a non-skipped red-main run -----------------------------------
+# --- watch the watcher: a red trunk must draw a red-main run that actually repaired it ------------
 
 VERIFY_WORKFLOW = "Verify"
 RED_MAIN_WORKFLOW = "Red main"
 RED_MAIN_WINDOW_MINUTES = 30
-# The shared red-main handler is `workflow_call`, so a caller must opt in with a non-empty mode; a caller
-# that passes none (`inputs.mode` empty) skips every job, and a skipped run still counts as "handled" to a
-# naive reader. This is the fleet-wide failure found on keel (2026-10-14): the net never fired.
-# A red trunk with no non-skipped red-main run inside the window is a broken watcher, not a handled red.
-HANDLED = ("success", "failure", "cancelled", "timed_out", "action_required")
+# The caller's guard (SylphxAI/.github .github/workflows/red-main.yml; keel lines 36-38, cloud 52-54):
+#   github.event_name == 'workflow_dispatch'
+#   || (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_branch == 'main')
+# So a non-skipped run means a manual dispatch or a Verify that concluded `failure` on the trunk. But a
+# green conclusion is NOT a repair: the classification step can emit verdict=infra (or the handler can stop
+# on an already-in-hand revert), after which the repair steps are skipped and the run still ends success.
+# The check therefore keys on the REPAIR: the run must have executed a step past the classification gate.
+# `REPAIR_STEP` is the last step of that chain ("Revert the culprit or report it"), which runs a revert or
+# the report path (migration-hold, protected pull request, infra) - either is a real response, not an ack.
+REPAIR_STEP = "Revert the culprit or report it"
+
+
+def _run_jobs(gh, repo: str, run_id: int) -> list[dict]:
+    """The jobs (with their steps) of one run - the evidence of how far the handler got."""
+    reply = gh.rest(f"repos/{repo}/actions/runs/{run_id}/jobs")
+    return reply.get("jobs", [])
+
+
+def _repaired(gh, repo: str, run: dict) -> bool:
+    """Did this red-main run reach the repair step (run, not skipped)? A green ack does not count."""
+    if run.get("conclusion") in (None, "skipped"):
+        return False
+    for job in _run_jobs(gh, repo, run["id"]):
+        for step in job.get("steps") or []:
+            if step.get("name") == REPAIR_STEP and step.get("conclusion") not in (None, "skipped"):
+                return True
+    return False
 
 
 def _runs(gh, repo: str, workflow: str, pages: int = 3) -> list[dict]:
@@ -184,7 +206,7 @@ def _started(run: dict) -> datetime.datetime:
 
 
 def watcher_offenders(gh, repo: str, trunk: str, window_minutes: int = RED_MAIN_WINDOW_MINUTES) -> list[dict]:
-    """Failed Verify runs on the trunk with no non-skipped red-main run inside `window_minutes` after them."""
+    """Failed Verify runs on the trunk with no red-main run that repaired them inside `window_minutes`."""
     try:
         verify = _runs(gh, repo, VERIFY_WORKFLOW)
         red = _runs(gh, repo, RED_MAIN_WORKFLOW)
@@ -192,24 +214,25 @@ def watcher_offenders(gh, repo: str, trunk: str, window_minutes: int = RED_MAIN_
         return [{"verify_run": None, "verify_at": None, "why": f"runs could not be read ({str(err)[:80]})"}]
     if not verify:
         return []
-    red_handled = [_started(run) for run in red if run.get("conclusion") not in (None, "skipped")]
+    # Only a run that got past classification to the repair step counts; one call per candidate run.
+    red_repaired = [_started(run) for run in red if _repaired(gh, repo, run)]
     offenders = []
     for run in verify:
         if run.get("head_branch") != trunk or run.get("conclusion") != "failure":
             continue
         when = _started(run)
         deadline = when + datetime.timedelta(minutes=window_minutes)
-        if any(when <= r <= deadline for r in red_handled):
+        if any(when <= r <= deadline for r in red_repaired):
             continue
         offenders.append({"verify_run": run.get("id"), "verify_at": when.isoformat().replace("+00:00", "Z"),
-                          "why": f"trunk Verify failed ({run['created_at']}) and no non-skipped "
-                                 f"{RED_MAIN_WORKFLOW} run followed within {window_minutes} minutes "
-                                 f"(the red-main safety net did not fire)"})
+                          "why": f"trunk Verify failed ({run['created_at']}) and no {RED_MAIN_WORKFLOW} run "
+                                 f"reached its repair step within {window_minutes} minutes (the red-main "
+                                 f"safety net did not fire; a green run that stopped at classification is not a repair)"})
     return offenders
 
 
 def watch_main(gh, args, hands_off: list[str]) -> int:
-    """The `watcher` command: a red trunk with no non-skipped red-main run is a broken safety net."""
+    """The `watcher` command: a red trunk with no red-main run that reached its repair step is a broken net."""
     repos = []
     for org in args.org:
         for base in om.list_org(gh, org):
@@ -228,7 +251,8 @@ def watch_main(gh, args, hands_off: list[str]) -> int:
                 print(f"         {o['why']}")
     failed = sum(1 for r in repos if r["status"] == "FAIL")
     print(f"{len(repos)} repositories: {len(repos) - failed} PASS, {failed} FAIL "
-          f"(a red trunk with no non-skipped {RED_MAIN_WORKFLOW} run within {args.window_minutes} minutes)")
+          f"(a red trunk with no {RED_MAIN_WORKFLOW} run that reached its repair step within "
+          f"{args.window_minutes} minutes)")
     return 1 if failed else 0
 
 

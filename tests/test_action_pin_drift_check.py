@@ -113,54 +113,87 @@ class Judge(unittest.TestCase):
 
 
 class Watcher(unittest.TestCase):
-    """A red trunk must draw a non-skipped red-main run within the window."""
+    """A red trunk must draw a red-main run that reached its repair step within the window."""
 
     class FakeRuns:
-        def __init__(self, rows):
-            self.rows, self.calls = rows, []
+        """Serves runs for the workflow-name filter and jobs for the repair-step check."""
+
+        def __init__(self, rows, jobs=None):
+            self.rows, self.jobs, self.calls = rows, jobs or {}, []
 
         def rest(self, path):
             self.calls.append(path)
+            if "/jobs" in path:
+                run_id = int(path.split("/runs/")[1].split("/")[0])
+                return {"jobs": self.jobs.get(run_id, [])}
             return {"workflow_runs": self.rows}
 
-    def run_(self, verify, red, trunk="main", window=30):
-        return drift.watcher_offenders(self.FakeRuns(verify + red), "o/r", trunk, window)
+    REPAIR = [{"name": "Red main handler", "steps": [
+        {"name": "Decide the verdict of the failed run", "conclusion": "success"},
+        {"name": "Revert the culprit or report it", "conclusion": "success"}]}]
+    ACK_ONLY = [{"name": "Red main handler", "steps": [
+        {"name": "Decide the verdict of the failed run", "conclusion": "success"},
+        {"name": "Revert the culprit or report it", "conclusion": "skipped"}]}]
 
-    def test_failed_trunk_verify_with_only_skipped_red_main_fails(self):
+    def run_(self, verify, red, jobs=None, trunk="main", window=30, gh=None):
+        gh = gh or self.FakeRuns(verify + red, jobs)
+        return drift.watcher_offenders(gh, "o/r", trunk, window), gh
+
+    def test_skipped_red_main_fails(self):
         verify = [{"id": 1, "name": "Verify", "conclusion": "failure", "head_branch": "main",
                    "created_at": "2026-10-14T01:52:43Z"}]
         red = [{"id": 2, "name": "Red main", "conclusion": "skipped", "head_branch": "main",
                 "created_at": "2026-10-14T02:06:14Z"}]
-        found = self.run_(verify, red)
+        found, _ = self.run_(verify, red)
         self.assertEqual(len(found), 1)
-        self.assertIn("safety net did not fire", found[0]["why"])
+        self.assertIn("repair step", found[0]["why"])
 
-    def test_a_non_skipped_red_main_inside_the_window_passes(self):
+    def test_a_green_run_that_stopped_at_classification_is_not_a_repair(self):
+        # The exact keel shape: conclusion success, but the repair step is skipped (verdict=infra).
         verify = [{"id": 1, "name": "Verify", "conclusion": "failure", "head_branch": "main",
                    "created_at": "2026-10-14T01:52:43Z"}]
         red = [{"id": 2, "name": "Red main", "conclusion": "success", "head_branch": "main",
                 "created_at": "2026-10-14T02:06:14Z"}]
-        self.assertEqual(self.run_(verify, red), [])
+        found, _ = self.run_(verify, red, jobs={2: self.ACK_ONLY})
+        self.assertEqual(len(found), 1)
 
-    def test_a_late_red_main_outside_the_window_fails(self):
+    def test_a_run_that_reached_the_repair_step_passes(self):
+        verify = [{"id": 1, "name": "Verify", "conclusion": "failure", "head_branch": "main",
+                   "created_at": "2026-10-14T01:52:43Z"}]
+        red = [{"id": 2, "name": "Red main", "conclusion": "success", "head_branch": "main",
+                "created_at": "2026-10-14T02:06:14Z"}]
+        found, _ = self.run_(verify, red, jobs={2: self.REPAIR})
+        self.assertEqual(found, [])
+
+    def test_a_late_repair_outside_the_window_fails(self):
         verify = [{"id": 1, "name": "Verify", "conclusion": "failure", "head_branch": "main",
                    "created_at": "2026-10-14T01:00:00Z"}]
         red = [{"id": 2, "name": "Red main", "conclusion": "success", "head_branch": "main",
                 "created_at": "2026-10-14T03:00:00Z"}]
-        self.assertEqual(len(self.run_(verify, red)), 1)
+        found, _ = self.run_(verify, red, jobs={2: self.REPAIR})
+        self.assertEqual(len(found), 1)
 
     def test_a_branch_verify_failure_is_not_a_trunk_red(self):
         verify = [{"id": 1, "name": "Verify", "conclusion": "failure", "head_branch": "feature",
                    "created_at": "2026-10-14T01:52:43Z"}]
-        self.assertEqual(self.run_(verify, []), [])
+        self.assertEqual(self.run_(verify, [])[0], [])
 
     def test_a_successful_trunk_verify_needs_no_red_main(self):
         verify = [{"id": 1, "name": "Verify", "conclusion": "success", "head_branch": "main",
                    "created_at": "2026-10-14T01:52:43Z"}]
-        self.assertEqual(self.run_(verify, []), [])
+        self.assertEqual(self.run_(verify, [])[0], [])
+
+    def test_jobs_are_read_only_for_candidate_runs(self):
+        # A skipped run is not a candidate, so its jobs are never fetched.
+        verify = [{"id": 1, "name": "Verify", "conclusion": "failure", "head_branch": "main",
+                   "created_at": "2026-10-14T01:52:43Z"}]
+        red = [{"id": 2, "name": "Red main", "conclusion": "skipped", "head_branch": "main",
+                "created_at": "2026-10-14T02:06:14Z"}]
+        _, gh = self.run_(verify, red)
+        self.assertFalse(any("/jobs" in c for c in gh.calls))
 
 
-
+class Command(unittest.TestCase):
     def run_check(self, text, gh=None):
         with tempfile.TemporaryDirectory() as tmp:
             wf = pathlib.Path(tmp) / ".github" / "workflows"
