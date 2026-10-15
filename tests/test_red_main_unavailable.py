@@ -15,6 +15,8 @@ import unittest
 
 import yaml
 
+from tests.red_main_programs import program
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 DOCUMENT = yaml.safe_load(WORKFLOW.read_text())
@@ -101,9 +103,9 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.work = self.root / "red-main"
         self.work.mkdir()
-        for name, filename in (("LIB", "lib.sh"),
-                               ("PREV_PY", "prev.py"), ("CONFIRM_PY", "confirm.py")):
-            (self.work / filename).write_text(HANDLER["env"][name])
+        for name, filename in (("lib.sh", "lib.sh"),
+                               ("prev.py", "prev.py"), ("confirm.py", "confirm.py")):
+            (self.work / filename).write_text(program(name))
         (self.work / "proof.py").write_text(FAKE_PROOF)
         (self.work / "real_proof.py").write_text((ROOT / ".github/actions/ci-range/post_main.py").read_text())
         binaries = self.root / "bin"
@@ -122,6 +124,7 @@ class UnavailableHandlerTest(unittest.TestCase):
                         RUN_URL=RUN["html_url"], RUN_FIXTURE=json.dumps(RUN),
                         MODE="notify", ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
                         INFRA="no", INFRA_SIGNATURE="", INITIAL_PROOF="unknown",
+                        OWNER_LABEL="owner:ops", FAILED_LANES="", OPS_ISSUE="",
                         PROOF_RESULT="unknown")
 
     def execute(self, name):
@@ -351,7 +354,7 @@ class UnavailableHandlerTest(unittest.TestCase):
         # How the failed jobs failed (steps, error lines) cannot be read: the
         # junit step records it and goes on (the infra verdict still runs),
         # and the confirmation escalates instead of matching job names.
-        (self.work / "junit.py").write_text(HANDLER["env"]["JUNIT_PY"])
+        (self.work / "junit.py").write_text(program("junit.py"))
         self.env.update(PROOF_RESULT="exception", FAILED_LANES="rust")
         read = self.execute("Read the failing tests from the run's junit artifacts")
         self.assertEqual(read.returncode, 0, read.stderr)

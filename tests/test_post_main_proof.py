@@ -47,14 +47,10 @@ def objects(row, conclusion="success", job_id=300, check_id=30):
 
 class ProofTest(unittest.TestCase):
     def test_reusable_payload_is_the_same_canonical_helper(self):
-        lines = (ROOT / ".github/workflows/red-main.yml").read_text().splitlines()
-        start = lines.index("      PROOF_PY: |") + 1
-        body = []
-        for line in lines[start:]:
-            if line.strip() and not line.startswith("        "):
-                break
-            body.append(line[8:])
-        self.assertEqual("\n".join(body).rstrip(), SOURCE.read_text().rstrip())
+        # The handler's copy of the helper is checked in under .github/red_main/
+        # and must stay byte-identical to the canonical source it wraps.
+        self.assertEqual((ROOT / ".github/red_main/proof.py").read_text().rstrip(),
+                         SOURCE.read_text().rstrip())
 
     def test_only_full_post_main_origin_is_proof(self):
         self.assertTrue(proof.full_push(run(), REPO, "main", "verify.yml", SHA))
@@ -377,9 +373,12 @@ class ProofTest(unittest.TestCase):
         self.assertIn('read_proof run "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$run_id"', text)
         self.assertIn('read_proof sha "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
         self.assertIn('proof.py" remote-base "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$HEAD_SHA"', text)
-        self.assertIn('if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi', text)
-        self.assertNotIn("status=success&per_page=1", text)
-        self.assertNotIn("check_name=$name&filter=latest", text)
+        # The no-action guard and the helper ship in the checked-in programs.
+        self.assertIn('if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi',
+                      (ROOT / ".github/red_main/lib.sh").read_text())
+        for body in (text, *[p.read_text() for p in (ROOT / ".github/red_main").iterdir()]):
+            self.assertNotIn("status=success&per_page=1", body)
+            self.assertNotIn("check_name=$name&filter=latest", body)
 
 
 if __name__ == "__main__":
