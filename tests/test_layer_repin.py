@@ -142,11 +142,11 @@ class LayerTest(unittest.TestCase):
         helper = fixtures.SettleTest()
         for layer in ("kit", "engine"):
             prs = [[5, repin.BRANCH_PREFIX + layer + "-" + "a" * 40, fixtures.HEAD, "false", "2027-01-15T07:00:00Z"]]
-            _, calls, _ = helper.settle({"prs": prs, "runs": [fixtures.check("ci-ok"), fixtures.check("web-smoke")]})
+            _, calls, _, _ = helper.settle({"prs": prs, "runs": [fixtures.check("ci-ok"), fixtures.check("web-smoke")]})
             self.assertEqual(helper.merges(calls), [f"pr merge 5 --squash --match-head-commit {fixtures.HEAD}"])
-            _, calls, comments = helper.settle({"prs": prs, "runs": [fixtures.check("ci-ok", conclusion="failure")]}, repeat=2)
+            _, calls, comments, _ = helper.settle({"prs": prs, "runs": [fixtures.check("ci-ok", conclusion="failure")]}, repeat=2)
             self.assertEqual(helper.merges(calls), [])
-            self.assertEqual(comments.count(f"keel-repin-red:{fixtures.HEAD} "), 1)
+            self.assertEqual(comments.count(f"keel-repin-red:red-{fixtures.HEAD} "), 1)
 
     def test_layer_main_behind_or_diverged_does_not_downgrade(self):
         with tempfile.TemporaryDirectory() as d:

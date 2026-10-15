@@ -21,9 +21,10 @@ from unittest.mock import patch
 
 import yaml
 
+from tests.red_main_programs import program
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests/fixtures/red-main"
-ENV = yaml.safe_load((ROOT / ".github/workflows/red-main.yml").read_text())["jobs"]["red-main"]["env"]
 REPO = "SylphxAI/keel"
 CURRENT, PREVIOUS = "37172490395", "37172043559"
 
@@ -46,8 +47,8 @@ class ConfirmTest(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        for name in ("JUNIT_PY", "CONFIRM_PY", "PREV_PY"):
-            (self.root / f"{name[:-3]}.py").write_text(ENV[name])
+        for name, filename in (("junit.py", "JUNIT.py"), ("confirm.py", "CONFIRM.py"), ("prev.py", "PREV.py")):
+            (self.root / filename).write_text(program(name))
 
     def script(self, name, *args, stdin=None):
         done = subprocess.run([sys.executable, str(self.root / f"{name}.py"), *args], input=stdin,

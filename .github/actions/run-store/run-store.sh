@@ -205,6 +205,13 @@ if [ "$code" = 404 ]; then
 fi
 [ "$code" = 200 ] || fail "could not fetch $key (HTTP $code)"
 bytes="$(file_bytes "$work/bundle.tgz")"
+# The bundle's tar members are untrusted: reject an escaping or special member
+# before anything is written, so a bundle can never overwrite a trusted file or
+# reach outside STORE_PATH.
+if ! command -v python3 > /dev/null 2>&1; then
+  fail "python3 is required to validate the bundle"
+fi
+python3 "$(dirname "${BASH_SOURCE[0]}")/validate_archive.py" "$work/bundle.tgz" || fail "refusing to unpack $key: unsafe archive member"
 mkdir -p "$STORE_PATH" || fail "cannot create $STORE_PATH"
 gzip -dc "$work/bundle.tgz" | tar -C "$STORE_PATH" -xf -
 rc=("${PIPESTATUS[@]}")

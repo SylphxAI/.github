@@ -50,25 +50,42 @@ someone pushed to it.
 all of these hold, judged on the pull request's **exact head commit**:
 
 - every check in `required-checks` (default `ci-ok web-smoke`) has run on that commit, finished, and
-  succeeded. A check that has not appeared or not finished keeps the pull request waiting;
+  succeeded. A check that has not appeared or not finished keeps the pull request waiting; a run that
+  ended `skipped` counts as absent, because GitHub reports a job skipped by its own `if:` that way and a
+  skipped required check has verified nothing;
 - no check at all on that commit failed, was cancelled or timed out, required or not;
 - only runs of the GitHub Actions app count, so another App cannot post a passing check under the name;
 - of several runs of one name (a re-run), the newest decides;
-- the pull request is not a draft, and every commit on it is the bot's own. A person's push to the
-  branch hands the merge back to a person;
+- the pull request is not a draft, and every commit after the bot's own on it is the bot's own. The pull
+  request's commit list is read once with the head it already fetched; a commit from anyone else is a
+  person's push to the branch, and it hands the merge back to a person;
 - the merge call is pinned to the judged commit (`--match-head-commit`), so a push after the verdict
   voids it. There is no admin or bypass merge. In a repository with a merge queue the pull request is
   queued (`--auto`) and the queue's own gate still runs.
 
 `web-smoke` is the title's own check that its packed web build boots in a browser to a drawn frame, with
 the boot splash visible at once and no black screen. A title with no `web-smoke` check is never merged
-by the bot: the pull request waits, then turns red (below) after `max-wait-minutes` (default 360). A
-title with no web build lists only its aggregate check in `required-checks`.
+by the bot: the pull request waits (told as a stall, below), then turns red after `max-wait-minutes`
+(default 360). A title with no web build lists only its aggregate check in `required-checks`.
 
-**A red pull request** (a failed check, a check that never finished, a draft, a refused merge) is left
-open and gets one comment naming the failing check and mentioning `owner`. The comment carries the head
-commit, so the same condition seen on every run adds no second comment; a new head that is red again gets
-a new one.
+**A newer repin closes the older one.** When the newest `keel-verified-*` tag is ahead of the pin, the
+title's poll opens the repin for that tag (`workflow-templates/keel-repin.yml` has no `tag` input set, so
+`poll` always resolves the newest verified tag). `settle` then closes an older open repin pull request on
+the same repository with one comment naming the newer one, so only the newest repin stays live and a title
+never carries two red repin pull requests. The older one's branch is kept, so closing and deleting the
+branch is what has the next poll rebuild that tag.
+
+**A stalled check is waiting, not red.** An unfinished check whose runner has not picked the job up is the
+queue, not the change: nothing about the pull request is wrong. `settle` treats a pending verdict whose
+oldest unfinished check has waited `STALL_MINUTES` (20) as stalled, leaves the pull request open, and adds
+one comment saying the runner has not picked the job up. The next scheduled run reads the same head and
+merges it as soon as the checks are green.
+
+**A red pull request** (a failed check, a required check that never appeared, a draft, a refused merge) is
+left open and gets one comment naming the failing check and mentioning `owner`. The comment is keyed by
+the head commit and a one-word kind (`red-`, `stalled-`, `foreign-`, `draft-`, `refused-`), so the same
+condition seen on every run adds no second comment, a head whose reason changes is told once for the new
+kind, and a new head that is red again gets a new one.
 
 **After the merge.** A merge made with the workflow token starts no `push` workflow, so a title that
 deploys on push lists its deploy workflow in `after-merge-workflows`; the bot starts it on the default
@@ -83,6 +100,25 @@ passed since the merge, the run fails and that pull request gets one comment men
 comment carries the live value, so the same wrong value on every run adds no second comment, and a new
 wrong value gets a new one. Within the grace the deploy is still expected and the run passes with a
 notice. A title with no merged repin pull request is not compared.
+
+## Where the bot does not merge on its own
+
+The action implements one rule for every title; a title that must not have its pin merged by a machine
+turns off its own `settle` job in its `keel-repin.yml`, rather than the action carrying a list of
+exceptions. Two kinds of title do that today:
+
+- **A title with real players.** The Fun titles (瘋系列), HK Mahjong Tycoon and Big2 Tycoon HK have real
+  users, and a change that reaches one takes one independent review and a guest-continuity check before
+  it ships ([SylphxAI/owner](https://github.com/SylphxAI/owner) `AGENTS.md`, "Real users"). `Cubeage/
+  fun-big2-keel`, `fun-mahjong-keel`, `block-sort-keel`, `godsmith-keel` and `planet-post-keel` therefore
+  carry `if: ${{ vars.KEEL_REPIN_AUTOMERGE == 'true' }}` on `settle`, with the guest-continuity line in
+  their comment; the bot still polls, opens the pull request and starts CI, and a person merges it. The
+  `KEEL_REPIN_AUTOMERGE` repository variable is unset in each of them, so `settle` is skipped.
+- **A delivered customer repository.** No work goes into one unless the customer asks, so a repository
+  whose organization custom property `sylphx_delivery` is `delivered` must not carry `keel-repin.yml` at
+  all. The property is an organization setting an action cannot read at run time; it is enforced where a
+  title is registered (the workflow file is added), and the settle job's `if:` is the switch if one is
+  ever registered. No `delivered` repository carries the workflow today.
 
 ## Permissions
 
@@ -172,7 +208,8 @@ hook paths, one PR on repeat and an owned draft on a failed build.
 | `ci-workflows` | Workflow files started on the branch, in order. Default `ci.yml`. The web smoke must be among the checks they produce. |
 | `required-checks` | settle: checks that must have succeeded on the head. Default `ci-ok web-smoke`. |
 | `owner` | Who a failed-build draft or red settle comment mentions, such as `@Cubeage/studio`. |
-| `max-wait-minutes` | settle: how long a required check may stay unfinished. Default 360. |
+| `max-wait-minutes` | settle: how long a required check may be absent before the pull request turns red. |
+| `stall-minutes` | settle: how long an unfinished check may wait before its run says the runner has not picked the job up. Default 20; the pull request is never merged on a stalled check and never called red for one. |
 | `after-merge-workflows` | settle: workflows started on the default branch after the merge. |
 | `live-url` | settle: the deployed title's host; the merged repin is settled only when its `VERSION.json` `keel` field is the merged commit. Empty: no live check. |
 | `live-grace-minutes` | settle: how long after the merge the deploy may take before a wrong live Keel fails the run. Default 60. |
@@ -184,8 +221,10 @@ held at two Keel commits (against real cargo when it is installed), the draft na
 repository the build could not read, poll (ahead, behind, pinned,
 pull request exists), the build check, the draft pull request, supersession of older repin pull
 requests, CI dispatch order, workflow files named and never edited, settle (merges only on every
-required check green on the exact head and pinned to it; waits on a missing or unfinished check; red
-on any failure, a stranger's commit or a draft means no merge; one comment per head; the newest run of
-a name decides; another App's check does not count; the queue retry; the after-merge dispatch), no
-approve call anywhere, the permission scopes, the 10-minute cadence, and no GitHub-hosted runner label. A consumer run:
+required check green on the exact head and pinned to it; waits on a missing or unfinished check; a
+skipped required check counts as absent; a check nobody has picked up says so and stays open rather
+than turning red; red on a failure, a stranger's commit or a draft means no merge; one comment per
+head and kind; the newest run of a name decides; another App's check does not count; the queue retry;
+the after-merge dispatch), no approve call anywhere, the permission scopes, the 10-minute cadence, and
+no GitHub-hosted runner label. A consumer run:
 `workflow_dispatch` the title's `keel-repin.yml` with `dry_run` true.

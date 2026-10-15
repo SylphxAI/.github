@@ -16,4 +16,5 @@ SylphxAI/agents	^scripts/egress-client-allowlist\.json$	egress policy that admit
 SylphxAI/work	^src/(main|v2_act)\.rs$	chat administration with the bot's own rights (topics, pins, bans)
 SylphxAI/infra	^status/worker/	platform paging: the out-of-cell status worker
 SylphxAI/infra	^infra/addons/monitoring/	platform paging: Alertmanager receiver, alert digest and alert tickets
+SylphxAI/infra	^infra/addons/cilium-l2/manifests/notify-chat-egress\.yaml$	Notify production API's exact-host chat egress policy; not other callers or platform-wide denial
 SylphxAI/.github	^\.github/actions/chat-senders/	this check's own host list

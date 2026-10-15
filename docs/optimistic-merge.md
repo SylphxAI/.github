@@ -121,6 +121,39 @@ Release keeps waiting releases instead of dropping them on each new commit
 (cloud#10373 live in production). Until then the declaration speeds the
 queue, and deploys stay as they are.
 
+## The red-main handler
+
+When `verify.yml` concludes a failure on the trunk, the caller's
+`.github/workflows/red-main.yml` invokes the shared handler. It never reruns:
+a real failure is traced to its first-bad commit and reverted through the
+queue, and a flake is quarantined. An **infrastructure** failure is never
+reverted.
+
+Classification is per failing step's TERMINAL ERROR, never per job. A run is
+infrastructure only when every failing step's own terminal error is an
+infrastructure signature (installation-token mint, artifact upload, cache 403,
+runner set-up, checkout, or a job that died with a lost runner). A test
+assertion, a clippy or build error, or any other project-code failure is a
+**code fault even when the same job also logged infrastructure-shaped noise**
+(ENOSPC, a cache warning). A job-level "any infra signature anywhere" rule once
+let a real `AssertionError` hide behind an unrelated ENOSPC line, the handler
+emitted `verdict=infra`, skipped its confirmation, trace and revert, and exited
+0 while the trunk stayed red for three days. The programs that decide this are
+checked in under [`.github/red_main/`](../.github/red_main/) and unit-tested
+(`tests/test_red_main_infra.py`), not embedded in the workflow.
+
+An infrastructure verdict **escalates visibly**: the handler opens one issue
+labelled `red-main-infra` and the owner label (and comments on the ops issue),
+so the report reaches a person instead of only a run's step summary. When the
+handler itself fails it opens one issue labelled `red-main-broken`.
+
+**Watch the watcher.** The caller's `red-main.yml` also runs `main-red-gate`
+in `mode: watch` on a 15-minute schedule: when the trunk has stayed red past
+`watch-limit-minutes` (default 30), whatever the handler's verdict was, it
+files one issue labelled `red-main-red-watchdog` and the owner label. It
+reverts nothing and dispatches nothing; a safety net that fails silently is
+worse than none.
+
 ## Stop the line on a red trunk
 
 This is Chromium's tree closure for our merge queue: a failing tree-closer
@@ -162,7 +195,11 @@ benchmark or nightly) never makes the trunk red here.
 ## The shared pieces
 
 - [`main-red-gate`](../.github/actions/main-red-gate/action.yml): the red-trunk
-  admission rule above; `mode`, `verify-workflow` and `fix-label` inputs.
+  admission rule above; `mode`, `verify-workflow` and `fix-label` inputs. Its
+  `mode: watch` is the scheduled half of the andon (see
+  [the red-main handler](#the-red-main-handler)): it files one issue labelled
+  `red-main-red-watchdog` when the trunk has stayed red past
+  `watch-limit-minutes` (default 30), whatever the handler's verdict was.
 - [`ci-range`](../.github/actions/ci-range/action.yml): the range and the lane
   selection, the same answer in the gate and in verify. Lanes are
   `name: path globs`; a change under `.github/` runs every lane. Use its
@@ -199,7 +236,10 @@ benchmark or nightly) never makes the trunk red here.
   unknown, never treat it as success or terminal no-action. Destructive revert
   requires authenticated failure plus a trusted authenticated baseline.
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
-  `verified` verdict. Skipped passes; failed or cancelled fails; `required:
+  `verified` verdict. Skipped passes; failed fails; a cancelled dependency is
+  reported CANCELLED (naming a superseded push from a stopped run) and does not
+  fail, because a pull-request push cancels the run before it while nothing was
+  wrong and the rerun settles it; `required:
   plan` makes a broken plan a failure. `required-unless-merge-group: suite`
   (the PR-time jobs) makes a skipped job a failure on every event but
   `merge_group`, so a dispatch run cannot post a green verdict over a red one.
@@ -382,12 +422,14 @@ Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
 pull-request backlog. The gate starter already uses it.
 
 The verdict jobs (`ci-ok`, `verified`) run on `sylphx-linux-control`, the
-reserved gate pool, on every event; it has no `-merge` twin. A verdict keeps
-`if: always()`, so a cancelled run still reports a failure instead of a
-skipped check, which GitHub counts as passing. It therefore runs after every
-cancel, and the cancelled run holds its concurrency group until it has: on a
-busy build pool that left a pull request's next run pending with no jobs
-(SylphxAI/agents#4222, 2026-10-02).
+reserved gate pool; it has no `-merge` twin. Use `if: always() && !cancelled()`:
+real dependency failures still produce a red verdict, but a workflow cancelled
+by PR concurrency must not report a stale red aggregate beside the replacement
+run for the same head. Cancellation also must not hold the concurrency group
+while the old verdict waits for a runner. When the verdict does execute in a
+current run, needs-pass reports a `cancelled` dependency as CANCELLED and does
+not fail on it (a lane cancelled while the verdict job still ran is
+not a red check); a genuine failure still fails it.
 
 Private repositories run every job on our runners: `sylphx-linux-standard`
 for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`

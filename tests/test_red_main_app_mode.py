@@ -32,19 +32,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.red_main_programs import program
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 
 
 def embedded(name: str) -> str:
-    lines = WORKFLOW.read_text().splitlines()
-    start = lines.index(f"      {name}: |") + 1
-    body = []
-    for line in lines[start:]:
-        if line.strip() and not line.startswith("        "):
-            break
-        body.append(line[8:])
-    return "\n".join(body) + "\n"
+    """The checked-in program for a former `<NAME>_PY`/`LIB` heredoc key."""
+    return program({"LIB": "lib.sh"}[name])
 
 
 def step(name: str) -> str:

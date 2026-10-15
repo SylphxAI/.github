@@ -81,8 +81,8 @@ class JunitDiscoveryTest(unittest.TestCase):
         self.exercise_fetch(miss=True)
 
     def test_sharded_nested_reports_keep_exact_test_and_job_identity(self):
-        workflow = yaml.safe_load((ROOT / '.github/workflows/red-main.yml').read_text())
-        env = workflow['jobs']['red-main']['env']
+        junit_py = (ROOT / '.github/red_main/junit.py').read_text()
+        window_py = (ROOT / '.github/red_main/window.py').read_text()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             report = root / 'junit-rust-test-701/nested'
@@ -91,10 +91,10 @@ class JunitDiscoveryTest(unittest.TestCase):
             (root / '.run-store-lanes.json').write_text(json.dumps({'junit-rust-test-701': 'rust-test (701)'}))
             output = root / 'units.tsv'
             with patch.object(sys, 'argv', ['junit.py', str(root), str(output), 'rust-test (701)']):
-                exec(compile(env['JUNIT_PY'], 'junit.py', 'exec'), {})
+                exec(compile(junit_py, 'junit.py', 'exec'), {})
             self.assertEqual(output.read_text(), 'test\tsuite::broken\trust-test (701)\n')
             namespace = {'__name__': 'fixture'}
-            exec(compile(env['WINDOW_PY'], 'window.py', 'exec'), namespace)
+            exec(compile(window_py, 'window.py', 'exec'), namespace)
             failed, passed, covered = namespace['read_junit'](str(root))
             self.assertEqual(failed, {('suite::broken', 'rust-test (701)')})
             self.assertEqual(passed, {('suite::passing', 'rust-test (701)')})
@@ -106,7 +106,7 @@ class JunitDiscoveryTest(unittest.TestCase):
         self.assertNotIn('gha run download', text)
         self.assertIn('ref: ${{ job.workflow_sha }}', text)
         self.assertEqual(text.count('python3 "$RUN_STORE_JUNIT"'), 3)
-        self.assertIn('env["RUN_STORE_JUNIT"]', text)
+        self.assertIn('env["RUN_STORE_JUNIT"]', (ROOT / '.github/red_main/window.py').read_text())
         producer = (ROOT / 'workflow-templates/optimistic-verify.yml').read_text()
         self.assertNotIn('actions/upload-artifact', producer)
         self.assertIn('name: run-store put junit-integration', producer)

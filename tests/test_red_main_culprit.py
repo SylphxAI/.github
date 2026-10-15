@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the red-main culprit rule (CULPRIT_PY in red-main.yml).
+"""Tests for the red-main culprit rule (.github/red_main/culprit.py).
 
 Every candidate is verified at once; the culprit is the oldest failure whose
 older candidates all passed. A cancelled, timed-out or unfinished run is
@@ -13,24 +13,12 @@ import sys
 import unittest
 from pathlib import Path
 
+from tests.red_main_programs import program
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 
-
-def embedded(name: str) -> str:
-    """The block scalar `name: |` in the workflow env, dedented (no YAML dependency)."""
-    lines = WORKFLOW.read_text().splitlines()
-    start = lines.index(f"      {name}: |") + 1
-    body = []
-    for line in lines[start:]:
-        if line.strip() and not line.startswith("        "):
-            break
-        body.append(line[8:])
-    return "\n".join(body) + "\n"
-
-
-SCRIPT = embedded("CULPRIT_PY")
-
+SCRIPT = program("culprit.py")
 
 def decide(*conclusions: str) -> list[str]:
     """Candidates c1..cN, oldest first, with the given conclusions."""
@@ -80,7 +68,7 @@ def step(name: str) -> str:
     return text[start : end if end != -1 else len(text)]
 
 
-GUARD = embedded("REVERT_GUARD_PY")
+GUARD = program("revert_guard.py")
 
 
 def guard(number: int, labels: list[str], protected_prs: str = "") -> str:
@@ -227,7 +215,7 @@ class TokenModeTest(unittest.TestCase):
             code = "\n".join(l for l in block.splitlines() if not l.strip().startswith("#"))
             has = re.search(r'\bgha\b|\bclassify_run\b|\bread_proof\b|\bpython3\s+"[^"\n]*/proof\.py"', code) is not None
             self.assertEqual("ACTIONS_TOKEN: ${{ github.token }}" in block, has, block[:60])
-        self.assertIn('gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }', text)
+        self.assertIn('gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }', program("lib.sh"))
         # No raw `gh` call on an Actions endpoint: it would use the App token.
         for line in text.splitlines():
             code = line.strip()

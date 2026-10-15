@@ -15,12 +15,22 @@ name: Red main
 # `workflow_dispatch` is how a classification is rehearsed without waiting for
 # a red main: with no event run, the handler takes the newest failed run of
 # the verify workflow on main.
+#
+# The `red-watchdog` job watches the watcher: on a schedule it alerts when the
+# trunk has stayed red past 30 minutes, whatever the handler's verdict was. A
+# report the handler writes can sit unseen (an infrastructure verdict reverts
+# nothing), and a trunk once stayed red for three days with every reader taking
+# the passing handler run as healthy.
 
 on:
   workflow_run:
     workflows: ["Verify"]
     types: [completed]
   workflow_dispatch:
+  # Every 15 minutes, off the hour so it does not collide with the nightly
+  # verify. It reads the trunk state and files one issue past the limit.
+  schedule:
+    - cron: "*/15 * * * *"
 
 # The job's own token. It carries every Actions call (dispatch, runs,
 # artifacts) and the failure notice, in every mode; the handler never hands it
@@ -40,11 +50,12 @@ jobs:
   red-main:
     name: Red main handler
     # Only a failed run of the verify workflow on the trunk (the repository's
-    # default branch, `main` or `master` alike). A dispatch is always handled.
+    # default branch, `main` or `master` alike). A dispatch is always handled;
+    # the scheduled run is the watchdog's, not the handler's.
     if: >-
       github.event_name == 'workflow_dispatch'
-      || (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_branch == github.event.repository.default_branch)
-    uses: SylphxAI/.github/.github/workflows/red-main.yml@0e60d27730cdd0148c5649881d82c5bd58996931 # main 0e60d27 (SylphxAI/.github#211, pin floor)
+      || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_branch == github.event.repository.default_branch)
+    uses: SylphxAI/.github/.github/workflows/red-main.yml@8bbd9a31a5f0364e4f286e4bf675d7f01c0abea2 # main 8bbd9a3 (SylphxAI/.github#260, classify by step terminal error; pin floor)
     # One secret, passed by name. The handler needs exactly the builder App's
     # private key, and `secrets: inherit` would hand it every secret this
     # repository holds. The handler reads it as
@@ -59,3 +70,16 @@ jobs:
     # so the handler's own job enters it and reads the key from it.
     with:
       verify-workflow: verify.yml
+
+  # Watch the watcher: file one issue when the trunk has stayed red past 30
+  # minutes, whatever the handler's verdict was. It reverts nothing.
+  red-watchdog:
+    name: Watch the trunk
+    if: github.event_name == 'schedule'
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 5
+    steps:
+      - uses: SylphxAI/.github/.github/actions/main-red-gate@main
+        with:
+          mode: watch
+          watch-limit-minutes: "30"

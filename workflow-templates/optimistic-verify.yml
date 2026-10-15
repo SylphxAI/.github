@@ -94,12 +94,11 @@ jobs:
   # only after a merge).
   verified:
     name: verified
-    if: always()
+    if: always() && !cancelled()
     needs: [plan, integration, e2e]
-    # The reserved gate pool (Kueue queue scale-set-gate, never lends): an
-    # `if: always()` verdict still runs after its run is cancelled, and that run
-    # keeps its concurrency group until it does, so on a busy build pool a
-    # superseded run held the next one (SylphxAI/agents#4222, 2026-10-02).
+    # The current workflow's verdict has a reserved seat; cancelled workflows
+    # must not publish a stale aggregate after their cancellation, and a lane a
+    # cancellation left `cancelled` is reported CANCELLED rather than failed.
     runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
