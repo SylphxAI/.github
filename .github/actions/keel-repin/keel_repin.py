@@ -27,9 +27,14 @@ Steps, run from the repository root (the action calls them in this order):
   keel_repin.py settle [--required "ci-ok web-smoke"] [--owner @team] [--dry-run]
       For every open repin pull request: merge it when, and only when, every required check ran on
       its exact head commit and succeeded, no check on that commit failed, it is not a draft, and
-      every commit on it is the bot's own. A red pull request is left open with one comment that
-      names the failing check and the owner; a pending one is left for the next run. Idempotent:
-      it keeps no state, so the title's schedule just runs it again.
+      every commit on it is the bot's own. An older repin pull request is closed with one comment when
+      a newer tag's repin is open, so only the newest stays live. A red pull request is left open with
+      one comment that names the failing check and the owner; a required check that has not finished is
+      not a failure: once it has waited STALL_MINUTES the pull request gets one comment saying the
+      runner has not picked the job up, and the next run reads the same head again. A check run
+      `skipped` on a required name counts as absent. A pending check whose required name has never
+      appeared turns the pull request red after --max-wait-minutes. Idempotent: it keeps no state, so
+      the title's schedule just runs it again.
       With --live-url, a merged repin is settled only once the live title runs it: the newest merged
       repin pull request's commit must equal the `keel` field of <live-url>/VERSION.json. A missing
       or different field fails the run (after --live-grace-minutes from the merge, the deploy's
@@ -79,6 +84,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 UNREADABLE_RE = re.compile(r"git fetch [^\n]*?'https://github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?'")
 DEFAULT_REQUIRED = "ci-ok web-smoke"
 DEFAULT_MAX_WAIT_MINUTES = 360
+STALL_MINUTES = 20
 
 
 class Refused(Exception):
@@ -753,6 +759,10 @@ def classify(check_runs, required):
     under the same name). Of several runs with one name (a re-run) the newest decides. Any failed check
     on the commit makes it red, required or not; a required check that has not appeared, or has not
     finished, keeps it pending.
+
+    A check that ended `skipped` counts for nothing: GitHub reports a job skipped by its own `if:` that
+    way, and a skipped required check has not verified anything. So a required name whose newest run is
+    `skipped` is treated as absent and keeps the pull request waiting.
     """
     latest = {}
     for r in check_runs:
@@ -770,6 +780,8 @@ def classify(check_runs, required):
             pending.append(f"`{name}` has not run")
         elif r["status"] != "completed":
             pending.append(f"`{name}` is {r['status']}")
+        elif r["conclusion"] == "skipped":
+            pending.append(f"`{name}` was skipped, so it has not verified anything")
         elif r["conclusion"] != "success":
             return "red", [f"`{name}` ended {r['conclusion']}, not success"]
     for n, r in latest.items():
@@ -791,35 +803,45 @@ def repo_name():
 
 def head_check_runs(repo, sha):
     out = gh_json(["api", "--paginate", f"repos/{repo}/commits/{sha}/check-runs?per_page=100"],
-                  '.check_runs[] | [.id, .name, .status, (.conclusion // ""), (.app.slug // ""), .html_url] | @tsv')
+                  '.check_runs[] | [.id, .name, .status, (.conclusion // ""), (.app.slug // ""), .html_url, (.started_at // "")] | @tsv')
     runs = []
     for line in out.splitlines():
         if line.strip():
-            i, name, status, conclusion, app, url = line.split("\t")
-            runs.append({"id": int(i), "name": name, "status": status, "conclusion": conclusion, "app": app, "url": url})
+            i, name, status, conclusion, app, url, started = line.split("\t")
+            runs.append({"id": int(i), "name": name, "status": status, "conclusion": conclusion, "app": app,
+                         "url": url, "started_at": started})
     return runs
 
 
-def commit_emails(repo, number):
-    out = gh_json(["api", "--paginate", f"repos/{repo}/pulls/{number}/commits?per_page=100"], ".[].commit.author.email")
-    return [e for e in out.split() if e]
+def already_told(number, sha, kind=""):
+    """Whether this head and kind of reason already carry a comment on the pull request.
 
-
-def already_told(number, sha):
+    One reason per head per kind, so the same condition seen on every scheduled run adds no second
+    comment, and a head whose reason changes (a failure became a stall, or the reverse) is told once
+    for the new kind.
+    """
     out = gh_json(["pr", "view", str(number), "--json", "comments"], ".comments[].body")
-    return f"{RED_MARKER}{sha} " in out
+    return f"{RED_MARKER}{kind}{sha} " in out
 
 
-def tell_red(number, tag, sha, owner, problems, draft, dry):
+def tell_red(number, tag, sha, owner, problems, draft, dry, kind="", pending=False, waited=None):
     who = f"{owner} " if owner else ""
-    if draft:
+    age = f" after {int(waited)} minutes" if waited is not None else ""
+    if pending:
+        # A check that has not finished is not a failure: the runners may simply be busy. The bot keeps
+        # waiting and re-reads the head on its next run; nothing here says the pull request is red.
+        text = (f"{who}The Keel repin to `{tag}` is waiting, not red: " + "; ".join(problems) + f" on `{sha[:9]}`{age}. "
+                "A required check that has not finished is not a failure, so the bot leaves this pull request open and "
+                "re-reads its head on the next run; it merges as soon as CI and the web smoke are green on that exact head. "
+                "Fix or restart the check, or close the pull request and delete the branch to stop the repin.")
+    elif draft:
         text = (f"{who}The Keel repin to `{tag}` is a draft: the build does not pass on the new tag. "
                 "The bot leaves the branch alone; fix it here, mark it ready, and merge it once CI and the web smoke pass on the new head.")
     else:
         text = (f"{who}The Keel repin to `{tag}` is not merged: " + "; ".join(problems) + f" on `{sha[:9]}`. "
                 "Fix it on this branch, or close the pull request and delete the branch so the next poll rebuilds it. "
                 "The bot merges only when CI and the web smoke are green on the exact head.")
-    text += f"\n\n{RED_MARKER}{sha} -->"
+    text += f"\n\n{RED_MARKER}{kind}{sha} -->"
     if dry:
         print(f"DRY RUN: would comment on #{number}:\n{text}")
         return
@@ -883,37 +905,153 @@ def settle_live(args, now):
     return 1
 
 
+def check_age_minutes(run, now):
+    """How long a check run has been sitting unfinished, in minutes.
+
+    GitHub stamps `started_at` when the job begins and leaves it blank while the job waits for a runner,
+    so a job nobody has picked up still counts, from the oldest stamp among the unfinished ones.
+    """
+    stamp = run.get("started_at") or run.get("created_at")
+    if not stamp:
+        return 0.0
+    try:
+        return max(0.0, (now - calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))) / 60)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def wait_reason(why, runs, required, now):
+    """A pending verdict and the sentence naming it: a stalled check, when the age points at the queue."""
+    ages = [check_age_minutes(r, now) for r in runs if r.get("status") != "completed"]
+    if not ages or max(ages) < STALL_MINUTES:
+        return "pending", why
+    missing = [w for w in why if "has not run" in w]
+    label = f"`{required[0]}`" if missing and required else "a required check"
+    if missing and len(missing) == len(why):
+        return "stalled", [f"{label} has not started after {int(max(ages))} minutes, so its runner has not picked the job up"]
+    return "stalled", ["a check has not finished after "
+                       f"{int(max(ages))} minutes, so its runner has not picked the job up", *why]
+
+
+def foreign_commits(repo, number, sha, branch):
+    """The pull request's own commits on the head that are not the bot's, newest first, as (sha, subject).
+
+    Every commit of a pull request created with the workflow token carries the bot's email, so a commit
+    with any other author or committer email is a person's push to the branch. The pull request's commit
+    list rides the same call that already fetched the head, and a repin branch holds a handful of commits,
+    so the head's own commits (beyond the trusted prefix) are the ones questioned. A branch whose history
+    a person rebased away is judged by the list alone.
+    """
+    out = gh_json(["api", "--paginate", f"repos/{repo}/pulls/{number}/commits?per_page=100"],
+                  '.[] | [.sha, (.commit.message | split("\\n")[0]), .commit.author.email, .commit.committer.email] | @tsv')
+    listed = []
+    for line in out.splitlines():
+        if "\t" not in line:
+            continue  # blank or short output (the fake in a test, an empty page)
+        commit, subject, author, committer = line.split("\t", 3)
+        listed.append({"sha": commit, "message": subject, "emails": {author, committer}})
+    if not any(c["sha"] == sha for c in listed):
+        print(f"the commit list does not carry {sha[:9]}; {branch} is judged by the list it returns")
+        return []
+    trusted = False
+    foreign = []
+    for commit in listed:
+        if commit["emails"] == {BOT_EMAIL}:
+            trusted = True
+            continue
+        if trusted:
+            foreign.append((commit["sha"], commit["message"]))
+    return list(reversed(foreign))
+
+
+def newer_repins(number, tag, prs):
+    """The open repin pull requests whose tag is newer than this one: [(number, tag), ...]."""
+    mine = tag_key(tag)
+    newer = []
+    for other_number, other_branch in prs:
+        if other_number == number:
+            continue
+        other_tag = other_branch[len(BRANCH_PREFIX):]
+        key = tag_key(other_tag)
+        if mine and key and key > mine:
+            newer.append((other_number, other_tag))
+    return sorted(newer, key=lambda item: tag_key(item[1]))
+
+
+def close_superseded(number, newer, dry):
+    """Close an older repin pull request with one comment naming the newer one that replaces it."""
+    listing = ", ".join(f"#{n} (`{t}`)" for n, t in newer)
+    body = (f"This repin is superseded by {listing}, a newer Keel tag on the same repository. "
+            "Only the newest repin pull request stays live, so this one is closed. "
+            "Its branch is kept: close and delete it to have the next poll rebuild it.")
+    print(f"#{number} is superseded by {listing}")
+    if dry:
+        print(f"DRY RUN: would close #{number}:\n{body}")
+        return
+    run([*gh_bin(), "pr", "close", number, "--comment", body], check=False)
+
+
 def cmd_settle(args):
     repo = repo_name()
     required = args.required.split()
     prs = gh_json(["pr", "list", "--state", "open", "--limit", "50", "--json", "number,headRefName,headRefOid,isDraft,createdAt"],
                   '.[] | select(.headRefName | startswith("' + BRANCH_PREFIX + '")) | [.number, .headRefName, .headRefOid, .isDraft, .createdAt] | @tsv')
     now = time.time() if args.now is None else args.now
+    rows = []
     for line in prs.splitlines():
         if not line.strip():
             continue
         number, branch, sha, draft, created = line.split("\t")
+        rows.append((number, branch, sha, draft == "true", created))
+    # Newest tag first: the newest repin is settled (or told why not) before an older one is closed.
+    rows.sort(key=lambda row: tag_key(row[1][len(BRANCH_PREFIX):]), reverse=True)
+    for number, branch, sha, draft, created in rows:
         tag = branch[len(BRANCH_PREFIX):]
-        draft = draft == "true"
         age_min = (now - calendar.timegm(time.strptime(created, "%Y-%m-%dT%H:%M:%SZ"))) / 60
+        # An older pull request of a newer tag is closed. Closing is keyed on the tag in the branch name,
+        # never on order, so a row read again after its own merge cannot close the surviving newest one.
+        greater = newer_repins(number, tag, [(n, b) for n, b, _s, _d, _c in rows])
+        if greater:
+            close_superseded(number, greater, args.dry_run)
+            continue
         if draft:
-            if not already_told(number, sha):
-                tell_red(number, tag, sha, args.owner, [], True, args.dry_run)
+            if not already_told(number, sha, "draft-"):
+                tell_red(number, tag, sha, args.owner, [], True, args.dry_run, kind="draft-")
             print(f"#{number} {tag}: draft, left for the owner")
             continue
-        strangers = sorted(set(commit_emails(repo, number)) - {BOT_EMAIL})
-        if strangers:
-            print(f"#{number} {tag}: has commits that are not the bot's; a person merges it")
-            continue
-        verdict, why = classify(head_check_runs(repo, sha), required)
+        runs = head_check_runs(repo, sha)
+        verdict, why = classify(runs, required)
+        if verdict == "green":
+            strangers = foreign_commits(repo, number, sha, branch)
+            if strangers:
+                # A person pushed to the branch, often a deliberate fix to the pinned rev. It is never
+                # discarded and never merged by the bot: the reason names the head and the owner hears it.
+                commit, subject = strangers[0]
+                problem = f"it carries `{commit[:9]}` (\"{subject[:120]}\"), which is not the bot's own commit"
+                if not already_told(number, sha, "foreign-"):
+                    tell_red(number, tag, sha, args.owner, [problem], False, args.dry_run, kind="foreign-")
+                print(f"#{number} {tag} {sha[:9]}: has commits that are not the bot's; a person merges it")
+                continue
+        elif verdict == "pending":
+            # Only a genuine pending — a required check that ran and has not finished — carries a stalled
+            # one. Red and green never do, so a red verdict stays red and is never re-judged as the queue.
+            verdict, why = wait_reason(why, runs, required, now)
+        waited = max([check_age_minutes(r, now) for r in runs if r.get("status") != "completed"], default=0.0)
         if verdict == "pending" and age_min > args.max_wait_minutes:
             verdict, why = "red", [f"still waiting after {int(age_min)} minutes ({'; '.join(why)})"]
         print(f"#{number} {tag} {sha[:9]}: {verdict} {'; '.join(why)}")
         if verdict == "pending":
             continue
+        if verdict == "stalled":
+            # The runners never picked the job up. That is the queue, not the change, so the pull
+            # request stays open with the reason and the next run re-reads the same head.
+            if not already_told(number, sha, "stalled-"):
+                tell_red(number, tag, sha, args.owner, why, False, args.dry_run, kind="stalled-", pending=True,
+                         waited=waited)
+            continue
         if verdict == "red":
-            if not already_told(number, sha):
-                tell_red(number, tag, sha, args.owner, why, False, args.dry_run)
+            if not already_told(number, sha, "red-"):
+                tell_red(number, tag, sha, args.owner, why, False, args.dry_run, kind="red-")
             continue
         if args.dry_run:
             print(f"DRY RUN: would merge #{number} at {sha}")
@@ -923,7 +1061,10 @@ def cmd_settle(args):
         if p.returncode != 0 and re.search(r"--auto|merge queue", p.stderr + p.stdout):
             p = run([*cmd, "--auto"], check=False)
         if p.returncode != 0:
-            tell_red(number, tag, sha, args.owner, [f"the merge was refused: {(p.stderr or p.stdout).strip()[-200:]}"], False, False)
+            if not already_told(number, sha, "refused-"):
+                tell_red(number, tag, sha, args.owner,
+                         [f"the merge was refused: {(p.stderr or p.stdout).strip()[-200:]}"], False, False,
+                         kind="refused-")
             continue
         print(f"merged (or queued) #{number} at {sha[:9]}")
         state = gh_json(["pr", "view", number, "--json", "state"], ".state").strip()
