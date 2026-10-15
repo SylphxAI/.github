@@ -60,6 +60,12 @@ jobs:
       - name: Lint authenticated JUnit consumer workflows
         uses: ./.github/actions/workflow-lint
         with:
+          # `job.workflow_sha` is a real reusable-workflow context the bundled
+          # actionlint schema does not know; `.github/actionlint.yaml` documents
+          # the accepted warning, so the consumer's checkout ref is ignored here
+          # the same way the image lane's is.
+          ignore: |
+            property "workflow_sha" is not defined
           args: |
             .github/workflows/project-control.yml
             .github/workflows/junit-consumer.yml
