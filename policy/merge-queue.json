@@ -56,6 +56,36 @@
         { "context": "review-ok", "integration_id": 5155317 }
       ],
       "reason": "First review gate rollout after producer installation, backfill, live posting and alert readiness."
+    },
+    {
+      "repo": "SylphxAI/work",
+      "ruleset": "sylphx-merge-queue",
+      "ruleset_id": 24403812,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
+    },
+    {
+      "repo": "SylphxAI/desk-tools",
+      "ruleset": "sylphx-merge-queue",
+      "ruleset_id": 24403587,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
+    },
+    {
+      "repo": "SylphxAI/.github",
+      "ruleset": "sylphx-merge-queue",
+      "ruleset_id": 20321046,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
     }
   ],
   "fast_gate_overrides": [
