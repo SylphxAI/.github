@@ -11,8 +11,8 @@ Steps, run from the repository root (the action calls them in this order):
 
   keel_repin.py run --tag keel-verified-2026-10-03-1|latest [--check-command CMD] [--report FILE]
       Resolve the tag to its commit, rewrite every Keel pin, refresh Cargo.lock for the
-      Keel crates, run the check command, and write a report. Never fails because the
-      build is broken: the break goes in the report so the pull request shows it.
+      Keel crates, run the target release's migrate --check and the build check, and write
+      a report. A failed migration or build goes in the report so the pull request shows it.
 
   keel_repin.py pr --report FILE [--dry-run]
       Branch, commit, push and open (or report) the pull request. A broken build opens it
@@ -445,6 +445,28 @@ def cmd_layer_run(args):
     return 0
 
 
+def check_migrations(root, remote, tag, sha, log):
+    """Run the target release's migration check, not a CLI already on PATH."""
+    with tempfile.TemporaryDirectory() as d:
+        source = str(Path(d) / "source")
+        try:
+            checkout_layer(remote, sha, source)
+        except Refused as error:
+            log.append(str(error))
+            return "migrate"
+        binary = Path(d) / "bin"
+        installer = Path(source) / "scripts/install_cli.sh"
+        commands = (["bash", str(installer), remote, tag, str(binary)],
+                    [str(binary / "keel"), "migrate", "--check"])
+        env = {**os.environ, "GH_TOKEN": os.environ.get("KEEL_API_TOKEN", "")}
+        for cmd in commands:
+            proc = run(cmd, cwd=root, check=False, env=env)
+            log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
+            if proc.returncode:
+                return "migrate"
+    return None
+
+
 def cmd_run(args):
     if args.layer != "keel":
         return cmd_layer_run(args)
@@ -483,6 +505,8 @@ def cmd_run(args):
     else:
         rewrite(root, old, sha, args.tag)
         stage = refresh_locks(root, log, old)
+    if stage is None:
+        stage = check_migrations(root, args.remote, args.tag, sha, log)
     if stage is None and args.check_command:
         proc = run(["bash", "-c", args.check_command], cwd=Path(root, args.check_dir), check=False)
         log.append(f"$ {args.check_command}\n{proc.stdout}{proc.stderr}")
@@ -541,7 +565,7 @@ def pr_text(report):
             *[f"- `{f}`" for f in report["manual"]],
         ]
     if report["status"] == "failed":
-        what = {"hook": "the repository's repin script", "lock": "the Cargo.lock refresh", "check": "the build check"}[report["stage"]]
+        what = {"hook": "the repository's repin script", "lock": "the Cargo.lock refresh", "migrate": "the migration check", "check": "the build check"}[report["stage"]]
         lines += [
             "",
             f"**Draft: {what} fails on this {'Keel tag' if layer == 'keel' else name + ' commit'}.** The pull request is open as a draft so the break is visible. "

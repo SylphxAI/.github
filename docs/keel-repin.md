@@ -17,7 +17,8 @@ tag) and calls the `keel-repin` action in three modes:
    branch exists: close it to stop the repin; close it and delete the branch to have the next poll
    rebuild it.
 2. **repin** (only when needed): moves every pin, refreshes `Cargo.lock` for the Keel crates,
-   downloads the target tag's prebuilt CLI through its `scripts/install_cli.sh`, and runs
+   and, for Keel-tag repins, downloads the target tag's prebuilt CLI through its
+   `scripts/install_cli.sh` and runs
    `keel migrate --check` from the title repository root before the title's build check.
    A migration failure, including `[mobile.android]` without `[mobile.android.signing]`
    (Keel #5144), opens a failed draft with the migration diagnostic instead of passing
@@ -172,7 +173,7 @@ hook paths, one PR on repeat and an owned draft on a failed build.
 | `dry-run` | Print the pull request it would open and the workflows it would start; push nothing. Rebuilds even if the branch exists. |
 | `reader-app-id`, `reader-app-key` | A read-only App that can read the private Keel repository. |
 | `extra-read-owner`, `extra-read-repos` | Private repositories of one owner that the lock refresh or the build fetches, such as a title kit; list every private git dependency of every tracked `Cargo.lock`. |
-| `check-command`, `check-dir` | The build check. Default `cargo check`. |
+| `check-command`, `check-dir` | The build check and its directory. Default `cargo check`. Keel-tag repins always run `keel migrate --check` from the repository root first, even with a custom or empty build check. |
 | `ci-workflows` | Workflow files started on the branch, in order. Default `ci.yml`. The web smoke must be among the checks they produce. |
 | `required-checks` | settle: checks that must have succeeded on the head. Default `ci-ok web-smoke`. |
 | `owner` | Who a failed-build draft or red settle comment mentions, such as `@Cubeage/studio`. |
@@ -186,7 +187,8 @@ hook paths, one PR on repeat and an owned draft on a failed build.
 `python -m unittest tests.test_keel_repin`: pin discovery and rewrite, the lock refresh of a crate
 held at two Keel commits (against real cargo when it is installed), the draft naming a private
 repository the build could not read, poll (ahead, behind, pinned,
-pull request exists), the build check, the draft pull request, supersession of older repin pull
+pull request exists), the target release's migration check (a stand-in CLI refusal names the
+Android signing migration and prevents the build check), the build check, the draft pull request, supersession of older repin pull
 requests, CI dispatch order, workflow files named and never edited, settle (merges only on every
 required check green on the exact head and pinned to it; waits on a missing or unfinished check; red
 on any failure, a stranger's commit or a draft means no merge; one comment per head; the newest run of

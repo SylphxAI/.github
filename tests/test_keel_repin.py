@@ -257,6 +257,15 @@ class RunTest(unittest.TestCase):
             self.assertIn("Draft: the migration check fails", body)
             self.assertIn("#5144", body)
 
+    def test_an_empty_build_check_does_not_skip_migrations(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, _ = make_keel_remote(base, 'echo "migration still needed"\nexit 1\n')
+            repo = make_title(base, TITLE)
+            rc, rep = self.run_cmd(repo, remote, "")
+            self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "migrate"))
+            self.assertIn("migration still needed", rep["log"])
+
     def test_already_pinned_and_branch_exists_and_no_pin(self):
         with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
