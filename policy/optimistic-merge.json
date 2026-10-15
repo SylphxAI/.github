@@ -4,8 +4,8 @@
   "orgs": ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"],
   "pin_floor": {
     "repo": "SylphxAI/.github",
-    "sha": "0e60d27730cdd0148c5649881d82c5bd58996931",
-    "note": "A red-main caller or main-red-gate pin is conformant when it is this commit or a descendant of it. Move the floor forward when a fix every caller needs lands."
+    "sha": "8bbd9a31a5f0364e4f286e4bf675d7f01c0abea2",
+    "note": "A red-main caller or main-red-gate pin is conformant when it is this commit or a descendant of it. Move the floor forward when a fix every caller needs lands. 8bbd9a3 is #260: the handler classifies a failure by each failing step's terminal error, so a real code fault is no longer swallowed as infrastructure."
   },
   "writer_app_orgs": ["SylphxAI"],
   "writer_app_repos": [],
