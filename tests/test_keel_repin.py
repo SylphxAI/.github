@@ -655,11 +655,12 @@ class SettleTest(unittest.TestCase):
         self.assertIn(f"keel-repin-red:stalled-{HEAD}", comments)
 
     def test_a_skipped_required_check_has_verified_nothing(self):
-        # GitHub reports a job its own `if:` skipped as `skipped`, and a skipped required check is absent.
+        # GitHub reports a job its own `if:` skipped as `skipped`, and a skipped required check is absent,
+        # so the pull request keeps waiting instead of passing the gate.
         runs = [check("ci-ok"), check("web-smoke", "completed", "skipped")]
-        rcs, calls, comments, _ = self.settle({"runs": runs}, now_offset=3600)
+        rcs, calls, comments, _ = self.settle({"runs": runs}, now_offset=60)
         self.assertEqual(self.merges(calls), [])
-        self.assertIn("has not picked the job up", comments)
+        self.assertEqual(comments, "")
 
     def test_the_newest_repin_closes_the_older_one_with_a_comment(self):
         older = "chore/keel-repin-keel-verified-2026-10-05-1"
@@ -667,12 +668,23 @@ class SettleTest(unittest.TestCase):
             {"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"],
                      [4, older, "f" * 40, "false", "2027-01-14T07:00:00Z"]],
              "runs": [check("ci-ok"), check("web-smoke")]})
-        self.assertEqual(self.merges(calls), [])  # the older one is closed, not merged
-        self.assertIn("pr close 4", closes)
-        self.assertIn("#5", closes)
+        self.assertIn("pr close 4", closes)          # the older tag's repin is closed
+        self.assertIn("#5", closes)                  # with a comment naming the newer one
         self.assertIn("keel-verified-2026-10-03-1", closes)
-        # The newest one is neither closed nor held back by the older one still being open.
-        self.assertNotIn("close 5", closes)
+        self.assertEqual(closes.count("pr close"), 1)
+        self.assertEqual(self.merges(calls), [f"pr merge 5 --squash --match-head-commit {HEAD}"])
+
+    def test_the_newest_repin_settles_before_an_older_one_is_closed(self):
+        # Both are open with green heads. The newest is judged first, so its merge can never be
+        # cancelled by a re-read of the older pull request that replaces it.
+        older = "chore/keel-repin-keel-verified-2026-10-05-1"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"],
+                     [4, older, "f" * 40, "false", "2027-01-14T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        merged = self.merges(calls)
+        self.assertEqual(merged, [f"pr merge 5 --squash --match-head-commit {HEAD}"])
+        self.assertIn("pr close 4", closes)
 
     def test_a_newer_repin_does_not_close_the_one_judged(self):
         newer = "chore/keel-repin-keel-verified-2026-10-07-1"

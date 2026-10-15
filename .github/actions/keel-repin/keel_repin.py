@@ -1003,12 +1003,16 @@ def cmd_settle(args):
             continue
         number, branch, sha, draft, created = line.split("\t")
         rows.append((number, branch, sha, draft == "true", created))
+    # Newest tag first: the newest repin is settled (or told why not) before an older one is closed.
+    rows.sort(key=lambda row: tag_key(row[1][len(BRANCH_PREFIX):]), reverse=True)
     for number, branch, sha, draft, created in rows:
         tag = branch[len(BRANCH_PREFIX):]
         age_min = (now - calendar.timegm(time.strptime(created, "%Y-%m-%dT%H:%M:%SZ"))) / 60
-        newer = newer_repins(number, tag, [(n, b) for n, b, _s, _d, _c in rows])
-        if newer:
-            close_superseded(number, newer, args.dry_run)
+        # An older pull request of a newer tag is closed. Closing is keyed on the tag in the branch name,
+        # never on order, so a row read again after its own merge cannot close the surviving newest one.
+        greater = newer_repins(number, tag, [(n, b) for n, b, _s, _d, _c in rows])
+        if greater:
+            close_superseded(number, greater, args.dry_run)
             continue
         if draft:
             if not already_told(number, sha, "draft-"):
