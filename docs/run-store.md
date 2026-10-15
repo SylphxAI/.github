@@ -74,6 +74,58 @@ Outputs: `key`, `found` (get), `bytes`.
 Like `actions/upload-artifact`, a directory's contents are stored (not the
 directory itself), and a single file is unpacked as `<path>/<file name>`.
 
+## JUnit discovery across runs
+
+The gateway has no wildcard/list API. Diagnostic producers MUST explicitly name
+their top-level step `run-store put <name>`, with the same `name` input beginning
+with `junit-`. For matrix jobs expand the same matrix value in both fields, for
+example `run-store put junit-rust-test-${{ matrix.shard }}` and
+`name: junit-rust-test-${{ matrix.shard }}`. Publish passing and failing testcases
+with `if: always()`, `required: "false"` and `continue-on-error: true`.
+
+The action's `get-junit.py <owner/repo> <run-id> <destination>` helper pages the
+authenticated run jobs API (`filter=latest`), validates the run identity and
+discovers exact keys from these step names, excluding skipped producers. It then
+uses the existing exact-name get contract, unpacking each entry into its own
+`<name>` directory. No static lane list or shard limit is assumed.
+The repository id comes from the target repository API, not the shared workflow
+source repository; run ids are always the producer's, including previous and
+candidate runs. Callers need `actions: read`, `contents: read`, `id-token: write`
+and `GH_TOKEN` (or `ACTIONS_TOKEN`) for those metadata reads.
+
+The helper also writes `.run-store-lanes.json`, mapping each stored name to its
+authenticated GitHub job name. Both failed-unit and regression-window parsers
+use that mapping for sharded reports (including nested XML paths), so a test is
+attributed to the actual matrix job rather than a guessed suffix. A partial
+shard fetch publishes no reports: unread diagnostics cannot clear a failed test.
+
+The handler checks out this helper at its own `job.workflow_sha`, never at a
+failing run's commit. BuildCache's event-scoped token remains authoritative:
+dev consumers can read protected entries but cannot overwrite them. Missing,
+expired or unavailable diagnostics retain the handler's lane-evidence fallback;
+they never become proof that a failed test passed.
+
+## Authenticated consumer check
+
+Project control publishes two real nested JUnit fixture shards (1 and 701) through
+run-store. Its completion triggers `junit-consumer-control.yml`, which invokes
+`junit-consumer.yml` in a different run with `actions: read` and `id-token: write`.
+The reusable consumer checks out shared source at `job.workflow_sha`, calls the
+unmocked discovery command and verifies both red-main parsers against the exact
+matrix job names and passing/failing test identities. No GitHub artifact is used.
+Publication, authentication, a missing shard or an identity mismatch fails this
+check rather than silently skipping it. The summary records source SHA, producer
+run URL and producer SHA for the consumer invocation evidence.
+
+To exercise a replacement PR head before merge, first let its normal Project
+control run finish publishing the fixtures. Dispatch the existing
+`project-control.yml` workflow at that PR branch with `junit-producer-run` set to
+that completed producer run ID. The dispatch calls the reusable consumer at the
+selected branch, and `ci-ok` includes its verdict. The automatic completion
+consumer does not duplicate this dispatch. The pre-merge dispatch is necessary
+for a newly added workflow: completion triggers load the default-branch caller.
+These checks need no builder App secret or manually copied credential.
+
 ## Behaviour
 
 - The key is `run-store.v1.<repository id>.<run id>.<name>`. Re-running only

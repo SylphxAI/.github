@@ -23,6 +23,7 @@ job with no junit (it stands for every test of that job).
       other way may hide the target (an earlier step failed, so the target's
       step never ran), so it prints `inconclusive <why>`; else `pass <why>`.
 """
+import json
 import os
 import shutil
 import subprocess
@@ -76,9 +77,16 @@ def read_junit(root):
     failing, passing, covered = set(), set(), set()
     if not os.path.isdir(root):
         return failing, passing, covered
+    lane_map = {}
+    mapping = os.path.join(root, ".run-store-lanes.json")
+    if os.path.isfile(mapping):
+        with open(mapping) as fh:
+            lane_map = json.load(fh)
     for dirpath, _dirs, files in os.walk(root):
         lane = os.path.basename(dirpath)
         lane = lane[len("junit-"):] if lane.startswith("junit-") else lane
+        entry = os.path.relpath(dirpath, root).split(os.sep)[0]
+        lane = lane_map.get(entry, lane)
         for filename in files:
             if not filename.endswith(".xml"):
                 continue
@@ -182,9 +190,8 @@ def live_loader(proof, repo):
             try:
                 env = dict(os.environ)
                 env["GH_TOKEN"] = env.get("ACTIONS_TOKEN") or env.get("GH_TOKEN", "")
-                subprocess.run(["gh", "run", "download", str(run["id"]), "--repo", repo,
-                                "--pattern", "junit-*", "--dir", work],
-                               env=env, capture_output=True, timeout=120)
+                subprocess.run(["python3", env["RUN_STORE_JUNIT"], repo, str(run["id"]), work],
+                               env=env, capture_output=True, timeout=600)
                 return read_junit(work)
             except Exception:
                 return set(), set(), set()

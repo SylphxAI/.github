@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import xml.etree.ElementTree as ElementTree
@@ -16,6 +17,11 @@ if len(sys.argv) > 4:
             if lane and signature:
                 signatures[clean(lane)] = clean(signature)
 
+lane_map = {}
+mapping = os.path.join(root, ".run-store-lanes.json")
+if os.path.isfile(mapping):
+    with open(mapping) as fh:
+        lane_map = json.load(fh)
 if os.path.isdir(root):
     for dirpath, dirnames, filenames in os.walk(root):
         for filename in filenames:
@@ -23,6 +29,8 @@ if os.path.isdir(root):
                 continue
             lane = os.path.basename(dirpath)
             lane = lane[len("junit-"):] if lane.startswith("junit-") else lane
+            entry = os.path.relpath(dirpath, root).split(os.sep)[0]
+            lane = lane_map.get(entry, lane)
             try:
                 tree = ElementTree.parse(os.path.join(dirpath, filename))
             except Exception:
