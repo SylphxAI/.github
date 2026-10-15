@@ -245,6 +245,12 @@ jobs:
       contents: read
       actions: read
       id-token: write
+      # A caller-owned build-command may copy an image from a private GHCR
+      # package (the mirror form of this lane). A reusable workflow's job
+      # permissions are the intersection with the caller's, so this grant is
+      # what lets the caller read such a package with github.token; without it
+      # GHCR answers MANIFEST_UNKNOWN for a digest that exists.
+      packages: read
     outputs:
       image_tag: ${{ steps.readback.outputs.image_tag }}
       digest: ${{ steps.readback.outputs.digest }}
