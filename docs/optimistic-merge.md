@@ -120,6 +120,39 @@ Release keeps waiting releases instead of dropping them on each new commit
 (cloud#10373 live in production). Until then the declaration speeds the
 queue, and deploys stay as they are.
 
+## The red-main handler
+
+When `verify.yml` concludes a failure on the trunk, the caller's
+`.github/workflows/red-main.yml` invokes the shared handler. It never reruns:
+a real failure is traced to its first-bad commit and reverted through the
+queue, and a flake is quarantined. An **infrastructure** failure is never
+reverted.
+
+Classification is per failing step's TERMINAL ERROR, never per job. A run is
+infrastructure only when every failing step's own terminal error is an
+infrastructure signature (installation-token mint, artifact upload, cache 403,
+runner set-up, checkout, or a job that died with a lost runner). A test
+assertion, a clippy or build error, or any other project-code failure is a
+**code fault even when the same job also logged infrastructure-shaped noise**
+(ENOSPC, a cache warning). A job-level "any infra signature anywhere" rule once
+let a real `AssertionError` hide behind an unrelated ENOSPC line, the handler
+emitted `verdict=infra`, skipped its confirmation, trace and revert, and exited
+0 while the trunk stayed red for three days. The programs that decide this are
+checked in under [`.github/red_main/`](../.github/red_main/) and unit-tested
+(`tests/test_red_main_infra.py`), not embedded in the workflow.
+
+An infrastructure verdict **escalates visibly**: the handler opens one issue
+labelled `red-main-infra` and the owner label (and comments on the ops issue),
+so the report reaches a person instead of only a run's step summary. When the
+handler itself fails it opens one issue labelled `red-main-broken`.
+
+**Watch the watcher.** The caller's `red-main.yml` also runs `main-red-gate`
+in `mode: watch` on a 15-minute schedule: when the trunk has stayed red past
+`watch-limit-minutes` (default 30), whatever the handler's verdict was, it
+files one issue labelled `red-main-red-watchdog` and the owner label. It
+reverts nothing and dispatches nothing; a safety net that fails silently is
+worse than none.
+
 ## Stop the line on a red trunk
 
 This is Chromium's tree closure for our merge queue: a failing tree-closer
@@ -161,7 +194,11 @@ benchmark or nightly) never makes the trunk red here.
 ## The shared pieces
 
 - [`main-red-gate`](../.github/actions/main-red-gate/action.yml): the red-trunk
-  admission rule above; `mode`, `verify-workflow` and `fix-label` inputs.
+  admission rule above; `mode`, `verify-workflow` and `fix-label` inputs. Its
+  `mode: watch` is the scheduled half of the andon (see
+  [the red-main handler](#the-red-main-handler)): it files one issue labelled
+  `red-main-red-watchdog` when the trunk has stayed red past
+  `watch-limit-minutes` (default 30), whatever the handler's verdict was.
 - [`ci-range`](../.github/actions/ci-range/action.yml): the range and the lane
   selection, the same answer in the gate and in verify. Lanes are
   `name: path globs`; a change under `.github/` runs every lane. Use its

@@ -29,7 +29,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 HANDLER = yaml.safe_load(WORKFLOW.read_text())["jobs"]["red-main"]
-ENV = HANDLER["env"]
+# The handler's programs are checked in under .github/red_main/, not embedded
+# in the workflow's env: read the reviewed files directly.
+PROGRAMS = ROOT / ".github/red_main"
+
+
+def program(name):
+    return (PROGRAMS / name).read_text()
 STEPS = {step["name"]: step for step in HANDLER["steps"] if "name" in step}
 TRACE = STEPS["Trace the culprit among the unverified commits"]["run"]
 FIXTURES = ROOT / "tests/fixtures/red-main"
@@ -147,7 +153,7 @@ def make_loader(scenario, downloads=None):
 
 
 PROOF = load("proof", (ROOT / ".github/actions/ci-range/post_main.py").read_text())
-WINDOW = load("window", ENV["WINDOW_PY"])
+WINDOW = load("window", program("window.py"))
 
 
 def eligible(row):
@@ -293,7 +299,7 @@ class ConfirmedUnitsTest(unittest.TestCase):
                 files.append(str(path))
             out = Path(d, "out")
             script = Path(d, "confirm.py")
-            script.write_text(ENV["CONFIRM_PY"])
+            script.write_text(program("confirm.py"))
             subprocess.run([sys.executable, str(script), "failure", *files, str(out)], check=True,
                            capture_output=True, text=True)
             return [tuple(line.split("\t")) for line in out.read_text().splitlines()]
@@ -390,9 +396,9 @@ class TraceStepTest(unittest.TestCase):
         self.root = Path(temp.name)
         self.work = self.root / "red-main"
         self.work.mkdir()
-        for name, filename in (("LIB", "lib.sh"), ("JUNIT_PY", "junit.py"), ("CULPRIT_PY", "culprit.py"),
-                               ("WINDOW_PY", "window.py"), ("CONFIRM_PY", "confirm.py"), ("INFRA_PY", "infra.py")):
-            (self.work / filename).write_text(ENV[name])
+        for name, filename in (("lib.sh", "lib.sh"), ("junit.py", "junit.py"), ("culprit.py", "culprit.py"),
+                               ("window.py", "window.py"), ("confirm.py", "confirm.py"), ("infra.py", "infra.py")):
+            (self.work / filename).write_text(program(name))
         # The infra classifier has its own tests; here no candidate is an infra failure.
         with open(self.work / "lib.sh", "a") as fh:
             fh.write('\nclassify_run() { echo none; }\n')
