@@ -375,8 +375,11 @@ leaves the alert open; no parallel writer should edit lifecycle markers.
 
 ## Rules kept from the July rollout
 
-- A running verify on the trunk is never cancelled; a newer push waits and
-  covers what it carries (`concurrency: cancel-in-progress: false`).
+- A newer trunk run supersedes an in-flight verify, so the latest push's run
+  starts at once (`concurrency: cancel-in-progress: true` on push). Each run
+  still covers the whole range since the last verified commit - the base is the
+  newest *successful* run, never `HEAD~1` - so a superseded run's commits stay
+  in the newest run, and fast-forwarding to the latest trunk is free.
 - Verify cost follows cycles, not commits: one run covers the whole range since
   the last verified commit, never `HEAD~1`.
 - A culprit is traced among the unverified commits at once; when it cannot be
@@ -468,7 +471,9 @@ every pin behind it then fails R4 and R5 until it is repinned.
 ## Read back after landing
 
 - The first merge group passes with only the gate lanes, and the first push
-  run of `Verify` ends with a `verified` check run on the trunk.
+  run of `Verify` ends with a `verified` check run on the trunk. A later push
+  supersedes the in-flight run and starts without waiting, and the newest run
+  still reaches `verified` over the whole range.
 - `gh workflow run red-main.yml` classifies the newest failed verify run (a
   rehearsal; it acts only as `on_red` allows).
 - Report: gate p90, pull request CI wall p50/p90 and arm-to-merge p50/p90,

@@ -4,8 +4,9 @@
 # the trunk, and on a pull request marked ready (ci.yml calls this file). The `verified` job's check run on the head commit is the marker
 # the platform's Release reads: only verified commits deploy.
 #
-# One run covers every commit since the last one whose suite passed. A running
-# verify is never cancelled; a newer push waits, and covers what it carries.
+# One run covers every commit since the last one whose suite passed, so a
+# newer run supersedes an in-flight one on the trunk: the newest run still
+# carries the commits the superseded one held (the latest push wins).
 # The red-main handler dispatches this workflow on a temporary branch with
 # `lanes` set to the lanes it suspects.
 #
@@ -29,11 +30,11 @@ on:
         type: string
         default: ""
 
-# On the trunk a running verify is never cancelled: a newer push waits and
-# covers what it carries. On a pull request a new push supersedes the run.
+# A newer run supersedes an in-flight one on the trunk and on a pull request.
+# A merge group never cancels: a cancelled entry ejects the queue.
 concurrency:
   group: verify-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 permissions:
   contents: read
