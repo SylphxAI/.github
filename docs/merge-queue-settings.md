@@ -87,7 +87,7 @@ reads whatever repository ruleset it carries, queue or not.
 
 The first declared targets are cloud (`20321070`) and infra (`23689347`). The
 policy is desired state, not a claim that a live gate is already enabled. Do
-not apply these entries until all of the following have actual readbacks:
+not apply an entry until all of the following have actual readbacks:
 
 - The reviewed producer is merged and installed by desk-sync.
 - Backfill posted `review-ok=success` on every open canonical-PASS head.
@@ -109,6 +109,12 @@ After those two readbacks, extend the same policy to work (`24403812`),
 desk-tools (`24403587`) and .github (`20321046`) with their provider-confirmed
 ruleset names. Every rollout keeps the queue and `ci-ok`. No TSV armer, private
 queue, polling loop or synthetic CI job is part of this path.
+
+Rollout progress: cloud and infra were applied on 2026-10-15 and read back
+(`review-ok` present, bound to integration `5155317`), with the pre-change
+rulesets saved in a ruleset-backup directory on the operator host, which is the
+rollback source for every entry of this rollout. work, desk-tools and .github
+are declared here and applied in the same rollout.
 
 Save a fresh backup directory per rollout. If posting stops or the gate blocks
 approved heads, use `--rollback` with that directory and read back the restored

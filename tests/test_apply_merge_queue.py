@@ -357,9 +357,10 @@ class RequiredCheckTests(unittest.TestCase):
     def rows(self, gh):
         return amq.plan(amq.read_org(gh, "SylphxAI"), SHIPPED_POLICY, {})
 
-    def test_only_first_phase_repositories_have_declared_review_gate(self):
+    def test_declared_review_gate_covers_the_gated_repositories(self):
         self.assertEqual([entry["repo"] for entry in SHIPPED_POLICY["required_checks"]],
-                         ["SylphxAI/cloud", "SylphxAI/infra"])
+                         ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/work",
+                          "SylphxAI/desk-tools", "SylphxAI/.github"])
         for entry in SHIPPED_POLICY["required_checks"]:
             self.assertEqual(entry["checks"], [
                 {"context": "ci-ok", "integration_id": 15368},
@@ -367,7 +368,7 @@ class RequiredCheckTests(unittest.TestCase):
 
     def test_scoped_missing_review_check_is_reported_with_exact_issuer(self):
         rows = [row for row in self.rows(self.fake()) if row["status"] == "DRIFT"]
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), len(SHIPPED_POLICY["required_checks"]))
         for row in rows:
             before, after = row["changes"]["required_status_checks"]
             self.assertEqual(before, [{"context": "ci-ok", "integration_id": 15368}])
@@ -397,10 +398,11 @@ class RequiredCheckTests(unittest.TestCase):
         gh = self.fake()
         gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"].append(
             {"context": "review-ok", "integration_id": 15368})
-        gh.rulesets["SylphxAI/work"] = ruleset(24403812, "work-main", POLICY["settings"], reviews=0)
+        gh.rulesets["SylphxAI/janus"] = ruleset(24403813, "janus-main", POLICY["settings"], reviews=0)
         with tempfile.TemporaryDirectory() as directory:
             amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0)
-        self.assertEqual({repo for repo, _ in gh.puts}, {"SylphxAI/cloud", "SylphxAI/infra"})
+        self.assertEqual({repo for repo, _ in gh.puts}, {entry["repo"] for entry in SHIPPED_POLICY["required_checks"]})
+        self.assertEqual(gh.rulesets["SylphxAI/janus"]["rules"][1], ruleset(1, "x", POLICY["settings"])["rules"][1])
         checks = gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"]
         self.assertNotIn({"context": "review-ok", "integration_id": 15368}, checks)
         self.assertIn({"context": "review-ok", "integration_id": 5155317}, checks)
