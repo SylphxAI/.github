@@ -65,7 +65,7 @@ inputs:
     description: "Who a failed build draft or red settle comment addresses, such as @Cubeage/studio. Empty: nobody is mentioned."
     default: ""
   max-wait-minutes:
-    description: "settle: a required check that has not finished this long after the pull request opened turns it red."
+    description: "settle: a required check that has never appeared, and has not finished this long after the pull request opened, turns it red."
     default: "360"
   after-merge-workflows:
     description: >
