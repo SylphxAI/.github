@@ -48,7 +48,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - run: echo "full build, e2e, mobile"
 
-  # The required check. Skipped jobs pass; failed or cancelled ones fail.
+  # The required check. Skipped jobs pass; a failed job fails; a cancelled job
+  # (a superseded push) is reported CANCELLED and does not fail.
   ci-ok:
     if: always() && !cancelled()
     needs: [changes, gate, heavy]
