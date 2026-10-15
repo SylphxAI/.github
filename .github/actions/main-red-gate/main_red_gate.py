@@ -22,12 +22,23 @@ not start; a queue that stayed shut on the first red would wait for a run that
 nothing can start. The next change landing is what lets the handler decide. A
 person can always pass a change with the fix label.
 
+`mode: watch` is the other half of the andon: on a schedule in the caller's
+ci.yml, it alerts when the trunk has stayed red past `watch-limit-minutes`
+(30) WHATEVER the handler's verdict was. The handler reports a real failure by
+tracing a culprit and reverting, and an infrastructure failure by reporting it
+and never reverting; either report lands in a run's summary and an issue a
+person may never open, and a trunk once stayed red for three days with every
+reader taking the passing handler run as healthy. Watch files ONE issue per
+repository, labelled `red-main-red-watchdog`, and comments on it for each
+further red window. It reverts nothing and dispatches nothing.
+
 Fail open: a state that cannot be read (API error, no verify run in sight)
 admits, with a warning. A gate that jams the queue on its own fault is worse
 than the red it guards against.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -38,6 +49,7 @@ import urllib.request
 FAILED = {"failure", "timed_out", "action_required", "startup_failure"}
 REVERT_LABELS = {"auto-revert", "queue-jump:red-main"}
 OUTAGE_LABEL = "queue-jump:outage"
+WATCH_LABEL = "red-main-red-watchdog"
 MERGE_GROUP_PR = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/[^/].*?/pr-(\d+)-[0-9a-f]{7,40}$")
 
 
@@ -122,14 +134,97 @@ def _get(url: str, token: str) -> dict | list:
     return json.load(urllib.request.urlopen(req, timeout=30))
 
 
+def _post(url: str, token: str, payload: dict) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=30))
+
+
+def red_minutes(run: dict, now: datetime.datetime) -> float | None:
+    """How long the decisive red run has been red, or None when its age is unreadable."""
+    stamp = run.get("created_at")
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    at = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    if at.tzinfo is None:
+        return None
+    return (now - at).total_seconds() / 60.0
+
+
+def watch_alert(repo: str, branch: str, run: dict, minutes: float, token: str) -> str:
+    """File or comment on the ONE watchdog issue for a trunk red past the limit; return the message."""
+    api = f"https://api.github.com/repos/{repo}"
+    body = (f"The trunk `{branch}` of `{repo}` has been red for {minutes:.0f} minutes: "
+            f"the newest conclusive {run.get('conclusion')} verify run is {run.get('html_url')} "
+            f"on `{(run.get('head_sha') or '')[:9]}`. The red-main handler either classified it "
+            "infrastructure (reported, never reverted) or has not finished; either way nothing pages "
+            "a person. A safety net that fails silently is worse than none. Open the run, read the "
+            "failed step, and forward-fix or re-run the net.")
+    try:
+        _post(f"{api}/labels", token, {"name": WATCH_LABEL, "color": "b60205",
+                                       "description": "red-main watchdog alert"})
+        _post(f"{api}/labels", token, {"name": "owner:ops", "color": "b60205",
+                                       "description": "red-main watchdog alert"})
+        open_issues = _get(f"{api}/issues?state=open&labels={WATCH_LABEL}&per_page=1", token)
+        number = open_issues[0]["number"] if isinstance(open_issues, list) and open_issues else None
+        if number:
+            _post(f"{api}/issues/{number}/comments", token, {"body": body})
+            return f"::error::trunk red {minutes:.0f} minutes; commented on the watchdog issue #{number}"
+        created = _post(f"{api}/issues", token, {
+            "title": f"{branch} is red past the watchdog limit", "body": body,
+            "labels": [WATCH_LABEL, "owner:ops"]})
+        return f"::error::trunk red {minutes:.0f} minutes; watchdog issue #{created.get('number')} opened"
+    except urllib.error.HTTPError as exc:
+        return f"::error::trunk red {minutes:.0f} minutes; the watchdog issue needs issues: write ({exc.code})"
+
+
+def watch(env: dict, repo: str, token: str, branch: str, runs: list[dict], now: datetime.datetime) -> int:
+    """Alert when the trunk has been red past the limit, whatever the handler's verdict was."""
+    limit = float(env.get("WATCH_LIMIT_MINUTES", "30") or 30)
+    state, run = trunk_state(runs, branch)
+    if state != "red":
+        print(f"watch: trunk is {state}: nothing to alert")
+        return 0
+    minutes = red_minutes(run, now)
+    if minutes is None:
+        print("::warning::watch: the red run's age could not be read: not alerting")
+        return 0
+    if minutes < limit:
+        print(f"watch: trunk red {minutes:.0f} minutes (< {limit:.0f}): nothing to alert")
+        return 0
+    # A way back already in motion is the net working: do not page over it.
+    try:
+        pulls = _get(f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=100", token)
+        motion = open_way_back(pulls, env.get("FIX_LABEL", "main-red-fix"))
+    except Exception as exc:
+        print(f"::warning::watch: open pull requests could not be read ({exc}): alerting anyway")
+        motion = None
+    if motion:
+        print(f"watch: trunk red {minutes:.0f} minutes but {motion}: nothing to alert")
+        return 0
+    print(watch_alert(repo, branch, run, minutes, token))
+    return 0
+
+
 def main() -> int:
     env = os.environ
-    if env.get("EVENT_NAME") != "merge_group":
-        print("not a merge group: nothing to gate")
-        return 0
     repo, token, branch = env["REPO"], env["TOKEN"], env.get("BASE_BRANCH", "main").removeprefix("refs/heads/")
     mode, fix_label = env.get("MODE", "enforce"), env.get("FIX_LABEL", "main-red-fix")
     api = f"https://api.github.com/repos/{repo}"
+    if mode == "watch":
+        # The scheduled half of the andon: no pull request, no merge group.
+        try:
+            data = _get(f"{api}/actions/workflows/{env['VERIFY_WORKFLOW']}/runs"
+                        f"?event=push&branch={branch}&per_page=30", token)
+        except Exception as exc:
+            print(f"::warning::watch: cannot read {env['VERIFY_WORKFLOW']} runs ({exc}): not alerting")
+            return 0
+        return watch(env, repo, token, branch, data.get("workflow_runs", []),
+                     datetime.datetime.now(datetime.timezone.utc))
+    if env.get("EVENT_NAME") != "merge_group":
+        print("not a merge group: nothing to gate")
+        return 0
     try:
         data = _get(f"{api}/actions/workflows/{env['VERIFY_WORKFLOW']}/runs"
                     f"?event=push&branch={branch}&per_page=30", token)
