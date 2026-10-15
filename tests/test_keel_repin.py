@@ -663,7 +663,7 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(comments, "")
 
     def test_the_newest_repin_closes_the_older_one_with_a_comment(self):
-        older = "chore/keel-repin-keel-verified-2026-10-05-1"
+        older = "chore/keel-repin-keel-verified-2026-10-01-1"
         rcs, calls, comments, closes = self.settle(
             {"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"],
                      [4, older, "f" * 40, "false", "2027-01-14T07:00:00Z"]],
@@ -677,7 +677,7 @@ class SettleTest(unittest.TestCase):
     def test_the_newest_repin_settles_before_an_older_one_is_closed(self):
         # Both are open with green heads. The newest is judged first, so its merge can never be
         # cancelled by a re-read of the older pull request that replaces it.
-        older = "chore/keel-repin-keel-verified-2026-10-05-1"
+        older = "chore/keel-repin-keel-verified-2026-10-01-1"
         rcs, calls, comments, closes = self.settle(
             {"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"],
                      [4, older, "f" * 40, "false", "2027-01-14T07:00:00Z"]],
@@ -692,7 +692,8 @@ class SettleTest(unittest.TestCase):
             {"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"],
                      [6, newer, "f" * 40, "false", "2027-01-16T07:00:00Z"]],
              "runs": [check("ci-ok"), check("web-smoke")]})
-        self.assertEqual(closes, "")
+        self.assertIn("pr close 5", closes)   # the older tag's repin yields to the newer one
+        self.assertNotIn("pr close 6", closes)
         self.assertEqual(len(self.merges(calls)), 1)  # the newest tag's repin settles first
 
     def test_a_red_check_is_never_merged_and_the_owner_hears_once(self):
