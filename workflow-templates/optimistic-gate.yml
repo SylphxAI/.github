@@ -139,7 +139,8 @@ jobs:
     uses: ./.github/workflows/verify.yml
     secrets: inherit
 
-  # The required check. Skipped lanes pass; a failed or cancelled lane fails; the
+  # The required check. Skipped lanes pass; a failed lane fails; a cancelled lane
+  # (a superseded push) is reported CANCELLED and does not fail; the
   # PR-time suite must succeed everywhere but the merge group and a draft (which
   # runs the gate lanes only), so a skipped suite on a dispatch run never turns
   # a red check green.

@@ -198,7 +198,10 @@ benchmark or nightly) never makes the trunk red here.
   unknown, never treat it as success or terminal no-action. Destructive revert
   requires authenticated failure plus a trusted authenticated baseline.
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
-  `verified` verdict. Skipped passes; failed or cancelled fails; `required:
+  `verified` verdict. Skipped passes; failed fails; a cancelled dependency is
+  reported CANCELLED (naming a superseded push from a stopped run) and does not
+  fail, because a pull-request push cancels the run before it while nothing was
+  wrong and the rerun settles it; `required:
   plan` makes a broken plan a failure. `required-unless-merge-group: suite`
   (the PR-time jobs) makes a skipped job a failure on every event but
   `merge_group`, so a dispatch run cannot post a green verdict over a red one.
@@ -385,9 +388,10 @@ reserved gate pool; it has no `-merge` twin. Use `if: always() && !cancelled()`:
 real dependency failures still produce a red verdict, but a workflow cancelled
 by PR concurrency must not report a stale red aggregate beside the replacement
 run for the same head. Cancellation also must not hold the concurrency group
-while the old verdict waits for a runner. The needs-pass action remains strict
-about failed/cancelled dependencies whenever a current-run verdict executes;
-this is lifecycle suppression, not a successful verdict for cancelled work.
+while the old verdict waits for a runner. When the verdict does execute in a
+current run, needs-pass reports a `cancelled` dependency as CANCELLED and does
+not fail on it (a lane cancelled while the verdict job still ran is
+not a red check); a genuine failure still fails it.
 
 Private repositories run every job on our runners: `sylphx-linux-standard`
 for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`

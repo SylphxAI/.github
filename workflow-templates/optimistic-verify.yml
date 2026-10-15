@@ -101,7 +101,8 @@ jobs:
     if: always() && !cancelled()
     needs: [plan, integration, e2e]
     # The current workflow's verdict has a reserved seat; cancelled workflows
-    # must not publish a stale aggregate after their cancellation.
+    # must not publish a stale aggregate after their cancellation, and a lane a
+    # cancellation left `cancelled` is reported CANCELLED rather than failed.
     runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
