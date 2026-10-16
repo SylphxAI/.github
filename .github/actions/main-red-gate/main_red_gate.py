@@ -41,7 +41,9 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import pathlib
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -50,6 +52,13 @@ FAILED = {"failure", "timed_out", "action_required", "startup_failure"}
 REVERT_LABELS = {"auto-revert", "queue-jump:red-main"}
 OUTAGE_LABEL = "queue-jump:outage"
 WATCH_LABEL = "red-main-red-watchdog"
+WATCH_INFRA_LABEL = "red-main-infra"
+# The classifier that owns what an infrastructure failure is, beside this
+# action: a composite action can only rely on files inside its own directory,
+# and the watchdog job runs with no repository checkout. The red-main handler
+# ships the identical file from .github/red_main/ (tests/test_red_main_infra.py
+# asserts the two stay byte-identical), so the two readers cannot drift.
+CLASSIFIER = pathlib.Path(__file__).resolve().parent / "infra.py"
 MERGE_GROUP_PR = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/[^/].*?/pr-(\d+)-[0-9a-f]{7,40}$")
 
 
@@ -152,20 +161,82 @@ def red_minutes(run: dict, now: datetime.datetime) -> float | None:
     return (now - at).total_seconds() / 60.0
 
 
+def watch_verdict(repo: str, run: dict, token: str) -> str:
+    """`infra <signature>` or `none` for the red run, from the ONE classifier that owns the rule.
+
+    The watchdog has no verdict of its own, so it asks the classifier that owns
+    the rule - the copy of .github/red_main/infra.py shipped beside this action -
+    with the same job payload the handler reads, rather than guessing from the
+    run's conclusion. The classification is what decides which owner the alert
+    reaches: the platform owner for a red the platform caused, the repository
+    owner for one a person must forward-fix. A read that fails escalates as a
+    person's red: the alert still reaches someone rather than being dropped,
+    the silent failure this watchdog exists to prevent.
+    """
+    try:
+        jobs = _get(f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100", token)
+    except Exception as exc:
+        print(f"::warning::watch: the run's jobs could not be read to classify it ({exc}): escalating it as a person's fix")
+        return "none"
+    payload = {"mode": "watchdog",
+               "jobs": [{"id": j.get("id"), "name": j.get("name"), "conclusion": j.get("conclusion"),
+                         "steps": j.get("steps", []),
+                         "annotations": [a.get("message", "") for a in j.get("annotations", [])]}
+                        for j in jobs.get("jobs", [])]}
+    return classify_run(payload)
+
+
+def classify_run(payload: dict) -> str:
+    """Run the shipped classifier's watchdog mode over one job payload.
+
+    `none` (a person's red) is returned when the classifier runs and does not
+    read the failure as infrastructure, AND when it cannot be run at all - the
+    alert must still reach someone. The two are not the same, so a classifier
+    that cannot be run also prints an ::error:: line: a routing that quietly
+    fell back would look identical to a correct person's red, which is the
+    silent-net failure this watchdog exists to prevent.
+    """
+    try:
+        done = subprocess.run([sys.executable, str(CLASSIFIER)], input=json.dumps(payload),
+                              capture_output=True, text=True, timeout=60)
+    except Exception as exc:
+        print(f"::error::watch: the classifier {CLASSIFIER} could not be run ({exc}): "
+              "escalating as a person's red")
+        return "none"
+    verdict = done.stdout.strip()
+    if done.returncode or (verdict != "none" and not verdict.startswith("infra ")):
+        print(f"::error::watch: the classifier answered {verdict!r} (exit {done.returncode}, "
+              f"{done.stderr.strip()[:200]}): escalating as a person's red")
+        return "none"
+    return verdict
+
+
 def watch_alert(repo: str, branch: str, run: dict, minutes: float, token: str) -> str:
     """File or comment on the ONE watchdog issue for a trunk red past the limit; return the message."""
     api = f"https://api.github.com/repos/{repo}"
+    verdict = watch_verdict(repo, run, token) if run.get("id") else "none"
+    infra = verdict.startswith("infra")
+    # A red the platform caused is not the repository owner's to forward-fix: it
+    # goes to the infra owner under the label the repair handler's own escalation
+    # uses, so one read of `red-main-infra` shows every platform-caused red.
+    label = WATCH_INFRA_LABEL if infra else "owner:ops"
+    label_description = ("red-main infrastructure escalation" if infra else "red-main watchdog alert")
+    why = (f"The classifier reads it as infrastructure (`{verdict.removeprefix('infra ').strip()}`), "
+           "which the red-main handler never reverts and no repository owner can forward-fix: "
+           "the platform must recover or its owner must act. "
+           if infra else
+           "The classifier reads it as a failure a person must forward-fix; the red-main handler reverts "
+           "only after the same unit fails on a second completed run. ")
     body = (f"The trunk `{branch}` of `{repo}` has been red for {minutes:.0f} minutes: "
             f"the newest conclusive {run.get('conclusion')} verify run is {run.get('html_url')} "
-            f"on `{(run.get('head_sha') or '')[:9]}`. The red-main handler either classified it "
-            "infrastructure (reported, never reverted) or has not finished; either way nothing pages "
-            "a person. A safety net that fails silently is worse than none. Open the run, read the "
-            "failed step, and forward-fix or re-run the net.")
+            f"on `{(run.get('head_sha') or '')[:9]}`. {why}"
+            "A safety net that fails silently is worse than none. Open the run, read the failed step, "
+            "and forward-fix it or report the platform failure to the infra owner.")
     try:
         _post(f"{api}/labels", token, {"name": WATCH_LABEL, "color": "b60205",
                                        "description": "red-main watchdog alert"})
-        _post(f"{api}/labels", token, {"name": "owner:ops", "color": "b60205",
-                                       "description": "red-main watchdog alert"})
+        _post(f"{api}/labels", token, {"name": label, "color": "b60205",
+                                       "description": label_description})
         open_issues = _get(f"{api}/issues?state=open&labels={WATCH_LABEL}&per_page=1", token)
         number = open_issues[0]["number"] if isinstance(open_issues, list) and open_issues else None
         if number:
@@ -173,8 +244,8 @@ def watch_alert(repo: str, branch: str, run: dict, minutes: float, token: str) -
             return f"::error::trunk red {minutes:.0f} minutes; commented on the watchdog issue #{number}"
         created = _post(f"{api}/issues", token, {
             "title": f"{branch} is red past the watchdog limit", "body": body,
-            "labels": [WATCH_LABEL, "owner:ops"]})
-        return f"::error::trunk red {minutes:.0f} minutes; watchdog issue #{created.get('number')} opened"
+            "labels": [WATCH_LABEL, label]})
+        return f"::error::trunk red {minutes:.0f} minutes; watchdog issue #{created.get('number')} opened for {label}"
     except urllib.error.HTTPError as exc:
         return f"::error::trunk red {minutes:.0f} minutes; the watchdog issue needs issues: write ({exc.code})"
 

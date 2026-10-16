@@ -248,7 +248,8 @@ class WatchTest(unittest.TestCase):
            "VERIFY_WORKFLOW": "verify.yml", "MODE": "watch", "WATCH_LIMIT_MINUTES": "30",
            "FIX_LABEL": "main-red-fix"}
 
-    def go(self, runs, open_pulls=(), env=None, post_error=False):
+    def go(self, runs, open_pulls=(), env=None, post_error=False, verdict=None, jobs_error=False,
+           real_verdict=False, classifier_missing=False):
         calls: list[str] = []
         posts: list[tuple[str, dict]] = []
 
@@ -256,6 +257,10 @@ class WatchTest(unittest.TestCase):
             calls.append(url)
             if "/actions/workflows/verify.yml/runs" in url:
                 return {"workflow_runs": runs}
+            if "/actions/runs/" in url and url.endswith("/jobs?per_page=100"):
+                if jobs_error:
+                    raise urllib.error.HTTPError(url, 403, "forbidden", {}, None)
+                return {"jobs": verdict if verdict is not None else []}
             if "/pulls?state=open" in url:
                 return list(open_pulls)
             if "/issues?state=open" in url:
@@ -272,9 +277,18 @@ class WatchTest(unittest.TestCase):
             return {}
 
         out = io.StringIO()
-        with mock.patch.dict(os.environ, {**self.ENV, **(env or {})}), \
-                mock.patch.object(gate, "_get", fake_get), mock.patch.object(gate, "_post", fake_post), \
-                contextlib.redirect_stdout(out):
+        stack = [mock.patch.dict(os.environ, {**self.ENV, **(env or {})}),
+                 mock.patch.object(gate, "_get", fake_get),
+                 mock.patch.object(gate, "_post", fake_post),
+                 contextlib.redirect_stdout(out)]
+        if not real_verdict:
+            # A stub verdict keeps every other test independent of the classifier.
+            stack.append(mock.patch.object(gate, "classify_run", lambda payload: "none"))
+        if classifier_missing:
+            stack.append(mock.patch.object(gate, "CLASSIFIER", pathlib.Path("/nonexistent/infra.py")))
+        with contextlib.ExitStack() as exits:
+            for patch in stack:
+                exits.enter_context(patch)
             code = gate.main()
         return code, out.getvalue(), calls, posts
 
@@ -284,13 +298,65 @@ class WatchTest(unittest.TestCase):
         self.assertIn("nothing to alert", out)
 
     def test_a_red_trunk_past_the_limit_files_one_watchdog_issue(self) -> None:
-        code, out, calls, posts = self.go([stamped(45, conclusion="failure")])
+        code, out, calls, posts = self.go([stamped(45, conclusion="failure")],
+                                         verdict=[{"id": 1, "name": "Test", "conclusion": "failure",
+                                                   "steps": [{"name": "Run tests", "conclusion": "failure"}],
+                                                   "annotations": [{"message": "AssertionError: nope"}]}])
         self.assertEqual(code, 0)
         opened = [p for url, p in posts if url.endswith("/issues")]
         self.assertEqual(len(opened), 1, posts)
         self.assertEqual(opened[0]["labels"], ["red-main-red-watchdog", "owner:ops"])
         self.assertIn("45 minutes", opened[0]["body"])
         self.assertIn("red-main-red-watchdog", opened[0]["labels"])
+
+    def test_a_platform_caused_red_reaches_the_infra_owner_not_the_repo_owner(self) -> None:
+        # The incident this covers: a lost-runner red sat on the repository
+        # owner's plate, who can do nothing about it, while the platform half
+        # of the escalation was never made. The verdict here is the classifier's
+        # own reading of the job payload, run for real, not a stub.
+        code, out, calls, posts = self.go(
+            [stamped(90, conclusion="failure")],
+            real_verdict=True,
+            verdict=[{"id": 1, "name": "Verify", "conclusion": "failure",
+                      "steps": [{"name": "Set up job", "conclusion": "success"}],
+                      "annotations": [{"message": "The self-hosted runner: sylphx-1 lost communication with the server."}]}])
+        self.assertEqual(code, 0)
+        opened = [p for url, p in posts if url.endswith("/issues")]
+        self.assertEqual(len(opened), 1, posts)
+        self.assertEqual(opened[0]["labels"], ["red-main-red-watchdog", "red-main-infra"])
+        self.assertIn("infrastructure", opened[0]["body"])
+
+    def test_a_repository_caused_red_still_reaches_the_repository_owner(self) -> None:
+        code, out, calls, posts = self.go(
+            [stamped(90, conclusion="failure")],
+            real_verdict=True,
+            verdict=[{"id": 1, "name": "Test", "conclusion": "failure",
+                      "steps": [{"name": "Run tests", "conclusion": "failure"}],
+                      "annotations": [{"message": "AssertionError: nope"}]}])
+        self.assertEqual(code, 0)
+        opened = [p for url, p in posts if url.endswith("/issues")]
+        self.assertEqual(opened[0]["labels"], ["red-main-red-watchdog", "owner:ops"], posts)
+
+    def test_a_jobs_read_that_fails_still_escalates_to_a_person(self) -> None:
+        code, out, calls, posts = self.go([stamped(60, conclusion="failure")], jobs_error=True, real_verdict=True)
+        self.assertEqual(code, 0)
+        opened = [p for url, p in posts if url.endswith("/issues")]
+        self.assertEqual(opened[0]["labels"], ["red-main-red-watchdog", "owner:ops"], posts)
+        self.assertIn("::warning::watch: the run's jobs could not be read", out)
+
+    def test_a_classifier_that_cannot_run_is_loud_not_silently_a_persons_red(self) -> None:
+        # The alert still reaches someone, but a routing that quietly fell back
+        # would be indistinguishable from a correct person's red - the silent
+        # failure this watchdog exists to prevent - so it also reports itself.
+        code, out, calls, posts = self.go(
+            [stamped(60, conclusion="failure")], real_verdict=True, classifier_missing=True,
+            verdict=[{"id": 1, "name": "Verify", "conclusion": "failure",
+                      "steps": [{"name": "Set up job", "conclusion": "success"}],
+                      "annotations": [{"message": "The self-hosted runner: sylphx-1 lost communication with the server."}]}])
+        self.assertEqual(code, 0)
+        self.assertIn("::error::watch: the classifier", out)
+        opened = [p for url, p in posts if url.endswith("/issues")]
+        self.assertEqual(opened[0]["labels"], ["red-main-red-watchdog", "owner:ops"], posts)
 
     def test_a_red_trunk_inside_the_limit_waits(self) -> None:
         code, out, calls, posts = self.go([stamped(12, conclusion="failure")])
