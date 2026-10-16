@@ -249,7 +249,7 @@ class WatchTest(unittest.TestCase):
            "FIX_LABEL": "main-red-fix"}
 
     def go(self, runs, open_pulls=(), env=None, post_error=False, verdict=None, jobs_error=False,
-           real_verdict=False):
+           real_verdict=False, classifier_missing=False):
         calls: list[str] = []
         posts: list[tuple[str, dict]] = []
 
@@ -284,6 +284,8 @@ class WatchTest(unittest.TestCase):
         if not real_verdict:
             # A stub verdict keeps every other test independent of the classifier.
             stack.append(mock.patch.object(gate, "classify_run", lambda payload: "none"))
+        if classifier_missing:
+            stack.append(mock.patch.object(gate, "CLASSIFIER", pathlib.Path("/nonexistent/infra.py")))
         with contextlib.ExitStack() as exits:
             for patch in stack:
                 exits.enter_context(patch)
@@ -341,6 +343,20 @@ class WatchTest(unittest.TestCase):
         opened = [p for url, p in posts if url.endswith("/issues")]
         self.assertEqual(opened[0]["labels"], ["red-main-red-watchdog", "owner:ops"], posts)
         self.assertIn("::warning::watch: the run's jobs could not be read", out)
+
+    def test_a_classifier_that_cannot_run_is_loud_not_silently_a_persons_red(self) -> None:
+        # The alert still reaches someone, but a routing that quietly fell back
+        # would be indistinguishable from a correct person's red - the silent
+        # failure this watchdog exists to prevent - so it also reports itself.
+        code, out, calls, posts = self.go(
+            [stamped(60, conclusion="failure")], real_verdict=True, classifier_missing=True,
+            verdict=[{"id": 1, "name": "Verify", "conclusion": "failure",
+                      "steps": [{"name": "Set up job", "conclusion": "success"}],
+                      "annotations": [{"message": "The self-hosted runner: sylphx-1 lost communication with the server."}]}])
+        self.assertEqual(code, 0)
+        self.assertIn("::error::watch: the classifier", out)
+        opened = [p for url, p in posts if url.endswith("/issues")]
+        self.assertEqual(opened[0]["labels"], ["red-main-red-watchdog", "owner:ops"], posts)
 
     def test_a_red_trunk_inside_the_limit_waits(self) -> None:
         code, out, calls, posts = self.go([stamped(12, conclusion="failure")])

@@ -187,13 +187,28 @@ def watch_verdict(repo: str, run: dict, token: str) -> str:
 
 
 def classify_run(payload: dict) -> str:
-    """Run the shipped classifier's watchdog mode over one job payload; a person's red when it cannot be read."""
+    """Run the shipped classifier's watchdog mode over one job payload.
+
+    `none` (a person's red) is returned when the classifier runs and does not
+    read the failure as infrastructure, AND when it cannot be run at all - the
+    alert must still reach someone. The two are not the same, so a classifier
+    that cannot be run also prints an ::error:: line: a routing that quietly
+    fell back would look identical to a correct person's red, which is the
+    silent-net failure this watchdog exists to prevent.
+    """
     try:
         done = subprocess.run([sys.executable, str(CLASSIFIER)], input=json.dumps(payload),
                               capture_output=True, text=True, timeout=60)
-    except Exception:
+    except Exception as exc:
+        print(f"::error::watch: the classifier {CLASSIFIER} could not be run ({exc}): "
+              "escalating as a person's red")
         return "none"
-    return done.stdout.strip() or "none"
+    verdict = done.stdout.strip()
+    if done.returncode or (verdict != "none" and not verdict.startswith("infra ")):
+        print(f"::error::watch: the classifier answered {verdict!r} (exit {done.returncode}, "
+              f"{done.stderr.strip()[:200]}): escalating as a person's red")
+        return "none"
+    return verdict
 
 
 def watch_alert(repo: str, branch: str, run: dict, minutes: float, token: str) -> str:
