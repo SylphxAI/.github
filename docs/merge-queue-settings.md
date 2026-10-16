@@ -49,6 +49,14 @@ on PR heads and merge-group commits, not implemented as a CI job. An undecided,
 withdrawn or blocking verdict cannot satisfy it. The enterprise ruleset keeps
 zero approving reviews; the status check is required by the repository ruleset.
 
+The same `review` block turns `require_extra_approval_for_unattributed_changes`
+off. That flag adds one approving review when a pull request carries commits
+GitHub cannot attribute to a user, which is every desk App's commit, so it held
+every bot pull request for an approval `ci-ok` already made (both production
+gates found live on 2026-10-07). The tool reads it from each selected,
+non-excluded ruleset's REST detail, because GraphQL's `PullRequestParameters`
+does not carry it, and converges it to false.
+
 The count reaches every repository ruleset of every organization in `orgs`,
 which is the same four-organization fleet as `policy/optimistic-merge.json`:
 `SylphxAI`, `Cubeage`, `EpiowAI` and `OzyrixLtd`. An approval held by any of
@@ -67,8 +75,8 @@ item in read_org(gh, org)]`, one GraphQL page per organization.
 
 ## What the tool manages
 
-The tool manages merge-queue parameters, approving review counts and explicitly
-scoped required-check bindings. `required_checks` names the exact repository,
+The tool manages merge-queue parameters, approving review counts, the
+extra-approval flag and explicitly scoped required-check bindings. `required_checks` names the exact repository,
 ruleset ID and name, a reason, and `{context, integration_id}` checks. It adds
 missing checks or corrects their publisher bindings without deleting unrelated
 checks, changing the strict flag, or altering conditions or bypass actors.
@@ -135,7 +143,9 @@ scripts/apply_merge_queue.py --rollback DIR               # put the saved rulese
 ```
 
 Reads are one GraphQL query per 100 repositories plus one custom-property read
-per selected, non-excluded repository. Writes are one `PUT` per
+per selected, non-excluded repository, and one ruleset-detail read per selected,
+non-excluded repository ruleset that carries a `pull_request` rule (its
+extra-approval flag is not in the GraphQL schema). Writes are one `PUT` per
 drifted ruleset, a second apart, read back, and stop at the first 403. The
 credential needs repository administration on each repository. Running
 `--apply` twice writes nothing the second time. `cloud` also pins its queue in
