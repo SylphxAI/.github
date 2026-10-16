@@ -50,11 +50,21 @@ class PlainLanguageTest(unittest.TestCase):
             "", "quoting residual here plain-language: allow(legacy quote; until=2099-01-01)\n")
         self.assertEqual(result.returncode, 0, result.stdout)
 
-    def test_bare_allow_marker_is_refused_after_the_grace_ended(self) -> None:
-        # The grace ended 2026-10-15; an unexpired marker must name a reason and a date for that to stay true.
+    def test_bare_allow_marker_is_allowed_inside_its_grace_window(self) -> None:
+        # A bare `allow` is tolerated with a warning only inside its grace
+        # window (`PLAIN_LANGUAGE_BARE_UNTIL`, 2026-10-15); pin both ends so the
+        # test states that behaviour rather than the wall clock.
         result = run_check("", "quoting residual here plain-language: allow\n",
-                           env={"PLAIN_LANGUAGE_BARE_UNTIL": "2099-01-01"})
+                           env={"PLAIN_LANGUAGE_TODAY": "2026-10-15",
+                                "PLAIN_LANGUAGE_BARE_UNTIL": "2026-10-15"})
         self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_bare_allow_marker_is_refused_after_the_grace_window(self) -> None:
+        result = run_check("", "quoting residual here plain-language: allow\n",
+                           env={"PLAIN_LANGUAGE_TODAY": "2026-10-16",
+                                "PLAIN_LANGUAGE_BARE_UNTIL": "2026-10-15"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no longer accepted", result.stdout)
 
     def test_standard_words_pass(self) -> None:
         result = run_check("", "a fencing token, Kueue admission, a database tombstone\n")
