@@ -47,6 +47,16 @@ proofs - is a suite lane.
    the gate lanes, a `suite` job that calls `verify.yml` on ready pull
    requests, and the `ci-ok` aggregate. Keep the job name the ruleset
    requires.
+   **A gate that was its own workflow.** `ci-ok` `needs:` the jobs of
+   `ci.yml`, so it does not wait for another workflow's check run on the same
+   commit. A check that gated the merge on its own - `keel-pin-check`,
+   `web-smoke` - must become a job of `ci.yml` that calls its file
+   (`uses: ./.github/workflows/keel-pin-check.yml`) and is listed in
+   `ci-ok`'s `needs:`. Left standalone, the queue can admit the change before
+   it reports: GitHub treats a required check missing on the head as
+   satisfied, and a run that finishes after `ci-ok` is never seen. Where a
+   check really should not gate the merge, keep it standalone and carry
+   `# optimistic-merge: gate-external` (the audit's R3b).
 3. **`.github/workflows/verify.yml`** from
    [`workflow-templates/optimistic-verify.yml`](../workflow-templates/optimistic-verify.yml):
    the suite lanes and the aggregate job named exactly `verified`. Each lane
@@ -453,7 +463,7 @@ exemption and writes the whole report with `--json`.
 | R1 | `sylphx.toml` has `[ci] merge = "optimistic"` and an explicit `on_red` |
 | R2 | `ci.yml` runs on `merge_group` and has the `ci-ok` job |
 | R3 | `verify.yml` runs on push to the default branch, has a `verified` job and does not cancel a trunk run |
-| R3b | every other workflow that runs on push to the default branch is called from `verify.yml`, or carries the comment `# optimistic-merge: advisory`; otherwise its red never reaches the handler |
+| R3b | every other workflow that runs on push to the default branch is called from `verify.yml`, or carries the comment `# optimistic-merge: advisory`; otherwise its red never reaches the handler. Every other workflow that runs on `merge_group` is called from `ci.yml`, or carries `# optimistic-merge: gate-external`; otherwise it is a gate step `ci-ok` never waits for |
 | R4 | `red-main.yml` calls the shared handler pinned to a full SHA at or after the policy floor, and its `if:` follows the default branch |
 | R5 | `ci.yml` has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
 | R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
