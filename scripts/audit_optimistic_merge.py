@@ -15,7 +15,10 @@ Rows, per non-archived repository of the policy's organizations:
        from verify.yml or marked `# optimistic-merge: advisory`, else its red
        never reaches the red-main handler
   R4   red-main.yml calls the shared handler pinned (full SHA) at or after the
-       policy floor, and its `if:` follows the repository's default branch
+       policy floor, its `if:` follows the repository's default branch, and the
+       verify workflow it names can be dispatched as the handler dispatches it:
+       a `workflow_dispatch` trigger, and a `lane-input` (default `lanes`) that
+       the repository's own callers declare, or an explicit empty one
   R5   ci.yml has a `main-state` job on `main-red-gate` pinned at or after the
        floor, and `ci-ok` needs it
   R6   the default branch has a merge queue, `ci-ok` is a required check
@@ -327,6 +330,101 @@ def uses_refs(text: str, path_pattern: str) -> list[str]:
     return found
 
 
+def dispatch_inputs(text: str) -> set[str] | None:
+    """Input names a `workflow_dispatch` trigger declares; None when the workflow has no such trigger.
+
+    Trigger names come from `triggers`, which ignores comments; no block of the
+    `on:` mapping contributes a name twice; every mapping entry is a code line;
+    and an input whose value is a flow mapping counts.
+    """
+    if "workflow_dispatch" not in triggers(text):
+        return None
+    lines = _code_lines(text)
+    for i, line in enumerate(lines):
+        if re.match(r"""^(?:on|"on"|'on')\s*:""", line):
+            break
+    else:
+        return set()
+    names: set[str] = set()
+    on_block = _sub_block(lines, i)
+    seen: set[int] = set()
+    handled: set[int] = set()
+    for j, line in enumerate(on_block):
+        if j in seen or not re.match(r"^\s*['\"]?workflow_dispatch['\"]?\s*:", line):
+            continue
+        body = _sub_block(on_block, j)
+        seen.update(range(j + 1, j + 1 + len(body)))
+        if j in handled:
+            continue
+        handled.add(j)
+        for k, sub in enumerate(body):
+            if not re.match(r"^\s*['\"]?inputs['\"]?\s*:\s*(.*)$", sub):
+                continue
+            if sub.split(":", 1)[1].strip():
+                break  # an inline `inputs:` value names no input
+            block = _sub_block(body, k)
+            if block:
+                base = _indent(block[0])
+                for entry in block:
+                    key = re.match(r"^\s*['\"]?([\w-]+)['\"]?\s*:\s*(.*)$", entry)
+                    if key and _indent(entry) == base:
+                        names.add(key.group(1))
+    return names
+
+
+def caller_with(text: str, key: str) -> str | None:
+    """The value of `key` in a `with:` block of the job that calls the shared red-main handler; None if unset.
+
+    Only code lines are read, so a comment cannot supply the key or its value.
+    """
+    caller = None
+    for body in jobs(text).values():
+        if any(re.search(r"uses\s*:\s*SylphxAI/\.github/\.github/workflows/red-main\.yml@", line) for line in body):
+            caller = body
+            break
+    if caller is None:
+        return None
+    for i, line in enumerate(caller):
+        if not re.match(r"^\s*with\s*:\s*$", line):
+            continue
+        for entry in _sub_block(caller, i):
+            match = re.match(rf"^\s*{re.escape(key)}\s*:\s*(.*?)\s*$", entry)
+            if match:
+                value = match.group(1)
+                if not value.startswith(("'", '"')):
+                    value = value.split(" #", 1)[0].strip()
+                return value.strip().strip("'\"")
+    return None
+
+
+def dispatch_callers(text: str) -> list[tuple[str, dict[str, str]]]:
+    """Every caller of a shared `.github/workflows/*.yml` in one workflow: (workflow, its `with:` values).
+
+    `with:` is keyed by input name, so a `with:` the caller omits reads as an
+    unset input rather than as one it sets to an empty value.
+    """
+    out = []
+    for body in jobs(text).values():
+        called = None
+        values: dict[str, str] = {}
+        for i, line in enumerate(body):
+            if called is None:
+                match = re.match(r"^\s*-?\s*uses\s*:\s*SylphxAI/\.github/\.github/workflows/([\w.-]+)@", line)
+                if match:
+                    called = match.group(1)
+            if re.match(r"^\s*with\s*:\s*$", line):
+                for entry in _sub_block(body, i):
+                    key = re.match(r"^\s*['\"]?([\w-]+)['\"]?\s*:\s*(.*?)\s*$", entry)
+                    if key:
+                        value = key.group(2)
+                        if not value.startswith(("'", '"')):
+                            value = value.split(" #", 1)[0].strip()
+                        values[key.group(1)] = value.strip().strip("'\"")
+        if called:
+            out.append((called, values))
+    return out
+
+
 def toml_ci(text: str | None) -> dict:
     """The `merge` and `on_red` values of the [ci] table."""
     out: dict[str, str] = {}
@@ -411,6 +509,50 @@ def _row(status: str, detail: str = "") -> dict:
     return {"status": status, "detail": detail}
 
 
+def dispatch_misfits(redmain: str, files: dict, all_workflows: dict) -> list[str]:
+    """Why a candidate dispatch would be refused (HTTP 422), from the callers and the verify workflow."""
+    name = caller_with(redmain, "verify-workflow")
+    if not name:
+        return []  # no caller: reported above
+    text = files.get(name) or all_workflows.get(name)
+    if not text:
+        return [f"the verify workflow `{name}` is unreadable"]
+    declared = dispatch_inputs(text)
+    if declared is None:
+        return [f"`{name}` has no workflow_dispatch trigger, so no candidate can be dispatched"]
+    return []
+
+
+def lane_misfits(name: str, declared: set[str] | None, facts: dict) -> list[str]:
+    """Why the lane input the handler sends the verify workflow `name` cannot be accepted.
+
+    A shared handler's `lane-input` (default `lanes`) reaches `name` whenever a
+    caller in this repository names it in `verify-workflow`, whether or not that
+    caller passes `lane-input` itself: omitting an input inherits the handler's
+    default, it does not disable it. When `name` declares no such
+    `workflow_dispatch` input, every dispatch the handler makes is refused with
+    HTTP 422 and nothing is reverted. An explicit `lane-input: ""` sends no
+    input and clears it. A repository whose builder App does not reach it has
+    no caller to send one (R7 runs the handler as notify).
+    """
+    if declared is None:
+        return []  # no workflow_dispatch trigger: dispatch_misfits reports that
+    workflows = {**(facts.get("all_workflows") or {}), **(facts.get("files") or {})}
+    bad: list[str] = []
+    for path, text in sorted(workflows.items()):
+        if not text:
+            continue
+        for _called, values in dispatch_callers(text):
+            if values.get("verify-workflow") != name:
+                continue
+            lane = values.get("lane-input", "lanes")
+            if lane and lane not in declared:
+                bad.append(f"the `{path}` caller of `{name}` sends lane-input `{lane}`, which is not a "
+                           f"workflow_dispatch input of `{name}` (every dispatch through it is refused with "
+                           f"HTTP 422); declare it or set `lane-input: \"\"`")
+    return bad
+
+
 def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dict]:
     """The rows of one repository from its facts (no network)."""
     org, branch = facts["org"], facts["branch"]
@@ -491,7 +633,14 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
         for name in literal:
             if name != branch:
                 bad.append(f"the `if:` names branch `{name}`, the default branch is `{branch}`")
-        rows["R4"] = need(not bad, "pinned at or after the floor", "; ".join(bad))
+        bad.extend(dispatch_misfits(redmain, files, facts.get("all_workflows") or {}))
+        verify_name = caller_with(redmain, "verify-workflow")
+        app_reached = org in policy.get("writer_app_orgs", []) or facts["repo"] in policy.get("writer_app_repos", [])
+        if verify_name and app_reached:
+            all_wf = facts.get("all_workflows") or {}
+            verify_inputs = dispatch_inputs(files.get(verify_name) or all_wf.get(verify_name) or "")
+            bad.extend(lane_misfits(verify_name, verify_inputs, facts))
+        rows["R4"] = need(not bad, "pinned at or after the floor, verify dispatchable", "; ".join(bad))
 
     # R5
     if ci is None:
