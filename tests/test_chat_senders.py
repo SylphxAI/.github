@@ -168,5 +168,86 @@ class ChatSendersTest(unittest.TestCase):
         self.assertEqual(action["runs"]["steps"][0]["env"]["CHECK_REPOSITORY"], "${{ github.repository }}")
 
 
+class CompositeStepTest(unittest.TestCase):
+    """The real composite step, run in an independent caller repo on every event.
+
+    The unit tests above call check.sh directly; these run action.yml's own
+    `runs.steps[0].run`, so a wrong range, a caller-supplied allow-list path or
+    an added widening input fails here.
+    """
+
+    def invoke(self, event: str, *, data: str = "https://api.telegram.org/bot\n",
+               repository: str = "example/repo", path: str = "src/send.ts",
+               caller_allow: bool = False) -> subprocess.CompletedProcess[str]:
+        """Run the actual composite shell step in an independent consumer repo."""
+        manifest = yaml.safe_load((ACTION / "action.yml").read_text())
+        step = manifest["runs"]["steps"][0]
+        self.assertEqual(step["env"]["CHECK_REPOSITORY"], "${{ github.repository }}")
+        self.assertEqual(set(manifest["inputs"]), {"mode"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+
+            def git(*args: str) -> str:
+                return subprocess.run(["git", "-C", tmp, *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "test@invalid")
+            git("config", "user.name", "test")
+            git("commit", "-qm", "base", "--allow-empty")
+            base = git("rev-parse", "HEAD")
+            git("switch", "-qc", "change")
+            doc = root / path
+            doc.parent.mkdir(parents=True, exist_ok=True)
+            doc.write_text(data)
+            if caller_allow:
+                # A caller-side allow-list at the conventional name and at a
+                # shadow action-data path, as committed PR content.
+                for name in ("chat-senders-allow.tsv",
+                             ".github/actions/chat-senders/allow-list.tsv"):
+                    target = root / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("*\t.*\tlet every host through\n")
+            git("add", ".")
+            git("commit", "-qm", "change")
+            head = git("rev-parse", "HEAD")
+            git("remote", "add", "origin", tmp)
+            env = dict(os.environ, EVENT_NAME=event, CHECK_REPOSITORY=repository,
+                       PR_BASE_SHA=base, PR_BASE_REF="main", PR_HEAD_SHA=head,
+                       MG_BASE_SHA=base, MG_HEAD_SHA=head, PUSH_BEFORE=base, GIT_SHA=head,
+                       MODE="fail", GITHUB_ACTION_PATH=str(ACTION))
+            return subprocess.run(["bash", "-c", step["run"]], cwd=tmp, env=env,
+                                  capture_output=True, text=True)
+
+    def test_an_added_host_fails_every_event(self) -> None:
+        for event in ("pull_request", "merge_group", "push"):
+            with self.subTest(event=event):
+                result = self.invoke(event)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("::error file=src/send.ts,line=1::chat-senders: ", result.stdout)
+
+    def test_an_allowed_path_passes_every_event(self) -> None:
+        for event in ("pull_request", "merge_group", "push"):
+            with self.subTest(event=event):
+                result = self.invoke(event, repository="SylphxAI/cloud",
+                                     path="services/notify/src/senders.rs")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_caller_allow_list_cannot_widen_the_action_allow_list(self) -> None:
+        for event in ("pull_request", "merge_group", "push"):
+            with self.subTest(event=event):
+                result = self.invoke(event, caller_allow=True)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("::error file=src/send.ts,line=1::", result.stdout)
+
+    def test_a_deleted_host_passes_every_event(self) -> None:
+        # The commit adds no host (only the shadow allow-list lives in it), so
+        # nothing is flagged even though the previous content named one.
+        for event in ("pull_request", "merge_group", "push"):
+            with self.subTest(event=event):
+                result = self.invoke(event, data="const other = 1;\n", caller_allow=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
