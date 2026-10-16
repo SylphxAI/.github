@@ -153,12 +153,13 @@ in `mode: watch` on a 15-minute schedule: when the trunk has stayed red past
 files one issue labelled `red-main-red-watchdog` and the owner label. It
 reverts nothing and dispatches nothing; a safety net that fails silently is
 worse than none. The alert is **routed by the same per-step classification**
-the repair handler uses (`.github/red_main/infra.py`, read in its `watchdog`
-mode): an infrastructure red (a lost runner, a set-up or checkout failure that
-never ran the code) carries `red-main-infra` and reaches the platform owner,
-because a runner that lost communication is nothing a repository owner can
-forward-fix; every other red carries `owner:ops` and reaches the repository
-owner. Routing every red to the repository owner, as it did, turned a
+the repair handler uses (`.github/red_main/infra.py`, shipped identically beside
+the gate action as `.github/actions/main-red-gate/infra.py` and read in its
+`watchdog` mode): an infrastructure red (a lost runner, a set-up or checkout
+failure that never ran the code) carries `red-main-infra` and reaches the
+platform owner, because a runner that lost communication is nothing a
+repository owner can forward-fix; every other red carries the repository
+owner's label. Routing every red to the repository owner, as it did, turned a
 platform-caused red into an impossible instruction. A job read that fails
 escalates as a person's red: the alert reaches someone rather than being
 dropped.

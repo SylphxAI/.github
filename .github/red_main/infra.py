@@ -1,5 +1,12 @@
 """Classify a failed run as infrastructure or code, per failing step's terminal error.
 
+Two readers share this one file. The red-main handler ships it to its runner as
+`.github/red_main/infra.py`; the watchdog gate action carries the identical copy
+beside itself as `.github/actions/main-red-gate/infra.py`, because a composite
+action can only rely on files inside its own directory and the watchdog job runs
+with no repository checkout. tests/test_red_main_infra.py asserts the two stay
+byte-identical, so the handler and the watchdog cannot drift.
+
 Reads {"jobs": [{name, conclusion, steps: [{name, conclusion}], annotations: [text]}]}
 on stdin and prints `infra <signature>` or `none`.
 

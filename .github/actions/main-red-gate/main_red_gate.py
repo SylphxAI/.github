@@ -53,9 +53,12 @@ REVERT_LABELS = {"auto-revert", "queue-jump:red-main"}
 OUTAGE_LABEL = "queue-jump:outage"
 WATCH_LABEL = "red-main-red-watchdog"
 WATCH_INFRA_LABEL = "red-main-infra"
-# The ONE classifier that owns what an infrastructure failure is; the repair
-# handler runs the same file, so the two readers cannot drift.
-CLASSIFIER = pathlib.Path(__file__).resolve().parents[2] / "red_main" / "infra.py"
+# The classifier that owns what an infrastructure failure is, beside this
+# action: a composite action can only rely on files inside its own directory,
+# and the watchdog job runs with no repository checkout. The red-main handler
+# ships the identical file from .github/red_main/ (tests/test_red_main_infra.py
+# asserts the two stay byte-identical), so the two readers cannot drift.
+CLASSIFIER = pathlib.Path(__file__).resolve().parent / "infra.py"
 MERGE_GROUP_PR = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/[^/].*?/pr-(\d+)-[0-9a-f]{7,40}$")
 
 
@@ -161,14 +164,14 @@ def red_minutes(run: dict, now: datetime.datetime) -> float | None:
 def watch_verdict(repo: str, run: dict, token: str) -> str:
     """`infra <signature>` or `none` for the red run, from the ONE classifier that owns the rule.
 
-    The watchdog has no verdict of its own, so it asks red_main/infra.py - the
-    file the repair handler runs - with the same job payload the handler reads,
-    rather than guessing from the run's conclusion. The classification is what
-    decides which owner the alert reaches: the platform owner for a red the
-    platform caused, the repository owner for one a person must forward-fix.
-    A read that fails escalates as a person's red: the alert still reaches
-    someone rather than being dropped, the silent failure this watchdog exists
-    to prevent.
+    The watchdog has no verdict of its own, so it asks the classifier that owns
+    the rule - the copy of .github/red_main/infra.py shipped beside this action -
+    with the same job payload the handler reads, rather than guessing from the
+    run's conclusion. The classification is what decides which owner the alert
+    reaches: the platform owner for a red the platform caused, the repository
+    owner for one a person must forward-fix. A read that fails escalates as a
+    person's red: the alert still reaches someone rather than being dropped,
+    the silent failure this watchdog exists to prevent.
     """
     try:
         jobs = _get(f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100", token)
@@ -184,7 +187,7 @@ def watch_verdict(repo: str, run: dict, token: str) -> str:
 
 
 def classify_run(payload: dict) -> str:
-    """Run red_main/infra.py's watchdog mode over one job payload; a person's red when it cannot be read."""
+    """Run the shipped classifier's watchdog mode over one job payload; a person's red when it cannot be read."""
     try:
         done = subprocess.run([sys.executable, str(CLASSIFIER)], input=json.dumps(payload),
                               capture_output=True, text=True, timeout=60)

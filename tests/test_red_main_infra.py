@@ -21,6 +21,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 INFRA = ROOT / ".github" / "red_main" / "infra.py"
+# The gate action ships the same file beside itself, because a composite action
+# can only rely on files inside its own directory and the watchdog job runs
+# with no repository checkout. The two must never drift.
+GATE_INFRA = ROOT / ".github" / "actions" / "main-red-gate" / "infra.py"
 FIXTURES = ROOT / "tests/fixtures/red-main"
 
 
@@ -102,6 +106,13 @@ class WatchdogClassifyTest(unittest.TestCase):
     repository owner cannot forward-fix a red the platform caused. The mode is
     the same rule read for routing, so the two readers cannot drift.
     """
+
+    def test_the_two_checked_in_classifiers_are_byte_identical(self):
+        # The handler runs .github/red_main/infra.py; the gate action ships the
+        # same file beside itself because a composite action can only rely on
+        # its own directory and the watchdog job has no checkout. One rule
+        # means one file, so they must not drift.
+        self.assertEqual(INFRA.read_text(), GATE_INFRA.read_text())
 
     def watchdog(self, jobs):
         done = subprocess.run([sys.executable, str(INFRA)], input=json.dumps({"jobs": jobs, "mode": "watchdog"}),

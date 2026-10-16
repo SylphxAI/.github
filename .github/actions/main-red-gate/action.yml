@@ -26,8 +26,9 @@ inputs:
       of a merge group and files one issue per repository when the trunk has
       stayed red past `watch-limit-minutes`, whatever the red-main handler's
       verdict was (watch the watcher). A `watch` alert is routed by the same
-      per-step classification the repair handler uses (red_main/infra.py):
-      `red-main-infra` for a platform-caused red, `owner:ops` otherwise.
+      per-step classification the repair handler uses (the identical
+      `infra.py` shipped beside this action): `red-main-infra` for a
+      platform-caused red, the repository owner's label otherwise.
     default: enforce
   watch-limit-minutes:
     description: >
