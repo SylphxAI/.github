@@ -94,6 +94,13 @@
       "reason": "Declare on_red revert, but the builder App does not reach the Cubeage organization, so the handler runs as notify (tenant organizations lack the writer App).",
       "owner": "Ops",
       "review": "2026-12-31"
+    },
+    {
+      "class": "suite-is-gate",
+      "repos": ["SylphxAI/work-e2e-fixture"],
+      "reason": "A fixture repository, not a product: sylphx.toml says nothing deploys from here. Its whole pull-request CI is one job that checks the fixture's files are present and that sylphx.toml parses, aggregated by the required `ci-ok`; the default branch already carries a merge queue with `ci-ok` required and `verified` is not one. The merge gate already is the full suite, so there is no post-merge verification to add.",
+      "owner": "Build",
+      "review": "2026-11-30"
     }
   ]
 }
