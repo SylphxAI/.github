@@ -733,6 +733,39 @@ class SettleTest(unittest.TestCase):
         self.assertNotIn("pr close 6", closes)
         self.assertEqual(len(self.merges(calls)), 1)  # the newest tag's repin settles first
 
+    def test_a_repin_prefix_branch_that_is_not_a_tag_does_not_stop_the_settle(self):
+        # A hand-made branch under the repin prefix (a smoke-producer fix, say) has no tag to sort by.
+        # It is skipped, so the genuine repin on the same title still settles.
+        hand = "chore/keel-repin-smoke-checks-20261015"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[182, hand, "f" * 40, "false", "2027-01-15T07:00:00Z"],
+                     [5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(rcs, [0])  # the None sort key no longer raises
+        self.assertEqual(self.merges(calls), [f"pr merge 5 --squash --match-head-commit {HEAD}"])
+        self.assertEqual(closes, "")  # the non-tag branch is neither settled nor closed
+
+    def test_a_repin_prefix_branch_that_is_not_a_tag_alone_settles_nothing(self):
+        hand = "chore/keel-repin-smoke-checks-20261015"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[182, hand, "f" * 40, "false", "2027-01-15T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(rcs, [0])
+        self.assertEqual(self.merges(calls), [])
+        self.assertEqual(closes, "")
+
+    def test_a_layer_repin_beside_a_non_repin_branch_still_settles(self):
+        # A kit/engine layer branch is `chore/keel-repin-<layer>-<sha>`, a real repin with no tag key.
+        # It must keep its row and order beside a non-repin branch, not be skipped with it.
+        layer = "chore/keel-repin-engine-" + "a" * 40
+        hand = "chore/keel-repin-smoke-checks-20261015"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[160, layer, HEAD, "false", "2027-01-15T07:00:00Z"],
+                     [182, hand, "f" * 40, "false", "2027-01-16T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(rcs, [0])
+        self.assertEqual(self.merges(calls), [f"pr merge 160 --squash --match-head-commit {HEAD}"])
+
     def test_a_red_check_is_never_merged_and_the_owner_hears_once(self):
         runs = [check("ci-ok"), check("web-smoke", conclusion="failure")]
         rcs, calls, comments, _ = self.settle({"runs": runs}, repeat=1)

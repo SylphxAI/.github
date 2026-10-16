@@ -51,8 +51,11 @@ someone pushed to it.
 
 ## When the bot merges
 
-`settle` looks at every open pull request from a `chore/keel-repin-*` branch and merges one only when
-all of these hold, judged on the pull request's **exact head commit**:
+`settle` looks at every open pull request from a `chore/keel-repin-<tag>` branch (or a
+`chore/keel-repin-<layer>-<sha>` branch for the kit and engine layers) and merges one only when
+all of these hold, judged on the pull request's **exact head commit**. A branch under the prefix that
+is neither a tag nor a layer commit (a hand-made `chore/keel-repin-smoke-checks-*`, say) is named and
+skipped, so it neither settles nor stops the repin beside it:
 
 - every check in `required-checks` (default `ci-ok web-smoke`) has run on that commit, finished, and
   succeeded. A check that has not appeared or not finished keeps the pull request waiting; a run that
