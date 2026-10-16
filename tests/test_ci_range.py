@@ -286,6 +286,18 @@ class StarterWorkflowTest(unittest.TestCase):
         self.assertIn("workflow_dispatch", gate[True])
         self.assertIn("pull_request", gate["jobs"]["suite"]["if"])
 
+    def test_verify_starter_supersedes_the_trunk_run(self) -> None:
+        # The latest trunk push wins: a newer run supersedes an in-flight one,
+        # and a cancelled verify is never a red trunk (RedMainOnlyOnFailureTest).
+        # A pull request run is superseded too; only `workflow_call` never
+        # cancels. The range base is the last *successful* run (`ci-range`), so a
+        # superseded run's commits stay in the newest run.
+        import yaml
+        verify = yaml.safe_load((ROOT / "workflow-templates" / "optimistic-verify.yml").read_text())
+        cancel = " ".join(str(verify["concurrency"]["cancel-in-progress"]).split())
+        self.assertIn("github.event_name == 'push'", cancel)
+        self.assertIn("github.event_name == 'pull_request'", cancel)
+
     def test_verify_starter_hand_over_keeps_a_bounded_size(self) -> None:
         # docs/optimistic-merge.md: a heavy hand-over between jobs of a run
         # uses `run-store` (the org's BuildCache), never GitHub artifact
