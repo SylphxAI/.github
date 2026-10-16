@@ -33,7 +33,7 @@ def classify(jobs):
 def job(name, conclusion, steps, annotations=(), jid=1):
     return {"id": jid, "name": name, "conclusion": conclusion,
             "steps": [{"name": n, "conclusion": c} for n, c in steps],
-            "annotations": [str(a) for a in annotations]}
+            "annotations": list(annotations)}
 
 
 def failed(name, step_name, notes=(), jid=1):
@@ -91,6 +91,51 @@ class CodeFaultTest(unittest.TestCase):
                    ["AssertionError: nope", "Process completed with exit code 1."], jid=2),
         ]
         self.assertEqual(classify(jobs), "none")
+
+
+class WatchdogClassifyTest(unittest.TestCase):
+    """The WATCHDOG's escalation mode: platform-caused reds reach the platform owner, the rest the repo owner.
+
+    The watchdog has no verdict of its own; it fires when the trunk is still red
+    past its watch limit whatever the handler concluded, and it once fired on a
+    lost-runner red (desk-tools 2026-10-07) that it escalated to nobody: the
+    repository owner cannot forward-fix a red the platform caused. The mode is
+    the same rule read for routing, so the two readers cannot drift.
+    """
+
+    def watchdog(self, jobs):
+        done = subprocess.run([sys.executable, str(INFRA)], input=json.dumps({"jobs": jobs, "mode": "watchdog"}),
+                              capture_output=True, text=True, check=True)
+        return done.stdout.strip()
+
+    def test_a_lost_runner_reaches_the_platform_owner(self):
+        jobs = [job("Verify", "failure", [("Set up job", "success"), ("Run tests", "success")],
+                    ["The self-hosted runner: sylphx-1 lost communication with the server."])]
+        self.assertTrue(self.watchdog(jobs).startswith("infra "))
+
+    def test_a_real_failure_still_reaches_the_repository_owner(self):
+        jobs = [failed("Test", "Run tests",
+                       ["AssertionError: nope", "The self-hosted runner: sylphx-1 lost communication with the server.",
+                        "Process completed with exit code 1."])]
+        self.assertEqual(self.watchdog(jobs), "none")
+        # A run that never started has no failing job at all: a person forward-fixes it.
+        self.assertEqual(self.watchdog([]), "none")
+
+    def test_watchdog_mode_agrees_with_the_repair_verdict(self):
+        # One rule, two readers: the same payload must never be infra to one of
+        # them and code to the other.
+        jobs = [failed("Release", "Run actions/upload-artifact@v4",
+                       ["Failed to upload the artifact", "Process completed with exit code 1."])]
+        self.assertEqual(classify(jobs).split()[0], self.watchdog(jobs).split()[0])
+
+    def test_an_annotation_object_is_read_like_the_string_lib_sh_builds(self):
+        # The raw jobs API serves each annotation as {"message": ...} while
+        # lib.sh flattens it to a string. A shape that silently became "no
+        # signature" would route a platform-caused red to the repository owner,
+        # who cannot act on it: both shapes must read the same.
+        as_object = [job("Verify", "failure", [("Set up job", "success"), ("Run tests", "success")],
+                         [{"message": "The self-hosted runner: sylphx-1 lost communication with the server."}])]
+        self.assertTrue(self.watchdog(as_object).startswith("infra "), as_object)
 
 
 class InfrastructureTest(unittest.TestCase):
