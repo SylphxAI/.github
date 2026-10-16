@@ -44,7 +44,15 @@ class PlainLanguageTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_allow_marker_skips_the_line(self) -> None:
-        result = run_check("", "quoting residual here plain-language: allow\n")
+        # A bare `allow` is tolerated with a warning only inside its grace
+        # window (`PLAIN_LANGUAGE_BARE_UNTIL`, 2026-10-15); pin the day so the
+        # test states that behaviour rather than the wall clock (the sibling
+        # test_bare_allow_has_a_grace_period_then_fails pins both ends).
+        os.environ["PLAIN_LANGUAGE_TODAY"] = "2026-10-15"
+        try:
+            result = run_check("", "quoting residual here plain-language: allow\n")
+        finally:
+            os.environ.pop("PLAIN_LANGUAGE_TODAY")
         self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_standard_words_pass(self) -> None:
