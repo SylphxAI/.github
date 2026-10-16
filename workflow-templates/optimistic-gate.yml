@@ -36,6 +36,11 @@ jobs:
   # Merge-group jobs run on the merge lane (`-merge` runners, never behind the
   # pull-request backlog); pull requests on the ordinary pool. An xlarge job
   # uses the same form with sylphx-linux-xlarge-merge / sylphx-linux-xlarge.
+  # A repository whose own policy check reads a static runner label refuses
+  # this expression: name the label that repository already allows (or the
+  # profile's label of the same size class) on every gate lane instead, and
+  # declare it in policy/optimistic-merge.json under an exemption waiving R8
+  # (docs/optimistic-merge.md, Runners).
   # Stop the line: while the trunk's newest conclusive Verify run is red and its
   # way back is in motion (a newer Verify run is running, or a revert or fix
   # pull request is open), a merge group is admitted only for a revert, a
