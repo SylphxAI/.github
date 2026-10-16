@@ -174,7 +174,7 @@ class TokenModeTest(unittest.TestCase):
             self.assertNotRegex(stripped, r"^(actions|checks|contents|issues|pull-requests|packages|id-token|statuses): write$")
 
     def test_key_flag_reads_the_secret_outside_an_if(self) -> None:
-        detect = step("Detect the builder App key")
+        detect = step("Detect the builder write-token path")
         self.assertIn("secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY", detect)
         for line in WORKFLOW.read_text().splitlines():
             if line.strip().startswith("if:"):
@@ -189,13 +189,27 @@ class TokenModeTest(unittest.TestCase):
         self.assertIn("secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY", text)
 
     def test_mint_steps_need_the_key_flag(self) -> None:
-        self.assertIn("steps.key.outputs.present == 'yes'", step("Mint the App token for the caller's repository"))
+        self.assertIn("steps.key.outputs.path == 'app'", step("Mint the App token for the caller's repository"))
+
+    def test_broker_path_mints_without_the_app_key(self) -> None:
+        # The Broker path is chosen when no PEM is present and a TrustPolicy is
+        # set; it calls the shared action and never reads a key.
+        detect = step("Detect the builder write-token path")
+        self.assertIn('echo "path=broker"', detect)
+        self.assertIn("BROKER_POLICY", detect)
+        mint = step("Mint the write token from the Broker")
+        self.assertIn("steps.key.outputs.path == 'broker'", mint)
+        self.assertIn("broker-write-token", mint)
+        self.assertNotIn("secrets.", mint)
 
     def test_token_falls_back_to_github_token(self) -> None:
         text = WORKFLOW.read_text()
         self.assertNotIn("app-token-min", text)
         self.assertNotIn("steps.app-token.outputs.token }}", text)
-        self.assertIn("steps.app-token.outputs.token || github.token }}", text)
+        self.assertIn(
+            "steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}",
+            text,
+        )
 
     def test_app_mint_requests_no_actions_permission(self) -> None:
         # The builder App installation holds no `actions` permission; asking
@@ -241,9 +255,9 @@ class TokenModeTest(unittest.TestCase):
         self.assertIn("SIMULATE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate-mint-failure && 'yes' || 'no' }}", probe)
 
     def test_no_key_forces_notify(self) -> None:
-        detect = step("Detect the builder App key")
+        detect = step("Detect the builder write-token path")
         self.assertIn("echo \"mode=notify\"", detect)
-        self.assertIn("revert needs a CI-triggering token (the builder App); notifying only.", detect)
+        self.assertIn("revert needs a CI-triggering token (the builder App or the Broker); notifying only.", detect)
         revert = step("Revert the culprit or report it")
         self.assertIn("MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}", revert)
 

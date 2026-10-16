@@ -77,23 +77,29 @@ proofs - is a suite lane.
    [`run-store`](run-store.md), never `upload-artifact`.
 4. **`.github/workflows/red-main.yml`** from
    [`workflow-templates/red-main.yml`](../workflow-templates/red-main.yml),
-   unchanged. In the organization that holds the builder App
-   (`SYLPHX_BUILDER_APP_ID` variable, `SYLPHX_BUILDER_PRIVATE_KEY` secret) it
-   reverts as `on_red` says (absent: `revert`; `notify` is an explicit
-   opt-out). It never reruns. Anywhere else it runs in
-   token mode: a comment on the affected pull requests,
-   never a pull request of its own - a person reverts. The App key never
-   leaves its organization. Token split: every Actions call (runs, jobs,
-   dispatch of the verify workflow) uses the caller's
-   `github.token`, so the caller grants `actions: write` and `id-token: write`
-   for run-store diagnostic reads; the builder App
-   installation needs no `actions` permission, only contents, issues,
-   pull-requests and workflows write (a verify or revert branch can point at
-   a commit with older workflow files), and is used for what must start CI (verify and revert
-   branches, pull requests, enqueue). If the App mint or the grant probe
-   fails, the handler comments the missing grant on `ops-issue` (the caller
-   grants `issues: write`), writes it to the step summary and fails the job;
-   it never fails silently.
+   unchanged. The write token comes, in this order, from the Kernel Broker
+   (federation, no key), then the builder App key (`SYLPHX_BUILDER_APP_ID`
+   variable, `SYLPHX_BUILDER_PRIVATE_KEY` secret), then token mode. Set
+   `with: broker-trust-policy: orgs/<org>/trust_policies/<policy>` to use the
+   Broker: the handler trades this job's GitHub OIDC token for a short-lived
+   Access key and calls `:exchangeToken` for a one-repository installation
+   token, so no PEM leaves the platform (`company/credentials.md`; the workflow
+   declares `id-token: write` and is listed under `[[ci]]` in the platform
+   manifest). Absent the Broker and the key, it runs in token mode: a comment on
+   the affected pull requests, never a pull request of its own - a person
+   reverts. It reverts as `on_red` says (absent: `revert`; `notify` is an
+   explicit opt-out) and never reruns. The App key never leaves its
+   organization. Token split: every Actions call (runs, jobs, dispatch of the
+   verify workflow) uses the caller's `github.token`, so the caller grants
+   `actions: write` and `id-token: write` (run-store diagnostic reads and the
+   Broker's OIDC exchange); the installation token needs no `actions`
+   permission, only contents, issues, pull-requests and workflows write (a
+   verify or revert branch can point at a commit with older workflow files),
+   and is used for what must start CI (verify and revert branches, pull
+   requests, enqueue). If the mint (App or Broker) or the grant probe fails, the
+   handler comments the missing grant on `ops-issue` (the caller grants
+   `issues: write`), writes it to the step summary and fails the job; it never
+   fails silently.
    **Trunk**: the handler guards the repository's default branch, read from
    the event payload, so a repository on `master` is classified like one on
    `main`. The `trunk` input names a different branch. The starter's `if:`

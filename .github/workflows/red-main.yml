@@ -252,6 +252,28 @@ on:
           comes from the passed or inherited secret, as before.
         type: string
         default: ''
+      broker-trust-policy:
+        description: >-
+          Kernel Broker TrustPolicy to mint the write token from, e.g.
+          `orgs/sylphx/trust_policies/red-main`. When set, the handler needs no
+          App private key: it trades this job's GitHub Actions OIDC token for a
+          short-lived Access key (`POST /v1/access/github/token`, the workflow
+          must be declared under `[[ci]]` in the platform manifest) and calls
+          `:exchangeToken` for a one-repository installation token. The PEM path
+          stays for a caller that still holds the key; an empty value and no key
+          keeps token mode. The `.github` org and the tenant orgs hold no PEM, so
+          this is the path a tenant uses once its builder App installation and
+          its `[[ci]]` declaration exist.
+        type: string
+        default: ''
+      broker-ci-name:
+        description: >-
+          The `[[ci]]` declaration name this workflow exchanges its OIDC token
+          under (`POST /v1/access/github/token`). Defaults to the TrustPolicy id
+          in `broker-trust-policy` (its last path segment), which is also the
+          name to declare.
+        type: string
+        default: ''
     secrets:
       app-private-key:
         description: >-
@@ -761,30 +783,46 @@ jobs:
           chmod 700 "$RUNNER_TEMP/red-main"
 
       # ---------------------------------------------------------------------
-      # Is there a builder App key? `secrets` cannot appear in an `if:`, so the
-      # step reads it into a flag. No key: token mode (see the header), and the
-      # effective mode is notify whatever the declaration says.
+      # Which write-token path does this caller have? `secrets` cannot appear
+      # in an `if:`, so the step reads the key into a flag. Order, per
+      # company/credentials.md: the Broker first (federation, no key anywhere),
+      # then a passed or environment App key, then token mode. `path` names the
+      # branch; `write=yes` means a token that can push and open pull requests
+      # is available, so the declared `revert` stands. No path at all: token
+      # mode (see the header), and the effective mode is notify whatever the
+      # declaration says.
       # ---------------------------------------------------------------------
-      - name: Detect the builder App key
+      - name: Detect the builder write-token path
         id: key
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 5
         env:
           APP_KEY: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+          BROKER_POLICY: ${{ inputs.broker-trust-policy }}
           DECLARED_MODE: ${{ steps.gate.outputs.mode }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           if [ -n "$APP_KEY" ]; then
+            echo "path=app" >>"$GITHUB_OUTPUT"
             echo "present=yes" >>"$GITHUB_OUTPUT"
+            echo "write=yes" >>"$GITHUB_OUTPUT"
             echo "mode=$DECLARED_MODE" >>"$GITHUB_OUTPUT"
             echo "the builder App key is present: the App path"
+          elif [ -n "$BROKER_POLICY" ]; then
+            echo "path=broker" >>"$GITHUB_OUTPUT"
+            echo "present=no" >>"$GITHUB_OUTPUT"
+            echo "write=yes" >>"$GITHUB_OUTPUT"
+            echo "mode=$DECLARED_MODE" >>"$GITHUB_OUTPUT"
+            echo "no App key, a Broker TrustPolicy is set: the Broker path ($BROKER_POLICY)"
           else
             state_set token-mode yes
+            echo "path=token" >>"$GITHUB_OUTPUT"
             echo "present=no" >>"$GITHUB_OUTPUT"
+            echo "write=no" >>"$GITHUB_OUTPUT"
             echo "mode=notify" >>"$GITHUB_OUTPUT"
-            echo "no builder App key: token mode, on the caller's own GITHUB_TOKEN"
-            say "revert needs a CI-triggering token (the builder App); notifying only."
+            echo "no builder App key and no Broker TrustPolicy: token mode, on the caller's own GITHUB_TOKEN"
+            say "revert needs a CI-triggering token (the builder App or the Broker); notifying only."
           fi
 
       # ---------------------------------------------------------------------
@@ -804,7 +842,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Mint the App token for the caller's repository
         id: app-token
-        if: steps.gate.outputs.proceed == 'true' && steps.key.outputs.present == 'yes'
+        if: steps.gate.outputs.proceed == 'true' && steps.key.outputs.path == 'app'
         continue-on-error: true
         timeout-minutes: 5
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
@@ -819,6 +857,36 @@ jobs:
           permission-workflows: write
 
       # ---------------------------------------------------------------------
+      # The Broker path: no App private key anywhere. The two-hop exchange
+      # (Actions OIDC token -> Access key -> one-repository installation token)
+      # is the shared `broker-write-token` action, pinned here by commit.
+      # ---------------------------------------------------------------------
+      - name: Mint the write token from the Broker
+        id: broker-token
+        if: steps.gate.outputs.proceed == 'true' && steps.key.outputs.path == 'broker'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: SylphxAI/.github/.github/actions/broker-write-token@f78ad189b259a05e8e00f2f1e1628f29323af157
+        with:
+          trust-policy: ${{ inputs.broker-trust-policy }}
+          ci-name: ${{ inputs.broker-ci-name }}
+          repository: ${{ github.repository }}
+          soft-fail: 'true'
+
+      - name: Record a Broker mint failure
+        if: >-
+          always() && steps.gate.outputs.proceed == 'true'
+          && steps.key.outputs.path == 'broker'
+          && steps.broker-token.outputs.failure != ''
+        timeout-minutes: 2
+        env:
+          REASON: ${{ steps.broker-token.outputs.failure }}
+        run: |
+          set -euo pipefail
+          . "$RUNNER_TEMP/red-main/lib.sh"
+          state_set grant-failure "$REASON"
+
+      # ---------------------------------------------------------------------
       # Probe the grant before anything acts. Actions is read through the
       # workflow token (a read proves `actions: read`; a dispatch the
       # caller did not grant is refused and named where it happens). The
@@ -830,10 +898,11 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
-          KEY_PRESENT: ${{ steps.key.outputs.present }}
-          APP_MINTED: ${{ steps.app-token.outputs.token != '' && 'yes' || 'no' }}
+          KEY_PRESENT: ${{ steps.key.outputs.write }}
+          KEY_PATH: ${{ steps.key.outputs.path }}
+          APP_MINTED: ${{ (steps.app-token.outputs.token != '' || steps.broker-token.outputs.token != '') && 'yes' || 'no' }}
           EVENT_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           SIMULATE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate-mint-failure && 'yes' || 'no' }}
         run: |
@@ -850,7 +919,11 @@ jobs:
             fail "simulated mint failure (test hook): the App token mint for $REPO was reported as refused"
           fi
           if [ "$KEY_PRESENT" = yes ] && [ "$APP_MINTED" != yes ]; then
-            fail "the App token was not minted on $REPO: the builder App installation does not grant contents, issues, pull-requests and workflows write, or the App id and key are empty, or the App has no installation on $REPO"
+            if [ "$KEY_PATH" = broker ]; then
+              fail "the Broker did not mint a write token on $REPO (see the mint step's reason; the caller grants id-token: write, the workflow is declared under [[ci]], and the TrustPolicy grants contents, issues, pull-requests and workflows write on $REPO)"
+            else
+              fail "the App token was not minted on $REPO: the builder App installation does not grant contents, issues, pull-requests and workflows write, or the App id and key are empty, or the App has no installation on $REPO"
+            fi
           fi
           run_path="repos/$REPO/actions/runs?per_page=1"
           if [ -n "$EVENT_RUN_ID" ]; then run_path="repos/$REPO/actions/runs/$EVENT_RUN_ID"; fi
@@ -927,7 +1000,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           EVENT_RUN_ID: ${{ github.event.workflow_run.id || '' }}
         run: |
@@ -1009,7 +1082,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
@@ -1044,7 +1117,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
@@ -1081,7 +1154,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
         run: |
@@ -1114,7 +1187,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 5
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           INFRA: ${{ steps.infra.outputs.infra }}
           INFRA_SIGNATURE: ${{ steps.infra.outputs.signature }}
           INITIAL_PROOF: ${{ steps.run.outputs.proof-verdict }}
@@ -1181,7 +1254,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true' && steps.verdict.outputs.verdict == 'real'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
@@ -1254,13 +1327,13 @@ jobs:
         # The candidate deadline (at most 60 minutes) plus branch setup.
         timeout-minutes: 70
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
-          TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
+          TOKEN_MODE: ${{ steps.key.outputs.write == 'yes' && 'no' || 'yes' }}
           MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
         run: |
           set -euo pipefail
@@ -1595,6 +1668,22 @@ jobs:
           permission-pull-requests: write
           permission-workflows: write
 
+      # The Broker path needs the same fresh token: a one-hour installation
+      # token minted before a long trace must be re-minted before the revert.
+      - name: Mint a fresh Broker token after the trace
+        id: broker-token-act
+        if: >-
+          always() && steps.gate.outputs.proceed == 'true'
+          && steps.broker-token.outputs.token != ''
+          && steps.broker-token.outputs.token != null
+        timeout-minutes: 5
+        uses: SylphxAI/.github/.github/actions/broker-write-token@f78ad189b259a05e8e00f2f1e1628f29323af157
+        with:
+          trust-policy: ${{ inputs.broker-trust-policy }}
+          ci-name: ${{ inputs.broker-ci-name }}
+          repository: ${{ github.repository }}
+          soft-fail: 'true'
+
       # ---------------------------------------------------------------------
       # Revert (mode revert) or report (mode notify).
       # ---------------------------------------------------------------------
@@ -1606,15 +1695,15 @@ jobs:
           && (steps.trace.outputs.culprit != '' || steps.trace.outputs.revert-all != '')
         timeout-minutes: 25
         env:
-          GH_TOKEN: ${{ steps.app-token-act.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token-act.outputs.token || steps.broker-token-act.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug || steps.broker-token.outputs.app-slug }}
           APP_ID: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
           MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
           OWNER_LABEL: ${{ steps.gate.outputs.owner-label }}
           MIGRATION_PATHS: ${{ steps.gate.outputs.migration-paths }}
           HOLD_UTC: ${{ steps.gate.outputs.hold-utc }}
-          TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
+          TOKEN_MODE: ${{ steps.key.outputs.write == 'yes' && 'no' || 'yes' }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
@@ -2034,7 +2123,7 @@ jobs:
           && (steps.helpers.outcome == 'success' || steps.helpers.outcome == 'failure')
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token-act.outputs.token || steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token-act.outputs.token || steps.broker-token-act.outputs.token || steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
         run: |
