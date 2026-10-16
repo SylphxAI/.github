@@ -26,8 +26,10 @@ Rows, per non-archived repository of the policy's organizations:
        floor, and `ci-ok` needs it
   R6   the default branch has a merge queue, `ci-ok` is a required check
        (where R2 applies) and `verified` never is
-  R7   on_red is `revert` or `revert_pr_unarmed` only where the builder App
-       reaches the repository (policy writer_app_orgs), `notify` elsewhere
+  R7   on_red is `revert` or `revert_pr_unarmed` only where a write token can
+       be minted (policy writer_app_orgs, which today means the builder App
+       reaches the repository; the red-main handler's Broker path mints the
+       same token per repository through the platform), `notify` elsewhere
   R8   merge lane: in a workflow that runs on merge_group, every job on the
        `sylphx-linux-standard` or `sylphx-linux-xlarge` pool selects its
        `-merge` twin on merge_group, so a merge group never queues behind the
