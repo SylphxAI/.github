@@ -12,7 +12,8 @@ import unittest
 ACTION = pathlib.Path(__file__).resolve().parents[1] / ".github" / "actions" / "plain-language"
 
 
-def run_check(before: str, after: str, terms: str = "terms.tsv", *specs: str, mode: str = "fail") -> subprocess.CompletedProcess[str]:
+def run_check(before: str, after: str, terms: str = "terms.tsv", *specs: str, mode: str = "fail",
+              env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory() as tmp:
         def git(*args: str) -> None:
             subprocess.run(["git", *args], cwd=tmp, check=True, capture_output=True)
@@ -28,7 +29,8 @@ def run_check(before: str, after: str, terms: str = "terms.tsv", *specs: str, mo
         git("commit", "-qam", "change")
         return subprocess.run(
             [str(ACTION / "check.sh"), "HEAD~1..HEAD", str(ACTION / terms), *specs],
-            cwd=tmp, capture_output=True, text=True, env={**os.environ, "PLAIN_LANGUAGE_MODE": mode},
+            cwd=tmp, capture_output=True, text=True,
+            env={**os.environ, "PLAIN_LANGUAGE_MODE": mode, **(env or {})},
         )
 
 
@@ -44,7 +46,14 @@ class PlainLanguageTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_allow_marker_skips_the_line(self) -> None:
-        result = run_check("", "quoting residual here plain-language: allow\n")
+        result = run_check(
+            "", "quoting residual here plain-language: allow(legacy quote; until=2099-01-01)\n")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_bare_allow_marker_is_refused_after_the_grace_ended(self) -> None:
+        # The grace ended 2026-10-15; an unexpired marker must name a reason and a date for that to stay true.
+        result = run_check("", "quoting residual here plain-language: allow\n",
+                           env={"PLAIN_LANGUAGE_BARE_UNTIL": "2099-01-01"})
         self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_standard_words_pass(self) -> None:
