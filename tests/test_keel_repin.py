@@ -34,13 +34,22 @@ def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, text=True, capture_output=True).stdout.strip()
 
 
-def make_keel_remote(base: pathlib.Path) -> tuple[str, str]:
-    """A bare repository standing in for the Keel repository, with one annotated tag."""
+def make_keel_remote(base: pathlib.Path, cli: str = "exit 0\n") -> tuple[str, str]:
+    """A tagged Keel repository with a stand-in release installer and CLI."""
     work = base / "keel-work"
     work.mkdir()
     git(work, "init", "-q", "-b", "main")
     (work / "f").write_text("keel")
-    git(work, "add", "f")
+    (work / "scripts").mkdir()
+    (work / "scripts/install_cli.sh").write_text(
+        '#!/bin/sh\nset -eu\n'
+        f'test "$2" = "{NEW_TAG}"\n'
+        'mkdir -p "$3"\n'
+        'cat > "$3/keel" <<\'CLI\'\n'
+        '#!/bin/sh\nset -eu\n'
+        'test "$*" = "migrate --check"\n' + cli +
+        'CLI\nchmod +x "$3/keel"\n')
+    git(work, "add", ".")
     git(work, "commit", "-q", "-m", "keel")
     sha = git(work, "rev-parse", "HEAD")
     git(work, "tag", "-a", NEW_TAG, "-m", "tag")
@@ -228,6 +237,34 @@ class RunTest(unittest.TestCase):
             self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "check"))
             self.assertIn("SavePort", rep["log"])
             self.assertIn("Cargo.toml", rep["changed"])  # the pin still moves; the break is the content of the draft
+
+    def test_android_signing_migration_failure_stops_the_repin_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, _ = make_keel_remote(base, (
+                'test -f app/keel.toml\n'
+                'echo "Android signing identity migration (#5144): add [mobile.android.signing] key_alias"\n'
+                'exit 1\n'))
+            config = '[mobile.android]\npackage = "com.example.game"\n'
+            repo = make_title(base, {**TITLE, "app/keel.toml": config})
+            rc, rep = self.run_cmd(repo, remote, "touch build-checked", ["--check-dir", "app"])
+            self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "migrate"))
+            self.assertIn("#5144", rep["log"])
+            self.assertIn("[mobile.android.signing]", rep["log"])
+            self.assertFalse((repo / "app/build-checked").exists())
+            self.assertEqual((repo / "app/keel.toml").read_text(), config)
+            _, body = keel_repin.pr_text(rep)
+            self.assertIn("Draft: the migration check fails", body)
+            self.assertIn("#5144", body)
+
+    def test_an_empty_build_check_does_not_skip_migrations(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, _ = make_keel_remote(base, 'echo "migration still needed"\nexit 1\n')
+            repo = make_title(base, TITLE)
+            rc, rep = self.run_cmd(repo, remote, "")
+            self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "migrate"))
+            self.assertIn("migration still needed", rep["log"])
 
     def test_already_pinned_and_branch_exists_and_no_pin(self):
         with tempfile.TemporaryDirectory() as d:
@@ -556,8 +593,10 @@ if a[:2] == ["pr", "list"] and "merged" in a:
         print(json.dumps(sc["merged"]))
 elif a[:2] == ["pr", "list"]:
     print("\n".join("\t".join(map(str, pr)) for pr in sc["prs"]))
-elif a[:1] == ["api"] and "check-runs" in a[-1] + " ".join(a):
+elif a[:1] == ["api"] and "check-runs" in " ".join(a):
     print("\n".join("\t".join(map(str, r)) for r in sc["runs"]))
+elif a[:1] == ["api"] and "pulls/" in " ".join(a) and "commits" in " ".join(a):
+    print("\n".join("\t".join(map(str, c)) for c in sc.get("pr_commits", [])))
 elif a[:1] == ["api"] and "/commits" in " ".join(a):
     print("\n".join(sc["emails"]))
 elif a[:2] == ["pr", "view"] and "comments" in a:
@@ -569,6 +608,8 @@ elif a[:2] == ["pr", "view"] and "state" in a:
     print(sc.get("state", "OPEN"))
 elif a[:2] == ["pr", "comment"]:
     open(d + "/comments.txt", "a").write(a[a.index("--body") + 1] + "\n")
+elif a[:2] == ["pr", "close"]:
+    open(d + "/closes.txt", "a").write(" ".join(a) + "\n")
 elif a[:2] == ["pr", "merge"]:
     if "--auto" not in a and sc.get("merge") == "needs-auto":
         sys.stderr.write("the merge queue is on: use --auto\n"); sys.exit(1)
@@ -582,12 +623,13 @@ TAG_BRANCH = keel_repin.BRANCH_PREFIX + NEW_TAG
 NOW = 1_800_000_000
 
 
-def check(name, status="completed", conclusion="success", app="github-actions", id=None):
-    return [id or abs(hash(name + status + conclusion)) % 10_000, name, status, conclusion if status == "completed" else "", app, f"https://example.invalid/{name}"]
+def check(name, status="completed", conclusion="success", app="github-actions", id=None, started_at=None):
+    return [id or abs(hash(name + status + conclusion)) % 10_000, name, status,
+            conclusion if status == "completed" else "", app, f"https://example.invalid/{name}", started_at]
 
 
 class SettleTest(unittest.TestCase):
-    def settle(self, scenario, extra=None, repeat=1):
+    def settle(self, scenario, extra=None, repeat=1, now_offset=600):
         with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
             gh = base / "gh"
@@ -600,33 +642,137 @@ class SettleTest(unittest.TestCase):
             rcs = []
             with mock.patch.dict(os.environ, env), mock.patch("builtins.print"):
                 for _ in range(repeat):
-                    rcs.append(keel_repin.main(["settle", "--owner", "@o/team", "--now", str(created + 600), *(extra or [])]))
+                    rcs.append(keel_repin.main(["settle", "--owner", "@o/team",
+                                                "--now", str(created + now_offset), *(extra or [])]))
             calls = (base / "gh-calls.txt").read_text() if (base / "gh-calls.txt").exists() else ""
             comments = (base / "comments.txt").read_text() if (base / "comments.txt").exists() else ""
-            return rcs, calls, comments
+            closes = (base / "closes.txt").read_text() if (base / "closes.txt").exists() else ""
+            return rcs, calls, comments, closes
 
     def merges(self, calls):
         return [c for c in calls.splitlines() if c.startswith("pr merge")]
 
     def test_green_on_the_exact_head_merges_pinned_to_that_head(self):
-        rcs, calls, comments = self.settle({"runs": [check("ci-ok"), check("web-smoke"), check("rust")]})
+        rcs, calls, comments, _ = self.settle({"runs": [check("ci-ok"), check("web-smoke"), check("rust")]})
         self.assertEqual(rcs, [0])
         self.assertEqual(self.merges(calls), [f"pr merge 5 --squash --match-head-commit {HEAD}"])
         self.assertIn(f"commits/{HEAD}/check-runs", calls)  # judged on the head the merge is pinned to
         self.assertEqual(comments, "")
 
     def test_a_missing_or_unfinished_required_check_waits(self):
-        for runs in ([check("ci-ok")], [check("ci-ok"), check("web-smoke", "in_progress")], []):
-            rcs, calls, comments = self.settle({"runs": runs})
+        for runs in ([check("ci-ok")], [check("web-smoke", "in_progress")], []):
+            rcs, calls, comments, _ = self.settle({"runs": runs}, now_offset=60)
             self.assertEqual((self.merges(calls), comments), ([], ""), runs)
+
+    def test_a_required_check_that_never_appeared_turns_red_only_when_it_was_never_there(self):
+        # Nothing on the head at all: the required name has never appeared, so the pull request waits
+        # while it is young and turns red only once it is older than max-wait-minutes.
+        rcs, calls, comments, _ = self.settle({"runs": [check("ci-ok")]}, extra=["--max-wait-minutes", "5"])
+        self.assertEqual(self.merges(calls), [])
+        self.assertIn("still waiting after 10 minutes", comments)
+        self.assertIn("`web-smoke` has not run", comments)
+
+    def test_a_check_nobody_picked_up_waits_and_says_so(self):
+        # A required check GitHub has queued or started but no runner has taken: the run has begun and
+        # sat for more than a minute. That is the queue, not the change, and it is not red. A queued run
+        # has no start stamp yet, so the older in-progress run is the one that sets the age.
+        aged = check("ci-ok", "in_progress", started_at="2027-01-15T07:20:00Z")
+        rcs, calls, comments, _ = self.settle({"runs": [check("ci-ok", "queued"), aged]}, now_offset=3600)
+        self.assertEqual(self.merges(calls), [])
+        self.assertNotIn("is not merged", comments)
+        self.assertIn("waiting, not red", comments)
+        self.assertIn("has not picked the job up", comments)
+        self.assertNotIn("still waiting after", comments)  # a stall is never the red max-wait path
+
+    def test_a_stalled_check_is_told_once_per_head_and_never_merges(self):
+        runs = [check("ci-ok", "in_progress", started_at="2027-01-15T07:20:00Z")]
+        rcs, calls, comments, _ = self.settle({"runs": runs}, now_offset=3600, repeat=3)
+        self.assertEqual(self.merges(calls), [])
+        self.assertEqual(comments.count(keel_repin.RED_MARKER), 1)  # one comment per head per kind
+        self.assertIn(f"keel-repin-red:stalled-{HEAD}", comments)
+
+    def test_a_skipped_required_check_has_verified_nothing(self):
+        # GitHub reports a job its own `if:` skipped as `skipped`, and a skipped required check is absent,
+        # so the pull request keeps waiting instead of passing the gate.
+        runs = [check("ci-ok"), check("web-smoke", "completed", "skipped")]
+        rcs, calls, comments, _ = self.settle({"runs": runs}, now_offset=60)
+        self.assertEqual(self.merges(calls), [])
+        self.assertEqual(comments, "")
+
+    def test_the_newest_repin_closes_the_older_one_with_a_comment(self):
+        older = "chore/keel-repin-keel-verified-2026-10-01-1"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"],
+                     [4, older, "f" * 40, "false", "2027-01-14T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertIn("pr close 4", closes)          # the older tag's repin is closed
+        self.assertIn("#5", closes)                  # with a comment naming the newer one
+        self.assertIn("keel-verified-2026-10-03-1", closes)
+        self.assertEqual(closes.count("pr close"), 1)
+        self.assertEqual(self.merges(calls), [f"pr merge 5 --squash --match-head-commit {HEAD}"])
+
+    def test_the_newest_repin_settles_before_an_older_one_is_closed(self):
+        # Both are open with green heads. The newest is judged first, so its merge can never be
+        # cancelled by a re-read of the older pull request that replaces it.
+        older = "chore/keel-repin-keel-verified-2026-10-01-1"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"],
+                     [4, older, "f" * 40, "false", "2027-01-14T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        merged = self.merges(calls)
+        self.assertEqual(merged, [f"pr merge 5 --squash --match-head-commit {HEAD}"])
+        self.assertIn("pr close 4", closes)
+
+    def test_a_newer_repin_does_not_close_the_one_judged(self):
+        newer = "chore/keel-repin-keel-verified-2026-10-07-1"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"],
+                     [6, newer, "f" * 40, "false", "2027-01-16T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertIn("pr close 5", closes)   # the older tag's repin yields to the newer one
+        self.assertNotIn("pr close 6", closes)
+        self.assertEqual(len(self.merges(calls)), 1)  # the newest tag's repin settles first
+
+    def test_a_repin_prefix_branch_that_is_not_a_tag_does_not_stop_the_settle(self):
+        # A hand-made branch under the repin prefix (a smoke-producer fix, say) has no tag to sort by.
+        # It is skipped, so the genuine repin on the same title still settles.
+        hand = "chore/keel-repin-smoke-checks-20261015"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[182, hand, "f" * 40, "false", "2027-01-15T07:00:00Z"],
+                     [5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(rcs, [0])  # the None sort key no longer raises
+        self.assertEqual(self.merges(calls), [f"pr merge 5 --squash --match-head-commit {HEAD}"])
+        self.assertEqual(closes, "")  # the non-tag branch is neither settled nor closed
+
+    def test_a_repin_prefix_branch_that_is_not_a_tag_alone_settles_nothing(self):
+        hand = "chore/keel-repin-smoke-checks-20261015"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[182, hand, "f" * 40, "false", "2027-01-15T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(rcs, [0])
+        self.assertEqual(self.merges(calls), [])
+        self.assertEqual(closes, "")
+
+    def test_a_layer_repin_beside_a_non_repin_branch_still_settles(self):
+        # A kit/engine layer branch is `chore/keel-repin-<layer>-<sha>`, a real repin with no tag key.
+        # It must keep its row and order beside a non-repin branch, not be skipped with it.
+        layer = "chore/keel-repin-engine-" + "a" * 40
+        hand = "chore/keel-repin-smoke-checks-20261015"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[160, layer, HEAD, "false", "2027-01-15T07:00:00Z"],
+                     [182, hand, "f" * 40, "false", "2027-01-16T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(rcs, [0])
+        self.assertEqual(self.merges(calls), [f"pr merge 160 --squash --match-head-commit {HEAD}"])
 
     def test_a_red_check_is_never_merged_and_the_owner_hears_once(self):
         runs = [check("ci-ok"), check("web-smoke", conclusion="failure")]
-        rcs, calls, comments = self.settle({"runs": runs}, repeat=1)
+        rcs, calls, comments, _ = self.settle({"runs": runs}, repeat=1)
         self.assertEqual(self.merges(calls), [])
         self.assertIn("@o/team", comments)
         self.assertIn("`web-smoke` failure", comments)
-        self.assertIn(f"keel-repin-red:{HEAD} ", comments)
+        self.assertIn(f"keel-repin-red:red-{HEAD} ", comments)
         # The same condition seen again produces no second comment.
         with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
@@ -642,12 +788,14 @@ class SettleTest(unittest.TestCase):
             self.assertEqual((base / "comments.txt").read_text().count(keel_repin.RED_MARKER), 1)
 
     def test_any_failed_check_on_the_head_is_red_even_when_not_required(self):
-        rcs, calls, comments = self.settle({"runs": [check("ci-ok"), check("web-smoke"), check("lint", conclusion="failure")]})
+        rcs, calls, comments, _ = self.settle({"runs": [check("ci-ok"), check("web-smoke"), check("lint", conclusion="failure")]})
         self.assertEqual((self.merges(calls), "`lint` failure" in comments), ([], True))
 
     def test_a_check_posted_by_another_app_does_not_count(self):
-        rcs, calls, comments = self.settle({"runs": [check("ci-ok"), check("web-smoke", app="some-other-app")]})
-        self.assertEqual((self.merges(calls), comments), ([], ""))
+        rcs, calls, comments, _ = self.settle({"runs": [check("ci-ok"), check("web-smoke", app="some-other-app")]},
+                                              now_offset=3600)
+        self.assertEqual(self.merges(calls), [])
+        self.assertNotIn("is not merged", comments)  # absent, so it waits rather than going red
 
     def test_the_newest_run_of_a_name_decides(self):
         runs = [check("ci-ok"), check("web-smoke", conclusion="failure", id=1), check("web-smoke", id=2)]
@@ -655,47 +803,75 @@ class SettleTest(unittest.TestCase):
         runs = [check("ci-ok"), check("web-smoke", id=1), check("web-smoke", conclusion="failure", id=2)]
         self.assertEqual(self.merges(self.settle({"runs": runs})[1]), [])
 
-    def test_a_pending_check_that_never_finishes_turns_red(self):
-        rcs, calls, comments = self.settle({"runs": [check("ci-ok")]}, extra=["--max-wait-minutes", "5"])
+    def test_a_failed_optional_check_is_red(self):
+        # Any failed check on the head is red, required or not, and it is red whatever the clock says.
+        rcs, calls, comments, _ = self.settle({"runs": [check("ci-ok"), check("web-smoke"), check("lint", conclusion="failure")]},
+                                              now_offset=3600)
         self.assertEqual(self.merges(calls), [])
-        self.assertIn("still waiting after 10 minutes", comments)
-        self.assertIn("`web-smoke` has not run", comments)
+        self.assertIn("`lint` failure", comments)
 
     def test_only_the_bots_own_commits_are_merged(self):
-        runs = [check("ci-ok"), check("web-smoke")]
-        rcs, calls, comments = self.settle({"runs": runs, "emails": [BOT, "person@example.com"]})
-        self.assertEqual((self.merges(calls), comments), ([], ""))
+        head = "e" * 40
+        earlier = "d" * 40
+        scenario = {"runs": [check("ci-ok"), check("web-smoke")],
+                    "pr_commits": [[earlier, "chore: repin", BOT, BOT], [head, "chore: repin", "person@example.com", "person@example.com"]]}
+        rcs, calls, comments, _ = self.settle(scenario)
+        self.assertEqual(self.merges(calls), [])
+        self.assertIn("is not merged", comments)
+        self.assertIn("not the bot's own commit", comments)
+        self.assertIn("@o/team", comments)
+
+    def test_a_stranger_commit_is_named_with_its_head_and_told_once(self):
+        head = "e" * 40
+        earlier = "d" * 40
+        scenario = {"runs": [check("ci-ok"), check("web-smoke")],
+                    "pr_commits": [[earlier, "chore: repin", BOT, BOT], [head, "fix: keep the pinned rev", "person@example.com", "person@example.com"]]}
+        rcs, calls, comments, _ = self.settle(scenario, repeat=3)
+        self.assertEqual(self.merges(calls), [])
+        self.assertEqual(comments.count(keel_repin.RED_MARKER), 1)
+        self.assertIn(f"keel-repin-red:foreign-{head}", comments)
+        self.assertIn(head[:9], comments)  # the reason names the head it judged
+        self.assertIn("fix: keep the pinned rev", comments)
+
+    def test_a_repin_branch_the_bot_owns_alone_still_merges(self):
+        head = "e" * 40
+        earlier = "d" * 40
+        scenario = {"runs": [check("ci-ok"), check("web-smoke")],
+                    "pr_commits": [[earlier, "chore: repin", BOT, BOT], [head, "chore: repin", BOT, BOT]]}
+        rcs, calls, comments, _ = self.settle(scenario)
+        self.assertEqual(self.merges(calls), [f"pr merge 5 --squash --match-head-commit {HEAD}"])
+        self.assertEqual(comments, "")
 
     def test_a_draft_is_never_merged_and_told_once(self):
         draft = [[5, TAG_BRANCH, HEAD, "true", "2027-01-15T07:00:00Z"]]
-        rcs, calls, comments = self.settle({"prs": draft, "runs": [check("ci-ok"), check("web-smoke")]})
+        rcs, calls, comments, _ = self.settle({"prs": draft, "runs": [check("ci-ok"), check("web-smoke")]})
         self.assertEqual(self.merges(calls), [])
         self.assertIn("is a draft", comments)
 
     def test_other_pull_requests_are_not_listed_for_merge(self):
         other = [[6, "feature/x", HEAD, "false", "2027-01-15T07:00:00Z"]]
         # The branch filter is in the gh --jq expression; the fake answers its rows as given, so check the filter text.
-        rcs, calls, comments = self.settle({"prs": [], "runs": []})
+        rcs, calls, comments, _ = self.settle({"prs": [], "runs": []})
         self.assertIn('startswith("chore/keel-repin-")', calls)
 
     def test_a_queue_repository_retries_with_auto_and_a_refusal_is_told(self):
         runs = [check("ci-ok"), check("web-smoke")]
-        rcs, calls, comments = self.settle({"runs": runs, "merge": "needs-auto"})
+        rcs, calls, comments, _ = self.settle({"runs": runs, "merge": "needs-auto"})
         self.assertEqual(len(self.merges(calls)), 2)
         self.assertTrue(self.merges(calls)[1].endswith("--auto"))
-        rcs, calls, comments = self.settle({"runs": runs, "merge": "refuse"})
+        rcs, calls, comments, _ = self.settle({"runs": runs, "merge": "refuse"})
         self.assertIn("the merge was refused", comments)
 
     def test_after_merge_workflows_start_only_when_the_merge_landed(self):
         runs = [check("ci-ok"), check("web-smoke")]
-        rcs, calls, _ = self.settle({"runs": runs, "state": "MERGED"}, extra=["--after-merge", "pages.yml deploy.yml", "--base", "main"])
+        rcs, calls, _, _ = self.settle({"runs": runs, "state": "MERGED"}, extra=["--after-merge", "pages.yml deploy.yml", "--base", "main"])
         self.assertIn("workflow run pages.yml --ref main", calls)
         self.assertIn("workflow run deploy.yml --ref main", calls)
-        rcs, calls, _ = self.settle({"runs": runs, "state": "OPEN"}, extra=["--after-merge", "pages.yml"])
+        rcs, calls, _, _ = self.settle({"runs": runs, "state": "OPEN"}, extra=["--after-merge", "pages.yml"])
         self.assertNotIn("workflow run", calls)
 
     def test_dry_run_merges_nothing(self):
-        rcs, calls, _ = self.settle({"runs": [check("ci-ok"), check("web-smoke")]}, extra=["--dry-run"])
+        rcs, calls, _, _ = self.settle({"runs": [check("ci-ok"), check("web-smoke")]}, extra=["--dry-run"])
         self.assertEqual(self.merges(calls), [])
 
 

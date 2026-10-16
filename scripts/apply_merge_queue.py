@@ -17,19 +17,26 @@ without --apply.
   scripts/apply_merge_queue.py --rollback DIR      # put the saved rulesets back
   scripts/apply_merge_queue.py --check             # exit 1 when any ruleset drifts
 
-What it manages: the parameters of the `merge_queue` rule of every ruleset that
-has one, and the required approving review count of the `pull_request` rule of
-every repository ruleset that has one (policy `review`: 0, because `ci-ok` is
-the gate and an approval checks nothing it did not). Everything else in a
-ruleset is carried through unchanged on a write. An inherited organization or
-enterprise ruleset is reported as INHERITED and never written: it has no
-repository path.
-What it only reports: whether the fast gate (`ci-ok`) is a required check of the
-same ruleset, and the strict flag. It never adds a required check, because a
-check no workflow reports would stop the queue.
+What it manages: merge_queue parameters, the pull_request approving review
+count and extra-approval flag, and the App bindings of explicitly scoped policy
+required_checks. `require_extra_approval_for_unattributed_changes` adds one
+approving review when a pull request carries commits GitHub cannot attribute to
+a user (every desk App's), so it would hold every bot pull request for an
+approval `ci-ok` already made; the policy converges it to false. Required checks
+are additive: unrelated checks and every other ruleset field are preserved.
+Inherited organization or enterprise rulesets are reported and never written.
+The fast gate and strict flag are reported fleet-wide, but checks are changed
+only on the declared repository/ruleset ID/name targets. Before adding a gate,
+follow the producer/backfill/live-posting/alert readiness procedure in
+docs/merge-queue-settings.md. Rollback restores saved bindings.
 
-Reads are one GraphQL query per 100 repositories of an organization. Writes are
-paced one second apart, are read back, and stop at the first HTTP 403.
+Reads are one GraphQL query per 100 repositories of an organization, then one
+custom-property read per selected, non-excluded repository, and one ruleset-
+detail read per selected, non-excluded repository ruleset that carries a
+pull_request rule (its extra-approval flag is not in the GraphQL schema).
+Delivered repositories and unreadable delivery properties are excluded before
+planning, so they cost no detail read and no write. Writes are paced one second
+apart, are read back, and stop at the first HTTP 403.
 """
 from __future__ import annotations
 
@@ -44,6 +51,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "policy" / "merge-queue.json"
 HANDS_OFF_POLICY = ROOT / "policy" / "optimistic-merge.json"
 REVIEW_KEY = "required_approving_review_count"
+EXTRA_APPROVAL_KEY = "require_extra_approval_for_unattributed_changes"
 
 # REST (snake_case) <-> GraphQL (camelCase) names of the merge queue parameters.
 PARAMS = {
@@ -84,6 +92,9 @@ def load_policy(path: Path) -> dict:
     count = policy.get("review", {}).get(REVIEW_KEY)
     if not isinstance(count, int) or isinstance(count, bool) or count < 0:
         raise ValueError(f"review.{REVIEW_KEY} must be a non-negative integer")
+    extra = policy.get("review", {}).get(EXTRA_APPROVAL_KEY)
+    if not isinstance(extra, bool):
+        raise ValueError(f"review.{EXTRA_APPROVAL_KEY} must be a boolean")
     for key, fields in (("exclude", ("repo", "reason")), ("overrides", ("repo", "ruleset", "settings", "reason")),
                         ("fast_gate_overrides", ("repo", "ruleset", "context", "reason"))):
         for entry in policy.get(key, []):
@@ -92,6 +103,34 @@ def load_policy(path: Path) -> dict:
                 raise ValueError(f"{key} entry {entry.get('repo')!r} lacks {missing}")
     for entry in policy.get("overrides", []):
         check_settings(entry["settings"], f"override {entry['repo']}")
+    targets = set()
+    required = policy.get("required_checks", [])
+    if not isinstance(required, list):
+        raise ValueError("required_checks must be an array")
+    for entry in required:
+        if not isinstance(entry, dict) or any(not entry.get(field) for field in
+                ("repo", "ruleset", "ruleset_id", "checks", "reason")):
+            raise ValueError("required_checks entries need repo, ruleset, ruleset_id, checks and reason")
+        if not isinstance(entry["checks"], list) or any(not isinstance(check, dict) for check in entry["checks"]):
+            raise ValueError("required_checks.checks must be an array of check objects")
+        rid = entry["ruleset_id"]
+        if not isinstance(rid, int) or isinstance(rid, bool) or rid <= 0:
+            raise ValueError("required_checks.ruleset_id must be a positive integer")
+        target = (entry["repo"], rid)
+        if target in targets:
+            raise ValueError(f"duplicate required_checks target {target}")
+        targets.add(target)
+        contexts = set()
+        for check in entry["checks"]:
+            context = check.get("context")
+            integration = check.get("integration_id")
+            if not isinstance(context, str) or not context.strip() or context != context.strip():
+                raise ValueError("required check context must be a non-empty trimmed string")
+            if not isinstance(integration, int) or isinstance(integration, bool) or integration <= 0:
+                raise ValueError("required check integration_id must be a positive integer")
+            if context in contexts:
+                raise ValueError(f"duplicate required check context {context}")
+            contexts.add(context)
     return policy
 
 
@@ -136,6 +175,29 @@ def expected_gate(policy: dict, repo: str, ruleset: str) -> str:
         if entry["repo"] == repo and entry["ruleset"] == ruleset:
             return entry["context"]
     return policy["fast_gate"]["context"]
+
+
+def desired_checks(policy: dict, repo: str, rid: int, name: str) -> list[dict]:
+    for entry in policy.get("required_checks", []):
+        if entry["repo"] == repo and entry["ruleset_id"] == rid:
+            if entry["ruleset"] != name:
+                raise ValueError(f"{repo} ruleset {rid} name differs from policy")
+            return entry["checks"]
+    return []
+
+
+def merge_checks(current: list[dict], desired: list[dict]) -> list[dict]:
+    bindings = {check["context"]: check for check in desired}
+    out = []
+    present = set()
+    for check in current:
+        context = check["context"]
+        if context in bindings and context in present:
+            continue
+        out.append({**check, **bindings.get(context, {})})
+        present.add(context)
+    out.extend(dict(check) for check in desired if check["context"] not in present)
+    return out
 
 
 # --- GitHub (the `gh` CLI; the desk login) --------------------------------------------
@@ -194,9 +256,9 @@ def read_org(gh, org: str) -> list[dict]:
                 rules = rs["rules"]["nodes"]
                 queue = next((r for r in rules if r["type"] == "MERGE_QUEUE"), None)
                 review = next((r for r in rules if r["type"] == "PULL_REQUEST"), None)
-                if queue is None and review is None:
-                    continue
                 checks = next((r for r in rules if r["type"] == "REQUIRED_STATUS_CHECKS"), None)
+                if queue is None and review is None and checks is None:
+                    continue
                 cparams = (checks or {}).get("parameters") or {}
                 # An inherited ruleset (`source` not `Repository`) is not a repository one: REST has no path
                 # to write it (`repos/{repo}/rulesets/{id}` writes repository rulesets only), so it is
@@ -210,7 +272,12 @@ def read_org(gh, org: str) -> list[dict]:
                     "refs": (rs.get("conditions") or {}).get("refName", {}).get("include", []),
                     "live": {k: queue["parameters"][g] for k, g in PARAMS.items()} if queue else None,
                     "review": (review.get("parameters") or {}).get("requiredApprovingReviewCount", 0) if review else None,
+                    # require_extra_approval_for_unattributed_changes is not in the GraphQL schema, so it is
+                    # filled from the REST ruleset detail (enrich_extra_approval) before planning.
+                    "extra_approval": None,
                     "required": [c["context"] for c in cparams.get("requiredStatusChecks", [])] if checks else None,
+                    "required_checks": [{"context": c["context"], "integration_id": c.get("integrationId")}
+                                        for c in cparams.get("requiredStatusChecks", [])] if checks else None,
                     "strict": cparams.get("strictRequiredStatusChecksPolicy") if checks else None,
                 })
         if not data["pageInfo"]["hasNextPage"]:
@@ -219,6 +286,32 @@ def read_org(gh, org: str) -> list[dict]:
 
 
 # --- plan -----------------------------------------------------------------------------
+
+
+def extra_approval(ruleset: dict) -> bool | None:
+    rule = next((r for r in ruleset["rules"] if r["type"] == "pull_request"), None)
+    return bool((rule.get("parameters") or {}).get(EXTRA_APPROVAL_KEY, False)) if rule else None
+
+
+def enrich_extra_approval(gh, fleet: list[dict], skip: dict[str, str], only: set[str]) -> None:
+    """Fill each selected, non-excluded repository ruleset's extra-approval flag from its REST detail.
+
+    GraphQL's PullRequestParameters does not carry require_extra_approval_for_unattributed_changes, so the
+    flag is read from the REST ruleset detail. Only a repository ruleset with a pull_request rule is read
+    (`id` and `review` set), and only when it is selected and not excluded: a delivered, unselected or
+    inherited ruleset costs no detail read (and no write)."""
+    for item in fleet:
+        if item["id"] is None or item["review"] is None:
+            continue
+        if item["repo"] in skip or (only and item["repo"] not in only):
+            continue
+        try:
+            item["extra_approval"] = extra_approval(gh.rest(f"repos/{item['repo']}/rulesets/{item['id']}"))
+        except Forbidden:
+            raise
+        except (RuntimeError, ValueError, OSError) as exc:
+            # a ruleset detail we cannot read is a repository we cannot verify: fail closed, never write
+            skip[item["repo"]] = f"ruleset detail unreadable: {exc}"
 
 
 def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] | None = None) -> list[dict]:
@@ -244,6 +337,14 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
         count = policy["review"][REVIEW_KEY]
         if item["review"] is not None and item["review"] != count:
             changes[REVIEW_KEY] = [item["review"], count]
+        extra = policy["review"][EXTRA_APPROVAL_KEY]
+        if item.get("extra_approval") is not None and item["extra_approval"] != extra:
+            changes[EXTRA_APPROVAL_KEY] = [item["extra_approval"], extra]
+        checks = desired_checks(policy, item["repo"], item["id"], item["ruleset"])
+        current = item.get("required_checks") or []
+        wanted = merge_checks(current, checks)
+        if checks and wanted != current:
+            changes["required_status_checks"] = [current, wanted]
         if item["live"] is None:
             row.update(status="DRIFT" if changes else "OK", changes=changes, notes=[])
             rows.append(row)
@@ -260,6 +361,15 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
             notes.append("strict_required_status_checks_policy is on (not managed here)")
         row.update(status="DRIFT" if changes else "OK", changes=changes, notes=notes)
         rows.append(row)
+    found = {(item["repo"], item["id"]) for item in fleet}
+    for target in policy.get("required_checks", []):
+        if target["repo"] in skip or (only and target["repo"] not in only):
+            continue
+        if (target["repo"], target["ruleset_id"]) not in found:
+            rows.append({"repo": target["repo"], "id": target["ruleset_id"],
+                         "ruleset": target["ruleset"], "enforcement": None, "refs": [],
+                         "status": "MISSING", "changes": {},
+                         "notes": ["declared required-check ruleset was not found; no apply is allowed"]})
     return rows
 
 
@@ -277,8 +387,8 @@ def render(rows: list[dict], skipped_orgs: list[str] | None = None) -> str:
         for note in r.get("notes", []):
             lines.append(f"           note: {note}")
     count = lambda s: sum(1 for r in rows if r["status"] == s)
-    lines.append(f"rulesets {len(rows)}: drift {count('DRIFT')}, ok {count('OK')}, excluded {count('EXCLUDED')}, "
-                 f"inherited {count('INHERITED')}")
+    lines.append(f"rulesets {len(rows)}: drift {count('DRIFT')}, missing {count('MISSING')}, ok {count('OK')}, "
+                 f"excluded {count('EXCLUDED')}, inherited {count('INHERITED')}")
     return "\n".join(lines)
 
 
@@ -289,15 +399,27 @@ def put_body(ruleset: dict) -> dict:
     return {k: ruleset[k] for k in PUT_KEYS if k in ruleset}
 
 
-def with_rules(ruleset: dict, settings: dict, review_count: int) -> dict:
+def with_rules(ruleset: dict, settings: dict, review_count: int, extra_approval: bool, checks: list[dict]) -> dict:
     body = put_body(ruleset)
     rules = []
+    has_checks = False
     for rule in body["rules"]:
         if rule["type"] == "merge_queue":
-            rule = {"type": "merge_queue", "parameters": {**rule["parameters"], **settings}}
+            rule = {**rule, "parameters": {**rule["parameters"], **settings}}
         elif rule["type"] == "pull_request":
-            rule = {"type": "pull_request", "parameters": {**rule.get("parameters", {}), REVIEW_KEY: review_count}}
+            rule = {**rule, "parameters": {**rule.get("parameters", {}), REVIEW_KEY: review_count,
+                                           EXTRA_APPROVAL_KEY: extra_approval}}
+        elif rule["type"] == "required_status_checks":
+            has_checks = True
+            params = rule.get("parameters") or {}
+            rule = {**rule, "parameters": {**params, "required_status_checks":
+                    merge_checks(params.get("required_status_checks", []), checks)}}
         rules.append(rule)
+    if checks and not has_checks:
+        rules.append({"type": "required_status_checks", "parameters": {
+            "strict_required_status_checks_policy": False,
+            "do_not_enforce_on_create": False,
+            "required_status_checks": [dict(check) for check in checks]}})
     body["rules"] = rules
     return body
 
@@ -313,12 +435,22 @@ def review_count(ruleset: dict) -> int | None:
 
 
 def managed(ruleset: dict) -> tuple:
-    """The part of a ruleset this tool writes: the queue parameters and the review count."""
-    return queue_params(ruleset), review_count(ruleset)
+    """Queue parameters, review count, extra-approval flag, and exact required-check App bindings."""
+    rule = next((r for r in ruleset["rules"] if r["type"] == "required_status_checks"), None)
+    checks = (rule.get("parameters") or {}).get("required_status_checks", []) if rule else None
+    bindings = None if checks is None else tuple(sorted(
+        ((check["context"], check.get("integration_id") or None) for check in checks),
+        key=lambda pair: (pair[0], pair[1] or 0)))
+    return queue_params(ruleset), review_count(ruleset), extra_approval(ruleset), bindings
 
 
 def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | None = None) -> list[dict]:
     """Write every DRIFT row; the pre-change ruleset is saved first and the write is read back."""
+    missing = [row for row in rows if row["status"] == "MISSING"]
+    if missing:
+        return [{"repo": row["repo"], "id": row["id"], "ruleset": row["ruleset"],
+                 "result": "FAILED: declared required-check ruleset missing; no writes performed"}
+                for row in missing]
     backup_dir.mkdir(parents=True, exist_ok=True)
     results = []
     for row in [r for r in rows if r["status"] == "DRIFT"]:
@@ -329,9 +461,11 @@ def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | N
             (backup_dir / f"{row['repo'].replace('/', '__')}__{row['id']}.json").write_text(json.dumps(before, indent=2) + "\n")
             settings = desired_settings(policy, row["repo"], row["ruleset"])
             count = policy["review"][REVIEW_KEY]
-            want = (settings if queue_params(before) is not None else None,
-                    count if review_count(before) is not None else None)
-            after = gh.rest(path, "PUT", with_rules(before, settings, count))
+            extra = policy["review"][EXTRA_APPROVAL_KEY]
+            checks = desired_checks(policy, row["repo"], row["id"], before["name"])
+            body = with_rules(before, settings, count, extra, checks)
+            want = managed(body)
+            after = gh.rest(path, "PUT", body)
             if managed(after) != want:
                 after = gh.rest(path)
             if managed(after) != want:
@@ -394,7 +528,21 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         policy = load_policy(Path(args.policy))
         skip = excluded(policy, hands_off_repos())
         fleet = [item for org in policy["orgs"] for item in read_org(gh, org)]
-        rows = plan(fleet, policy, skip, set(args.repo) or None)
+        only = set(args.repo)
+        for repo in sorted({item["repo"] for item in fleet}):
+            if repo in skip or (only and repo not in only):
+                continue
+            try:
+                properties = gh.rest(f"repos/{repo}/properties/values")
+                if any(p.get("property_name") == "sylphx_delivery" and p.get("value") == "delivered"
+                       for p in properties):
+                    skip[repo] = "sylphx_delivery=delivered"
+            except Forbidden:
+                raise
+            except (RuntimeError, ValueError, OSError) as exc:
+                skip[repo] = f"delivery properties unreadable: {exc}"
+        enrich_extra_approval(gh, fleet, skip, only)
+        rows = plan(fleet, policy, skip, only or None)
         if args.apply:
             if not args.backup_dir:
                 ap.error("--apply needs --backup-dir")
@@ -403,7 +551,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
                 f"{r['result']:<9} {r['repo']} / {r['ruleset']} (#{r['id']})" for r in results))
             return 1 if any(not r["result"].startswith("APPLIED") for r in results) else 0
         print(json.dumps(rows, indent=2) if args.json else render(rows))
-        return 1 if args.check and any(r["status"] == "DRIFT" for r in rows) else 0
+        return 1 if args.check and any(r["status"] in ("DRIFT", "MISSING") for r in rows) else 0
     except Forbidden as exc:
         print(f"stopped at the first 403: {exc}", file=sys.stderr)
         return 2

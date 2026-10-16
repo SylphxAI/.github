@@ -7,8 +7,11 @@ description: >
   fails the pull request instead of the first run on the trunk. Then refuses
   a timing or performance budget (PERF_ENFORCE, Lighthouse, hyperfine, k6)
   in a pull_request, merge_group or reusable workflow: timing gates run after
-  merge. Delivered customer repositories skip that rule. Needs a checkout and
-  python3. Linux x86_64.
+  merge. Also refuses mutable-registry package-manager audits before merge:
+  launched products audit the default branch on a separate schedule, and
+  unlaunched products defer audits to launch. Delivered customer repositories
+  skip these rules. Needs a checkout and
+  python3 with pip (the scalar scanner supplies pinned PyYAML). Linux x86_64.
 
 inputs:
   ignore:
@@ -58,8 +61,17 @@ runs:
           [ -n "$line" ] && argv+=("$line")
         done <<<"$ARGS"
         "$bin" "${argv[@]}"
-    - name: No timing gate before merge
+    - name: No non-deterministic gate before merge
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
-      run: python3 "$GITHUB_ACTION_PATH/perf_gate.py"
+      run: |
+        set -euo pipefail
+        # Decode YAML scalars with one pinned parser, not physical-line guesses.
+        # A private target works on externally managed runner Python installs.
+        deps="$RUNNER_TEMP/workflow-lint-pyyaml-6.0.3"
+        if ! PYTHONPATH="$deps" python3 -c 'import yaml; assert yaml.__version__ == "6.0.3"' 2>/dev/null; then
+          python3 -m pip install --disable-pip-version-check --no-input \
+            --only-binary=:all: --target "$deps" 'PyYAML==6.0.3'
+        fi
+        PYTHONPATH="$deps" python3 "$GITHUB_ACTION_PATH/perf_gate.py"

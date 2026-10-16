@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import importlib.util
 import io
 import os
@@ -233,6 +234,92 @@ class MainTest(unittest.TestCase):
         code, out, _ = self.go([running(), run("failure")], env={"MODE": "observe"})
         self.assertEqual(code, 0)
         self.assertIn("would have refused", out)
+
+
+def stamped(minutes_ago: float, **kwargs) -> dict:
+    at = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes_ago)
+    return {**run(**kwargs), "created_at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
+class WatchTest(unittest.TestCase):
+    """`mode: watch`: alert when the trunk has stayed red past the limit, whatever the verdict was."""
+
+    ENV = {"EVENT_NAME": "schedule", "REPO": "o/r", "TOKEN": "t", "BASE_BRANCH": "main",
+           "VERIFY_WORKFLOW": "verify.yml", "MODE": "watch", "WATCH_LIMIT_MINUTES": "30",
+           "FIX_LABEL": "main-red-fix"}
+
+    def go(self, runs, open_pulls=(), env=None, post_error=False):
+        calls: list[str] = []
+        posts: list[tuple[str, dict]] = []
+
+        def fake_get(url, token):
+            calls.append(url)
+            if "/actions/workflows/verify.yml/runs" in url:
+                return {"workflow_runs": runs}
+            if "/pulls?state=open" in url:
+                return list(open_pulls)
+            if "/issues?state=open" in url:
+                return []
+            raise AssertionError(url)
+
+        def fake_post(url, token, payload):
+            calls.append(url)
+            posts.append((url, payload))
+            if post_error:
+                raise urllib.error.HTTPError(url, 403, "forbidden", {}, None)
+            if url.endswith("/issues"):
+                return {"number": 55}
+            return {}
+
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {**self.ENV, **(env or {})}), \
+                mock.patch.object(gate, "_get", fake_get), mock.patch.object(gate, "_post", fake_post), \
+                contextlib.redirect_stdout(out):
+            code = gate.main()
+        return code, out.getvalue(), calls, posts
+
+    def test_a_green_trunk_alerts_nothing(self) -> None:
+        code, out, calls, posts = self.go([stamped(120, conclusion="success")])
+        self.assertEqual((code, posts), (0, []))
+        self.assertIn("nothing to alert", out)
+
+    def test_a_red_trunk_past_the_limit_files_one_watchdog_issue(self) -> None:
+        code, out, calls, posts = self.go([stamped(45, conclusion="failure")])
+        self.assertEqual(code, 0)
+        opened = [p for url, p in posts if url.endswith("/issues")]
+        self.assertEqual(len(opened), 1, posts)
+        self.assertEqual(opened[0]["labels"], ["red-main-red-watchdog", "owner:ops"])
+        self.assertIn("45 minutes", opened[0]["body"])
+        self.assertIn("red-main-red-watchdog", opened[0]["labels"])
+
+    def test_a_red_trunk_inside_the_limit_waits(self) -> None:
+        code, out, calls, posts = self.go([stamped(12, conclusion="failure")])
+        self.assertEqual((code, posts), (0, []))
+        self.assertIn("nothing to alert", out)
+
+    def test_the_limit_is_read_from_the_environment(self) -> None:
+        code, out, calls, posts = self.go([stamped(12, conclusion="failure")],
+                                          env={"WATCH_LIMIT_MINUTES": "10"})
+        self.assertTrue([p for url, p in posts if url.endswith("/issues")], out)
+
+    def test_a_way_back_in_motion_is_the_net_working_and_does_not_page(self) -> None:
+        code, out, calls, posts = self.go([stamped(90, conclusion="failure")],
+                                          open_pulls=[pull(head="auto-revert/abc", number=41)])
+        self.assertEqual((code, posts), (0, []))
+        self.assertIn("nothing to alert", out)
+
+    def test_an_unreadable_age_does_not_alert(self) -> None:
+        # No created_at: the age cannot be judged, so the watchdog stays quiet
+        # rather than page on a guess.
+        stale = {k: v for k, v in run("failure").items() if k != "created_at"}
+        code, out, calls, posts = self.go([stale])
+        self.assertEqual((code, posts), (0, []))
+        self.assertIn("age could not be read", out)
+
+    def test_an_issue_write_that_is_refused_is_reported_not_swallowed(self) -> None:
+        code, out, calls, posts = self.go([stamped(60, conclusion="failure")], post_error=True)
+        self.assertEqual(code, 0)
+        self.assertIn("needs issues: write", out)
 
 
 if __name__ == "__main__":

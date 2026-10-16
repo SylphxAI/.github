@@ -22,8 +22,16 @@ inputs:
     description: >
       `enforce` fails the gate while the trunk is red, its way back is in
       motion and the change is not that way back; `observe` only prints what
-      it would have done (adoption canary).
+      it would have done (adoption canary); `watch` runs on a schedule instead
+      of a merge group and files one issue per repository when the trunk has
+      stayed red past `watch-limit-minutes`, whatever the red-main handler's
+      verdict was (watch the watcher).
     default: enforce
+  watch-limit-minutes:
+    description: >
+      In `watch` mode, how long the trunk may stay red before the watchdog
+      alerts. 30 by default.
+    default: "30"
   fix-label:
     description: >
       Label that marks a pull request as the fix for the red trunk. A revert
@@ -44,5 +52,6 @@ runs:
         BASE_BRANCH: ${{ github.event.merge_group.base_ref || github.event.repository.default_branch }}
         VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
         MODE: ${{ inputs.mode }}
+        WATCH_LIMIT_MINUTES: ${{ inputs.watch-limit-minutes }}
         FIX_LABEL: ${{ inputs.fix-label }}
       run: python3 "$GITHUB_ACTION_PATH/main_red_gate.py"

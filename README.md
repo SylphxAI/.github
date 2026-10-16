@@ -34,6 +34,20 @@ Reusable workflows are in [.github/workflows](.github/workflows); the CI fast-pa
 [disarm-auto-merge-on-push](docs/disarm-automerge-on-push.md) clears an
 arm predating a new push without dequeuing an entry already on that head.
 
+The image lane accepts `source-sha` for post-verification dispatches. Pass the
+verified commit both as `source-sha` and `tag`; checkout and build evidence bind
+that commit even when the dispatch runs after `main` advances. An omitted
+`source-sha` keeps the triggering commit as the source.
+
+The image lane's promotion digest is the authenticated `Docker-Content-Digest`
+from a manifest HEAD using the OCI/Docker index and manifest types accepted by
+the runtime. It then reads that exact digest and verifies its bytes before
+comparing the published content with the local OCI layout. A separately
+negotiated `skopeo --raw` response is not a promotion identity: an index and its
+child manifest can expose the same image content but have different digests.
+Missing headers, an unreadable digest, or inconsistent identity/content fail
+publication readback; the scoped publisher credential never appears in logs.
+
 ## Repository settings
 
 Company repositories delete a pull request's head branch when it merges

@@ -4,8 +4,9 @@
 # the trunk, and on a pull request marked ready (ci.yml calls this file). The `verified` job's check run on the head commit is the marker
 # the platform's Release reads: only verified commits deploy.
 #
-# One run covers every commit since the last one whose suite passed. A running
-# verify is never cancelled; a newer push waits, and covers what it carries.
+# One run covers every commit since the last one whose suite passed, so a
+# newer run supersedes an in-flight one on the trunk: the newest run still
+# carries the commits the superseded one held (the latest push wins).
 # The red-main handler dispatches this workflow on a temporary branch with
 # `lanes` set to the lanes it suspects.
 #
@@ -29,16 +30,17 @@ on:
         type: string
         default: ""
 
-# On the trunk a running verify is never cancelled: a newer push waits and
-# covers what it carries. On a pull request a new push supersedes the run.
+# A newer run supersedes an in-flight one on the trunk and on a pull request.
+# A merge group never cancels: a cancelled entry ejects the queue.
 concurrency:
   group: verify-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 permissions:
   contents: read
   actions: read
   checks: read
+  id-token: write
 
 jobs:
   plan:
@@ -67,23 +69,18 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - run: echo "the full test suite; write a JUnit report"
-      # The red-main handler names flaky tests from `junit-<lane>` artifacts.
-      # The report is a diagnostic: when the organization's artifact storage
-      # quota is spent the upload fails, and that must never turn a passing
-      # suite red (docs/run-store.md). Without it the handler falls back to
-      # naming the lane.
-      # Keep `path` on the report file: a working tree copied with it, a
-      # `**/*.bundle` or a blob added here and uploaded spends the whole
-      # organization's metered quota and holds its CI down. Files another job
-      # of this run needs are a hand-over - use run-store, never an artifact.
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      # Keep this explicit step name equal to "run-store put <name>".
+      # red-main discovers exact names (including matrix shards) from run jobs.
+      # Diagnostics remain optional; a missing report falls back to lane evidence.
+      - name: run-store put junit-integration
+        uses: SylphxAI/.github/.github/actions/run-store@main
         if: always()
         continue-on-error: true
         with:
+          mode: put
           name: junit-integration
           path: junit.xml
-          if-no-files-found: ignore
-          retention-days: 3
+          required: "false"
 
   e2e:
     needs: plan
@@ -98,12 +95,11 @@ jobs:
   # only after a merge).
   verified:
     name: verified
-    if: always()
+    if: always() && !cancelled()
     needs: [plan, integration, e2e]
-    # The reserved gate pool (Kueue queue scale-set-gate, never lends): an
-    # `if: always()` verdict still runs after its run is cancelled, and that run
-    # keeps its concurrency group until it does, so on a busy build pool a
-    # superseded run held the next one (SylphxAI/agents#4222, 2026-10-02).
+    # The current workflow's verdict has a reserved seat; cancelled workflows
+    # must not publish a stale aggregate after their cancellation, and a lane a
+    # cancellation left `cancelled` is reported CANCELLED rather than failed.
     runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
