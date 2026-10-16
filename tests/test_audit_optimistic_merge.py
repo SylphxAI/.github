@@ -209,6 +209,81 @@ class RowFailureTest(unittest.TestCase):
         facts["all_workflows"] = None
         self.only(facts, "R3b", "unreadable")
 
+    # Cubeage/last-minute-keel: its main gated keel-pin-check.yml and
+    # web-smoke.yml through a ci-ok.yml that waited for every check on the
+    # commit. Deleting that file under optimistic merge left `ci-ok` needing
+    # only `ci.yml`'s jobs, so a merge group could pass while those two checks
+    # were still pending, and a run that finished after `ci-ok` was never seen.
+    def test_r3b_a_merge_group_workflow_outside_ci_never_reaches_the_gate(self) -> None:
+        facts = conformant()
+        facts["all_workflows"]["keel-pin-check.yml"] = (
+            "name: Keel pin check\non:\n  pull_request:\n  merge_group:\nconcurrency:\n  group: g\n"
+            "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\njobs:\n  keel-pin-check:\n"
+            "    runs-on: x\n")
+        # Called from verify.yml only: its red reaches the handler, but a merge
+        # group is still admitted without its verdict.
+        facts["files"]["verify.yml"] += "\n  pin:\n    uses: ./.github/workflows/keel-pin-check.yml\n"
+        self.only(facts, "R3b", "keel-pin-check.yml")
+        # Called from ci.yml but not in ci-ok's needs: ci-ok still passes while
+        # the pin job runs, so the merge is admitted without it.
+        facts["files"]["ci.yml"] += "\n  pin:\n    uses: ./.github/workflows/keel-pin-check.yml\n"
+        self.only(facts, "R3b", "not needed by ci-ok")
+        # Called from ci.yml and needed by ci-ok: R3b is satisfied.
+        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
+            "needs: [main-state, plan, lint, test, migrations, stack, suite]",
+            "needs: [main-state, plan, lint, test, migrations, stack, suite, pin]")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
+    def test_r3b_names_every_merge_group_workflow_outside_ci(self) -> None:
+        facts = conformant()
+        shoe = ("on:\n  pull_request:\n  merge_group:\nconcurrency:\n  group: g\n"
+                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\njobs:\n  a:\n    runs-on: x\n")
+        facts["all_workflows"].update({"keel-pin-check.yml": shoe, "web-smoke.yml": shoe})
+        rows = run_rows(facts)
+        self.assertEqual(failing(rows), {"R3b"})
+        self.assertIn("keel-pin-check.yml, web-smoke.yml", rows["R3b"]["detail"])
+
+    def test_r3b_a_merge_group_workflow_called_from_ci_passes(self) -> None:
+        facts = conformant()
+        facts["all_workflows"]["keel-pin-check.yml"] = (
+            "on:\n  pull_request:\n  merge_group:\njobs:\n  keel-pin-check:\n    runs-on: x\n")
+        facts["files"]["ci.yml"] += ("\n  pin:\n    uses: ./.github/workflows/keel-pin-check.yml\n"
+                                     "    secrets: inherit\n")
+        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
+            "needs: [main-state, plan, lint, test, migrations, stack, suite]",
+            "needs: [main-state, plan, lint, test, migrations, stack, suite, pin]")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
+    def test_r3b_a_job_named_by_a_ci_job_name_counts_as_needed(self) -> None:
+        # A calling job whose `name:` is what ci-ok lists is awaited too.
+        facts = conformant()
+        facts["all_workflows"]["keel-pin-check.yml"] = (
+            "on:\n  pull_request:\n  merge_group:\njobs:\n  keel-pin-check:\n    runs-on: x\n")
+        facts["files"]["ci.yml"] += ("\n  pin:\n    name: pin-check\n"
+                                     "    uses: ./.github/workflows/keel-pin-check.yml\n")
+        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
+            "needs: [main-state, plan, lint, test, migrations, stack, suite]",
+            "needs: [main-state, plan, lint, test, migrations, stack, suite, pin-check]")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
+    def test_r3b_a_pr_only_workflow_outside_ci_passes(self) -> None:
+        # A pull-request-only workflow never runs in the merge queue, so the
+        # queue cannot be admitted without it.
+        facts = conformant()
+        facts["all_workflows"]["content-checks.yml"] = (
+            "on:\n  pull_request:\njobs:\n  zh-hant:\n    runs-on: x\n")
+        facts["all_workflows"]["office-kit.yml"] = (
+            "on:\n  pull_request:\n    paths: ['tools/**']\n  workflow_dispatch:\njobs:\n  build-kit:\n"
+            "    runs-on: x\n")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
+    def test_r3b_gate_external_comment_waives_a_merge_group_workflow(self) -> None:
+        facts = conformant()
+        facts["all_workflows"]["web-smoke.yml"] = (
+            "# optimistic-merge: gate-external\non:\n  pull_request:\n  merge_group:\njobs:\n  web-smoke:\n"
+            "    runs-on: x\n")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
     def test_r8_merge_group_job_on_the_pull_request_pool_fails(self) -> None:
         facts = conformant()
         facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
@@ -226,9 +301,11 @@ class RowFailureTest(unittest.TestCase):
         facts = conformant()
         wf = "on:\n  merge_group:\njobs:\n  build:\n    runs-on: sylphx-linux-xlarge\n    steps: []\n"
         facts["all_workflows"]["heavy.yml"] = wf
-        self.only(facts, "R8", "heavy.yml (build)")
+        rows = run_rows(facts)
+        self.assertEqual(failing(rows), {"R3b", "R8"}, rows)  # R3b: called from neither ci.yml nor verify.yml
+        self.assertIn("heavy.yml (build)", rows["R8"]["detail"])
         facts["all_workflows"]["heavy.yml"] = wf.replace("xlarge", "xlarge-merge")
-        self.assertEqual(failing(run_rows(facts)), set())
+        self.assertEqual(failing(run_rows(facts)), {"R3b"})
 
     def test_r8_leaves_verdicts_pr_only_jobs_and_workflows_without_merge_group(self) -> None:
         facts = conformant()
@@ -248,10 +325,12 @@ class RowFailureTest(unittest.TestCase):
         facts = conformant()
         facts["all_workflows"]["lst.yml"] = ("on:\n  merge_group:\njobs:\n  a:\n    runs-on:\n"
                                               "      - self-hosted\n      - sylphx-linux-standard\n")
-        self.only(facts, "R8", "lst.yml (a)")
+        rows = run_rows(facts)
+        self.assertEqual(failing(rows), {"R3b", "R8"}, rows)
+        self.assertIn("lst.yml (a)", rows["R8"]["detail"])
 
     def test_r9_pull_request_workflows_cancel_only_pull_request_runs(self) -> None:
-        head = "on:\n  pull_request:\n  merge_group:\n"
+        head = "# optimistic-merge: gate-external\non:\n  pull_request:\n  merge_group:\n"
         cases = {
             head + "jobs:\n  a:\n    runs-on: x\n": "no workflow-level concurrency",
             head + "concurrency: lint\njobs: {}\n": "never cancelled",
