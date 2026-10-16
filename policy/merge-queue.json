@@ -33,6 +33,10 @@
     {
       "repo": "SylphxAI/openclaw-sylphx",
       "reason": "Hosted stopgap: no fixes."
+    },
+    {
+      "repo": "SylphxAI/work",
+      "reason": "Archived 2026-10-15: the retired work system. Read-only; its rulesets are left as they are."
     }
   ],
   "overrides": [],
@@ -56,16 +60,6 @@
         { "context": "review-ok", "integration_id": 5155317 }
       ],
       "reason": "First review gate rollout after producer installation, backfill, live posting and alert readiness."
-    },
-    {
-      "repo": "SylphxAI/work",
-      "ruleset": "sylphx-merge-queue",
-      "ruleset_id": 24403812,
-      "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 }
-      ],
-      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
     },
     {
       "repo": "SylphxAI/desk-tools",

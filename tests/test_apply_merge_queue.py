@@ -225,6 +225,17 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(rows["SylphxAI/bgca"]["status"], "EXCLUDED")
         self.assertEqual(rows["SylphxAI/bgca"]["changes"], {})
 
+    def test_archived_retired_repository_is_excluded_and_writes_nothing(self):
+        gh = FakeGh({"SylphxAI/work": ruleset(11, "sylphx-merge-queue", OLD),
+                     "SylphxAI/cloud": ruleset(12, "sylphx-merge-queue", OLD)})
+        rows = {r["repo"]: r for r in amq.plan(amq.read_org(gh, "SylphxAI"), POLICY,
+                                               amq.excluded(POLICY, amq.hands_off_repos()))}
+        self.assertEqual(rows["SylphxAI/work"]["status"], "EXCLUDED")
+        self.assertEqual(rows["SylphxAI/work"]["changes"], {})
+        with tempfile.TemporaryDirectory() as directory:
+            amq.apply(gh, list(rows.values()), POLICY, pathlib.Path(directory), pause=0)
+        self.assertEqual([repo for repo, _ in gh.puts], ["SylphxAI/cloud"])
+
     def test_missing_fast_gate_is_reported_not_written(self):
         row = self.rows()["SylphxAI/other"]
         self.assertTrue(any("ci-ok is not a required check" in n for n in row["notes"]))
@@ -301,7 +312,7 @@ class ApplyTests(unittest.TestCase):
             amq.WRITE_PAUSE_SECONDS = 0
             rc, _ = self.run_main(gh, "--apply", "--backup-dir", d)
             self.assertEqual(rc, 0)
-            self.assertEqual(len(gh.puts), 3)
+            self.assertEqual(len(gh.puts), 2)
             repo, body = next(p for p in gh.puts if p[0] == "SylphxAI/desk-tools")
             self.assertEqual({r["type"] for r in body["rules"]}, {"merge_queue", "required_status_checks", "pull_request"})
             review = body["rules"][2]["parameters"]
@@ -345,7 +356,7 @@ class ApplyTests(unittest.TestCase):
             amq.WRITE_PAUSE_SECONDS = 0
             rc, _ = self.run_main(gh, "--apply", "--backup-dir", d)
         self.assertEqual(rc, 1)
-        self.assertEqual([r for r, _ in gh.puts], ["SylphxAI/janus", "SylphxAI/work"])
+        self.assertEqual([r for r, _ in gh.puts], ["SylphxAI/janus"])
 
 
 class RequiredCheckTests(unittest.TestCase):
@@ -359,8 +370,7 @@ class RequiredCheckTests(unittest.TestCase):
 
     def test_declared_review_gate_covers_the_gated_repositories(self):
         self.assertEqual([entry["repo"] for entry in SHIPPED_POLICY["required_checks"]],
-                         ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/work",
-                          "SylphxAI/desk-tools", "SylphxAI/.github"])
+                         ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/desk-tools", "SylphxAI/.github"])
         for entry in SHIPPED_POLICY["required_checks"]:
             self.assertEqual(entry["checks"], [
                 {"context": "ci-ok", "integration_id": 15368},
