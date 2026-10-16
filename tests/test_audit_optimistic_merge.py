@@ -224,8 +224,14 @@ class RowFailureTest(unittest.TestCase):
         # group is still admitted without its verdict.
         facts["files"]["verify.yml"] += "\n  pin:\n    uses: ./.github/workflows/keel-pin-check.yml\n"
         self.only(facts, "R3b", "keel-pin-check.yml")
-        # Called from ci.yml, inside the gate: R3b is satisfied.
+        # Called from ci.yml but not in ci-ok's needs: ci-ok still passes while
+        # the pin job runs, so the merge is admitted without it.
         facts["files"]["ci.yml"] += "\n  pin:\n    uses: ./.github/workflows/keel-pin-check.yml\n"
+        self.only(facts, "R3b", "not needed by ci-ok")
+        # Called from ci.yml and needed by ci-ok: R3b is satisfied.
+        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
+            "needs: [main-state, plan, lint, test, migrations, stack, suite]",
+            "needs: [main-state, plan, lint, test, migrations, stack, suite, pin]")
         self.assertNotIn("R3b", failing(run_rows(facts)))
 
     def test_r3b_names_every_merge_group_workflow_outside_ci(self) -> None:
@@ -243,6 +249,21 @@ class RowFailureTest(unittest.TestCase):
             "on:\n  pull_request:\n  merge_group:\njobs:\n  keel-pin-check:\n    runs-on: x\n")
         facts["files"]["ci.yml"] += ("\n  pin:\n    uses: ./.github/workflows/keel-pin-check.yml\n"
                                      "    secrets: inherit\n")
+        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
+            "needs: [main-state, plan, lint, test, migrations, stack, suite]",
+            "needs: [main-state, plan, lint, test, migrations, stack, suite, pin]")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
+    def test_r3b_a_job_named_by_a_ci_job_name_counts_as_needed(self) -> None:
+        # A calling job whose `name:` is what ci-ok lists is awaited too.
+        facts = conformant()
+        facts["all_workflows"]["keel-pin-check.yml"] = (
+            "on:\n  pull_request:\n  merge_group:\njobs:\n  keel-pin-check:\n    runs-on: x\n")
+        facts["files"]["ci.yml"] += ("\n  pin:\n    name: pin-check\n"
+                                     "    uses: ./.github/workflows/keel-pin-check.yml\n")
+        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
+            "needs: [main-state, plan, lint, test, migrations, stack, suite]",
+            "needs: [main-state, plan, lint, test, migrations, stack, suite, pin-check]")
         self.assertNotIn("R3b", failing(run_rows(facts)))
 
     def test_r3b_a_pr_only_workflow_outside_ci_passes(self) -> None:
