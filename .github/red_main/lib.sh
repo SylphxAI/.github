@@ -41,8 +41,14 @@ require_grant() {
 }
 
 # write_refused <stderr> <permission> <what>: report a write the forge
-# refused for want of a permission.
+# refused for want of a permission. Rejected credentials (HTTP 401: an
+# expired or revoked token) are no missing grant: the step fails at
+# once, so a handler that acted on nothing never reads as a success.
 write_refused() {
+  if grep -qE 'HTTP 401|Bad credentials' <<<"$1"; then
+    printf '::error::%s failed: the forge rejected the credentials (HTTP 401, an expired or revoked token)\n' "$3" >&2
+    exit 1
+  fi
   if grep -qE 'HTTP (403|404)' <<<"$1"; then
     printf '::error::%s was refused: %s is missing %s\n' \
       "$3" "$GRANT_HOLDER" "$2" >&2
@@ -51,6 +57,22 @@ write_refused() {
     printf '::error::%s failed: %s\n' "$3" "$(head -c 300 <<<"$1" | tr '\n' ' ')" >&2
   fi
   return 1
+}
+
+# commit_prs <sha> <jq filter>: the pull requests a commit landed
+# through, filtered. A failed read is not "no pull request": the
+# forge's answer is named and the call returns non-zero, so the caller
+# stops instead of reading an error body as a pull request number.
+commit_prs() {
+  local out err
+  err=$(mktemp)
+  if ! out=$(gh api "repos/$REPO/commits/$1/pulls" --jq "$2" 2>"$err"); then
+    printf '::error::reading the pull requests of %s failed: %s\n' "$1" "$(head -c 300 "$err" | tr '\n' ' ')" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+  printf '%s' "$out"
 }
 
 # git_c <git args...>: git with the App token as an in-memory

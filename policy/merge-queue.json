@@ -23,7 +23,8 @@
   },
   "review": {
     "required_approving_review_count": 0,
-    "note": "Human approving reviews remain at zero. The exact-head, App-bound review-ok status is the independent review gate on explicitly rolled-out repositories."
+    "require_extra_approval_for_unattributed_changes": false,
+    "note": "Human approving reviews remain at zero. The exact-head, App-bound review-ok status is the independent review gate on explicitly rolled-out repositories. require_extra_approval_for_unattributed_changes adds one approving review when a pull request carries commits GitHub cannot attribute to a user (every desk App's), which would hold every bot pull request for an approval ci-ok already made; the tool converges it to false."
   },
   "exclude": [
     {
