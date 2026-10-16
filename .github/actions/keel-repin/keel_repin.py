@@ -1002,6 +1002,26 @@ def newer_repins(number, tag, prs):
     return sorted(newer, key=lambda item: tag_key(item[1]))
 
 
+def repin_sort_key(head):
+    """The sort key of a repin branch's tail, or None when it is not a repin.
+
+    A settle branch is `chore/keel-repin-<tag>` for the Keel layer or `chore/keel-repin-<layer>-<sha>`
+    for the kit and engine layers. A branch under the same prefix that is neither (a hand-made
+    `chore/keel-repin-smoke-checks-20261015`, say) is not a repin: sorting it by a None tag key crashed
+    the whole settle job, so a genuine repin beside it could not settle. Its key is therefore None.
+    Every real key is a (rank, text) pair, so tag and layer rows sort together and the order is total.
+    """
+    key = tag_key(head)
+    if key is not None:
+        date, kind, n = key
+        return (0, date, kind, n)
+    for layer in LAYER_REPOS:
+        prefix = layer + "-"
+        if head.startswith(prefix) and SHA_RE.fullmatch(head[len(prefix):]):
+            return (1, layer, 0, 0)
+    return None
+
+
 def close_superseded(number, newer, dry):
     """Close an older repin pull request with one comment naming the newer one that replaces it."""
     listing = ", ".join(f"#{n} (`{t}`)" for n, t in newer)
@@ -1026,9 +1046,16 @@ def cmd_settle(args):
         if not line.strip():
             continue
         number, branch, sha, draft, created = line.split("\t")
-        rows.append((number, branch, sha, draft == "true", created))
+        key = repin_sort_key(branch[len(BRANCH_PREFIX):])
+        if key is None:
+            # A branch under the repin prefix that is not a repin (a hand-made smoke-producer branch,
+            # say) is named and skipped, so it neither settles nor stops the repin beside it.
+            print(f"#{number} {branch}: not a repin branch; skipped")
+            continue
+        rows.append((key, number, branch, sha, draft == "true", created))
     # Newest tag first: the newest repin is settled (or told why not) before an older one is closed.
-    rows.sort(key=lambda row: tag_key(row[1][len(BRANCH_PREFIX):]), reverse=True)
+    rows.sort(key=lambda row: row[0], reverse=True)
+    rows = [row[1:] for row in rows]
     for number, branch, sha, draft, created in rows:
         tag = branch[len(BRANCH_PREFIX):]
         age_min = (now - calendar.timegm(time.strptime(created, "%Y-%m-%dT%H:%M:%SZ"))) / 60
