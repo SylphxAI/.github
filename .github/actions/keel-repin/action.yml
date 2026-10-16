@@ -41,7 +41,7 @@ inputs:
     description: The workflow token, with contents:write, pull-requests:write and actions:write on this repository.
     default: ${{ github.token }}
   check-command:
-    description: The build check, run after the pin moves. A failure opens the pull request as a draft.
+    description: The build check, run after the pin moves and the target Keel CLI passes migrate --check. A failure opens the pull request as a draft.
     default: cargo check
   check-dir:
     description: Directory the check command runs in, relative to the repository root.
@@ -192,6 +192,7 @@ runs:
         LAYER: ${{ inputs.layer }}
         CHECK_COMMAND: ${{ inputs.check-command }}
         CHECK_DIR: ${{ inputs.check-dir }}
+        KEEL_API_TOKEN: ${{ steps.keel-token.outputs.token }}
         OWNER_MENTION: ${{ inputs.owner }}
         ACTION_PATH: ${{ github.action_path }}
         REPORT: ${{ runner.temp }}/keel-repin-report.json
