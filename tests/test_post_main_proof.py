@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Producer/origin regressions shared by range selection and auto-revert."""
 import copy
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import io
 import json
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import yaml
 
@@ -105,9 +107,103 @@ class ProofTest(unittest.TestCase):
         with patch.object(proof, "api", side_effect=pages):
             with self.assertRaises(ValueError):
                 proof.paged("p", "workflow_runs")
-        with patch.object(proof, "api", side_effect=[dict(total_count=600, workflow_runs=rows(i * 100 + 1, 100)) for i in range(5)]):
-            with self.assertRaisesRegex(ValueError, "exhausted"):
-                proof.paged("p", "workflow_runs")
+        pages = [dict(total_count=600, workflow_runs=rows(i * 100 + 1, 100)) for i in range(6)]
+        with patch.object(proof, "api", side_effect=pages):
+            self.assertEqual(len(proof.paged("p", "workflow_runs")), 600)
+
+    def test_nine_hundred_eighty_nine_rows_are_complete_without_a_five_page_cliff(self):
+        rows = [run(i) for i in range(1, 990)]
+        calls = []
+        def reader(path):
+            calls.append(path)
+            page = int(parse_qs(urlsplit(path).query)["page"][0])
+            return dict(total_count=len(rows), workflow_runs=rows[(page - 1) * 100:page * 100])
+        self.assertEqual(proof.paged("p", "workflow_runs", reader), rows)
+        self.assertEqual(len(calls), 10)
+
+    def history_provider(self, rows, calls, capped=True):
+        def reader(path):
+            calls.append(path)
+            query = parse_qs(urlsplit(path).query)
+            matched = rows
+            if "created" in query:
+                self.assertEqual(len(query["created"]), 1)
+                lower, upper = query["created"][0].split("..")
+                start, stop = proof.history_second(lower), proof.history_second(upper, end_of_day=True)
+                matched = [row for row in rows if start <= proof.history_second(row["created_at"]) <= stop]
+            page = int(query["page"][0])
+            self.assertLessEqual(page, 10, "a saturated filtered search must split, never request page 11")
+            # The provider enforces its search ceiling even when total_count
+            # advertises the uncapped total. Never rely on page ordering.
+            return dict(total_count=min(len(matched), 1000) if capped else len(matched),
+                        workflow_runs=matched[:1000][(page - 1) * 100:page * 100])
+        return reader
+
+    def test_provider_search_ceiling_partitions_complete_history_and_preserves_filters(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        rows = [run(i + 1, created_at=(start + timedelta(seconds=i)).isoformat()) for i in range(2105)]
+        rows.reverse()  # neither history selection nor splitting assumes order
+        path = "repos/SylphxAI/cloud/actions/workflows/verify.yml/runs?event=push&branch=main&head_sha=" + SHA
+        for capped in (True, False):
+            calls = []
+            selected = proof.paged(path, "workflow_runs", self.history_provider(rows, calls, capped))
+            self.assertEqual({row["id"] for row in selected}, {row["id"] for row in rows})
+            self.assertEqual(len(selected), 2105)
+            for call in calls:
+                query = parse_qs(urlsplit(call).query)
+                self.assertEqual(query["event"], ["push"])
+                self.assertEqual(query["branch"], ["main"])
+                self.assertEqual(query["head_sha"], [SHA])
+            self.assertEqual(proof.latest_run(selected, SHA)["id"], 2105)
+
+    def test_existing_created_filter_is_partitioned_without_expanding_its_scope(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        rows = [run(i + 1, created_at=(start + timedelta(seconds=i)).isoformat()) for i in range(1100)]
+        rows.append(run(5000, created_at="2026-01-02T00:00:00Z"))
+        calls = []
+        selected = proof.paged("p?event=push&created=2026-01-01..2026-01-01", "workflow_runs",
+                               self.history_provider(rows, calls))
+        self.assertEqual(len(selected), 1100)
+        self.assertNotIn(5000, {row["id"] for row in selected})
+        for call in calls:
+            value = parse_qs(urlsplit(call).query)["created"]
+            self.assertEqual(len(value), 1)
+            lower, upper = value[0].split("..")
+            self.assertGreaterEqual(proof.history_second(lower), proof.history_second("2026-01-01"))
+            self.assertLessEqual(proof.history_second(upper, end_of_day=True),
+                                 proof.history_second("2026-01-01", end_of_day=True))
+
+    def test_search_that_cannot_progress_within_one_second_is_unavailable(self):
+        rows = [run(i + 1, created_at="2026-01-01T00:00:00Z") for i in range(1001)]
+        calls = []
+        with self.assertRaisesRegex(ValueError, "saturated within one second"):
+            proof.paged("p", "workflow_runs", self.history_provider(rows, calls))
+        # This is bounded by UTC-second progress, not a lifetime row cap.
+        self.assertLess(len(calls), 100)
+
+    def test_partition_refuses_ignored_ranges_missing_rows_and_parent_identity_changes(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        rows = [run(i + 1, created_at=(start + timedelta(seconds=i)).isoformat()) for i in range(1100)]
+        for fault in ("ignored", "omitted", "changed", "repeated"):
+            calls = []
+            provider = self.history_provider(rows, calls, capped=False)
+            def reader(path):
+                if "created=" not in path:
+                    return provider(path)
+                body = provider(path)
+                if fault == "ignored":
+                    return dict(total_count=1100, workflow_runs=rows[:100])
+                if fault == "omitted" and body["workflow_runs"]:
+                    body["workflow_runs"] = body["workflow_runs"][:-1]
+                if fault == "changed":
+                    body = copy.deepcopy(body)
+                    for row in body["workflow_runs"]:
+                        row["run_attempt"] = 2
+                if fault == "repeated" and len(body["workflow_runs"]) > 1:
+                    body["workflow_runs"][1] = body["workflow_runs"][0]
+                return body
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                proof.paged("p", "workflow_runs", reader)
 
     def test_omitted_newest_same_sha_producer_never_exposes_older_proof(self):
         old = run(1)

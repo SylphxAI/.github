@@ -327,6 +327,21 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("previous-run history is unavailable", self.summary())
 
+    def test_complete_989_row_history_reaches_the_real_predecessor(self):
+        old = dict(id=9, status="completed", conclusion="success", created_at="2026-09-30T09:00:00Z")
+        rows = [dict(id=1000 + i, status="in_progress", conclusion=None,
+                     created_at="2026-09-30T11:00:00Z") for i in range(988)] + [old]
+        self.env["HISTORY_PAGES"] = json.dumps([
+            dict(total_count=989, workflow_runs=rows[offset:offset + 100])
+            for offset in range(0, 989, 100)
+        ])
+        self.env["PROOF_RESULT"] = "success"
+        result = self.execute("Confirm the same unit failed on two consecutive completed runs")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("confirmed=no", (self.root / "output").read_text())
+        self.assertIn("was 'success'", self.summary())
+        self.assertIn("page=10", (self.root / "workflow-paths").read_text())
+
     def test_authenticated_previous_failure_with_partial_jobs_escalates(self):
         self.use_real_proof()
         previous = dict(RUN, id=9, status="completed", conclusion="failure",

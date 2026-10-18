@@ -12,10 +12,12 @@ import os
 import re
 import subprocess
 import sys
-from urllib.parse import urlencode
+from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 ACTIONS_APP_ID = 15368
-PAGE_LIMIT = 5
+PAGE_LIMIT = 5  # Jobs/annotations retain their existing per-run bound.
+WORKFLOW_SEARCH_LIMIT = 1000  # GitHub bounds filtered workflow searches.
 WALK_LIMIT = 200
 
 
@@ -71,18 +73,21 @@ def full_push(run, repo, branch, workflow, sha=None):
     return producer_origin(run, repo, branch, workflow, sha) == "eligible"
 
 
-def paged(path, key, reader=None):
-    """Require complete counted coverage; adapters may supply a counted reader."""
-    reader = api if reader is None else reader
-    rows = []
-    total = None
-    identities = set()
-    for page in range(1, PAGE_LIMIT + 1):
-        body = reader(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
-        count = body.get("total_count") if isinstance(body, dict) else None
-        batch = body.get(key) if isinstance(body, dict) else None
-        if type(count) is not int or count < 0 or not isinstance(batch, list):
-            raise ValueError(f"{key} history envelope unavailable")
+def history_envelope(body, key):
+    count = body.get("total_count") if isinstance(body, dict) else None
+    batch = body.get(key) if isinstance(body, dict) else None
+    if type(count) is not int or count < 0 or not isinstance(batch, list):
+        raise ValueError(f"{key} history envelope unavailable")
+    return count, batch
+
+
+def counted_pages(path, key, reader, page_limit, first=None):
+    """Complete stable counted pages, with no repeated or missing identities."""
+    rows, identities, total = [], set(), None
+    for page in range(1, page_limit + 1):
+        body = first if page == 1 and first is not None else reader(
+            f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
+        count, batch = history_envelope(body, key)
         if total is None:
             total = count
         if count != total or len(batch) != min(100, max(0, total - len(rows))):
@@ -95,6 +100,125 @@ def paged(path, key, reader=None):
         if len(rows) == total:
             return rows
     raise ValueError(f"{key} pagination exhausted")
+
+
+def history_second(value, end_of_day=False):
+    """GitHub run timestamps and created search bounds have second precision."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("workflow history timestamp unavailable")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        value += "T23:59:59+00:00" if end_of_day else "T00:00:00+00:00"
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.microsecond:
+        raise ValueError("workflow history timestamp lacks second-precision timezone")
+    return int(parsed.timestamp())
+
+
+def workflow_history(path, reader):
+    """Read filtered history beyond GitHub's 1,000-result search ceiling.
+
+    Saturated searches split into disjoint inclusive UTC-second ranges until
+    each leaf is below the provider ceiling. No provider ordering, lifetime
+    row limit or retry is used. Every leaf retains count/page checks, and the
+    assembled result rejects identities repeated between leaves. An unresolved
+    single-second bucket fails closed rather than silently dropping old runs.
+    """
+    parsed = urlsplit(path)
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(key in ("page", "per_page") for key, _ in query):
+        raise ValueError("workflow history path already contains pagination")
+    created = [value for key, value in query if key == "created"]
+    if len(created) > 1:
+        raise ValueError("workflow history has contradictory created filters")
+    lower, upper = 0, int(datetime.now(timezone.utc).timestamp())
+    if created:
+        value = created[0]
+        if ".." in value:
+            start, stop = value.split("..", 1)
+            lower, upper = history_second(start), history_second(stop, end_of_day=True)
+        elif value.startswith(">="):
+            lower = history_second(value[2:])
+        elif value.startswith("<="):
+            upper = history_second(value[2:], end_of_day=True)
+        elif value.startswith(">"):
+            lower = history_second(value[1:], end_of_day=True) + 1
+        elif value.startswith("<"):
+            upper = history_second(value[1:]) - 1
+        else:
+            lower, upper = history_second(value), history_second(value, end_of_day=True)
+        if lower > upper:
+            raise ValueError("workflow history created bounds are reversed")
+    filters = [(key, value) for key, value in query if key != "created"]
+
+    def bounded_path(start, stop):
+        def timestamp(second):
+            return datetime.fromtimestamp(second, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                           urlencode(filters + [("created", f"{timestamp(start)}..{timestamp(stop)}")]),
+                           parsed.fragment))
+
+    def read_range(current, start, stop, first=None):
+        if first is None:
+            first = reader(f"{current}{'&' if '?' in current else '?'}per_page=100&page=1")
+        count, batch = history_envelope(first, "workflow_runs")
+        if len(batch) != min(100, count):
+            raise ValueError("workflow_runs history count/page inconsistent")
+        # Validate the advertised first page even when a saturated parent is
+        # replaced by narrower searches. Bad evidence never becomes absence.
+        seen = set()
+        for row in batch:
+            if (not isinstance(row, dict) or not positive_id(row.get("id"))
+                    or row["id"] in seen):
+                raise ValueError("workflow_runs history identity unavailable or repeated")
+            seen.add(row["id"])
+            if current != path or created:
+                at = history_second(row.get("created_at"))
+                if not start <= at <= stop:
+                    raise ValueError("workflow history row is outside its created range")
+        if count < WORKFLOW_SEARCH_LIMIT:
+            rows = counted_pages(current, "workflow_runs", reader,
+                                 max(1, (count + 99) // 100), first)
+            # Existing unsaturated callers need no timestamp to authenticate
+            # exact-SHA producer identity. Partitioned/filtered reads do: a row
+            # outside its requested range would otherwise erase history.
+            if current != path or created:
+                for row in rows:
+                    at = history_second(row.get("created_at"))
+                    if not start <= at <= stop:
+                        raise ValueError("workflow history row is outside its created range")
+            return rows
+        if start >= stop:
+            raise ValueError("workflow history search saturated within one second")
+        midpoint = (start + stop) // 2
+        before = read_range(bounded_path(start, midpoint), start, midpoint)
+        after = read_range(bounded_path(midpoint + 1, stop), midpoint + 1, stop)
+        rows = before + after
+        ids = [row["id"] for row in rows]
+        if len(set(ids)) != len(ids):
+            raise ValueError("workflow_runs history identity unavailable or repeated")
+        # GitHub can advertise the actual total or its search ceiling. A
+        # saturated count is a lower bound; an uncapped total stays exact.
+        if len(rows) < count or (count > WORKFLOW_SEARCH_LIMIT and len(rows) != count):
+            raise ValueError("workflow_runs partition history count inconsistent")
+        parent = {row["id"]: row for row in batch}
+        combined = {row["id"]: row for row in rows}
+        identity_fields = ("id", "run_attempt", "head_sha", "workflow_id", "check_suite_id",
+                           "repository", "head_repository", "event", "head_branch", "path", "created_at")
+        if any(identity not in combined or any(
+                combined[identity].get(field) != row.get(field) for field in identity_fields)
+               for identity, row in parent.items()):
+            raise ValueError("workflow history changed or omitted a parent identity")
+        return rows
+
+    return read_range(path, lower, upper)
+
+
+def paged(path, key, reader=None):
+    """Require complete counted coverage; adapters may supply a counted reader."""
+    reader = api if reader is None else reader
+    if key == "workflow_runs":
+        return workflow_history(path, reader)
+    return counted_pages(path, key, reader, PAGE_LIMIT)
 
 
 def linked_check_id(job, repo):
