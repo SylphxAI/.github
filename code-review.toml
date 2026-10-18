@@ -1,6 +1,7 @@
 # SylphxAI code-review policy: the org-level default of Sylphx PR Review,
 # read from `code-review.toml` in the SylphxAI/.github repository by every
-# SylphxAI repository without its own `.github/code-review.toml`.
+# SylphxAI repository without its own `.github/code-review.toml`. Its presence
+# is the opt-in: it enables review for every SylphxAI repository.
 #
 # Tier 3 (independent review required) only for real-user product repositories
 # and their deployments or data stores; money, charge and credential paths are
@@ -11,6 +12,12 @@
 # (`scope = "path"`). A tier 3 match ignores files whose diff changes only
 # comments. The review check plus the repository's required CI is the merge
 # verdict.
+# Repositories opted out of review: hands-off customer repositories and every
+# repository with the custom property sylphx_delivery=delivered (read
+# 2026-10-18 21:56Z: SylphxAI/bgca is the only one). No check is posted there
+# and nothing of them is read or sent to the review engine.
+skip_repositories = ['^SylphxAI/bgca$']
+
 default_tier = 2
 default_reason = "ordinary pre-launch/internal product or platform code"
 
