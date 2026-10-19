@@ -9,7 +9,11 @@
 #      gateway's largest entry), RUN_STORE_RETRY_DELAY (seconds, default 5),
 #      ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_ID_TOKEN_REQUEST_TOKEN,
 #      GITHUB_OUTPUT, RUNNER_TEMP.
-# Out: key, found, bytes in $GITHUB_OUTPUT.
+# Out: key, found, bytes, unavailable in $GITHUB_OUTPUT.
+#
+# A 404 is the only "no entry". The gateway answers 503 while its object
+# store is down: that is "store unavailable", said as such and never reported
+# as a producer that did not store the entry.
 #
 # Both tokens are masked before any other use and travel only in a curl
 # config on stdin, never in an argument list or the job's environment.
@@ -47,6 +51,20 @@ fi
 key="run-store.v1.${REPO_ID}.${STORE_RUN_ID}.${NAME}"
 echo "key=$key" >> "$out"
 [ "$MODE" = get ] && echo "found=false" >> "$out"
+echo "unavailable=false" >> "$out"
+
+# unavailable_report <detail>: the caller gets the one answer for a store
+# outage, never the miss message. With required=false it warns and succeeds,
+# and `unavailable=true` says found=false is not about the producer.
+unavailable_report() {
+  echo "unavailable=true" >> "$out"
+  if [ "$required" = false ]; then
+    echo "::warning::run-store $MODE $NAME: store unavailable ($1); an entry may exist but could not be read"
+    exit 0
+  fi
+  echo "::error::run-store $MODE $NAME: store unavailable ($1), not a missing entry; the cache's object store (Ceph RGW) did not answer"
+  exit 1
+}
 
 json_field() { # json_field <file> <dotted.path>: prints a string field or fails
   if command -v jq > /dev/null 2>&1; then
@@ -180,6 +198,10 @@ if [ "$MODE" = put ]; then
         stored=yes
         break
         ;;
+      503)
+        reason="store unavailable (HTTP 503 from the build cache)"
+        unavailable_report "$reason"
+        ;;
       403 | 411 | 413 | 507) reason="HTTP $code"; break ;;
       *) reason="HTTP $code" ;;
     esac
@@ -196,10 +218,12 @@ fi
 code=000
 for attempt in 1 2 3; do
   code="$(call GET "$work/bundle.tgz")"
-  # A gateway whose store is down answers reads 404, so a miss is retried too.
   case "$code" in 200 | 401 | 403) break ;; esac
   [ "$attempt" -lt 3 ] && sleep "$delay"
 done
+if [ "$code" = 503 ]; then
+  unavailable_report "HTTP $code from the build cache's object store"
+fi
 if [ "$code" = 404 ]; then
   fail "no entry $key (the producer job did not store it in run $STORE_RUN_ID, or it expired)"
 fi
