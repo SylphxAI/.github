@@ -78,10 +78,19 @@
       "ruleset_id": 20321046,
       "checks": [
         { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
+    },
+    {
+      "repo": "SylphxAI/owner",
+      "ruleset": "require-review",
+      "ruleset_id": 24462493,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
         { "context": "always-loaded", "integration_id": 15368 }
       ],
-      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App. always-loaded is owner's plain-language check on the files every agent loads (.github/workflows/plain-language.yml): it runs on every pull request head since 2026-10-19, and this entry is what makes it required."
+      "reason": "always-loaded is owner's plain-language check on the files every agent loads (.github/workflows/plain-language.yml): owner has reported it on pull request heads since 2026-10-19, so its producer is observed where it is required. ci-ok comes from owner's Rulings workflow. The check is added only after this entry lands; the policy tool never adds it to a repository whose workflows do not produce it."
     }
   ],
   "fast_gate_overrides": [

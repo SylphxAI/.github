@@ -417,14 +417,17 @@ class RequiredCheckTests(unittest.TestCase):
 
     def test_declared_review_gate_covers_the_gated_repositories(self):
         self.assertEqual([entry["repo"] for entry in SHIPPED_POLICY["required_checks"]],
-                         ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/desk-tools", "SylphxAI/.github"])
+                         ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/desk-tools", "SylphxAI/.github",
+                          "SylphxAI/owner"])
         for entry in SHIPPED_POLICY["required_checks"]:
             expected = [
                 {"context": "ci-ok", "integration_id": 15368},
                 {"context": "review-ok", "integration_id": 5155317}]
-            if entry["repo"] == "SylphxAI/.github":
-                # The plain-language check on the files every agent loads runs in the .github workflows.
-                expected.append({"context": "always-loaded", "integration_id": 15368})
+            if entry["repo"] == "SylphxAI/owner":
+                # owner's plain-language workflow produces always-loaded on its pull request heads; no other repository does.
+                expected = [
+                    {"context": "ci-ok", "integration_id": 15368},
+                    {"context": "always-loaded", "integration_id": 15368}]
             self.assertEqual(entry["checks"], expected)
 
     def test_scoped_missing_review_check_is_reported_with_exact_issuer(self):
@@ -433,7 +436,9 @@ class RequiredCheckTests(unittest.TestCase):
         for row in rows:
             before, after = row["changes"]["required_status_checks"]
             self.assertEqual(before, [{"context": "ci-ok", "integration_id": 15368}])
-            self.assertIn({"context": "review-ok", "integration_id": 5155317}, after)
+            entry = next(e for e in SHIPPED_POLICY["required_checks"] if e["repo"] == row["repo"])
+            for check in entry["checks"][1:]:
+                self.assertIn(check, after)
 
     def test_apply_adds_gate_preserves_other_checks_and_rollback_restores_bindings(self):
         gh = self.fake()
