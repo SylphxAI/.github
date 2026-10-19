@@ -419,9 +419,13 @@ class RequiredCheckTests(unittest.TestCase):
         self.assertEqual([entry["repo"] for entry in SHIPPED_POLICY["required_checks"]],
                          ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/desk-tools", "SylphxAI/.github"])
         for entry in SHIPPED_POLICY["required_checks"]:
-            self.assertEqual(entry["checks"], [
+            expected = [
                 {"context": "ci-ok", "integration_id": 15368},
-                {"context": "review-ok", "integration_id": 5155317}])
+                {"context": "review-ok", "integration_id": 5155317}]
+            if entry["repo"] == "SylphxAI/.github":
+                # The plain-language check on the files every agent loads runs in the .github workflows.
+                expected.append({"context": "always-loaded", "integration_id": 15368})
+            self.assertEqual(entry["checks"], expected)
 
     def test_scoped_missing_review_check_is_reported_with_exact_issuer(self):
         rows = [row for row in self.rows(self.fake()) if row["status"] == "DRIFT"]
