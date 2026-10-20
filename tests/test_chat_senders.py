@@ -124,8 +124,8 @@ class ChatSendersTest(unittest.TestCase):
         for repo, path in [
             ("SylphxAI/work", "src/v2_act.rs"),
             ("SylphxAI/work", "src/main.rs"),
-            ("SylphxAI/agents", "crates/spiron-channels/src/telegram_file.rs"),
-            ("SylphxAI/agents", "crates/spiron-api/src/ingress/telegram_webhook_live/part_00.rs"),
+            ("SylphxAI/spiron", "crates/spiron-channels/src/telegram_file.rs"),
+            ("SylphxAI/spiron", "crates/spiron-api/src/ingress/telegram_webhook_live/part_00.rs"),
             ("SylphxAI/cloud",
              "services/ai/crates/ai-server/src/capabilities/control_plane/interfaces/telegram_operator_bot/wire.rs"),
             ("SylphxAI/infra", "status/worker/index.mjs"),
