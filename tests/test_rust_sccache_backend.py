@@ -26,12 +26,14 @@ OIDC_REQUEST_TOKEN = "fake-oidc-request-token"
 MINTED = "fake-minted.run.token"
 SECRETS = (OIDC_JWT, OIDC_REQUEST_TOKEN, MINTED)
 
-# The cluster's object store by name, as a caller passes it: the tests run on
-# machines where that name may or may not resolve, so the getent stub decides.
+# The cluster's object store by its fully qualified name, as a caller passes
+# it: the tests run on machines where that name may or may not resolve, so the
+# getent stub decides.
+CLUSTER_HOST = "rook-ceph-rgw-ceph-objectstore.rook-ceph.svc.cluster.local"
 STATIC = {
     "S3_ACCESS_KEY": "STATICKEY",
     "S3_SECRET_KEY": "static-secret",
-    "S3_ENDPOINT": "http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:1",
+    "S3_ENDPOINT": f"http://{CLUSTER_HOST}:1",
 }
 FIELDS = [
     "backend",
@@ -150,7 +152,7 @@ class Fake:
 def in_cluster_resolver() -> pathlib.Path:
     """A resolver that knows the cluster's object-store name, for tests on a
     runner that is not inside the cluster."""
-    return stub_getent(True, "rook-ceph-rgw-ceph-objectstore.rook-ceph.svc")
+    return stub_getent(True, CLUSTER_HOST)
 
 
 def base_env() -> dict[str, str]:
@@ -423,13 +425,13 @@ class RustSccacheBackend(unittest.TestCase):
     def test_a_cluster_endpoint_the_runner_cannot_resolve_skips_static(self) -> None:
         # A hosted runner cannot resolve the cluster's own RGW name; sccache's
         # server start then failed on it and the job compiled cold.
-        got, out = self.static_on("http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:80", resolves=False)
+        got, out = self.static_on(f"http://{CLUSTER_HOST}:80", resolves=False)
         self.assertEqual(got["backend"], "gha")
         self.assertEqual(len([l for l in out.splitlines() if l.startswith("::warning::")]), 1)
-        self.assertIn("rook-ceph-rgw-ceph-objectstore.rook-ceph.svc", out)
+        self.assertIn(CLUSTER_HOST, out)
 
     def test_a_cluster_endpoint_the_runner_resolves_keeps_static(self) -> None:
-        got, _ = self.static_on("http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:80", resolves=True)
+        got, _ = self.static_on(f"http://{CLUSTER_HOST}:80", resolves=True)
         self.assertEqual(got["backend"], "static")
         self.assertEqual(got["SCCACHE_BUCKET"], "ci-sccache-org-a")
 
@@ -540,6 +542,21 @@ class RustSccacheStart(unittest.TestCase):
         self.start({"ACTIONS_CACHE": "false"})
         self.assertIn("backend=none", self.read("output"))
         self.assertEqual(self.log.exists(), False)
+
+    def test_default_s3_endpoint_is_the_fully_qualified_cluster_name(self) -> None:
+        # A pod's default ndots sends the short Service name out to the
+        # upstream resolver, which has no record for it: sccache then starts no
+        # server at all. The default must carry the cluster's own domain.
+        text = (ACTION / "action.yml").read_text()
+        default = ""
+        in_input = False
+        for line in text.splitlines():
+            if line.startswith("  s3-endpoint:"):
+                in_input = True
+            elif in_input and line.startswith("    default:"):
+                default = line.split(":", 1)[1].strip()
+                break
+        self.assertEqual(default, "http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc.cluster.local:80")
 
     def test_action_never_exports_the_webdav_settings_to_the_job(self) -> None:
         for path in (ACTION / "action.yml", START):

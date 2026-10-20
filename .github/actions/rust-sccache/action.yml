@@ -30,10 +30,12 @@ inputs:
     default: ""
   s3-endpoint:
     description: >
-      S3 endpoint URL. The default is the cluster's own object store: a name
-      that resolves only on a runner inside the cluster, so on any other runner
-      the static backend is skipped, with one warning, and the next backend is
-      tried.
+      S3 endpoint URL. The default is the cluster Service's fully qualified
+      name: a pod's default ndots setting sends the short name out to the
+      upstream resolver, which answers NXDOMAIN for it. A cluster name that the
+      runner cannot resolve (any runner outside the cluster) skips this backend
+      with one warning and the next backend is tried.
+    default: http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc.cluster.local:80
   s3-bucket:
     description: >
       S3 bucket. Empty means `ci-sccache-<organization, lowercase>`, created on

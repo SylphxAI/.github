@@ -136,12 +136,10 @@ _endpoint_in_cluster() {
   rest="${rest%%/*}"
   host="${rest%%:*}"
   case "$host" in
-    # Cluster service names end in `.svc`; an endpoint whose name ends
-    # anywhere else (cache.example.com) may resolve from a runner outside the
-    # cluster and is not this check's business.
-    *.svc)
-      ;;
-    *.*.svc)
+    # Only a pod service DNS name (`<service>.<namespace>.svc.cluster.local`,
+    # or its `.svc` shorthand) is this check's; any other endpoint is a
+    # registered name that may resolve from outside the cluster.
+    *.*.svc|*.*.svc.cluster.local)
       ;;
     *)
       return 1
