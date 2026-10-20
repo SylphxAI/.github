@@ -475,6 +475,21 @@ class RustSccacheStart(unittest.TestCase):
         self.assertIn("backend=none", self.read("output"))
         self.assertEqual(self.log.exists(), False)
 
+    def test_default_s3_endpoint_is_the_fully_qualified_cluster_name(self) -> None:
+        # A pod's default ndots sends the short Service name out to the
+        # upstream resolver, which has no record for it: sccache then starts no
+        # server at all. The default must carry the cluster's own domain.
+        text = (ACTION / "action.yml").read_text()
+        default = ""
+        in_input = False
+        for line in text.splitlines():
+            if line.startswith("  s3-endpoint:"):
+                in_input = True
+            elif in_input and line.startswith("    default:"):
+                default = line.split(":", 1)[1].strip()
+                break
+        self.assertEqual(default, "http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc.cluster.local:80")
+
     def test_action_never_exports_the_webdav_settings_to_the_job(self) -> None:
         for path in (ACTION / "action.yml", START):
             for line in path.read_text().splitlines():
