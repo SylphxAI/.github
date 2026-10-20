@@ -477,6 +477,13 @@ class RustSccacheStart(unittest.TestCase):
             "esac\n"
         )
         sccache.chmod(0o755)
+        # The cluster's own cache endpoint resolves for these tests too: they
+        # exercise the server start and the fall-through, not resolution.
+        resolver = d / "resolver"
+        resolver.mkdir()
+        (resolver / "getent").write_text((in_cluster_resolver() / "getent").read_text())
+        (resolver / "getent").chmod(0o755)
+        self.resolver = str(resolver)
         self.out = {n: d / n for n in ("env", "output", "summary")}
         for p in self.out.values():
             p.touch()
@@ -484,7 +491,7 @@ class RustSccacheStart(unittest.TestCase):
     def start(self, env: dict[str, str], fail: str = "") -> subprocess.CompletedProcess:
         full = {
             **base_env(),
-            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "PATH": f"{self.bin}:{self.resolver}:{os.environ['PATH']}",
             "GITHUB_ACTION_PATH": str(ACTION),
             "GITHUB_ENV": str(self.out["env"]),
             "GITHUB_OUTPUT": str(self.out["output"]),
