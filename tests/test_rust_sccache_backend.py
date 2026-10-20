@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -25,7 +26,13 @@ OIDC_REQUEST_TOKEN = "fake-oidc-request-token"
 MINTED = "fake-minted.run.token"
 SECRETS = (OIDC_JWT, OIDC_REQUEST_TOKEN, MINTED)
 
-STATIC = {"S3_ACCESS_KEY": "STATICKEY", "S3_SECRET_KEY": "static-secret", "S3_ENDPOINT": "http://127.0.0.1:1"}
+# The cluster's object store by name, as a caller passes it: the tests run on
+# machines where that name may or may not resolve, so the getent stub decides.
+STATIC = {
+    "S3_ACCESS_KEY": "STATICKEY",
+    "S3_SECRET_KEY": "static-secret",
+    "S3_ENDPOINT": "http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:1",
+}
 FIELDS = [
     "backend",
     "SCCACHE_BUCKET",
@@ -140,6 +147,12 @@ class Fake:
         self.server.server_close()
 
 
+def in_cluster_resolver() -> pathlib.Path:
+    """A resolver that knows the cluster's object-store name, for tests on a
+    runner that is not inside the cluster."""
+    return stub_getent(True, "rook-ceph-rgw-ceph-objectstore.rook-ceph.svc")
+
+
 def base_env() -> dict[str, str]:
     return {
         "PATH": os.environ["PATH"],
@@ -148,6 +161,21 @@ def base_env() -> dict[str, str]:
         # A job's own AWS_* must not leak into the static backend's server.
         "AWS_SESSION_TOKEN": "",
     }
+
+
+def stub_getent(resolves: bool, host: str) -> pathlib.Path:
+    """A `getent` that answers only `host`, and only when `resolves`. The test
+    machine may be inside the cluster, where the real name resolves, so the
+    runner's DNS is never the test's own."""
+    d = pathlib.Path(tempfile.mkdtemp())
+    getent = d / "getent"
+    getent.write_text(
+        "#!/bin/sh\n"
+        f'[ "$1" = hosts ] && [ "$2" = {host!r} ] && {{ [ {int(resolves)} = 1 ] && {{ echo "10.0.0.9 $2"; exit 0; }}; }}\n'
+        "exit 2\n"
+    )
+    getent.chmod(0o755)
+    return d
 
 
 def choose(env: dict[str, str]) -> tuple[dict[str, str], str]:
@@ -163,10 +191,28 @@ def choose(env: dict[str, str]) -> tuple[dict[str, str], str]:
     return fields, out
 
 
+class resolved:
+    """The cluster's object-store name resolves while this guard is active: the
+    static backend's default endpoint, on a runner that is not inside the
+    cluster. Tests about resolution stub the resolver themselves."""
+
+    def __enter__(self):
+        self.dir = in_cluster_resolver()
+        self.saved = os.environ["PATH"]
+        os.environ["PATH"] = f"{self.dir}:{self.saved}"
+        return self
+
+    def __exit__(self, *exc) -> None:
+        os.environ["PATH"] = self.saved
+
+
 class RustSccacheBackend(unittest.TestCase):
     def setUp(self) -> None:
         self.fake = Fake()
         self.addCleanup(self.fake.close)
+        guard = resolved()
+        guard.__enter__()
+        self.addCleanup(guard.__exit__, None, None, None)
 
     def assertNoSecrets(self, text: str) -> None:
         for s in SECRETS:
@@ -366,6 +412,26 @@ class RustSccacheBackend(unittest.TestCase):
         self.assertEqual(got["AWS_ACCESS_KEY_ID"], "STATICKEY")
         got, _ = choose(org)
         self.assertEqual(got["backend"], "gha")
+
+    # --- the cluster's object store ----------------------------------------
+
+    def static_on(self, endpoint: str, resolves: bool) -> tuple[dict[str, str], str]:
+        host = (endpoint.split("//", 1)[1].split("/", 1)[0]).rsplit(":", 1)[0]
+        d = stub_getent(resolves, host)
+        return choose({**STATIC, "S3_ENDPOINT": endpoint, "PATH": f"{d}:{os.environ['PATH']}"} | {"BUILD_CACHE": "false"})
+
+    def test_a_cluster_endpoint_the_runner_cannot_resolve_skips_static(self) -> None:
+        # A hosted runner cannot resolve the cluster's own RGW name; sccache's
+        # server start then failed on it and the job compiled cold.
+        got, out = self.static_on("http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:80", resolves=False)
+        self.assertEqual(got["backend"], "gha")
+        self.assertEqual(len([l for l in out.splitlines() if l.startswith("::warning::")]), 1)
+        self.assertIn("rook-ceph-rgw-ceph-objectstore.rook-ceph.svc", out)
+
+    def test_a_cluster_endpoint_the_runner_resolves_keeps_static(self) -> None:
+        got, _ = self.static_on("http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:80", resolves=True)
+        self.assertEqual(got["backend"], "static")
+        self.assertEqual(got["SCCACHE_BUCKET"], "ci-sccache-org-a")
 
     def test_actions_cache_can_be_left_to_the_caller(self) -> None:
         self.assertEqual(choose({"ACTIONS_CACHE": "false"})[0]["backend"], "none")

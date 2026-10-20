@@ -29,8 +29,11 @@ inputs:
     description: S3 secret key.
     default: ""
   s3-endpoint:
-    description: S3 endpoint URL.
-    default: http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:80
+    description: >
+      S3 endpoint URL. The default is the cluster's own object store: a name
+      that resolves only on a runner inside the cluster, so on any other runner
+      the static backend is skipped, with one warning, and the next backend is
+      tried.
   s3-bucket:
     description: >
       S3 bucket. Empty means `ci-sccache-<organization, lowercase>`, created on
