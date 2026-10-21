@@ -4,11 +4,11 @@
   "decision": "SylphxAI/cloud docs/adr/ADR-01M495TCCBZGSQ68A4P4G428H2-sylphx-agents-hosted-agent-runtime.md, D5",
   "owner_repos": ["SylphxAI/cloud"],
   "baseline": [
-    {"repo": "SylphxAI/agents", "departure": "agent-runtime-package crates/egress-guard/Cargo.toml egress-guard", "expires": "2026-11-30"},
-    {"repo": "SylphxAI/agents", "departure": "agent-runtime-package crates/spiron-credential-crypto/Cargo.toml spiron-credential-crypto", "expires": "2026-11-30"},
-    {"repo": "SylphxAI/agents", "departure": "agent-runtime-package crates/spiron-vault-proxy/Cargo.toml spiron-vault-proxy", "expires": "2026-11-30"},
-    {"repo": "SylphxAI/agents", "departure": "agent-runtime-table packages/db/migrations/20260306000000_initial.sql session_entries", "expires": "2026-11-30"},
-    {"repo": "SylphxAI/agents", "departure": "agent-runtime-table packages/db/migrations/20260722234500_session_turn_settlement_authority.sql session_turns", "expires": "2026-11-30"},
-    {"repo": "SylphxAI/agents", "departure": "agent-runtime-table packages/db/migrations/20260925010000_mind_compaction.sql agent_memory_items", "expires": "2026-11-30"}
+    {"repo": "SylphxAI/spiron", "departure": "agent-runtime-package crates/egress-guard/Cargo.toml egress-guard", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/spiron", "departure": "agent-runtime-package crates/spiron-credential-crypto/Cargo.toml spiron-credential-crypto", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/spiron", "departure": "agent-runtime-package crates/spiron-vault-proxy/Cargo.toml spiron-vault-proxy", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/spiron", "departure": "agent-runtime-table packages/db/migrations/20260306000000_initial.sql session_entries", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/spiron", "departure": "agent-runtime-table packages/db/migrations/20260722234500_session_turn_settlement_authority.sql session_turns", "expires": "2026-11-30"},
+    {"repo": "SylphxAI/spiron", "departure": "agent-runtime-table packages/db/migrations/20260925010000_mind_compaction.sql agent_memory_items", "expires": "2026-11-30"}
   ]
 }
