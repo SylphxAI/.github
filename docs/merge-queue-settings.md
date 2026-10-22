@@ -113,15 +113,15 @@ the existing `ci-ok` floor unchanged. At the barrier, activate `review-ok` and
 its App binding in the cloud contract and apply only cloud and infra. Send heads
 for independent review only after their native CI is green.
 
-After those two readbacks, extend the same policy to desk-tools (`24403587`)
-and .github (`20321046`) with their provider-confirmed ruleset names. Every
+After those two readbacks, extend the same policy to .github (`20321046`)
+with its provider-confirmed ruleset name. Every
 rollout keeps the queue and `ci-ok`. No TSV armer, private queue, polling loop
 or synthetic CI job is part of this path.
 
 Rollout progress: cloud and infra were applied on 2026-10-15 and read back
 (`review-ok` present, bound to integration `5155317`), with the pre-change
 rulesets saved in a ruleset-backup directory on the operator host, which is the
-rollback source for every entry of this rollout. desk-tools and .github are
+rollback source for every entry of this rollout. .github is
 declared here and applied in the same rollout. The retired work repository is
 archived, so it is an `exclude` entry: the tool never reads or writes it, and a
 repository with no queue left to protect is not given a new required check.
@@ -136,7 +136,7 @@ receipt.
 
 ```sh
 scripts/apply_merge_queue.py --dry-run                    # diff of every ruleset (the default)
-scripts/apply_merge_queue.py --repo SylphxAI/desk-tools   # one repository
+scripts/apply_merge_queue.py --repo SylphxAI/.github      # one repository
 scripts/apply_merge_queue.py --check                      # exit 1 on any drift (for a schedule)
 scripts/apply_merge_queue.py --apply --backup-dir DIR     # write; saves each ruleset in DIR first
 scripts/apply_merge_queue.py --rollback DIR               # put the saved rulesets back
