@@ -10,10 +10,10 @@
 *	\.(md|mdx)$	documentation names hosts and sends nothing
 SylphxAI/cloud	^services/notify/	Notify's chat sender
 SylphxAI/cloud	^services/ai/.*/telegram_operator_bot/	conversational agent: the AI service's operator bot
-SylphxAI/agents	^crates/spiron-channels/	conversational agent: channel adapters
-SylphxAI/agents	^crates/spiron-api/src/ingress/	conversational agent: channel ingress
-SylphxAI/agents	^scripts/egress-client-allowlist\.json$	egress policy that admits the chat hosts
-SylphxAI/agents	^crates/spiron-worker/src/credential_sites\.rs$	approval-gate test vectors: the inline test module classifies agent commands that name the chat host; nothing sends
+SylphxAI/spiron	^crates/spiron-channels/	conversational agent: channel adapters
+SylphxAI/spiron	^crates/spiron-api/src/ingress/	conversational agent: channel ingress
+SylphxAI/spiron	^scripts/egress-client-allowlist\.json$	egress policy that admits the chat hosts
+SylphxAI/spiron	^crates/spiron-worker/src/credential_sites\.rs$	approval-gate test vectors: the inline test module classifies agent commands that name the chat host; nothing sends
 SylphxAI/work	^src/(main|v2_act)\.rs$	chat administration with the bot's own rights (topics, pins, bans)
 SylphxAI/infra	^status/worker/	platform paging: the out-of-cell status worker
 SylphxAI/infra	^infra/addons/monitoring/	platform paging: Alertmanager receiver, alert digest and alert tickets
