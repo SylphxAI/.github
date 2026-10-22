@@ -25,10 +25,12 @@ pub.dev and crates.io package lists from the registries' public APIs, or a saved
 list with --packages; README text with `gh api repos/<org>/<repo>/readme`, or a
 saved map with --readmes. --fix-npm runs `npm deprecate` on each listed npm
 package (needs an npm token with write access) and reports what is left.
---fix-crates yanks every unyanked version of each listed crate through the
-crates.io API (token in CARGO_REGISTRY_TOKEN, a crate owner's token with the
-yank scope); `cargo yank --undo` reverses it. pub.dev has no token path for its
-Discontinued option: a publisher admin sets it on the package's Admin tab.
+--fix-crates is a one-off: it yanks every unyanked version of each listed crate
+through the crates.io API (token in CARGO_REGISTRY_TOKEN, a crate owner's token
+with the yank scope); `cargo yank --undo` reverses it. It is not wired into the
+scheduled sweep, so no long-lived registry token is parked there. pub.dev has no
+token path for its Discontinued option: a publisher admin sets it on the
+package's Admin tab.
 
 Exit: 0 nothing listed, 1 at least one repository or package is listed
 (MISSING, NO-NOTICE or UNDEPRECATED lines), 2 a list or the properties could not

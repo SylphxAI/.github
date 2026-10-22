@@ -26,3 +26,11 @@ a bot's own rights, conversational agents, platform paging), and tests,
 fixtures and documentation in every repository. There is no inline waiver and
 no caller input that widens it; a new exception is a reviewed change to
 `allow-list.tsv` here. Set `mode: warn` to annotate without failing.
+
+Notify's production egress grant is allowed only at
+`SylphxAI/infra:infra/addons/cilium-l2/manifests/notify-chat-egress.yaml`.
+The repository and entire path must match; sibling policies and other
+repositories remain checked. This admits Notify's own policy declaration,
+not a new direct sender or platform-wide runtime host-denial guarantee.
+Consumers must pin a commit containing this allowance; changing this list
+does not update an already-pinned action.

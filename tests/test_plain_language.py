@@ -12,7 +12,8 @@ import unittest
 ACTION = pathlib.Path(__file__).resolve().parents[1] / ".github" / "actions" / "plain-language"
 
 
-def run_check(before: str, after: str, terms: str = "terms.tsv", *specs: str, mode: str = "fail") -> subprocess.CompletedProcess[str]:
+def run_check(before: str, after: str, terms: str = "terms.tsv", *specs: str, mode: str = "fail",
+              env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory() as tmp:
         def git(*args: str) -> None:
             subprocess.run(["git", *args], cwd=tmp, check=True, capture_output=True)
@@ -28,7 +29,8 @@ def run_check(before: str, after: str, terms: str = "terms.tsv", *specs: str, mo
         git("commit", "-qam", "change")
         return subprocess.run(
             [str(ACTION / "check.sh"), "HEAD~1..HEAD", str(ACTION / terms), *specs],
-            cwd=tmp, capture_output=True, text=True, env={**os.environ, "PLAIN_LANGUAGE_MODE": mode},
+            cwd=tmp, capture_output=True, text=True,
+            env={**os.environ, "PLAIN_LANGUAGE_MODE": mode, **(env or {})},
         )
 
 
@@ -44,8 +46,25 @@ class PlainLanguageTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_allow_marker_skips_the_line(self) -> None:
-        result = run_check("", "quoting residual here plain-language: allow\n")
+        result = run_check(
+            "", "quoting residual here plain-language: allow(legacy quote; until=2099-01-01)\n")
         self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_bare_allow_marker_is_allowed_inside_its_grace_window(self) -> None:
+        # A bare `allow` is tolerated with a warning only inside its grace
+        # window (`PLAIN_LANGUAGE_BARE_UNTIL`, 2026-10-15); pin both ends so the
+        # test states that behaviour rather than the wall clock.
+        result = run_check("", "quoting residual here plain-language: allow\n",
+                           env={"PLAIN_LANGUAGE_TODAY": "2026-10-15",
+                                "PLAIN_LANGUAGE_BARE_UNTIL": "2026-10-15"})
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_bare_allow_marker_is_refused_after_the_grace_window(self) -> None:
+        result = run_check("", "quoting residual here plain-language: allow\n",
+                           env={"PLAIN_LANGUAGE_TODAY": "2026-10-16",
+                                "PLAIN_LANGUAGE_BARE_UNTIL": "2026-10-15"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no longer accepted", result.stdout)
 
     def test_standard_words_pass(self) -> None:
         result = run_check("", "a fencing token, Kueue admission, a database tombstone\n")

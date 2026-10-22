@@ -98,13 +98,34 @@ class ChatSendersTest(unittest.TestCase):
         self.assertEqual(run_check(line, path, repository="SylphxAI/cloud").returncode, 0)
         self.assertEqual(run_check(line, path, repository="SylphxAI/other").returncode, 1)
 
+    def test_notify_egress_policy_passes_only_at_its_exact_infra_path(self) -> None:
+        path = "infra/addons/cilium-l2/manifests/notify-chat-egress.yaml"
+        for host in HOSTS:
+            with self.subTest(host=host):
+                result = run_check(host + "\n", path, repository="SylphxAI/infra")
+                self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_notify_egress_allowance_does_not_admit_other_paths_or_repositories(self) -> None:
+        path = "infra/addons/cilium-l2/manifests/notify-chat-egress.yaml"
+        for repo, candidate in [
+            ("SylphxAI/other", path),
+            ("SylphxAI/infra", "infra/addons/cilium-l2/manifests/other-chat-egress.yaml"),
+            ("SylphxAI/infra", "infra/addons/cilium-l2/manifests/notify-chat-egressXyaml"),
+            ("SylphxAI/infra", path + ".bak"),
+            ("SylphxAI/infra", "other/" + path),
+            ("SylphxAI/infra", "infra/addons/cilium-l2/manifests/nested/notify-chat-egress.yaml"),
+        ]:
+            with self.subTest(repository=repo, path=candidate):
+                result = run_check("https://api.telegram.org/bot\n", candidate, repository=repo)
+                self.assertEqual(result.returncode, 1, result.stdout)
+
     def test_decision_seven_exceptions_pass(self) -> None:
         line = "https://api.telegram.org/bot\n"
         for repo, path in [
             ("SylphxAI/work", "src/v2_act.rs"),
             ("SylphxAI/work", "src/main.rs"),
-            ("SylphxAI/agents", "crates/spiron-channels/src/telegram_file.rs"),
-            ("SylphxAI/agents", "crates/spiron-api/src/ingress/telegram_webhook_live/part_00.rs"),
+            ("SylphxAI/spiron", "crates/spiron-channels/src/telegram_file.rs"),
+            ("SylphxAI/spiron", "crates/spiron-api/src/ingress/telegram_webhook_live/part_00.rs"),
             ("SylphxAI/cloud",
              "services/ai/crates/ai-server/src/capabilities/control_plane/interfaces/telegram_operator_bot/wire.rs"),
             ("SylphxAI/infra", "status/worker/index.mjs"),

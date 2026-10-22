@@ -97,6 +97,66 @@ class CiOkTest(unittest.TestCase):
         queued = {"id": 4, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
         self.assertEqual(ci_ok.evaluate([run("a")], set(), suites=[queued])[0], "pass")
 
+    def test_empty_unfinished_suites_need_workflow_events(self) -> None:
+        for status in ("queued", "in_progress"):
+            empty = {"id": 2, "status": status, "conclusion": None, "latest_check_runs_count": 0}
+            self.assertTrue(ci_ok.needs_workflow_events([empty]))
+            self.assertFalse(ci_ok.needs_workflow_events([dict(empty, latest_check_runs_count=1)]))
+        self.assertTrue(ci_ok.needs_workflow_events([
+            {"status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}]))
+        self.assertFalse(ci_ok.needs_workflow_events([
+            {"status": "completed", "conclusion": "success", "latest_check_runs_count": 0}]))
+
+    def test_empty_gating_replacement_waits_until_it_completes(self) -> None:
+        broken = {"id": 1, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        replacement = {"id": 2, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
+        for event in ci_ok.GATING_EVENTS:
+            wr = [{"check_suite_id": 1, "path": ".github/workflows/ci.yml", "event": event,
+                   "created_at": "2026-10-08T10:00:00Z"},
+                  {"check_suite_id": 2, "path": ".github/workflows/ci.yml", "event": event,
+                   "created_at": "2026-10-08T10:01:00Z"}]
+            events = ci_ok.suite_events(wr)
+            for status in ("queued", "in_progress"):
+                self.assertEqual(ci_ok.evaluate([run("a")], set(),
+                                               suites=[broken, dict(replacement, status=status)],
+                                               suite_events=events),
+                                 ("pending", ["workflow has no jobs yet (check suite 2)"]))
+            self.assertEqual(ci_ok.evaluate([run("a")], set(),
+                                           suites=[broken, dict(replacement, status="completed", conclusion="failure")],
+                                           suite_events=events)[0], "fail")
+            self.assertEqual(ci_ok.evaluate([run("a"), run("build")], set(),
+                                           suites=[broken, dict(replacement, status="completed", conclusion="success",
+                                                                latest_check_runs_count=1)],
+                                           suite_events=events)[0], "pass")
+        for event in ("push", "workflow_run", "superseded"):
+            self.assertEqual(ci_ok.evaluate([run("a")], set(), suites=[replacement],
+                                           suite_events={2: event})[0], "pass")
+
+    def test_two_stable_polls_cannot_pass_an_empty_gating_replacement(self) -> None:
+        import contextlib
+        import io
+        from unittest import mock
+
+        broken = {"id": 1, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        replacement = {"id": 2, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
+        completed = dict(replacement, status="completed", conclusion="success", latest_check_runs_count=1)
+        env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0", "CI_OK_INTERVAL": "1",
+               "CI_OK_TIMEOUT_MINUTES": "1"}
+        clock = [0.0]
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                mock.patch.object(ci_ok.time, "time", side_effect=lambda: clock[0]), \
+                mock.patch.object(ci_ok.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+                mock.patch.object(ci_ok, "fetch_suites", side_effect=[[broken, replacement], [broken, replacement],
+                                                                   [broken, completed], [broken, completed]]) as suites, \
+                mock.patch.object(ci_ok, "fetch", return_value=[run("a")]), \
+                mock.patch.object(ci_ok, "fetch_suite_events", return_value={1: "superseded", 2: "pull_request"}), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 0)
+        self.assertEqual(suites.call_count, 4)
+        self.assertEqual(out.getvalue().count("waiting on:"), 2)
+        self.assertEqual(out.getvalue().count("all checks passed:"), 1)
+
     def test_failed_suite_with_jobs_is_judged_by_its_check_runs(self) -> None:
         # A re-run that passed leaves the suite's latest check runs green.
         rerun = {"id": 5, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 2}

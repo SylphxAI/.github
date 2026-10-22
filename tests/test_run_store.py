@@ -6,10 +6,13 @@ GitHub OIDC issuer and the gateway."""
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import os
 import pathlib
 import subprocess
+import tarfile
 import tempfile
 import threading
 import unittest
@@ -21,6 +24,31 @@ OIDC_JWT = "fake-oidc-jwt.aaa.bbb"
 OIDC_REQUEST_TOKEN = "fake-oidc-request-token"
 MINTED = "fake-minted.run.token"
 SECRETS = (OIDC_JWT, OIDC_REQUEST_TOKEN, MINTED)
+
+
+def bundle(members: list[tuple[tarfile.TarInfo, bytes | None]]) -> bytes:
+    """A gzip tar bundle, as run-store put stores it, from explicit members so a
+    test can name one a put would never produce (traversal, link, special)."""
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tar:
+        for member, data in members:
+            tar.addfile(member, io.BytesIO(data) if data is not None else None)
+    return gzip.compress(raw.getvalue())
+
+
+def regular(name: str, data: bytes) -> tuple[tarfile.TarInfo, bytes]:
+    member = tarfile.TarInfo(name)
+    member.size = len(data)
+    member.mode = 0o644
+    return member, data
+
+
+def special(name: str, kind: bytes, linkname: str = "") -> tuple[tarfile.TarInfo, None]:
+    member = tarfile.TarInfo(name)
+    member.type = kind
+    member.linkname = linkname
+    member.mode = 0o755 if kind == tarfile.DIRTYPE else 0o644
+    return member, None
 
 
 class Fake:
@@ -266,6 +294,62 @@ class RunStoreTest(unittest.TestCase):
         rc, log, _ = self.run_store("put", "f", src)
         self.assertEqual(rc, 1)
         self.assertIn("token exchange: invalid response", log)
+
+    def stage_bundle(self, name: str, blob: bytes) -> None:
+        self.fake.store[f"run-store.v1.77.4242.{name}"] = blob
+
+    def test_path_traversal_is_refused_before_writing(self) -> None:
+        self.stage_bundle("evil", bundle([regular("../escaped.txt", b"pwn"), regular("bad/r00t.txt", b"pwn")]))
+        dest = self.dir / "d"
+        rc, log, out = self.run_store("get", "evil", dest)
+        self.assertEqual(rc, 1)
+        self.assertIn("refusing to unpack run-store.v1.77.4242.evil: unsafe archive member", log)
+        self.assertFalse((self.dir / "escaped.txt").exists())
+        self.assertFalse(dest.exists())
+        self.assertEqual(out["found"], "false")
+
+    def test_symlink_member_is_refused_before_writing(self) -> None:
+        self.stage_bundle(
+            "link",
+            bundle([special("evil", tarfile.SYMTYPE, "/etc"), regular("evil/pwned.txt", b"pwn")]),
+        )
+        dest = self.dir / "d"
+        rc, log, _ = self.run_store("get", "link", dest)
+        self.assertEqual(rc, 1)
+        self.assertIn("unsafe archive member: symlink 'evil' -> '/etc'", log)
+        self.assertFalse(dest.exists())
+
+    def test_hardlink_member_is_refused_before_writing(self) -> None:
+        self.stage_bundle(
+            "hard",
+            bundle([regular("target", b"safe"), special("hard", tarfile.LNKTYPE, "/etc/passwd")]),
+        )
+        rc, log, _ = self.run_store("get", "hard", self.dir / "d")
+        self.assertEqual(rc, 1)
+        self.assertIn("unsafe archive member: hardlink 'hard' -> '/etc/passwd'", log)
+
+    def test_absolute_path_is_refused_before_writing(self) -> None:
+        self.stage_bundle("abs", bundle([regular("/etc/evil", b"pwn")]))
+        rc, log, _ = self.run_store("get", "abs", self.dir / "d")
+        self.assertEqual(rc, 1)
+        self.assertIn("unsafe archive member: absolute path '/etc/evil'", log)
+
+    def test_special_file_is_refused_before_writing(self) -> None:
+        self.stage_bundle("spec", bundle([special("pipe", tarfile.FIFOTYPE)]))
+        rc, log, _ = self.run_store("get", "spec", self.dir / "d")
+        self.assertEqual(rc, 1)
+        self.assertIn("unsafe archive member: special file 'pipe'", log)
+
+    def test_safe_junit_bundle_still_fetches(self) -> None:
+        self.stage_bundle(
+            "junit",
+            bundle([special("results/", tarfile.DIRTYPE), regular("results/junit.xml", b"<testsuite/>")]),
+        )
+        dest = self.dir / "d"
+        rc, log, out = self.run_store("get", "junit", dest)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(out["found"], "true")
+        self.assertEqual((dest / "results" / "junit.xml").read_bytes(), b"<testsuite/>")
 
 
 if __name__ == "__main__":

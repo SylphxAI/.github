@@ -10,7 +10,7 @@ description: >
   that runs it the required status check. Each check is judged by its latest
   run (a run cancelled by a newer run of its workflow does not count), and an
   API rate limit spent past the deadline fails the gate at once. Where all
-  gating jobs share one workflow, use a plain `needs:` + `if: always()` job instead.
+  gating jobs share one workflow, use a plain `needs:` + `if: always() && !cancelled()` job instead.
 
 inputs:
   token:
