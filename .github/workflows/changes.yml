@@ -2,9 +2,10 @@ name: changes
 
 # Which kinds of file a change touches, so a docs-only pull request skips the
 # heavy jobs. Call it first and gate heavy jobs on its outputs (see
-# docs/ci-template.md). A merge_group or push has no useful diff base for a
-# per-PR filter, so every output is "true" there: the queue and the trunk
-# always run everything the caller gates on `code`.
+# docs/ci-template.md). A merge_group diffs the group's base commit against its
+# head commit, so a docs-only group skips the heavy jobs as its pull request
+# did. A push has no diff base, so every output is "true" there. When the diff
+# cannot be computed (checkout or filter failure) every output is "true" too.
 
 on:
   workflow_call:
@@ -12,17 +13,18 @@ on:
       code:
         description: >
           JSON array of globs that count as code; every pattern must match
-          (a "!" pattern excludes). Default: everything except documentation,
-          issue templates and workflow files.
+          (a "!" pattern excludes). Default: everything except Markdown files,
+          LICENSE files, issue templates and workflow files. Non-Markdown
+          files under docs/ are code.
         type: string
-        default: '["**", "!docs/**", "!**/*.md", "!LICENSE*", "!.github/ISSUE_TEMPLATE/**", "!.github/workflows/**", "!.github/actions/**"]'
+        default: '["**", "!**/*.md", "!LICENSE*", "!.github/ISSUE_TEMPLATE/**", "!.github/workflows/**", "!.github/actions/**"]'
       runner:
         description: Runner label for the job. Keep the cheap standard one.
         type: string
         default: sylphx-linux-standard
     outputs:
       code:
-        description: '"true" when a code file changed (or the event has no diff).'
+        description: '"true" when a code file changed (or the diff could not be computed).'
         value: ${{ jobs.changes.outputs.code }}
       docs:
         description: '"true" when documentation changed.'
@@ -44,13 +46,23 @@ jobs:
       docs: ${{ steps.kinds.outputs.docs || steps.all.outputs.value }}
       workflows: ${{ steps.kinds.outputs.workflows || steps.all.outputs.value }}
     steps:
-      # No pull request, no diff to filter: report everything as changed.
+      # No diff to filter (push) or none computable: report everything as changed.
       - id: all
         run: echo "value=true" >> "$GITHUB_OUTPUT"
-      - if: github.event_name == 'pull_request'
+      # A merge group has no pull request to ask, so diff its commits locally.
+      - if: github.event_name == 'merge_group'
+        continue-on-error: true
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         id: kinds
+        continue-on-error: true
         uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
         with:
+          base: ${{ github.event.merge_group.base_sha }}
+          ref: ${{ github.event.merge_group.head_sha }}
           filters: |
             docs:
               - 'docs/**'
@@ -60,10 +72,13 @@ jobs:
               - '.github/actions/**'
       # `every` makes the "!" patterns exclusions; the default `some` marks a
       # docs-only change as code because "**" matches it.
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         id: filter
+        continue-on-error: true
         uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
         with:
+          base: ${{ github.event.merge_group.base_sha }}
+          ref: ${{ github.event.merge_group.head_sha }}
           predicate-quantifier: every
           filters: |
             code: ${{ inputs.code }}

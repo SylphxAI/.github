@@ -97,6 +97,66 @@ class CiOkTest(unittest.TestCase):
         queued = {"id": 4, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
         self.assertEqual(ci_ok.evaluate([run("a")], set(), suites=[queued])[0], "pass")
 
+    def test_empty_unfinished_suites_need_workflow_events(self) -> None:
+        for status in ("queued", "in_progress"):
+            empty = {"id": 2, "status": status, "conclusion": None, "latest_check_runs_count": 0}
+            self.assertTrue(ci_ok.needs_workflow_events([empty]))
+            self.assertFalse(ci_ok.needs_workflow_events([dict(empty, latest_check_runs_count=1)]))
+        self.assertTrue(ci_ok.needs_workflow_events([
+            {"status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}]))
+        self.assertFalse(ci_ok.needs_workflow_events([
+            {"status": "completed", "conclusion": "success", "latest_check_runs_count": 0}]))
+
+    def test_empty_gating_replacement_waits_until_it_completes(self) -> None:
+        broken = {"id": 1, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        replacement = {"id": 2, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
+        for event in ci_ok.GATING_EVENTS:
+            wr = [{"check_suite_id": 1, "path": ".github/workflows/ci.yml", "event": event,
+                   "created_at": "2026-10-08T10:00:00Z"},
+                  {"check_suite_id": 2, "path": ".github/workflows/ci.yml", "event": event,
+                   "created_at": "2026-10-08T10:01:00Z"}]
+            events = ci_ok.suite_events(wr)
+            for status in ("queued", "in_progress"):
+                self.assertEqual(ci_ok.evaluate([run("a")], set(),
+                                               suites=[broken, dict(replacement, status=status)],
+                                               suite_events=events),
+                                 ("pending", ["workflow has no jobs yet (check suite 2)"]))
+            self.assertEqual(ci_ok.evaluate([run("a")], set(),
+                                           suites=[broken, dict(replacement, status="completed", conclusion="failure")],
+                                           suite_events=events)[0], "fail")
+            self.assertEqual(ci_ok.evaluate([run("a"), run("build")], set(),
+                                           suites=[broken, dict(replacement, status="completed", conclusion="success",
+                                                                latest_check_runs_count=1)],
+                                           suite_events=events)[0], "pass")
+        for event in ("push", "workflow_run", "superseded"):
+            self.assertEqual(ci_ok.evaluate([run("a")], set(), suites=[replacement],
+                                           suite_events={2: event})[0], "pass")
+
+    def test_two_stable_polls_cannot_pass_an_empty_gating_replacement(self) -> None:
+        import contextlib
+        import io
+        from unittest import mock
+
+        broken = {"id": 1, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 0}
+        replacement = {"id": 2, "status": "queued", "conclusion": None, "latest_check_runs_count": 0}
+        completed = dict(replacement, status="completed", conclusion="success", latest_check_runs_count=1)
+        env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0", "CI_OK_INTERVAL": "1",
+               "CI_OK_TIMEOUT_MINUTES": "1"}
+        clock = [0.0]
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                mock.patch.object(ci_ok.time, "time", side_effect=lambda: clock[0]), \
+                mock.patch.object(ci_ok.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+                mock.patch.object(ci_ok, "fetch_suites", side_effect=[[broken, replacement], [broken, replacement],
+                                                                   [broken, completed], [broken, completed]]) as suites, \
+                mock.patch.object(ci_ok, "fetch", return_value=[run("a")]), \
+                mock.patch.object(ci_ok, "fetch_suite_events", return_value={1: "superseded", 2: "pull_request"}), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 0)
+        self.assertEqual(suites.call_count, 4)
+        self.assertEqual(out.getvalue().count("waiting on:"), 2)
+        self.assertEqual(out.getvalue().count("all checks passed:"), 1)
+
     def test_failed_suite_with_jobs_is_judged_by_its_check_runs(self) -> None:
         # A re-run that passed leaves the suite's latest check runs green.
         rerun = {"id": 5, "status": "completed", "conclusion": "failure", "latest_check_runs_count": 2}
@@ -107,6 +167,79 @@ class CiOkTest(unittest.TestCase):
         self.assertEqual(ci_ok.evaluate(runs, set(), required={"a"})[0], "pass")
         state, detail = ci_ok.evaluate(runs, set(), required={"a", "b", "c"})
         self.assertEqual((state, detail), ("fail", ["b=skipped (required)", "c=missing (required)"]))
+
+    def test_cancelled_run_superseded_by_a_later_run_of_the_same_check_passes(self) -> None:
+        # Cubeage/big2-tycoon#15 @575a2304: plain-language was cancelled at
+        # 18:53 by a newer run of its workflow, which succeeded at 19:58 on the
+        # same head; the check-runs list returns both, and ci-ok failed twice.
+        old = dict(run("plain-language", conclusion="cancelled"), id=10, check_suite={"id": 1},
+                   started_at="2026-10-04T18:50:00Z")
+        new = dict(run("plain-language"), id=20, check_suite={"id": 2}, started_at="2026-10-04T19:55:00Z")
+        wr = [{"check_suite_id": 1, "path": ".github/workflows/plain.yml", "event": "pull_request",
+               "created_at": "2026-10-04T18:50:00Z"},
+              {"check_suite_id": 2, "path": ".github/workflows/plain.yml", "event": "pull_request",
+               "created_at": "2026-10-04T19:55:00Z"}]
+        events = ci_ok.suite_events(wr)
+        self.assertEqual(ci_ok.evaluate([old, new, run("a")], set(), suite_events=events),
+                         ("pass", ["a", "plain-language"]))
+        # Without `actions: read` the older cancelled run of the same name still yields.
+        self.assertEqual(ci_ok.evaluate([old, new, run("a")], set())[0], "pass")
+        # The newest run is what counts: a later failure still fails.
+        self.assertEqual(ci_ok.evaluate([dict(old, conclusion="success"), dict(new, conclusion="failure")],
+                                        set(), suite_events=events)[0], "fail")
+        self.assertTrue(ci_ok.needs_suite_events([old, new], set()))
+        self.assertFalse(ci_ok.needs_suite_events([new, run("a")], set()))
+
+    def test_same_named_jobs_of_two_live_workflows_both_count(self) -> None:
+        # Two workflows that each have a `build` job: neither is superseded.
+        a = dict(run("build", conclusion="failure"), id=1, check_suite={"id": 1}, started_at="2026-10-04T18:00:00Z")
+        b = dict(run("build"), id=2, check_suite={"id": 2}, started_at="2026-10-04T18:01:00Z")
+        wr = [{"check_suite_id": 1, "path": ".github/workflows/ci.yml", "event": "pull_request",
+               "created_at": "2026-10-04T18:00:00Z"},
+              {"check_suite_id": 2, "path": ".github/workflows/web.yml", "event": "pull_request",
+               "created_at": "2026-10-04T18:01:00Z"}]
+        self.assertEqual(ci_ok.evaluate([a, b], set(), suite_events=ci_ok.suite_events(wr))[0], "fail")
+        self.assertEqual(ci_ok.evaluate([a, b], set())[0], "fail")
+
+    def test_exhausted_api_budget_fails_closed_before_the_deadline(self) -> None:
+        # With the token's rate limit spent past the deadline, the gate fails
+        # at once with a clear message instead of polling until it times out.
+        import io, email.message, urllib.error
+        headers = email.message.Message()
+        headers["x-ratelimit-remaining"] = "0"
+        headers["x-ratelimit-reset"] = "5000"
+        err = urllib.error.HTTPError("https://api.github.com/x", 403, "rate limit", headers, io.BytesIO(b""))
+        limited = ci_ok.rate_limited(err, now=1000.0)
+        self.assertEqual(limited, 5000.0)
+        other = urllib.error.HTTPError("https://api.github.com/x", 403, "forbidden", email.message.Message(),
+                                       io.BytesIO(b""))
+        self.assertIsNone(ci_ok.rate_limited(other, now=1000.0))
+        retry = email.message.Message()
+        retry["retry-after"] = "60"
+        self.assertEqual(ci_ok.rate_limited(
+            urllib.error.HTTPError("u", 429, "slow down", retry, io.BytesIO(b"")), now=1000.0), 1060.0)
+
+        calls = []
+
+        def fetch_limited(*_a, **_k):
+            calls.append(1)
+            raise ci_ok.RateLimited(ci_ok.time.time() + 86400)
+
+        env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0", "CI_OK_INTERVAL": "0",
+               "CI_OK_TIMEOUT_MINUTES": "1"}
+        out = io.StringIO()
+        from unittest import mock
+        import contextlib
+        with mock.patch.dict(ci_ok.os.environ, env), mock.patch.object(ci_ok, "fetch_suites", fetch_limited), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 1)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("rate limit", out.getvalue())
+
+    def test_low_api_budget_slows_polling(self) -> None:
+        self.assertEqual(ci_ok.poll_interval(20, remaining=5000), 20)
+        self.assertEqual(ci_ok.poll_interval(20, remaining=None), 20)
+        self.assertEqual(ci_ok.poll_interval(20, remaining=150), 60)
 
 
 if __name__ == "__main__":

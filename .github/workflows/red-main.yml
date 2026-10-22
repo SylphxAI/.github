@@ -19,11 +19,20 @@ name: Red main
 # Self-heal rules: only COMPLETED verify runs count (cancelled and skipped are
 # ignored); a real failure reverts only after the SAME failing unit (job and
 # test) failed on two consecutive completed runs, at the first-bad commit; and
-# a run whose every failed job shows an infrastructure signature (installation
-# token mint, artifact upload, cache 403, lost runner) is reported and never
-# reverted. Nothing is ever rerun: a flaky test is quarantined through the
+# a run whose every failing step's TERMINAL ERROR is an infrastructure
+# signature (installation token mint, artifact upload, cache 403, runner set-up
+# or checkout, a lost runner) is never reverted. Classification is per failing
+# step, never per job: a real assertion is a code fault even when the same job
+# also logged infrastructure-shaped noise (ENOSPC, a cache warning), which is
+# how a genuine failure once hid behind it for three days. An infrastructure
+# verdict escalates visibly: it opens one issue labelled `red-main-infra` and
+# the owner label and comments on the ops issue, so it is never a silent
+# `exit 0`. Nothing is ever rerun: a flaky test is quarantined through the
 # repository's quarantine list, not retried. When the handler itself fails, it
 # opens (or comments on) one issue labelled `red-main-broken` and `owner:ops`.
+# A scheduled watchdog in the caller's `red-main.yml` files one issue labelled
+# `red-main-red-watchdog` when the trunk stays red past 30 minutes whatever the
+# verdict was (watch the watcher).
 #
 # Revert rules (every repository, by default):
 #   1. a culprit that adds or changes a migration (`[ci] migration_paths`,
@@ -43,7 +52,7 @@ name: Red main
 # The candidates are the commits since a per-unit baseline: when the confirm step
 # names failing units (a junit test, else a lane) that failed on two consecutive
 # runs, the baseline is the head of the newest earlier completed push run where
-# one of them did not fail (WINDOW_PY), so a unit that breaks inside an already
+# one of them did not fail (.github/red_main/window.py), so a unit that breaks inside an already
 # red trunk is traced over the commits since it last passed. The candidate runs
 # then cover only those units' lanes and count as failed only when one of those
 # units failed. No such run in the last 100 keeps the last fully verified
@@ -55,7 +64,7 @@ name: Red main
 # blamed; when one sits at or before the first failure, the oldest failing
 # commit cannot be named with certainty, so the whole window is reverted in
 # one pull request (the same path a window wider than max-candidates takes).
-# The rule is CULPRIT_PY below. A caller that sets `revert-window: false`
+# The rule is .github/red_main/culprit.py. A caller that sets `revert-window: false`
 # reverts only a traced culprit: a window is reported on its pull requests and
 # a person decides. `candidate-timeout-minutes` (default 20, at most 60) is the
 # trace's shared deadline; set it above the slowest lane a trace re-runs.
@@ -105,7 +114,10 @@ name: Red main
 # never written to a file - it lives in step outputs and in `$GH_TOKEN` for
 # the length of one step. Git network commands take it from the environment
 # through a credential helper defined in the step's own shell, so it never
-# reaches a remote URL or the git config.
+# reaches a remote URL or the git config. An installation token lives 60
+# minutes and the trace may run 70, so the handler mints a second, fresh
+# token after the trace for the revert, the report and the record; a write
+# the forge answers with HTTP 401 fails the step instead of passing as done.
 #
 # ---------------------------------------------------------------------------
 # Token mode (no builder App key)
@@ -240,6 +252,28 @@ on:
           comes from the passed or inherited secret, as before.
         type: string
         default: ''
+      broker-trust-policy:
+        description: >-
+          Kernel Broker TrustPolicy to mint the write token from, e.g.
+          `orgs/sylphx/trust_policies/red-main`. When set, the handler needs no
+          App private key: it trades this job's GitHub Actions OIDC token for a
+          short-lived Access key (`POST /v1/access/github/token`, the workflow
+          must be declared under `[[ci]]` in the platform manifest) and calls
+          `:exchangeToken` for a one-repository installation token. The PEM path
+          stays for a caller that still holds the key; an empty value and no key
+          keeps token mode. The `.github` org and the tenant orgs hold no PEM, so
+          this is the path a tenant uses once its builder App installation and
+          its `[[ci]]` declaration exist.
+        type: string
+        default: ''
+      broker-ci-name:
+        description: >-
+          The `[[ci]]` declaration name this workflow exchanges its OIDC token
+          under (`POST /v1/access/github/token`). Defaults to the TrustPolicy id
+          in `broker-trust-policy` (its last path segment), which is also the
+          name to declare.
+        type: string
+        default: ''
     secrets:
       app-private-key:
         description: >-
@@ -265,13 +299,13 @@ concurrency:
 # GITHUB_TOKEN carries, and a called workflow can only narrow that grant (an
 # explicit request above it fails the call), so this handler requests nothing.
 # Every caller grants `actions: write` (dispatch of the verify workflow,
-# runs, jobs and artifacts, all through `github.token`) and `issues: write`
-# (the notice when a mint or probe fails), plus `contents: read` and
-# `checks: read`. The github.token is never handed to anything that runs
+# runs and jobs, all through `github.token`) and `issues: write`
+# (the notice when a mint or probe fails), plus `contents: read`,
+# `id-token: write` (run-store reads) and `checks: read`. The github.token is never handed to anything that runs
 # pull-request-controlled code. A caller with the builder App also has the
 # handler push and open pull requests through the App installation token,
-# which needs contents, issues and pull-requests write and no `actions`
-# permission. A tenant caller without the App also grants `pull-requests:
+# which needs contents, issues, pull-requests and workflows write and no
+# `actions` permission. A tenant caller without the App also grants `pull-requests:
 # write` and the handler notifies on its own token.
 
 jobs:
@@ -623,6 +657,7 @@ jobs:
       # own default branch from the event payload, else `main`.
       TRUNK: ${{ inputs.trunk || github.event.repository.default_branch || 'main' }}
       REPO: ${{ github.repository }}
+      RUN_STORE_JUNIT: ${{ github.workspace }}/.red-main-store/.github/actions/run-store/get-junit.py
       VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
       VERIFY_CHECK_NAME: ${{ inputs.verify-check-name || 'verified' }}
       MAX_CANDIDATES: ${{ inputs.max-candidates }}
@@ -632,1155 +667,31 @@ jobs:
       # A window wider than this is never reverted by a machine; the handler
       # says so and stops.
       MAX_REVERT_COMMITS: '250'
-      # Shell helpers, written to disk by the first step. They are held here
-      # rather than in a heredoc because a heredoc terminator cannot be
-      # indented inside a YAML block scalar.
-      # Canonical source: .github/actions/ci-range/post_main.py. The equality
-      # regression test requires this reusable-workflow payload to match it.
-      PROOF_PY: |
-        #!/usr/bin/env python3
-        """Authenticated post-main proof selection, shared by CI range and red-main.
-
-        The workflow-run conclusion is not proof: optional publication can fail after
-        verified passed. Likewise a newer recording/dispatch/merge_group check cannot
-        mask a full post-main failure. Unknown or incomplete reads are never green.
-        """
-        from __future__ import annotations
-
-        import json
-        import os
-        import re
-        import subprocess
-        import sys
-        from urllib.parse import urlencode
-
-        ACTIONS_APP_ID = 15368
-        PAGE_LIMIT = 5
-        WALK_LIMIT = 200
-
-
-        def api(path):
-            env = dict(os.environ)
-            env["GH_TOKEN"] = env.get("ACTIONS_TOKEN") or env.get("TOKEN") or env.get("GH_TOKEN", "")
-            result = subprocess.run(["gh", "api", path], env=env, check=True, capture_output=True,
-                                    text=True, timeout=35)
-            return json.loads(result.stdout)
-
-
-        def workflow_path(workflow):
-            return workflow if workflow.startswith(".github/workflows/") else f".github/workflows/{workflow}"
-
-
-        def positive_id(value):
-            return type(value) is int and value > 0
-
-
-        def valid_sha(value):
-            return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{40}", value) is not None
-
-
-        def producer_origin(run, repo, branch, workflow, sha=None):
-            """Only complete, valid producer evidence can establish ineligibility."""
-            if not isinstance(run, dict):
-                return "unknown"
-            for field in ("id", "workflow_id", "check_suite_id", "run_attempt"):
-                if not positive_id(run.get(field)):
-                    return "unknown"
-            for field in ("repository", "head_repository"):
-                identity = run.get(field)
-                if (not isinstance(identity, dict) or not positive_id(identity.get("id"))
-                        or not isinstance(identity.get("full_name"), str)
-                        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", identity["full_name"]) is None):
-                    return "unknown"
-            event, tracked, path = run.get("event"), run.get("head_branch"), run.get("path")
-            if (not isinstance(event, str) or re.fullmatch(r"[a-z][a-z0-9_]*", event) is None
-                    or not isinstance(tracked, str) or not tracked.strip()
-                    or not isinstance(path, str) or re.fullmatch(r"\.github/workflows/[^/]+\.ya?ml", path) is None
-                    or not valid_sha(run.get("head_sha"))):
-                return "unknown"
-            eligible = (
-                event == "push" and tracked == branch and path == workflow_path(workflow)
-                and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
-                and run["repository"]["id"] == run["head_repository"]["id"]
-                and (sha is None or run["head_sha"] == sha)
-            )
-            return "eligible" if eligible else "ineligible"
-
-
-        def full_push(run, repo, branch, workflow, sha=None):
-            return producer_origin(run, repo, branch, workflow, sha) == "eligible"
-
-
-        def paged(path, key, reader=None):
-            """Require complete counted coverage; adapters may supply a counted reader."""
-            reader = api if reader is None else reader
-            rows = []
-            total = None
-            identities = set()
-            for page in range(1, PAGE_LIMIT + 1):
-                body = reader(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
-                count = body.get("total_count") if isinstance(body, dict) else None
-                batch = body.get(key) if isinstance(body, dict) else None
-                if type(count) is not int or count < 0 or not isinstance(batch, list):
-                    raise ValueError(f"{key} history envelope unavailable")
-                if total is None:
-                    total = count
-                if count != total or len(batch) != min(100, max(0, total - len(rows))):
-                    raise ValueError(f"{key} history count/page inconsistent")
-                for row in batch:
-                    if not isinstance(row, dict) or not positive_id(row.get("id")) or row["id"] in identities:
-                        raise ValueError(f"{key} history identity unavailable or repeated")
-                    identities.add(row["id"])
-                rows.extend(batch)
-                if len(rows) == total:
-                    return rows
-            raise ValueError(f"{key} pagination exhausted")
-
-
-        def linked_check_id(job, repo):
-            """Extract the check identity from a strict provider URL, never the job id."""
-            url = job.get("check_run_url")
-            if not isinstance(url, str):
-                return None
-            match = re.fullmatch(
-                rf"https://api\.github\.com/repos/{re.escape(repo)}/check-runs/([1-9][0-9]*)", url,
-            )
-            return int(match[1]) if match else None
-
-
-        def checked_verdict(run, repo, branch, workflow, name="verified"):
-            """Read the latest attempt's aggregate job AND its authenticated check."""
-            origin = producer_origin(run, repo, branch, workflow)
-            if origin != "eligible":
-                return origin
-            jobs = paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
-            jobs = [job for job in jobs if job.get("name") == name]
-            if len(jobs) != 1:
-                return "unknown"
-            job = jobs[0]
-            check_id = linked_check_id(job, repo)
-            if (type(job.get("id")) is not int or job["id"] < 1 or check_id is None
-                    or job.get("run_id") != run["id"] or job.get("run_attempt") != run.get("run_attempt")
-                    or not isinstance(run.get("run_attempt"), int) or run["run_attempt"] < 1
-                    or job.get("head_sha") != run["head_sha"]):
-                return "unknown"
-            # Run, job and check ids are distinct identities. Fetch the locally built
-            # path for the linked check; its details URL must name this actual job.
-            check = api(f"repos/{repo}/check-runs/{check_id}")
-            if (check.get("id") != check_id or check.get("app", {}).get("id") != ACTIONS_APP_ID
-                    or check.get("app", {}).get("slug") != "github-actions"
-                    or check.get("head_sha") != run["head_sha"] or check.get("name") != name
-                    or check.get("check_suite", {}).get("id") != run["check_suite_id"]
-                    or check.get("details_url") != f"https://github.com/{repo}/actions/runs/{run['id']}/job/{job['id']}"
-                    or check.get("status") != job.get("status")
-                    or check.get("conclusion") != job.get("conclusion")):
-                return "unknown"
-            if check.get("status") != "completed":
-                return "pending"
-            return check.get("conclusion") or "unknown"
-
-
-        def push_runs(repo, branch, workflow, sha=None):
-            query = {"event": "push", "branch": branch}
-            if sha:
-                query["head_sha"] = sha
-            # No whole-run status filter: a failed optional publish is not a failed
-            # verified proof, and a newer genuine failure must not be hidden.
-            rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?{urlencode(query)}",
-                         "workflow_runs")
-            candidates = []
-            for row in rows:
-                origin = producer_origin(row, repo, branch, workflow, sha)
-                if origin == "ineligible":
-                    continue
-                # Missing origin evidence must not erase the newest possible producer
-                # and expose an older passing/failing run. Unorderable history is an
-                # unavailable proof set, not an empty one.
-                if (not isinstance(row, dict) or not positive_id(row.get("id"))
-                        or not positive_id(row.get("run_attempt")) or not valid_sha(row.get("head_sha"))
-                        or (sha is not None and row["head_sha"] != sha)):
-                    raise ValueError("workflow history identity unavailable")
-                candidates.append(row)
-            return candidates
-
-
-        def latest_run(rows, sha):
-            candidates = [row for row in rows if row.get("head_sha") == sha]
-            return max(candidates, key=lambda r: (r["id"], r.get("run_attempt", 0)), default=None)
-
-
-        def sha_verdict(repo, branch, workflow, sha, name="verified"):
-            run = latest_run(push_runs(repo, branch, workflow, sha), sha)
-            return checked_verdict(run, repo, branch, workflow, name) if run else "unknown"
-
-
-        def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=False):
-            rows = push_runs(repo, branch, workflow)
-            if remote:
-                sha = head
-                ancestors = []
-                for _ in range(WALK_LIMIT):
-                    parents = api(f"repos/{repo}/commits/{sha}").get("parents", [])
-                    if not parents:
-                        break
-                    sha = parents[0]["sha"]
-                    ancestors.append(sha)
-                    # Stop at the first authenticated success. No current-HEAD base.
-                    run = latest_run(rows, sha)
-                    if run and checked_verdict(run, repo, branch, workflow, name) == "success":
-                        return sha
-                return ""
-            ancestors = subprocess.run(["git", "rev-list", "--first-parent", f"--max-count={WALK_LIMIT}",
-                                        f"{head}^"], capture_output=True, text=True, check=False)
-            if ancestors.returncode:
-                return ""
-            for sha in ancestors.stdout.split():
-                run = latest_run(rows, sha)
-                if run and checked_verdict(run, repo, branch, workflow, name) == "success":
-                    return sha
-            return ""
-
-
-        PENDING_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
-
-
-        def failed_jobs(repo, identity):
-            """Failing jobs of a completed run. Complete, valid jobs establish them.
-
-            A job that is still queued or running (a non-lane job such as an alert that
-            outlives the run's verdict) cannot have failed, so it is skipped; but only
-            once the run itself is read back as completed. Anything else (an unknown
-            status, a completed job without a known conclusion, an unreadable run)
-            is an error, so the caller escalates instead of reading a partial list.
-            """
-            if not isinstance(identity, str) or re.fullmatch(r"[1-9][0-9]*", identity) is None:
-                raise ValueError("invalid workflow run identity")
-            jobs = paged(f"repos/{repo}/actions/runs/{identity}/jobs?filter=latest", "jobs")
-            failed, pending = [], []
-            for job in jobs:
-                name = job.get("name")
-                if (not isinstance(name, str) or not name.strip()
-                        or type(job.get("run_id")) is not int or job["run_id"] != int(identity)):
-                    raise ValueError("previous-run lane evidence unavailable or invalid")
-                if job.get("status") in PENDING_STATUSES:
-                    pending.append(name)
-                    continue
-                if (job.get("status") != "completed"
-                        or job.get("conclusion") not in
-                        ("success", "failure", "timed_out", "cancelled", "skipped", "neutral",
-                         "action_required", "startup_failure", "stale")):
-                    raise ValueError("previous-run lane evidence unavailable or invalid")
-                if job["conclusion"] in ("failure", "timed_out"):
-                    # Only a joined name must survive the comma-separated list. A comma
-                    # in a lane that passed (or was skipped) cannot break the join, so
-                    # it never blocks the confirmation; one in a failing lane is written
-                    # as ';', the same way the current run's lanes are written.
-                    if re.search(r"[\x00-\x1f\x7f]", name):
-                        raise ValueError(f"failed lane name has a control character: {name!r}")
-                    failed.append(job)
-            if pending:
-                run = api(f"repos/{repo}/actions/runs/{identity}")
-                if (not isinstance(run, dict) or run.get("id") != int(identity)
-                        or run.get("status") != "completed"):
-                    raise ValueError("previous-run lane evidence incomplete: the run is still active")
-            return failed
-
-
-        def lane_of(job):
-            return job["name"].replace(",", ";")
-
-
-        def failed_lanes(repo, identity):
-            """Failing lanes of a completed run, comma-separated (see failed_jobs)."""
-            return ",".join(lane_of(job) for job in failed_jobs(repo, identity))
-
-
-        # Values that change from run to run inside an otherwise identical message: a
-        # timestamp, a runner or pod name's hash, a commit, a duration.
-        VOLATILE = [
-            (re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b"), "<time>"),
-            (re.compile(r"\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b"), "<hex>"),
-            (re.compile(r"\b\d+\.\d+\s*(?:ms|s|m|h|sec|seconds?|minutes?)?\b"), "<n>"),
-        ]
-        FAILED_STEP = ("failure", "timed_out", "cancelled")
-        SIGNATURE_LIMIT = 300
-
-
-        def assertion(message):
-            text = " ".join(str(message).split())
-            for pattern, token in VOLATILE:
-                text = pattern.sub(token, text)
-            return text
-
-
-        def lane_signature(job, annotations):
-            """What failed in a job: its conclusion, its failed steps, and its error lines.
-
-            The failed steps come from the job (`steps[].conclusion`), the error lines
-            from the job's own failure annotations (every `##[error]` line, including
-            the runner's "Process completed with exit code N."). Two runs failed the
-            same way only when all three match, so one job failing at two different
-            steps, or at one step with two different errors, is two different units.
-            """
-            steps = job.get("steps")
-            if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
-                raise ValueError(f"failed job {job.get('name')!r} has no step list")
-            failed = [" ".join(str(step.get("name") or "").split()) for step in steps
-                      if step.get("conclusion") in FAILED_STEP]
-            errors = sorted({assertion(note["message"]) for note in annotations
-                             if note.get("annotation_level") == "failure"})
-            text = (f"{job['conclusion']} at {' + '.join(failed) or 'no failed step'}: "
-                    + (" | ".join(errors) or "no error line"))
-            return re.sub(r"[\x00-\x1f\x7f]", " ", text)[:SIGNATURE_LIMIT]
-
-
-        def check_annotations(repo, check_id):
-            """Every annotation of one check run; an incomplete read is an error."""
-            notes = []
-            for page in range(1, PAGE_LIMIT + 1):
-                batch = api(f"repos/{repo}/check-runs/{check_id}/annotations?per_page=100&page={page}")
-                if not isinstance(batch, list) or not all(
-                        isinstance(note, dict) and isinstance(note.get("message"), str)
-                        and isinstance(note.get("annotation_level"), str) for note in batch):
-                    raise ValueError("failed-job annotations unavailable or invalid")
-                notes.extend(batch)
-                if len(batch) < 100:
-                    return notes
-            raise ValueError("failed-job annotations pagination exhausted")
-
-
-        def failed_units(repo, identity):
-            """`lane<TAB>signature` per failing job of a completed run (see lane_signature).
-
-            The check run is the one the job links to; its annotations are read through
-            a locally built path. An unreadable job, link or annotation list is an
-            error: the caller escalates, it never compares a partial signature.
-            """
-            rows = []
-            for job in failed_jobs(repo, identity):
-                check_id = linked_check_id(job, repo)
-                if check_id is None:
-                    raise ValueError("previous-run lane evidence unavailable or invalid")
-                rows.append(f"{lane_of(job)}\t{lane_signature(job, check_annotations(repo, check_id))}")
-            return "\n".join(rows)
-
-
-        def main():
-            if len(sys.argv) == 3 and sys.argv[1] == "check-id":
-                check_id = linked_check_id(json.load(sys.stdin), sys.argv[2])
-                if check_id is None:
-                    raise ValueError("invalid job check_run_url")
-                print(check_id)
-                return
-            command, repo, branch, workflow, identity, *rest = sys.argv[1:]
-            name = rest[0] if rest else "verified"
-            if command == "history":
-                # Require complete history: no undocumented provider ordering can
-                # establish the predecessor from a partial set. Exhausted bounds fail.
-                rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?"
-                             + urlencode({"event": "push", "branch": branch}), "workflow_runs")
-                print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
-            elif command == "failed-lanes":
-                print(failed_lanes(repo, identity))
-            elif command == "failed-units":
-                print(failed_units(repo, identity))
-            elif command == "base":
-                print(last_verified(repo, branch, workflow, identity, name))
-            elif command == "remote-base":
-                print(last_verified(repo, branch, workflow, identity, name, remote=True))
-            elif command == "sha":
-                print(sha_verdict(repo, branch, workflow, identity, name))
-            elif command == "run":
-                run = api(f"repos/{repo}/actions/runs/{identity}")
-                print(checked_verdict(run, repo, branch, workflow, name))
-            else:
-                raise ValueError("unknown proof selection command")
-
-
-        if __name__ == "__main__":
-            try:
-                main()
-            except Exception as error:
-                print(f"post-main proof unavailable: {error}", file=sys.stderr)
-                sys.exit(1)
-      LIB: |
-        # Red main handler helpers (owner#809).
-        WORK_DIR="${RUNNER_TEMP}/red-main"
-        STATE_DIR="$WORK_DIR/state"
-        export WORK_DIR STATE_DIR GIT_TERMINAL_PROMPT=0
-        mkdir -p "$STATE_DIR"
-        # No-action is terminal for subsequent steps, not just the resolver.
-        # In particular, a non-proof optional/diagnostic failure cannot reach
-        # revert after the resolver exits successfully.
-        if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi
-
-        # say <line>: append a line to the summary the final step posts.
-        say() { printf '%s\n' "$*" >>"$WORK_DIR/summary.md"; }
-
-        state_set() { printf '%s' "$2" >"$STATE_DIR/$1"; }
-        state_get() { cat "$STATE_DIR/$1" 2>/dev/null || true; }
-
-        # Who the writes belong to, for the messages that name a missing grant.
-        if [ "$(state_get token-mode)" = yes ]; then
-          GRANT_HOLDER="the workflow token on $REPO"
-        else
-          GRANT_HOLDER="the App installation on $REPO"
-        fi
-
-        # grant_of <surface>: granted | read-only | missing | unknown
-        grant_of() {
-          awk -F'\t' -v k="$1" '$1==k {print $2}' "$STATE_DIR/grant.tsv" 2>/dev/null | head -1
-        }
-
-        # require_grant <surface> <permission> <what>: fail closed, naming the
-        # permission the installation does not hold. The caller stops.
-        require_grant() {
-          local verdict
-          verdict=$(grant_of "$1")
-          if [ "$verdict" != "granted" ]; then
-            printf '::error::%s does not grant %s (grant probe: %s); %s was not performed\n' \
-              "$GRANT_HOLDER" "$2" "${verdict:-unknown}" "$3" >&2
-            state_set blocked "$2"
-            return 1
-          fi
-        }
-
-        # write_refused <stderr> <permission> <what>: report a write the forge
-        # refused for want of a permission.
-        write_refused() {
-          if grep -qE 'HTTP (403|404)' <<<"$1"; then
-            printf '::error::%s was refused: %s is missing %s\n' \
-              "$3" "$GRANT_HOLDER" "$2" >&2
-            state_set blocked "$2"
-          else
-            printf '::error::%s failed: %s\n' "$3" "$(head -c 300 <<<"$1" | tr '\n' ' ')" >&2
-          fi
-          return 1
-        }
-
-        # git_c <git args...>: git with the App token as an in-memory
-        # credential. The token is read from the environment at call time and
-        # never written to a configuration file, a remote URL, or a prompt.
-        git_c() {
-          # shellcheck disable=SC2016
-          git -c credential.helper= \
-              -c credential.helper='!f() { printf "username=x-access-token\npassword=%s\n" "$GH_TOKEN"; }; f' \
-              "$@"
-        }
-
-        # push_branch <branch> [extra push args...]: push HEAD to the branch.
-        push_branch() {
-          local branch="$1"
-          shift
-          git_c push "$@" origin "HEAD:refs/heads/$branch"
-        }
-
-        # bot_identity: the App's own git identity, from the step environment.
-        bot_identity() {
-          local slug="${APP_SLUG:-red-main}"
-          export GIT_AUTHOR_NAME="${slug}[bot]"
-          export GIT_AUTHOR_EMAIL="${APP_ID:-0}+${slug}[bot]@users.noreply.github.com"
-          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
-          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-        }
-
-        # labels_that_exist <name>...: JSON array of the labels the repository
-        # actually defines. A label the repository does not define is not a
-        # reason to lose the whole record.
-        labels_that_exist() {
-          local have want out='[]'
-          have=$(gh api "repos/$REPO/labels?per_page=100" --paginate --jq '.[].name' 2>/dev/null || true)
-          for want in "$@"; do
-            if grep -qxF "$want" <<<"$have"; then
-              out=$(jq -c --arg l "$want" '. + [$l]' <<<"$out")
-            fi
-          done
-          printf '%s' "$out"
-        }
-
-        # gha <gh args...>: gh on the caller-granted workflow token. Every
-        # Actions API call (runs, jobs, artifacts, dispatch) goes through
-        # it: the builder App installation holds no `actions` permission, and
-        # a workflow_dispatch made with GITHUB_TOKEN still starts a run.
-        gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }
-
-        # classify_run <run id>: infra classification of a run's failed jobs,
-        # `infra <signatures>` or `none`. A jobs or annotations API error is
-        # NOT `none`: it returns non-zero, and the caller stops, so a
-        # classifier error never falls into the revert path.
-        classify_run() {
-          local run_id="$1" jobs_json enriched id check_id notes
-          jobs_json=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" --paginate \
-            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")
-                  | {id, check_run_url, name, conclusion, steps: [(.steps // [])[] | {name, conclusion}]}' \
-            | jq -s '.') || return 1
-          enriched='[]'
-          for id in $(jq -r '.[].id' <<<"$jobs_json"); do
-            check_id=$(jq -c --argjson id "$id" '.[] | select(.id == $id)' <<<"$jobs_json" \
-              | python3 "$WORK_DIR/proof.py" check-id "$REPO") || return 1
-            notes=$(gha api "repos/$REPO/check-runs/$check_id/annotations?per_page=100" --jq '[.[].message]') || return 1
-            enriched=$(jq -c --argjson id "$id" --argjson notes "$notes" --argjson jobs "$jobs_json" \
-              '. + [ ($jobs[] | select(.id == $id)) + {annotations: $notes} ]' <<<"$enriched")
-          done
-          jq -c '{jobs: .}' <<<"$enriched" | python3 "$WORK_DIR/infra.py"
-        }
-
-        # read_proof <run|sha> <args...>: unavailable is unverified, never
-        # success or a reason to silence recovery under set -euo pipefail.
-        read_proof() {
-          local verdict
-          if verdict=$(python3 "$WORK_DIR/proof.py" "$@" 2>"$WORK_DIR/proof.err"); then
-            printf '%s\n' "$verdict"
-          else
-            say "**Unverified:** the post-main proof could not be read ($(head -c 200 "$WORK_DIR/proof.err" | tr '\n' ' ')); investigation or escalation remains active."
-            printf '%s\n' unknown
-          fi
-        }
-
-        # enc <value>: percent-encode a query parameter value.
-        enc() { jq -rn --arg v "$1" '$v|@uri'; }
-      # The opt-in gate: which committed declaration decides, and what it says.
-      GATE_PY: |
-        import sys
-
-        path, has_file = sys.argv[1:3]
-
-        import re
-
-        OWNER = "owner:ops"
-        # Rule 1: a commit that touches these paths is never auto-reverted.
-        # The defaults are unanchored (any directory named migrations, migrate
-        # or drizzle, any atlas.sum, prisma/migrations): over-holding is the
-        # safe direction. `[ci] migration_paths`, a comma-separated list of
-        # globs (`**` crosses directories), ADDS to them.
-        MIGRATIONS = "**/migrations/**,**/migrate/**,**/atlas.sum,**/drizzle/**,**/prisma/migrations/**"
-
-        def out(verdict, mode, basis, owner=OWNER, paths=MIGRATIONS, hold=""):
-            # An empty field would collapse in the shell's tab split, so an
-            # empty hold is written `-`.
-            print(f"{verdict}\t{mode}\t{owner}\t{paths}\t{hold or '-'}\t{basis}")
-
-        if has_file != "yes":
-            # Silence is never consent: a repository without a manifest has
-            # declared nothing, and this says how one declares.
-            out(
-                "off",
-                "",
-                'no sylphx.toml; a repository that wants verified commits adopts a minimal manifest '
-                '(version = "1" and [ci] merge = "optimistic", on_red = "notify" or "revert")',
-            )
-            raise SystemExit(0)
-
-        try:
-            import tomllib
-        except ImportError:
-            tomllib = None
-
-        ci = None
-        try:
-            raw = open(path, "rb").read()
-            if tomllib is not None:
-                ci = tomllib.loads(raw.decode("utf-8")).get("ci")
-                if not isinstance(ci, dict):
-                    # A manifest that parses but declares no [ci] table has
-                    # declared nothing, which is not the same as unreadable.
-                    ci = {}
-            else:
-                # The manifest is flat key = value TOML; read the [ci] table
-                # line by line when tomllib is unavailable.
-                ci = {}
-                table = None
-                for line in raw.decode("utf-8").splitlines():
-                    line = line.split("#", 1)[0].strip()
-                    if not line:
-                        continue
-                    if line.startswith("["):
-                        table = line.strip("[]").strip()
-                        continue
-                    if table == "ci" and "=" in line:
-                        key, value = line.split("=", 1)
-                        ci[key.strip()] = value.strip().strip('"')
-        except Exception:
-            ci = None
-
-        if not isinstance(ci, dict):
-            out("off", "", "sylphx.toml could not be read")
-        elif ci.get("merge") != "optimistic":
-            # Absent or anything else: the repository has not opted in.
-            out("off", "", f"sylphx.toml [ci] merge is {ci.get('merge')!r}, not optimistic")
-        else:
-            on_red = ci.get("on_red") or "revert"
-            if not isinstance(on_red, str) or on_red not in ("notify", "revert", "revert_pr_unarmed"):
-                out("error", "", f"sylphx.toml [ci] on_red must be notify, revert or revert_pr_unarmed, not {on_red!r}")
-            else:
-                # The label the handler's alerts carry; a repository names its
-                # own owner label, anything malformed falls back to owner:ops.
-                # A value that is not a string (a TOML array or number) falls
-                # back to the default: never a crash.
-                owner = ci.get("red_main_owner")
-                if not isinstance(owner, str) or not re.fullmatch(r"owner:[a-z0-9-]+", owner):
-                    owner = OWNER
-                extra = ci.get("migration_paths")
-                paths = MIGRATIONS
-                if isinstance(extra, str) and re.fullmatch(r"[A-Za-z0-9_./*,-]+", extra):
-                    paths = MIGRATIONS + "," + extra
-                # `revert_hold_utc = "19:00-22:00"`: inside the window a revert
-                # is opened but never armed (a deploy freeze).
-                # A start equal to the end is an empty window.
-                hold = ci.get("revert_hold_utc")
-                if not isinstance(hold, str) or not re.fullmatch(
-                    r"([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]", hold, re.ASCII
-                ):
-                    hold = ""
-                out("act", on_red, f"sylphx.toml [ci] merge=optimistic on_red={on_red}", owner, paths, hold)
-      # Rule 1. Input on stdin: the files the candidate commits changed, one
-      # per line; arg: the comma-separated globs. Prints `migration <file>` for
-      # the first match, else `none`.
-      MIGRATION_PY: |
-        import re
-        import sys
-
-        def to_regex(glob):
-            out, i = "", 0
-            while i < len(glob):
-                if glob.startswith("**/", i):
-                    out += "(?:.*/)?"
-                    i += 3
-                elif glob.startswith("**", i):
-                    out += ".*"
-                    i += 2
-                elif glob[i] == "*":
-                    out += "[^/]*"
-                    i += 1
-                elif glob[i] == "?":
-                    out += "[^/]"
-                    i += 1
-                else:
-                    out += re.escape(glob[i])
-                    i += 1
-            return re.compile(out + r"\Z")
-
-        patterns = [to_regex(g.strip().lstrip("/")) for g in sys.argv[1].split(",") if g.strip()]
-        for line in sys.stdin:
-            name = line.strip()
-            if name and any(rx.match(name) for rx in patterns):
-                print(f"migration {name}")
-                raise SystemExit(0)
-        print("none")
-      # A deploy freeze. Args: `HH:MM-HH:MM` (UTC, may wrap midnight) and the
-      # current `HH:MM`. Prints `in` or `out`; an empty window is `out`.
-      HOLD_PY: |
-        import sys
-
-        window, now = sys.argv[1:3]
-        if not window:
-            print("out")
-            raise SystemExit(0)
-        start, end = window.split("-")
-        if start <= end:
-            inside = start <= now < end
-        else:
-            inside = now >= start or now < end
-        print("in" if inside else "out")
-      # The culprit rule. Input on stdin: one `sha<TAB>conclusion` line per
-      # candidate, oldest first (`timeout` stands for not finished by the
-      # deadline). First line of output: `culprit <sha>`, `window`, or `none`;
-      # a second line `why <reason>` explains a window.
-      # The revert guard. Input on stdin: the pull request as JSON
-      # (`{"number": N, "labels": ["..."]}`); env PROTECTED_LABELS and
-      # PROTECTED_PRS are comma-separated. Prints `protected <reason>` or `ok`.
-      REVERT_GUARD_PY: |
-        import json
-        import os
-        import sys
-
-        pr = json.load(sys.stdin)
-        labels = [x.strip().lower() for x in os.environ.get("PROTECTED_LABELS", "").split(",") if x.strip()]
-        numbers = {x.strip().lstrip("#") for x in os.environ.get("PROTECTED_PRS", "").split(",") if x.strip()}
-        if str(pr.get("number", "")) in numbers:
-            print(f"protected: #{pr['number']} is on the never-revert list")
-            raise SystemExit(0)
-        for label in pr.get("labels", []):
-            low = str(label).lower()
-            if low in labels or low.endswith(":p0"):
-                print(f"protected: #{pr.get('number')} carries the label {label}")
-                raise SystemExit(0)
-        print("ok")
-      CULPRIT_PY: |
-        import sys
-
-        rows = []
-        for line in sys.stdin:
-            parts = line.rstrip("\n").split("\t")
-            if parts[0]:
-                rows.append((parts[0], parts[1] if len(parts) > 1 else ""))
-
-        # The first candidate that is not a success decides: a failure with
-        # only passing ancestors is the culprit; anything else is inconclusive
-        # and the oldest failing commit cannot be named with certainty.
-        for sha, conclusion in rows:
-            if conclusion == "success":
-                continue
-            if conclusion == "failure":
-                print(f"culprit {sha}")
-            else:
-                print("window")
-                print(f"why {sha[:9]} concluded {conclusion or 'nothing'}, which is inconclusive, at or before the first failure")
-            raise SystemExit(0)
-        print("none")
-      # The failing units of a run, from its own junit artifacts (never from
-      # the job logs). A lane that published none is one `lane` unit, named by
-      # how it failed: its row in the optional fourth argument, a
-      # `lane<TAB>signature` file from `proof.py failed-units` (conclusion,
-      # failed steps, error lines), else by the lane name alone.
-      JUNIT_PY: |
-        import os
-        import sys
-        import xml.etree.ElementTree as ElementTree
-
-        root, out, lanes = sys.argv[1], sys.argv[2], [x for x in sys.argv[3].split(",") if x]
-        rows, seen, covered = [], set(), set()
-
-        def clean(value):
-            return " ".join((value or "").split())[:300]
-
-        signatures = {}
-        if len(sys.argv) > 4:
-            with open(sys.argv[4], encoding="utf-8") as fh:
-                for line in fh:
-                    lane, _, signature = line.rstrip("\n").partition("\t")
-                    if lane and signature:
-                        signatures[clean(lane)] = clean(signature)
-
-        if os.path.isdir(root):
-            for dirpath, dirnames, filenames in os.walk(root):
-                for filename in filenames:
-                    if not filename.endswith(".xml"):
-                        continue
-                    lane = os.path.basename(dirpath)
-                    lane = lane[len("junit-"):] if lane.startswith("junit-") else lane
-                    try:
-                        tree = ElementTree.parse(os.path.join(dirpath, filename))
-                    except Exception:
-                        continue
-                    for case in tree.iter("testcase"):
-                        if not [c for c in case if c.tag in ("failure", "error")]:
-                            continue
-                        name = clean(case.get("name"))
-                        klass = clean(case.get("classname"))
-                        full = f"{klass}::{name}" if klass else name
-                        if not full or (full, lane) in seen:
-                            continue
-                        seen.add((full, lane))
-                        covered.add(lane)
-                        rows.append(("test", full, lane))
-        for lane in lanes:
-            if lane not in covered and (lane, lane) not in seen:
-                seen.add((lane, lane))
-                rows.append(("lane", signatures.get(clean(lane), clean(lane)), clean(lane)))
-        with open(out, "w", encoding="utf-8") as fh:
-            for kind, name, lane in rows:
-                fh.write(f"{kind}\t{name}\t{lane}\n")
-        print(f"{len(rows)} failing unit(s), {len(lanes)} failed lane(s)")
-      # Infra signatures (owner#809): a failed run whose every failed job died
-      # of the platform, not of the code. Reads {"jobs": [{name, conclusion,
-      # steps: [{name, conclusion}], annotations: [text]}]} on stdin and prints
-      # `infra <signature>` or `none`. The signatures are the installation
-      # token mint, an artifact upload, a cache 403, and a lost runner. A job
-      # whose failed steps include anything else (a test, clippy, a build) is
-      # a code failure and the whole run is `none`.
-      INFRA_PY: |
-        import json
-        import re
-        import sys
-
-        STEP_SIGNATURES = [
-            ("installation-token-mint", re.compile(r"installation token|create-github-app-token|token mint", re.I)),
-            ("upload-artifact", re.compile(r"upload[- ]artifact|upload .*artifact", re.I)),
-            # The platform failing before any project code ran: the runner
-            # set-up and the source checkout (runner, network).
-            ("runner-setup", re.compile(r"^set up job$", re.I)),
-            ("checkout", re.compile(r"^(run )?(actions/)?checkout\b", re.I)),
-        ]
-        CACHE_STEP = re.compile(r"cache", re.I)
-        CACHE_403 = re.compile(r"\b403\b|forbidden", re.I)
-        # GitHub's own runner-lost annotations, verbatim (hosted, self-hosted,
-        # and the shutdown signal), anchored at the start of the message.
-        RUNNER_LOST = re.compile(
-            r"The hosted runner lost communication with the server\."
-            r"|The self-hosted runner: \S+ lost communication with the server\."
-            r"|The runner has received a shutdown signal\."
-        )
-
-        def step_signature(step, notes):
-            name = step.get("name") or ""
-            sig = next((label for label, rx in STEP_SIGNATURES if rx.search(name)), None)
-            if sig is None and CACHE_STEP.search(name) and any(CACHE_403.search(n) for n in notes):
-                sig = "cache-403"
-            return sig
-
-        def job_signature(job):
-            notes = [str(n) for n in job.get("annotations") or []]
-            failed = [s for s in job.get("steps") or [] if s.get("conclusion") == "failure"]
-            sigs = [step_signature(s, notes) for s in failed]
-            # Any failed step outside the infra patterns (a test, clippy, a
-            # build) is a code failure, whatever the annotations say.
-            if any(sig is None for sig in sigs):
-                return None
-            if sigs:
-                return sigs[0]
-            # No step failed: the job died with the runner.
-            if any(RUNNER_LOST.match(n) for n in notes):
-                return "runner-lost"
-            return None
-
-        jobs = [
-            j for j in json.load(sys.stdin).get("jobs", [])
-            if j.get("conclusion") in ("failure", "timed_out")
-        ]
-        signatures = [job_signature(j) for j in jobs]
-        if jobs and all(signatures):
-            print("infra " + ",".join(sorted(set(signatures))))
-        else:
-            print("none")
-      # The previous COMPLETED verify run on main. Reads the workflow runs
-      # JSON on stdin; arg: this run's created_at. Only success, failure and
-      # timed_out runs count: cancelled, skipped, startup_failure and
-      # unfinished runs are not runs. Prints `id<TAB>conclusion<TAB>url` or
-      # nothing.
-      PREV_PY: |
-        from datetime import datetime
-        import json
-        import sys
-
-        def timestamp(value):
-            if not isinstance(value, str) or not value:
-                raise ValueError("workflow history timestamp unavailable")
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                raise ValueError("workflow history timestamp lacks timezone")
-            return parsed
-
-        created = timestamp(sys.argv[1])
-        body = json.load(sys.stdin)
-        rows = body.get("workflow_runs") if isinstance(body, dict) else None
-        count = body.get("total_count") if isinstance(body, dict) else None
-        if (not isinstance(rows, list) or type(count) is not int or count < 0
-                or count != len(rows)):
-            raise ValueError("workflow history unavailable or incomplete")
-        runs = []
-        for row in rows:
-            if (not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] < 1
-                    or row.get("status") not in
-                    ("completed", "queued", "in_progress", "waiting", "pending", "requested")):
-                raise ValueError("workflow history identity unavailable")
-            at = timestamp(row.get("created_at"))
-            if (row["status"] == "completed" and row.get("conclusion") not in
-                    ("success", "failure", "timed_out", "cancelled", "skipped", "neutral", "action_required", "startup_failure", "stale")):
-                raise ValueError("workflow history conclusion unavailable")
-            if (row["status"] == "completed" and at < created
-                    and row.get("conclusion") in ("success", "failure", "timed_out")):
-                runs.append(row)
-        runs.sort(key=lambda row: timestamp(row["created_at"]), reverse=True)
-        if runs:
-            print(f"{runs[0]['id']}\t{runs[0]['conclusion']}\t{runs[0].get('html_url', '')}")
-      # The regression window of a confirmed failing unit, and the judge of a
-      # trace candidate against it (see the text of the script).
-      WINDOW_PY: |
-        """The regression window of a red trunk, per failing unit (Findit-style).
-
-        A unit that newly fails inside an already-red trunk is traced from the newest
-        earlier completed verify run in which that unit did not fail, not from the last
-        commit where everything passed. Units are `kind<TAB>name<TAB>job` rows, the same
-        as junit.py writes: a `test` row is a failing test of a job, a `lane` row is a
-        job with no junit (it stands for every test of that job).
-
-          window.py window <repo> <branch> <workflow> <created> <aggregate> <confirmed.tsv> <targets.tsv>
-              Prints `base <sha> <run id> <unit count>` and writes the units whose
-              baseline that is, or prints `none <why>`. Walks the verify runs on the
-              branch, newest first, from the run before the failing one; the first run
-              that clears any confirmed unit decides, so the window is the narrowest
-              one. A run clears a unit when its job succeeded, or when the job failed
-              but its junit shows the test did not (a producer that lists passing tests
-              must list this one). A job that was skipped, cancelled or absent clears
-              nothing. The aggregate job (`verified`) is not a unit.
-          window.py judge <targets.tsv> <failing.tsv>
-              Prints `fail <why>` when a unit of targets failed in a candidate run
-              whose failing units are failing.tsv: the same test of the same job, or
-              the same job failing the same way (a lane row's name is how it failed:
-              its failed steps and error lines). A target's job that failed some
-              other way may hide the target (an earlier step failed, so the target's
-              step never ran), so it prints `inconclusive <why>`; else `pass <why>`.
-        """
-        import os
-        import shutil
-        import subprocess
-        import sys
-        import tempfile
-        import xml.etree.ElementTree as ElementTree
-        from datetime import datetime
-        from urllib.parse import urlencode
-
-        WALK_RUNS = 100
-        SETTLED = ("success", "failure", "timed_out")
-        FAILED = ("failure", "timed_out")
-
-
-        def timestamp(value):
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                raise ValueError("workflow history timestamp lacks timezone")
-            return parsed
-
-
-        def read_units(path):
-            rows = []
-            try:
-                with open(path, encoding="utf-8") as fh:
-                    for line in fh:
-                        parts = line.rstrip("\n").split("\t")
-                        if len(parts) == 3 and all(parts):
-                            rows.append(tuple(parts))
-            except OSError:
-                pass
-            return rows
-
-
-        def earlier_runs(rows, created, is_eligible):
-            """Completed, settled, genuine push runs created before `created`, newest first."""
-            before = timestamp(created)
-            runs = [
-                row for row in rows
-                if isinstance(row, dict) and row.get("status") == "completed"
-                and row.get("conclusion") in SETTLED and timestamp(row["created_at"]) < before
-                and is_eligible(row)
-            ]
-            runs.sort(key=lambda row: (timestamp(row["created_at"]), row["id"]), reverse=True)
-            return runs
-
-
-        def read_junit(root):
-            """(failing, passing, covered) from junit-<job>/*.xml under root: sets of
-            (classname::name, job) pairs, and the jobs that published any testcase."""
-            failing, passing, covered = set(), set(), set()
-            if not os.path.isdir(root):
-                return failing, passing, covered
-            for dirpath, _dirs, files in os.walk(root):
-                lane = os.path.basename(dirpath)
-                lane = lane[len("junit-"):] if lane.startswith("junit-") else lane
-                for filename in files:
-                    if not filename.endswith(".xml"):
-                        continue
-                    try:
-                        tree = ElementTree.parse(os.path.join(dirpath, filename))
-                    except Exception:
-                        continue
-                    for case in tree.iter("testcase"):
-                        name = " ".join((case.get("name") or "").split())[:300]
-                        klass = " ".join((case.get("classname") or "").split())[:300]
-                        full = f"{klass}::{name}" if klass else name
-                        if not full:
-                            continue
-                        kinds = {child.tag for child in case}
-                        covered.add(lane)
-                        if kinds & {"failure", "error"}:
-                            failing.add((full, lane))
-                        elif "skipped" not in kinds:
-                            passing.add((full, lane))
-            return failing, passing, covered
-
-
-        class Evidence:
-            """What one earlier run shows: its job conclusions, and (read only when a
-            unit needs it) its junit."""
-
-            def __init__(self, jobs, junit):
-                self.jobs = jobs
-                self._junit = junit
-                self._cache = None
-
-            def junit(self):
-                if self._cache is None:
-                    self._cache = self._junit()
-                return self._cache
-
-
-        def clears(unit, evidence):
-            kind, name, job = unit
-            conclusion = evidence.jobs.get(job)
-            if conclusion == "success":
-                return True
-            if conclusion not in FAILED or kind != "test":
-                return False
-            failing, passing, covered = evidence.junit()
-            if job not in covered or (name, job) in failing:
-                return False
-            if any(lane == job for _name, lane in passing):
-                return (name, job) in passing
-            # The producer lists failures only: a test it does not list did not fail.
-            return True
-
-
-        def find_window(units, runs, load, limit=WALK_RUNS):
-            """(run, cleared units, runs read) for the newest run that clears any unit."""
-            read = 0
-            for run in runs[:limit]:
-                read += 1
-                evidence = load(run)
-                cleared = [unit for unit in units if clears(unit, evidence)]
-                if cleared:
-                    return run, cleared, read
-            return None, [], read
-
-
-        def judge(targets, failing):
-            seen = {(kind, name, job) for kind, name, job in failing}
-            jobs = {job for _kind, _name, job in failing}
-            # A job that failed without junit (a build error, an earlier step)
-            # can hide any test of it; junit lists a job's failing tests, so
-            # another failing test of the job hides nothing.
-            lanes = {job for kind, _name, job in failing if kind == "lane"}
-            hidden = None
-            for kind, name, job in sorted(targets):
-                if (kind, name, job) in seen:
-                    what = f"{name} ({job})" if kind == "test" else f"job {job} ({name})"
-                    return f"fail the target {what} failed the same way in the candidate"
-                if hidden is None and job in (lanes if kind == "test" else jobs):
-                    hidden = job
-            if hidden is not None:
-                return (f"inconclusive the target job {hidden} failed in the candidate, "
-                        "but not the same way, so the target may not have run")
-            return "pass none of the target units failed in the candidate"
-
-
-        def live_loader(proof, repo):
-            def load(run):
-                try:
-                    rows = proof.paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
-                except Exception:
-                    rows = []
-                jobs = {}
-                for row in rows:
-                    name = row.get("name")
-                    if (isinstance(name, str) and name.strip() and row.get("run_id") == run["id"]
-                            and row.get("status") == "completed"):
-                        jobs[name.replace(",", ";")] = row.get("conclusion")
-
-                def junit():
-                    work = tempfile.mkdtemp(prefix="junit-window-")
-                    try:
-                        env = dict(os.environ)
-                        env["GH_TOKEN"] = env.get("ACTIONS_TOKEN") or env.get("GH_TOKEN", "")
-                        subprocess.run(["gh", "run", "download", str(run["id"]), "--repo", repo,
-                                        "--pattern", "junit-*", "--dir", work],
-                                       env=env, capture_output=True, timeout=120)
-                        return read_junit(work)
-                    except Exception:
-                        return set(), set(), set()
-                    finally:
-                        shutil.rmtree(work, ignore_errors=True)
-
-                return Evidence(jobs, junit)
-            return load
-
-
-        def main():
-            command = sys.argv[1]
-            if command == "judge":
-                print(judge(read_units(sys.argv[2]), read_units(sys.argv[3])))
-                return
-            repo, branch, workflow, created, aggregate, confirmed, out = sys.argv[2:9]
-            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            import proof
-            units = [u for u in read_units(confirmed) if u[2] != aggregate]
-            if not units:
-                print("none no confirmed unit besides the aggregate job")
-                return
-            history = proof.paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?"
-                                  + urlencode({"event": "push", "branch": branch}), "workflow_runs")
-            runs = earlier_runs(history, created,
-                                lambda row: proof.producer_origin(row, repo, branch, workflow) == "eligible")
-            run, cleared, read = find_window(units, runs, live_loader(proof, repo))
-            if run is None:
-                print(f"none no earlier completed run clears a failing unit (read {read} of {len(runs)})")
-                return
-            with open(out, "w", encoding="utf-8") as fh:
-                for kind, name, job in cleared:
-                    fh.write(f"{kind}\t{name}\t{job}\n")
-            print(f"base {run['head_sha']} {run['id']} {len(cleared)} (read {read} run(s))")
-
-
-        if __name__ == "__main__":
-            try:
-                main()
-            except Exception as error:
-                print(f"none the per-unit window is unavailable: {error}")
-      # Same failing unit on the previous completed verify run? Args: the
-      # previous run's conclusion, its failing-units file, this run's, and
-      # optionally a file that receives this run's confirmed units. Prints
-      # `yes <why>` or `no <why>`. Units are `kind<TAB>name<TAB>job`: a `test`
-      # row matches the same test of the same job; a `lane` row (a job with no
-      # junit) matches only a lane row of the same job with the same name,
-      # which is how it failed (its failed steps and error lines). A job that
-      # failed on both runs at a different step or with a different error is
-      # two different causes, and confirms nothing. The aggregate job
-      # ($VERIFY_CHECK_NAME) fails whenever anything fails, so it is never a
-      # unit. A previous run that passed, or an unknown one, confirms nothing.
-      CONFIRM_PY: |
-        import os
-        import sys
-
-        prev_conclusion, prev_path, cur_path = sys.argv[1:4]
-        aggregate = os.environ.get("VERIFY_CHECK_NAME") or "verified"
-
-        def read(path):
-            rows = []
-            try:
-                with open(path, encoding="utf-8") as fh:
-                    for line in fh:
-                        parts = line.rstrip("\n").split("\t")
-                        if len(parts) == 3 and parts[2] != aggregate:
-                            rows.append(tuple(parts))
-            except OSError:
-                pass
-            return rows
-
-        if prev_conclusion not in ("failure", "timed_out"):
-            print(f"no the previous completed run was '{prev_conclusion or 'not found'}'")
-            raise SystemExit(0)
-        prev, cur = read(prev_path), read(cur_path)
-
-        def units(rows, kind):
-            return {(name, job) for k, name, job in rows if k == kind}
-
-        def jobs(rows):
-            return {job for _kind, _name, job in rows}
-
-        common_tests = units(prev, "test") & units(cur, "test")
-        common_lanes = units(prev, "lane") & units(cur, "lane")
-        # The units of THIS run that the previous run confirms: the same test,
-        # or the same job failing the same way; the trace reads them from the
-        # optional fourth argument.
-        if len(sys.argv) > 4:
-            confirmed = [(kind, name, job) for kind, name, job in cur
-                         if (name, job) in units(prev, kind)]
-            with open(sys.argv[4], "w", encoding="utf-8") as fh:
-                for row in confirmed:
-                    fh.write("\t".join(row) + "\n")
-        if common_tests:
-            name, job = sorted(common_tests)[0]
-            print(f"yes the same unit failed on both runs: {name} ({job})")
-        elif common_lanes:
-            name, job = sorted(common_lanes)[0]
-            print(f"yes the same job failed the same way on both runs: {job} ({name})")
-        elif jobs(prev) & jobs(cur):
-            job = sorted(jobs(prev) & jobs(cur))[0]
-            before = next(name for _kind, name, j in prev if j == job)
-            now = next(name for _kind, name, j in cur if j == job)
-            print(f"no {job} failed on both runs, but not the same way (previous run: {before}; this run: {now})")
-        else:
-            print("no the previous completed run failed a different unit")
+      # The handler's programs and shell helpers are checked in under
+      # .github/red_main/ and run from there, so the verdict engines are
+      # unit-tested code rather than a heredoc written at runtime. The
+      # helpers step copies them into $WORK_DIR; nothing here holds text.
+      # proof.py's canonical source is .github/actions/ci-range/post_main.py
+      # and must stay byte-identical to it (tests/test_post_main_proof.py).
     steps:
+      # ---------------------------------------------------------------------
+      # The handler's programs are checked in beside this workflow and run
+      # from there, so the verdict engines are unit-tested code rather than a
+      # heredoc written at runtime. The reusable workflow runs in the .github
+      # repository, so its own tree is checked out here at the ref this run
+      # was dispatched with (`job.workflow_sha`); no caller tree is read.
+      # ---------------------------------------------------------------------
+      - name: Check out the handler programs
+        id: programs
+        timeout-minutes: 5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ job.workflow_sha }}
+          path: red-main-programs
+          persist-credentials: false
+          sparse-checkout: .github/red_main
+
       # ---------------------------------------------------------------------
       # Gate: the repository's own committed declaration decides whether the
       # handler exists at all, and in which mode.
@@ -1804,6 +715,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MANIFEST: ${{ runner.temp }}/red-main/sylphx.toml
+          PROGRAMS: ${{ github.workspace }}/red-main-programs
         run: |
           set -euo pipefail
           echo "proceed=false" >>"$GITHUB_OUTPUT"
@@ -1821,8 +733,7 @@ jobs:
             echo "::error::python3 is not on the runner, so the declaration cannot be read; no action (fail closed)"
             exit 0
           fi
-          printf '%s\n' "$GATE_PY" >"$RUNNER_TEMP/red-main/gate.py"
-          decision=$(python3 "$RUNNER_TEMP/red-main/gate.py" "$MANIFEST" "$has_file")
+          decision=$(python3 "$PROGRAMS/.github/red_main/gate.py" "$MANIFEST" "$has_file")
           IFS=$'\t' read -r verdict mode owner_label migration_paths hold_utc basis <<<"$decision" || true
           case "${verdict:-}" in
             act)
@@ -1842,60 +753,86 @@ jobs:
           esac
 
       # ---------------------------------------------------------------------
-      # The helpers, on disk for the steps that follow.
+      # The helpers, on disk for the steps that follow: copied verbatim from
+      # the checked-in programs so every step runs the reviewed file.
       # ---------------------------------------------------------------------
+      - name: Read canonical run-store consumer
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ job.workflow_sha }}
+          path: .red-main-store
+          persist-credentials: false
+          sparse-checkout: .github/actions/run-store
+
       - name: Prepare the handler helpers
         id: helpers
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 5
+        env:
+          PROGRAMS: ${{ github.workspace }}/red-main-programs/.github/red_main
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/red-main"
-          printf '%s\n' "$LIB" >"$RUNNER_TEMP/red-main/lib.sh"
-          printf '%s\n' "$PROOF_PY" >"$RUNNER_TEMP/red-main/proof.py"
-          printf '%s\n' "$GATE_PY" >"$RUNNER_TEMP/red-main/gate.py"
-          printf '%s\n' "$JUNIT_PY" >"$RUNNER_TEMP/red-main/junit.py"
-          printf '%s\n' "$CULPRIT_PY" >"$RUNNER_TEMP/red-main/culprit.py"
-          printf '%s\n' "$REVERT_GUARD_PY" >"$RUNNER_TEMP/red-main/revert-guard.py"
-          printf '%s\n' "$INFRA_PY" >"$RUNNER_TEMP/red-main/infra.py"
-          printf '%s\n' "$CONFIRM_PY" >"$RUNNER_TEMP/red-main/confirm.py"
-          printf '%s\n' "$MIGRATION_PY" >"$RUNNER_TEMP/red-main/migration.py"
-          printf '%s\n' "$HOLD_PY" >"$RUNNER_TEMP/red-main/hold.py"
-          printf '%s\n' "$PREV_PY" >"$RUNNER_TEMP/red-main/prev.py"
-          printf '%s\n' "$WINDOW_PY" >"$RUNNER_TEMP/red-main/window.py"
+          for program in infra confirm migration hold prev window proof gate junit culprit; do
+            install -m 600 "$PROGRAMS/$program.py" "$RUNNER_TEMP/red-main/$program.py"
+          done
+          install -m 600 "$PROGRAMS/revert_guard.py" "$RUNNER_TEMP/red-main/revert-guard.py"
+          install -m 600 "$PROGRAMS/lib.sh" "$RUNNER_TEMP/red-main/lib.sh"
           chmod 700 "$RUNNER_TEMP/red-main"
 
       # ---------------------------------------------------------------------
-      # Is there a builder App key? `secrets` cannot appear in an `if:`, so the
-      # step reads it into a flag. No key: token mode (see the header), and the
-      # effective mode is notify whatever the declaration says.
+      # Which write-token path does this caller have? `secrets` cannot appear
+      # in an `if:`, so the step reads the key into a flag. Order, per
+      # company/credentials.md: the Broker first (federation, no key anywhere),
+      # then a passed or environment App key, then token mode. `path` names the
+      # branch; `write=yes` means a token that can push and open pull requests
+      # is available, so the declared `revert` stands. No path at all: token
+      # mode (see the header), and the effective mode is notify whatever the
+      # declaration says.
       # ---------------------------------------------------------------------
-      - name: Detect the builder App key
+      - name: Detect the builder write-token path
         id: key
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 5
         env:
           APP_KEY: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+          BROKER_POLICY: ${{ inputs.broker-trust-policy }}
           DECLARED_MODE: ${{ steps.gate.outputs.mode }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           if [ -n "$APP_KEY" ]; then
+            echo "path=app" >>"$GITHUB_OUTPUT"
             echo "present=yes" >>"$GITHUB_OUTPUT"
+            echo "write=yes" >>"$GITHUB_OUTPUT"
             echo "mode=$DECLARED_MODE" >>"$GITHUB_OUTPUT"
             echo "the builder App key is present: the App path"
+          elif [ -n "$BROKER_POLICY" ]; then
+            echo "path=broker" >>"$GITHUB_OUTPUT"
+            echo "present=no" >>"$GITHUB_OUTPUT"
+            echo "write=yes" >>"$GITHUB_OUTPUT"
+            echo "mode=$DECLARED_MODE" >>"$GITHUB_OUTPUT"
+            echo "no App key, a Broker TrustPolicy is set: the Broker path ($BROKER_POLICY)"
           else
             state_set token-mode yes
+            echo "path=token" >>"$GITHUB_OUTPUT"
             echo "present=no" >>"$GITHUB_OUTPUT"
+            echo "write=no" >>"$GITHUB_OUTPUT"
             echo "mode=notify" >>"$GITHUB_OUTPUT"
-            echo "no builder App key: token mode, on the caller's own GITHUB_TOKEN"
-            say "revert needs a CI-triggering token (the builder App); notifying only."
+            echo "no builder App key and no Broker TrustPolicy: token mode, on the caller's own GITHUB_TOKEN"
+            say "revert needs a CI-triggering token (the builder App or the Broker); notifying only."
           fi
 
       # ---------------------------------------------------------------------
-      # App token, narrowed to the calling repository, carrying the three
-      # permissions the handler writes through: contents, issues and
-      # pull-requests. It asks for no `actions` permission: the builder App
+      # App token, narrowed to the calling repository, carrying the four
+      # permissions the handler writes through: contents, issues,
+      # pull-requests and workflows. Workflows write is needed because a
+      # `sylphx-verify/<sha>` or revert branch points at a commit whose
+      # `.github/workflows` differ from the default branch's (an older pin),
+      # and the forge refuses that ref write from an App without it. It asks
+      # for no `actions` permission: the builder App
       # installation does not hold one, and a request above the installation's
       # grant fails the whole mint. Actions calls use the caller's
       # `github.token` (see `gha` in the helpers). The App token stays for what
@@ -1905,7 +842,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Mint the App token for the caller's repository
         id: app-token
-        if: steps.gate.outputs.proceed == 'true' && steps.key.outputs.present == 'yes'
+        if: steps.gate.outputs.proceed == 'true' && steps.key.outputs.path == 'app'
         continue-on-error: true
         timeout-minutes: 5
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
@@ -1917,6 +854,37 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+          permission-workflows: write
+
+      # ---------------------------------------------------------------------
+      # The Broker path: no App private key anywhere. The two-hop exchange
+      # (Actions OIDC token -> Access key -> one-repository installation token)
+      # is the shared `broker-write-token` action, pinned here by commit.
+      # ---------------------------------------------------------------------
+      - name: Mint the write token from the Broker
+        id: broker-token
+        if: steps.gate.outputs.proceed == 'true' && steps.key.outputs.path == 'broker'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: SylphxAI/.github/.github/actions/broker-write-token@f78ad189b259a05e8e00f2f1e1628f29323af157
+        with:
+          trust-policy: ${{ inputs.broker-trust-policy }}
+          ci-name: ${{ inputs.broker-ci-name }}
+          repository: ${{ github.repository }}
+          soft-fail: 'true'
+
+      - name: Record a Broker mint failure
+        if: >-
+          always() && steps.gate.outputs.proceed == 'true'
+          && steps.key.outputs.path == 'broker'
+          && steps.broker-token.outputs.failure != ''
+        timeout-minutes: 2
+        env:
+          REASON: ${{ steps.broker-token.outputs.failure }}
+        run: |
+          set -euo pipefail
+          . "$RUNNER_TEMP/red-main/lib.sh"
+          state_set grant-failure "$REASON"
 
       # ---------------------------------------------------------------------
       # Probe the grant before anything acts. Actions is read through the
@@ -1930,10 +898,11 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
-          KEY_PRESENT: ${{ steps.key.outputs.present }}
-          APP_MINTED: ${{ steps.app-token.outputs.token != '' && 'yes' || 'no' }}
+          KEY_PRESENT: ${{ steps.key.outputs.write }}
+          KEY_PATH: ${{ steps.key.outputs.path }}
+          APP_MINTED: ${{ (steps.app-token.outputs.token != '' || steps.broker-token.outputs.token != '') && 'yes' || 'no' }}
           EVENT_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           SIMULATE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate-mint-failure && 'yes' || 'no' }}
         run: |
@@ -1950,7 +919,11 @@ jobs:
             fail "simulated mint failure (test hook): the App token mint for $REPO was reported as refused"
           fi
           if [ "$KEY_PRESENT" = yes ] && [ "$APP_MINTED" != yes ]; then
-            fail "the App token was not minted on $REPO: the builder App installation does not grant contents, issues and pull-requests write, or the App id and key are empty, or the App has no installation on $REPO"
+            if [ "$KEY_PATH" = broker ]; then
+              fail "the Broker did not mint a write token on $REPO (see the mint step's reason; the caller grants id-token: write, the workflow is declared under [[ci]], and the TrustPolicy grants contents, issues, pull-requests and workflows write on $REPO)"
+            else
+              fail "the App token was not minted on $REPO: the builder App installation does not grant contents, issues, pull-requests and workflows write, or the App id and key are empty, or the App has no installation on $REPO"
+            fi
           fi
           run_path="repos/$REPO/actions/runs?per_page=1"
           if [ -n "$EVENT_RUN_ID" ]; then run_path="repos/$REPO/actions/runs/$EVENT_RUN_ID"; fi
@@ -2004,7 +977,7 @@ jobs:
             reason=$(cat "$RUNNER_TEMP/red-main/state/grant-failure")
           fi
           if [ -z "$reason" ]; then
-            reason="the App token mint for $REPO failed: the builder App installation does not grant contents, issues and pull-requests write, or has no installation on this repository"
+            reason="the App token mint for $REPO failed: the builder App installation does not grant contents, issues, pull-requests and workflows write, or has no installation on this repository"
           fi
           body="Red main handler could not act on \`$REPO\`: $reason. No bisect or revert was performed. Run: $RUN_URL"
           {
@@ -2027,7 +1000,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           EVENT_RUN_ID: ${{ github.event.workflow_run.id || '' }}
         run: |
@@ -2097,6 +1070,7 @@ jobs:
             echo "short-sha=$short_sha"
             echo "failed-lanes=$failed_lanes"
             echo "proof-verdict=$proof"
+            echo "run-url=$run_url"
           } >>"$GITHUB_OUTPUT"
           say "Verify run [$run_id]($run_url) on \`$head_sha\` has post-main proof \`$proof\`${failed_lanes:+ in lane(s) \`$failed_lanes\`}."
 
@@ -2108,7 +1082,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
@@ -2143,7 +1117,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
@@ -2151,10 +1125,10 @@ jobs:
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           mkdir -p "$WORK_DIR/junit"
-          if gha run download "$RUN_ID" --repo "$REPO" --pattern 'junit-*' --dir "$WORK_DIR/junit" 2>"$WORK_DIR/junit.err"; then
-            echo "downloaded the run's junit artifacts"
+          if python3 "$RUN_STORE_JUNIT" "$REPO" "$RUN_ID" "$WORK_DIR/junit" 2>"$WORK_DIR/junit.err"; then
+            echo "read the run's junit entries from run-store"
           else
-            say "The run published no \`junit-*\` artifact, so a failing lane is named by how it failed (its failed steps and error lines) rather than by a test."
+            say "The run published no readable \`junit-*\` run-store entry, so a failing lane is named by how it failed (its failed steps and error lines) rather than by a test."
           fi
           # How each failed job failed: a lane unit is its job, failed steps
           # and error lines, so one job failing two different ways is two
@@ -2180,7 +1154,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
         run: |
@@ -2201,17 +1175,27 @@ jobs:
           esac
 
       # ---------------------------------------------------------------------
-      # Verdict: an infrastructure failure is reported; anything else stands
-      # as a real failure.
+      # Verdict: an infrastructure failure is ESCALATED, not merely recorded.
+      # It is never reverted (a revert because the runner lost disk would be
+      # worse than useless), but it opens one issue labelled
+      # `red-main-infra` and the owner label so a person sees it: a silently
+      # reported infra failure once left a trunk red for three days while
+      # every reader took the passing handler run as healthy.
       # ---------------------------------------------------------------------
       - name: Decide the verdict of the failed run
         id: verdict
         if: steps.gate.outputs.proceed == 'true'
         timeout-minutes: 5
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           INFRA: ${{ steps.infra.outputs.infra }}
           INFRA_SIGNATURE: ${{ steps.infra.outputs.signature }}
           INITIAL_PROOF: ${{ steps.run.outputs.proof-verdict }}
+          HEAD_SHA: ${{ steps.run.outputs.head-sha }}
+          RUN_URL: ${{ steps.run.outputs.run-url }}
+          FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
+          OWNER_LABEL: ${{ steps.gate.outputs.owner-label }}
+          OPS_ISSUE: ${{ inputs.ops-issue }}
         run: |
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
@@ -2227,7 +1211,31 @@ jobs:
           esac
           if [ "$INFRA" = yes ]; then
             echo "verdict=infra" >>"$GITHUB_OUTPUT"
-            say "Infrastructure failure (\`$INFRA_SIGNATURE\`): reported, with no revert and no rerun."
+            say "Infrastructure failure (\`$INFRA_SIGNATURE\`): reported to the infra owner, with no revert and no rerun."
+            # One open issue per repository names the current infra failure,
+            # commented on again for each further one: the report is visible
+            # to a person, never only in this run's step summary.
+            body="\`$TRUNK\` failed of INFRASTRUCTURE at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Signature: \`$INFRA_SIGNATURE\`. Nothing was reverted: a runner or platform failure is not a code fault. The trunk stays red until the platform recovers or a person forward-fixes; if it is still red in 30 minutes the watchdog files a separate \`red-main-red-watchdog\` issue."
+            for label in red-main-infra "$OWNER_LABEL"; do
+              gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
+                -f description="red-main infrastructure escalation" >/dev/null 2>&1 || true
+            done
+            existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-infra&per_page=100" \
+              --jq '[.[] | select(has("pull_request") | not)] | .[0].number // empty' 2>/dev/null || true)
+            if [ -n "$existing" ]; then
+              gh api --method POST "repos/$REPO/issues/$existing/comments" --field body="$body" >/dev/null 2>&1 \
+                && say "Escalated on the open infrastructure issue [#$existing](https://github.com/$REPO/issues/$existing)." \
+                || say "**Blocked:** the infrastructure escalation comment was not posted (\`issues: write\`)."
+            elif gh api --method POST "repos/$REPO/issues" -f title="$TRUNK failed of infrastructure (red-main)" -f body="$body" \
+                -f 'labels[]=red-main-infra' -f "labels[]=$OWNER_LABEL" --jq '.number' >"$WORK_DIR/infra-issue" 2>"$WORK_DIR/infra-issue.err"; then
+              say "Escalated to the infra owner: [issue #$(cat "$WORK_DIR/infra-issue")](https://github.com/$REPO/issues/$(cat "$WORK_DIR/infra-issue"))."
+            else
+              say "**Blocked:** the infrastructure escalation issue was not opened (\`issues: write\`): $(head -c 200 "$WORK_DIR/infra-issue.err" | tr '\n' ' ')."
+              echo "::warning::the infrastructure escalation issue could not be opened"
+            fi
+            if [ -n "$OPS_ISSUE" ]; then
+              gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$body" >/dev/null 2>&1 || true
+            fi
             exit 0
           fi
           echo "verdict=real" >>"$GITHUB_OUTPUT"
@@ -2246,7 +1254,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true' && steps.verdict.outputs.verdict == 'real'
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
@@ -2284,7 +1292,7 @@ jobs:
           : >"$WORK_DIR/previous-failing-tests.tsv"
           if [ "$prev_conclusion" = failure ] || [ "$prev_conclusion" = timed_out ]; then
             mkdir -p "$WORK_DIR/junit-previous"
-            gha run download "$prev_id" --repo "$REPO" --pattern 'junit-*' --dir "$WORK_DIR/junit-previous" 2>/dev/null || true
+            python3 "$RUN_STORE_JUNIT" "$REPO" "$prev_id" "$WORK_DIR/junit-previous" 2>/dev/null || true
             if ! python3 "$RUNNER_TEMP/red-main/proof.py" failed-units "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$prev_id" \
                 >"$WORK_DIR/previous-lane-signatures.tsv"; then
               say "**Unverified:** previous failing lanes are unavailable; escalating without confirmation."
@@ -2319,13 +1327,13 @@ jobs:
         # The candidate deadline (at most 60 minutes) plus branch setup.
         timeout-minutes: 70
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           RUN_ID: ${{ steps.run.outputs.run-id }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
           FAILED_LANES: ${{ steps.run.outputs.failed-lanes }}
-          TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
+          TOKEN_MODE: ${{ steps.key.outputs.write == 'yes' && 'no' || 'yes' }}
           MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
         run: |
           set -euo pipefail
@@ -2435,14 +1443,36 @@ jobs:
           fi
           dispatch() {
             local ref="$1" payload
+            # return_run_details: without it the forge answers 204 with no
+            # body, the run id is empty and every candidate reads as timed out.
             if [ -n "$dispatch_lanes" ] && [ -n "$LANE_INPUT" ]; then
               payload=$(jq -n --arg ref "$ref" --arg key "$LANE_INPUT" --arg value "$dispatch_lanes" \
-                '{ref: $ref, inputs: {($key): $value}}')
+                '{ref: $ref, inputs: {($key): $value}, return_run_details: true}')
             else
-              payload=$(jq -n --arg ref "$ref" '{ref: $ref}')
+              payload=$(jq -n --arg ref "$ref" '{ref: $ref, return_run_details: true}')
             fi
-            gha api --method POST "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/dispatches" \
-              --input - <<<"$payload" --jq '.workflow_run_id'
+            # The temporary ref was created a moment ago and the forge's ref
+            # reads lag a write by seconds: it can answer 422 "No ref found"
+            # for it. That one answer is retried, about 30 s in all; any
+            # other failure stops at once.
+            local id err attempt=1
+            while :; do
+              if id=$(gha api --method POST "repos/$REPO/actions/workflows/$VERIFY_WORKFLOW/dispatches" \
+                   --input - <<<"$payload" --jq '.workflow_run_id // empty' 2>"$WORK_DIR/dispatch-try.err"); then
+                break
+              fi
+              err=$(cat "$WORK_DIR/dispatch-try.err")
+              if ! grep -q 'No ref found' <<<"$err" || [ "$attempt" -ge 6 ]; then
+                printf '%s\n' "$err" >&2
+                return 1
+              fi
+              sleep $((attempt * 2))
+              attempt=$((attempt + 1))
+            done
+            case "$id" in
+              ''|*[!0-9]*) echo "the dispatch returned no run id ('$id')" >&2; return 1 ;;
+            esac
+            printf '%s\n' "$id"
           }
           # Every candidate at once: a branch and a verify run each.
           : >"$WORK_DIR/candidates.tsv"
@@ -2452,11 +1482,21 @@ jobs:
           while IFS=$'\t' read -r sha subject; do
             [ -n "$sha" ] || continue
             candidate_branch="sylphx-verify/$sha"
+            # Create the branch, or move it if a stale one is left over. Both
+            # errors are kept: on the App path a refused write stops the trace
+            # with the forge's answer, since a dispatch on a ref that does not
+            # exist can only answer "No ref found".
             if ! gh api --method POST "repos/$REPO/git/refs" \
-                 --field "ref=refs/heads/$candidate_branch" --field "sha=$sha" >/dev/null 2>&1; then
-              gh api --method PATCH "repos/$REPO/git/refs/heads/$candidate_branch" \
-                --field "sha=$sha" --field force=true >/dev/null 2>&1 \
-                || { [ "$TOKEN_MODE" != yes ] || refs_refused=yes; }
+                 --field "ref=refs/heads/$candidate_branch" --field "sha=$sha" >/dev/null 2>"$WORK_DIR/ref.err"; then
+              if ! gh api --method PATCH "repos/$REPO/git/refs/heads/$candidate_branch" \
+                   --field "sha=$sha" --field force=true >/dev/null 2>>"$WORK_DIR/ref.err"; then
+                if [ "$TOKEN_MODE" = yes ]; then
+                  refs_refused=yes
+                else
+                  say "**No action:** the temporary branch \`$candidate_branch\` could not be created ($(head -c 400 "$WORK_DIR/ref.err" | tr '\n' ' ')); a person must decide."
+                  exit 0
+                fi
+              fi
             fi
             if [ "$refs_refused" = yes ]; then break; fi
             printf '%s\n' "$candidate_branch" >>"$WORK_DIR/temp-branches"
@@ -2479,20 +1519,39 @@ jobs:
             exit 0
           fi
           # One shared deadline; one poll per still-running run every 30 s.
+          # A status read that fails is not "still running": a run that cannot
+          # be read (a wrong id, a refused token) would otherwise wait out the
+          # whole deadline and turn every candidate into a timeout. One failed
+          # read is retried at the next poll; three in a row for the same run
+          # stop the trace with the forge's answer.
           deadline=$((SECONDS + CANDIDATE_TIMEOUT_MINUTES * 60))
           pending=("${order[@]}")
+          declare -A read_failures=()
           while [ "${#pending[@]}" -gt 0 ]; do
             still=()
             for sha in "${pending[@]}"; do
-              status="" conclusion=""
-              IFS=$'\t' read -r status conclusion < <(
-                gha api "repos/$REPO/actions/runs/${run_of[$sha]}" --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null || true
-              ) || true
-              if [ "$status" = "completed" ]; then
-                conclusion_of[$sha]="${conclusion:-unknown}"
-              else
-                still+=("$sha")
+              status="" conclusion="" answer=""
+              if answer=$(gha api "repos/$REPO/actions/runs/${run_of[$sha]}" \
+                   --jq '[.status, (.conclusion // "")] | @tsv' 2>"$WORK_DIR/poll.err"); then
+                IFS=$'\t' read -r status conclusion <<<"$answer" || true
               fi
+              case "$status" in
+                completed)
+                  read_failures[$sha]=0
+                  conclusion_of[$sha]="${conclusion:-unknown}" ;;
+                queued|in_progress|waiting|requested|pending|action_required)
+                  read_failures[$sha]=0
+                  still+=("$sha") ;;
+                *)
+                  read_failures[$sha]=$(( ${read_failures[$sha]:-0} + 1 ))
+                  if [ "${read_failures[$sha]}" -ge 3 ]; then
+                    why=$(head -c 300 "$WORK_DIR/poll.err" | tr '\n' ' ')
+                    say "**Stopped:** the status of candidate \`${sha:0:9}\` (verify run ${run_of[$sha]}) could not be read three times in a row (${why:-the answer had no run status: $status}); no culprit is named."
+                    echo "::error::candidate run ${run_of[$sha]} status unreadable: ${why:-the answer had no run status: $status}"
+                    exit 1
+                  fi
+                  still+=("$sha") ;;
+              esac
             done
             pending=("${still[@]}")
             [ "${#pending[@]}" -gt 0 ] || break
@@ -2540,7 +1599,7 @@ jobs:
               [ "${conclusion_of[$sha]}" = failure ] || continue
               candidate_dir="$WORK_DIR/junit-candidate-${run_of[$sha]}"
               mkdir -p "$candidate_dir"
-              gha run download "${run_of[$sha]}" --repo "$REPO" --pattern 'junit-*' --dir "$candidate_dir" 2>/dev/null || true
+              python3 "$RUN_STORE_JUNIT" "$REPO" "${run_of[$sha]}" "$candidate_dir" 2>/dev/null || true
               if ! python3 "$RUNNER_TEMP/red-main/proof.py" failed-units "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "${run_of[$sha]}" \
                   >"$WORK_DIR/candidate-signatures.tsv" 2>/dev/null; then
                 conclusion_of[$sha]=inconclusive
@@ -2584,6 +1643,48 @@ jobs:
           esac
 
       # ---------------------------------------------------------------------
+      # A fresh App token for everything after the trace. An installation
+      # token lives 60 minutes and the trace alone may take 70, so the token
+      # minted at the start can expire before the revert, the report or the
+      # record: every step after this one uses this token. It runs even when
+      # the trace failed or timed out, so the record still has live
+      # credentials; a failed mint fails the job (and skips the revert)
+      # rather than acting on an expired token.
+      # ---------------------------------------------------------------------
+      - name: Mint a fresh App token after the trace
+        id: app-token-act
+        if: >-
+          always() && steps.gate.outputs.proceed == 'true'
+          && steps.app-token.outputs.token != ''
+        timeout-minutes: 5
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
+          private-key: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      # The Broker path needs the same fresh token: a one-hour installation
+      # token minted before a long trace must be re-minted before the revert.
+      - name: Mint a fresh Broker token after the trace
+        id: broker-token-act
+        if: >-
+          always() && steps.gate.outputs.proceed == 'true'
+          && steps.broker-token.outputs.token != ''
+          && steps.broker-token.outputs.token != null
+        timeout-minutes: 5
+        uses: SylphxAI/.github/.github/actions/broker-write-token@f78ad189b259a05e8e00f2f1e1628f29323af157
+        with:
+          trust-policy: ${{ inputs.broker-trust-policy }}
+          ci-name: ${{ inputs.broker-ci-name }}
+          repository: ${{ github.repository }}
+          soft-fail: 'true'
+
+      # ---------------------------------------------------------------------
       # Revert (mode revert) or report (mode notify).
       # ---------------------------------------------------------------------
       - name: Revert the culprit or report it
@@ -2594,15 +1695,15 @@ jobs:
           && (steps.trace.outputs.culprit != '' || steps.trace.outputs.revert-all != '')
         timeout-minutes: 25
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token-act.outputs.token || steps.broker-token-act.outputs.token || github.token }}
           ACTIONS_TOKEN: ${{ github.token }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug || steps.broker-token.outputs.app-slug }}
           APP_ID: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
           MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
           OWNER_LABEL: ${{ steps.gate.outputs.owner-label }}
           MIGRATION_PATHS: ${{ steps.gate.outputs.migration-paths }}
           HOLD_UTC: ${{ steps.gate.outputs.hold-utc }}
-          TOKEN_MODE: ${{ steps.key.outputs.present == 'yes' && 'no' || 'yes' }}
+          TOKEN_MODE: ${{ steps.key.outputs.write == 'yes' && 'no' || 'yes' }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
           SHORT_SHA: ${{ steps.run.outputs.short-sha }}
           RUN_URL: ${{ steps.run.outputs.run-url }}
@@ -2683,7 +1784,7 @@ jobs:
               body="\`$TRUNK\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: $not_reverted, so a person decides."
               : >"$WORK_DIR/notified"
               for sha in "${shas[@]}"; do
-                pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
+                pr=$(commit_prs "$sha" '.[0].number // empty')
                 [ -n "$pr" ] || continue
                 if grep -qxF "$pr" "$WORK_DIR/notified"; then continue; fi
                 printf '%s\n' "$pr" >>"$WORK_DIR/notified"
@@ -2701,8 +1802,7 @@ jobs:
           # is left to a person: comment on it and on the ops issue instead.
           protected=""
           for sha in "${shas[@]}"; do
-            pr_json=$(gh api "repos/$REPO/commits/$sha/pulls" \
-              --jq '.[0] | {number: (.number // 0), labels: [(.labels // [])[].name]}' 2>/dev/null || true)
+            pr_json=$(commit_prs "$sha" '.[0] | {number: (.number // 0), labels: [(.labels // [])[].name]}')
             [ -n "$pr_json" ] || continue
             verdict=$(python3 "$RUNNER_TEMP/red-main/revert-guard.py" <<<"$pr_json")
             case "$verdict" in
@@ -2801,7 +1901,7 @@ jobs:
             done
             prs=""
             for sha in "${shas[@]}"; do
-              pr=$(gh api "repos/$REPO/commits/$sha/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
+              pr=$(commit_prs "$sha" '.[0].number // empty')
               [ -z "$pr" ] || prs="$prs #$pr"
             done
             hold_body="\`$TRUNK\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit \`$first\`${prs:+ (pull request$prs)} was NOT reverted: $why. Forward-fix it; the handler will not revert a migration. Owner: $OWNER_LABEL."
@@ -2845,8 +1945,8 @@ jobs:
           original=""
           original_number=""
           if [ "$count" -eq 1 ]; then
-            original=$(gh api "repos/$REPO/commits/$first/pulls" --jq '.[0] | "#\(.number) \(.title)"' 2>/dev/null || true)
-            original_number=$(gh api "repos/$REPO/commits/$first/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
+            original=$(commit_prs "$first" '.[0] | "#\(.number) \(.title)"')
+            original_number=$(commit_prs "$first" '.[0].number // empty')
           fi
           {
             printf '%s\n' "The verify workflow failed on \`$TRUNK\` at \`$HEAD_SHA\` in lane(s) \`${FAILED_LANES:-unknown}\`."
@@ -3023,7 +2123,7 @@ jobs:
           && (steps.helpers.outcome == 'success' || steps.helpers.outcome == 'failure')
         timeout-minutes: 10
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app-token-act.outputs.token || steps.broker-token-act.outputs.token || steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}
           MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}
           HEAD_SHA: ${{ steps.run.outputs.head-sha }}
         run: |
