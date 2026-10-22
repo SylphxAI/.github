@@ -1,8 +1,11 @@
 {
-  "version": 1,
-  "doc": "docs/merge-queue-settings.md. The one source for the merge queue rule and the required approving review count of every repository ruleset. Applied by scripts/apply_merge_queue.py (dry-run by default). GitHub does not allow a merge_queue rule in an organization or enterprise ruleset, so it is applied per repository from here.",
+  "version": 2,
+  "doc": "docs/merge-queue-settings.md. The one source for merge queue settings, approving review count and explicitly scoped required checks. Applied by scripts/apply_merge_queue.py (dry-run by default). Required checks roll out only after their producer is installed, backfilled and observed on PR heads and merge groups.",
   "orgs": [
-    "SylphxAI"
+    "SylphxAI",
+    "Cubeage",
+    "EpiowAI",
+    "OzyrixLtd"
   ],
   "settings": {
     "merge_method": "SQUASH",
@@ -16,12 +19,12 @@
   "fast_gate": {
     "context": "ci-ok",
     "integration_id": 15368,
-    "note": "The required check of the queue is the fast gate only; the full suite runs after the merge (docs/optimistic-merge.md). The tool reports a ruleset that does not require it and never adds a check itself: requiring a check that no workflow reports would stop the queue."
+    "note": "ci-ok is the CI gate. The tool reports it fleet-wide and adds or binds checks only for the explicit required_checks targets below; all other required checks are preserved."
   },
   "review": {
     "required_approving_review_count": 0,
     "require_extra_approval_for_unattributed_changes": false,
-    "note": "Every repository ruleset's pull_request rule requires no approving review: ci-ok is the gate, and an approval finds nothing it did not (owner standards: ONE CHECK). The enterprise ruleset already requires 0. require_extra_approval_for_unattributed_changes adds one more approving review when a pull request carries commits GitHub cannot attribute to a user (every desk App's), so it holds every bot pull request for an approval ci-ok already made; it is false here too."
+    "note": "Human approving reviews remain at zero. The exact-head, App-bound review-ok status is the independent review gate on explicitly rolled-out repositories. require_extra_approval_for_unattributed_changes adds one approving review when a pull request carries commits GitHub cannot attribute to a user (every desk App's), which would hold every bot pull request for an approval ci-ok already made; the tool converges it to false."
   },
   "exclude": [
     {
@@ -31,9 +34,65 @@
     {
       "repo": "SylphxAI/openclaw-sylphx",
       "reason": "Hosted stopgap: no fixes."
+    },
+    {
+      "repo": "SylphxAI/work",
+      "reason": "Archived 2026-10-15: the retired work system. Read-only; its rulesets are left as they are."
     }
   ],
   "overrides": [],
+  "required_checks": [
+    {
+      "repo": "SylphxAI/cloud",
+      "ruleset": "sylphx-merge-queue",
+      "ruleset_id": 20321070,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "First review gate rollout: preserve CI and bind independent review to its sole App. Apply only after the documented readiness gates and the cloud contract update."
+    },
+    {
+      "repo": "SylphxAI/infra",
+      "ruleset": "infra-main-required-ci",
+      "ruleset_id": 23689347,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "First review gate rollout after producer installation, backfill, live posting and alert readiness."
+    },
+    {
+      "repo": "SylphxAI/desk-tools",
+      "ruleset": "sylphx-merge-queue",
+      "ruleset_id": 24403587,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
+    },
+    {
+      "repo": "SylphxAI/.github",
+      "ruleset": "sylphx-merge-queue",
+      "ruleset_id": 20321046,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "review-ok", "integration_id": 5155317 }
+      ],
+      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
+    },
+    {
+      "repo": "SylphxAI/owner",
+      "ruleset": "require-review",
+      "ruleset_id": 24462493,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 },
+        { "context": "always-loaded", "integration_id": 15368 }
+      ],
+      "reason": "always-loaded is owner's plain-language check on the files every agent loads (.github/workflows/plain-language.yml): owner has reported it on pull request heads since 2026-10-19, so its producer is observed where it is required. ci-ok comes from owner's Rulings workflow. The check is added only after this entry lands; the policy tool never adds it to a repository whose workflows do not produce it."
+    }
+  ],
   "fast_gate_overrides": [
     {
       "repo": "SylphxAI/cloud",

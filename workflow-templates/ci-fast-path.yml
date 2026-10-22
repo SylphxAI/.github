@@ -48,14 +48,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - run: echo "full build, e2e, mobile"
 
-  # The required check. Skipped jobs pass; failed or cancelled ones fail.
+  # The required check. Skipped jobs pass; a failed job fails; a cancelled job
+  # (a superseded push) is reported CANCELLED and does not fail.
   ci-ok:
-    if: always()
+    if: always() && !cancelled()
     needs: [changes, gate, heavy]
-    # The reserved gate pool (Kueue queue scale-set-gate, never lends): an
-    # `if: always()` verdict still runs after its run is cancelled, and that run
-    # keeps its concurrency group until it does, so on a busy build pool a
-    # superseded run held the next one (SylphxAI/agents#4222, 2026-10-02).
+    # The current workflow's verdict has a reserved seat; superseded workflows
+    # must not publish a stale red aggregate beside their replacement.
     runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:

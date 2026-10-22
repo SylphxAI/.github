@@ -4,7 +4,8 @@ name: Public repository consumers
 # consumer in the `sylphx_consumer` organization property, or it is listed for a
 # keep, merge or archive decision; every archived public repository says so in
 # its description or README, and every package published from it is deprecated
-# (npm packages are deprecated by this run) (docs/public-repo-consumers.md).
+# (npm packages are deprecated and crates yanked by this run; pub.dev's
+# Discontinued option has no token path) (docs/public-repo-consumers.md).
 
 on:
   schedule:
@@ -31,6 +32,9 @@ jobs:
       - name: List public repositories with no recorded consumer, and shut-down ones that do not say so
         # Public repositories, their custom properties and READMEs are readable
         # by anyone, so the job's own read-only token is enough: no App key.
+        # This job reads and reports only. Yanking a crate from an archived
+        # repository is a one-off, run deliberately with an owner token, never
+        # a long-lived secret parked in a sweep that runs on a schedule.
         env:
           GH_TOKEN: ${{ github.token }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

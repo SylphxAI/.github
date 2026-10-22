@@ -7,7 +7,11 @@ the [Keel repin bot](keel-repin.md) requires before it merges a repin.
 The check itself is Keel's (`scripts/browser_smoke.py`, from the title's own `KEEL_PIN`). The
 `web-smoke` action here fetches that script, installs Chrome for Testing, serves the pack as a static
 host does (Keel's `static_host.py`, so the pack's `_headers` and Content Security Policy apply) and runs
-three checks, always all:
+three checks, always all. The host and both browser checks use the pack's `<base href>` path
+(`/` when absent), so a title packed with a non-root `[web] base` is checked where its assets live.
+A host startup failure includes its output in the job log, including an unsupported option from an
+older Keel pin:
+
 
 | Check | Passes when |
 | --- | --- |
@@ -29,7 +33,15 @@ splash and starts and answers a touch, not how fast it draws. Frame times are ju
    step requires a check run of exactly that name.
 3. Add `web-smoke.yml` to the repin workflow's `ci-workflows` so the bot starts it on the repin branch
    (the workflow lists `workflow_dispatch`, as the template does).
-4. Add `web-smoke` to the repository's required checks.
+4. Add `web-smoke` to the repository's required checks. Under
+   [optimistic merge](optimistic-merge.md) also call the file from
+   `.github/workflows/ci.yml` (it now declares `on: workflow_call`) and list the
+   calling job in `ci-ok`'s `needs:` (docs/optimistic-merge.md, "The pull
+   request"): `ci-ok` needs only `ci.yml`'s jobs, so a check required on its own
+   - or called but not needed by `ci-ok` - is admitted while it is still
+   pending and a run that finishes after `ci-ok` is never seen. Where the smoke
+   should not gate the merge, keep it standalone and carry
+   `# optimistic-merge: gate-external` (audit row R3b).
 
 The job needs `CUBEAGE_CI_READER_APP_ID` and `CUBEAGE_CI_READER_APP_KEY` (the read-only App that can read
 SylphxAI/keel) as the other Keel jobs do. It runs on our own runners only: on a GitHub-hosted runner the

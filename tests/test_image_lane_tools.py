@@ -32,6 +32,7 @@ def load(module_name: str, relative: str):
 
 mint = load("image_lane_mint", "scripts/mint-registry-auth.py")
 pack = load("image_lane_pack", "scripts/pack-image-evidence.py")
+readback = load("image_lane_readback", "scripts/read-registry-manifest.py")
 
 
 def jwt(claims: dict) -> str:
@@ -40,6 +41,16 @@ def jwt(claims: dict) -> str:
         return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
     return f"{segment({'alg': 'ES256'})}.{segment(claims)}.signature"
+
+class ImageLaneSourceContractTests(unittest.TestCase):
+    def test_dispatched_source_binds_checkout_and_evidence(self) -> None:
+        workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
+        source = "${{ inputs.source-sha || github.sha }}"
+        self.assertIn("      source-sha:\n", workflow)
+        self.assertIn(f"          ref: {source}\n", workflow)
+        self.assertIn(f"          LANE_SOURCE_SHA: {source}\n", workflow)
+        self.assertNotIn("          LANE_SOURCE_SHA: ${{ github.sha }}", workflow)
+
 
 
 class SplitImageReferenceTests(unittest.TestCase):
@@ -252,6 +263,17 @@ class RegistryMintRetryTests(unittest.TestCase):
         self.assertIsInstance(result, str)
         self.assertEqual(len(calls), 3)
 
+    def test_sustained_connect_outage_longer_than_the_old_budget_is_ridden_out(self) -> None:
+        # Live 2026-10-07: a runner pool's connect to the issuer timed out for
+        # whole minutes, so every attempt of the old 3-attempt/67 s budget fell
+        # inside the same window and the build failed. Four consecutive connect
+        # timeouts (past that old budget) must now reach a success.
+        connect_timeout = mint.urllib.error.URLError(TimeoutError("timed out"))
+        result, calls, sleeps = self.run_mint([connect_timeout] * 4 + [self.response()])
+        self.assertIsInstance(result, str)
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(sleeps, list(mint.MINT_BACKOFF_SECONDS[:4]))
+
     def test_gives_up_after_bounded_attempts(self) -> None:
         blips = [self.http_error(502)] * (mint.MINT_ATTEMPTS + 2)
         result, calls, sleeps = self.run_mint(blips)
@@ -409,6 +431,120 @@ class ImageLaneNoArtifactTests(unittest.TestCase):
     def test_the_receipt_is_a_job_output(self) -> None:
         self.assertIn("value: ${{ jobs.publish.outputs.verify_receipt }}", self.workflow)
         self.assertIn("printf 'verify_receipt=%s\\n'", self.workflow)
+
+
+class RegistryManifestReadbackTests(unittest.TestCase):
+    def response(self, url, digest, body=b"", media_type=None):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.geturl.return_value = url
+        response.headers = {
+            "Docker-Content-Digest": digest,
+            "Content-Type": media_type or readback.MANIFEST_TYPES[0],
+        }
+        response.read.return_value = body
+        return response
+
+    def fixture(self, root, body):
+        auth = root / "auth.json"
+        auth.write_text(json.dumps({"auths": {"registry.sylphx.com": {
+            "auth": base64.b64encode(b"oauth2accesstoken:scoped-test-jwt").decode(),
+        }}}))
+        output = root / "manifest.json"
+        digest = "sha256:" + hashlib.sha256(body).hexdigest()
+        base = "https://registry.sylphx.com/v2/library/sylphx-hands/manifests/"
+        return auth, output, digest, base
+
+    def test_promotes_the_head_selected_index_not_a_negotiated_child_hash(self):
+        child = "sha256:" + "a" * 64
+        body = json.dumps({"schemaVersion": 2, "mediaType": readback.MANIFEST_TYPES[0],
+                           "manifests": [{"digest": child}]}).encode()
+        with tempfile.TemporaryDirectory() as directory:
+            auth, output, digest, base = self.fixture(Path(directory), body)
+            opener = mock.Mock()
+            opener.open.side_effect = [self.response(base + "release", digest),
+                                       self.response(base + digest, digest, body)]
+            with mock.patch.object(readback.urllib.request, "build_opener", return_value=opener):
+                self.assertEqual(readback.read_manifest(LANE_IMAGE, "release", auth, output), digest)
+            self.assertNotEqual(digest, child)
+            self.assertEqual(output.read_bytes(), body)
+            head, get = [call.args[0] for call in opener.open.call_args_list]
+            self.assertEqual(head.get_method(), "HEAD")
+            self.assertEqual(get.full_url, base + digest)
+            self.assertEqual(get.get_method(), "GET")
+            for request in (head, get):
+                self.assertEqual(request.get_header("Accept"), readback.ACCEPT)
+                self.assertEqual(request.get_header("Authorization"), "Bearer scoped-test-jwt")
+
+    def test_single_manifest_is_read_by_its_authoritative_digest(self):
+        body = b'{"schemaVersion":2,"config":{"digest":"sha256:config"},"layers":[]}'
+        with tempfile.TemporaryDirectory() as directory:
+            auth, output, digest, base = self.fixture(Path(directory), body)
+            opener = mock.Mock()
+            media = readback.MANIFEST_TYPES[2]
+            opener.open.side_effect = [self.response(base + "release", digest, media_type=media),
+                                       self.response(base + digest, digest, body, media)]
+            with mock.patch.object(readback.urllib.request, "build_opener", return_value=opener):
+                self.assertEqual(readback.read_manifest(LANE_IMAGE, "release", auth, output), digest)
+
+    def test_missing_or_invalid_head_digest_never_falls_back_to_a_body_hash(self):
+        for bad in ("", "sha256:short", "sha256:" + "A" * 64):
+            with self.subTest(digest=bad), tempfile.TemporaryDirectory() as directory:
+                auth, output, _, base = self.fixture(Path(directory), b"{}")
+                opener = mock.Mock()
+                opener.open.return_value = self.response(base + "release", bad)
+                with mock.patch.object(readback.urllib.request, "build_opener", return_value=opener):
+                    with self.assertRaises(ValueError):
+                        readback.read_manifest(LANE_IMAGE, "release", auth, output)
+                self.assertEqual(opener.open.call_count, 1)
+                self.assertFalse(output.exists())
+
+    def test_digest_get_must_match_head_identity_media_type_and_exact_bytes(self):
+        for mismatch in ("identity", "media_type", "bytes"):
+            with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as directory:
+                auth, output, digest, base = self.fixture(Path(directory), b"{}")
+                get = self.response(base + digest, digest, b"{}")
+                if mismatch == "identity":
+                    get.headers["Docker-Content-Digest"] = "sha256:" + "b" * 64
+                elif mismatch == "media_type":
+                    get.headers["Content-Type"] = readback.MANIFEST_TYPES[2]
+                else:
+                    get.read.return_value = b"{ }"
+                opener = mock.Mock()
+                opener.open.side_effect = [self.response(base + "release", digest), get]
+                with mock.patch.object(readback.urllib.request, "build_opener", return_value=opener):
+                    with self.assertRaises(ValueError):
+                        readback.read_manifest(LANE_IMAGE, "release", auth, output)
+                self.assertFalse(output.exists())
+
+    def test_a_digest_not_present_in_the_registry_never_produces_a_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            auth, output, digest, base = self.fixture(Path(directory), b"{}")
+            opener = mock.Mock()
+            opener.open.side_effect = [self.response(base + "release", digest),
+                readback.urllib.error.HTTPError(base + digest, 404, "Not Found", {}, None)]
+            with mock.patch.object(readback.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaises(readback.urllib.error.HTTPError):
+                    readback.read_manifest(LANE_IMAGE, "release", auth, output)
+            self.assertFalse(output.exists())
+
+    def test_credentials_do_not_follow_redirects_or_fall_back_to_static_auth(self):
+        self.assertIsNone(readback.NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.example/"))
+        with tempfile.TemporaryDirectory() as directory:
+            auth, output, _, _ = self.fixture(Path(directory), b"{}")
+            auth.write_text(json.dumps({"auths": {"registry.sylphx.com": {
+                "auth": base64.b64encode(b"static-user:static-password").decode(),
+            }}}))
+            with mock.patch.object(readback.urllib.request, "build_opener") as opener:
+                with self.assertRaises(ValueError):
+                    readback.read_manifest(LANE_IMAGE, "release", auth, output)
+            opener.assert_not_called()
+            self.assertFalse(output.exists())
+
+    def test_image_and_evidence_readback_use_the_same_authoritative_path(self):
+        workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
+        self.assertEqual(workflow.count("python3 .image-lane/scripts/read-registry-manifest.py"), 2)
+        self.assertNotIn("hashlib.sha256(open(sys.argv[1]", workflow)
 
 
 if __name__ == "__main__":

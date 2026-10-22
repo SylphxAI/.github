@@ -5,13 +5,14 @@ Steps, run from the repository root (the action calls them in this order):
 
   keel_repin.py poll [--tag latest]
       Resolve the tag, and write `tag`, `sha` and `needed` to $GITHUB_OUTPUT. Nothing is needed when
-      the pin is already the tag, the tag is not ahead of the pin, or a pull request for the tag
-      exists in any state (a closed one is never reopened by a later poll).
+      the pin is already the tag, the tag is not ahead of the pin, the tag's branch exists, or an
+      open or merged pull request for the tag exists. A closed pull request stops the tag only while
+      its branch exists: close it to stop the repin, close it and delete the branch to rebuild it.
 
   keel_repin.py run --tag keel-verified-2026-10-03-1|latest [--check-command CMD] [--report FILE]
       Resolve the tag to its commit, rewrite every Keel pin, refresh Cargo.lock for the
-      Keel crates, run the check command, and write a report. Never fails because the
-      build is broken: the break goes in the report so the pull request shows it.
+      Keel crates, run the target release's migrate --check and the build check, and write
+      a report. A failed migration or build goes in the report so the pull request shows it.
 
   keel_repin.py pr --report FILE [--dry-run]
       Branch, commit, push and open (or report) the pull request. A broken build opens it
@@ -26,9 +27,14 @@ Steps, run from the repository root (the action calls them in this order):
   keel_repin.py settle [--required "ci-ok web-smoke"] [--owner @team] [--dry-run]
       For every open repin pull request: merge it when, and only when, every required check ran on
       its exact head commit and succeeded, no check on that commit failed, it is not a draft, and
-      every commit on it is the bot's own. A red pull request is left open with one comment that
-      names the failing check and the owner; a pending one is left for the next run. Idempotent:
-      it keeps no state, so the title's schedule just runs it again.
+      every commit on it is the bot's own. An older repin pull request is closed with one comment when
+      a newer tag's repin is open, so only the newest stays live. A red pull request is left open with
+      one comment that names the failing check and the owner; a required check that has not finished is
+      not a failure: once it has waited STALL_MINUTES the pull request gets one comment saying the
+      runner has not picked the job up, and the next run reads the same head again. A check run
+      `skipped` on a required name counts as absent. A pending check whose required name has never
+      appeared turns the pull request red after --max-wait-minutes. Idempotent: it keeps no state, so
+      the title's schedule just runs it again.
       With --live-url, a merged repin is settled only once the live title runs it: the newest merged
       repin pull request's commit must equal the `keel` field of <live-url>/VERSION.json. A missing
       or different field fails the run (after --live-grace-minutes from the merge, the deploy's
@@ -78,6 +84,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 UNREADABLE_RE = re.compile(r"git fetch [^\n]*?'https://github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?'")
 DEFAULT_REQUIRED = "ci-ok web-smoke"
 DEFAULT_MAX_WAIT_MINUTES = 360
+STALL_MINUTES = 20
 
 
 class Refused(Exception):
@@ -171,7 +178,7 @@ def is_text(path):
 
 
 def rewrite(root, old_shas, new_sha, tag):
-    """Move every pin to new_sha and the tag; returns the changed file list."""
+    """Move matching commits; rewrite Keel tags only when tag is supplied."""
     root = Path(root)
     prefix = re.compile("|".join(f"(?<![0-9a-f]){re.escape(o[:n])}(?![0-9a-f])" for o in old_shas for n in (12, 8, 7)) or "(?!)")
     changed = []
@@ -186,7 +193,7 @@ def rewrite(root, old_shas, new_sha, tag):
         for old in old_shas:
             new = new.replace(old, new_sha)
         new = prefix.sub(lambda m: new_sha[: len(m.group(0))], new)
-        if f.endswith("Cargo.toml"):
+        if tag is not None and f.endswith("Cargo.toml"):
             new = "\n".join(
                 TAG_PIN_RE.sub(lambda m: f"{m.group(1)}{tag}{m.group(2)}", line) if KEEL_URL.search(line) else line
                 for line in new.split("\n")
@@ -278,13 +285,203 @@ def remote_branch_exists(root, branch):
     return run(["git", "ls-remote", "--exit-code", "--heads", "origin", branch], cwd=root, check=False).returncode == 0
 
 
+LAYER_REPOS = {"kit": "Cubeage/cubeage-kit", "engine": "Cubeage/tycoon-engine"}
+
+
+def layer_pins(root, layer):
+    """Cargo git revisions and the title's explicit layer revision files."""
+    repo = re.compile(re.escape(LAYER_REPOS[layer]) + r"(?:\.git)?(?![\w-])")
+    found = []
+    for f in tracked_files(root):
+        if f.endswith("Cargo.toml") and not f.startswith(SKIP_DIRS) and "/vendor/" not in f:
+            for line in (Path(root) / f).read_text(errors="replace").splitlines():
+                if repo.search(line):
+                    found += REV_RE.findall(line)
+        elif (layer == "kit" and (f == "deps/kit.rev" or f.endswith("/deps/kit.rev"))) or (layer == "engine" and Path(f).name == "ENGINE_REV"):
+            pin = (Path(root) / f).read_text().strip()
+            if SHA_RE.fullmatch(pin):
+                found.append(pin)
+    return sorted(set(found))
+
+
+def layer_target(args):
+    if SHA_RE.fullmatch(args.tag):
+        return args.tag
+    if args.tag not in ("", "latest", "main"):
+        raise Refused("a shared layer target must be main, latest or a full commit SHA")
+    out = run(["git", "ls-remote", args.remote, "refs/heads/main"]).stdout.split()
+    if not out or not SHA_RE.fullmatch(out[0]):
+        raise Refused(f"no main commit at {args.remote}")
+    return out[0]
+
+
+def checkout_layer(remote, sha, directory):
+    run(["git", "init", "-q", directory])
+    run(["git", "-C", directory, "fetch", "-q", "--no-tags", remote, sha])
+    run(["git", "-C", directory, "checkout", "-q", "FETCH_HEAD"])
+
+
+def layer_ahead(remote, sha, old):
+    with tempfile.TemporaryDirectory() as d:
+        run(["git", "init", "-q", "--bare", d])
+        run(["git", "-C", d, "fetch", "-q", "--no-tags", remote, sha, *old])
+        return all(run(["git", "-C", d, "merge-base", "--is-ancestor", pin, sha], check=False).returncode == 0 for pin in old)
+
+
+def cmd_layer_poll(args):
+    root = Path(args.root).resolve()
+    sha = layer_target(args)
+    branch = BRANCH_PREFIX + args.layer + "-" + sha
+    old = layer_pins(root, args.layer)
+    if not old:
+        raise Refused(f"no {args.layer} pin found")
+    out = {"tag": sha, "sha": sha, "needed": "false", "reason": ""}
+    if old == [sha]:
+        out["reason"] = "already pinned"
+    elif pr_exists(branch) or remote_branch_exists(root, branch):
+        out["reason"] = "a pull request or branch for this commit exists"
+    else:
+        ahead = layer_ahead(args.remote, sha, old)
+        out["needed"] = "true" if ahead else "false"
+        out["reason"] = "" if ahead else "main is not ahead of every pin"
+    write_outputs(out)
+    return 0
+
+
+def refresh_layer_locks(root, layer, log):
+    """Update the layer and its transitive pins in one Cargo resolution."""
+    repo = LAYER_REPOS[layer]
+    for f in tracked_files(root):
+        if Path(f).name != "Cargo.lock" or f.startswith(SKIP_DIRS) or "/vendor/" in f:
+            continue
+        lock = (Path(root) / f).read_text()
+        names = sorted(set(re.findall(r'\[\[package\]\]\s+name = "([^"]+)"\s+version = "[^"]+"\s+source = "git\+https://github.com/' + re.escape(repo) + r'(?:\.git)?[?\"]', lock)))
+        manifest = (Path(root) / f).with_name("Cargo.toml")
+        if not names or not manifest.exists():
+            continue
+        cmd = ["cargo", "update", "--manifest-path", str(manifest)]
+        for name in names:
+            cmd += ["-p", name]
+        proc = run(cmd, cwd=root, check=False)
+        log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
+        if proc.returncode:
+            return "lock"
+    return None
+
+
+def cmd_layer_run(args):
+    root = Path(args.root).resolve()
+    sha = layer_target(args)
+    old = layer_pins(root, args.layer)
+    if not old:
+        raise Refused(f"no {args.layer} pin found")
+    branch = BRANCH_PREFIX + args.layer + "-" + sha
+    report = {"layer": args.layer, "remote": args.remote, "tag": sha, "sha": sha, "branch": branch, "status": "unchanged",
+              "stage": "", "changed": [], "old": old, "manual": [], "log": "", "owner": args.owner}
+    if old == [sha] or (not args.ignore_branch and remote_branch_exists(root, branch)):
+        if old != [sha]:
+            report["status"] = "branch-exists"
+        Path(args.report).write_text(json.dumps(report, indent=2))
+        return 0
+    log, stage = [], None
+    keel_old = find_pins(root) if args.layer == "kit" else []
+    with tempfile.TemporaryDirectory() as d:
+        checkout_layer(args.remote, sha, d)
+        if args.layer == "kit":
+            pins = find_pins(d)
+            if len(pins) != 1:
+                raise Refused("cubeage-kit must pin exactly one Keel commit")
+            report["keel_sha"] = pins[0]
+            if (root / HOOK).exists():
+                cmd = ["bash", HOOK, pins[0], sha]
+                proc = run(cmd, cwd=root, check=False)
+                log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
+                stage = "hook" if proc.returncode else None
+            else:
+                # Convert Keel tags before rewrite can replace them with the kit SHA.
+                # A layer tuple uses a rev, not a Keel release tag.
+                for f in pin_files(tracked_files(root))[0]:
+                    p = root / f
+                    p.write_text("\n".join(
+                        TAG_PIN_RE.sub(lambda m: 'rev = "' + pins[0] + '"', line) if KEEL_URL.search(line) else line
+                        for line in p.read_text().split("\n")))
+                rewrite(root, old, sha, None)
+                rewrite(root, keel_old, pins[0], pins[0])
+                for f in tracked_files(root):
+                    if Path(f).name == "KEEL_PIN":
+                        (root / f).write_text(pins[0] + "\n")
+                stage = refresh_layer_locks(root, args.layer, log)
+                if stage is None:
+                    stage = refresh_locks(root, log)
+                if stage is None and (root / "scripts/vendor-private.sh").exists():
+                    proc = run(["bash", "scripts/vendor-private.sh"], cwd=root, check=False)
+                    log.append(f"$ bash scripts/vendor-private.sh\n{proc.stdout}{proc.stderr}")
+                    stage = "hook" if proc.returncode else None
+        else:
+            rewrite(root, old, sha, None)
+            for f in tracked_files(root):
+                if Path(f).name == "ENGINE_REV":
+                    (root / f).write_text(sha + "\n")
+            hook = next((h for h in ("tools/vendor_engine.sh", "scripts/vendor-private.sh") if (root / h).exists()), None)
+            if hook:
+                proc = run(["bash", hook], cwd=root, check=False, env={**os.environ, "ENGINE_REPO": d})
+                log.append(f"$ bash {hook}\n{proc.stdout}{proc.stderr}")
+                stage = "hook" if proc.returncode else None
+            if stage is None:
+                stage = refresh_layer_locks(root, args.layer, log)
+    if stage is None and args.layer == "kit":
+        for f in tracked_files(root):
+            if Path(f).name == "Cargo.lock" and not f.startswith(SKIP_DIRS) and "/vendor/" not in f:
+                sources = {source for _, _, source in lock_entries((root / f).read_text())}
+                commits = {source.rsplit("#", 1)[-1] for source in sources}
+                if sources and (len(sources) != 1 or commits != {report["keel_sha"]}):
+                    stage = "lock"
+                    log.append(f"{f}: expected one Keel commit {report['keel_sha']} from one source, found {', '.join(sorted(sources))}")
+    if stage is None and args.check_command:
+        proc = run(["bash", "-c", args.check_command], cwd=root / args.check_dir, check=False)
+        log.append(f"$ {args.check_command}\n{proc.stdout}{proc.stderr}")
+        stage = "check" if proc.returncode else None
+    report["manual"] = workflow_mentions(root, old + keel_old)
+    run(["git", "checkout", "--", WORKFLOWS.rstrip("/")], cwd=root, check=False)
+    report["changed"] = sorted(e[3:] for e in run(["git", "status", "--porcelain", "-z"], cwd=root).stdout.split("\0") if len(e) > 3)
+    if any(f.startswith("target/") or "/target/" in f for f in report["changed"]):
+        raise Refused("build output (target/) is not ignored by git in this repository; add it to .gitignore")
+    report.update(status=("failed" if stage else "ok") if report["changed"] else "unchanged", stage=stage or "", log="\n".join(log))
+    Path(args.report).write_text(json.dumps(report, indent=2))
+    return 0
+
+
+def check_migrations(root, remote, tag, sha, log):
+    """Run the target release's migration check, not a CLI already on PATH."""
+    with tempfile.TemporaryDirectory() as d:
+        source = str(Path(d) / "source")
+        try:
+            checkout_layer(remote, sha, source)
+        except Refused as error:
+            log.append(str(error))
+            return "migrate"
+        binary = Path(d) / "bin"
+        installer = Path(source) / "scripts/install_cli.sh"
+        commands = (["bash", str(installer), remote, tag, str(binary)],
+                    [str(binary / "keel"), "migrate", "--check"])
+        env = {**os.environ, "GH_TOKEN": os.environ.get("KEEL_API_TOKEN", "")}
+        for cmd in commands:
+            proc = run(cmd, cwd=root, check=False, env=env)
+            log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
+            if proc.returncode:
+                return "migrate"
+    return None
+
+
 def cmd_run(args):
+    if args.layer != "keel":
+        return cmd_layer_run(args)
     root = Path(args.root).resolve()
     if args.tag in ("", "latest"):
         args.tag = newest_verified_tag(args.remote)
     sha = resolve_tag(args.tag, args.remote)
     branch = BRANCH_PREFIX + args.tag
-    report = {"tag": args.tag, "sha": sha, "branch": branch, "status": "unchanged", "stage": "", "changed": [], "old": [], "manual": [], "log": ""}
+    report = {"tag": args.tag, "sha": sha, "branch": branch, "status": "unchanged", "stage": "", "changed": [], "old": [], "manual": [], "log": "", "owner": args.owner}
 
     def save():
         Path(args.report).write_text(json.dumps(report, indent=2))
@@ -314,6 +511,8 @@ def cmd_run(args):
     else:
         rewrite(root, old, sha, args.tag)
         stage = refresh_locks(root, log, old)
+    if stage is None:
+        stage = check_migrations(root, args.remote, args.tag, sha, log)
     if stage is None and args.check_command:
         proc = run(["bash", "-c", args.check_command], cwd=Path(root, args.check_dir), check=False)
         log.append(f"$ {args.check_command}\n{proc.stdout}{proc.stderr}")
@@ -352,12 +551,17 @@ def unreadable_repos(log):
 def pr_text(report):
     tag, sha = report["tag"], report["sha"]
     old = report["old"]
-    title = f"chore(keel): repin Keel to {tag} ({sha[:9]})"
-    lines = [f"Moves the Keel pin to `{tag}`, commit `{sha}`."]
+    layer = report.get("layer", "keel")
+    name = LAYER_REPOS[layer].split("/")[1] if layer != "keel" else "Keel"
+    title = f"chore({layer}): repin {name} to {tag} ({sha[:9]})"
+    lines = [f"Moves the {name} pin to `{tag}`, commit `{sha}`."]
+    if report.get("keel_sha"):
+        lines.append(f"Moves the Keel pin to `kit-{sha}`, commit `{report['keel_sha']}`.")
     if old:
         lines.append("")
         lines.append("Old pin: " + ", ".join(f"`{o}`" for o in old))
-        lines.append(f"Keel changes: https://github.com/SylphxAI/keel/compare/{old[0]}...{sha} (private repository)")
+        repo = LAYER_REPOS[layer] if layer != "keel" else "SylphxAI/keel"
+        lines.append(f"{name} changes: https://github.com/{repo}/compare/{old[0]}...{sha} (private repository)")
     if report["changed"]:
         lines += ["", "Files changed:", *[f"- `{f}`" for f in report["changed"][:60]]]
     if report.get("manual"):
@@ -367,12 +571,14 @@ def pr_text(report):
             *[f"- `{f}`" for f in report["manual"]],
         ]
     if report["status"] == "failed":
-        what = {"hook": "the repository's repin script", "lock": "the Cargo.lock refresh", "check": "the build check"}[report["stage"]]
+        what = {"hook": "the repository's repin script", "lock": "the Cargo.lock refresh", "migrate": "the migration check", "check": "the build check"}[report["stage"]]
         lines += [
             "",
-            f"**Draft: {what} fails on this Keel tag.** The pull request is open as a draft so the break is visible. "
+            f"**Draft: {what} fails on this {'Keel tag' if layer == 'keel' else name + ' commit'}.** The pull request is open as a draft so the break is visible. "
             "Fix it on this branch (the bot never touches it again), then mark it ready. CI was not started by the bot.",
         ]
+        if report.get("owner"):
+            lines.append(f"Owner: {report['owner']}")
         missing = unreadable_repos(report["log"])
         if missing:
             lines += [
@@ -396,7 +602,7 @@ def pr_text(report):
             "its checks land on this head commit, and the held run can be left alone.",
         ]
     lines += ["", "Opened by the keel-repin action. It merges this pull request itself once CI and the web smoke are green on this exact head; "
-              "a person can merge it earlier, or close it to stop that."]
+              "a person can merge it earlier, or close it (keeping the branch) to stop that."]
     return title, "\n".join(lines) + "\n"
 
 
@@ -452,7 +658,13 @@ def cmd_pr(args):
         if head == branch or not head.startswith(BRANCH_PREFIX):
             continue
         other = tag_key(head[len(BRANCH_PREFIX):])
-        if other and mine and other < mine:
+        superseded = bool(other and mine and other < mine)
+        layer = report.get("layer", "keel")
+        if layer != "keel" and head.startswith(BRANCH_PREFIX + layer + "-"):
+            previous = head[len(BRANCH_PREFIX + layer + "-"):]
+            superseded = bool(SHA_RE.fullmatch(previous) and previous != report["sha"]
+                              and layer_ahead(report["remote"], report["sha"], [previous]))
+        if superseded:
             run([*gh, "pr", "close", num, "--delete-branch", "--comment", f"Superseded by the repin to `{report['tag']}` (`{branch}`)."], cwd=root, check=False)
             print(f"closed superseded #{num} ({head})")
     return 0
@@ -484,9 +696,10 @@ def unmatched_commits(remote, tag_sha, pin):
 
 
 def pr_exists(branch):
-    """A pull request from this branch exists in any state (open, closed or merged)."""
-    p = run([*gh_bin(), "pr", "list", "--head", branch, "--state", "all", "--json", "number", "--jq", "length"], check=False)
-    return p.returncode == 0 and p.stdout.strip() not in ("", "0")
+    """An open or merged pull request from this branch exists. A closed, unmerged one does not count: whether
+    it still stops the tag is decided by its branch (kept: stopped; deleted: the next poll rebuilds it)."""
+    p = run([*gh_bin(), "pr", "list", "--head", branch, "--state", "all", "--json", "state", "--jq", ".[].state"], check=False)
+    return p.returncode == 0 and bool({"OPEN", "MERGED"} & set(p.stdout.split()))
 
 
 def write_outputs(pairs):
@@ -499,6 +712,8 @@ def write_outputs(pairs):
 
 
 def cmd_poll(args):
+    if args.layer != "keel":
+        return cmd_layer_poll(args)
     root = Path(args.root).resolve()
     tag = newest_verified_tag(args.remote) if args.tag in ("", "latest") else args.tag
     sha = resolve_tag(tag, args.remote)
@@ -568,6 +783,10 @@ def classify(check_runs, required):
     under the same name). Of several runs with one name (a re-run) the newest decides. Any failed check
     on the commit makes it red, required or not; a required check that has not appeared, or has not
     finished, keeps it pending.
+
+    A check that ended `skipped` counts for nothing: GitHub reports a job skipped by its own `if:` that
+    way, and a skipped required check has not verified anything. So a required name whose newest run is
+    `skipped` is treated as absent and keeps the pull request waiting.
     """
     latest = {}
     for r in check_runs:
@@ -585,6 +804,8 @@ def classify(check_runs, required):
             pending.append(f"`{name}` has not run")
         elif r["status"] != "completed":
             pending.append(f"`{name}` is {r['status']}")
+        elif r["conclusion"] == "skipped":
+            pending.append(f"`{name}` was skipped, so it has not verified anything")
         elif r["conclusion"] != "success":
             return "red", [f"`{name}` ended {r['conclusion']}, not success"]
     for n, r in latest.items():
@@ -606,35 +827,45 @@ def repo_name():
 
 def head_check_runs(repo, sha):
     out = gh_json(["api", "--paginate", f"repos/{repo}/commits/{sha}/check-runs?per_page=100"],
-                  '.check_runs[] | [.id, .name, .status, (.conclusion // ""), (.app.slug // ""), .html_url] | @tsv')
+                  '.check_runs[] | [.id, .name, .status, (.conclusion // ""), (.app.slug // ""), .html_url, (.started_at // "")] | @tsv')
     runs = []
     for line in out.splitlines():
         if line.strip():
-            i, name, status, conclusion, app, url = line.split("\t")
-            runs.append({"id": int(i), "name": name, "status": status, "conclusion": conclusion, "app": app, "url": url})
+            i, name, status, conclusion, app, url, started = line.split("\t")
+            runs.append({"id": int(i), "name": name, "status": status, "conclusion": conclusion, "app": app,
+                         "url": url, "started_at": started})
     return runs
 
 
-def commit_emails(repo, number):
-    out = gh_json(["api", "--paginate", f"repos/{repo}/pulls/{number}/commits?per_page=100"], ".[].commit.author.email")
-    return [e for e in out.split() if e]
+def already_told(number, sha, kind=""):
+    """Whether this head and kind of reason already carry a comment on the pull request.
 
-
-def already_told(number, sha):
+    One reason per head per kind, so the same condition seen on every scheduled run adds no second
+    comment, and a head whose reason changes (a failure became a stall, or the reverse) is told once
+    for the new kind.
+    """
     out = gh_json(["pr", "view", str(number), "--json", "comments"], ".comments[].body")
-    return f"{RED_MARKER}{sha} " in out
+    return f"{RED_MARKER}{kind}{sha} " in out
 
 
-def tell_red(number, tag, sha, owner, problems, draft, dry):
+def tell_red(number, tag, sha, owner, problems, draft, dry, kind="", pending=False, waited=None):
     who = f"{owner} " if owner else ""
-    if draft:
+    age = f" after {int(waited)} minutes" if waited is not None else ""
+    if pending:
+        # A check that has not finished is not a failure: the runners may simply be busy. The bot keeps
+        # waiting and re-reads the head on its next run; nothing here says the pull request is red.
+        text = (f"{who}The Keel repin to `{tag}` is waiting, not red: " + "; ".join(problems) + f" on `{sha[:9]}`{age}. "
+                "A required check that has not finished is not a failure, so the bot leaves this pull request open and "
+                "re-reads its head on the next run; it merges as soon as CI and the web smoke are green on that exact head. "
+                "Fix or restart the check, or close the pull request and delete the branch to stop the repin.")
+    elif draft:
         text = (f"{who}The Keel repin to `{tag}` is a draft: the build does not pass on the new tag. "
                 "The bot leaves the branch alone; fix it here, mark it ready, and merge it once CI and the web smoke pass on the new head.")
     else:
         text = (f"{who}The Keel repin to `{tag}` is not merged: " + "; ".join(problems) + f" on `{sha[:9]}`. "
                 "Fix it on this branch, or close the pull request and delete the branch so the next poll rebuilds it. "
                 "The bot merges only when CI and the web smoke are green on the exact head.")
-    text += f"\n\n{RED_MARKER}{sha} -->"
+    text += f"\n\n{RED_MARKER}{kind}{sha} -->"
     if dry:
         print(f"DRY RUN: would comment on #{number}:\n{text}")
         return
@@ -654,7 +885,8 @@ def web_smoke():
 def newest_merged_repin():
     """The newest merged repin pull request as (number, tag, commit, merged_at epoch), or None."""
     out = gh_json(["pr", "list", "--state", "merged", "--limit", "50", "--json", "number,headRefName,body,mergedAt"],
-                  '[.[] | select(.headRefName | startswith("' + BRANCH_PREFIX + '"))] | max_by(.mergedAt) // empty')
+                  '[.[] | select((.headRefName | startswith("' + BRANCH_PREFIX + '")) and '
+                  '(.headRefName | startswith("' + BRANCH_PREFIX + 'engine-") | not))] | max_by(.mergedAt) // empty')
     if not out.strip():
         return None
     pr = json.loads(out)
@@ -697,37 +929,180 @@ def settle_live(args, now):
     return 1
 
 
+def check_age_minutes(run, now):
+    """How long a check run has been sitting unfinished, in minutes.
+
+    GitHub stamps `started_at` when the job begins and leaves it blank while the job waits for a runner,
+    so a job nobody has picked up still counts, from the oldest stamp among the unfinished ones.
+    """
+    stamp = run.get("started_at") or run.get("created_at")
+    if not stamp:
+        return 0.0
+    try:
+        return max(0.0, (now - calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))) / 60)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def wait_reason(why, runs, required, now):
+    """A pending verdict and the sentence naming it: a stalled check, when the age points at the queue."""
+    ages = [check_age_minutes(r, now) for r in runs if r.get("status") != "completed"]
+    if not ages or max(ages) < STALL_MINUTES:
+        return "pending", why
+    missing = [w for w in why if "has not run" in w]
+    label = f"`{required[0]}`" if missing and required else "a required check"
+    if missing and len(missing) == len(why):
+        return "stalled", [f"{label} has not started after {int(max(ages))} minutes, so its runner has not picked the job up"]
+    return "stalled", ["a check has not finished after "
+                       f"{int(max(ages))} minutes, so its runner has not picked the job up", *why]
+
+
+def foreign_commits(repo, number, sha, branch):
+    """The pull request's own commits on the head that are not the bot's, newest first, as (sha, subject).
+
+    Every commit of a pull request created with the workflow token carries the bot's email, so a commit
+    with any other author or committer email is a person's push to the branch. The pull request's commit
+    list rides the same call that already fetched the head, and a repin branch holds a handful of commits,
+    so the head's own commits (beyond the trusted prefix) are the ones questioned. A branch whose history
+    a person rebased away is judged by the list alone.
+    """
+    out = gh_json(["api", "--paginate", f"repos/{repo}/pulls/{number}/commits?per_page=100"],
+                  '.[] | [.sha, (.commit.message | split("\\n")[0]), .commit.author.email, .commit.committer.email] | @tsv')
+    listed = []
+    for line in out.splitlines():
+        if "\t" not in line:
+            continue  # blank or short output (the fake in a test, an empty page)
+        commit, subject, author, committer = line.split("\t", 3)
+        listed.append({"sha": commit, "message": subject, "emails": {author, committer}})
+    if not any(c["sha"] == sha for c in listed):
+        print(f"the commit list does not carry {sha[:9]}; {branch} is judged by the list it returns")
+        return []
+    trusted = False
+    foreign = []
+    for commit in listed:
+        if commit["emails"] == {BOT_EMAIL}:
+            trusted = True
+            continue
+        if trusted:
+            foreign.append((commit["sha"], commit["message"]))
+    return list(reversed(foreign))
+
+
+def newer_repins(number, tag, prs):
+    """The open repin pull requests whose tag is newer than this one: [(number, tag), ...]."""
+    mine = tag_key(tag)
+    newer = []
+    for other_number, other_branch in prs:
+        if other_number == number:
+            continue
+        other_tag = other_branch[len(BRANCH_PREFIX):]
+        key = tag_key(other_tag)
+        if mine and key and key > mine:
+            newer.append((other_number, other_tag))
+    return sorted(newer, key=lambda item: tag_key(item[1]))
+
+
+def repin_sort_key(head):
+    """The sort key of a repin branch's tail, or None when it is not a repin.
+
+    A settle branch is `chore/keel-repin-<tag>` for the Keel layer or `chore/keel-repin-<layer>-<sha>`
+    for the kit and engine layers. A branch under the same prefix that is neither (a hand-made
+    `chore/keel-repin-smoke-checks-20261015`, say) is not a repin: sorting it by a None tag key crashed
+    the whole settle job, so a genuine repin beside it could not settle. Its key is therefore None.
+    Every real key is a (rank, text) pair, so tag and layer rows sort together and the order is total.
+    """
+    key = tag_key(head)
+    if key is not None:
+        date, kind, n = key
+        return (0, date, kind, n)
+    for layer in LAYER_REPOS:
+        prefix = layer + "-"
+        if head.startswith(prefix) and SHA_RE.fullmatch(head[len(prefix):]):
+            return (1, layer, 0, 0)
+    return None
+
+
+def close_superseded(number, newer, dry):
+    """Close an older repin pull request with one comment naming the newer one that replaces it."""
+    listing = ", ".join(f"#{n} (`{t}`)" for n, t in newer)
+    body = (f"This repin is superseded by {listing}, a newer Keel tag on the same repository. "
+            "Only the newest repin pull request stays live, so this one is closed. "
+            "Its branch is kept: close and delete it to have the next poll rebuild it.")
+    print(f"#{number} is superseded by {listing}")
+    if dry:
+        print(f"DRY RUN: would close #{number}:\n{body}")
+        return
+    run([*gh_bin(), "pr", "close", number, "--comment", body], check=False)
+
+
 def cmd_settle(args):
     repo = repo_name()
     required = args.required.split()
     prs = gh_json(["pr", "list", "--state", "open", "--limit", "50", "--json", "number,headRefName,headRefOid,isDraft,createdAt"],
                   '.[] | select(.headRefName | startswith("' + BRANCH_PREFIX + '")) | [.number, .headRefName, .headRefOid, .isDraft, .createdAt] | @tsv')
     now = time.time() if args.now is None else args.now
+    rows = []
     for line in prs.splitlines():
         if not line.strip():
             continue
         number, branch, sha, draft, created = line.split("\t")
+        key = repin_sort_key(branch[len(BRANCH_PREFIX):])
+        if key is None:
+            # A branch under the repin prefix that is not a repin (a hand-made smoke-producer branch,
+            # say) is named and skipped, so it neither settles nor stops the repin beside it.
+            print(f"#{number} {branch}: not a repin branch; skipped")
+            continue
+        rows.append((key, number, branch, sha, draft == "true", created))
+    # Newest tag first: the newest repin is settled (or told why not) before an older one is closed.
+    rows.sort(key=lambda row: row[0], reverse=True)
+    rows = [row[1:] for row in rows]
+    for number, branch, sha, draft, created in rows:
         tag = branch[len(BRANCH_PREFIX):]
-        draft = draft == "true"
         age_min = (now - calendar.timegm(time.strptime(created, "%Y-%m-%dT%H:%M:%SZ"))) / 60
+        # An older pull request of a newer tag is closed. Closing is keyed on the tag in the branch name,
+        # never on order, so a row read again after its own merge cannot close the surviving newest one.
+        greater = newer_repins(number, tag, [(n, b) for n, b, _s, _d, _c in rows])
+        if greater:
+            close_superseded(number, greater, args.dry_run)
+            continue
         if draft:
-            if not already_told(number, sha):
-                tell_red(number, tag, sha, args.owner, [], True, args.dry_run)
+            if not already_told(number, sha, "draft-"):
+                tell_red(number, tag, sha, args.owner, [], True, args.dry_run, kind="draft-")
             print(f"#{number} {tag}: draft, left for the owner")
             continue
-        strangers = sorted(set(commit_emails(repo, number)) - {BOT_EMAIL})
-        if strangers:
-            print(f"#{number} {tag}: has commits that are not the bot's; a person merges it")
-            continue
-        verdict, why = classify(head_check_runs(repo, sha), required)
+        runs = head_check_runs(repo, sha)
+        verdict, why = classify(runs, required)
+        if verdict == "green":
+            strangers = foreign_commits(repo, number, sha, branch)
+            if strangers:
+                # A person pushed to the branch, often a deliberate fix to the pinned rev. It is never
+                # discarded and never merged by the bot: the reason names the head and the owner hears it.
+                commit, subject = strangers[0]
+                problem = f"it carries `{commit[:9]}` (\"{subject[:120]}\"), which is not the bot's own commit"
+                if not already_told(number, sha, "foreign-"):
+                    tell_red(number, tag, sha, args.owner, [problem], False, args.dry_run, kind="foreign-")
+                print(f"#{number} {tag} {sha[:9]}: has commits that are not the bot's; a person merges it")
+                continue
+        elif verdict == "pending":
+            # Only a genuine pending — a required check that ran and has not finished — carries a stalled
+            # one. Red and green never do, so a red verdict stays red and is never re-judged as the queue.
+            verdict, why = wait_reason(why, runs, required, now)
+        waited = max([check_age_minutes(r, now) for r in runs if r.get("status") != "completed"], default=0.0)
         if verdict == "pending" and age_min > args.max_wait_minutes:
             verdict, why = "red", [f"still waiting after {int(age_min)} minutes ({'; '.join(why)})"]
         print(f"#{number} {tag} {sha[:9]}: {verdict} {'; '.join(why)}")
         if verdict == "pending":
             continue
+        if verdict == "stalled":
+            # The runners never picked the job up. That is the queue, not the change, so the pull
+            # request stays open with the reason and the next run re-reads the same head.
+            if not already_told(number, sha, "stalled-"):
+                tell_red(number, tag, sha, args.owner, why, False, args.dry_run, kind="stalled-", pending=True,
+                         waited=waited)
+            continue
         if verdict == "red":
-            if not already_told(number, sha):
-                tell_red(number, tag, sha, args.owner, why, False, args.dry_run)
+            if not already_told(number, sha, "red-"):
+                tell_red(number, tag, sha, args.owner, why, False, args.dry_run, kind="red-")
             continue
         if args.dry_run:
             print(f"DRY RUN: would merge #{number} at {sha}")
@@ -737,7 +1112,10 @@ def cmd_settle(args):
         if p.returncode != 0 and re.search(r"--auto|merge queue", p.stderr + p.stdout):
             p = run([*cmd, "--auto"], check=False)
         if p.returncode != 0:
-            tell_red(number, tag, sha, args.owner, [f"the merge was refused: {(p.stderr or p.stdout).strip()[-200:]}"], False, False)
+            if not already_told(number, sha, "refused-"):
+                tell_red(number, tag, sha, args.owner,
+                         [f"the merge was refused: {(p.stderr or p.stdout).strip()[-200:]}"], False, False,
+                         kind="refused-")
             continue
         print(f"merged (or queued) #{number} at {sha[:9]}")
         state = gh_json(["pr", "view", number, "--json", "state"], ".state").strip()
@@ -753,17 +1131,20 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--tag", required=True)
+    r.add_argument("--tag", default="latest")
+    r.add_argument("--layer", choices=("keel", "kit", "engine"), default="keel")
+    r.add_argument("--owner", default="")
     r.add_argument("--root", default=".")
-    r.add_argument("--remote", default=os.environ.get("KEEL_REMOTE", DEFAULT_REMOTE))
+    r.add_argument("--remote", default=None)
     r.add_argument("--check-command", default="cargo check")
     r.add_argument("--check-dir", default=".")
     r.add_argument("--report", required=True)
     r.add_argument("--ignore-branch", action="store_true", help="rebuild even when the branch exists (dry runs)")
     q = sub.add_parser("poll")
     q.add_argument("--tag", default="latest")
+    q.add_argument("--layer", choices=("keel", "kit", "engine"), default="keel")
     q.add_argument("--root", default=".")
-    q.add_argument("--remote", default=os.environ.get("KEEL_REMOTE", DEFAULT_REMOTE))
+    q.add_argument("--remote", default=None)
     d = sub.add_parser("dispatch")
     d.add_argument("--report", required=True)
     d.add_argument("--workflows", default="ci.yml", help="workflow files, space separated, started in order")
@@ -788,6 +1169,9 @@ def main(argv=None):
     p.add_argument("--label", default="")
     p.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+    if args.cmd in ("run", "poll") and not args.remote:
+        args.remote = (os.environ.get("KEEL_REMOTE", DEFAULT_REMOTE) if args.layer == "keel"
+                       else "https://github.com/" + LAYER_REPOS[args.layer])
     try:
         return {"run": cmd_run, "pr": cmd_pr, "poll": cmd_poll, "dispatch": cmd_dispatch, "settle": cmd_settle}[args.cmd](args)
     except Refused as e:
