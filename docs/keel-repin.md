@@ -16,8 +16,13 @@ tag) and calls the `keel-repin` action in three modes:
    no open or merged pull request from it exists. A closed pull request stops its tag only while its
    branch exists: close it to stop the repin; close it and delete the branch to have the next poll
    rebuild it.
-2. **repin** (only when needed): moves every pin, refreshes `Cargo.lock` for the Keel crates, runs
-   the title's build check, pushes `chore/keel-repin-<tag>`, opens the pull request with the
+2. **repin** (only when needed): moves every pin, refreshes `Cargo.lock` for the Keel crates,
+   and, for Keel-tag repins, downloads the target tag's prebuilt CLI through its
+   `scripts/install_cli.sh` and runs
+   `keel migrate --check` from the title repository root before the title's build check.
+   A migration failure, including `[mobile.android]` without `[mobile.android.signing]`
+   (Keel #5144), opens a failed draft with the migration diagnostic instead of passing
+   the build preflight. The action then pushes `chore/keel-repin-<tag>`, opens the pull request with the
    workflow token and the repository's single `owner:*` label, then starts the title's CI on that
    branch with `workflow_dispatch`.
 
@@ -46,8 +51,11 @@ someone pushed to it.
 
 ## When the bot merges
 
-`settle` looks at every open pull request from a `chore/keel-repin-*` branch and merges one only when
-all of these hold, judged on the pull request's **exact head commit**:
+`settle` looks at every open pull request from a `chore/keel-repin-<tag>` branch (or a
+`chore/keel-repin-<layer>-<sha>` branch for the kit and engine layers) and merges one only when
+all of these hold, judged on the pull request's **exact head commit**. A branch under the prefix that
+is neither a tag nor a layer commit (a hand-made `chore/keel-repin-smoke-checks-*`, say) is named and
+skipped, so it neither settles nor stops the repin beside it:
 
 - every check in `required-checks` (default `ci-ok web-smoke`) has run on that commit, finished, and
   succeeded. A check that has not appeared or not finished keeps the pull request waiting; a run that
@@ -204,7 +212,7 @@ hook paths, one PR on repeat and an owned draft on a failed build.
 | `dry-run` | Print the pull request it would open and the workflows it would start; push nothing. Rebuilds even if the branch exists. |
 | `reader-app-id`, `reader-app-key` | A read-only App that can read the private Keel repository. |
 | `extra-read-owner`, `extra-read-repos` | Private repositories of one owner that the lock refresh or the build fetches, such as a title kit; list every private git dependency of every tracked `Cargo.lock`. |
-| `check-command`, `check-dir` | The build check. Default `cargo check`. |
+| `check-command`, `check-dir` | The build check and its directory. Default `cargo check`. Keel-tag repins always run `keel migrate --check` from the repository root first, even with a custom or empty build check. |
 | `ci-workflows` | Workflow files started on the branch, in order. Default `ci.yml`. The web smoke must be among the checks they produce. |
 | `required-checks` | settle: checks that must have succeeded on the head. Default `ci-ok web-smoke`. |
 | `owner` | Who a failed-build draft or red settle comment mentions, such as `@Cubeage/studio`. |
@@ -219,7 +227,8 @@ hook paths, one PR on repeat and an owned draft on a failed build.
 `python -m unittest tests.test_keel_repin`: pin discovery and rewrite, the lock refresh of a crate
 held at two Keel commits (against real cargo when it is installed), the draft naming a private
 repository the build could not read, poll (ahead, behind, pinned,
-pull request exists), the build check, the draft pull request, supersession of older repin pull
+pull request exists), the target release's migration check (a stand-in CLI refusal names the
+Android signing migration and prevents the build check), the build check, the draft pull request, supersession of older repin pull
 requests, CI dispatch order, workflow files named and never edited, settle (merges only on every
 required check green on the exact head and pinned to it; waits on a missing or unfinished check; a
 skipped required check counts as absent; a check nobody has picked up says so and stays open rather

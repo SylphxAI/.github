@@ -43,6 +43,22 @@ def red_main(pin: str = FLOOR) -> str:
     return re.sub(r"red-main\.yml@[0-9a-f]{40}", f"red-main.yml@{pin}", (STARTERS / "red-main.yml").read_text())
 
 
+def with_input(text: str, key: str, value: str) -> str:
+    """Append `key: value` to the `with:` block of the shared-handler caller, at the block's own indent."""
+    lines = text.splitlines(keepends=True)
+    index = next(i for i, line in enumerate(lines) if re.match(r"^    with:\s*$", line))
+    lines.insert(index + 1, f"      {key}: {value}\n")
+    return "".join(lines)
+
+
+def strip_dispatch_inputs(text: str) -> str:
+    """The verify starter with an input-less `workflow_dispatch` (the shape that caused the 422s)."""
+    return re.sub(r"  workflow_dispatch:\n    inputs:\n(?:      .*\n)+", "  workflow_dispatch:\n", text)
+
+
+VERIFY_WORKFLOW = "verify.yml"
+
+
 def conformant(org: str = "SylphxAI", name: str = "tool", branch: str = "main", on_red: str | None = None) -> dict:
     on_red = on_red or ("revert" if org == "SylphxAI" else "notify")
     verify = starter("optimistic-verify.yml").replace("branches: [main]", f"branches: [{branch}]")
@@ -193,6 +209,81 @@ class RowFailureTest(unittest.TestCase):
         facts["all_workflows"] = None
         self.only(facts, "R3b", "unreadable")
 
+    # Cubeage/last-minute-keel: its main gated keel-pin-check.yml and
+    # web-smoke.yml through a ci-ok.yml that waited for every check on the
+    # commit. Deleting that file under optimistic merge left `ci-ok` needing
+    # only `ci.yml`'s jobs, so a merge group could pass while those two checks
+    # were still pending, and a run that finished after `ci-ok` was never seen.
+    def test_r3b_a_merge_group_workflow_outside_ci_never_reaches_the_gate(self) -> None:
+        facts = conformant()
+        facts["all_workflows"]["keel-pin-check.yml"] = (
+            "name: Keel pin check\non:\n  pull_request:\n  merge_group:\nconcurrency:\n  group: g\n"
+            "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\njobs:\n  keel-pin-check:\n"
+            "    runs-on: x\n")
+        # Called from verify.yml only: its red reaches the handler, but a merge
+        # group is still admitted without its verdict.
+        facts["files"]["verify.yml"] += "\n  pin:\n    uses: ./.github/workflows/keel-pin-check.yml\n"
+        self.only(facts, "R3b", "keel-pin-check.yml")
+        # Called from ci.yml but not in ci-ok's needs: ci-ok still passes while
+        # the pin job runs, so the merge is admitted without it.
+        facts["files"]["ci.yml"] += "\n  pin:\n    uses: ./.github/workflows/keel-pin-check.yml\n"
+        self.only(facts, "R3b", "not needed by ci-ok")
+        # Called from ci.yml and needed by ci-ok: R3b is satisfied.
+        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
+            "needs: [main-state, plan, lint, test, migrations, stack, suite]",
+            "needs: [main-state, plan, lint, test, migrations, stack, suite, pin]")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
+    def test_r3b_names_every_merge_group_workflow_outside_ci(self) -> None:
+        facts = conformant()
+        shoe = ("on:\n  pull_request:\n  merge_group:\nconcurrency:\n  group: g\n"
+                "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\njobs:\n  a:\n    runs-on: x\n")
+        facts["all_workflows"].update({"keel-pin-check.yml": shoe, "web-smoke.yml": shoe})
+        rows = run_rows(facts)
+        self.assertEqual(failing(rows), {"R3b"})
+        self.assertIn("keel-pin-check.yml, web-smoke.yml", rows["R3b"]["detail"])
+
+    def test_r3b_a_merge_group_workflow_called_from_ci_passes(self) -> None:
+        facts = conformant()
+        facts["all_workflows"]["keel-pin-check.yml"] = (
+            "on:\n  pull_request:\n  merge_group:\njobs:\n  keel-pin-check:\n    runs-on: x\n")
+        facts["files"]["ci.yml"] += ("\n  pin:\n    uses: ./.github/workflows/keel-pin-check.yml\n"
+                                     "    secrets: inherit\n")
+        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
+            "needs: [main-state, plan, lint, test, migrations, stack, suite]",
+            "needs: [main-state, plan, lint, test, migrations, stack, suite, pin]")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
+    def test_r3b_a_job_named_by_a_ci_job_name_counts_as_needed(self) -> None:
+        # A calling job whose `name:` is what ci-ok lists is awaited too.
+        facts = conformant()
+        facts["all_workflows"]["keel-pin-check.yml"] = (
+            "on:\n  pull_request:\n  merge_group:\njobs:\n  keel-pin-check:\n    runs-on: x\n")
+        facts["files"]["ci.yml"] += ("\n  pin:\n    name: pin-check\n"
+                                     "    uses: ./.github/workflows/keel-pin-check.yml\n")
+        facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
+            "needs: [main-state, plan, lint, test, migrations, stack, suite]",
+            "needs: [main-state, plan, lint, test, migrations, stack, suite, pin-check]")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
+    def test_r3b_a_pr_only_workflow_outside_ci_passes(self) -> None:
+        # A pull-request-only workflow never runs in the merge queue, so the
+        # queue cannot be admitted without it.
+        facts = conformant()
+        facts["all_workflows"]["content-checks.yml"] = (
+            "on:\n  pull_request:\njobs:\n  zh-hant:\n    runs-on: x\n")
+        facts["all_workflows"]["office-kit.yml"] = (
+            "on:\n  pull_request:\n    paths: ['tools/**']\n  workflow_dispatch:\njobs:\n  build-kit:\n"
+            "    runs-on: x\n")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
+    def test_r3b_gate_external_comment_waives_a_merge_group_workflow(self) -> None:
+        facts = conformant()
+        facts["all_workflows"]["web-smoke.yml"] = (
+            "# optimistic-merge: gate-external\non:\n  pull_request:\n  merge_group:\njobs:\n  web-smoke:\n"
+            "    runs-on: x\n")
+        self.assertNotIn("R3b", failing(run_rows(facts)))
+
     def test_r8_merge_group_job_on_the_pull_request_pool_fails(self) -> None:
         facts = conformant()
         facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(
@@ -210,9 +301,11 @@ class RowFailureTest(unittest.TestCase):
         facts = conformant()
         wf = "on:\n  merge_group:\njobs:\n  build:\n    runs-on: sylphx-linux-xlarge\n    steps: []\n"
         facts["all_workflows"]["heavy.yml"] = wf
-        self.only(facts, "R8", "heavy.yml (build)")
+        rows = run_rows(facts)
+        self.assertEqual(failing(rows), {"R3b", "R8"}, rows)  # R3b: called from neither ci.yml nor verify.yml
+        self.assertIn("heavy.yml (build)", rows["R8"]["detail"])
         facts["all_workflows"]["heavy.yml"] = wf.replace("xlarge", "xlarge-merge")
-        self.assertEqual(failing(run_rows(facts)), set())
+        self.assertEqual(failing(run_rows(facts)), {"R3b"})
 
     def test_r8_leaves_verdicts_pr_only_jobs_and_workflows_without_merge_group(self) -> None:
         facts = conformant()
@@ -232,10 +325,12 @@ class RowFailureTest(unittest.TestCase):
         facts = conformant()
         facts["all_workflows"]["lst.yml"] = ("on:\n  merge_group:\njobs:\n  a:\n    runs-on:\n"
                                               "      - self-hosted\n      - sylphx-linux-standard\n")
-        self.only(facts, "R8", "lst.yml (a)")
+        rows = run_rows(facts)
+        self.assertEqual(failing(rows), {"R3b", "R8"}, rows)
+        self.assertIn("lst.yml (a)", rows["R8"]["detail"])
 
     def test_r9_pull_request_workflows_cancel_only_pull_request_runs(self) -> None:
-        head = "on:\n  pull_request:\n  merge_group:\n"
+        head = "# optimistic-merge: gate-external\non:\n  pull_request:\n  merge_group:\n"
         cases = {
             head + "jobs:\n  a:\n    runs-on: x\n": "no workflow-level concurrency",
             head + "concurrency: lint\njobs: {}\n": "never cancelled",
@@ -296,6 +391,93 @@ class RowFailureTest(unittest.TestCase):
         rows = run_rows(facts, compare)
         self.assertEqual(failing(rows), {"R4"})
         self.assertIn("could not be compared", rows["R4"]["detail"])
+
+    def test_r4_default_lane_input_needs_a_lanes_dispatch_input(self) -> None:
+        # The anymd shape: the caller omits lane-input, so the handler's default
+        # (lanes) reaches verify.yml, whose workflow_dispatch declares no
+        # inputs; every candidate dispatch is refused with HTTP 422.
+        facts = conformant()
+        facts["files"]["verify.yml"] = strip_dispatch_inputs(facts["files"]["verify.yml"])
+        self.assertEqual(audit.dispatch_inputs(facts["files"]["verify.yml"]), set())
+        self.only(facts, "R4", "the `red-main.yml` caller of `verify.yml` sends lane-input `lanes`")
+        facts["files"]["red-main.yml"] = with_input(red_main(), "lane-input", '""')
+        self.assertNotIn("R4", failing(run_rows(facts)))
+
+    def test_r4_a_named_lane_input_must_be_declared(self) -> None:
+        facts = conformant()
+        self.assertEqual(audit.dispatch_inputs(facts["files"]["verify.yml"]), {"lanes"})
+        facts["files"]["red-main.yml"] = with_input(red_main(), "lane-input", "suites # the verify input")
+        self.only(facts, "R4", "sends lane-input `suites`")
+        facts["files"]["red-main.yml"] = with_input(red_main(), "lane-input", "'lanes'")
+        self.assertNotIn("R4", failing(run_rows(facts)))
+
+    def test_r4_the_verify_workflow_must_be_dispatchable_and_readable(self) -> None:
+        facts = conformant()
+        facts["files"]["verify.yml"] = facts["files"]["verify.yml"].replace("  workflow_dispatch:\n", "  pull_request:\n")
+        self.assertIsNone(audit.dispatch_inputs(facts["files"]["verify.yml"]))
+        self.assertIn("no workflow_dispatch trigger", run_rows(facts)["R4"]["detail"])
+        facts = conformant()
+        facts["files"]["red-main.yml"] = red_main().replace("verify-workflow: verify.yml", "verify-workflow: suite.yml")
+        self.only(facts, "R4", "`suite.yml` is unreadable")
+        facts["all_workflows"]["suite.yml"] = facts["files"]["verify.yml"]
+        self.assertNotIn("R4", failing(run_rows(facts)))
+
+    def test_r4_every_caller_of_the_verify_workflow_sends_a_declared_lane_input(self) -> None:
+        # The handler owns the `lane-input` default for every caller that names
+        # the verify workflow, whether or not the caller sets the key itself:
+        # omitting it inherits the default. A repository usually has one such
+        # caller (the red-main caller), and this is the anymd shape.
+        facts = conformant()
+        verify = strip_dispatch_inputs(facts["files"]["verify.yml"])
+        facts["files"]["verify.yml"] = verify
+        # A second dispatcher in the same repository: a workflow that names the
+        # same verify workflow, so the handler's default reaches it too.
+        facts["all_workflows"]["dispatcher.yml"] = (
+            "jobs:\n"
+            "  gate:\n"
+            "    uses: SylphxAI/.github/.github/workflows/optimistic-gate.yml@%s\n"
+            "    with:\n"
+            "      verify-workflow: verify.yml\n" % FLOOR)
+        misfits = audit.lane_misfits("verify.yml", audit.dispatch_inputs(verify), facts)
+        self.assertIn("the `dispatcher.yml` caller of `verify.yml` sends lane-input `lanes`", " ".join(misfits))
+        self.assertIn("the `red-main.yml` caller of `verify.yml` sends lane-input `lanes`", " ".join(misfits))
+        # An explicit empty lane-input on each caller clears it.
+        facts["all_workflows"]["dispatcher.yml"] = with_input(facts["all_workflows"]["dispatcher.yml"],
+                                                              "lane-input", '""')
+        facts["files"]["red-main.yml"] = with_input(red_main(), "lane-input", '""')
+        self.assertEqual(audit.lane_misfits("verify.yml", audit.dispatch_inputs(verify), facts), [])
+        self.assertNotIn("R4", failing(run_rows(facts)))
+
+    def test_r4_a_repository_without_the_writer_app_has_no_caller_to_break(self) -> None:
+        # The handler runs as notify where the builder App does not reach the
+        # organization, so nothing sends a lane input there (R7 covers it), and
+        # R4 carries the same waiver. The repository in the App-reached
+        # organization does break, so the waiver is the App's reach only.
+        for org, on_red, expect in (("Cubeage", "notify", False), ("SylphxAI", "revert", True)):
+            with self.subTest(org=org):
+                facts = conformant(org, on_red=on_red)
+                facts["files"]["verify.yml"] = strip_dispatch_inputs(facts["files"]["verify.yml"])
+                self.assertEqual("R4" in failing(run_rows(facts)), expect)
+
+    def test_dispatch_inputs_reads_only_real_trigger_and_input_names(self) -> None:
+        # Commented-out triggers and inputs declare nothing (the audit strips
+        # comments before parsing, and matching raw text would invent them).
+        commented = "on:\n  push:\n  # workflow_dispatch:\n  #   inputs:\n  #     lanes:\n"
+        self.assertIsNone(audit.dispatch_inputs(commented))
+        self.assertEqual(audit.dispatch_inputs("on:\n  workflow_dispatch:\n"), set())
+        self.assertEqual(audit.dispatch_inputs("on:\n  workflow_dispatch:\n    inputs: {lanes: {type: string}}\n"), set())
+        self.assertEqual(audit.dispatch_inputs("on:\n  workflow_dispatch:\n    inputs:\n      lanes: {type: string}\n"), {"lanes"})
+        doubled = ("on:\n  workflow_dispatch:\n    inputs:\n      lanes:\n        type: string\n"
+                   "  workflow_dispatch:\n    inputs:\n      lanes:\n        type: string\n")
+        self.assertEqual(audit.dispatch_inputs(doubled), {"lanes"})
+        self.assertEqual(audit.dispatch_inputs("on:\n  workflow_dispatch:\n    inputs:\n      'a-b':\n        type: string\n"), {"a-b"})
+
+    def test_caller_with_ignores_a_commented_key(self) -> None:
+        text = (red_main() + '      # lane-input: lanes\n')
+        self.assertIsNone(audit.caller_with(text, "lane-input"))
+        text = red_main().replace("      verify-workflow: verify.yml # the verify workflow\n",
+                                  "      # verify-workflow: other.yml\n      verify-workflow: verify.yml\n")
+        self.assertEqual(audit.caller_with(text, "verify-workflow"), "verify.yml")
 
     def test_r5_main_state_job_pin_and_need(self) -> None:
         facts = conformant()

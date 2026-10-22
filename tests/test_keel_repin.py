@@ -34,13 +34,22 @@ def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, text=True, capture_output=True).stdout.strip()
 
 
-def make_keel_remote(base: pathlib.Path) -> tuple[str, str]:
-    """A bare repository standing in for the Keel repository, with one annotated tag."""
+def make_keel_remote(base: pathlib.Path, cli: str = "exit 0\n") -> tuple[str, str]:
+    """A tagged Keel repository with a stand-in release installer and CLI."""
     work = base / "keel-work"
     work.mkdir()
     git(work, "init", "-q", "-b", "main")
     (work / "f").write_text("keel")
-    git(work, "add", "f")
+    (work / "scripts").mkdir()
+    (work / "scripts/install_cli.sh").write_text(
+        '#!/bin/sh\nset -eu\n'
+        f'test "$2" = "{NEW_TAG}"\n'
+        'mkdir -p "$3"\n'
+        'cat > "$3/keel" <<\'CLI\'\n'
+        '#!/bin/sh\nset -eu\n'
+        'test "$*" = "migrate --check"\n' + cli +
+        'CLI\nchmod +x "$3/keel"\n')
+    git(work, "add", ".")
     git(work, "commit", "-q", "-m", "keel")
     sha = git(work, "rev-parse", "HEAD")
     git(work, "tag", "-a", NEW_TAG, "-m", "tag")
@@ -228,6 +237,34 @@ class RunTest(unittest.TestCase):
             self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "check"))
             self.assertIn("SavePort", rep["log"])
             self.assertIn("Cargo.toml", rep["changed"])  # the pin still moves; the break is the content of the draft
+
+    def test_android_signing_migration_failure_stops_the_repin_preflight(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, _ = make_keel_remote(base, (
+                'test -f app/keel.toml\n'
+                'echo "Android signing identity migration (#5144): add [mobile.android.signing] key_alias"\n'
+                'exit 1\n'))
+            config = '[mobile.android]\npackage = "com.example.game"\n'
+            repo = make_title(base, {**TITLE, "app/keel.toml": config})
+            rc, rep = self.run_cmd(repo, remote, "touch build-checked", ["--check-dir", "app"])
+            self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "migrate"))
+            self.assertIn("#5144", rep["log"])
+            self.assertIn("[mobile.android.signing]", rep["log"])
+            self.assertFalse((repo / "app/build-checked").exists())
+            self.assertEqual((repo / "app/keel.toml").read_text(), config)
+            _, body = keel_repin.pr_text(rep)
+            self.assertIn("Draft: the migration check fails", body)
+            self.assertIn("#5144", body)
+
+    def test_an_empty_build_check_does_not_skip_migrations(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, _ = make_keel_remote(base, 'echo "migration still needed"\nexit 1\n')
+            repo = make_title(base, TITLE)
+            rc, rep = self.run_cmd(repo, remote, "")
+            self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "migrate"))
+            self.assertIn("migration still needed", rep["log"])
 
     def test_already_pinned_and_branch_exists_and_no_pin(self):
         with tempfile.TemporaryDirectory() as d:
@@ -695,6 +732,39 @@ class SettleTest(unittest.TestCase):
         self.assertIn("pr close 5", closes)   # the older tag's repin yields to the newer one
         self.assertNotIn("pr close 6", closes)
         self.assertEqual(len(self.merges(calls)), 1)  # the newest tag's repin settles first
+
+    def test_a_repin_prefix_branch_that_is_not_a_tag_does_not_stop_the_settle(self):
+        # A hand-made branch under the repin prefix (a smoke-producer fix, say) has no tag to sort by.
+        # It is skipped, so the genuine repin on the same title still settles.
+        hand = "chore/keel-repin-smoke-checks-20261015"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[182, hand, "f" * 40, "false", "2027-01-15T07:00:00Z"],
+                     [5, TAG_BRANCH, HEAD, "false", "2027-01-15T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(rcs, [0])  # the None sort key no longer raises
+        self.assertEqual(self.merges(calls), [f"pr merge 5 --squash --match-head-commit {HEAD}"])
+        self.assertEqual(closes, "")  # the non-tag branch is neither settled nor closed
+
+    def test_a_repin_prefix_branch_that_is_not_a_tag_alone_settles_nothing(self):
+        hand = "chore/keel-repin-smoke-checks-20261015"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[182, hand, "f" * 40, "false", "2027-01-15T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(rcs, [0])
+        self.assertEqual(self.merges(calls), [])
+        self.assertEqual(closes, "")
+
+    def test_a_layer_repin_beside_a_non_repin_branch_still_settles(self):
+        # A kit/engine layer branch is `chore/keel-repin-<layer>-<sha>`, a real repin with no tag key.
+        # It must keep its row and order beside a non-repin branch, not be skipped with it.
+        layer = "chore/keel-repin-engine-" + "a" * 40
+        hand = "chore/keel-repin-smoke-checks-20261015"
+        rcs, calls, comments, closes = self.settle(
+            {"prs": [[160, layer, HEAD, "false", "2027-01-15T07:00:00Z"],
+                     [182, hand, "f" * 40, "false", "2027-01-16T07:00:00Z"]],
+             "runs": [check("ci-ok"), check("web-smoke")]})
+        self.assertEqual(rcs, [0])
+        self.assertEqual(self.merges(calls), [f"pr merge 160 --squash --match-head-commit {HEAD}"])
 
     def test_a_red_check_is_never_merged_and_the_owner_hears_once(self):
         runs = [check("ci-ok"), check("web-smoke", conclusion="failure")]

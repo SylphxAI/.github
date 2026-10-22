@@ -68,8 +68,18 @@ jobs:
     # the trunk and release tags) drops the `secrets:` block above and adds
     # `environment: <name>` here: a `uses:` job cannot declare `environment:`,
     # so the handler's own job enters it and reads the key from it.
+    #
+    # A repository whose organization holds no builder App key uses the Broker
+    # instead: it drops the `secrets:` block above and sets
+    # `broker-trust-policy: orgs/<org>/trust_policies/<policy>` here. The
+    # handler then trades this job's GitHub OIDC token (`id-token: write`,
+    # already granted above) for a one-repository installation token through
+    # the platform, so no private key is stored anywhere. The workflow and the
+    # policy are declared platform-side; the trust policy id is also the
+    # `[[ci]]` declaration name unless `broker-ci-name` overrides it.
     with:
       verify-workflow: verify.yml
+      broker-trust-policy: ''
 
   # Watch the watcher: file one issue when the trunk has stayed red past 30
   # minutes, whatever the handler's verdict was. It reverts nothing.
