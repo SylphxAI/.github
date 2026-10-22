@@ -85,12 +85,18 @@ class LifecycleTest(unittest.TestCase):
     def setUp(self):
         self.code = embedded()
         self.api = API()
+        self.trunk('main')
 
-    def event(self, run_id, result='failure', attempt=1):
+    def trunk(self, name):
+        patcher = patch.dict(self.code['os'].environ, {'TRUNK': name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def event(self, run_id, result='failure', attempt=1, branch='main'):
         run = {'id': run_id, 'workflow_id': 1, 'check_suite_id': 1, 'run_attempt': attempt, 'head_sha': 'a' * 40,
                'status': 'completed', 'conclusion': result, 'path': '.github/workflows/verify.yml',
                'repository': {'id': 1, 'full_name': 'SylphxAI/keel'},
-               'event': 'push', 'head_branch': 'main',
+               'event': 'push', 'head_branch': branch,
                'head_repository': {'id': 1, 'full_name': 'SylphxAI/keel'}}
         self.api.runs[run_id] = run
         return self.code['Event']('SylphxAI/keel', 'verify.yml', 'verified',
@@ -124,7 +130,7 @@ class LifecycleTest(unittest.TestCase):
                 json.dump({'action': 'completed', 'repository': {'full_name': event.repo},
                            'workflow_run': run}, stream)
                 stream.flush()
-                env = {'REPO': event.repo, 'VERIFY_WORKFLOW': event.workflow,
+                env = {'TRUNK': 'main', 'REPO': event.repo, 'VERIFY_WORKFLOW': event.workflow,
                        'VERIFY_CHECK_NAME': event.check, 'HEAD_SHA': event.sha,
                        'RUN_ID': str(event.run), 'RUN_ATTEMPT': str(event.attempt),
                        'RESULT': result, 'GITHUB_EVENT_PATH': stream.name,
@@ -153,6 +159,21 @@ class LifecycleTest(unittest.TestCase):
                     self.apply(event)
                 self.assertEqual(len(self.api.writes), 1)
                 self.assertEqual(self.api.issues[0]['state'], 'open')
+
+    def test_master_trunk_failure_and_recovery_are_classified(self):
+        self.trunk('master')
+        self.apply(self.event(10, branch='master'))
+        self.assertEqual(len(self.api.issues), 1)
+        self.apply(self.event(20, 'success', branch='master'))
+        self.assertEqual(self.api.issues[0]['state'], 'closed')
+        listing = [path for path in self.api.reads if '/actions/workflows/' in path]
+        self.assertTrue(listing and all('branch=master&' in path for path in listing), listing)
+
+    def test_a_run_on_main_is_not_the_trunk_of_a_master_repository(self):
+        self.trunk('master')
+        with self.assertLogs(level='WARNING'):
+            self.apply(self.event(10, branch='main'))
+        self.assertEqual(self.api.writes, [])
 
     def test_fork_main_success_and_non_main_failure_api_rejected(self):
         for changes, result in [({'event': 'pull_request',

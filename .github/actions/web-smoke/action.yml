@@ -1,0 +1,190 @@
+name: web-smoke
+description: >
+  Boots a Keel title's packed web build in headless Chrome and requires what a player must see: on a
+  cold Slow 3G load the title's splash paints within 1 s and its bar moves (no black screen while it
+  loads), and the title then draws a ready frame with no boot failure and a quiet console. Call it from
+  a job named `web-smoke`, after the title's own `keel pack --profile web` step, so the check run is
+  named `web-smoke` and the Keel repin bot's settle can require it. The check is Keel's own
+  (scripts/browser_smoke.py at the title's KEEL_PIN); this action fetches that script, installs Chrome
+  for Testing, serves the pack as a static host does and judges it. Our own runners only: it refuses a
+  GitHub-hosted runner. See docs/web-smoke.md.
+
+inputs:
+  pack-dir:
+    description: Directory `keel pack --profile web` wrote (holds index.html), relative to the workspace.
+    required: true
+  reader-app-id:
+    description: Read-only GitHub App id that can read the Keel repository (the CUBEAGE_CI_READER_APP_ID secret for Cubeage titles).
+    required: true
+  reader-app-key:
+    description: Private key of the read-only App.
+    required: true
+  keel-ref:
+    description: >
+      Keel revision whose scripts judge the pack. Empty: the revision in the file named by keel-pin-file,
+      so the check is the one that shipped with the title's engine. Set a newer one to hold an older title
+      to a newer standard.
+    default: ""
+  keel-pin-file:
+    description: File holding the title's Keel pin, used when keel-ref is empty.
+    default: KEEL_PIN
+  slow-3g-splash:
+    description: >
+      "true" (default) runs the Slow 3G splash check. "false" is only for a title whose Keel has no web
+      boot standard yet and is being repinned.
+    default: "true"
+  splash-budget-ms:
+    description: Budget for the splash's first contentful paint on Slow 3G.
+    default: "1000"
+  tap:
+    description: Accessibility-mirror id of the start control to touch-tap once after the frame (empty for no tap).
+    default: ""
+  viewport:
+    description: Viewport of the boot check, WIDTHxHEIGHT[,touch].
+    default: 390x844,touch
+  budget-s:
+    description: Seconds the title has to draw its ready frame (and the bar to move on Slow 3G).
+    default: "10"
+  ignore-console:
+    description: >
+      Console errors to ignore, one regular expression per line. Empty by default: a failed request, a
+      CORS block, a panic or an uncaught exception fails the check. A request the smoke cannot make
+      belongs in offline-dependencies, which skips only its network or CORS failure.
+    default: ""
+  offline-dependencies:
+    description: >
+      Endpoints the title calls at boot that the smoke cannot reach, one regular expression per line,
+      matched against the console line. The pack is served from 127.0.0.1, an origin the Cubeage API does
+      not allow, so the guest sign-in is CORS-blocked there: the default is the Cubeage auth service. A
+      network or CORS failure naming one is skipped and listed in the output; a 5xx, a console error from
+      the title, any other endpoint and a missing frame still fail. Setting it replaces the default (list
+      the default too to add an entry); an empty value means no offline dependency.
+    default: 'api\.cubeage\.com/cubeage\.v1\.AuthService/'
+  chrome-version:
+    description: Chrome for Testing version (headless shell and chromedriver).
+    default: 153.0.8010.52
+  max-served-ratio:
+    description: >
+      Largest served/q11 a wasm module may have: the size of its precompressed `<file>.br` (what a host with
+      brotli_static or a precompressed-asset worker sends to `Accept-Encoding: br`) over brotli quality 11 of
+      the module. 1.03 is the web boot standard; a host compressing on the fly sends about 1.25.
+    default: "1.03"
+  require-precompressed:
+    description: >
+      "true" fails a wasm module that has no precompressed `<file>.br` in the pack (the host would compress
+      it on the fly). Set it for a title whose pack step runs its precompress step before this action.
+      "false" (default) reports such a module and does not fail it.
+    default: "false"
+  timeout-s:
+    description: Seconds each check may take before it fails.
+    default: "300"
+  live-url:
+    description: >
+      The deployed title's host (for example https://lanewarden.play.cubeage.com). When set, the action also
+      reads <live-url>/VERSION.json and records its `keel` field, the Keel commit the live pack was built
+      with, as the `live-keel` output and in the job summary. Empty (default): no live read.
+    default: ""
+  expect-keel:
+    description: >
+      With live-url: the full Keel commit the live title must run. The check fails when the live `keel`
+      field is missing or names another commit. Empty (default): record only.
+    default: ""
+
+outputs:
+  keel-ref:
+    description: The Keel revision the check ran with.
+    value: ${{ steps.ref.outputs.ref }}
+  live-keel:
+    description: The `keel` commit the live title's VERSION.json reports (empty when live-url is empty or it names none).
+    value: ${{ steps.live.outputs.keel }}
+
+runs:
+  using: composite
+  steps:
+    - name: Pick the Keel revision
+      id: ref
+      shell: bash
+      env:
+        KEEL_REF: ${{ inputs.keel-ref }}
+        PIN_FILE: ${{ inputs.keel-pin-file }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: python3 "$ACTION_PATH/web_smoke.py" ref --ref "$KEEL_REF" --pin-file "$PIN_FILE"
+
+    - name: Mint read-only Keel token
+      id: keel-token
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      with:
+        app-id: ${{ inputs.reader-app-id }}
+        private-key: ${{ inputs.reader-app-key }}
+        owner: SylphxAI
+        repositories: keel
+        permission-contents: read
+
+    - name: Fetch Keel's smoke scripts
+      shell: bash
+      env:
+        KEEL_TOKEN: ${{ steps.keel-token.outputs.token }}
+        KEEL_REF: ${{ steps.ref.outputs.ref }}
+        ACTION_PATH: ${{ github.action_path }}
+        DEST: ${{ runner.temp }}/web-smoke-keel
+      run: |
+        set -euo pipefail
+        rm -rf "$DEST"
+        python3 "$ACTION_PATH/web_smoke.py" keel --ref "$KEEL_REF" --dest "$DEST"
+
+    - name: Chrome for Testing
+      id: chrome
+      shell: bash
+      env:
+        VERSION: ${{ inputs.chrome-version }}
+        ACTION_PATH: ${{ github.action_path }}
+        DEST: ${{ runner.tool_cache }}/web-smoke
+      run: |
+        set -euo pipefail
+        mkdir -p "$DEST"
+        python3 "$ACTION_PATH/web_smoke.py" chrome --version "$VERSION" --dest "$DEST"
+
+    - name: Boot the pack
+      shell: bash
+      env:
+        PACK: ${{ inputs.pack-dir }}
+        KEEL_REF: ${{ steps.ref.outputs.ref }}
+        KEEL_DIR: ${{ runner.temp }}/web-smoke-keel
+        CHROME_DIR: ${{ steps.chrome.outputs.dir }}
+        SLOW_3G: ${{ inputs.slow-3g-splash }}
+        SPLASH_BUDGET_MS: ${{ inputs.splash-budget-ms }}
+        TAP: ${{ inputs.tap }}
+        VIEWPORT: ${{ inputs.viewport }}
+        BUDGET_S: ${{ inputs.budget-s }}
+        IGNORE_CONSOLE: ${{ inputs.ignore-console }}
+        OFFLINE_DEPENDENCIES: ${{ inputs.offline-dependencies }}
+        MAX_SERVED_RATIO: ${{ inputs.max-served-ratio }}
+        REQUIRE_PRECOMPRESSED: ${{ inputs.require-precompressed }}
+        TIMEOUT_S: ${{ inputs.timeout-s }}
+        ACTION_PATH: ${{ github.action_path }}
+        REPORT: ${{ runner.temp }}/web-smoke-report.json
+      run: |
+        set -euo pipefail
+        args=(run --keel "$KEEL_DIR" --pack "$PACK" --chrome "$CHROME_DIR" --ref "$KEEL_REF"
+              --slow-3g-splash "$SLOW_3G" --splash-budget-ms "$SPLASH_BUDGET_MS" --tap "$TAP"
+              --viewport "$VIEWPORT" --budget-s "$BUDGET_S" --timeout-s "$TIMEOUT_S" --report "$REPORT"
+              --max-served-ratio "$MAX_SERVED_RATIO" --require-precompressed "$REQUIRE_PRECOMPRESSED")
+        while IFS= read -r pattern; do
+          if [ -n "$pattern" ]; then args+=(--ignore-console "$pattern"); fi
+        done <<< "$IGNORE_CONSOLE"
+        # Always pass the flag, even for an empty input, so an empty list is "none" and not "the default".
+        args+=(--offline-dependency "")
+        while IFS= read -r pattern; do
+          if [ -n "$pattern" ]; then args+=(--offline-dependency "$pattern"); fi
+        done <<< "$OFFLINE_DEPENDENCIES"
+        python3 "$ACTION_PATH/web_smoke.py" "${args[@]}"
+
+    - name: Read the live title's Keel
+      id: live
+      if: always() && inputs.live-url != ''
+      shell: bash
+      env:
+        LIVE_URL: ${{ inputs.live-url }}
+        EXPECT_KEEL: ${{ inputs.expect-keel }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: python3 "$ACTION_PATH/web_smoke.py" live --url "$LIVE_URL" --expect-keel "$EXPECT_KEEL"

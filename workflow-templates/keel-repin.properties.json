@@ -1,0 +1,6 @@
+{
+  "name": "Keel repin",
+  "description": "Opens the pull request that moves a Keel title's pin to the newest keel-verified tag, on Sylphx runners.",
+  "iconName": "octicon rocket",
+  "categories": ["Automation", "Rust"]
+}

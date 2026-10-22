@@ -15,6 +15,8 @@ import unittest
 
 import yaml
 
+from tests.red_main_programs import program
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 DOCUMENT = yaml.safe_load(WORKFLOW.read_text())
@@ -53,6 +55,8 @@ elif "/jobs?" in path:
         key = "NEWEST_JOB_FIXTURE" if "/runs/2/" in path else "JOB_FIXTURE"
         print(json.dumps({"total_count": 1, "jobs": [json.loads(os.environ[key])]} if key in os.environ else {"total_count": 0, "jobs": []}))
 elif "/actions/workflows/" in path:
+    with open(os.path.join(os.environ["RUNNER_TEMP"], "workflow-paths"), "a") as stream:
+        stream.write(path + "\\n")
     if os.environ.get("HISTORY_UNAVAILABLE") == "yes":
         print("HTTP 502: history unavailable", file=sys.stderr)
         sys.exit(1)
@@ -99,9 +103,9 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.work = self.root / "red-main"
         self.work.mkdir()
-        for name, filename in (("LIB", "lib.sh"),
-                               ("PREV_PY", "prev.py"), ("CONFIRM_PY", "confirm.py")):
-            (self.work / filename).write_text(HANDLER["env"][name])
+        for name, filename in (("lib.sh", "lib.sh"),
+                               ("prev.py", "prev.py"), ("confirm.py", "confirm.py")):
+            (self.work / filename).write_text(program(name))
         (self.work / "proof.py").write_text(FAKE_PROOF)
         (self.work / "real_proof.py").write_text((ROOT / ".github/actions/ci-range/post_main.py").read_text())
         binaries = self.root / "bin"
@@ -113,13 +117,15 @@ class UnavailableHandlerTest(unittest.TestCase):
         git.write_text('#!/bin/bash\ntouch "$RUNNER_TEMP/git.called"\nexit 1\n')
         git.chmod(0o755)
         self.env = dict(os.environ, RUNNER_TEMP=str(self.root),
+                        RUN_STORE_JUNIT=str(ROOT / ".github/actions/run-store/get-junit.py"),
                         PATH=f"{binaries}:{os.environ['PATH']}",
                         GITHUB_OUTPUT=str(self.root / "output"),
-                        REPO="SylphxAI/cloud", VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME="verified",
+                        TRUNK="main", REPO="SylphxAI/cloud", VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME="verified",
                         EVENT_RUN_ID="1", RUN_ID="1", HEAD_SHA=SHA, SHORT_SHA=SHA[:9],
                         RUN_URL=RUN["html_url"], RUN_FIXTURE=json.dumps(RUN),
                         MODE="notify", ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
                         INFRA="no", INFRA_SIGNATURE="", INITIAL_PROOF="unknown",
+                        OWNER_LABEL="owner:ops", FAILED_LANES="", OPS_ISSUE="",
                         PROOF_RESULT="unknown")
 
     def execute(self, name):
@@ -136,6 +142,27 @@ class UnavailableHandlerTest(unittest.TestCase):
 
     def use_real_proof(self):
         (self.work / "proof.py").write_text((ROOT / ".github/actions/ci-range/post_main.py").read_text())
+
+    def history_of(self, branch):
+        self.env["EVENT_RUN_ID"] = ""
+        self.env["PROOF_RESULT"] = "failure"
+        self.env["HISTORY_FIXTURE"] = json.dumps(dict(total_count=1, workflow_runs=[dict(RUN, head_branch=branch, status="completed")]))
+
+    def test_dispatch_on_a_master_repository_classifies_its_newest_failed_run(self):
+        self.history_of("master")
+        self.env["TRUNK"] = "master"
+        result = self.execute("Resolve the verify run that failed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.work / "state/quiet").exists(), result.stdout)
+        self.assertEqual(self.state("run-id"), "1")
+        self.assertIn("branch=master&", (self.root / "workflow-paths").read_text())
+
+    def test_dispatch_never_takes_another_branch_for_the_trunk(self):
+        self.history_of("main")
+        self.env["TRUNK"] = "master"
+        result = self.execute("Resolve the verify run that failed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("on master was found", self.state("quiet"))
 
     def test_real_helper_partial_and_null_producers_never_quiet(self):
         self.use_real_proof()
@@ -323,6 +350,22 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.assertNotIn("confirmed=yes", output)
         self.assertIn("previous failing lanes are unavailable", self.summary())
         self.assertFalse((self.root / "git.called").exists())
+
+    def test_unreadable_failed_job_detail_escalates_at_confirmation(self):
+        # How the failed jobs failed (steps, error lines) cannot be read: the
+        # junit step records it and goes on (the infra verdict still runs),
+        # and the confirmation escalates instead of matching job names.
+        (self.work / "junit.py").write_text(program("junit.py"))
+        self.env.update(PROOF_RESULT="exception", FAILED_LANES="rust")
+        read = self.execute("Read the failing tests from the run's junit artifacts")
+        self.assertEqual(read.returncode, 0, read.stderr)
+        self.assertIn("HTTP 502", self.state("units-unavailable"))
+        self.env["PROOF_RESULT"] = "failure"
+        result = self.execute("Confirm the same unit failed on two consecutive completed runs")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed jobs of run 1 failed could not be read", self.summary())
+        output = (self.root / "output").read_text() if (self.root / "output").exists() else ""
+        self.assertNotIn("confirmed=", output)
 
     def test_invalid_previous_status_escalates(self):
         for status in ("", "mystery"):

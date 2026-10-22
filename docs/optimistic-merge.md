@@ -14,7 +14,7 @@ no half state.
 | --- | --- | --- |
 | Draft pull request | gate lanes only - the draft is the compiler | `ci-ok` |
 | Pull request marked ready | gate lanes + the full suite the change affects | `ci-ok` |
-| Merge group | gate lanes only (target p90 under 5 min) | `ci-ok` |
+| Merge group | gate lanes only (target p90 under 5 min); while the trunk is red and its way back is in motion, only a revert or the labelled fix is admitted | `ci-ok` |
 | Push to the trunk | the full suite over every commit since the last verified one | none; `verified` marks the commit |
 | `verify.yml` fails on the trunk | red-main handler: trace and revert (never a rerun; a flake is quarantined through the quarantine list) | - |
 
@@ -23,7 +23,9 @@ contract drift, the unit tests the change affects, and - only when the change
 touches the repository's migration globs - the migration lanes: lint and
 integrity (atlas lint and `atlas.sum`, drizzle checks) and the database-backed
 migration tests. DDL cannot be undone by a revert, so a migration is
-exercised before it reaches the trunk. Everything else -
+exercised before it reaches the trunk. A change to `sylphx.toml`, a `package.json`, a
+Dockerfile or the stack baseline also runs the stack-conformance lane
+([stack-conformance.md](stack-conformance.md)). Everything else -
 integration and database tests, browser and device matrices, release builds,
 proofs - is a suite lane.
 
@@ -45,28 +47,64 @@ proofs - is a suite lane.
    the gate lanes, a `suite` job that calls `verify.yml` on ready pull
    requests, and the `ci-ok` aggregate. Keep the job name the ruleset
    requires.
+   **A gate that was its own workflow.** `ci-ok` `needs:` the jobs of
+   `ci.yml`, so it does not wait for another workflow's check run on the same
+   commit. A check that gated the merge on its own - `keel-pin-check`,
+   `web-smoke` - must become a job of `ci.yml` that calls its file and is
+   listed in `ci-ok`'s `needs:`. A `uses:` call needs the called workflow to
+   declare `on: workflow_call` (the two starters now do), and the calling job
+   must be in `ci-ok`'s `needs:`: a call alone is not enough, because `ci-ok`
+   still passes while that job runs. Left standalone or merely called, the
+   queue can admit the change before it reports: GitHub treats a required check
+   missing on the head as satisfied, and a run that finishes after `ci-ok` is
+   never seen. Where a check really should not gate the merge, keep it
+   standalone and carry `# optimistic-merge: gate-external` (the audit's R3b).
 3. **`.github/workflows/verify.yml`** from
    [`workflow-templates/optimistic-verify.yml`](../workflow-templates/optimistic-verify.yml):
    the suite lanes and the aggregate job named exactly `verified`. Each lane
-   that runs tests uploads a JUnit report as `junit-<lane>`; the handler names
-   flaky tests from it.
+   that runs tests stores a JUnit report as `junit-<lane>` (failing and passing
+   testcases) through [run-store](run-store.md); the handler names failing tests
+   and each test's trace window from it. Its top-level producer step is named
+   exactly `run-store put <name>` with the same expanded name input, including
+   matrix shard suffixes. This is the explicit discovery contract for exact
+   cross-run keys; the gateway does not support wildcard listing. Publish with
+   `if: always()`, `continue-on-error: true` and `required: "false"` so missing
+   optional diagnostics never turn a passing lane red. Producers and handler
+   callers grant `id-token: write`; keep `path` on the report file only.
+   This document is the complete set of steps between the copy and a working pipeline; a lane's own
+   material is the caller's, install steps included, and is never added here.
+   A file or directory another job of the same run needs is a hand-over: use
+   [`run-store`](run-store.md), never `upload-artifact`.
 4. **`.github/workflows/red-main.yml`** from
    [`workflow-templates/red-main.yml`](../workflow-templates/red-main.yml),
-   unchanged. In the organization that holds the builder App
-   (`SYLPHX_BUILDER_APP_ID` variable, `SYLPHX_BUILDER_PRIVATE_KEY` secret) it
-   reverts as `on_red` says (absent: `revert`; `notify` is an explicit
-   opt-out). It never reruns. Anywhere else it runs in
-   token mode: a comment on the affected pull requests,
-   never a pull request of its own - a person reverts. The App key never
-   leaves its organization. Token split: every Actions call (runs, jobs,
-   artifacts, dispatch of the verify workflow) uses the caller's
-   `github.token`, so the caller grants `actions: write`; the builder App
-   installation needs no `actions` permission, only contents, issues and
-   pull-requests write, and is used for what must start CI (verify and revert
-   branches, pull requests, enqueue). If the App mint or the grant probe
-   fails, the handler comments the missing grant on `ops-issue` (the caller
-   grants `issues: write`), writes it to the step summary and fails the job;
-   it never fails silently.
+   unchanged. The write token comes, in this order, from the Kernel Broker
+   (federation, no key), then the builder App key (`SYLPHX_BUILDER_APP_ID`
+   variable, `SYLPHX_BUILDER_PRIVATE_KEY` secret), then token mode. Set
+   `with: broker-trust-policy: orgs/<org>/trust_policies/<policy>` to use the
+   Broker: the handler trades this job's GitHub OIDC token for a short-lived
+   Access key and calls `:exchangeToken` for a one-repository installation
+   token, so no PEM leaves the platform (`company/credentials.md`; the workflow
+   declares `id-token: write` and is listed under `[[ci]]` in the platform
+   manifest). Absent the Broker and the key, it runs in token mode: a comment on
+   the affected pull requests, never a pull request of its own - a person
+   reverts. It reverts as `on_red` says (absent: `revert`; `notify` is an
+   explicit opt-out) and never reruns. The App key never leaves its
+   organization. Token split: every Actions call (runs, jobs, dispatch of the
+   verify workflow) uses the caller's `github.token`, so the caller grants
+   `actions: write` and `id-token: write` (run-store diagnostic reads and the
+   Broker's OIDC exchange); the installation token needs no `actions`
+   permission, only contents, issues, pull-requests and workflows write (a
+   verify or revert branch can point at a commit with older workflow files),
+   and is used for what must start CI (verify and revert branches, pull
+   requests, enqueue). If the mint (App or Broker) or the grant probe fails, the
+   handler comments the missing grant on `ops-issue` (the caller grants
+   `issues: write`), writes it to the step summary and fails the job; it never
+   fails silently.
+   **Trunk**: the handler guards the repository's default branch, read from
+   the event payload, so a repository on `master` is classified like one on
+   `main`. The `trunk` input names a different branch. The starter's `if:`
+   compares the failed run's branch with the same default branch; list that
+   branch under `push` in `verify.yml` too.
    **Key in an environment**: a repository may hold the key in a GitHub
    environment (deployments limited to the trunk and release tags) instead of
    a repository secret. The caller sets `with: environment: <name>` and drops
@@ -74,8 +112,8 @@ proofs - is a suite lane.
    reads `SYLPHX_BUILDER_PRIVATE_KEY` from it (a `uses:` job cannot declare
    `environment:` itself). The default, empty, keeps the passed-secret path.
 5. **Labels** the handler uses but never creates, and silently skips when
-   absent: `flake`, `quarantine`, `auto-revert`, `queue-jump:red-main`.
-   Create them in the same change.
+   absent: `flake`, `quarantine`, `auto-revert`, `queue-jump:red-main`, and
+   `main-red-fix` (below). Create them in the same change.
 6. **Pin** every `SylphxAI/.github/...@main` in the starters to the commit you
    adopt.
 7. **Rust repositories**: add `.github/workflows/sylphx-check.yml`, a copy of
@@ -86,7 +124,8 @@ proofs - is a suite lane.
    see [rust-check.md](rust-check.md).
 8. **Ruleset**: `ci-ok` stays the only required check. `verified` is never a
    required check: it exists only after a merge, so requiring it deadlocks
-   the queue.
+   the queue. The queue's own parameters (HEADGREEN and the rest) come from
+   [merge-queue-settings.md](merge-queue-settings.md), not from the ruleset by hand.
 
 `verified` needs only the gating suite lanes. A report-only lane (for example
 one that runs only quarantined tests) stays out of its `needs` and uses
@@ -100,8 +139,85 @@ Release keeps waiting releases instead of dropping them on each new commit
 (cloud#10373 live in production). Until then the declaration speeds the
 queue, and deploys stay as they are.
 
+## The red-main handler
+
+When `verify.yml` concludes a failure on the trunk, the caller's
+`.github/workflows/red-main.yml` invokes the shared handler. It never reruns:
+a real failure is traced to its first-bad commit and reverted through the
+queue, and a flake is quarantined. An **infrastructure** failure is never
+reverted.
+
+Classification is per failing step's TERMINAL ERROR, never per job. A run is
+infrastructure only when every failing step's own terminal error is an
+infrastructure signature (installation-token mint, artifact upload, cache 403,
+runner set-up, checkout, or a job that died with a lost runner). A test
+assertion, a clippy or build error, or any other project-code failure is a
+**code fault even when the same job also logged infrastructure-shaped noise**
+(ENOSPC, a cache warning). A job-level "any infra signature anywhere" rule once
+let a real `AssertionError` hide behind an unrelated ENOSPC line, the handler
+emitted `verdict=infra`, skipped its confirmation, trace and revert, and exited
+0 while the trunk stayed red for three days. The programs that decide this are
+checked in under [`.github/red_main/`](../.github/red_main/) and unit-tested
+(`tests/test_red_main_infra.py`), not embedded in the workflow.
+
+An infrastructure verdict **escalates visibly**: the handler opens one issue
+labelled `red-main-infra` and the owner label (and comments on the ops issue),
+so the report reaches a person instead of only a run's step summary. When the
+handler itself fails it opens one issue labelled `red-main-broken`.
+
+**Watch the watcher.** The caller's `red-main.yml` also runs `main-red-gate`
+in `mode: watch` on a 15-minute schedule: when the trunk has stayed red past
+`watch-limit-minutes` (default 30), whatever the handler's verdict was, it
+files one issue labelled `red-main-red-watchdog` and the owner label. It
+reverts nothing and dispatches nothing; a safety net that fails silently is
+worse than none.
+
+## Stop the line on a red trunk
+
+This is Chromium's tree closure for our merge queue: a failing tree-closer
+builder closes the tree, the commit queue's tree status check holds every
+ordinary change until it reopens, and only a change carrying `No-Tree-Checks:
+true` (the revert, or the fix that reopens the tree) lands meanwhile.
+
+The starter gate has a `main-state` job (merge groups only) that runs
+[`main-red-gate`](../.github/actions/main-red-gate/action.yml). The trunk is
+red when its newest conclusive push run of the verify workflow failed
+(cancelled, skipped and superseded runs are passed over, as in owner
+standards/dx.md); a later success clears it. While red, a merge group is
+admitted when it is the way back to green:
+
+- a revert: branch `auto-revert/*` (the red-main handler's), a title starting
+  `Revert`, or the `auto-revert` / `queue-jump:red-main` labels;
+- a live-outage fix, labelled `queue-jump:outage` (the handler never reverts
+  one either);
+- the fix, when a person labels the pull request `main-red-fix`.
+
+Any other pull request fails `main-state`, so `ci-ok` fails, and it leaves the
+queue, but only while the way back is in motion: a newer run of the verify
+workflow on the trunk is still running, or a revert or fix pull request (not a
+draft) is open. When nothing is in motion the group is admitted with a
+warning. The red-main handler reverts only after the same failure repeats on a
+second completed run, and never reverts an infrastructure failure, a
+`timed_out` run or one that did not start; a queue that stayed shut on the
+first red would wait for a run nothing can start, and the next change landing
+is that run. A person can always pass a change by labelling it `main-red-fix`.
+
+The gate fails open: a verify history, pull request or pull request list it
+cannot read admits with a warning, so it never jams the queue on its own
+fault. The starter ships `mode: observe` (prints what it would refuse and
+refuses nothing): read a few merge groups, including one on a red trunk, then
+set `enforce`. The job needs `pull-requests: read` beside the gate's other
+read permissions. A check on the trunk that is not the verify workflow (a
+benchmark or nightly) never makes the trunk red here.
+
 ## The shared pieces
 
+- [`main-red-gate`](../.github/actions/main-red-gate/action.yml): the red-trunk
+  admission rule above; `mode`, `verify-workflow` and `fix-label` inputs. Its
+  `mode: watch` is the scheduled half of the andon (see
+  [the red-main handler](#the-red-main-handler)): it files one issue labelled
+  `red-main-red-watchdog` when the trunk has stayed red past
+  `watch-limit-minutes` (default 30), whatever the handler's verdict was.
 - [`ci-range`](../.github/actions/ci-range/action.yml): the range and the lane
   selection, the same answer in the gate and in verify. Lanes are
   `name: path globs`; a change under `.github/` runs every lane. Use its
@@ -138,7 +254,10 @@ queue, and deploys stay as they are.
   unknown, never treat it as success or terminal no-action. Destructive revert
   requires authenticated failure plus a trusted authenticated baseline.
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
-  `verified` verdict. Skipped passes; failed or cancelled fails; `required:
+  `verified` verdict. Skipped passes; failed fails; a cancelled dependency is
+  reported CANCELLED (naming a superseded push from a stopped run) and does not
+  fail, because a pull-request push cancels the run before it while nothing was
+  wrong and the rerun settles it; `required:
   plan` makes a broken plan a failure. `required-unless-merge-group: suite`
   (the PR-time jobs) makes a skipped job a failure on every event but
   `merge_group`, so a dispatch run cannot post a green verdict over a red one.
@@ -164,6 +283,29 @@ queue, and deploys stay as they are.
       ignore: |
         property "workflow_sha" is not defined
   ```
+
+  It also refuses a timing or performance budget before merge
+  ([`perf_gate.py`](../.github/actions/workflow-lint/perf_gate.py)): in a
+  workflow triggered by `pull_request`, `pull_request_target`, `merge_group`
+  or `workflow_call`, `PERF_ENFORCE` other than `0`, Lighthouse (`lhci`),
+  `hyperfine`, `k6 run` or the chat perf run fail the lint. Shared runners
+  move wall-clock numbers with load, so timing is judged after merge, as a
+  median against a stored baseline; before merge a workflow may only measure
+  and print. The scanner inspects executable `run`/`uses` fields, not job ids,
+  `needs` references or artifact names. A job in a reusable workflow may keep
+  a post-merge budget when its job-level `if` explicitly excludes all three
+  pre-merge events with `&&` (no `||`):
+
+  ```yaml
+  if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && github.event_name != 'merge_group'
+  ```
+
+  This uses the caller's event: GitHub documents that a reusable workflow's
+  [`github` context is associated with the caller](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations)
+  (read 2026-10-09). Unknown or partial conditions remain checked; a step-level
+  condition never exempts the job. A delivered customer repository (`sylphx_delivery` =
+  `delivered`, read from the event payload or the repository's property
+  values) skips this rule.
 - [`red-main.yml`](../.github/workflows/red-main.yml): the reusable handler.
 
 ## Lifecycle-only alerts (no repair)
@@ -251,12 +393,44 @@ leaves the alert open; no parallel writer should edit lifecycle markers.
 
 ## Rules kept from the July rollout
 
-- A running verify on the trunk is never cancelled; a newer push waits and
-  covers what it carries (`concurrency: cancel-in-progress: false`).
+- A newer trunk run supersedes an in-flight verify, so the latest push's run
+  starts at once (`concurrency: cancel-in-progress: true` on push). Each run
+  still covers the whole range since the last verified commit - the base is the
+  newest *successful* run, never `HEAD~1` - so a superseded run's commits stay
+  in the newest run, and fast-forwarding to the latest trunk is free.
 - Verify cost follows cycles, not commits: one run covers the whole range since
   the last verified commit, never `HEAD~1`.
 - A culprit is traced among the unverified commits at once; when it cannot be
-  named with certainty, the whole window is reverted in one pull request.
+  named with certainty, the whole window is reverted in one pull request. A
+  caller that sets `revert-window: false` reverts only a traced culprit and
+  reports a window on its pull requests instead; one whose suite lanes run
+  longer than 20 minutes raises `candidate-timeout-minutes` (at most 60), or
+  every trace ends inconclusive.
+- The trace window of a unit that breaks inside an already red trunk starts at
+  the newest earlier completed push run of the verify workflow where that unit
+  did not fail, not at the last fully verified commit. A job that succeeded
+  clears its units; a job that failed clears a test only when its `junit-<lane>`
+  report shows the test passing (a report that lists failures only clears a
+  test it does not list). Only units that failed on two consecutive runs count,
+  the aggregate `verified` job is not a unit, the candidate runs dispatch only
+  those units' lanes, and a candidate counts as failed only if one of those
+  units failed in it. With no such run in the last 100, the fully verified
+  commit stays the baseline.
+- A failing unit is a test of a job, from the job's `junit-<lane>` report. A
+  job that publishes no report is one unit named by how it failed: its
+  conclusion, its failed steps and its error lines (the check run's failure
+  annotations, every `##[error]` line, with timestamps, hashes and durations
+  masked). Two runs, or a run and a trace candidate, failed the same way only
+  when the same test failed, or the same job failed at the same step with the
+  same error lines; the job name alone never matches, and the aggregate
+  `verified` job is never a unit. A job that failed both times at different
+  steps (one step stopping the job before the other runs) confirms nothing,
+  and a candidate that failed a traced job some other way is inconclusive,
+  never the culprit. A step that ends in the runner's bare "Process completed
+  with exit code N." is told apart by its step only; print the failing check
+  as an `::error::` line (or publish `junit-<lane>`) so two failures of one
+  step are told apart too. Steps and error lines that cannot be read stop the
+  handler without a revert, as any unread proof does.
 - A flake is quarantined first, in its own source (`#[ignore = "quarantined
   <date>: <reason> (<issue>, owner <lane>)"]`, or a comment above
   `test.skip(`), never retried in the queue.
@@ -268,23 +442,65 @@ Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
 (`-xlarge-merge` for xlarge jobs), so a merge group never waits behind the
 pull-request backlog. The gate starter already uses it.
 
+A repository whose own policy check reads a static runner label (for example
+`check-owned-ci-runners.ts` in `EpiowAI/epiow-legacy` or
+`check-owned-runner-profiles.py` in `EpiowAI/korvana`) refuses the dynamic
+expression: name the label that repository already allows (`runs-on:
+sylphx-linux-standard`, or the profile's label of the same size class) on every
+gate lane. R8 reads a static label as a FAIL, so list such a repository in
+[`policy/optimistic-merge.json`](../policy/optimistic-merge.json) under an
+exemption that waives R8, with its class, reason, owner and review date.
+
 The verdict jobs (`ci-ok`, `verified`) run on `sylphx-linux-control`, the
-reserved gate pool, on every event; it has no `-merge` twin. A verdict keeps
-`if: always()`, so a cancelled run still reports a failure instead of a
-skipped check, which GitHub counts as passing. It therefore runs after every
-cancel, and the cancelled run holds its concurrency group until it has: on a
-busy build pool that left a pull request's next run pending with no jobs
-(SylphxAI/agents#4222, 2026-10-02).
+reserved gate pool; it has no `-merge` twin. Use `if: always() && !cancelled()`:
+real dependency failures still produce a red verdict, but a workflow cancelled
+by PR concurrency must not report a stale red aggregate beside the replacement
+run for the same head. Cancellation also must not hold the concurrency group
+while the old verdict waits for a runner. When the verdict does execute in a
+current run, needs-pass reports a `cancelled` dependency as CANCELLED and does
+not fail on it (a lane cancelled while the verdict job still ran is
+not a red check); a genuine failure still fails it.
 
 Private repositories run every job on our runners: `sylphx-linux-standard`
 for most lanes, `sylphx-linux-xlarge` for heavy compiles, `sylphx-linux-large`
 between. Public repositories may use GitHub's standard hosted runners, which
 are free for them. Never larger or GPU hosted runners.
 
+## Conformance check
+
+[`scripts/audit_optimistic_merge.py`](../scripts/audit_optimistic_merge.py)
+reads every non-archived repository of the organizations in
+[`policy/optimistic-merge.json`](../policy/optimistic-merge.json) (read-only:
+a few batched GraphQL queries and one compare read per distinct pin) and
+reports it against these rows. It exits 1 on any FAIL outside a named
+exemption and writes the whole report with `--json`.
+
+| Row | Holds when |
+| --- | --- |
+| R1 | `sylphx.toml` has `[ci] merge = "optimistic"` and an explicit `on_red` |
+| R2 | `ci.yml` runs on `merge_group` and has the `ci-ok` job |
+| R3 | `verify.yml` runs on push to the default branch, has a `verified` job and does not cancel a trunk run |
+| R3b | every other workflow that runs on push to the default branch is called from `verify.yml`, or carries the comment `# optimistic-merge: advisory`; otherwise its red never reaches the handler. Every other workflow that runs on `merge_group` is called from `ci.yml` by a job that is in `ci-ok`'s `needs:`, or carries `# optimistic-merge: gate-external`; otherwise it is a gate step `ci-ok` never waits for |
+| R4 | `red-main.yml` calls the shared handler pinned to a full SHA at or after the policy floor, its `if:` follows the default branch, and its verify workflow can be dispatched as the handler dispatches it: it has a `workflow_dispatch` trigger, and every caller in the repository that names it in `verify-workflow` sends the `lane-input` the workflow declares (default `lanes`, the handler's own default) or an explicit `lane-input: ""`, else the candidate dispatch is refused with HTTP 422 |
+| R5 | `ci.yml` has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
+| R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
+| R7 | `on_red` is `revert` (or `revert_pr_unarmed`) where the builder App reaches the repository, `notify` elsewhere |
+| R8 | in every workflow that runs on `merge_group`, each job on `sylphx-linux-standard` or `sylphx-linux-xlarge` selects its `-merge` twin on `merge_group` (the expression under Runners); verdict jobs on `sylphx-linux-control`, jobs whose `if:` keeps `merge_group` out, and runners chosen by `matrix`/`inputs` are out of scope. A repository whose own policy check reads a static runner label (see Runners) declares it in a named exemption |
+| R9 | every workflow that runs on `pull_request` has a workflow-level `concurrency:` whose `cancel-in-progress` is `${{ github.event_name == 'pull_request' }}` ([ci-template.md](ci-template.md#concurrency)): a superseded pull-request run is cancelled, a merge-group or trunk run never is; a literal `true` holds only where neither `merge_group` nor a push to the default branch starts the workflow |
+
+Unreadable is FAIL. A repository whose rows are waived by a policy
+exemption reports EXEMPT; an exemption carries a class, reason, owner and a
+review date, and one past its date stops applying. Hands-off repositories
+and fully waived ones are listed by name only; their files are not read.
+Move `pin_floor` forward in the policy when a fix every caller needs lands:
+every pin behind it then fails R4 and R5 until it is repinned.
+
 ## Read back after landing
 
 - The first merge group passes with only the gate lanes, and the first push
-  run of `Verify` ends with a `verified` check run on the trunk.
+  run of `Verify` ends with a `verified` check run on the trunk. A later push
+  supersedes the in-flight run and starts without waiting, and the newest run
+  still reaches `verified` over the whole range.
 - `gh workflow run red-main.yml` classifies the newest failed verify run (a
   rehearsal; it acts only as `on_red` allows).
 - Report: gate p90, pull request CI wall p50/p90 and arm-to-merge p50/p90,
