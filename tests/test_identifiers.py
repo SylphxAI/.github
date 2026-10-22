@@ -3,17 +3,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import pathlib
 import subprocess
 import tempfile
 import unittest
 
+import yaml
+
 ACTION = pathlib.Path(__file__).resolve().parents[1] / ".github" / "actions" / "identifiers"
 
 
 def run_check(
-    before: str, after: str, path: str = "schema.sql", *specs: str, mode: str = "fail"
+    before: str, after: str, path: str = "schema.sql", *specs: str, mode: str = "fail",
+    repository: str = "example/repo"
 ) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory() as tmp:
         def git(*args: str) -> None:
@@ -31,7 +36,8 @@ def run_check(
         git("commit", "-qam", "change")
         return subprocess.run(
             [str(ACTION / "check.sh"), "HEAD~1..HEAD", str(ACTION / "rules.tsv"), *specs],
-            cwd=tmp, capture_output=True, text=True, env={**os.environ, "IDENTIFIERS_MODE": mode},
+            cwd=tmp, capture_output=True, text=True, env={**os.environ, "IDENTIFIERS_MODE": mode,
+                                                        "CHECK_REPOSITORY": repository},
         )
 
 
@@ -151,6 +157,114 @@ class IdentifiersTest(unittest.TestCase):
         result = run_check("", "id text primary key\n", mode="warn")
         self.assertEqual(result.returncode, 0)
         self.assertIn("::warning file=schema.sql,line=1::", result.stdout)
+
+
+MIGRATION_PATH = "services/api/migrations/20261002000000_erasure_requests.sql"
+MIGRATION = (pathlib.Path(__file__).parent / "fixtures" / "identifiers" /
+             "20261002000000_erasure_requests.sql").read_bytes()
+MIGRATION_SHA256 = "ec45154ae1d30614b4909e0da9d2d5f74ecd6695de3f0e0d09c761568b4f54d2"
+
+
+class HistoricalAllowanceTest(unittest.TestCase):
+    def test_fixture_identity(self) -> None:
+        self.assertEqual(hashlib.sha256(MIGRATION).hexdigest(), MIGRATION_SHA256)
+        blob = hashlib.sha1(f"blob {len(MIGRATION)}\0".encode() + MIGRATION).hexdigest()
+        self.assertEqual(blob, "98bc238255f41ee91e0af595c545f1a76ef0d83f")
+        allowances = json.loads((ACTION / "historical-allowances.json").read_text())
+        self.assertEqual(allowances, [{"repository": "SylphxAI/tachyn", "path": MIGRATION_PATH,
+                                      "code": "sql.text-primary-key", "sha256": MIGRATION_SHA256}])
+
+    def test_rules_have_unique_stable_codes(self) -> None:
+        rows = [line.split("\t") for line in (ACTION / "rules.tsv").read_text().splitlines()
+                if line and not line.startswith("#")]
+        self.assertTrue(all(len(row) == 4 and row[3] for row in rows))
+        self.assertEqual(len(rows), len({row[3] for row in rows}))
+
+    def invoke(self, event: str, *, data: bytes = MIGRATION,
+               repository: str = "SylphxAI/tachyn", path: str = MIGRATION_PATH,
+               caller_allowance: bool = False, other_code: bool = False,
+               dirty: bytes | None = None) -> subprocess.CompletedProcess[str]:
+        """Run the actual composite shell step in an independent consumer repo."""
+        manifest = yaml.safe_load((ACTION / "action.yml").read_text())
+        step = manifest["runs"]["steps"][0]
+        self.assertEqual(step["env"]["CHECK_REPOSITORY"], "${{ github.repository }}")
+        self.assertEqual(set(manifest["inputs"]), {"mode", "exclude"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            def git(*args: str) -> str:
+                return subprocess.run(["git", "-C", tmp, *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "test@invalid")
+            git("config", "user.name", "test")
+            git("commit", "-qm", "base", "--allow-empty")
+            base = git("rev-parse", "HEAD")
+            git("switch", "-qc", "change")
+            doc = root / path
+            doc.parent.mkdir(parents=True)
+            doc.write_bytes(data)
+            fake_list = [{"repository": repository, "path": path,
+                          "code": "sql.text-primary-key", "sha256": hashlib.sha256(data).hexdigest()}]
+            if caller_allowance:
+                # Attempt both a conventional caller-side file and a shadow
+                # action data file as committed PR/merge/push content.
+                for name in ("historical-allowances.json",
+                             ".github/actions/identifiers/historical-allowances.json"):
+                    target = root / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(json.dumps(fake_list))
+            git("add", ".")
+            git("commit", "-qm", "change")
+            head = git("rev-parse", "HEAD")
+            git("remote", "add", "origin", tmp)
+            if dirty is not None:
+                doc.write_bytes(dirty)
+            env = dict(os.environ, EVENT_NAME=event, CHECK_REPOSITORY=repository,
+                       PR_BASE_SHA=base, PR_BASE_REF="main", PR_HEAD_SHA=head,
+                       MG_BASE_SHA=base, MG_HEAD_SHA=head, PUSH_BEFORE=base, GIT_SHA=head,
+                       MODE="fail", EXCLUDE="", GITHUB_ACTION_PATH=str(ACTION),
+                       INPUT_ALLOWANCES=json.dumps(fake_list),
+                       IDENTIFIERS_ALLOWANCES=str(root / "historical-allowances.json"),
+                       ALLOWANCES=str(root / "historical-allowances.json"))
+            command = ["bash", "-c", step["run"]]
+            if other_code:
+                rules = root / "other-rules.tsv"
+                rules.write_text((ACTION / "rules.tsv").read_text().replace(
+                    "sql.text-primary-key", "sql.other-finding"))
+                command = [str(ACTION / "check.sh"), f"{base}..{head}", str(rules)]
+            return subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
+
+    def test_exact_historical_file_passes_all_events(self) -> None:
+        for event in ("pull_request", "merge_group", "push"):
+            with self.subTest(event=event):
+                result = self.invoke(event)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("::warning", result.stdout)
+                self.assertNotIn("::error", result.stdout)
+
+    def test_each_mismatch_fails_all_events_despite_caller_allowances(self) -> None:
+        cases = [dict(data=MIGRATION + b"\n"),  # exactly one added byte
+                 dict(repository="SylphxAI/another-repo"),
+                 dict(path="other/20261002000000_erasure_requests.sql"),
+                 dict(path="services/api/migrations/20261003000000_erasure_requests.sql")]
+        for event in ("pull_request", "merge_group", "push"):
+            for case in cases:
+                with self.subTest(event=event, case=case):
+                    result = self.invoke(event, caller_allowance=True, **case)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn("::error", result.stdout)
+                    self.assertIn("[sql.text-primary-key]", result.stdout)
+
+    def test_other_finding_code_is_not_allowed(self) -> None:
+        result = self.invoke("push", other_code=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("[sql.other-finding]", result.stdout)
+
+    def test_hash_uses_committed_endpoint_not_working_tree(self) -> None:
+        result = self.invoke("push", data=MIGRATION + b"\n", dirty=MIGRATION)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        result = self.invoke("push", dirty=MIGRATION + b"\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

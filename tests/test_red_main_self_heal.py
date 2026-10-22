@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Tests for the red-main self-heal rules (INFRA_PY and CONFIRM_PY in red-main.yml)."""
+"""Tests for the red-main self-heal rules (.github/red_main/).
+
+The handler's programs are checked in under .github/red_main/ and run from
+there, so a test reads the reviewed file rather than a heredoc in the workflow.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,24 +16,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.red_main_programs import program
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 
 
 def embedded(name: str) -> str:
-    lines = WORKFLOW.read_text().splitlines()
-    start = lines.index(f"      {name}: |") + 1
-    body = []
-    for line in lines[start:]:
-        if line.strip() and not line.startswith("        "):
-            break
-        body.append(line[8:])
-    return "\n".join(body) + "\n"
+    """The checked-in program for a former `<NAME>_PY`/`LIB` heredoc key."""
+    return program({
+        "INFRA_PY": "infra.py", "CONFIRM_PY": "confirm.py", "MIGRATION_PY": "migration.py",
+        "HOLD_PY": "hold.py", "PREV_PY": "prev.py", "PROOF_PY": "proof.py", "GATE_PY": "gate.py",
+        "LIB": "lib.sh",
+    }[name])
 
 
 INFRA = embedded("INFRA_PY")
 CONFIRM = embedded("CONFIRM_PY")
-VERDICT = embedded("VERDICT_PY")
 MIGRATION = embedded("MIGRATION_PY")
 HOLD = embedded("HOLD_PY")
 PREV = embedded("PREV_PY")
@@ -60,6 +64,38 @@ def confirm(prev_conclusion: str, prev_rows: str, cur_rows: str) -> str:
 
 
 class InfraTest(unittest.TestCase):
+    def test_classifier_fetches_annotations_by_linked_check_not_job_id(self):
+        fixture = dict(job("cache", ["Restore cache"]), id=300,
+                       check_run_url="https://api.github.com/repos/SylphxAI/cloud/check-runs/30")
+        script = '''
+set -euo pipefail
+. "$RUNNER_TEMP/lib.sh"
+gha() {
+  case "$2" in
+    "repos/$REPO/actions/runs/1/jobs?filter=latest&per_page=100") printf '%s\\n' "$FIXTURE_JOB" ;;
+    "repos/$REPO/check-runs/30/annotations?per_page=100") printf '%s\\n' '["Failed to restore: 403 Forbidden"]' ;;
+    *) echo "unexpected API path: $2" >&2; return 1 ;;
+  esac
+}
+classify_run 1
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "lib.sh").write_text(embedded("LIB"))
+            work = root / "red-main"
+            work.mkdir()
+            (work / "infra.py").write_text(INFRA)
+            (work / "proof.py").write_text(embedded("PROOF_PY"))
+            env = dict(os.environ, RUNNER_TEMP=directory, REPO="SylphxAI/cloud",
+                       FIXTURE_JOB=json.dumps(fixture))
+            result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "infra cache-403")
+            env["FIXTURE_JOB"] = json.dumps(dict(fixture, check_run_url="https://evil.invalid/30"))
+            malformed = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+            self.assertNotEqual(malformed.returncode, 0)
+            self.assertIn("invalid job check_run_url", malformed.stderr)
+
     def test_token_mint(self):
         self.assertEqual(classify(job("a", ["Mint installation token"])), "infra installation-token-mint")
 
@@ -108,39 +144,15 @@ class InfraTest(unittest.TestCase):
         self.assertEqual(classify(), "none")
 
 
-def verdict(infra, state, conclusion="") -> str:
-    return subprocess.run(
-        [sys.executable, "-c", VERDICT, infra, state, conclusion], capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-
 def previous(runs, created="2026-09-30T10:00:00Z") -> str:
     return subprocess.run(
         [sys.executable, "-c", PREV, created],
-        input=json.dumps({"workflow_runs": runs}), capture_output=True, text=True, check=True,
+        input=json.dumps({"total_count": len(runs), "workflow_runs": runs}), capture_output=True, text=True, check=True,
     ).stdout.strip()
 
 
 def run(id, conclusion, created, status="completed"):
     return {"id": id, "conclusion": conclusion, "created_at": created, "status": status, "html_url": f"u{id}"}
-
-
-class VerdictTest(unittest.TestCase):
-    def test_infra_rerun_passes_means_no_flake_and_no_revert(self):
-        self.assertEqual(verdict("yes", "completed", "success"), "infra")
-
-    def test_infra_rerun_fails_means_stop(self):
-        self.assertEqual(verdict("yes", "completed", "failure"), "unknown")
-
-    def test_infra_rerun_refused_or_timeout_means_stop(self):
-        self.assertEqual(verdict("yes", "refused"), "unknown")
-        self.assertEqual(verdict("yes", "timeout"), "unknown")
-
-    def test_code_failure_paths_unchanged(self):
-        self.assertEqual(verdict("no", "completed", "success"), "flake")
-        self.assertEqual(verdict("no", "completed", "failure"), "real")
-        self.assertEqual(verdict("no", "refused"), "real")
-        self.assertEqual(verdict("no", "timeout"), "unknown")
 
 
 class PreviousRunTest(unittest.TestCase):
@@ -163,6 +175,20 @@ class PreviousRunTest(unittest.TestCase):
     def test_unfinished_run_is_ignored(self):
         self.assertEqual(previous([run(2, None, "2026-09-30T09:40:00Z", "in_progress")]), "")
 
+    def test_invalid_or_blank_status_is_rejected_but_unfinished_states_are_kept(self):
+        for status in ("", None, "mystery", 5):
+            with self.assertRaises(subprocess.CalledProcessError):
+                previous([run(2, "success", "2026-09-30T09:40:00Z", status)])
+        for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+            self.assertEqual(previous([run(2, None, "2026-09-30T09:40:00Z", status)]), "")
+
+    def test_incomplete_envelope_is_rejected(self):
+        for body in ('{"workflow_runs": []}', '{"total_count": null, "workflow_runs": []}',
+                     '{"total_count": 2, "workflow_runs": []}'):
+            with self.assertRaises(subprocess.CalledProcessError):
+                subprocess.run([sys.executable, "-c", PREV, "2026-09-30T10:00:00Z"], input=body,
+                               capture_output=True, text=True, check=True)
+
     def test_none_found(self):
         self.assertEqual(previous([]), "")
 
@@ -183,8 +209,21 @@ class ConfirmTest(unittest.TestCase):
     def test_same_test_different_job(self):
         self.assertTrue(confirm("failure", "test\tt1\tj1\n", "test\tt1\tj2\n").startswith("no "))
 
-    def test_lane_row_matches_same_job(self):
-        self.assertTrue(confirm("failure", "lane\tj\tj\n", "test\tt1\tj\n").startswith("yes "))
+    def test_lane_row_does_not_match_a_test_of_the_same_job(self):
+        # A job with no junit on one run and a failing test on the other is
+        # not the same failure: nothing confirms, the next run decides.
+        self.assertTrue(confirm("failure", "lane\tj\tj\n", "test\tt1\tj\n").startswith("no "))
+
+    def test_lane_rows_match_only_the_same_way_of_failing(self):
+        at_a = "lane\tfailure at A: Process completed with exit code 1.\tj\n"
+        at_b = "lane\tfailure at B: Process completed with exit code 1.\tj\n"
+        self.assertTrue(confirm("failure", at_a, at_a).startswith("yes "))
+        answer = confirm("failure", at_a, at_b)
+        self.assertTrue(answer.startswith("no j failed on both runs, but not the same way"), answer)
+
+    def test_the_aggregate_job_is_never_a_unit(self):
+        verified = "lane\tfailure at Verdict: Process completed with exit code 1.\tverified\n"
+        self.assertTrue(confirm("failure", verified, verified).startswith("no "))
 
     def test_lane_rows_different_job(self):
         self.assertTrue(confirm("failure", "lane\tj1\tj1\n", "lane\tj2\tj2\n").startswith("no "))
@@ -205,7 +244,8 @@ def gate(on_red: str | None) -> str:
 
 class GateModeTest(unittest.TestCase):
     def test_modes(self):
-        self.assertTrue(gate(None).startswith("act\tnotify"))
+        self.assertTrue(gate(None).startswith("act\trevert\t"))  # revert by default
+        self.assertTrue(gate("notify").startswith("act\tnotify"))  # an explicit opt-out
         self.assertTrue(gate("revert").startswith("act\trevert\t"))
         self.assertTrue(gate("revert_pr_unarmed").startswith("act\trevert_pr_unarmed\t"))
 
@@ -247,19 +287,12 @@ class UnarmedStaticTest(unittest.TestCase):
         text = WORKFLOW.read_text()
         merges = [m.start() for m in re.finditer(r"gh pr merge", text)]
         enqueues = [m.start() for m in re.finditer(r"\{enqueuePullRequest\(", text)]
-        self.assertEqual(len(merges), 2)
+        self.assertEqual(len(merges), 1)
         self.assertEqual(len(enqueues), 1)
-        quarantine = step_text("Mark the flaky units in their own source")
         revert = step_text("Revert the culprit or report it")
-        q_start = text.index(quarantine)
         r_start = text.index(revert)
-        q_merge = [m for m in merges if q_start <= m < q_start + len(quarantine)]
         r_merge = [m for m in merges if r_start <= m < r_start + len(revert)]
-        self.assertEqual((len(q_merge), len(r_merge)), (1, 1))
-        # quarantine: after its guard, and the guard exits
-        guard = text.index('if [ "$MODE" != revert ] || [ "${REPO%%/*}" != SylphxAI ]; then', q_start)
-        self.assertLess(guard, q_merge[0])
-        self.assertIn("exit 0", text[guard:q_merge[0]])
+        self.assertEqual(len(r_merge), 1)
         # revert: after the unarmed branch, which exits
         unarmed = text.index('if [ "$MODE" = revert_pr_unarmed ]; then\n            state_set revert-pr', r_start)
         self.assertLess(unarmed, r_merge[0])
@@ -346,9 +379,11 @@ class InfraRule2Test(unittest.TestCase):
         self.assertEqual(classify(job("a", ["Checkout", "cargo nextest"])), "none")
 
     def test_infra_only_run_is_never_a_revert_verdict(self):
-        # The rerun that fails again after an infra failure stops; it never
-        # reaches `real`, so nothing is reverted.
-        self.assertEqual(verdict("yes", "completed", "failure"), "unknown")
+        # An infra failure is reported as `infra`, never `real`: nothing is
+        # reverted, and nothing is rerun.
+        body = step_text("Decide the verdict of the failed run")
+        self.assertLess(body.index("verdict=infra"), body.index("verdict=real"))
+        self.assertNotIn("rerun --failed", WORKFLOW.read_text())
 
 
 def hold(window: str, now: str) -> str:
@@ -450,8 +485,6 @@ class RulesStaticTest(unittest.TestCase):
         guard = trace.index('if [ "$MODE" = notify ]')
         self.assertLess(guard, trace.index('"repos/$REPO/git/refs"'))
         self.assertIn("exit 0", trace[guard:trace.index('"repos/$REPO/git/refs"')])
-        cond = step_text("Mark the flaky units in their own source")
-        self.assertIn("!= 'notify'", cond)
 
     def test_revert_notifies_owner_and_ops_and_files_followup(self):
         body = step_text("Revert the culprit or report it")
@@ -462,7 +495,7 @@ class RulesStaticTest(unittest.TestCase):
 class DispatchWithNothingRedTest(unittest.TestCase):
     def test_no_failed_run_is_quiet_not_an_error(self):
         body = step_text("Resolve the verify run that failed")
-        self.assertIn('quiet "no failed run of $VERIFY_WORKFLOW on main was found to handle"', body)
+        self.assertIn('quiet "no failed run of $VERIFY_WORKFLOW on $TRUNK was found to handle"', body)
         self.assertNotIn("was found to handle\"\n            exit 1", body)
 
 
@@ -473,7 +506,7 @@ class ReviewFixesStaticTest(unittest.TestCase):
         self.assertIn('[ -s "$WORK_DIR/one-commit.txt" ] || files_ok=no', body)
         self.assertNotIn("--jq '.files", body)
         # after the clone, before the revert
-        self.assertLess(body.index("git_c checkout --quiet -B main FETCH_HEAD"), body.index("git_c diff --no-renames"))
+        self.assertLess(body.index("git_c checkout --quiet -B \"$TRUNK\" FETCH_HEAD"), body.index("git_c diff --no-renames"))
         self.assertLess(body.index("git_c diff --no-renames"), body.index("git_c revert --no-edit"))
 
     def test_shell_fallback_is_the_default_list(self):
@@ -486,7 +519,7 @@ class ReviewFixesStaticTest(unittest.TestCase):
 
     def test_hold_comments_once_per_culprit(self):
         body = step_text("Revert the culprit or report it")
-        start = body.index('if [ -z "$existing" ]; then\n              gh api --method POST "repos/$REPO/issues" -f title="main is red: migration')
+        start = body.index('if [ -z "$existing" ]; then\n              gh api --method POST "repos/$REPO/issues" -f title="$TRUNK is red: migration')
         end = body.index('say "**No revert (migration hold)')
         self.assertIn("OPS_ISSUE#", body[start:end])
         self.assertIn('for pr in $prs; do', body[start:end])

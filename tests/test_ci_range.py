@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -59,8 +60,14 @@ class SelectTest(unittest.TestCase):
         run = ci_range.select(LANES, None, "verify / test (linux),verified")
         self.assertEqual(run, {"lint": False, "test": True, "e2e": False})
 
-    def test_only_never_widens_past_the_range(self) -> None:
-        self.assertEqual(ci_range.select(LANES, ["README.md"], "e2e")["e2e"], False)
+    def test_only_runs_a_named_lane_outside_the_range(self) -> None:
+        # A dispatch naming lanes on an already verified head (empty range)
+        # runs those lanes and nothing else.
+        self.assertEqual(ci_range.select(LANES, [], "lint,e2e"), {"lint": True, "test": False, "e2e": True})
+        self.assertEqual(ci_range.select(LANES, ["README.md"], "e2e")["e2e"], True)
+
+    def test_only_drops_a_selected_lane_it_does_not_name(self) -> None:
+        self.assertEqual(ci_range.select(LANES, ["src/a.rs", "web/b.ts"], "e2e"), {"lint": False, "test": False, "e2e": True})
 
     def test_only_with_no_known_lane_runs_the_selection(self) -> None:
         self.assertEqual(ci_range.select(LANES, None, "verified,plan"), {"lint": True, "test": True, "e2e": True})
@@ -140,9 +147,53 @@ class NeedsPassTest(unittest.TestCase):
         needs = {"plan": {"result": "success"}, "a": {"result": "skipped"}, "b": {"result": "success"}}
         self.assertEqual(needs_pass.verdict(needs, {"plan"}, set()), [])
 
-    def test_failure_cancel_fail(self) -> None:
-        for bad in ("failure", "cancelled", ""):
+    def test_failure_and_no_result_fail(self) -> None:
+        for bad in ("failure", "timed_out", "action_required", "startup_failure", ""):
             self.assertTrue(needs_pass.verdict({"a": {"result": bad}}, set(), set()), bad)
+
+    def test_cancelled_lane_is_not_a_failure(self) -> None:
+        # a superseded push cancels the run before it; its lanes read
+        # `cancelled` while nothing was wrong, so the aggregate must not fail.
+        needs = {"plan": {"result": "success"}, "work": {"result": "cancelled"},
+                 "rest": {"result": "cancelled"}}
+        self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), "pull_request"), [])
+        # a real failure beside a cancelled lane is still a failure
+        needs["rest"] = {"result": "failure"}
+        self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), "pull_request"),
+                         ["rest: failure"])
+
+    def test_cancelled_required_lane_is_not_a_failure(self) -> None:
+        # required/required-unless-merge-group accept success only, but a cancelled
+        # lane has no verdict of its own; the rerun settles it.
+        needs = {"plan": {"result": "success"}, "suite": {"result": "cancelled"}}
+        self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), "pull_request", {"suite"}), [])
+        self.assertEqual(needs_pass.verdict(needs, {"plan", "suite"}, set(), "pull_request"), [])
+
+    def test_cancelled_lane_names_its_reason_class(self) -> None:
+        # The reason class must be readable without the log: a pull_request run
+        # cancelled by concurrency is a superseded push; anywhere else it was stopped.
+        self.assertEqual(needs_pass.cancel_class("work", "pull_request"),
+                         "work: CANCELLED (superseded push)")
+        for event in ("push", "merge_group", "workflow_dispatch", ""):
+            self.assertEqual(needs_pass.cancel_class("work", event),
+                             "work: CANCELLED (stopped run)", event)
+
+    def test_cancelled_lanes_reported_and_the_run_exits_zero(self) -> None:
+        # The regression: the exact NEEDS map from the run that failed as red.
+        env = dict(os.environ, NEEDS=json.dumps(
+            {"plan": {"result": "success"}, "work": {"result": "cancelled"},
+             "rest": {"result": "cancelled"}}), REQUIRED="plan", EVENT_NAME="pull_request")
+        proc = subprocess.run([sys.executable, str(needs_pass.__file__)],
+                              env=env, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("CANCELLED (superseded push)", proc.stdout)
+        self.assertNotIn("::error::", proc.stdout)
+        # a genuinely failed lane still exits 1
+        env["NEEDS"] = json.dumps({"plan": {"result": "success"}, "work": {"result": "failure"}})
+        proc = subprocess.run([sys.executable, str(needs_pass.__file__)],
+                              env=env, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("::error::work: failure", proc.stdout)
 
     def test_required_must_succeed(self) -> None:
         self.assertEqual(needs_pass.verdict({"plan": {"result": "skipped"}}, {"plan"}, set()),
@@ -151,6 +202,23 @@ class NeedsPassTest(unittest.TestCase):
 
     def test_advisory_never_fails(self) -> None:
         self.assertEqual(needs_pass.verdict({"quarantine": {"result": "failure"}}, set(), {"quarantine"}), [])
+
+    def test_verdict_templates_skip_cancelled_workflows_not_failed_dependencies(self) -> None:
+        import yaml
+        for name, job in (("ci-fast-path.yml", "ci-ok"),
+                          ("optimistic-gate.yml", "ci-ok"),
+                          ("optimistic-verify.yml", "verified"),
+                          ("rust-ci.yml", "ci-ok")):
+            with self.subTest(template=name):
+                workflow = yaml.safe_load((ROOT / "workflow-templates" / name).read_text())
+                gate = workflow["jobs"][job]
+                self.assertEqual(gate["if"], "always() && !cancelled()")
+                self.assertTrue(gate["needs"])
+                self.assertIn("needs-pass@", gate["steps"][0]["uses"])
+        # The lifecycle guard never weakens the aggregate's failure semantics.
+        self.assertTrue(needs_pass.verdict({"test": {"result": "failure"}}, {"test"}, set()))
+        # A cancelled dependency is not a failure.
+        self.assertEqual(needs_pass.verdict({"test": {"result": "cancelled"}}, {"test"}, set()), [])
 
 
 class ActionManifestExpressionTest(unittest.TestCase):
@@ -218,6 +286,63 @@ class StarterWorkflowTest(unittest.TestCase):
         self.assertIn("workflow_dispatch", gate[True])
         self.assertIn("pull_request", gate["jobs"]["suite"]["if"])
 
+    def test_verify_starter_supersedes_the_trunk_run(self) -> None:
+        # The latest trunk push wins: a newer run supersedes an in-flight one,
+        # and a cancelled verify is never a red trunk (RedMainOnlyOnFailureTest).
+        # A pull request run is superseded too; only `workflow_call` never
+        # cancels. The range base is the last *successful* run (`ci-range`), so a
+        # superseded run's commits stay in the newest run.
+        import yaml
+        verify = yaml.safe_load((ROOT / "workflow-templates" / "optimistic-verify.yml").read_text())
+        cancel = " ".join(str(verify["concurrency"]["cancel-in-progress"]).split())
+        self.assertIn("github.event_name == 'push'", cancel)
+        self.assertIn("github.event_name == 'pull_request'", cancel)
+
+    def test_verify_starter_hand_over_keeps_a_bounded_size(self) -> None:
+        # docs/optimistic-merge.md: a heavy hand-over between jobs of a run
+        # uses `run-store` (the org's BuildCache), never GitHub artifact
+        # storage, which is a metered organization quota ("Artifact storage
+        # quota has been hit", fb#4348). A raw platform bundle left in the
+        # starter is copied into a caller and uploaded there.
+        import yaml
+        text = (ROOT / "workflow-templates" / "optimistic-verify.yml").read_text()
+        raw = sum(path.stat().st_size for path in (ROOT / "workflow-templates").glob("*.bundle"))
+        self.assertLess(raw, 4 * 1024, "a raw bundle in workflow-templates")
+        verify = yaml.safe_load(text)
+        for job_name, job in (verify.get("jobs") or {}).items():
+            for step in job.get("steps") or []:
+                if "path" in (step.get("with") or {}):
+                    self.assertNotIn("*", str(step["with"]["path"]), f"{job_name} {step.get('name')}")
+        guide = (ROOT / "docs" / "optimistic-merge.md").read_text()
+        self.assertIn("never `upload-artifact`", guide)
+        self.assertIn("complete set of steps", " ".join(guide.split()))
+
+    def test_starter_diagnostics_use_optional_run_store_not_github_artifacts(self) -> None:
+        # Starters must not copy GitHub's metered artifact dependency into a
+        # caller. Optional JUnit diagnostics use the run-store discovery
+        # contract and must never turn a passing test job red.
+        import yaml
+        seen = 0
+        for path in (ROOT / "workflow-templates").glob("*.yml"):
+            workflow = yaml.safe_load(path.read_text())
+            for job_name, job in (workflow.get("jobs") or {}).items():
+                for step in job.get("steps") or []:
+                    uses = str(step.get("uses", ""))
+                    where = f"{path.name} {job_name} {step.get('with', {}).get('name')}"
+                    self.assertFalse(uses.startswith(("actions/upload-artifact@", "actions/download-artifact@")), where)
+                    inputs = step.get("with") or {}
+                    if "/actions/run-store@" not in uses or not str(inputs.get("name", "")).startswith("junit-"):
+                        continue
+                    seen += 1
+                    self.assertEqual(inputs.get("mode"), "put", where)
+                    self.assertEqual(step.get("name"), f"run-store put {inputs['name']}", where)
+                    self.assertEqual(step.get("if"), "always()", where)
+                    self.assertIs(step.get("continue-on-error"), True, where)
+                    self.assertEqual(inputs.get("required"), "false", where)
+                    permissions = job.get("permissions", workflow.get("permissions", {}))
+                    self.assertEqual(permissions.get("id-token"), "write", where)
+        self.assertGreater(seen, 0)
+
 
 class RedMainOnlyOnFailureTest(unittest.TestCase):
     """A cancelled, superseded or timed-out run is never a red trunk: only a
@@ -228,14 +353,19 @@ class RedMainOnlyOnFailureTest(unittest.TestCase):
         caller = yaml.safe_load((ROOT / "workflow-templates" / "red-main.yml").read_text())
         condition = " ".join(caller["jobs"]["red-main"]["if"].split())
         self.assertIn("github.event.workflow_run.conclusion == 'failure'", condition)
-        self.assertIn("github.event.workflow_run.head_branch == 'main'", condition)
+        self.assertIn("github.event.workflow_run.head_branch == github.event.repository.default_branch", condition)
         self.assertEqual(caller[True]["workflow_run"]["workflows"], ["Verify"])  # yaml reads `on` as True
 
-    def test_handler_quits_on_any_other_conclusion(self) -> None:
+    def test_handler_quiets_only_authenticated_success_or_ineligible_producer(self) -> None:
         handler = (ROOT / ".github" / "workflows" / "red-main.yml").read_text()
-        self.assertIn('[ "$conclusion" = "failure" ] || quiet', handler)
-        # A dispatch without an event run takes only a failed run, never a cancelled one.
-        self.assertIn("status=failure", handler)
+        self.assertIn('case "$proof" in', handler)
+        self.assertIn('failure|timed_out|action_required|startup_failure)', handler)
+        self.assertIn('success|ineligible) quiet "the authenticated post-main proof', handler)
+        self.assertIn('proof=$(read_proof run', handler)
+        # Manual event selection cannot take a diagnostic or merge-group run;
+        # whole-workflow failure is not proof (optional publishing may fail).
+        self.assertIn("runs?event=push&branch=$TRUNK", handler)
+        self.assertNotIn("runs?branch=main&status=failure", handler)
 
 
 if __name__ == "__main__":

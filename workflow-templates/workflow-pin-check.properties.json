@@ -1,0 +1,6 @@
+{
+  "name": "Workflow pin check",
+  "description": "Fails a pull request whose workflows pin another of our repositories to a commit that is not on that repository's default branch, on Sylphx runners.",
+  "iconName": "octicon pin",
+  "categories": ["Automation"]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Keel pin check",
+  "description": "Fails a pull request that pins Keel to a commit off Keel main or to two commits, and warns when the pin is not a verified tag, on Sylphx runners.",
+  "iconName": "octicon pin",
+  "categories": ["Automation", "Rust"]
+}

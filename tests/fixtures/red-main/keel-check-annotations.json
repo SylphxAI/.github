@@ -1,0 +1,56 @@
+{
+  "111557040542": [
+    {
+      "annotation_level": "warning",
+      "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@v4, actions/checkout@v4, actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
+    },
+    {
+      "annotation_level": "failure",
+      "message": "Process completed with exit code 101."
+    },
+    {
+      "annotation_level": "warning",
+      "message": "BuildCache unavailable (token exchange: HTTP 404); trying the next cache backend"
+    }
+  ],
+  "111557055633": [
+    {
+      "annotation_level": "warning",
+      "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
+    },
+    {
+      "annotation_level": "failure",
+      "message": "Process completed with exit code 1."
+    },
+    {
+      "annotation_level": "warning",
+      "message": "BuildCache unavailable (token exchange: HTTP 404); trying the next cache backend"
+    }
+  ],
+  "111564895969": [
+    {
+      "annotation_level": "failure",
+      "message": "Process completed with exit code 1."
+    }
+  ],
+  "111577722269": [
+    {
+      "annotation_level": "warning",
+      "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
+    },
+    {
+      "annotation_level": "failure",
+      "message": "Process completed with exit code 1."
+    },
+    {
+      "annotation_level": "warning",
+      "message": "BuildCache unavailable (token exchange: HTTP 404); trying the next cache backend"
+    }
+  ],
+  "111586876805": [
+    {
+      "annotation_level": "failure",
+      "message": "Process completed with exit code 1."
+    }
+  ]
+}

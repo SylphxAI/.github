@@ -1,0 +1,53 @@
+name: Disarm auto-merge on push
+on:
+  workflow_call:
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  disarm:
+    if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 5
+    steps:
+      # No checkout: never execute the pull request's code with a write token.
+      - name: Disable an auto-merge request armed before this push
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            function disarmReason(event, pr) {
+              if (!event.pull_request.auto_merge) return 'not armed when the push arrived';
+              if (!pr || pr.state !== 'OPEN') return 'pull request is no longer open';
+              if (pr.headRefOid !== event.after) return 'a newer push superseded this event';
+              if (pr.mergeQueueEntry?.headCommit?.oid === pr.headRefOid) return 'already queued on this head';
+              if (!pr.autoMergeRequest) return 'auto-merge is already disabled';
+              const pushedAt = Date.parse(event.pull_request.updated_at);
+              const enabledAt = Date.parse(pr.autoMergeRequest.enabledAt);
+              if (!Number.isFinite(pushedAt) || !Number.isFinite(enabledAt)) throw new Error('invalid push or arm timestamp');
+              if (enabledAt >= pushedAt) return 'armed at or after this push; preserve the new arm';
+              return null;
+            }
+            const event = context.payload;
+            const result = await github.graphql(`
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    id state headRefOid
+                    autoMergeRequest { enabledAt }
+                    mergeQueueEntry { headCommit { oid } }
+                  }
+                }
+              }`, { owner: context.repo.owner, repo: context.repo.repo, number: event.pull_request.number });
+            const pr = result.repository.pullRequest;
+            const reason = disarmReason(event, pr);
+            if (reason) {
+              core.info(`Skip #${event.pull_request.number}: ${reason}`);
+              return;
+            }
+            await github.graphql(`
+              mutation($id: ID!) {
+                disablePullRequestAutoMerge(input: {pullRequestId: $id}) {
+                  pullRequest { number autoMergeRequest { enabledAt } }
+                }
+              }`, { id: pr.id });
+            core.info(`Disabled stale auto-merge for #${event.pull_request.number} at head ${event.after}`);
