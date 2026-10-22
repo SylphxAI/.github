@@ -35,7 +35,7 @@ Compile cache, first that applies (the
    inside its 10 GB per-repository quota.
 
 sccache entries are keyed under `rustc`, shared by the org's repositories, and
-the job ends with `sccache --show-stats` whenever BuildCache or the static keys
+the job ends with `sccache --show-stats` (also in the job summary, with a warning when cache writes fail) whenever BuildCache or the static keys
 carried it (the action's `backend` output is `buildcache` or `static`). The
 platform's `ci-sccache` key is never a repository's cache: the `RGW_S3_*`
 secrets are ignored.

@@ -28,10 +28,20 @@ class RustCheckWorkflow(unittest.TestCase):
         for marker in ("@@sylphx-check-begin", "@@sylphx-check-end", "@@sylphx-check-exit="):
             self.assertIn(f'echo "{marker}', self.text)
 
+    def test_reports_the_hit_rate_and_warns_when_writes_fail(self) -> None:
+        stats = re.search(r"- name: sccache stats\n((?:        .*\n|\n)+)", self.text)
+        self.assertIsNotNone(stats)
+        body = stats.group(1)
+        self.assertIn("always()", body)
+        self.assertIn("GITHUB_STEP_SUMMARY", body)
+        self.assertIn("Cache hits rate", body)
+        self.assertIn("Cache write errors", body)
+        self.assertIn("::warning", body)
+
     def test_sccache_through_the_action_then_rust_cache(self) -> None:
         sccache = re.search(r"- name: Compile cache \(sccache\)\n((?:        .*\n)+)", self.text)
         self.assertIsNotNone(sccache)
-        self.assertIn("uses: SylphxAI/.github/.github/actions/rust-sccache@d4305368ad744cdb047d8cdfd7588d99618cb5b5", sccache.group(1))
+        self.assertIn("uses: SylphxAI/.github/.github/actions/rust-sccache@b051405836fcc2346300b21bd5f3af9e8eae5419", sccache.group(1))
         self.assertIn("actions-cache: 'false'", sccache.group(1))
         self.assertIn("secrets.SYLPHX_CI_CACHE_ACCESS_KEY", sccache.group(1))
         step = re.search(r"- name: Compile cache on GitHub Actions cache\n((?:        .*\n)+)", self.text)
@@ -134,3 +144,36 @@ class GitDepsTest(unittest.TestCase):
             out = self.run_step(bad, app=True)
             self.assertEqual(out.returncode, 2, bad)
             self.assertIn("bad git-deps line", out.stdout)
+
+
+TEMPLATE = WORKFLOW.parents[2] / "workflow-templates" / "rust-check.yml"
+SCCACHE_PIN = re.compile(r"uses: SylphxAI/\.github/\.github/actions/rust-sccache@([0-9a-f]{40})")
+
+
+class StarterTemplate(unittest.TestCase):
+    """A repository copied from the starter must start: the caller grants what the
+    pinned reusable job requests, and the pin carries the current compile cache."""
+
+    def setUp(self) -> None:
+        self.spec = yaml.safe_load(TEMPLATE.read_text())
+
+    def pinned_sha(self) -> str:
+        uses = self.spec["jobs"]["check"]["uses"]
+        match = re.fullmatch(r"SylphxAI/\.github/\.github/workflows/rust-check\.yml@([0-9a-f]{40})", uses)
+        self.assertIsNotNone(match, uses)
+        return match.group(1)
+
+    def test_check_job_grants_the_oidc_permission_the_reusable_job_requests(self) -> None:
+        self.assertEqual(self.spec["permissions"], {"contents": "read"})
+        self.assertEqual(self.spec["jobs"]["check"]["permissions"], {"contents": "read", "id-token": "write"})
+
+    def test_pinned_commit_uses_the_current_rust_sccache_pin(self) -> None:
+        sha = self.pinned_sha()
+        root = WORKFLOW.parents[2]
+        shown = subprocess.run(
+            ["git", "-C", str(root), "show", f"{sha}:.github/workflows/rust-check.yml"],
+            capture_output=True, text=True,
+        )
+        if shown.returncode != 0:
+            self.skipTest(f"{sha} is not in this clone (shallow checkout)")
+        self.assertEqual(SCCACHE_PIN.findall(shown.stdout), SCCACHE_PIN.findall(WORKFLOW.read_text()))

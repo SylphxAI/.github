@@ -184,6 +184,48 @@ class Main(unittest.TestCase):
         self.assertEqual(code, 2)
 
 
+class HttpGet(unittest.TestCase):
+    """*.pages.dev answers urllib's default 'Python-urllib/3.x' User-Agent with HTTP 403, so every read
+    names the gate; a caller's headers are kept."""
+
+    def capture(self, headers=None):
+        seen = []
+
+        class Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, n):
+                return b"ok"
+
+        def urlopen(req, timeout):
+            seen.append(req)
+            return Resp()
+
+        old = ppg.urllib.request.urlopen
+        ppg.urllib.request.urlopen = urlopen
+        try:
+            self.assertEqual(ppg.http_get("https://x.pages.dev/GIT_SHA.txt", headers), (200, "ok"))
+        finally:
+            ppg.urllib.request.urlopen = old
+        return seen[0]
+
+    def test_sends_an_explicit_user_agent(self):
+        agent = self.capture().get_header("User-agent")
+        self.assertTrue(agent)
+        self.assertNotIn("Python-urllib", agent)
+
+    def test_keeps_caller_headers(self):
+        req = self.capture({"Authorization": "Bearer tok"})
+        self.assertEqual(req.get_header("Authorization"), "Bearer tok")
+        self.assertTrue(req.get_header("User-agent"))
+
+
 class ActionAndTemplate(unittest.TestCase):
     def test_action_refuses_a_github_hosted_runner_and_keeps_the_token_out_of_arguments(self):
         text = (ACTION / "action.yml").read_text()

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Tests for the red-main self-heal rules (INFRA_PY and CONFIRM_PY in red-main.yml)."""
+"""Tests for the red-main self-heal rules (.github/red_main/).
+
+The handler's programs are checked in under .github/red_main/ and run from
+there, so a test reads the reviewed file rather than a heredoc in the workflow.
+"""
 
 from __future__ import annotations
 
@@ -12,19 +16,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.red_main_programs import program
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 
 
 def embedded(name: str) -> str:
-    lines = WORKFLOW.read_text().splitlines()
-    start = lines.index(f"      {name}: |") + 1
-    body = []
-    for line in lines[start:]:
-        if line.strip() and not line.startswith("        "):
-            break
-        body.append(line[8:])
-    return "\n".join(body) + "\n"
+    """The checked-in program for a former `<NAME>_PY`/`LIB` heredoc key."""
+    return program({
+        "INFRA_PY": "infra.py", "CONFIRM_PY": "confirm.py", "MIGRATION_PY": "migration.py",
+        "HOLD_PY": "hold.py", "PREV_PY": "prev.py", "PROOF_PY": "proof.py", "GATE_PY": "gate.py",
+        "LIB": "lib.sh",
+    }[name])
 
 
 INFRA = embedded("INFRA_PY")

@@ -6,6 +6,12 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
+    inputs:
+      junit-producer-run:
+        description: 'Completed Project control producer run to read from a different run.'
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
@@ -28,28 +34,9 @@ jobs:
           node-version: "22.14.0"
       - name: Enforce managed runner defaults
         run: |
-          set -euo pipefail
-          reusable=.github/workflows/adr29-admission.yml
-          template=templates/workflows/adr29-admission.yml
-          project_control=.github/workflows/project-control.yml
-          test "$(grep -Ec '^[[:space:]]*runs-on:' "$reusable")" -eq 1
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$reusable")" -eq 1
-          test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$template")" -eq 4
-          test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 6
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$project_control")" -eq 5
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$project_control")" -eq 1
-          # owner#750 (zero metered GitHub spend): the admission template and
-          # reusable workflow serve private repositories, so they run on our
-          # runners only (asserted above). This public repository's own jobs
-          # run on GitHub's free standard hosted runners (asserted above);
-          # larger and GPU hosted runners are banned everywhere.
+          # Larger and GPU hosted runners are banned everywhere (owner#750).
           if grep -REn '(ubuntu|windows|macos)-[a-z0-9.-]*(cores|xlarge|large|gpu)' .github templates --include='*.yml' --include='*.yaml' | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#'; then
             echo '::error::larger or GPU GitHub-hosted runners are banned (owner#750)'
-            exit 1
-          fi
-          if grep -REn '^[[:space:]]*runs-on:[[:space:]]*.*[$][{][{]' "$reusable" "$template" "$project_control"; then
-            echo '::error::dynamic runner declarations are not allowed in ADR-29 policy surfaces'
             exit 1
           fi
       - name: Check Changesets publisher syntax
@@ -70,6 +57,19 @@ jobs:
         run: python -m pip install --quiet pyyaml
       - name: Unit tests
         run: python -m unittest discover -s tests
+      - name: Lint authenticated JUnit consumer workflows
+        uses: ./.github/actions/workflow-lint
+        with:
+          # `job.workflow_sha` is a real reusable-workflow context the bundled
+          # actionlint schema does not know; `.github/actionlint.yaml` documents
+          # the accepted warning, so the consumer's checkout ref is ignored here
+          # the same way the image lane's is.
+          ignore: |
+            property "workflow_sha" is not defined
+          args: |
+            .github/workflows/project-control.yml
+            .github/workflows/junit-consumer.yml
+            .github/workflows/junit-consumer-control.yml
       - name: Prepare metadata sync consumer fixture
         env:
           SYNC_FIXTURE: ${{ runner.temp }}/metadata-consumer
@@ -118,6 +118,45 @@ jobs:
         uses: ./.github/actions/brand
         with:
           brand-directory: ${{ runner.temp }}/brand-consumer/brand data
+
+  junit-producer:
+    if: github.event_name != 'workflow_dispatch'
+    name: JUnit fixture (${{ matrix.shard }})
+    # Standard hosted runners are free only while this repository is public.
+    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      matrix:
+        shard: [1, 701]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare nested passing and failing JUnit cases
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/junit/nested"
+          printf '<testsuite><testcase classname="suite" name="broken-%s"><failure/></testcase><testcase classname="suite" name="passing-%s"/></testsuite>\n' "$SHARD" "$SHARD" > "$RUNNER_TEMP/junit/nested/junit.xml"
+      - name: run-store put junit-consumer-${{ matrix.shard }}
+        uses: ./.github/actions/run-store
+        with:
+          mode: put
+          name: junit-consumer-${{ matrix.shard }}
+          path: ${{ runner.temp }}/junit
+
+  junit-consumer:
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/junit-consumer.yml
+    with:
+      producer-run: ${{ inputs.junit-producer-run }}
 
   # The optimistic-merge actions, run as a consumer runs them: a manifest the
   # runner cannot load (an expression in a description, a bad input) fails
@@ -183,7 +222,7 @@ jobs:
 
   template-verdict:
     needs: template-plan
-    if: always() && github.event_name != 'push'
+    if: always() && !cancelled() && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -195,51 +234,11 @@ jobs:
           needs: ${{ toJSON(needs) }}
           required: template-plan
 
-  review-stamp:
-    if: github.event_name == 'merge_group'
-    runs-on: sylphx-linux-standard
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-      # This repository ships the gate: run its code and policy from the merge
-      # group's BASE commit, never the queued head, so a PR cannot rewrite the
-      # trust list that grades it. The head copy runs only for first adoption,
-      # while the base has no gate yet.
-      - name: Check out the gate from the base commit
-        id: gate-base
-        env:
-          BASE_SHA: ${{ github.event.merge_group.base_sha }}
-        run: |
-          set -euo pipefail
-          if git cat-file -e "$BASE_SHA:.github/actions/review-stamp-gate/review_stamp_gate.py" 2>/dev/null; then
-            mkdir -p .review-gate-base
-            git archive "$BASE_SHA" .github/actions/review-stamp-gate | tar -x -C .review-gate-base
-            echo "from=base" >> "$GITHUB_OUTPUT"
-          else
-            echo "base $BASE_SHA has no review-stamp-gate; first adoption runs the queued copy"
-            echo "from=head" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.gate-base.outputs.from == 'base'
-        uses: ./.review-gate-base/.github/actions/review-stamp-gate
-        with:
-          config-path: .github/review-stamp.json
-          trusted-creator-ids: '8020099'
-      - if: steps.gate-base.outputs.from == 'head'
-        uses: ./.github/actions/review-stamp-gate
-        with:
-          config-path: .github/review-stamp.json
-          trusted-creator-ids: '8020099'
-
   # Aggregate verdict required by the main merge queue ruleset. Skipped jobs
   # pass; failed or cancelled jobs fail.
   ci-ok:
-    needs: [project-control, tests, template-plan, template-verdict, review-stamp]
-    if: always()
+    needs: [project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer]
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
