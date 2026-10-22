@@ -73,6 +73,13 @@ listed in the rollout's record with what it pins; never land the check alone ont
 The Keel repin bot ([keel-repin.md](keel-repin.md)) only pins a `keel-verified-*` tag's commit, so its
 pull requests pass; listing this workflow in its `ci-workflows` puts the check on them too.
 
+Under [optimistic merge](optimistic-merge.md) a check that gated the merge on its own must become a job
+of the gate: call this file from `.github/workflows/ci.yml` (it now declares `on: workflow_call`) and
+list the calling job in `ci-ok`'s `needs:` (docs/optimistic-merge.md, "The pull request"). `ci-ok` needs
+only `ci.yml`'s jobs, so while the check stands alone - or is called but not needed by `ci-ok` - a merge
+group can pass before it reports. Where the check should not gate the merge, keep it standalone and
+carry `# optimistic-merge: gate-external` (audit row R3b).
+
 ## Tests
 
 `tests/test_keel_pin_check.py` builds a Keel history and fixture titles in a temporary directory and fetches

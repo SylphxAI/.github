@@ -1,0 +1,84 @@
+name: Shared-action pin drift
+
+# Weekly, and on demand: every repository's pins of the shared SylphxAI/.github actions must be within
+# DRIFT_DAYS of .github main, and every red trunk must have drawn a Red main run that reached its repair
+# step within 30 minutes. Both failures are silent otherwise - a stale commit still resolves, and a
+# red-main run that ends green at classification (or is skipped) looks like a handled trunk - so they are
+# checked here rather than found by an unrelated incident (docs/action-pin-drift-check.md).
+
+on:
+  schedule:
+    - cron: "27 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    # GitHub-hosted standard runners are free only on a public repository.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The reads span every repository of the policy organizations, private ones included, so the job's
+      # own token is not enough: mint the read App token the other fleet sweeps use.
+      - name: Mint read-only token
+        id: reader
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
+          private-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
+          owner: SylphxAI
+          permission-contents: read
+          permission-actions: read
+      - name: Shared-action pins are within the drift window
+        env:
+          GH_TOKEN: ${{ steps.reader.outputs.token }}
+        run: |
+          set -o pipefail
+          rc=0
+          python3 scripts/action_pin_drift_check.py audit \
+            --org SylphxAI --org Cubeage --org EpiowAI --org OzyrixLtd \
+            --json "$RUNNER_TEMP/drift.json" | tee "$RUNNER_TEMP/drift.txt" || rc=$?
+          {
+            echo "## Shared-action pin drift"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/drift.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) ;;
+            1) echo "::error::a shared-action pin is behind SylphxAI/.github main; repin it (docs/action-pin-drift-check.md)"; exit 1 ;;
+            *) echo "::error::could not read a repository's workflows or .github main"; exit "$rc" ;;
+          esac
+      - name: Every red trunk drew a red-main run
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ steps.reader.outputs.token }}
+        run: |
+          set -o pipefail
+          rc=0
+          python3 scripts/action_pin_drift_check.py watcher \
+            --org SylphxAI --org Cubeage --org EpiowAI --org OzyrixLtd \
+            --json "$RUNNER_TEMP/watcher.json" | tee "$RUNNER_TEMP/watcher.txt" || rc=$?
+          {
+            echo "## Watch the watcher"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/watcher.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) ;;
+            1) echo "::error::a red trunk has no red-main run that reached its repair step; the red-main safety net is broken there"; exit 1 ;;
+            *) echo "::error::could not read a repository's runs"; exit "$rc" ;;
+          esac

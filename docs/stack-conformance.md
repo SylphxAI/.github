@@ -49,7 +49,7 @@ for these parts. A delivered customer repository (organization custom property
 property with the job token, and an unreadable property leaves the check on.
 
 The baseline was seeded on 2026-10-06 from `scan` over the default branch of
-every repository with a desk checkout (136 repositories): only SylphxAI/agents
+every repository with a desk checkout (136 repositories): only SylphxAI/spiron
 has instances. Its expiry, 2026-11-30, leaves room after the agent app's switch
 and cleanup items for their estimate to slip.
 
@@ -106,7 +106,7 @@ moved onto Sylphx Knowledge and been deleted. An entry whose table is gone is
 a notice; delete it. Extending a date is a pull request here with its reason.
 
 The baseline was seeded on 2026-10-07 from a scan of the default branch of
-every repository with a desk checkout: only SylphxAI/agents has instances
+every repository with a desk checkout: only SylphxAI/spiron has instances
 (`knowledge_entries`, `knowledge_relations` and the `bots_graph.relations`
 projection). Its expiry, 2026-11-30, leaves room after the knowledge migration
 items for their estimate to slip.

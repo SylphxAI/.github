@@ -29,7 +29,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 HANDLER = yaml.safe_load(WORKFLOW.read_text())["jobs"]["red-main"]
-ENV = HANDLER["env"]
+# The handler's programs are checked in under .github/red_main/, not embedded
+# in the workflow's env: read the reviewed files directly.
+PROGRAMS = ROOT / ".github/red_main"
+
+
+def program(name):
+    return (PROGRAMS / name).read_text()
 STEPS = {step["name"]: step for step in HANDLER["steps"] if "name" in step}
 TRACE = STEPS["Trace the culprit among the unverified commits"]["run"]
 FIXTURES = ROOT / "tests/fixtures/red-main"
@@ -147,7 +153,7 @@ def make_loader(scenario, downloads=None):
 
 
 PROOF = load("proof", (ROOT / ".github/actions/ci-range/post_main.py").read_text())
-WINDOW = load("window", ENV["WINDOW_PY"])
+WINDOW = load("window", program("window.py"))
 
 
 def eligible(row):
@@ -293,7 +299,7 @@ class ConfirmedUnitsTest(unittest.TestCase):
                 files.append(str(path))
             out = Path(d, "out")
             script = Path(d, "confirm.py")
-            script.write_text(ENV["CONFIRM_PY"])
+            script.write_text(program("confirm.py"))
             subprocess.run([sys.executable, str(script), "failure", *files, str(out)], check=True,
                            capture_output=True, text=True)
             return [tuple(line.split("\t")) for line in out.read_text().splitlines()]
@@ -320,16 +326,6 @@ args = sys.argv[1:]
 repo = fx["repo"]
 def jq():
     return args[args.index("--jq") + 1] if "--jq" in args else ""
-if args[0] == "run" and args[1] == "download":
-    rid, dest = args[2], args[args.index("--dir") + 1]
-    for lane, xml in fx["junit"].get(rid, {}).items():
-        d = pathlib.Path(dest, "junit-" + lane)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "junit.xml").write_text(xml)
-    if not fx["junit"].get(rid):
-        print("no artifact matches", file=sys.stderr)
-        sys.exit(1)
-    sys.exit(0)
 path = next(a for a in args if a.startswith("repos/"))
 method = args[args.index("--method") + 1] if "--method" in args else "GET"
 base = f"repos/{repo}/"
@@ -376,6 +372,18 @@ else:
     sys.exit(1)
 '''
 
+FAKE_JUNIT = r'''
+import json, os, pathlib, sys
+fx = json.load(open(os.environ["FIXTURE"]))
+repo, rid, dest = sys.argv[1:]
+assert repo == fx["repo"]
+for lane, xml in fx["junit"].get(rid, {}).items():
+    d = pathlib.Path(dest, "junit-" + lane)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "junit.xml").write_text(xml)
+sys.exit(0 if fx["junit"].get(rid) else 1)
+'''
+
 WRAPPED_PROOF = (ROOT / ".github/actions/ci-range/post_main.py").read_text().replace(
     'if __name__ == "__main__":',
     'last_verified = lambda *a, **k: os.environ["VERIFIED_BASE"]\n\n\nif __name__ == "__main__":')
@@ -390,9 +398,9 @@ class TraceStepTest(unittest.TestCase):
         self.root = Path(temp.name)
         self.work = self.root / "red-main"
         self.work.mkdir()
-        for name, filename in (("LIB", "lib.sh"), ("JUNIT_PY", "junit.py"), ("CULPRIT_PY", "culprit.py"),
-                               ("WINDOW_PY", "window.py"), ("CONFIRM_PY", "confirm.py"), ("INFRA_PY", "infra.py")):
-            (self.work / filename).write_text(ENV[name])
+        for name, filename in (("lib.sh", "lib.sh"), ("junit.py", "junit.py"), ("culprit.py", "culprit.py"),
+                               ("window.py", "window.py"), ("confirm.py", "confirm.py"), ("infra.py", "infra.py")):
+            (self.work / filename).write_text(program(name))
         # The infra classifier has its own tests; here no candidate is an infra failure.
         with open(self.work / "lib.sh", "a") as fh:
             fh.write('\nclassify_run() { echo none; }\n')
@@ -403,6 +411,8 @@ class TraceStepTest(unittest.TestCase):
         gh.write_text(f"#!{sys.executable}\n" + FAKE_GH)
         gh.chmod(0o755)
         self.fixture = self.root / "fixture.json"
+        self.junit = self.root / "get-junit.py"
+        self.junit.write_text(FAKE_JUNIT)
 
     def run_trace(self, scenario, confirmed, candidates, candidate_junit=None, verified_base=0, failed_lanes="",
                   mode="revert", annotations=None):
@@ -433,6 +443,7 @@ class TraceStepTest(unittest.TestCase):
                    RUN_ID=str(run_id(scenario.last)), RUN_URL="u", FAILED_LANES=failed_lanes,
                    TOKEN_MODE="no", MODE=mode, ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
                    VERIFIED_BASE=sha(verified_base))
+        env["RUN_STORE_JUNIT"] = str(self.junit)
         done = subprocess.run(["bash", "-c", TRACE], env=env, cwd=self.root, capture_output=True,
                               text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)

@@ -44,7 +44,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: SylphxAI/.github/.github/workflows/rust-check.yml@b051405836fcc2346300b21bd5f3af9e8eae5419 # main after #217
+    uses: SylphxAI/.github/.github/workflows/rust-check.yml@46ec433892bca8693193049b5ee7441bb916a7ad # main after #258
     with:
       ref: ${{ inputs.ref }}
       packages: ${{ inputs.packages }}

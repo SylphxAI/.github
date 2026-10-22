@@ -53,7 +53,7 @@ jobs:
 
   # The one required check.
   ci-ok:
-    if: always()
+    if: always() && !cancelled()
     needs: [rust]
     runs-on: sylphx-linux-control
     timeout-minutes: 5
