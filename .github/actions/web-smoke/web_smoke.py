@@ -2,6 +2,7 @@
 """web-smoke: boot a Keel title's packed web build in headless Chrome and require a splash and a drawn frame.
 
 usage: web_smoke.py ref    [--ref REF] [--pin-file FILE]
+       web_smoke.py live   --url HOST [--expect-keel SHA]   (the live title's VERSION.json keel field)
        web_smoke.py keel   --ref REF --dest DIR          (Keel's scripts/ at REF; token in KEEL_TOKEN)
        web_smoke.py chrome --version V --dest DIR        (Chrome for Testing, headless shell + chromedriver)
        web_smoke.py run    --keel DIR --pack DIR --chrome DIR [options]
@@ -25,6 +26,10 @@ Both always run, then a third check reads the pack's wasm modules the way a host
 its size over brotli quality 11 of the module (served/q11) must stay within the bound (1.03). A module
 with no `.br` is compressed on the fly by the host (about +25 %); that fails only with
 `--require-precompressed`. The exit status is 1 when any check fails. Self-hosted runners only.
+
+`live` reads `<HOST>/VERSION.json` of the deployed title and records its `keel` field, the full commit
+of the Keel the live pack was built with (Keel's packer writes it). With --expect-keel it fails when the
+field is missing, not a 40-hex commit, or names another commit: the title runs the wrong Keel.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ import tempfile
 import time
 import urllib.request
 import zipfile
+from html.parser import HTMLParser
 from pathlib import Path
 
 CFT_BASE = "https://storage.googleapis.com/chrome-for-testing-public/%s/linux64"
@@ -114,6 +120,77 @@ def fetch_keel_scripts(ref: str, dest: str, token_env: str = "KEEL_TOKEN") -> No
     print("Keel scripts at %s (%s)" % (ref, sha))
 
 
+KEEL_FIELD = re.compile(r"^[0-9a-f]{40}$")
+VERSION_FILE = "VERSION.json"
+
+
+def version_url(url: str) -> str:
+    """`<host>/VERSION.json` for a title host (a bare host gets https), or the URL itself when it names the file."""
+    url = url.strip()
+    if not url:
+        raise Refused("no live URL given")
+    if "://" not in url:
+        url = "https://" + url
+    if url.rstrip("/").endswith("/" + VERSION_FILE):
+        return url.rstrip("/")
+    return url.rstrip("/") + "/" + VERSION_FILE
+
+
+def live_keel(url: str, timeout: float = 20.0, opener=None) -> tuple[str | None, str]:
+    """The `keel` commit the live title at URL reports in its VERSION.json, or None with the reason.
+
+    None means the title cannot say which Keel it runs: VERSION.json is unreachable, not a JSON
+    object, has no `keel` field, or holds something other than a full 40-hex commit (`unknown`).
+    """
+    target = version_url(url)
+    opener = opener or urllib.request.urlopen
+    req = urllib.request.Request(target, headers={"Cache-Control": "no-cache", "User-Agent": "sylphx-web-smoke"})
+    try:
+        with opener(req, timeout=timeout) as r:
+            body = r.read(65536)
+    except Exception as e:  # an unreachable host is a missing field, never a pass
+        return None, "%s could not be read (%s)" % (target, e)
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return None, "%s is not JSON" % target
+    if not isinstance(data, dict) or "keel" not in data:
+        return None, "%s has no keel field" % target
+    keel = str(data["keel"]).strip().lower()
+    if not KEEL_FIELD.match(keel):
+        return None, "%s keel field is %r, not a full commit" % (target, data["keel"])
+    return keel, "%s keel %s" % (target, keel)
+
+
+def keel_verdict(live: str | None, why: str, expect: str) -> tuple[bool, str]:
+    """Pass only when the live keel field is the expected commit; a missing field never passes."""
+    expect = expect.strip().lower()
+    if live is None:
+        return False, "the live title does not say which Keel it runs: " + why
+    if live != expect:
+        return False, "the live title runs Keel %s, not the pinned %s (%s)" % (live[:12], expect[:12], why)
+    return True, "the live title runs the pinned Keel %s" % live[:12]
+
+
+def cmd_live(opts) -> int:
+    keel, why = live_keel(opts.url)
+    set_output("keel", keel or "")
+    print(why)
+    lines = ["### web-smoke live Keel", "", "`%s`: %s" % (version_url(opts.url), ("`%s`" % keel) if keel else "no keel commit (" + why + ")")]
+    rc = 0
+    if opts.expect_keel:
+        ok, text = keel_verdict(keel, why, opts.expect_keel)
+        lines += ["", text]
+        if not ok:
+            print("::error title=web-smoke live keel::%s" % text)
+            rc = 1
+    target = os.environ.get("GITHUB_STEP_SUMMARY")
+    if target:
+        with open(target, "a") as f:
+            f.write("\n".join(lines) + "\n")
+    return rc
+
+
 def chrome_binaries(root: str) -> list[str]:
     return [os.path.join(root, "chromedriver-linux64", "chromedriver"),
             os.path.join(root, "chrome-headless-shell-linux64", "chrome-headless-shell")]
@@ -160,21 +237,47 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def start_host(keel: str, pack: str, port: int) -> subprocess.Popen:
+def pack_base(index: Path) -> str:
+    class BaseParser(HTMLParser):
+        base = "/"
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "base":
+                href = dict(attrs).get("href")
+                if href is not None:
+                    self.base = "/" + href.strip("/") + "/" if href.strip("/") else "/"
+
+    parser = BaseParser()
+    parser.feed(index.read_text())
+    return parser.base
+
+
+def start_host(keel: str, pack: str, port: int, base: str = "/") -> subprocess.Popen:
     host = os.path.join(keel, "scripts", "static_host.py")
-    proc = subprocess.Popen([sys.executable, host, "--dir", pack, str(port)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    url = "http://127.0.0.1:%d/index.html" % port
-    for _ in range(100):
-        if proc.poll() is not None:
-            raise Refused("the static host exited with status %s" % proc.returncode)
+    cmd = [sys.executable, host, "--dir", pack]
+    # Old pins need no new host flag when the pack is served at the root.
+    if base != "/":
+        cmd += ["--base", base]
+    url = "http://127.0.0.1:%d%sindex.html" % (port, base)
+    with tempfile.TemporaryFile(mode="w+") as log:
+        proc = subprocess.Popen([*cmd, str(port)], stdout=log, stderr=subprocess.STDOUT)
+        for _ in range(100):
+            if proc.poll() is not None:
+                log.seek(0)
+                raise Refused("the static host exited with status %s:\n%s" % (proc.returncode, log.read()[-4000:]))
+            try:
+                urllib.request.urlopen(url, timeout=2).close()
+                return proc
+            except Exception:
+                time.sleep(0.2)
+        proc.terminate()
         try:
-            urllib.request.urlopen(url, timeout=2).close()
-            return proc
-        except Exception:
-            time.sleep(0.2)
-    proc.terminate()
-    raise Refused("the static host did not serve %s in 20 s" % url)
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        log.seek(0)
+        raise Refused("the static host did not serve %s in 20 s:\n%s" % (url, log.read()[-4000:]))
 
 
 def supports(keel: str, flag: str) -> bool:
@@ -319,8 +422,9 @@ def cmd_run(opts) -> int:
     print("::endgroup::")
     if not served_ok:
         print("::error title=web-smoke served-q11::%s" % next((l for l in served_out.splitlines() if l.startswith("FAIL")), "failed"))
-    host = start_host(opts.keel, str(pack), port)
-    url = "http://127.0.0.1:%d/index.html" % port
+    base = pack_base(index)
+    host = start_host(opts.keel, str(pack), port, base)
+    url = "http://127.0.0.1:%d%sindex.html" % (port, base)
     results = [("served-q11", served_ok, served_out)]
     try:
         for name, cmd in smoke_commands(opts.keel, opts.chrome, url, opts):
@@ -361,6 +465,9 @@ def main(argv=None) -> int:
     c = sub.add_parser("chrome")
     c.add_argument("--version", required=True)
     c.add_argument("--dest", required=True)
+    v = sub.add_parser("live")
+    v.add_argument("--url", required=True)
+    v.add_argument("--expect-keel", default="", help="fail unless the live keel field is this commit")
     u = sub.add_parser("run")
     u.add_argument("--keel", required=True)
     u.add_argument("--pack", required=True)
@@ -386,6 +493,8 @@ def main(argv=None) -> int:
         elif opts.cmd == "keel":
             refuse_hosted()
             fetch_keel_scripts(opts.ref, opts.dest)
+        elif opts.cmd == "live":
+            return cmd_live(opts)
         elif opts.cmd == "chrome":
             refuse_hosted()
             set_output("dir", install_chrome(opts.version, opts.dest))

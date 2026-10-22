@@ -29,7 +29,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 HANDLER = yaml.safe_load(WORKFLOW.read_text())["jobs"]["red-main"]
-ENV = HANDLER["env"]
+# The handler's programs are checked in under .github/red_main/, not embedded
+# in the workflow's env: read the reviewed files directly.
+PROGRAMS = ROOT / ".github/red_main"
+
+
+def program(name):
+    return (PROGRAMS / name).read_text()
 STEPS = {step["name"]: step for step in HANDLER["steps"] if "name" in step}
 TRACE = STEPS["Trace the culprit among the unverified commits"]["run"]
 FIXTURES = ROOT / "tests/fixtures/red-main"
@@ -73,14 +79,27 @@ def job_rows(rid, failed=(), skipped=()):
     rows = []
     for job in copy.deepcopy(template):
         job["run_id"] = rid
+        job["check_run_url"] = f"https://api.github.com/repos/{REPO}/check-runs/{job['id']}"
         if job["name"] in failed or (job["name"] == AGGREGATE and failed):
             job["conclusion"] = "failure"
         elif job["name"] in skipped:
             job["conclusion"] = "skipped"
         else:
             job["conclusion"] = "success"
+        job["steps"] = [{"name": "Test", "conclusion": job["conclusion"]}]
         rows.append(job)
     return rows
+
+
+# What the local `gh` serves for every failed job's check run: the runner's
+# own error line, so a failed lane fails at step "Test" with exit code 1.
+EXIT_1 = [{"annotation_level": "failure", "message": "Process completed with exit code 1."}]
+
+
+def lane(job):
+    """The lane unit of a fixture job that failed at its "Test" step."""
+    return ("lane", PROOF.lane_signature({"name": job, "conclusion": "failure",
+                                          "steps": [{"name": "Test", "conclusion": "failure"}]}, EXIT_1), job)
 
 
 def junit_xml(failing=(), passing=()):
@@ -134,7 +153,7 @@ def make_loader(scenario, downloads=None):
 
 
 PROOF = load("proof", (ROOT / ".github/actions/ci-range/post_main.py").read_text())
-WINDOW = load("window", ENV["WINDOW_PY"])
+WINDOW = load("window", program("window.py"))
 
 
 def eligible(row):
@@ -253,12 +272,21 @@ class TestLevelTest(unittest.TestCase):
 class JudgeTest(unittest.TestCase):
     def test_a_candidate_fails_only_on_a_target_unit(self):
         target = [("test", NEW_TEST, GPU)]
-        self.assertTrue(WINDOW.judge(target, [("test", OLD_TEST, GPU)]).startswith("pass "))
         self.assertTrue(WINDOW.judge(target, [("test", OLD_TEST, GPU), ("test", NEW_TEST, GPU)]).startswith("fail "))
-        # A job that failed with no failing test (a build error) may hide the target.
-        self.assertTrue(WINDOW.judge(target, [("lane", GPU, GPU)]).startswith("fail "))
         self.assertTrue(WINDOW.judge([("lane", WEB, WEB)], [("test", OLD_TEST, GPU)]).startswith("pass "))
-        self.assertTrue(WINDOW.judge([("lane", WEB, WEB)], [("test", "a::b", WEB)]).startswith("fail "))
+        self.assertTrue(WINDOW.judge([lane(WEB)], [lane(WEB)]).startswith("fail "))
+
+    def test_a_target_job_that_failed_some_other_way_is_inconclusive(self):
+        # A job that failed with no failing test (a build error), or with a
+        # different test or step, may hide the target: it never counts as the
+        # target failing, nor as the target passing.
+        self.assertTrue(WINDOW.judge([("test", NEW_TEST, GPU)], [("test", OLD_TEST, GPU)]).startswith("pass "))
+        self.assertTrue(WINDOW.judge([("test", NEW_TEST, GPU)], [lane(GPU)]).startswith("inconclusive "))
+        self.assertTrue(WINDOW.judge([lane(WEB)], [("test", "a::b", WEB)]).startswith("inconclusive "))
+        other_step = ("lane", lane(WEB)[1].replace("at Test", "at Serve"), WEB)
+        self.assertTrue(WINDOW.judge([lane(WEB)], [other_step]).startswith("inconclusive "))
+        # Any target failing the same way decides, whatever else is unclear.
+        self.assertTrue(WINDOW.judge([lane(WEB), lane(GPU)], [other_step, lane(GPU)]).startswith("fail "))
 
 
 class ConfirmedUnitsTest(unittest.TestCase):
@@ -271,20 +299,23 @@ class ConfirmedUnitsTest(unittest.TestCase):
                 files.append(str(path))
             out = Path(d, "out")
             script = Path(d, "confirm.py")
-            script.write_text(ENV["CONFIRM_PY"])
+            script.write_text(program("confirm.py"))
             subprocess.run([sys.executable, str(script), "failure", *files, str(out)], check=True,
                            capture_output=True, text=True)
             return [tuple(line.split("\t")) for line in out.read_text().splitlines()]
 
     def test_only_units_the_previous_run_also_failed_are_confirmed(self):
-        prev = [("test", OLD_TEST, GPU), ("lane", AGGREGATE, AGGREGATE)]
-        cur = [("test", OLD_TEST, GPU), ("test", NEW_TEST, "Test"), ("lane", AGGREGATE, AGGREGATE)]
-        self.assertEqual(self.confirmed(prev, cur), [("test", OLD_TEST, GPU), ("lane", AGGREGATE, AGGREGATE)])
+        # The aggregate job fails whenever anything does: never a unit.
+        prev = [("test", OLD_TEST, GPU), lane(WEB), ("lane", AGGREGATE, AGGREGATE)]
+        cur = [("test", OLD_TEST, GPU), ("test", NEW_TEST, "Test"), lane(WEB), ("lane", AGGREGATE, AGGREGATE)]
+        self.assertEqual(self.confirmed(prev, cur), [("test", OLD_TEST, GPU), lane(WEB)])
 
-    def test_a_lane_row_confirms_the_tests_of_the_same_job(self):
-        prev = [("lane", GPU, GPU)]
-        cur = [("test", NEW_TEST, GPU), ("test", "a::b", WEB)]
-        self.assertEqual(self.confirmed(prev, cur), [("test", NEW_TEST, GPU)])
+    def test_a_lane_row_confirms_nothing_that_failed_another_way(self):
+        # A job with no junit on one run and a failing test on the other, or
+        # one that failed at another step, is not the same failure.
+        prev = [("lane", GPU, GPU), ("lane", lane(WEB)[1].replace("at Test", "at Serve"), WEB)]
+        cur = [("test", NEW_TEST, GPU), ("test", "a::b", WEB), lane(WEB)]
+        self.assertEqual(self.confirmed(prev, cur), [])
 
 
 FAKE_GH = r'''
@@ -295,16 +326,6 @@ args = sys.argv[1:]
 repo = fx["repo"]
 def jq():
     return args[args.index("--jq") + 1] if "--jq" in args else ""
-if args[0] == "run" and args[1] == "download":
-    rid, dest = args[2], args[args.index("--dir") + 1]
-    for lane, xml in fx["junit"].get(rid, {}).items():
-        d = pathlib.Path(dest, "junit-" + lane)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "junit.xml").write_text(xml)
-    if not fx["junit"].get(rid):
-        print("no artifact matches", file=sys.stderr)
-        sys.exit(1)
-    sys.exit(0)
 path = next(a for a in args if a.startswith("repos/"))
 method = args[args.index("--method") + 1] if "--method" in args else "GET"
 base = f"repos/{repo}/"
@@ -319,6 +340,10 @@ elif "/actions/runs/" in path and "/jobs" in path:
         print("HTTP 404", file=sys.stderr); sys.exit(1)
     page = int(path.rsplit("page=", 1)[1]) if "page=" in path else 1
     print(json.dumps({"total_count": len(rows), "jobs": rows[(page - 1) * 100: page * 100]}))
+elif path.startswith(base + "check-runs/") and "/annotations" in path:
+    check = path[len(base + "check-runs/"):].split("/")[0]
+    default = [{"annotation_level": "failure", "message": "Process completed with exit code 1."}]
+    print(json.dumps(fx.get("annotations", {}).get(check, default) if path.endswith("page=1") else []))
 elif path.startswith(base + "actions/runs/"):
     rid = path.rsplit("/", 1)[1]
     if jq() == ".created_at":
@@ -347,6 +372,18 @@ else:
     sys.exit(1)
 '''
 
+FAKE_JUNIT = r'''
+import json, os, pathlib, sys
+fx = json.load(open(os.environ["FIXTURE"]))
+repo, rid, dest = sys.argv[1:]
+assert repo == fx["repo"]
+for lane, xml in fx["junit"].get(rid, {}).items():
+    d = pathlib.Path(dest, "junit-" + lane)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "junit.xml").write_text(xml)
+sys.exit(0 if fx["junit"].get(rid) else 1)
+'''
+
 WRAPPED_PROOF = (ROOT / ".github/actions/ci-range/post_main.py").read_text().replace(
     'if __name__ == "__main__":',
     'last_verified = lambda *a, **k: os.environ["VERIFIED_BASE"]\n\n\nif __name__ == "__main__":')
@@ -361,9 +398,9 @@ class TraceStepTest(unittest.TestCase):
         self.root = Path(temp.name)
         self.work = self.root / "red-main"
         self.work.mkdir()
-        for name, filename in (("LIB", "lib.sh"), ("JUNIT_PY", "junit.py"), ("CULPRIT_PY", "culprit.py"),
-                               ("WINDOW_PY", "window.py"), ("CONFIRM_PY", "confirm.py"), ("INFRA_PY", "infra.py")):
-            (self.work / filename).write_text(ENV[name])
+        for name, filename in (("lib.sh", "lib.sh"), ("junit.py", "junit.py"), ("culprit.py", "culprit.py"),
+                               ("window.py", "window.py"), ("confirm.py", "confirm.py"), ("infra.py", "infra.py")):
+            (self.work / filename).write_text(program(name))
         # The infra classifier has its own tests; here no candidate is an infra failure.
         with open(self.work / "lib.sh", "a") as fh:
             fh.write('\nclassify_run() { echo none; }\n')
@@ -374,22 +411,29 @@ class TraceStepTest(unittest.TestCase):
         gh.write_text(f"#!{sys.executable}\n" + FAKE_GH)
         gh.chmod(0o755)
         self.fixture = self.root / "fixture.json"
+        self.junit = self.root / "get-junit.py"
+        self.junit.write_text(FAKE_JUNIT)
 
     def run_trace(self, scenario, confirmed, candidates, candidate_junit=None, verified_base=0, failed_lanes="",
-                  mode="revert"):
+                  mode="revert", annotations=None):
         chain = [sha(n) for n in range(0, scenario.last + 1)]
         candidate_run = {sha(n): str(9_000 + n) for n in range(1, scenario.last + 1)}
         jobs, junit = dict(scenario.jobs), dict(scenario.junit)
         conclusion = {}
         for n, (failed, xml) in candidates.items():
             rid = candidate_run[sha(n)]
-            jobs[rid] = job_rows(int(rid), failed)
+            if failed and isinstance(failed[0], dict):  # recorded job rows
+                jobs[rid] = [dict(row, run_id=int(rid)) for row in failed]
+                failed = [row["name"] for row in failed if row["conclusion"] == "failure"]
+            else:
+                jobs[rid] = job_rows(int(rid), failed)
             conclusion[rid] = "failure" if failed else "success"
             if xml:
                 junit[rid] = xml
         self.fixture.write_text(json.dumps(dict(
             repo=REPO, history=scenario.history, jobs=jobs, junit=junit, chain=chain,
-            created=at(scenario.last), candidate_run=candidate_run, run_conclusion=conclusion)))
+            created=at(scenario.last), candidate_run=candidate_run, run_conclusion=conclusion,
+            annotations=annotations or {})))
         (self.work / "confirmed-units.tsv").write_text("".join("\t".join(r) + "\n" for r in confirmed))
         env = dict(os.environ, RUNNER_TEMP=str(self.root), FIXTURE=str(self.fixture),
                    PATH=f"{self.root / 'bin'}:{os.environ['PATH']}", GITHUB_OUTPUT=str(self.root / "output"),
@@ -399,6 +443,7 @@ class TraceStepTest(unittest.TestCase):
                    RUN_ID=str(run_id(scenario.last)), RUN_URL="u", FAILED_LANES=failed_lanes,
                    TOKEN_MODE="no", MODE=mode, ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
                    VERIFIED_BASE=sha(verified_base))
+        env["RUN_STORE_JUNIT"] = str(self.junit)
         done = subprocess.run(["bash", "-c", TRACE], env=env, cwd=self.root, capture_output=True,
                               text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -419,7 +464,7 @@ class TraceStepTest(unittest.TestCase):
         s = Scenario(70)
         for n in range(1, 71):
             s.add(n, ([GPU] if n >= 3 else []) + ([WEB] if n >= 61 else []))
-        confirmed = [("lane", GPU, GPU), ("lane", WEB, WEB), ("lane", AGGREGATE, AGGREGATE)]
+        confirmed = [lane(GPU), lane(WEB)]
         self.run_trace(s, confirmed, {}, failed_lanes=f"{GPU},{WEB},{AGGREGATE}")
         summary = self.summary()
         self.assertEqual(self.state("base"), sha(60))
@@ -432,7 +477,7 @@ class TraceStepTest(unittest.TestCase):
         s = Scenario(70)
         for n in range(1, 71):
             s.add(n, ([GPU] if n >= 3 else []) + ([WEB] if n >= 65 else []))
-        confirmed = [("lane", GPU, GPU), ("lane", WEB, WEB), ("lane", AGGREGATE, AGGREGATE)]
+        confirmed = [lane(GPU), lane(WEB)]
         candidates = {n: ([WEB] if n >= 65 else [], None) for n in range(65, 71)}
         self.run_trace(s, confirmed, candidates, failed_lanes=f"{GPU},{WEB},{AGGREGATE}")
         summary = self.summary()
@@ -454,7 +499,7 @@ class TraceStepTest(unittest.TestCase):
                 s.add(n, [GPU], junit={GPU: junit_xml([OLD_TEST], others + [NEW_TEST])})
             else:
                 s.add(n, [GPU], junit={GPU: junit_xml([OLD_TEST, NEW_TEST], others)})
-        confirmed = [("test", OLD_TEST, GPU), ("test", NEW_TEST, GPU), ("lane", AGGREGATE, AGGREGATE)]
+        confirmed = [("test", OLD_TEST, GPU), ("test", NEW_TEST, GPU)]
         candidates = {
             67: ([GPU], {GPU: junit_xml([OLD_TEST], others + [NEW_TEST])}),
             68: ([GPU], {GPU: junit_xml([OLD_TEST, NEW_TEST], others)}),
@@ -471,7 +516,7 @@ class TraceStepTest(unittest.TestCase):
         s = Scenario(70)
         for n in range(1, 71):
             s.add(n, [GPU])
-        confirmed = [("lane", GPU, GPU), ("lane", AGGREGATE, AGGREGATE)]
+        confirmed = [lane(GPU)]
         self.run_trace(s, confirmed, {}, verified_base=0, failed_lanes=f"{GPU},{AGGREGATE}")
         summary = self.summary()
         self.assertIn("Per-unit baseline unavailable", summary)
@@ -488,6 +533,50 @@ class TraceStepTest(unittest.TestCase):
                        failed_lanes=f"{GPU},{AGGREGATE}")
         self.assertEqual(self.state("base"), sha(4))
         self.assertEqual(self.state("base-unit-run"), "")
+
+    def keel(self, run):
+        return json.loads((FIXTURES / f"keel-verify-jobs-{run}.json").read_text())["jobs"]
+
+    def keel_trace(self, candidates):
+        """Keel main red on "Web release and smoke" from c5; c1-c4 verified."""
+        s = Scenario(10)
+        for n in range(1, 11):
+            s.add(n, [WEB] if n >= 5 else [])
+        # Confirmed on two runs: the job failed at "Mobile web smoke" both times.
+        target = ("lane", "failure at Mobile web smoke: Process completed with exit code 1.", WEB)
+        self.run_trace(s, [target], candidates, failed_lanes=f"{WEB},{AGGREGATE}",
+                       annotations=json.loads((FIXTURES / "keel-check-annotations.json").read_text()))
+        self.assertIn(f"Unverified commits since `{sha(4)}`: 6.", self.summary())
+
+    def test_a_candidate_failing_the_same_step_and_error_is_the_culprit(self):
+        same, other = self.keel(37250728778), self.keel(37242311505)
+        self.keel_trace({5: ([], None), 6: (same, None), 7: (same, None), 8: (other, None),
+                         9: (same, None), 10: (same, None)})
+        self.assertEqual(self.state("culprit"), sha(6))
+        self.assertEqual({d["inputs"]["lanes"] for d in self.dispatched()}, {WEB})
+
+    def test_a_candidate_failing_the_same_job_another_way_is_never_the_culprit(self):
+        # c6 fails "Web release and smoke" at "Serve the web pack" (the
+        # scene() check of 145c958a), which stops the job before "Mobile web
+        # smoke" runs. A job-name match would name c6; it is inconclusive, so
+        # no single culprit is named: the window is reverted as one pull
+        # request only where the caller allows it (revert-window), otherwise
+        # reported.
+        same, other = self.keel(37250728778), self.keel(37242311505)
+        self.keel_trace({5: ([], None), 6: (other, None), 7: (same, None), 8: (same, None),
+                         9: (same, None), 10: (same, None)})
+        self.assertEqual(self.state("culprit"), "")
+        summary = self.summary()
+        self.assertIn(f"Candidate `{sha(6)[:9]}`: the target job {WEB} failed in the candidate, but not the same way",
+                      summary)
+        self.assertIn("cannot be named with certainty", summary)
+        # A candidate that failed only other jobs (here the Windows link step)
+        # with the target passing counts as passed.
+        passed_other = [dict(row, conclusion="success", steps=[dict(st, conclusion="success") for st in row["steps"]])
+                        if row["name"] in (WEB, AGGREGATE) else row for row in other]
+        self.keel_trace({5: ([], None), 6: (passed_other, None), 7: (same, None), 8: (same, None),
+                         9: (same, None), 10: (same, None)})
+        self.assertEqual(self.state("culprit"), sha(7))
 
     def test_the_trace_step_dispatches_the_traced_lanes_only(self):
         step = STEPS["Trace the culprit among the unverified commits"]["run"]

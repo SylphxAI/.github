@@ -22,11 +22,14 @@ an fnmatch glob over repository paths in which `*` also crosses `/`
 with no patterns always runs. No base, or a change under `.github/`, selects
 every lane: a workflow change can affect any of them.
 
-`only` (a dispatch of the verify workflow by the red-main handler) narrows the
-selection to the named lanes. The handler names lanes by job name, so a
-`caller / job` prefix and a ` (matrix)` suffix are ignored, and names that are
-not lanes (such as `verified`) are dropped. If nothing named is a lane, every
-selected lane runs: running more is safe, running nothing is not.
+`only` (a dispatch of the verify workflow, by a person or by the red-main
+handler) runs exactly the named lanes, whatever the range selected: naming a
+lane is an explicit request, and a dispatch on an already verified head has an
+empty range, so narrowing to it would run nothing (a signed-build dispatch on a
+verified main skipped the very lanes it named). The handler names lanes by job
+name, so a `caller / job` prefix and a ` (matrix)` suffix are ignored, and
+names that are not lanes (such as `verified`) are dropped. If nothing named is
+a lane, every selected lane runs: running more is safe, running nothing is not.
 
 Outputs (GITHUB_OUTPUT): base, run (JSON object lane -> bool), changed (count).
 """
@@ -86,7 +89,7 @@ def select(lanes: dict[str, list[str]], changed: list[str] | None, only: str = "
             run[name] = any(fnmatch.fnmatchcase(path, pattern) for path in changed for pattern in patterns)
     wanted = {lane_name(x) for x in only.split(",") if x.strip()} & set(lanes)
     if wanted:
-        run = {name: selected and name in wanted for name, selected in run.items()}
+        run = {name: name in wanted for name in run}
     return run
 
 

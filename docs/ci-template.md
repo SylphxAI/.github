@@ -13,7 +13,7 @@ the pieces it lacks.
 
 | Piece | Use |
 | --- | --- |
-| [`workflows/changes.yml`](../.github/workflows/changes.yml) | Reusable path filter. Outputs `code`, `docs`, `workflows`. Gate heavy jobs on `needs.changes.outputs.code == 'true'`. Merge groups and pushes report everything changed. Override the `code` input (a JSON array of globs) when the repository's code is narrower. |
+| [`workflows/changes.yml`](../.github/workflows/changes.yml) | Reusable path filter. Outputs `code`, `docs`, `workflows`. Gate heavy jobs on `needs.changes.outputs.code == 'true'`. A merge group is diffed (base to head commit) like its pull request; pushes, and any diff that cannot be computed, report everything changed. Override the `code` input (a JSON array of globs) when the repository's code is narrower. |
 | [`actions/cache-toolchain`](../.github/actions/cache-toolchain/action.yml) | Cache preset keyed per toolchain, OS, arch and lockfile: `cargo` (registry), `bun`, `npm`, `pnpm`, `gradle`, `unity` (Library). |
 | [`actions/rust-sccache`](../.github/actions/rust-sccache/action.yml) | Compiled Rust output cache. Use it with `cache-toolchain` `cargo`. |
 | [`actions/needs-pass`](../.github/actions/needs-pass/action.yml) | The `ci-ok` verdict: skipped passes, failed or cancelled fails. |
@@ -30,6 +30,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
+Row R9 of the [conformance check](optimistic-merge.md#conformance-check)
+reports every pull-request workflow without it.
+
 ## Triggers
 
 `pull_request`, `merge_group` and `push: branches: [main]` only. A bare `push`
@@ -42,10 +45,13 @@ workflow never reports, which blocks the merge; a skipped job does report.
 1. `changes` first (seconds, standard runner).
 2. Cheap gate - format, lint, typecheck, unit tests - `needs: changes`.
 3. Heavy jobs - release build, e2e, iOS, Android, matrices - `needs: [changes, gate]`, so a lint failure never pays for a build.
-4. `ci-ok`: `if: always()`, `needs:` every job above, then `needs-pass`. Make
-   it the only required check. Skipped jobs (a docs-only change) count as
-   success; a failed or cancelled one fails; list `changes` as `required` so a
-   broken filter never reads as green.
+4. `ci-ok`: `if: always() && !cancelled()`, `needs:` every job above, then
+   `needs-pass`. Make it the only required check. Dependency failures still
+   produce a red verdict; cancellation of the workflow suppresses its stale
+   verdict so the replacement run alone decides the current head. Skipped jobs
+   (a docs-only change) count as success; failed/cancelled dependencies fail
+   whenever the verdict runs. List `changes` as `required` so a broken filter
+   never reads as green.
 
 ## Which events run the heavy jobs
 
@@ -58,17 +64,25 @@ every ready pull request (a device matrix, a store build) is gated on
 workflow: a skipped heavy job is only safe when something still runs it before
 release.
 
+## Dependency advisory checks
+
+Package-manager audits read a mutable registry and must not gate pull requests
+or merge groups. Unlaunched products defer them to launch; launched products
+use the existing update bot's advisory repairs and a separate scheduled
+default-branch audit. See [dependency-audits.md](dependency-audits.md) for
+ownership, adoption and the `workflow-lint` guard.
+
 ## Runners
 
 - Light jobs (`changes`, lint, docs, scripts): `sylphx-linux-standard`.
   Never `-xlarge` or `-2xlarge`.
-- Every `if: always()` verdict job (`ci-ok`, `verified`, any `source-ci/pass`
-  alias) runs on `sylphx-linux-control`, the reserved gate pool, on every
-  event: it still runs after its run is cancelled, and the run keeps its
-  concurrency group until it does, so on a busy build pool it holds the next
-  run. Keep `always()`; never `!cancelled()` on a verdict (a skipped required
-  check counts as passing). Any other job that would run after a cancel uses
-  `!cancelled()`.
+- Every verdict job (`ci-ok`, `verified`, any `source-ci/pass` alias) uses
+  `if: always() && !cancelled()` and runs on `sylphx-linux-control`, the reserved
+  gate pool. `always()` preserves failure reporting; `!cancelled()` prevents a
+  superseded workflow from posting a stale red aggregate beside its replacement
+  or holding the workflow's concurrency group while waiting for a verdict seat.
+  Merge-group and trunk runs are never superseded by PR concurrency. Do not
+  change needs-pass to treat cancelled dependencies as success.
 - Merge-group runs use the `-merge` lane (`sylphx-linux-standard-merge`,
   `sylphx-linux-xlarge-merge`) so they never queue behind the pull-request
   backlog: `runs-on: ${{ github.event_name == 'merge_group' && '...-merge' || '...' }}`.

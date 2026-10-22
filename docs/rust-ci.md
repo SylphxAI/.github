@@ -14,17 +14,57 @@ decision and its reasons are
    have. Replace `@main` with the commit of this repository you adopt.
 2. Keep all three triggers. The `push` to main is what warms the cache that
    pull requests and the merge queue read.
-3. Pass the organization secrets `SYLPHX_CI_CACHE_ACCESS_KEY` and
-   `SYLPHX_CI_CACHE_SECRET_KEY` by name, and make sure the repository is in
-   the secrets' visibility list. Without them the action falls back to the
-   repository's GitHub Actions cache, which works but is slower and capped.
+3. Nothing else is needed for the compile cache: the starter's `rust` job
+   grants `id-token: write`, and the job exchanges its GitHub OIDC identity
+   for a short-lived BuildCache token (see below). Keep passing the
+   organization secrets `SYLPHX_CI_CACHE_ACCESS_KEY` and
+   `SYLPHX_CI_CACHE_SECRET_KEY` by name while a fallback is wanted: they
+   carry the job when BuildCache is not available to it. Without them the
+   action falls back to the repository's GitHub Actions cache, which works but
+   is slower and capped.
 4. Make `ci-ok` the required check.
+
+A caller that moves its pin of `rust-ci.yml` (or `rust-check.yml`) to a commit
+that requests `id-token: write` must grant it on the calling job as well: a
+reusable workflow cannot hold more permission than its caller gives it, and
+GitHub refuses to start the run otherwise.
 
 A repository whose gate has bespoke jobs (device lanes, release builds,
 generated code) keeps its own jobs and uses the same cache directly: the
 `rust-sccache` step with `key-prefix: rustc`, after the toolchain and before
 the first cargo command, on every Rust job, with a `push: branches: [main]`
-run of those jobs.
+run of those jobs. Add `permissions: id-token: write` (with `contents: read`)
+to each job that uses the action, or to the workflow. Without it the job has
+no OIDC identity, BuildCache is skipped with one warning, and the action falls
+back to the static secrets (`static`), then the Actions cache (`gha`). Pull
+requests from forks never get `id-token: write` and take the same fallback.
+
+## The compile cache backend
+
+The `rust-sccache` action picks the first backend that works, and writes it to
+the job summary and to its `backend` output (`buildcache`, `static`, `gha` or
+`none`):
+
+1. **`buildcache`.** The job requests a GitHub OIDC token (audience
+   `sylphx-build-cache`) and exchanges it at the BuildCache gateway
+   (`build-cache-url`, default `https://build-cache.sylphx.net`;
+   `build-cache-network` `public` or `cluster`) for a run token. The gateway
+   maps the repository's owner to the organization and scopes the token by
+   the event: `merge_group`, `schedule` and a push to `main` write the
+   protected scope (and read only it); every other event, pull requests
+   included, writes a dev scope and reads protected and dev. A pull request
+   therefore reads everything main wrote and can never poison it. The token
+   is masked, goes only to the sccache server, and is never written to
+   `$GITHUB_ENV`, an output or the summary. `build-cache: 'false'` skips this
+   backend.
+2. **`static`.** The organization's own object-store user, from the secrets.
+3. **`gha`.** The repository's Actions cache.
+4. **`none`.** The job compiles cold.
+
+A failure at any step (no OIDC permission, the gateway answering 404 for an
+organization it does not know, 503, a timeout, an unusable reply, or the sccache
+server not starting) selects the next backend with one warning that names the
+HTTP status or the curl exit code, never a body or a token.
 
 Add the [`rust-sccache-report`](../.github/actions/rust-sccache-report/action.yml)
 step last, with `if: always()` and `backend: ${{ steps.<id>.outputs.backend }}`:
@@ -54,7 +94,7 @@ Every input is optional. The contract the rollout repositories adopt:
 
 Secrets, passed by name: `SYLPHX_CI_CACHE_ACCESS_KEY` and
 `SYLPHX_CI_CACHE_SECRET_KEY` (the organization's cache user; optional, the
-action falls back to the GitHub Actions cache without them), and
+fallback when BuildCache is not available), and
 `GIT_DEPS_APP_ID` / `GIT_DEPS_APP_KEY` with `git-deps`.
 
 Fixed by the workflow, because they are part of the cache key: the checkout
@@ -84,3 +124,10 @@ It does not cache build-script execution, linking, or test runs; cargo still
 links every binary and runs every test. Dependency downloads come from the
 registry each run. The bound is the bucket's 14-day expiry and the
 organization's object-store quota.
+
+## Cache namespace
+
+The `rust-sccache` action's `key-prefix` defaults to `rustc`, the one
+namespace of ADR 0004, so a caller that does not set it cannot land in a
+namespace of its own. A caller still states `key-prefix: rustc` until its pin
+is at or after the commit that made it the default.

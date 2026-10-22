@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Tests for the red-main self-heal rules (INFRA_PY and CONFIRM_PY in red-main.yml)."""
+"""Tests for the red-main self-heal rules (.github/red_main/).
+
+The handler's programs are checked in under .github/red_main/ and run from
+there, so a test reads the reviewed file rather than a heredoc in the workflow.
+"""
 
 from __future__ import annotations
 
@@ -12,19 +16,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.red_main_programs import program
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 
 
 def embedded(name: str) -> str:
-    lines = WORKFLOW.read_text().splitlines()
-    start = lines.index(f"      {name}: |") + 1
-    body = []
-    for line in lines[start:]:
-        if line.strip() and not line.startswith("        "):
-            break
-        body.append(line[8:])
-    return "\n".join(body) + "\n"
+    """The checked-in program for a former `<NAME>_PY`/`LIB` heredoc key."""
+    return program({
+        "INFRA_PY": "infra.py", "CONFIRM_PY": "confirm.py", "MIGRATION_PY": "migration.py",
+        "HOLD_PY": "hold.py", "PREV_PY": "prev.py", "PROOF_PY": "proof.py", "GATE_PY": "gate.py",
+        "LIB": "lib.sh",
+    }[name])
 
 
 INFRA = embedded("INFRA_PY")
@@ -205,8 +209,21 @@ class ConfirmTest(unittest.TestCase):
     def test_same_test_different_job(self):
         self.assertTrue(confirm("failure", "test\tt1\tj1\n", "test\tt1\tj2\n").startswith("no "))
 
-    def test_lane_row_matches_same_job(self):
-        self.assertTrue(confirm("failure", "lane\tj\tj\n", "test\tt1\tj\n").startswith("yes "))
+    def test_lane_row_does_not_match_a_test_of_the_same_job(self):
+        # A job with no junit on one run and a failing test on the other is
+        # not the same failure: nothing confirms, the next run decides.
+        self.assertTrue(confirm("failure", "lane\tj\tj\n", "test\tt1\tj\n").startswith("no "))
+
+    def test_lane_rows_match_only_the_same_way_of_failing(self):
+        at_a = "lane\tfailure at A: Process completed with exit code 1.\tj\n"
+        at_b = "lane\tfailure at B: Process completed with exit code 1.\tj\n"
+        self.assertTrue(confirm("failure", at_a, at_a).startswith("yes "))
+        answer = confirm("failure", at_a, at_b)
+        self.assertTrue(answer.startswith("no j failed on both runs, but not the same way"), answer)
+
+    def test_the_aggregate_job_is_never_a_unit(self):
+        verified = "lane\tfailure at Verdict: Process completed with exit code 1.\tverified\n"
+        self.assertTrue(confirm("failure", verified, verified).startswith("no "))
 
     def test_lane_rows_different_job(self):
         self.assertTrue(confirm("failure", "lane\tj1\tj1\n", "lane\tj2\tj2\n").startswith("no "))

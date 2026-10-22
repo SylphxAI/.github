@@ -1,0 +1,120 @@
+name: broker-write-token
+description: >-
+  Trade this job's GitHub Actions OIDC token for a one-repository GitHub App
+  installation token through the Sylphx platform, with no App private key
+  anywhere (company/credentials.md, the Broker is the only signer).
+
+  Two hops, both on the platform:
+  1. `POST /v1/access/github/token` with the job's OIDC token (audience
+     `sylphx-access`) and the workflow's `[[ci]]` declaration name, for a
+     short-lived Access key. The declaration pins the repository, the workflow
+     file and the ref, so a fork or a pull-request event cannot trade.
+  2. `POST /v1/{trust_policy}:exchangeToken` with that key, narrowed to the one
+     calling repository, for an installation token carrying only what the
+     TrustPolicy grants.
+
+  The token is written to a 0600 file under RUNNER_TEMP and returned as an
+  output the caller masks as a secret; it is never printed. A failed hop writes
+  its reason to the `failure` output and fails unless `soft-fail` is true.
+inputs:
+  trust-policy:
+    description: >-
+      The Kernel Broker TrustPolicy, `orgs/{org}/trust_policies/{policy}`.
+    required: true
+  ci-name:
+    description: >-
+      The `[[ci]]` declaration name this workflow exchanges under. Defaults to
+      the TrustPolicy id (the last path segment).
+    required: false
+    default: ''
+  repository:
+    description: The one repository the token may cover, `owner/name`.
+    required: true
+  api-url:
+    description: Platform API base URL.
+    required: false
+    default: https://api.sylphx.com
+  soft-fail:
+    description: >-
+      `true` writes the reason to the `failure` output and succeeds instead of
+      failing the step; the caller reports it by name. Default `false`.
+    required: false
+    default: 'false'
+outputs:
+  token:
+    description: The installation token, empty when the exchange failed.
+    value: ${{ steps.exchange.outputs.token }}
+  app-slug:
+    description: The App's slug, for the git bot identity.
+    value: ${{ steps.exchange.outputs.app-slug }}
+  failure:
+    description: A one-line reason when the exchange failed, empty on success.
+    value: ${{ steps.exchange.outputs.failure }}
+runs:
+  using: composite
+  steps:
+    - name: Exchange the OIDC token for an installation token
+      id: exchange
+      shell: bash
+      env:
+        BROKER_POLICY: ${{ inputs.trust-policy }}
+        BROKER_CI_NAME: ${{ inputs.ci-name }}
+        REPO: ${{ inputs.repository }}
+        API_URL: ${{ inputs.api-url }}
+        SOFT_FAIL: ${{ inputs.soft-fail }}
+        OIDC_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+        OIDC_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+      run: |
+        set -uo pipefail
+        fail() {
+          printf '::error::%s\n' "$1"
+          { echo "failure=$1"; echo "token="; } >>"$GITHUB_OUTPUT"
+          [ "$SOFT_FAIL" = true ] || exit 1
+        }
+        [ -n "${BROKER_POLICY:-}" ] || { fail "broker-write-token: trust-policy is empty"; exit 0; }
+        if [ -z "${OIDC_URL:-}" ]; then
+          fail "no Actions OIDC request URL: the caller must grant id-token: write for the Broker path to $BROKER_POLICY"
+          exit 0
+        fi
+        ci_name="${BROKER_CI_NAME:-${BROKER_POLICY##*/}}"
+        # 1. GitHub OIDC token -> short-lived Access key.
+        oidc=$(curl -sS -H "Authorization: bearer ${OIDC_TOKEN}" \
+          "${OIDC_URL}&audience=sylphx-access" | jq -r '.value // empty') || {
+          fail "the GitHub OIDC token request to $OIDC_URL failed at the network"; exit 0; }
+        if [ -z "$oidc" ]; then
+          fail "the GitHub OIDC token request returned no token: the caller must grant id-token: write"
+          exit 0
+        fi
+        key_reply=$(curl -sS -X POST "${API_URL}/v1/access/github/token" \
+          -H 'content-type: application/json' \
+          --data "$(jq -cn --arg n "$ci_name" --arg t "$oidc" '{name:$n,token:$t}')") || {
+          fail "the Access key exchange (POST /v1/access/github/token, ci $ci_name) failed at the network"; exit 0; }
+        api_key=$(jq -r '.api_key // empty' <<<"$key_reply")
+        if [ -z "$api_key" ]; then
+          why=$(jq -r '.detail // .title // "no reason given"' <<<"$key_reply")
+          fail "no Access key for ci $ci_name: $why (is $REPO declared under [[ci]]?)"
+          exit 0
+        fi
+        echo "::add-mask::$api_key"
+        # 2. Access key -> one-repository installation token.
+        policy="${BROKER_POLICY%/}"
+        tok_reply=$(curl -sS -X POST "${API_URL}/v1/${policy}:exchangeToken" \
+          -H 'content-type: application/json' \
+          -H "Authorization: Bearer ${api_key}" \
+          --data "$(jq -cn --arg r "$REPO" '{repositories:[$r]}')") || {
+          fail "the Broker exchange (POST /v1/${policy}:exchangeToken) failed at the network"; exit 0; }
+        token=$(jq -r '.token // empty' <<<"$tok_reply")
+        if [ -z "$token" ]; then
+          why=$(jq -r '.detail // .title // "no reason given"' <<<"$tok_reply")
+          fail "no installation token from $policy for $REPO: $why"
+          exit 0
+        fi
+        echo "::add-mask::$token"
+        printf '%s' "$token" >"${RUNNER_TEMP:?}/broker-token"
+        chmod 600 "${RUNNER_TEMP}/broker-token"
+        {
+          echo "token=$token"
+          echo "app-slug=sylphx-builder"
+          echo "failure="
+        } >>"$GITHUB_OUTPUT"
+        echo "the Broker minted a one-repository installation token for $REPO under $policy"

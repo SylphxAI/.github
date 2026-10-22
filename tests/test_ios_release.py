@@ -79,12 +79,7 @@ class IosRelease(unittest.TestCase):
             self.assertIn("timeout-minutes", s, s["name"])
         self.assertIn("timeout-minutes", self.prepare)
         self.assertNotIn("|| true", self.text)
-        # The one allowed form: an upload may not fail a merge_group run (org
-        # artifact quota); outside merge_group it stays loud.
-        allowed = "continue-on-error: ${{ github.event_name == 'merge_group' }}"
-        for line in self.text.splitlines():
-            if "continue-on-error" in line and not line.lstrip().startswith("#"):
-                self.assertEqual(line.strip(), allowed)
+        self.assertNotIn("continue-on-error", self.text)
 
     def test_cleanup_is_per_item_not_aborting(self) -> None:
         body = self.step("Cleanup")["run"]
@@ -241,10 +236,21 @@ class IosRelease(unittest.TestCase):
         self.assertEqual(self.upload["needs"], ["prepare", "sign"])
         self.assertEqual(self.job["if"], "inputs.ipa-artifact == ''")
         self.assertIn("needs.sign.result == 'skipped'", self.upload["if"])
-        art = self.step("Upload exported .ipa")
-        self.assertRegex(art["uses"], r"^actions/upload-artifact@[0-9a-f]{40}$")
-        self.assertEqual(art["with"]["retention-days"], 1)
-        self.assertRegex(self.step("Download .ipa", self.upload)["uses"], r"^actions/download-artifact@[0-9a-f]{40}$")
+        action = r"^SylphxAI/\.github/\.github/actions/run-store@[0-9a-f]{40}$"
+        for job, name, mode in (
+            (self.prepare, "Download Xcode", "get"),
+            (self.prepare, "Upload prepared workspace", "put"),
+            (self.job, "Download prepared workspace", "get"),
+            (self.job, "Upload exported .ipa", "put"),
+            (self.upload, "Download .ipa", "get"),
+        ):
+            step = self.step(name, job)
+            self.assertRegex(step["uses"], action)
+            self.assertEqual(step["with"]["mode"], mode)
+            self.assertNotIn("retention-days", step["with"])
+        self.assertEqual(self.doc["permissions"]["id-token"], "write")
+        self.assertNotIn("actions/upload-artifact@", self.text)
+        self.assertNotIn("actions/download-artifact@", self.text)
 
     def test_sign_job_holds_only_the_signing_secrets(self) -> None:
         dump = yaml.safe_dump(self.job)

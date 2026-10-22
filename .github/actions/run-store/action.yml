@@ -1,0 +1,76 @@
+name: run-store
+description: >
+  Hands a file or directory from one job of a workflow run to another through
+  the platform's BuildCache gateway (its Turbo door), never through GitHub
+  artifact storage, whose metered quota can stop every upload in the
+  organization. `put` packs the path and stores it under a key made of the
+  repository id, the run id and the name, then reads it back; `get` fetches
+  that key into a directory. The job needs `permissions: id-token: write`: its
+  GitHub OIDC token is exchanged for a run token scoped by the event (main, the
+  merge queue and schedules write the protected scope, every other event the
+  dev scope), so a pull request run can never write what a main run reads.
+  Entries expire with the gateway's bucket after 7 days and are at most 1 GiB.
+  See docs/run-store.md.
+
+inputs:
+  mode:
+    description: "`put` (store `path`) or `get` (fetch into `path`)."
+    required: true
+  name:
+    description: >
+      The hand-over's name inside the run, [A-Za-z0-9._-], at most 100
+      characters. A producer and its consumers use the same name.
+    required: true
+  path:
+    description: >
+      put: the file or directory to store (a directory's contents, like
+      actions/upload-artifact). get: the directory to unpack into (created when
+      missing; a stored file lands as `<path>/<file name>`).
+    required: true
+  run-id:
+    description: >
+      get only: the run whose entry to fetch. Default is this run; another
+      run's id reads a hand-over a workflow_run or dispatch consumer needs.
+    default: ""
+  required:
+    description: >
+      get: "true" fails the step on a miss; "false" sets `found` to false and
+      lets the job decide (rebuild, skip). put: "true" fails the step when the
+      entry could not be stored and read back; "false" only warns.
+    default: "true"
+  build-cache-url:
+    description: BuildCache gateway URL.
+    default: https://build-cache.sylphx.net
+  build-cache-network:
+    description: >
+      Which of the gateway's endpoints the run token is for: `public`, or
+      `cluster` for jobs on the platform's own network.
+    default: public
+
+outputs:
+  key:
+    description: The entry's key.
+    value: ${{ steps.run.outputs.key }}
+  found:
+    description: get only - "true" when the entry was fetched and unpacked.
+    value: ${{ steps.run.outputs.found }}
+  bytes:
+    description: Size of the stored or fetched bundle in bytes.
+    value: ${{ steps.run.outputs.bytes }}
+
+runs:
+  using: composite
+  steps:
+    - name: run-store ${{ inputs.mode }} ${{ inputs.name }}
+      id: run
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        NAME: ${{ inputs.name }}
+        STORE_PATH: ${{ inputs.path }}
+        STORE_RUN_ID: ${{ inputs.run-id || github.run_id }}
+        REPO_ID: ${{ github.repository_id }}
+        REQUIRED: ${{ inputs.required }}
+        BUILD_CACHE_URL: ${{ inputs.build-cache-url }}
+        BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
+      run: bash "$GITHUB_ACTION_PATH/run-store.sh"
