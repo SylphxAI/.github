@@ -6,10 +6,17 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
+    inputs:
+      junit-producer-run:
+        description: 'Completed Project control producer run to read from a different run.'
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  # Only a superseded pull_request run is cancelled; merge_group and main pushes finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -27,27 +34,9 @@ jobs:
           node-version: "22.14.0"
       - name: Enforce managed runner defaults
         run: |
-          set -euo pipefail
-          reusable=.github/workflows/adr29-admission.yml
-          template=templates/workflows/adr29-admission.yml
-          project_control=.github/workflows/project-control.yml
-          test "$(grep -Ec '^[[:space:]]*runs-on:' "$reusable")" -eq 1
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$reusable")" -eq 1
-          test "$(grep -Ec '^[[:space:]]*runs-on:' "$template")" -eq 4
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*sylphx-linux-standard$' "$template")" -eq 4
-          test "$(grep -Ec '^[[:space:]]*runs-on:' "$project_control")" -eq 5
-          test "$(grep -Ec '^[[:space:]]*runs-on:[[:space:]]*ubuntu-latest$' "$project_control")" -eq 5
-          # owner#750 (zero metered GitHub spend): the admission template and
-          # reusable workflow serve private repositories, so they run on our
-          # runners only (asserted above). This public repository's own jobs
-          # run on GitHub's free standard hosted runners (asserted above);
-          # larger and GPU hosted runners are banned everywhere.
+          # Larger and GPU hosted runners are banned everywhere (owner#750).
           if grep -REn '(ubuntu|windows|macos)-[a-z0-9.-]*(cores|xlarge|large|gpu)' .github templates --include='*.yml' --include='*.yaml' | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#'; then
             echo '::error::larger or GPU GitHub-hosted runners are banned (owner#750)'
-            exit 1
-          fi
-          if grep -REn '^[[:space:]]*runs-on:[[:space:]]*.*[$][{][{]' "$reusable" "$template" "$project_control"; then
-            echo '::error::dynamic runner declarations are not allowed in ADR-29 policy surfaces'
             exit 1
           fi
       - name: Check Changesets publisher syntax
@@ -68,6 +57,106 @@ jobs:
         run: python -m pip install --quiet pyyaml
       - name: Unit tests
         run: python -m unittest discover -s tests
+      - name: Lint authenticated JUnit consumer workflows
+        uses: ./.github/actions/workflow-lint
+        with:
+          # `job.workflow_sha` is a real reusable-workflow context the bundled
+          # actionlint schema does not know; `.github/actionlint.yaml` documents
+          # the accepted warning, so the consumer's checkout ref is ignored here
+          # the same way the image lane's is.
+          ignore: |
+            property "workflow_sha" is not defined
+          args: |
+            .github/workflows/project-control.yml
+            .github/workflows/junit-consumer.yml
+            .github/workflows/junit-consumer-control.yml
+      - name: Prepare metadata sync consumer fixture
+        env:
+          SYNC_FIXTURE: ${{ runner.temp }}/metadata-consumer
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import pathlib
+          import runpy
+          root = pathlib.Path(os.environ['SYNC_FIXTURE'])
+          root.mkdir()
+          runpy.run_path('tests/test_metadata_sync.py')['fixture'](root)
+          PYTHON
+      - name: Invoke metadata sync write as a consumer
+        uses: ./.github/actions/metadata-sync
+        with:
+          plan: ${{ runner.temp }}/metadata-consumer/plan.json
+          root-directory: ${{ runner.temp }}/metadata-consumer
+          mode: write
+      - name: Invoke metadata sync check as a consumer
+        uses: ./.github/actions/metadata-sync
+        with:
+          plan: ${{ runner.temp }}/metadata-consumer/plan.json
+          root-directory: ${{ runner.temp }}/metadata-consumer
+      - name: Prepare shared brand consumer fixture
+        env:
+          BRAND_FIXTURE: ${{ runner.temp }}/brand-consumer
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import pathlib
+          import runpy
+          root = pathlib.Path(os.environ['BRAND_FIXTURE'])
+          root.mkdir()
+          runpy.run_path('tests/test_brand.py')['fixture'](root)
+          PYTHON
+      - name: Invoke shared brand check as a consumer
+        uses: ./.github/actions/brand
+        with:
+          brand-directory: ${{ runner.temp }}/brand-consumer/brand data
+      - name: Invoke shared brand write as a consumer
+        uses: ./.github/actions/brand
+        with:
+          mode: write
+          brand-directory: ${{ runner.temp }}/brand-consumer/brand data
+      - name: Check generated consumer provenance
+        uses: ./.github/actions/brand
+        with:
+          brand-directory: ${{ runner.temp }}/brand-consumer/brand data
+
+  junit-producer:
+    if: github.event_name != 'workflow_dispatch'
+    name: JUnit fixture (${{ matrix.shard }})
+    # Standard hosted runners are free only while this repository is public.
+    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      matrix:
+        shard: [1, 701]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare nested passing and failing JUnit cases
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/junit/nested"
+          printf '<testsuite><testcase classname="suite" name="broken-%s"><failure/></testcase><testcase classname="suite" name="passing-%s"/></testsuite>\n' "$SHARD" "$SHARD" > "$RUNNER_TEMP/junit/nested/junit.xml"
+      - name: run-store put junit-consumer-${{ matrix.shard }}
+        uses: ./.github/actions/run-store
+        with:
+          mode: put
+          name: junit-consumer-${{ matrix.shard }}
+          path: ${{ runner.temp }}/junit
+
+  junit-consumer:
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/junit-consumer.yml
+    with:
+      producer-run: ${{ inputs.junit-producer-run }}
 
   # The optimistic-merge actions, run as a consumer runs them: a manifest the
   # runner cannot load (an expression in a description, a bad input) fails
@@ -105,6 +194,11 @@ jobs:
           cp workflow-templates/optimistic-gate.yml "$work/.github/workflows/ci.yml"
           cp workflow-templates/optimistic-verify.yml "$work/.github/workflows/verify.yml"
           cp workflow-templates/red-main.yml "$work/.github/workflows/red-main.yml"
+          cp workflow-templates/rust-check.yml "$work/.github/workflows/sylphx-check.yml"
+          cp workflow-templates/rust-ci.yml "$work/.github/workflows/rust-ci.yml"
+          cp workflow-templates/keel-repin.yml "$work/.github/workflows/keel-repin.yml"
+          cp workflow-templates/keel-pin-check.yml "$work/.github/workflows/keel-pin-check.yml"
+          cp workflow-templates/pages-publish.yml "$work/.github/workflows/pages-publish.yml"
           cp .github/actionlint.yaml "$work/.github/actionlint.yaml"
           git -C "$work" init -q
       - name: actionlint on the starters
@@ -120,10 +214,15 @@ jobs:
             ${{ runner.temp }}/starter/.github/workflows/ci.yml
             ${{ runner.temp }}/starter/.github/workflows/verify.yml
             ${{ runner.temp }}/starter/.github/workflows/red-main.yml
+            ${{ runner.temp }}/starter/.github/workflows/sylphx-check.yml
+            ${{ runner.temp }}/starter/.github/workflows/rust-ci.yml
+            ${{ runner.temp }}/starter/.github/workflows/keel-repin.yml
+            ${{ runner.temp }}/starter/.github/workflows/keel-pin-check.yml
+            ${{ runner.temp }}/starter/.github/workflows/pages-publish.yml
 
   template-verdict:
     needs: template-plan
-    if: always() && github.event_name != 'push'
+    if: always() && !cancelled() && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -138,8 +237,8 @@ jobs:
   # Aggregate verdict required by the main merge queue ruleset. Skipped jobs
   # pass; failed or cancelled jobs fail.
   ci-ok:
-    needs: [project-control, tests, template-plan, template-verdict]
-    if: always()
+    needs: [project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer]
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

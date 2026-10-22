@@ -1,0 +1,77 @@
+name: pages-publish-gate
+description: >
+  Non-regress gate for a web preview deploy: publishes a commit only when it is ahead of the commit the
+  preview already serves, so a deploy never goes back and a busy main still ships. A Verify or CI run on
+  a busy main finishes after newer commits have landed, so "is this run still the main tip" skips most
+  runs and freezes the preview; "is this run ahead of what is served" does not. Reads the served commit
+  from served-sha-url (a product.meta.json with git_sha, or a GIT_SHA.txt) or takes it as served-sha, then
+  asks the GitHub compare API. Output publish is true when the run's commit is ahead of the served one,
+  or when nothing is served (no URL content, a 404, or no sha in it); false when it is identical, behind
+  or diverged, and false with a warning when the served sha or the comparison cannot be read (the next
+  run corrects it; a regress is worse than a short lag). Never fails a job over a decision. Our own
+  runners only. See docs/pages-publish-gate.md.
+
+inputs:
+  run-sha:
+    description: The 40-hex commit the deploy would publish (the verified run's head_sha, or github.sha).
+    required: true
+  served-sha-url:
+    description: >
+      URL whose body names the commit the preview serves: a JSON object with a git_sha field (see
+      served-sha-key), or plain text holding the sha (GIT_SHA.txt). A 404 or 410, or a body with no sha,
+      means nothing is served yet.
+    default: ""
+  served-sha-key:
+    description: JSON field holding the served commit when served-sha-url returns JSON.
+    default: git_sha
+  served-sha:
+    description: The served commit, when the caller already has it. Wins over served-sha-url.
+    default: ""
+  repository:
+    description: owner/name of the repository the commits belong to.
+    default: ${{ github.repository }}
+  token:
+    description: Token that can read the repository's commits (contents read); the workflow token is enough.
+    default: ${{ github.token }}
+
+outputs:
+  publish:
+    description: '"true" to deploy, "false" to skip.'
+    value: ${{ steps.gate.outputs.publish }}
+  reason:
+    description: One line saying why (ahead, identical, behind, diverged, nothing served, or what could not be read).
+    value: ${{ steps.gate.outputs.reason }}
+  served-sha:
+    description: The commit the preview serves now, empty when none.
+    value: ${{ steps.gate.outputs.served-sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Refuse a GitHub-hosted runner
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ runner.environment }}
+      run: |
+        set -euo pipefail
+        if [ "$ENVIRONMENT" = github-hosted ]; then
+          echo "::error::pages-publish-gate runs on our own runners only (GitHub spend is zero)"
+          exit 1
+        fi
+
+    - name: Decide
+      id: gate
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RUN_SHA: ${{ inputs.run-sha }}
+        SERVED_URL: ${{ inputs.served-sha-url }}
+        SERVED_KEY: ${{ inputs.served-sha-key }}
+        SERVED_SHA: ${{ inputs.served-sha }}
+        REPOSITORY: ${{ inputs.repository }}
+        GATE_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        python3 "$ACTION_PATH/pages_publish_gate.py" \
+          --run-sha "$RUN_SHA" --repository "$REPOSITORY" \
+          --served-sha "$SERVED_SHA" --served-sha-url "$SERVED_URL" --served-sha-key "$SERVED_KEY"

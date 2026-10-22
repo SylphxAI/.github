@@ -1,0 +1,8 @@
+[
+  {
+    "repository": "SylphxAI/tachyn",
+    "path": "services/api/migrations/20261002000000_erasure_requests.sql",
+    "code": "sql.text-primary-key",
+    "sha256": "ec45154ae1d30614b4909e0da9d2d5f74ecd6695de3f0e0d09c761568b4f54d2"
+  }
+]

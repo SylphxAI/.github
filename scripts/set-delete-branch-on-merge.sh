@@ -129,6 +129,15 @@ for owner in "${OWNERS[@]}"; do
   while IFS= read -r full; do
     [[ -z "$full" ]] && continue
 
+    # Delivered customer projects (custom property sylphx_delivery=delivered)
+    # are never touched; an unreadable property also skips.
+    if "$(dirname "$0")/is-delivered.sh" "$full"; then rc=0; else rc=$?; fi
+    if [[ "$rc" != 1 ]]; then
+      printf '%-11s %s (delivered customer project)\n' SKIP "$full"
+      skipped=$((skipped + 1))
+      continue
+    fi
+
     meta=""
     if ! meta="$(gh api "repos/$full" --jq '[.delete_branch_on_merge, (.permissions.admin // false)] | @tsv' 2>/dev/null)"; then
       printf '%-11s %s (repository read failed)\n' FAILED "$full"

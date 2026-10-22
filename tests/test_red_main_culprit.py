@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the red-main culprit rule (CULPRIT_PY in red-main.yml).
+"""Tests for the red-main culprit rule (.github/red_main/culprit.py).
 
 Every candidate is verified at once; the culprit is the oldest failure whose
 older candidates all passed. A cancelled, timed-out or unfinished run is
@@ -13,24 +13,12 @@ import sys
 import unittest
 from pathlib import Path
 
+from tests.red_main_programs import program
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/red-main.yml"
 
-
-def embedded(name: str) -> str:
-    """The block scalar `name: |` in the workflow env, dedented (no YAML dependency)."""
-    lines = WORKFLOW.read_text().splitlines()
-    start = lines.index(f"      {name}: |") + 1
-    body = []
-    for line in lines[start:]:
-        if line.strip() and not line.startswith("        "):
-            break
-        body.append(line[8:])
-    return "\n".join(body) + "\n"
-
-
-SCRIPT = embedded("CULPRIT_PY")
-
+SCRIPT = program("culprit.py")
 
 def decide(*conclusions: str) -> list[str]:
     """Candidates c1..cN, oldest first, with the given conclusions."""
@@ -80,6 +68,95 @@ def step(name: str) -> str:
     return text[start : end if end != -1 else len(text)]
 
 
+GUARD = program("revert_guard.py")
+
+
+def guard(number: int, labels: list[str], protected_prs: str = "") -> str:
+    import json
+    import os
+
+    env = {**os.environ, "PROTECTED_LABELS": "queue-jump:outage,P0", "PROTECTED_PRS": protected_prs}
+    out = subprocess.run(
+        [sys.executable, "-c", GUARD],
+        input=json.dumps({"number": number, "labels": labels}),
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    ).stdout
+    return out.strip()
+
+
+class RevertGuardTest(unittest.TestCase):
+    """A live-outage or P0 fix, or a listed pull request, is never auto-reverted."""
+
+    def test_an_ordinary_pull_request_may_be_reverted(self) -> None:
+        self.assertEqual(guard(1, ["area:ci", "owner:ops"]), "ok")
+
+    def test_outage_label_is_protected(self) -> None:
+        self.assertTrue(guard(2, ["queue-jump:outage"]).startswith("protected"))
+
+    def test_p0_label_is_protected_in_any_case_or_prefix(self) -> None:
+        self.assertTrue(guard(3, ["P0"]).startswith("protected"))
+        self.assertTrue(guard(3, ["p0"]).startswith("protected"))
+        self.assertTrue(guard(3, ["priority:P0"]).startswith("protected"))
+
+    def test_a_listed_number_is_protected_whatever_its_labels(self) -> None:
+        self.assertTrue(guard(10791, [], "10791, #10808").startswith("protected"))
+        self.assertTrue(guard(10808, ["area:ci"], "10791,#10808").startswith("protected"))
+        self.assertEqual(guard(10792, [], "10791,10808"), "ok")
+
+    def test_red_main_label_alone_is_not_protected(self) -> None:
+        self.assertEqual(guard(4, ["queue-jump:red-main"]), "ok")
+
+    def test_the_revert_step_checks_the_guard_before_any_push(self) -> None:
+        revert = step("Revert the culprit or report it")
+        self.assertLess(revert.index("revert-guard.py"), revert.index("git_c revert"))
+        self.assertLess(revert.index("revert-guard.py"), revert.index("push_branch"))
+
+
+class RevertWindowTest(unittest.TestCase):
+    """revert-window false: only a traced culprit is reverted, never a window."""
+
+    def test_inputs_default_to_the_old_behaviour(self) -> None:
+        text = WORKFLOW.read_text()
+        self.assertRegex(text, r"(?m)^      revert-window:\n        description: >-\n(?:          .*\n)+        type: boolean\n        default: true\n")
+        self.assertRegex(text, r"(?m)^      candidate-timeout-minutes:\n        description: >-\n(?:          .*\n)+        type: number\n        default: 20\n")
+        self.assertIn("      CANDIDATE_TIMEOUT_MINUTES: ${{ inputs.candidate-timeout-minutes }}\n", text)
+        self.assertIn("      REVERT_WINDOW: ${{ inputs.revert-window }}\n", text)
+
+    def test_a_window_without_a_culprit_takes_the_notify_path(self) -> None:
+        revert = step("Revert the culprit or report it")
+        downgrade = revert.index('if [ -z "$culprit" ] && [ "$REVERT_WINDOW" = false ]; then')
+        self.assertIn("MODE=notify", revert[downgrade : downgrade + 400])
+        # Decided before the notify branch, so no revert branch, push, pull
+        # request or queue jump can follow for a window.
+        self.assertLess(downgrade, revert.index('if [ "$MODE" != "revert" ]'))
+        self.assertLess(downgrade, revert.index("git_c revert"))
+        self.assertLess(downgrade, revert.index("push_branch"))
+
+    def test_a_named_culprit_is_still_reverted(self) -> None:
+        revert = step("Revert the culprit or report it")
+        self.assertIn('if [ -n "$culprit" ]; then\n            shas=("$culprit")', revert)
+
+    def test_trace_messages_follow_the_setting(self) -> None:
+        trace = step("Trace the culprit among the unverified commits")
+        self.assertNotIn("are reverted as one pull request", trace)
+        self.assertEqual(trace.count("$window_fate"), 2)
+
+    def test_candidate_deadline_is_bounded_and_fits_the_step(self) -> None:
+        import re
+
+        trace = step("Trace the culprit among the unverified commits")
+        self.assertIn('-gt 60 ]', trace)
+        self.assertLess(trace.index("-gt 60 ]"), trace.index("/dispatches"))
+        step_timeout = int(re.search(r"(?m)^        timeout-minutes: (\d+)$", trace).group(1))
+        self.assertGreaterEqual(step_timeout, 60 + 10)
+        job = WORKFLOW.read_text().split("\n  red-main:\n", 1)[1]
+        job_timeout = int(re.search(r"(?m)^    timeout-minutes: (\d+)$", job).group(1))
+        self.assertGreater(job_timeout, step_timeout + 25)
+
+
 class TokenModeTest(unittest.TestCase):
     """No builder App key: notify on the caller's own GITHUB_TOKEN."""
 
@@ -97,33 +174,92 @@ class TokenModeTest(unittest.TestCase):
             self.assertNotRegex(stripped, r"^(actions|checks|contents|issues|pull-requests|packages|id-token|statuses): write$")
 
     def test_key_flag_reads_the_secret_outside_an_if(self) -> None:
-        detect = step("Detect the builder App key")
+        detect = step("Detect the builder write-token path")
         self.assertIn("secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY", detect)
         for line in WORKFLOW.read_text().splitlines():
             if line.strip().startswith("if:"):
                 self.assertNotIn("secrets.", line)
 
+    def test_environment_input_wires_to_the_job(self) -> None:
+        text = WORKFLOW.read_text()
+        self.assertRegex(text, r"(?m)^      environment:\n        description:")
+        self.assertIn("        type: string\n        default: ''\n    secrets:", text)
+        self.assertIn("\n    environment: ${{ inputs.environment }}\n", text)
+        # Passed secrets still work when no environment is named.
+        self.assertIn("secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY", text)
+
     def test_mint_steps_need_the_key_flag(self) -> None:
-        for name in (
-            "Mint the App token for the caller's repository",
-            "Mint the App token with the observation grant only",
-        ):
-            self.assertIn("steps.key.outputs.present == 'yes'", step(name))
+        self.assertIn("steps.key.outputs.path == 'app'", step("Mint the App token for the caller's repository"))
+
+    def test_broker_path_mints_without_the_app_key(self) -> None:
+        # The Broker path is chosen when no PEM is present and a TrustPolicy is
+        # set; it calls the shared action and never reads a key.
+        detect = step("Detect the builder write-token path")
+        self.assertIn('echo "path=broker"', detect)
+        self.assertIn("BROKER_POLICY", detect)
+        mint = step("Mint the write token from the Broker")
+        self.assertIn("steps.key.outputs.path == 'broker'", mint)
+        self.assertIn("broker-write-token", mint)
+        self.assertNotIn("secrets.", mint)
 
     def test_token_falls_back_to_github_token(self) -> None:
         text = WORKFLOW.read_text()
-        self.assertNotIn("app-token-min.outputs.token }}", text)
-        self.assertIn("steps.app-token-min.outputs.token || github.token }}", text)
+        self.assertNotIn("app-token-min", text)
+        self.assertNotIn("steps.app-token.outputs.token }}", text)
+        self.assertIn(
+            "steps.app-token.outputs.token || steps.broker-token.outputs.token || github.token }}",
+            text,
+        )
+
+    def test_app_mint_requests_no_actions_permission(self) -> None:
+        # The builder App installation holds no `actions` permission; asking
+        # for it fails the whole mint (red-main runs 36615065175 and later).
+        mint = step("Mint the App token for the caller's repository")
+        self.assertNotIn("permission-actions", WORKFLOW.read_text())
+        for perm in ("contents", "issues", "pull-requests"):
+            self.assertIn(f"permission-{perm}: write", mint)
+
+    def test_actions_calls_use_the_workflow_token(self) -> None:
+        # Repair and lifecycle jobs each enforce their own token split.
+        text = '  red-main:' + WORKFLOW.read_text().split('  red-main:', 1)[1]
+        # Actions calls and authenticated proofs use the workflow token.
+        self.assertNotRegex(text, r"(?m)^      ACTIONS_TOKEN:")
+        import re
+        for block in re.split(r"(?m)^(?=      - name: )", text)[1:]:
+            code = "\n".join(l for l in block.splitlines() if not l.strip().startswith("#"))
+            has = re.search(r'\bgha\b|\bclassify_run\b|\bread_proof\b|\bpython3\s+"[^"\n]*/proof\.py"', code) is not None
+            self.assertEqual("ACTIONS_TOKEN: ${{ github.token }}" in block, has, block[:60])
+        self.assertIn('gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }', program("lib.sh"))
+        # No raw `gh` call on an Actions endpoint: it would use the App token.
+        for line in text.splitlines():
+            code = line.strip()
+            if code.startswith("#"):
+                continue
+            self.assertNotRegex(code, r"\bgh (api\b.*repos/\$REPO/actions/|run (rerun|download|view|list))")
+        # The handler never reruns: a flake is quarantined, a real failure reverted.
+        self.assertNotRegex(text, r"(?i)gha? run rerun|rerun --failed|RERUN_TIMEOUT")
+        self.assertIn("/dispatches", step("Trace the culprit among the unverified commits"))
+        self.assertIn("gha api --method POST", step("Trace the culprit among the unverified commits"))
+
+    def test_failed_mint_or_probe_is_reported_by_name(self) -> None:
+        notice = step("Report a failed mint or probe")
+        self.assertIn("steps.app-token.outcome == 'failure' || steps.probe.outcome == 'failure'", notice)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", notice)
+        self.assertIn("OPS_ISSUE: ${{ inputs.ops-issue }}", notice)
+        self.assertIn("GITHUB_STEP_SUMMARY", notice)
+        self.assertIn("\n          exit 1\n", notice)
+
+    def test_probe_reads_actions_through_the_workflow_token(self) -> None:
+        probe = step("Probe the grants on the caller's repository")
+        self.assertIn("gha api", probe)
+        self.assertIn("SIMULATE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate-mint-failure && 'yes' || 'no' }}", probe)
 
     def test_no_key_forces_notify(self) -> None:
-        detect = step("Detect the builder App key")
+        detect = step("Detect the builder write-token path")
         self.assertIn("echo \"mode=notify\"", detect)
-        self.assertIn("revert needs a CI-triggering token (the builder App); notifying only.", detect)
+        self.assertIn("revert needs a CI-triggering token (the builder App or the Broker); notifying only.", detect)
         revert = step("Revert the culprit or report it")
         self.assertIn("MODE: ${{ steps.key.outputs.mode || steps.gate.outputs.mode }}", revert)
-
-    def test_quarantine_pull_request_needs_the_key(self) -> None:
-        self.assertIn("steps.key.outputs.present == 'yes'", step("Mark the flaky units in their own source"))
 
     def test_revert_pull_request_is_unreachable_in_notify(self) -> None:
         revert = step("Revert the culprit or report it")

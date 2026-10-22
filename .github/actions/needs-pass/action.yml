@@ -1,10 +1,23 @@
 name: needs-pass
 description: >
   The aggregate verdict of a workflow: pass when every needed job succeeded or
-  was skipped, fail on any failure, cancellation or other result. Run it in
+  was skipped (except `required` and, outside merge_group,
+  `required-unless-merge-group`, which must succeed), fail on any failure or other result.
+  A cancelled dependency is not a failure: a pull-request push supersedes the run
+  before it, so its lanes read `cancelled` while nothing was wrong. The verdict
+  reports each cancelled lane as CANCELLED (naming a superseded push from a
+  stopped run) and does not fail on it; the workflow's rerun produces the lanes'
+  real results, which then decide. Run it in
   the job whose check run is the one that matters - `ci-ok` in the merge-queue
   gate, `verified` in the post-merge verify workflow (docs/optimistic-merge.md)
-  - with `if: always()` on that job so a failed lane still produces a verdict.
+  - with `if: always() && !cancelled()` on that job so dependency failures
+  produce a verdict but a superseded/cancelled workflow does not post a stale
+  failure beside its replacement. Use `runs-on: sylphx-linux-control` so the
+  current workflow's verdict never waits for a build seat. This job condition
+  keeps a superseded/cancelled workflow from posting a stale failure beside its
+  replacement; needs-pass itself reports a cancelled dependency as CANCELLED
+  rather than failing it, so a lane cancelled while the verdict job still ran
+  is not a red check either.
 
 inputs:
   needs:
@@ -21,6 +34,15 @@ inputs:
       a lane that runs only quarantined tests).
     default: ""
 
+  required-unless-merge-group:
+    description: >
+      Comma-separated PR-time jobs (for example suite, identifiers,
+      plain-language) that must have succeeded on every event except
+      merge_group. A skipped one is a failure there, so a workflow_dispatch
+      run cannot post a green verdict over a red one. In a merge group the
+      queue does not run them and skipped passes.
+    default: ""
+
 runs:
   using: composite
   steps:
@@ -29,4 +51,6 @@ runs:
         NEEDS: ${{ inputs.needs }}
         REQUIRED: ${{ inputs.required }}
         ADVISORY: ${{ inputs.advisory }}
+        REQUIRED_UNLESS_MERGE_GROUP: ${{ inputs.required-unless-merge-group }}
+        EVENT_NAME: ${{ github.event_name }}
       run: python3 "$GITHUB_ACTION_PATH/needs_pass.py"

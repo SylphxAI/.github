@@ -1,6 +1,6 @@
 {
   "name": "Optimistic merge",
-  "description": " red main:A red trunk is rerun, a flake quarantined, a real failure reverted through the queue.",
+  "description": " red main:A red trunk is never rerun: a flake is quarantined, a real failure reverted through the queue.",
   "iconName": "octicon git-merge-queue",
   "categories": ["Continuous integration"]
 }

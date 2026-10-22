@@ -1,0 +1,6 @@
+{
+  "name": "iOS TestFlight",
+  "description": "Sign, archive and upload an iOS app to TestFlight on the internal macOS runners.",
+  "iconName": "octicon rocket",
+  "categories": ["Continuous integration", "Swift"]
+}

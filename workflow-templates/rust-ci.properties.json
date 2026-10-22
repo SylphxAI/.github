@@ -1,0 +1,6 @@
+{
+  "name": "Rust CI",
+  "description": "Format, clippy and tests on Sylphx runners, every rustc call served from the organization's shared compile cache, warmed by main.",
+  "iconName": "octicon rocket",
+  "categories": ["Continuous integration", "Rust"]
+}

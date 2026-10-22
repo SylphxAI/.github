@@ -30,11 +30,36 @@ permissions:
   contents: read
   actions: read
   checks: read
+  pull-requests: read
 
 jobs:
+  # Merge-group jobs run on the merge lane (`-merge` runners, never behind the
+  # pull-request backlog); pull requests on the ordinary pool. An xlarge job
+  # uses the same form with sylphx-linux-xlarge-merge / sylphx-linux-xlarge.
+  # A repository whose own policy check reads a static runner label refuses
+  # this expression: name the label that repository already allows (or the
+  # profile's label of the same size class) on every gate lane instead, and
+  # declare it in policy/optimistic-merge.json under an exemption waiving R8
+  # (docs/optimistic-merge.md, Runners).
+  # Stop the line: while the trunk's newest conclusive Verify run is red and its
+  # way back is in motion (a newer Verify run is running, or a revert or fix
+  # pull request is open), a merge group is admitted only for a revert, a
+  # live-outage fix or a pull request labelled `main-red-fix`; anything else
+  # leaves the queue until the trunk is green. Merge groups only.
+  # Ships in `observe` (prints what it would refuse, refuses nothing): read a
+  # few merge groups, including one on a red trunk, then set `mode: enforce`.
+  main-state:
+    if: github.event_name == 'merge_group'
+    runs-on: sylphx-linux-standard-merge
+    timeout-minutes: 5
+    steps:
+      - uses: SylphxAI/.github/.github/actions/main-red-gate@main
+        with:
+          mode: observe
+
   # Which lanes this change affects. A change under .github/ runs them all.
   plan:
-    runs-on: sylphx-linux-standard
+    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
     timeout-minutes: 10
     outputs:
       base: ${{ steps.range.outputs.base }}
@@ -51,25 +76,24 @@ jobs:
             lint:
             test: src/* tests/*
             migrations: migrations/*
+            stack: *sylphx.toml *package.json *Cargo.toml *Dockerfile* *.sql .github/stack-departures.txt
 
   lint:
     needs: plan
-    runs-on: sylphx-linux-standard
+    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: SylphxAI/.github/.github/actions/workflow-lint@main
       # Rust: install the toolchain first, then
       #   - uses: SylphxAI/.github/.github/actions/rust-sccache@main
-      #     with:
-      #       s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
-      #       s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
+      # (no secret: Sylphx runners carry the org's own cache credential)
       - run: echo "format check, lint, typecheck"
 
   test:
     needs: plan
     if: fromJSON(needs.plan.outputs.run).test
-    runs-on: sylphx-linux-standard
+    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -85,28 +109,56 @@ jobs:
   migrations:
     needs: plan
     if: fromJSON(needs.plan.outputs.run).migrations
-    runs-on: sylphx-linux-standard
+    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - run: echo "migration lint, integrity, and the database-backed migration tests"
 
+  # No new departure from the default stack (docs/stack-conformance.md in
+  # SylphxAI/.github): a backend service off Rust or a migration engine other
+  # than atlas fails unless .github/stack-departures.txt, which may only
+  # shrink, already lists it; an agent-runtime part Sylphx Agents owns fails
+  # unless SylphxAI/.github policy/agent-runtime.json allows it until a date;
+  # a new work-engine table needs a header saying whose records it holds; a
+  # knowledge-graph or CRM table fails unless SylphxAI/.github
+  # policy/knowledge-tables.json allows it until a date.
+  stack:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.run).stack
+    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          filter: blob:none
+      - uses: SylphxAI/.github/.github/actions/stack-conformance@main
+        with:
+          base: ${{ needs.plan.outputs.base }}
+
   # The full suite on a pull request that is ready: the same lanes verify.yml
   # runs after merge, selected by this change. Never in a merge group or a
-  # draft.
+  # draft; it also runs on workflow_dispatch, where the aggregator requires it.
   suite:
-    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    if: github.event_name != 'merge_group' && !github.event.pull_request.draft
     uses: ./.github/workflows/verify.yml
     secrets: inherit
 
-  # The required check. Skipped lanes pass; a failed or cancelled lane fails.
+  # The required check. Skipped lanes pass; a failed lane fails; a cancelled lane
+  # (a superseded push) is reported CANCELLED and does not fail; the
+  # PR-time suite must succeed everywhere but the merge group and a draft (which
+  # runs the gate lanes only), so a skipped suite on a dispatch run never turns
+  # a red check green.
   ci-ok:
-    if: always()
-    needs: [plan, lint, test, migrations, suite]
-    runs-on: sylphx-linux-standard
+    if: always() && !cancelled()
+    needs: [main-state, plan, lint, test, migrations, stack, suite]
+    # The current workflow's verdict has a reserved seat; superseded workflows
+    # must not publish a stale red aggregate beside their replacement.
+    runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main
         with:
           needs: ${{ toJSON(needs) }}
           required: plan
+          required-unless-merge-group: ${{ github.event.pull_request.draft && ' ' || 'suite' }}

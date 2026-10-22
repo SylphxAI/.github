@@ -4,10 +4,17 @@ description: >
   sccache, points it at a backend and sets RUSTC_WRAPPER, so every rustc
   invocation after this step is served from the cache when it can be. Run it
   after the Rust toolchain is installed and before the first cargo command.
-  Backend: the S3 bucket named by the inputs when credentials are given (the
-  in-cluster object store on our runners); otherwise the GitHub Actions cache,
-  which needs no secret. The cache only ever speeds a job up: if the backend is
-  unreachable the job compiles cold and says so. Linux x86_64 only; on any
+  Backend, first that applies (backend.sh): (1) BuildCache, the platform's
+  compile-cache gateway: the job's GitHub OIDC token (the job needs
+  `permissions: id-token: write`) is exchanged for a run token scoped by the
+  event - main, the merge queue and schedules write the protected scope, every
+  other event a dev scope that reads protected - and the token goes only to
+  the sccache server, never to the job's environment; (2) the organization's
+  own bucket when the s3-* inputs carry its SYLPHX_CI_CACHE_* pair; (3) the
+  repository's GitHub Actions cache, which needs no secret. A backend that
+  fails or whose server will not start falls through to the next. Never the
+  platform's ci-sccache bucket. The cache only ever speeds a job up: if no
+  backend works the job compiles cold and says so. Linux x86_64 only; on any
   other runner it does nothing.
 
 inputs:
@@ -15,30 +22,64 @@ inputs:
     description: >
       S3 access key - the organization secret SYLPHX_CI_CACHE_ACCESS_KEY, an
       object-store user of the organization's own (never shared across
-      organizations). Empty selects the GitHub Actions cache backend.
+      organizations). The fallback when BuildCache is not available to the
+      job. Empty selects the GitHub Actions cache backend.
     default: ""
   s3-secret-key:
     description: S3 secret key.
     default: ""
   s3-endpoint:
-    description: S3 endpoint URL.
-    default: http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:80
+    description: >
+      S3 endpoint URL. The default is the cluster Service's fully qualified
+      name: a pod's default ndots setting sends the short name out to the
+      upstream resolver, which answers NXDOMAIN for it. A cluster name that the
+      runner cannot resolve (any runner outside the cluster) skips this backend
+      with one warning and the next backend is tried.
+    default: http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc.cluster.local:80
   s3-bucket:
     description: >
       S3 bucket. Empty means `ci-sccache-<organization, lowercase>`, created on
-      first use with a 14-day expiry so the cache stays bounded.
+      first use; its expiry (14 days; 1 day for the retired `<owner>/` namespace) is applied on every run so the cache stays bounded.
     default: ""
   key-prefix:
     description: >
-      Prefix for every cache entry. Defaults to the repository, so no two
-      repositories share entries.
-    default: ${{ github.repository }}
+      Prefix for every cache entry, under the org's prefix on the org backend.
+      One namespace per organization (docs/adr/0004-fleet-rust-compile-cache.md):
+      sccache keys are content hashes, so a repository in the prefix would only
+      lower the hit rate. Leave it; change it only to roll the whole namespace
+      after a poisoned entry, as one change in every caller.
+    default: rustc
+  actions-cache:
+    description: >
+      "false" skips the GitHub Actions cache backend, for a caller that brings
+      its own fallback (read the `backend` output).
+    default: "true"
+  build-cache:
+    description: >
+      "false" skips the BuildCache backend (it is also skipped when the job
+      has no `id-token: write` permission).
+    default: "true"
+  build-cache-url:
+    description: BuildCache gateway URL.
+    default: https://build-cache.sylphx.net
+  build-cache-network:
+    description: >
+      Which of the gateway's endpoints the run token is for: `public`, or
+      `cluster` for jobs on the platform's own network.
+    default: public
+
+outputs:
+  backend:
+    description: >
+      The backend sccache runs on - buildcache|static|gha|none - also written
+      to the job summary.
+    value: ${{ steps.sccache.outputs.backend }}
 
 runs:
   using: composite
   steps:
     - name: Export the Actions cache service to sccache
-      if: inputs.s3-access-key == '' && runner.os == 'Linux' && runner.arch == 'X64'
+      if: inputs.s3-access-key == '' && inputs.actions-cache != 'false' && runner.os == 'Linux' && runner.arch == 'X64'
       uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       with:
         script: |
@@ -47,16 +88,21 @@ runs:
             if (process.env[name]) core.exportVariable(name, process.env[name]);
           }
     - name: sccache
+      id: sccache
       if: runner.os == 'Linux' && runner.arch == 'X64'
       shell: bash
       env:
-        VERSION: v0.10.0
-        SHA256: 1fbb35e135660d04a2d5e42b59c7874d39b3deb17de56330b25b713ec59f849b
+        VERSION: v0.18.0
+        SHA256: 45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
         S3_ACCESS_KEY: ${{ inputs.s3-access-key }}
         S3_SECRET_KEY: ${{ inputs.s3-secret-key }}
         S3_ENDPOINT: ${{ inputs.s3-endpoint }}
         S3_BUCKET: ${{ inputs.s3-bucket }}
         KEY_PREFIX: ${{ inputs.key-prefix }}
+        ACTIONS_CACHE: ${{ inputs.actions-cache }}
+        BUILD_CACHE: ${{ inputs.build-cache }}
+        BUILD_CACHE_URL: ${{ inputs.build-cache-url }}
+        BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
       run: |
         set -euo pipefail
         dir="$RUNNER_TEMP/sccache-bin"
@@ -71,37 +117,4 @@ runs:
         # Incremental artifacts are not cacheable, and sccache refuses them.
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
-        if [ -n "$S3_ACCESS_KEY" ]; then
-          S3_BUCKET="${S3_BUCKET:-ci-sccache-$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')}"
-          bucket_url="${S3_ENDPOINT%/}/$S3_BUCKET"
-          sign=(--aws-sigv4 "aws:amz:us-east-1:s3" --user "$S3_ACCESS_KEY:$S3_SECRET_KEY")
-          if ! curl -sS -o /dev/null --max-time 10 -w '%{http_code}' "${sign[@]}" -I "$bucket_url" | grep -q '^200$'; then
-            curl -sS --max-time 10 "${sign[@]}" -X PUT "$bucket_url" -o /dev/null || true
-            lifecycle='<LifecycleConfiguration><Rule><ID>expire</ID><Filter><Prefix></Prefix></Filter><Status>Enabled</Status><Expiration><Days>14</Days></Expiration></Rule></LifecycleConfiguration>'
-            md5="$(printf '%s' "$lifecycle" | openssl dgst -md5 -binary | base64)"
-            curl -sS --max-time 10 "${sign[@]}" -X PUT -H "Content-MD5: $md5" --data "$lifecycle" "$bucket_url?lifecycle" -o /dev/null || true
-          fi
-          {
-            echo "SCCACHE_BUCKET=$S3_BUCKET"
-            echo "SCCACHE_ENDPOINT=$S3_ENDPOINT"
-            echo "SCCACHE_REGION=us-east-1"
-            echo "SCCACHE_S3_KEY_PREFIX=$KEY_PREFIX"
-            echo "AWS_ACCESS_KEY_ID=$S3_ACCESS_KEY"
-            echo "AWS_SECRET_ACCESS_KEY=$S3_SECRET_KEY"
-          } >> "$GITHUB_ENV"
-          export SCCACHE_BUCKET="$S3_BUCKET" SCCACHE_ENDPOINT="$S3_ENDPOINT" SCCACHE_REGION=us-east-1 \
-            SCCACHE_S3_KEY_PREFIX="$KEY_PREFIX" AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY"
-          backend="S3 $S3_ENDPOINT/$S3_BUCKET/$KEY_PREFIX"
-        else
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "SCCACHE_GHA_VERSION=$KEY_PREFIX" >> "$GITHUB_ENV"
-          export SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION="$KEY_PREFIX"
-          backend="GitHub Actions cache"
-        fi
-        export SCCACHE_IDLE_TIMEOUT=0
-        if SCCACHE_LOG=warn sccache --start-server; then
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          echo "sccache $VERSION on $backend"
-        else
-          echo "::warning::sccache could not start on $backend; compiling without the cache"
-        fi
+        . "$GITHUB_ACTION_PATH/start.sh"

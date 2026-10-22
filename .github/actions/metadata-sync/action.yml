@@ -1,0 +1,28 @@
+name: Metadata sync
+description: Validate and check or write a caller-rendered metadata plan offline.
+inputs:
+  plan:
+    description: JSON plan path, relative to the caller workspace or absolute.
+    required: true
+  root-directory:
+    description: Caller repository root containing the plan targets.
+    default: '.'
+  mode:
+    description: 'check reports drift without writes; write updates after full validation.'
+    default: check
+runs:
+  using: composite
+  steps:
+    - name: Check or write metadata
+      shell: bash
+      env:
+        SYNC_PLAN: ${{ inputs.plan }}
+        SYNC_ROOT: ${{ inputs.root-directory }}
+        SYNC_MODE: ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        case "$SYNC_MODE" in
+          check|write) ;;
+          *) echo '::error::mode must be check or write'; exit 2 ;;
+        esac
+        python3 "$GITHUB_ACTION_PATH/sync.py" --plan "$SYNC_PLAN" --root "$SYNC_ROOT" "--$SYNC_MODE"

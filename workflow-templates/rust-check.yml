@@ -2,6 +2,7 @@ name: Rust check
 
 # Remote `cargo check` for `sylphx build check` (SylphxAI/.github docs/rust-check.md).
 # Copy this file to .github/workflows/sylphx-check.yml and keep the name.
+# Until the CLI ships: gh workflow run sylphx-check.yml -R ORG/REPO -f ref=BRANCH -f packages="crate1 crate2"
 on:
   workflow_dispatch:
     inputs:
@@ -37,12 +38,25 @@ permissions:
 
 jobs:
   check:
-    uses: SylphxAI/.github/.github/workflows/rust-check.yml@main
+    # id-token: the compile cache knows the job by its GitHub OIDC identity
+    # (a called workflow can only narrow what its caller grants, and GitHub
+    # refuses to start the run when the called job asks for more).
+    permissions:
+      contents: read
+      id-token: write
+    uses: SylphxAI/.github/.github/workflows/rust-check.yml@46ec433892bca8693193049b5ee7441bb916a7ad # main after #258
     with:
       ref: ${{ inputs.ref }}
       packages: ${{ inputs.packages }}
       tests: ${{ inputs.tests }}
       workspace: ${{ inputs.workspace }}
+      # Private git dependencies Cargo fetches, one OWNER/REPO per line, read
+      # through your own reader App (GIT_DEPS_APP_ID / GIT_DEPS_APP_KEY below).
+      # git-deps: |
+      #   OWNER/REPO
+    # Only for a runner without the platform's per-org credential (optional).
     secrets:
-      RGW_S3_ACCESS_KEY: ${{ secrets.RGW_S3_ACCESS_KEY }}
-      RGW_S3_SECRET_KEY: ${{ secrets.RGW_S3_SECRET_KEY }}
+      SYLPHX_CI_CACHE_ACCESS_KEY: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
+      SYLPHX_CI_CACHE_SECRET_KEY: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
+      # GIT_DEPS_APP_ID: ${{ secrets.YOUR_READER_APP_ID }}
+      # GIT_DEPS_APP_KEY: ${{ secrets.YOUR_READER_APP_KEY }}
