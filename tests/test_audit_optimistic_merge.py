@@ -652,7 +652,8 @@ class PolicyTest(unittest.TestCase):
         for repo, kind in (("Cubeage/big2-tycoon", "suite-is-gate"), ("Cubeage/cubeage-studio", "suite-is-gate"),
                            ("Cubeage/fun-big2-hk", "on-red-notify"), ("Cubeage/fun-big2-tw", "on-red-notify"),
                            ("SylphxAI/bgca", "hands-off"), ("Cubeage/hk-mahjong-tycoon", "hands-off"),
-                           ("Cubeage/Big2TycoonHk", "frozen-legacy")):
+                           ("Cubeage/Big2TycoonHk", "frozen-legacy"),
+                           ("SylphxAI/work-e2e-fixture", "suite-is-gate")):
             self.assertEqual(audit.exemption_for(POLICY, repo, today)[0]["class"], kind, repo)
 
     def test_a_security_advisory_fork_is_exempt_and_its_parent_is_not(self) -> None:
