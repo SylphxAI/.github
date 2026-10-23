@@ -94,6 +94,34 @@
       "reason": "Declare on_red revert, but the builder App does not reach the Cubeage organization, so the handler runs as notify (tenant organizations lack the writer App).",
       "owner": "Ops",
       "review": "2026-12-31"
+    },
+    {
+      "class": "suite-is-gate",
+      "repos": ["SylphxAI/Google-Photos-Delete-Tool", "SylphxAI/lockdocs", "SylphxAI/mcp-kit", "SylphxAI/readme-mark", "SylphxAI/talos-images"],
+      "reason": "Measured pull-request job time (GitHub run data, read 2026-10-05 21:2xZ for the OSS set): under about 5 minutes of job time, so the merge gate already is the full suite.",
+      "owner": "Build",
+      "review": "2026-11-30"
+    },
+    {
+      "class": "suite-is-gate",
+      "repos": ["SylphxAI/ads-ops", "SylphxAI/repomap-cloud", "SylphxAI/oss-checkout", "SylphxAI/skills"],
+      "reason": "Measured pull-request job time (GitHub run data, read 2026-10-05 21:2xZ): ads-ops p90 about 15 s, repomap-cloud p50 170 s / p90 254 s, oss-checkout p50 178 s / p90 251 s; skills p90 about 5 min wall time including runner wait. The merge gate already is the full suite.",
+      "owner": "Build",
+      "review": "2026-11-30"
+    },
+    {
+      "class": "suite-is-gate",
+      "repos": ["SylphxAI/.github"],
+      "reason": "Its tests are the gate. Measured job run time (desk CI data github_ci_jobs, 30 days, read 2026-10-05 20:51Z): `tests` p90 52 s over 33 runs, `pytest` p90 60 s over 4, `ci-ok` p90 8 s over 36.",
+      "owner": "Build",
+      "review": "2026-11-30"
+    },
+    {
+      "class": "no-build",
+      "repos": ["SylphxAI/configs", "SylphxAI/gpdt-test-library", "SylphxAI/homebrew-tap", "SylphxAI/owner", "SylphxAI/scoop-bucket", "SylphxAI/sylphx-clients", "SylphxAI/terraform-provider-sylphx"],
+      "reason": "Nothing to build or deploy: assets, policy pages, shared configuration and package-manager taps, so there is no gate or post-merge verification to hold them to.",
+      "owner": "Build",
+      "review": "2027-04-04"
     }
   ]
 }
