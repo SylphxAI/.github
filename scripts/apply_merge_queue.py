@@ -12,7 +12,7 @@ without --apply.
 
   scripts/apply_merge_queue.py                     # dry-run diff of every repository
   scripts/apply_merge_queue.py --dry-run --json    # the same, machine-readable
-  scripts/apply_merge_queue.py --repo SylphxAI/desk-tools
+  scripts/apply_merge_queue.py --repo SylphxAI/.github
   scripts/apply_merge_queue.py --apply --backup-dir DIR [--repo ORG/NAME ...]
   scripts/apply_merge_queue.py --rollback DIR      # put the saved rulesets back
   scripts/apply_merge_queue.py --check             # exit 1 when any ruleset drifts
