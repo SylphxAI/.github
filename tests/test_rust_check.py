@@ -56,6 +56,9 @@ class RustCheckWorkflow(unittest.TestCase):
         self.assertLess(self.text.index("Compile cache (sccache)"), self.text.index("Compile cache on GitHub"))
         self.assertLess(self.text.index("Compile cache on GitHub"), self.text.index("- name: cargo check"))
 
+    def test_unpinned_workspace_falls_back_to_stable(self) -> None:
+        self.assertIn("rustup default stable", self.text)
+
     def test_job_may_request_an_oidc_token_and_nothing_else_beyond_read(self) -> None:
         # BuildCache authenticates the job by its GitHub OIDC identity.
         spec = yaml.safe_load(self.text)
