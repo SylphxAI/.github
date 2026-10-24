@@ -126,6 +126,12 @@ declared here and applied in the same rollout. The retired work repository is
 archived, so it is an `exclude` entry: the tool never reads or writes it, and a
 repository with no queue left to protect is not given a new required check.
 
+Rollout progress: cloud and infra were applied on 2026-10-15 and read back
+(`review-ok` present, bound to integration `5155317`), with the pre-change
+rulesets saved in a ruleset-backup directory on the operator host, which is the
+rollback source for every entry of this rollout. work, desk-tools and .github
+are declared here and applied in the same rollout.
+
 Save a fresh backup directory per rollout. If posting stops or the gate blocks
 approved heads, use `--rollback` with that directory and read back the restored
 App bindings and CI gate. A successful PUT alone is not an apply or rollback
