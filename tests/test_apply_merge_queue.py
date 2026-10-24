@@ -120,6 +120,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_shipped_policy_requires_no_approving_review(self):
         self.assertEqual(POLICY["review"]["required_approving_review_count"], 0)
+        self.assertIs(POLICY["review"]["require_extra_approval_for_unattributed_changes"], False)
 
     def test_shipped_policy_turns_off_extra_approval_for_unattributed_changes(self):
         # The gate that actually held every bot pull request was this flag, not the review count.
@@ -259,7 +260,7 @@ class PlanTests(unittest.TestCase):
 
 class ApplyTests(unittest.TestCase):
     def fake(self, **kw):
-        return FakeGh({"SylphxAI/desk-tools": ruleset(10, "sylphx-merge-queue", OLD),
+        return FakeGh({"SylphxAI/desk-tools": ruleset(10, "sylphx-merge-queue", OLD, extra=True),
                        "SylphxAI/work": ruleset(11, "sylphx-merge-queue", OLD),
                        "SylphxAI/janus": ruleset(12, "ci-must-pass", None)}, **kw)
 
