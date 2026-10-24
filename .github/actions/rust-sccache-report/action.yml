@@ -1,0 +1,21 @@
+name: rust-sccache-report
+description: >
+  Run last in a job that used rust-sccache (with `if: always()`): prints the
+  sccache stats, adds the hit rate to the job summary, and raises a warning
+  when cache writes fail or never happen, so a cold cache does not go
+  unnoticed. It never fails the job.
+
+inputs:
+  backend:
+    description: The rust-sccache `backend` output, shown in the summary heading.
+    default: sccache
+
+runs:
+  using: composite
+  steps:
+    - name: Cache report
+      if: runner.os == 'Linux' && inputs.backend != 'none' && inputs.backend != ''
+      shell: bash
+      env:
+        BACKEND: ${{ inputs.backend }}
+      run: bash "$GITHUB_ACTION_PATH/../rust-sccache/cache-report.sh"

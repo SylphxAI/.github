@@ -477,6 +477,11 @@ class RustSccacheStart(unittest.TestCase):
             "esac\n"
         )
         sccache.chmod(0o755)
+        # Static setup now probes write access and rejects failed creation;
+        # these start/fallback tests require a healthy fake object store.
+        curl = self.bin / "curl"
+        curl.write_text('#!/bin/sh\ncase "$*" in *:1/*) printf 200;; *) exec /usr/bin/curl "$@";; esac\n')
+        curl.chmod(0o755)
         # The cluster's own cache endpoint resolves for these tests too: they
         # exercise the server start and the fall-through, not resolution.
         resolver = d / "resolver"
