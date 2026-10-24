@@ -21,6 +21,7 @@ Use one from another repository with
 | [secret-scan](.github/actions/secret-scan/action.yml) | Runs gitleaks over only the commits a push or pull request adds |
 | [plain-language](.github/actions/plain-language/action.yml) | Warns about coined terms on the lines a pull request adds |
 | [identifiers](.github/actions/identifiers/action.yml) | Fails when a change adds an id generator, or a text or serial primary key, that is not a UUIDv7 |
+| [standards-lint](.github/actions/standards-lint/README.md) | Fails when a change adds a sleep or a polling loop on an event-driven primary path; a bounded resync passes when the line names it |
 | [chat-senders](.github/actions/chat-senders/README.md) | Fails when a change adds a direct Telegram, Slack or Discord chat-API host outside the action's allow-list; products send chat through Notify |
 | [stack-conformance](docs/stack-conformance.md) | Fails a change that adds a departure from the default stack, an agent-runtime part Sylphx Agents owns that `policy/agent-runtime.json` does not allow until a date, or a knowledge-graph or CRM table that `policy/knowledge-tables.json` does not allow until a date |
 | [zh-hant](.github/actions/zh-hant/action.yml) | Fails when a change adds a Simplified-only character to Traditional Chinese text |

@@ -1,0 +1,16 @@
+# Extension pattern <TAB> forbidden pattern <TAB> message <TAB> stable finding code.
+# A row applies only to paths matching its extension pattern. A line that names
+# the event the loop waits for, or a bounded resync or recovery, carries
+# `standards-lint: allow(<reason>)` and is not a finding. The patterns are
+# case-sensitive. A match is a newly introduced wait on an event-driven primary
+# path (owner standards/architecture.md, "Real time: events first").
+\.(rs|go)$	\b(?:std::thread::|time::|tokio::time::)?sleep\(	a sleep on a primary path waits for a tick; wait on the event (watch, informer, outbox, webhook, LISTEN/NOTIFY) and keep only a slow resync (owner standards/architecture.md)	primary-path.sleep
+\.(ts|tsx|js|mjs|cjs)$	\b(?:setInterval|setTimeout)\s*\(	a timer on a primary path waits for a tick; subscribe to the change and keep only a slow resync	primary-path.timer
+\.(ts|tsx|js|mjs|cjs)$	\bawait\s+new\s+Promise\b[^;\n]*\bsetTimeout\b	a sleep on a primary path waits for a tick; subscribe to the change and keep only a slow resync	primary-path.sleep
+\.py$	\btime\.sleep\(	a sleep on a primary path waits for a tick; wait on the event and keep only a slow resync	primary-path.sleep
+\.(sh|bash)$	\bsleep[ \t]+[0-9]	a sleep on a primary path waits for a tick; wait on the event and keep only a slow resync	primary-path.sleep
+\.(ya?ml)$	\bschedule:\s*["']?(?:\*|[0-9*/,-]+\s){4}	a CronJob schedule is a poll; reconcile from a watch or informer and keep a slow resync as the safety net	primary-path.cron
+\.rs$	\bwhile\b[^;\n{}]*\{[^}]*\b(?:recv|read|get|poll|probe|query|fetch|list|status)\w*\(	a loop that re-reads state on each pass is a poll; reconcile from the event and keep only a slow resync	primary-path.poll
+\.(ts|tsx|js|mjs|cjs)$	\bwhile\s*\([^)]*\)\s*\{[^}]*\b(?:fetch|get|read|query|poll|probe|status)\w*\(	a loop that re-reads state on each pass is a poll; subscribe to the change and keep only a slow resync	primary-path.poll
+\.py$	\bwhile\b[^:\n]*:[^\n]*\b(?:get|read|query|poll|fetch|probe|status)\w*\(	a loop that re-reads state on each pass is a poll; wait on the event and keep only a slow resync	primary-path.poll
+\.go$	\bfor\b[^{]*\{[^}]*\b(?:Get|Read|Query|Poll|Fetch|Probe|Status|Do)\w*\(	a loop that re-reads state on each pass is a poll; watch the resource and keep only a slow resync	primary-path.poll
