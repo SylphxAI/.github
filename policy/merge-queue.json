@@ -36,6 +36,10 @@
       "reason": "Hosted stopgap: no fixes."
     },
     {
+      "repo": "Cubeage/cubeage-platform",
+      "reason": "Platform repository of Cubeage: its merge queue is changed only by its own team."
+    },
+    {
       "repo": "SylphxAI/work",
       "reason": "Archived 2026-10-15: the retired work system. Read-only; its rulesets are left as they are."
     }
