@@ -8,9 +8,11 @@ description: >
   a full push of the approved workflow on the tracked branch). Schedule: everything.
   Outputs `base`, `run` (JSON lane -> bool; use
   `fromJSON(needs.<job>.outputs.run).<lane>`) and `changed`.
-  Proof history must have a valid, stable total_count and complete pages
-  within five pages of 100 rows. Missing, inconsistent or larger history
+  Proof history requires stable counted pages and complete identity coverage.
+  Workflow searches at GitHub's 1,000-result ceiling are partitioned into
+  disjoint created-time ranges; missing, inconsistent or unresolvable history
   is unavailable, never an older proof or a confirmed absent predecessor.
+  Job and annotation reads retain their five-page per-run bound.
   Previous failing lanes also require complete jobs with valid names,
   run membership, completed statuses and recognized conclusions.
   The job needs `actions: read` and `checks: read`, and a checkout of HEAD
