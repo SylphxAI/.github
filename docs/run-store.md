@@ -138,8 +138,12 @@ These checks need no builder App secret or manually copied credential.
   largest entry) before uploading, retries three times, treats a write the
   gateway accepted but dropped (`x-build-cache: dropped`, its store was down)
   as a failure, and reads the entry back with `HEAD` before it succeeds.
-- A get retries three times, a miss included (a gateway whose store is down
-  answers reads 404), then fails with the key and run it looked for.
+- A get retries three times, a miss included, then fails with the key and run
+  it looked for. A 404 is the only "no entry". While the gateway's object
+  store is down it answers reads `503` (before 2026-10-19 it answered a false
+  `404`), and the step says `store unavailable` and sets the `unavailable`
+  output instead, so a failed get never reads as a producer that did not store
+  the entry.
 - A get validates every tar member before it writes anything: a name that
   escapes `path` (`..` or absolute), a symlink or hardlink, and a special file
   (fifo, device, socket) are refused, so an untrusted bundle (a pull request's
