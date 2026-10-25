@@ -66,6 +66,13 @@ organization it does not know, 503, a timeout, an unusable reply, or the sccache
 server not starting) selects the next backend with one warning that names the
 HTTP status or the curl exit code, never a body or a token.
 
+Add the [`rust-sccache-report`](../.github/actions/rust-sccache-report/action.yml)
+step last, with `if: always()` and `backend: ${{ steps.<id>.outputs.backend }}`:
+it prints the hit rate and warns (it never fails the job) when cache writes
+fail or never happen. On the `static` backend the `rust-sccache` step itself
+fails, with the HTTP status and S3 error code, when the cache bucket cannot be
+created, and warns when the bucket exists but refuses a write.
+
 ## Inputs
 
 Every input is optional. The contract the rollout repositories adopt:

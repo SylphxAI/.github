@@ -113,15 +113,15 @@ the existing `ci-ok` floor unchanged. At the barrier, activate `review-ok` and
 its App binding in the cloud contract and apply only cloud and infra. Send heads
 for independent review only after their native CI is green.
 
-After those two readbacks, extend the same policy to desk-tools (`24403587`)
-and .github (`20321046`) with their provider-confirmed ruleset names. Every
+After those two readbacks, extend the same policy to .github (`20321046`)
+with its provider-confirmed ruleset name. Every
 rollout keeps the queue and `ci-ok`. No TSV armer, private queue, polling loop
 or synthetic CI job is part of this path.
 
 Rollout progress: cloud and infra were applied on 2026-10-15 and read back
 (`review-ok` present, bound to integration `5155317`), with the pre-change
 rulesets saved in a ruleset-backup directory on the operator host, which is the
-rollback source for every entry of this rollout. desk-tools and .github are
+rollback source for every entry of this rollout. .github is
 declared here and applied in the same rollout. The retired work repository is
 archived, so it is an `exclude` entry: the tool never reads or writes it, and a
 repository with no queue left to protect is not given a new required check.
@@ -136,10 +136,10 @@ receipt.
 
 ```sh
 scripts/apply_merge_queue.py --dry-run                    # diff of every ruleset (the default)
-scripts/apply_merge_queue.py --repo SylphxAI/desk-tools   # one repository
+scripts/apply_merge_queue.py --repo SylphxAI/.github      # one repository
 scripts/apply_merge_queue.py --check                      # exit 1 on any drift (for a schedule)
 scripts/apply_merge_queue.py --apply --backup-dir DIR     # write; saves each ruleset in DIR first
-scripts/apply_merge_queue.py --rollback DIR               # put the saved rulesets back
+scripts/apply_merge_queue.py --rollback DIR               # put the saved merge_queue parameters back
 ```
 
 Reads are one GraphQL query per 100 repositories plus one custom-property read
@@ -148,7 +148,14 @@ non-excluded repository ruleset that carries a `pull_request` rule (its
 extra-approval flag is not in the GraphQL schema). Writes are one `PUT` per
 drifted ruleset, a second apart, read back, and stop at the first 403. The
 credential needs repository administration on each repository. Running
-`--apply` twice writes nothing the second time. `cloud` also pins its queue in
+`--apply` twice writes nothing the second time.
+`--apply` refuses a backup directory that already holds a backup of a ruleset it
+would change, so the first backup stays the true "before"; use a new directory
+for each run. `--rollback` reads each ruleset as it is now and puts back only the
+saved `merge_queue` parameters, so any other edit made since the apply stays.
+The organizations are SylphxAI, Cubeage, EpiowAI and OzyrixLtd (read with the
+same login as the optimistic-merge audit); `Cubeage/cubeage-platform` and the
+hands-off repositories are excluded. `cloud` also pins its queue in
 `.github/branch-protection-contract.json`, which its guard compares with the live
 ruleset; when this policy changes a value for cloud, change that file in the
 same step.

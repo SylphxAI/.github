@@ -12,7 +12,10 @@
 #                  everything else. Skipped when the job has no OIDC access or
 #                  BUILD_CACHE is false.
 #   2. static      the organization's own object-store user, passed as the
-#                  s3-access-key / s3-secret-key inputs (SYLPHX_CI_CACHE_*)
+#                  s3-access-key / s3-secret-key inputs (SYLPHX_CI_CACHE_*),
+#                  when the runner can resolve its endpoint: an in-cluster name
+#                  is skipped on a runner outside the cluster instead of
+#                  failing a server start
 #   3. gha         the repository's GitHub Actions cache, unless ACTIONS_CACHE
 #                  is false (the caller then brings its own fallback)
 #   4. none
@@ -122,16 +125,41 @@ if ! _backend_skipped buildcache && [ "${BUILD_CACHE:-true}" != false ]; then
   if _buildcache; then backend=buildcache; fi
 fi
 
+# An in-cluster endpoint (rook-ceph-rgw-ceph-objectstore.rook-ceph.svc and the
+# like) resolves only from inside the cluster's own network. On any other runner
+# it is not the cache's address, so the static backend is skipped instead of
+# spending a server start on a name that cannot resolve. A host that does not
+# answer `getent` at all counts as out of the cluster.
+_endpoint_in_cluster() {
+  local rest host
+  rest="${S3_ENDPOINT#*://}"
+  rest="${rest%%/*}"
+  host="${rest%%:*}"
+  case "$host" in
+    # Only a pod service DNS name (`<service>.<namespace>.svc.cluster.local`,
+    # or its `.svc` shorthand) is this check's; any other endpoint is a
+    # registered name that may resolve from outside the cluster.
+    *.*.svc|*.*.svc.cluster.local)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  command -v getent >/dev/null 2>&1 && getent hosts "$host" >/dev/null 2>&1
+}
+
 if [ "$backend" = none ] && ! _backend_skipped static && [ -n "${S3_ACCESS_KEY:-}" ] && [ -n "${S3_SECRET_KEY:-}" ]; then
   S3_BUCKET="${S3_BUCKET:-ci-sccache-$(printf '%s' "${GITHUB_REPOSITORY_OWNER:?}" | tr '[:upper:]' '[:lower:]')}"
   if [ "$S3_BUCKET" = ci-sccache ]; then
     echo "::warning::the platform's ci-sccache bucket is not a repository cache; ignoring the S3 inputs"
-  else
+  elif _endpoint_in_cluster; then
     backend=static
     unset AWS_SESSION_TOKEN
     export SCCACHE_BUCKET="$S3_BUCKET" SCCACHE_ENDPOINT="${S3_ENDPOINT:?}" SCCACHE_REGION=us-east-1 \
       SCCACHE_S3_KEY_PREFIX="$KEY_PREFIX" AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY"
-    backend_label="S3 $SCCACHE_ENDPOINT/$SCCACHE_BUCKET/$KEY_PREFIX"
+    backend_label="S3 $SCCACHE_ENDPOINT/$S3_BUCKET/$KEY_PREFIX"
+  else
+    echo "::warning::S3 endpoint ${S3_ENDPOINT} is a cluster-internal name this runner cannot resolve; trying the next cache backend"
   fi
 fi
 if [ "$backend" = none ] && ! _backend_skipped gha && [ "${ACTIONS_CACHE:-true}" != false ]; then

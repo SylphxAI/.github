@@ -151,23 +151,34 @@ class NeedsPassTest(unittest.TestCase):
         for bad in ("failure", "timed_out", "action_required", "startup_failure", ""):
             self.assertTrue(needs_pass.verdict({"a": {"result": bad}}, set(), set()), bad)
 
-    def test_cancelled_lane_is_not_a_failure(self) -> None:
-        # a superseded push cancels the run before it; its lanes read
-        # `cancelled` while nothing was wrong, so the aggregate must not fail.
+    def test_cancelled_lane_fails(self) -> None:
+        # A cancelled lane never tested the head, so it fails the verdict; the
+        # label tells it apart from a real failure.
         needs = {"plan": {"result": "success"}, "work": {"result": "cancelled"},
                  "rest": {"result": "cancelled"}}
-        self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), "pull_request"), [])
-        # a real failure beside a cancelled lane is still a failure
+        self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), "pull_request"),
+                         ["rest: CANCELLED (superseded push)", "work: CANCELLED (superseded push)"])
         needs["rest"] = {"result": "failure"}
         self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), "pull_request"),
-                         ["rest: failure"])
+                         ["rest: failure", "work: CANCELLED (superseded push)"])
 
-    def test_cancelled_required_lane_is_not_a_failure(self) -> None:
-        # required/required-unless-merge-group accept success only, but a cancelled
-        # lane has no verdict of its own; the rerun settles it.
+    def test_every_lane_cancelled_fails(self) -> None:
+        # The false green this closes: a run superseded one second after it
+        # started posted ci-ok success for a head it never tested.
+        needs = {"plan": {"result": "cancelled"}, "suite": {"result": "cancelled"}}
+        self.assertEqual(needs_pass.verdict(needs, set(), set(), "pull_request"),
+                         ["plan: CANCELLED (superseded push)", "suite: CANCELLED (superseded push)"])
+
+    def test_cancelled_lane_fails_even_when_advisory(self) -> None:
+        self.assertEqual(needs_pass.verdict({"evals": {"result": "cancelled"}}, set(), {"evals"}, "push"),
+                         ["evals: CANCELLED (stopped run)"])
+
+    def test_cancelled_required_lane_fails(self) -> None:
         needs = {"plan": {"result": "success"}, "suite": {"result": "cancelled"}}
-        self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), "pull_request", {"suite"}), [])
-        self.assertEqual(needs_pass.verdict(needs, {"plan", "suite"}, set(), "pull_request"), [])
+        self.assertEqual(needs_pass.verdict(needs, {"plan"}, set(), "pull_request", {"suite"}),
+                         ["suite: CANCELLED (superseded push)"])
+        self.assertEqual(needs_pass.verdict(needs, {"plan", "suite"}, set(), "merge_group"),
+                         ["suite: CANCELLED (stopped run)"])
 
     def test_cancelled_lane_names_its_reason_class(self) -> None:
         # The reason class must be readable without the log: a pull_request run
@@ -178,16 +189,14 @@ class NeedsPassTest(unittest.TestCase):
             self.assertEqual(needs_pass.cancel_class("work", event),
                              "work: CANCELLED (stopped run)", event)
 
-    def test_cancelled_lanes_reported_and_the_run_exits_zero(self) -> None:
-        # The regression: the exact NEEDS map from the run that failed as red.
+    def test_cancelled_lanes_reported_and_the_run_exits_one(self) -> None:
         env = dict(os.environ, NEEDS=json.dumps(
             {"plan": {"result": "success"}, "work": {"result": "cancelled"},
              "rest": {"result": "cancelled"}}), REQUIRED="plan", EVENT_NAME="pull_request")
         proc = subprocess.run([sys.executable, str(needs_pass.__file__)],
                               env=env, capture_output=True, text=True)
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("CANCELLED (superseded push)", proc.stdout)
-        self.assertNotIn("::error::", proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("::error::rest: CANCELLED (superseded push)", proc.stdout)
         # a genuinely failed lane still exits 1
         env["NEEDS"] = json.dumps({"plan": {"result": "success"}, "work": {"result": "failure"}})
         proc = subprocess.run([sys.executable, str(needs_pass.__file__)],
@@ -217,8 +226,9 @@ class NeedsPassTest(unittest.TestCase):
                 self.assertIn("needs-pass@", gate["steps"][0]["uses"])
         # The lifecycle guard never weakens the aggregate's failure semantics.
         self.assertTrue(needs_pass.verdict({"test": {"result": "failure"}}, {"test"}, set()))
-        # A cancelled dependency is not a failure.
-        self.assertEqual(needs_pass.verdict({"test": {"result": "cancelled"}}, {"test"}, set()), [])
+        # A cancelled dependency fails too: it never tested the head.
+        self.assertEqual(needs_pass.verdict({"test": {"result": "cancelled"}}, {"test"}, set()),
+                         ["test: CANCELLED (stopped run)"])
 
 
 class ActionManifestExpressionTest(unittest.TestCase):

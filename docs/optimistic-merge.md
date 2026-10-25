@@ -254,10 +254,9 @@ benchmark or nightly) never makes the trunk red here.
   unknown, never treat it as success or terminal no-action. Destructive revert
   requires authenticated failure plus a trusted authenticated baseline.
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
-  `verified` verdict. Skipped passes; failed fails; a cancelled dependency is
-  reported CANCELLED (naming a superseded push from a stopped run) and does not
-  fail, because a pull-request push cancels the run before it while nothing was
-  wrong and the rerun settles it; `required:
+  `verified` verdict. Skipped passes; failed fails; a cancelled dependency
+  fails too, reported as CANCELLED (naming a superseded push or a stopped run),
+  because a cancelled lane never tested the head; `required:
   plan` makes a broken plan a failure. `required-unless-merge-group: suite`
   (the PR-time jobs) makes a skipped job a failure on every event but
   `merge_group`, so a dispatch run cannot post a green verdict over a red one.

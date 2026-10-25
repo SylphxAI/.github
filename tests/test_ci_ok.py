@@ -45,6 +45,16 @@ class CiOkTest(unittest.TestCase):
         runs = [run("ci-ok", "in_progress", None), run("plain-language", conclusion="failure"), run("a")]
         self.assertEqual(ci_ok.evaluate(runs, {"ci-ok", "plain-language"})[0], "pass")
 
+    def test_newer_run_of_the_same_check_replaces_an_older_suite_failure(self) -> None:
+        old = {"id": 1, "name": "check", "status": "completed", "conclusion": "failure", "check_suite": {"id": 1}}
+        new = {"id": 2, "name": "check", "status": "completed", "conclusion": "success", "check_suite": {"id": 2}}
+        # Main identifies superseded suites by workflow and event, so two
+        # different workflows with the same job name cannot hide each other.
+        self.assertEqual(ci_ok.evaluate([old, new], set(), suite_events={1: "superseded", 2: "pull_request"})[0], "pass")
+        self.assertEqual(ci_ok.evaluate([new, old], set(), suite_events={1: "superseded", 2: "pull_request"})[0], "pass")
+        rerun = {"id": 3, "name": "check", "status": "in_progress", "conclusion": None}
+        self.assertEqual(ci_ok.evaluate([old, new, rerun], set()), ("pending", ["check"]))
+
     def test_other_apps_do_not_gate_by_default(self) -> None:
         deploy = {"name": "sylphx/deploy", "status": "in_progress", "conclusion": None, "app": {"slug": "sylphx-ai"}}
         mine = {"name": "a", "status": "completed", "conclusion": "success", "app": {"slug": "github-actions"}}

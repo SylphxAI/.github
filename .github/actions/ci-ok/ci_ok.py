@@ -2,7 +2,7 @@
 """Aggregate gate: wait for every other GitHub Actions check run on a commit, then pass or fail.
 
 Used where a repository's checks live in several workflows (or path-filtered
-ones), so one `ci-ok` job cannot `needs:` them all. It lists the latest check
+ones), so one `ci-ok` job cannot `needs:` them all. It lists the check
 runs on the commit through the REST API, ignores its own job and any names in
 CI_OK_IGNORE, and waits until the set is complete and stable. Any failure,
 cancellation, timeout, action_required or startup failure fails the gate;
@@ -183,7 +183,7 @@ def fetch(repo: str, sha: str, token: str) -> list[dict]:
     runs, page = [], 1
     while True:
         data = _get(f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs"
-                    f"?filter=latest&per_page=100&page={page}", token)
+                    f"?filter=all&per_page=100&page={page}", token)
         runs += data.get("check_runs", [])
         if len(runs) >= data.get("total_count", 0) or not data.get("check_runs"):
             return runs

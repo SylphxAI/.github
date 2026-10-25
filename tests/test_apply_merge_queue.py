@@ -120,6 +120,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_shipped_policy_requires_no_approving_review(self):
         self.assertEqual(POLICY["review"]["required_approving_review_count"], 0)
+        self.assertIs(POLICY["review"]["require_extra_approval_for_unattributed_changes"], False)
 
     def test_shipped_policy_turns_off_extra_approval_for_unattributed_changes(self):
         # The gate that actually held every bot pull request was this flag, not the review count.
@@ -259,7 +260,7 @@ class PlanTests(unittest.TestCase):
 
 class ApplyTests(unittest.TestCase):
     def fake(self, **kw):
-        return FakeGh({"SylphxAI/desk-tools": ruleset(10, "sylphx-merge-queue", OLD),
+        return FakeGh({"SylphxAI/desk-tools": ruleset(10, "sylphx-merge-queue", OLD, extra=True),
                        "SylphxAI/work": ruleset(11, "sylphx-merge-queue", OLD),
                        "SylphxAI/janus": ruleset(12, "ci-must-pass", None)}, **kw)
 
@@ -347,11 +348,60 @@ class ApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             amq.WRITE_PAUSE_SECONDS = 0
             self.run_main(gh, "--apply", "--backup-dir", d)
+            reviews = {repo: amq.review_count(rs) for repo, rs in gh.rulesets.items()}
             rc, _ = self.run_main(gh, "--rollback", d)
             self.assertEqual(rc, 0)
             self.assertEqual(amq.queue_params(gh.rulesets["SylphxAI/desk-tools"]), OLD)
             for repo in gh.rulesets:
-                self.assertEqual(amq.review_count(gh.rulesets[repo]), 1)
+                self.assertEqual(amq.review_count(gh.rulesets[repo]), reviews[repo])
+
+    def test_apply_refuses_an_existing_backup_and_keeps_it(self):
+        gh = self.fake()
+        with tempfile.TemporaryDirectory() as d:
+            amq.WRITE_PAUSE_SECONDS = 0
+            self.run_main(gh, "--apply", "--backup-dir", d)
+            first = (pathlib.Path(d) / "SylphxAI__desk-tools__10.json").read_text()
+            # The ruleset drifts again (a hand edit); a second apply into the same directory must not run.
+            gh.rulesets["SylphxAI/desk-tools"] = ruleset(10, "sylphx-merge-queue", OLD)
+            gh.puts.clear()
+            rc, _ = self.run_main(gh, "--apply", "--backup-dir", d)
+            self.assertEqual((rc, gh.puts), (2, []))
+            self.assertEqual((pathlib.Path(d) / "SylphxAI__desk-tools__10.json").read_text(), first)
+            self.assertEqual(amq.queue_params(gh.rulesets["SylphxAI/desk-tools"]), OLD)
+
+    def test_rollback_restores_only_the_queue_parameters(self):
+        gh = self.fake()
+        with tempfile.TemporaryDirectory() as d:
+            amq.WRITE_PAUSE_SECONDS = 0
+            self.run_main(gh, "--apply", "--backup-dir", d)
+            # An unrelated edit made after the apply: a second approval and a new bypass actor.
+            rs = gh.rulesets["SylphxAI/desk-tools"]
+            rs["rules"][2]["parameters"] = {"required_approving_review_count": 2}
+            rs["bypass_actors"] = [{"actor_id": 5, "actor_type": "Team", "bypass_mode": "always"}]
+            gh.puts.clear()
+            rc, _ = self.run_main(gh, "--rollback", d)
+            self.assertEqual(rc, 0)
+            now = gh.rulesets["SylphxAI/desk-tools"]
+            self.assertEqual(amq.queue_params(now), OLD)
+            self.assertEqual(now["rules"][2]["parameters"], {"required_approving_review_count": 2})
+            self.assertEqual(now["bypass_actors"][0]["actor_id"], 5)
+
+    def test_rollback_fails_when_the_queue_rule_is_gone(self):
+        gh = self.fake()
+        with tempfile.TemporaryDirectory() as d:
+            amq.WRITE_PAUSE_SECONDS = 0
+            self.run_main(gh, "--apply", "--backup-dir", d)
+            gh.rulesets["SylphxAI/desk-tools"]["rules"] = [r for r in gh.rulesets["SylphxAI/desk-tools"]["rules"] if r["type"] != "merge_queue"]
+            gh.puts.clear()
+            rc, out = self.run_main(gh, "--rollback", d)
+            self.assertEqual(rc, 1)
+            self.assertNotIn("SylphxAI/desk-tools", [r for r, _ in gh.puts])
+
+    def test_all_four_organizations_and_the_platform_repo_are_covered(self):
+        self.assertEqual(POLICY["orgs"], ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"])
+        skip = amq.excluded(POLICY, amq.hands_off_repos())
+        for repo in ("Cubeage/cubeage-platform", "Cubeage/hk-mahjong-tycoon", "SylphxAI/bgca"):
+            self.assertIn(repo, skip)
 
     def test_first_403_stops_the_run(self):
         # A 403 on the write stops the run: no ruleset after it is written.
@@ -417,11 +467,18 @@ class RequiredCheckTests(unittest.TestCase):
 
     def test_declared_review_gate_covers_the_gated_repositories(self):
         self.assertEqual([entry["repo"] for entry in SHIPPED_POLICY["required_checks"]],
-                         ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/desk-tools", "SylphxAI/.github"])
+                         ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/desk-tools", "SylphxAI/.github",
+                          "SylphxAI/owner"])
         for entry in SHIPPED_POLICY["required_checks"]:
-            self.assertEqual(entry["checks"], [
+            expected = [
                 {"context": "ci-ok", "integration_id": 15368},
-                {"context": "review-ok", "integration_id": 5155317}])
+                {"context": "review-ok", "integration_id": 5155317}]
+            if entry["repo"] == "SylphxAI/owner":
+                # owner's plain-language workflow produces always-loaded on its pull request heads; no other repository does.
+                expected = [
+                    {"context": "ci-ok", "integration_id": 15368},
+                    {"context": "always-loaded", "integration_id": 15368}]
+            self.assertEqual(entry["checks"], expected)
 
     def test_scoped_missing_review_check_is_reported_with_exact_issuer(self):
         rows = [row for row in self.rows(self.fake()) if row["status"] == "DRIFT"]
@@ -429,7 +486,9 @@ class RequiredCheckTests(unittest.TestCase):
         for row in rows:
             before, after = row["changes"]["required_status_checks"]
             self.assertEqual(before, [{"context": "ci-ok", "integration_id": 15368}])
-            self.assertIn({"context": "review-ok", "integration_id": 5155317}, after)
+            entry = next(e for e in SHIPPED_POLICY["required_checks"] if e["repo"] == row["repo"])
+            for check in entry["checks"][1:]:
+                self.assertIn(check, after)
 
     def test_apply_adds_gate_preserves_other_checks_and_rollback_restores_bindings(self):
         gh = self.fake()
@@ -449,7 +508,10 @@ class RequiredCheckTests(unittest.TestCase):
             self.assertEqual(gh.puts, [])
             restored = amq.rollback(gh, pathlib.Path(directory), pause=0)
             self.assertTrue(all(row["result"] == "RESTORED" for row in restored))
-            self.assertEqual(gh.rulesets, before)
+            for repo, saved in before.items():
+                self.assertEqual(amq.queue_params(gh.rulesets[repo]), amq.queue_params(saved))
+            self.assertIn({"context": "review-ok", "integration_id": 5155317},
+                          gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"])
 
     def test_wrong_review_issuer_is_corrected_and_unscoped_ruleset_unchanged(self):
         gh = self.fake()
@@ -523,7 +585,9 @@ class RequiredCheckTests(unittest.TestCase):
             applied = amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0)
             self.assertTrue(all(row["result"].startswith("FAILED") for row in applied))
             restored = amq.rollback(gh, pathlib.Path(directory), pause=0)
-            self.assertTrue(all(row["result"].startswith("FAILED") for row in restored))
+            # Queue-only rollback preserves the live check binding, even if
+            # a prior apply's binding write failed its readback.
+            self.assertTrue(all(row["result"] == "RESTORED" for row in restored))
 
 
 class ExtraApprovalTests(unittest.TestCase):
