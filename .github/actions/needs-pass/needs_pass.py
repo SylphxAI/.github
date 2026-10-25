@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Aggregate verdict over `toJSON(needs)`: see action.yml.
 
-A cancelled dependency is not a failure: a pull-request push supersedes
-the run before it (`concurrency.cancel-in-progress`), so its lanes read
-`cancelled` while nothing was wrong. The aggregate reports them as CANCELLED,
-distinct from FAILED, and does not fail on them; a rerun produces the lanes'
-real results, which then decide.
+A cancelled dependency fails the verdict. A cancelled lane never tested the
+head, so passing it lets a superseded or stopped run post a green verdict for
+an untested commit (agents#4769: a run cancelled one second after it started
+posted ci-ok success while its replacement was still queued). The failure is
+labelled CANCELLED so it reads apart from a real FAILED lane; the replacement
+run's verdict, which is newer, then decides the head.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ def names(value: str) -> set[str]:
 
 
 def cancel_class(job: str, event: str) -> str:
-    """Why a `cancelled` lane is not a failure, from what the action already has.
+    """Name why a lane was cancelled, from what the action already has.
 
     The org's workflows cancel in progress only on `pull_request`
     (`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`), so a
@@ -39,8 +40,7 @@ def verdict(needs: dict, required: set[str], advisory: set[str],
 
     Jobs in `required_unless_merge_group` must succeed on every event except
     merge_group, where the queue by design does not run them and skipped is fine.
-    A `cancelled` result never fails, even in `required`/`required_unless_merge_group`:
-    a superseded or stopped run has no verdict of its own, and the rerun settles it.
+    A `cancelled` result always fails: the lane never tested the head.
     """
     if event != "merge_group":
         required = required | set(required_unless_merge_group)
@@ -50,6 +50,7 @@ def verdict(needs: dict, required: set[str], advisory: set[str],
     for job, value in sorted(needs.items()):
         result = (value or {}).get("result", "")
         if result == CANCELLED:
+            bad.append(cancel_class(job, event))
             continue
         if job in required and result != "success":
             bad.append(f"{job}: {result or 'no result'} (must succeed)")
@@ -62,8 +63,6 @@ def main() -> int:
     needs = json.loads(os.environ["NEEDS"] or "{}")
     event = os.environ.get("EVENT_NAME", "")
     print(json.dumps({job: (value or {}).get("result") for job, value in needs.items()}))
-    for job in sorted(j for j, v in needs.items() if (v or {}).get("result") == CANCELLED):
-        print(f"::warning::{cancel_class(job, event)} - not a failure; re-run to settle it")
     bad = verdict(needs, names(os.environ.get("REQUIRED", "")), names(os.environ.get("ADVISORY", "")),
                   event, names(os.environ.get("REQUIRED_UNLESS_MERGE_GROUP", "")))
     for reason in bad:
