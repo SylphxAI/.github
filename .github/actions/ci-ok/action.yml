@@ -16,8 +16,10 @@ inputs:
   token:
     description: >
       Token that can read check runs and workflow runs (the job needs
-      `checks: read` and `actions: read`; without `actions: read` a workflow_run
-      or push workflow that failed to start on the commit also fails the gate).
+      `checks: read` and `actions: read`; without `actions: read` a workflow that
+      failed to start on the commit also fails the gate). A pull request also
+      fails when GitHub rejected one of its workflows at push time. A merge
+      group does not, so a broken recovery workflow cannot block its own repair.
     default: ${{ github.token }}
   job-name:
     description: Name of the calling job's check run, ignored while waiting.
