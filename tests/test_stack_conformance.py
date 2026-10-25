@@ -291,11 +291,11 @@ class KnowledgeTableGuardTest(unittest.TestCase):
 
     def test_a_new_table_fails_and_a_recorded_one_passes(self):
         policy = {"owner_repos": ["SylphxAI/cloud"], "baseline": [
-            {"repo": "SylphxAI/agents", "table": "knowledge_entries", "expires": "2026-11-30"}]}
+            {"repo": "SylphxAI/spiron", "table": "knowledge_entries", "expires": "2026-11-30"}]}
         today = datetime.date(2026, 10, 7)
         errors, _ = sc.decide_knowledge(
             ["knowledge-table m/1.sql knowledge_entries", "knowledge-table m/1.sql crm_accounts"],
-            "SylphxAI/agents", policy, today)
+            "SylphxAI/spiron", policy, today)
         self.assertEqual(len(errors), 1)
         self.assertIn("crm_accounts", errors[0])
         self.assertIn("new knowledge or CRM table", errors[0])

@@ -57,6 +57,12 @@ outputs:
   bytes:
     description: Size of the stored or fetched bundle in bytes.
     value: ${{ steps.run.outputs.bytes }}
+  unavailable:
+    description: >
+      "true" when the cache's object store did not answer: the entry was not
+      read or stored, and a get's `found: false` says nothing about whether
+      the producer wrote it.
+    value: ${{ steps.run.outputs.unavailable }}
 
 runs:
   using: composite
