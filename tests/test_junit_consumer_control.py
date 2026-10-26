@@ -1,5 +1,8 @@
 """Keep the live consumer proof connected to actual producers and shared source."""
 from pathlib import Path
+import json
+import runpy
+import tempfile
 import unittest
 
 import yaml
@@ -48,10 +51,60 @@ class JunitConsumerControlTest(unittest.TestCase):
             self.assertNotIn('actions/download-artifact', text)
         script = (ROOT / 'scripts/check-junit-consumer.py').read_text()
         self.assertIn('get-junit.py', script)
-        self.assertIn("env['JUNIT_PY']", script)
-        self.assertIn("env['WINDOW_PY']", script)
         self.assertIn("run == os.environ['GITHUB_RUN_ID']", script)
         self.assertNotIn('unittest.mock', script)
+
+
+class JunitConsumerReportsTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.reports, self.units = root / 'reports', root / 'units.tsv'
+        self.reports.mkdir()
+        self.lanes = {f'junit-consumer-{shard}': f'JUnit fixture ({shard})' for shard in (1, 701)}
+        (self.reports / '.run-store-lanes.json').write_text(json.dumps(self.lanes))
+        for shard in (1, 701):
+            directory = self.reports / f'junit-consumer-{shard}' / 'nested'
+            directory.mkdir(parents=True)
+            (directory / 'junit.xml').write_text(
+                f'<testsuite><testcase classname="suite" name="broken-{shard}"><failure/></testcase>'
+                f'<testcase classname="suite" name="passing-{shard}"/></testsuite>')
+        self.verify = runpy.run_path(str(ROOT / 'scripts/check-junit-consumer.py'))['verify_reports']
+
+    def test_both_canonical_parsers_preserve_nested_matrix_test_identity(self):
+        # Run the real parsers on report bytes, without inline workflow programs
+        # or network/store mocks. The automatic consumer covers live transport.
+        self.verify(self.reports, self.units)
+        self.assertEqual(set(self.units.read_text().splitlines()), {
+            'test\tsuite::broken-1\tJUnit fixture (1)',
+            'test\tsuite::broken-701\tJUnit fixture (701)',
+        })
+
+    def test_wrong_lane_attribution_is_refused(self):
+        (self.reports / '.run-store-lanes.json').write_text(json.dumps({
+            'junit-consumer-1': 'JUnit fixture (701)',
+            'junit-consumer-701': 'JUnit fixture (1)',
+        }))
+        with self.assertRaisesRegex(AssertionError, 'lane attribution mismatch'):
+            self.verify(self.reports, self.units)
+
+    def test_missing_nested_shard_is_refused(self):
+        (self.reports / 'junit-consumer-701/nested/junit.xml').unlink()
+        with self.assertRaisesRegex(AssertionError, 'Missing nested shard'):
+            self.verify(self.reports, self.units)
+
+    def test_wrong_failing_test_identity_is_refused(self):
+        path = self.reports / 'junit-consumer-701/nested/junit.xml'
+        path.write_text(path.read_text().replace('broken-701', 'wrong-test'))
+        with self.assertRaisesRegex(AssertionError, 'Failed-unit parser lost'):
+            self.verify(self.reports, self.units)
+
+    def test_wrong_passing_test_identity_is_refused(self):
+        path = self.reports / 'junit-consumer-701/nested/junit.xml'
+        path.write_text(path.read_text().replace('passing-701', 'wrong-test'))
+        with self.assertRaisesRegex(AssertionError, 'Regression-window parser lost'):
+            self.verify(self.reports, self.units)
 
 
 if __name__ == '__main__':
