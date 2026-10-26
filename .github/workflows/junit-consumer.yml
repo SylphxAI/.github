@@ -26,8 +26,6 @@ jobs:
           ref: ${{ job.workflow_sha }}
           persist-credentials: false
           path: consumer-shared
-      - name: Install parser dependency
-        run: python3 -m pip install --quiet pyyaml
       - name: Fetch exact cross-run JUnit and verify identity
         env:
           GH_TOKEN: ${{ github.token }}
