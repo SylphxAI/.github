@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -35,10 +36,13 @@ mkdir -p "$root/bin"
 if [ "$crate" = wasm-bindgen-cli ]; then
   printf '#!/bin/sh\necho "wasm-bindgen %s"\n' "$version" > "$root/bin/wasm-bindgen"
   chmod +x "$root/bin/wasm-bindgen"
+  cp "$root/bin/wasm-bindgen" "$root/bin/wasm-bindgen-test-runner"
+  [ "${FAIL_BINDGEN:-}" != 1 ] || exit 1
 else
   test -f "$path/Cargo.toml"
   printf '#!/bin/sh\necho keel\n' > "$root/bin/keel"
   chmod +x "$root/bin/keel"
+  [ "${FAIL_KEEL:-}" != 1 ] || exit 1
 fi
 """
 
@@ -126,6 +130,18 @@ class InstallerTest(unittest.TestCase):
                          plain.stdout.strip() + " features=texture-encoder foo")
         self.assertNotIn(",", r.stdout)
 
+    def test_tool_keys_invalidate_only_the_changed_tool(self):
+        keel = self.run_installer("key", "keel").stdout
+        bindgen = self.run_installer("key", "wasm-bindgen").stdout
+        self.assertEqual(keel.strip(), f"keel-{self.pin}")
+        self.assertEqual(bindgen.strip(), "wasm-bindgen-0.2.93")
+        self.assertEqual(self.run_installer("key", "keel", WASM_BINDGEN="0.2.95").stdout, keel)
+        self.assertEqual(self.run_installer("key", "wasm-bindgen", KEEL_PIN="a" * 40,
+                                            KEEL_FEATURES="texture-encoder").stdout, bindgen)
+        self.assertNotEqual(self.run_installer("key", "keel", KEEL_PIN="a" * 40).stdout, keel)
+        self.assertNotEqual(self.run_installer("key", "keel", KEEL_FEATURES="texture-encoder").stdout, keel)
+        self.assertNotEqual(self.run_installer("key", "wasm-bindgen", WASM_BINDGEN="0.2.95").stdout, bindgen)
+
     def test_cold_builds_then_warm_is_from_cache(self):
         r = self.run_installer("install", str(self.root))
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -139,13 +155,76 @@ class InstallerTest(unittest.TestCase):
         self.assertIn(f"keel tools from cache: keel={self.pin} wasm-bindgen=0.2.93", r.stdout)
         self.assertEqual(len(self.builds()), 2)
 
-    def test_a_new_bindgen_version_rebuilds(self):
+    def test_a_new_bindgen_version_rebuilds_only_bindgen(self):
         self.assertEqual(self.run_installer("install", str(self.root)).returncode, 0)
         (self.title / "Cargo.lock").write_text(LOCK.replace("0.2.93", "0.2.95"))
         r = self.run_installer("install", str(self.root))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("building keel tools", r.stdout)
-        self.assertEqual(len(self.builds()), 4)
+        self.assertIn("building wasm-bindgen tools", r.stdout)
+        self.assertNotIn("building keel tools", r.stdout)
+        self.assertEqual(len(self.builds()), 3)
+        self.assertIn("wasm-bindgen-cli --version 0.2.95", self.builds()[-1])
+
+    def test_new_keel_pin_reuses_bindgen_restored_on_another_runner(self):
+        self.assertEqual(self.run_installer("install", str(self.root)).returncode, 0)
+        # Simulate only the independent wasm-bindgen cache hitting on a fresh
+        # runner after the title moves its Keel pin. No combined root survives.
+        new_root = pathlib.Path(self.tmp.name) / "another-runner" / "tools"
+        shutil.copytree(self.root / "wasm-bindgen", new_root / "wasm-bindgen")
+        src = pathlib.Path(self.tmp.name) / "keel-work"
+        git(src, "commit", "-q", "--allow-empty", "-m", "c2")
+        pin = git(src, "rev-parse", "HEAD")
+        r = self.run_installer("install", str(new_root), KEEL_PIN=pin, KEEL_SRC=str(src))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.builds()), 3)
+        self.assertNotIn("building wasm-bindgen", r.stdout)
+        self.assertTrue((new_root / "bin" / "wasm-bindgen-test-runner").is_file())
+        self.assertTrue((new_root / "bin" / "wasm-bindgen").resolve().is_relative_to(new_root))
+
+    def test_feature_change_reuses_bindgen(self):
+        self.assertEqual(self.run_installer("install", str(self.root)).returncode, 0)
+        r = self.run_installer("install", str(self.root), KEEL_FEATURES="texture-encoder")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.builds()), 3)
+        self.assertNotIn("building wasm-bindgen", r.stdout)
+
+    def test_incomplete_tool_rebuilds_without_rebuilding_the_other(self):
+        for tool in ("keel", "wasm-bindgen"):
+            for missing in ("stamp", f"bin/{tool}"):
+                with self.subTest(tool=tool, missing=missing):
+                    self.assertEqual(self.run_installer("install", str(self.root)).returncode, 0)
+                    (self.root / tool / missing).unlink()
+                    built = len(self.builds())
+                    r = self.run_installer("install", str(self.root))
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.assertEqual(len(self.builds()), built + 1)
+                    self.assertEqual("wasm-bindgen-cli" in self.builds()[-1], tool == "wasm-bindgen")
+
+    def test_failed_installs_never_get_a_completion_stamp(self):
+        for tool, flag in (("keel", "FAIL_KEEL"), ("wasm-bindgen", "FAIL_BINDGEN")):
+            with self.subTest(tool=tool):
+                root = self.root / f"failed-{tool}"
+                r = self.run_installer("install", str(root), **{flag: "1"})
+                self.assertNotEqual(r.returncode, 0)
+                self.assertFalse((root / tool / "stamp").exists())
+                self.assertFalse((root / "stamp").exists())
+                self.assertEqual(self.run_installer("install", str(root)).returncode, 0)
+
+    def test_wrong_cached_bindgen_version_is_refused(self):
+        self.assertEqual(self.run_installer("install", str(self.root)).returncode, 0)
+        binary = self.root / "wasm-bindgen" / "bin" / "wasm-bindgen"
+        binary.write_text('#!/bin/sh\necho "wasm-bindgen 0.2.95"\n')
+        r = self.run_installer("install", str(self.root))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("the lockfile pins 0.2.93", r.stderr)
+
+    def test_none_removes_previously_exposed_bindgen_and_companions(self):
+        self.assertEqual(self.run_installer("install", str(self.root)).returncode, 0)
+        built = len(self.builds())
+        r = self.run_installer("install", str(self.root), WASM_BINDGEN="none")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.builds()), built)
+        self.assertEqual([p.name for p in (self.root / "bin").iterdir()], ["keel"])
 
     def test_half_built_root_without_stamp_rebuilds(self):
         (self.root / "bin").mkdir(parents=True)
@@ -166,6 +245,13 @@ class InstallerTest(unittest.TestCase):
         r = self.run_installer("install", str(self.root), KEEL_SRC=str(src), KEEL_REPO="/nonexistent")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(f"--path {src}/crates/keel-cli", self.builds()[-1])
+
+    def test_wrong_source_identity_is_refused(self):
+        src = pathlib.Path(self.tmp.name) / "keel-work"
+        r = self.run_installer("install", str(self.root), KEEL_PIN="a" * 40, KEEL_SRC=str(src))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("is not at the pin", r.stderr)
+        self.assertFalse((self.root / "keel" / "stamp").exists())
 
     def test_explicit_pin_overrides_file(self):
         (self.title / "KEEL_PIN").unlink()

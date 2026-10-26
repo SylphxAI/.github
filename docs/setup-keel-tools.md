@@ -9,13 +9,13 @@ needs on `PATH`:
 - `wasm-bindgen`, at the version the title's `Cargo.lock` pins for the
   `wasm-bindgen` crate; the CLI and the crate must match exactly.
 
-Both are installed into one root under `$RUNNER_TEMP/keel-tools`, cached per
-runner OS and arch, Keel commit, wasm-bindgen version, `features` and the
-installer's hash. A warm key restores the root and logs `keel tools from
-cache` in seconds; a new pin builds both from source once (about five
-minutes) and saves the cache straight after the build, so a later failing step
-still leaves it for the next run. The root carries a stamp written last, so a
-half-built root never counts as warm.
+Each tool has a separate cache under `$RUNNER_TEMP/keel-tools`, keyed by
+runner OS and arch, the installer's hash and that tool's version (plus
+`features` for Keel). Moving a Keel pin reuses wasm-bindgen; changing the
+wasm-bindgen version reuses Keel. Only missing tools build from source.
+Each install carries a stamp written after success, and caches are saved
+straight after installation. The shared `bin` output exposes both tools and
+their companion executables. A fully warm run logs `keel tools from cache`.
 
 ## Use
 
@@ -38,7 +38,8 @@ Inputs, all optional:
 | `features` | empty | Extra cargo features for the keel CLI; a title whose `keel.toml` encodes GPU textures needs `texture-encoder`. |
 | `working-directory` | `.` | Directory holding `pin-file` and `cargo-lock`. |
 
-Outputs: `bin` (the directory on `PATH`) and `cache-hit`.
+Outputs: `bin` (the directory on `PATH`) and `cache-hit` (`true` when every
+requested tool was restored).
 
 A title that packs GPU textures sets `features: texture-encoder`, because
 `cargo install` without it builds the keel CLI without that feature (a weight

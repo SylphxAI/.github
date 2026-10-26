@@ -1,9 +1,9 @@
 name: setup-keel-tools
 description: >
   Puts the keel CLI, built from the Keel rev a title pins, and the wasm-bindgen
-  CLI, at the version the title's Cargo.lock pins, on PATH. Both live in one
-  root cached per runner OS and arch, Keel rev, wasm-bindgen version and this
-  action's installer, so they are compiled only when the pin moves; a warm run
+  CLI, at the version the title's Cargo.lock pins, on PATH. Each has a separate
+  cache per runner OS and arch, its own revision/features and this action's
+  installer, so moving one pin never rebuilds the other tool; a warm run
   logs "keel tools from cache" and takes seconds. Run it after checkout and the
   Rust toolchain (and rust-sccache, which speeds the cold build). See
   docs/setup-keel-tools.md.
@@ -41,8 +41,8 @@ outputs:
     description: The directory holding keel and wasm-bindgen (already on PATH).
     value: ${{ steps.key.outputs.root }}/bin
   cache-hit:
-    description: '"true" when the tools came from the cache.'
-    value: ${{ steps.restore.outputs.cache-hit }}
+    description: '"true" when every requested tool came from the cache.'
+    value: ${{ steps.restore-keel.outputs.cache-hit == 'true' && (steps.key.outputs.wasm-bindgen == 'none' || steps.restore-bindgen.outputs.cache-hit == 'true') }}
 
 runs:
   using: composite
@@ -59,15 +59,24 @@ runs:
         INSTALLER: ${{ github.action_path }}/install-keel-tools.sh
       run: |
         set -euo pipefail
-        part="$(bash "$INSTALLER" key)"
+        keel="$(bash "$INSTALLER" key keel)"
+        bindgen="$(bash "$INSTALLER" key wasm-bindgen)"
         script="$(sha256sum "$INSTALLER" | cut -c1-12)"
-        echo "key=keel-tools-${RUNNER_OS}-${RUNNER_ARCH}-${part}-${script}" >> "$GITHUB_OUTPUT"
+        echo "keel-key=keel-tools-${RUNNER_OS}-${RUNNER_ARCH}-${keel}-${script}" >> "$GITHUB_OUTPUT"
+        echo "bindgen-key=keel-tools-${RUNNER_OS}-${RUNNER_ARCH}-${bindgen}-${script}" >> "$GITHUB_OUTPUT"
+        echo "wasm-bindgen=${bindgen#wasm-bindgen-}" >> "$GITHUB_OUTPUT"
         echo "root=${RUNNER_TEMP}/keel-tools" >> "$GITHUB_OUTPUT"
-    - id: restore
+    - id: restore-keel
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
-        path: ${{ steps.key.outputs.root }}
-        key: ${{ steps.key.outputs.key }}
+        path: ${{ steps.key.outputs.root }}/keel
+        key: ${{ steps.key.outputs.keel-key }}
+    - id: restore-bindgen
+      if: steps.key.outputs.wasm-bindgen != 'none'
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.key.outputs.root }}/wasm-bindgen
+        key: ${{ steps.key.outputs.bindgen-key }}
     - shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -82,8 +91,13 @@ runs:
         ROOT: ${{ steps.key.outputs.root }}
       run: bash "$INSTALLER" install "$ROOT"
     # Saved right after a build, so a later failing step still leaves it for the next run.
-    - if: steps.restore.outputs.cache-hit != 'true'
+    - if: steps.restore-keel.outputs.cache-hit != 'true'
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
-        path: ${{ steps.key.outputs.root }}
-        key: ${{ steps.key.outputs.key }}
+        path: ${{ steps.key.outputs.root }}/keel
+        key: ${{ steps.key.outputs.keel-key }}
+    - if: steps.key.outputs.wasm-bindgen != 'none' && steps.restore-bindgen.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.key.outputs.root }}/wasm-bindgen
+        key: ${{ steps.key.outputs.bindgen-key }}

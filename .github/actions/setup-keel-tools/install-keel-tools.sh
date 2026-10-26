@@ -3,12 +3,11 @@
 # disabled, the wasm-bindgen CLI (at the version the title's Cargo.lock pins
 # for the wasm-bindgen crate) into one root, and puts its bin/ on PATH.
 #
-# The root carries a stamp of both versions. When the stamp matches (the
-# action restores the root from a cache keyed on the key this script prints),
-# nothing is built and the step takes seconds; otherwise both are built from
-# source and the stamp is written last, so a half-built root never matches.
+# Each tool has its own stamped install root, so changing one never rebuilds
+# the other. bin/ exposes both roots, including Cargo's companion executables.
+# A stamp is written only after its install and version checks succeed.
 #
-#   install-keel-tools.sh key            # print the cache key part
+#   install-keel-tools.sh key [keel|wasm-bindgen]  # print the cache key part
 #   install-keel-tools.sh install DIR    # install into DIR
 #
 # Environment (all optional):
@@ -48,27 +47,41 @@ features="$(printf '%s' "$features" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e
 
 stamp="keel=$pin wasm-bindgen=$bindgen"
 [ -z "$features" ] || stamp="$stamp features=$features"
+keel_stamp="keel=$pin${features:+ features=$features}"
 if [ "$mode" = key ]; then
-  # The cache key carries the features too, or two shapes of one pin restore
-  # each other's root, find a different stamp, rebuild and then never save
-  # (cache-hit is true), so each shape rebuilds on every run. Commas would
-  # split the key's parts, and line 46 already replaced them with spaces.
-  echo "keel-$pin-wasm-bindgen-$bindgen${features:+ features=$features}"
+  case "${2:-all}" in
+    all) echo "keel-$pin-wasm-bindgen-$bindgen${features:+ features=$features}" ;;
+    keel) echo "keel-$pin${features:+ features=$features}" ;;
+    wasm-bindgen) echo "wasm-bindgen-$bindgen" ;;
+    *) echo "unknown tool: $2" >&2; exit 2 ;;
+  esac
   exit 0
 fi
 
 dir="${2:?usage: $0 install DIR}"
 start=$SECONDS
-if [ "$(cat "$dir/stamp" 2>/dev/null || true)" = "$stamp" ] && [ -x "$dir/bin/keel" ] \
-  && { [ "$bindgen" = none ] || [ -x "$dir/bin/wasm-bindgen" ]; }; then
-  echo "keel tools from cache: $stamp"
-else
-  echo "building keel tools: $stamp"
-  rm -rf "$dir"
-  mkdir -p "$dir"
-  if [ "$bindgen" != none ]; then
-    cargo install wasm-bindgen-cli --version "$bindgen" --locked --root "$dir"
+warm=true
+if [ "$bindgen" != none ]; then
+  bindgen_root="$dir/wasm-bindgen"
+  if [ "$(cat "$bindgen_root/stamp" 2>/dev/null || true)" != "wasm-bindgen=$bindgen" ] \
+    || [ ! -x "$bindgen_root/bin/wasm-bindgen" ]; then
+    warm=false
+    echo "building wasm-bindgen tools: $bindgen"
+    rm -rf "$bindgen_root"
+    mkdir -p "$bindgen_root"
+    cargo install wasm-bindgen-cli --version "$bindgen" --locked --root "$bindgen_root"
   fi
+  have="$("$bindgen_root/bin/wasm-bindgen" --version | awk '{print $2}')"
+  [ "$have" = "$bindgen" ] || { echo "wasm-bindgen is $have, the lockfile pins $bindgen" >&2; exit 1; }
+  printf 'wasm-bindgen=%s' "$bindgen" > "$bindgen_root/stamp"
+fi
+
+keel_root="$dir/keel"
+if [ "$(cat "$keel_root/stamp" 2>/dev/null || true)" != "$keel_stamp" ] || [ ! -x "$keel_root/bin/keel" ]; then
+  warm=false
+  echo "building keel tools: $keel_stamp"
+  rm -rf "$keel_root"
+  mkdir -p "$keel_root"
   src="${KEEL_SRC:-}"
   cloned=""
   if [ -z "$src" ]; then
@@ -81,15 +94,26 @@ else
   [ "$(git -C "$src" rev-parse HEAD)" = "$pin" ] || { echo "the Keel checkout $src is not at the pin $pin" >&2; exit 1; }
   feature_args=()
   if [ -n "$features" ]; then feature_args=(--features "$features"); fi
-  cargo install --path "$src/crates/keel-cli" --locked --root "$dir" "${feature_args[@]}"
+  cargo install --path "$src/crates/keel-cli" --locked --root "$keel_root" "${feature_args[@]}"
+  [ -x "$keel_root/bin/keel" ] || { echo "no keel binary in $keel_root/bin" >&2; exit 1; }
   if [ -n "$cloned" ]; then rm -rf "$src"; fi
-  printf '%s' "$stamp" > "$dir/stamp"
+  printf '%s' "$keel_stamp" > "$keel_root/stamp"
 fi
 
-if [ "$bindgen" != none ]; then
-  have="$("$dir/bin/wasm-bindgen" --version | awk '{print $2}')"
-  [ "$have" = "$bindgen" ] || { echo "wasm-bindgen is $have, the lockfile pins $bindgen" >&2; exit 1; }
-fi
-[ -x "$dir/bin/keel" ] || { echo "no keel binary in $dir/bin" >&2; exit 1; }
+# Expose requested tools without copying their bytes or retaining links to
+# another runner. The install roots and bin are on the same filesystem.
+rm -rf "${dir:?}/bin"
+mkdir -p "$dir/bin"
+roots=("$keel_root")
+[ "$bindgen" = none ] || roots+=("$bindgen_root")
+for root in "${roots[@]}"; do
+  for binary in "$root"/bin/*; do
+    [ -f "$binary" ] || continue
+    [ -x "$binary" ] || continue
+    ln "$binary" "$dir/bin/${binary##*/}"
+  done
+done
+printf '%s' "$stamp" > "$dir/stamp"
+if [ "$warm" = true ]; then echo "keel tools from cache: $stamp"; fi
 if [ -n "${GITHUB_PATH:-}" ]; then echo "$dir/bin" >> "$GITHUB_PATH"; fi
 echo "keel tools ready in $((SECONDS - start)) s"
