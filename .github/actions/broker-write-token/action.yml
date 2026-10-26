@@ -114,7 +114,7 @@ runs:
         chmod 600 "${RUNNER_TEMP}/broker-token"
         {
           echo "token=$token"
-          echo "app-slug=sylphx-builder"
+          echo "app-slug=sylphx-ai"
           echo "failure="
         } >>"$GITHUB_OUTPUT"
         echo "the Broker minted a one-repository installation token for $REPO under $policy"
