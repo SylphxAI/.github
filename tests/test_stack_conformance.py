@@ -164,6 +164,86 @@ class DecideTest(unittest.TestCase):
         self.assertIsNone(sc.parse_baseline(None))
 
 
+class KeelGameGuardTest(unittest.TestCase):
+    MANIFEST = '[package]\nname = "example-game"\n[dependencies]\nkeel = "0.1"\n'
+
+    def tree(self, **files):
+        return sc.DictTree({"Cargo.toml": self.MANIFEST, **files})
+
+    def test_engine_commerce_and_shader_consumers_pass(self):
+        tree = self.tree(**{"crates/game/src/shop.rs": (
+            "use keel::commerce::iap::Sku;\n"
+            "use keel_commerce::Catalog;\nuse cubeage_kit::commerce;\n"
+            "fn shop(sku: Sku) {}\nfn shader() { keel::render::draw(); }\n")})
+        self.assertEqual(sc.keel_departures(tree), [])
+
+    def test_local_sku_structs_fail_even_if_engine_commerce_is_also_imported(self):
+        tree = self.tree(**{"src/shop.rs": (
+            "use keel_commerce::Sku;\npub struct CoinSku { amount: u32 }\n"
+            "struct\nPremiumSku;\nstruct SkuId;\n")})
+        found = sc.keel_departures(tree)
+        self.assertEqual(found, ["keel-local-sku src/shop.rs:2 CoinSku",
+                                 "keel-local-sku src/shop.rs:3 PremiumSku"])
+        self.assertIn("keel_commerce", sc.decide_keel(found)[0])
+
+    def test_pixel_vector_functions_fail_with_multiline_arguments_and_types(self):
+        tree = self.tree(**{"crates/game/src/textures.rs": (
+            "pub fn cloud_pixels(\nwidth: u32, height: u32,\n) -> Vec < u8 > { vec![] }\n"
+            "fn sun_pixels() -> std::vec::Vec<u8> { vec![] }\n"
+            "fn read_pixels() -> Vec<f32> { vec![] }\n")})
+        found = sc.keel_departures(tree)
+        self.assertEqual(len(found), 2)
+        self.assertTrue(all(line.startswith("keel-cpu-pixels") for line in found))
+
+    def test_comments_literals_and_dependency_build_outputs_are_not_code(self):
+        bad = "struct CoinSku; fn cloud_pixels() -> Vec<u8> {}"
+        tree = self.tree(**{"src/game.rs": (
+            f"// {bad}\n/* nested /* comment */ {bad} */\n"
+            f'const S: &str = r##"{bad}"##;\nconst T: &str = "{bad}";\n'),
+            "target/generated/src/game.rs": bad, "vendor/src/game.rs": bad})
+        self.assertEqual(sc.keel_departures(tree), [])
+
+    def test_boilerplate_files_fail_only_for_keel_consumers(self):
+        files = {"docs/BUILDING.md": "# Build", "scripts/measure-rust-debug.py": "pass"}
+        self.assertEqual(sc.keel_departures(self.tree(**files)), [
+            "keel-boilerplate docs/BUILDING.md", "keel-boilerplate scripts/measure-rust-debug.py"])
+        self.assertEqual(sc.keel_departures(sc.DictTree(files)), [])
+        self.assertEqual(sc.keel_departures(self.tree(**{"docs/build.md": "# Build"})), [])
+
+    def test_detects_workspace_renamed_and_target_dependencies(self):
+        manifests = [
+            '[workspace.dependencies]\nkeel = "0.1"\n',
+            '[dependencies]\nengine = { package = "keel", version = "0.1" }\n',
+            '[dependencies]\nengine = { package = "sylphx-keel-engine", version = "0.1" }\n',
+            '[target.\'cfg(wasm)\'.dependencies]\ncubeage-kit = "0.1"\n',
+            '[dependencies.keel_commerce]\nversion = "0.1"\n',
+        ]
+        for text in manifests:
+            with self.subTest(text=text):
+                self.assertTrue(sc.keel_game(sc.DictTree({"crates/game/Cargo.toml": text})))
+                self.assertTrue(sc.keel_game(sc.DictTree({"Cargo.toml": text})))
+
+    def test_line_reader_works_without_tomllib(self):
+        original = sc.tomllib
+        try:
+            sc.tomllib = None
+            self.assertTrue(sc.keel_game(self.tree()))
+        finally:
+            sc.tomllib = original
+
+    def test_shared_engine_and_commerce_owners_are_not_game_consumers(self):
+        for name in ("keel", "keel-commerce", "sylphx-keel-engine", "sylphx-keel-commerce", "cubeage-kit"):
+            tree = sc.DictTree({"Cargo.toml": self.MANIFEST.replace("example-game", name),
+                                "src/commerce.rs": "struct CoinSku;"})
+            self.assertEqual(sc.keel_departures(tree), [])
+
+    def test_stack_lane_is_selected_for_source_and_boilerplate_changes(self):
+        text = (ROOT / "workflow-templates" / "optimistic-gate.yml").read_text()
+        lane = next(line for line in text.splitlines() if line.strip().startswith("stack:"))
+        for pattern in ("*.rs", "docs/BUILDING.md", "scripts/measure-rust-debug.py"):
+            self.assertIn(pattern, lane)
+
+
 class AgentRuntimeTest(unittest.TestCase):
     POLICY = {
         "owner_repos": ["SylphxAI/cloud"],
@@ -498,6 +578,26 @@ class GitTest(unittest.TestCase):
         rc, out = check(added, recorded)
         self.assertEqual(rc, 1)
         self.assertIn("allowed only by", out)
+
+    def test_keel_game_boundaries_fail_at_the_real_check_entrypoint(self):
+        base = self.commit({"Cargo.toml": KeelGameGuardTest.MANIFEST,
+                            "src/main.rs": "fn main() {}"})
+        self.assertEqual(self.check(base, base)[0], 0)
+        head = self.commit({"src/shop.rs": "struct CoinSku;\n",
+                            "src/art.rs": "fn cloud_pixels() -> Vec<u8> { vec![] }\n",
+                            "docs/BUILDING.md": "# Build\n",
+                            "scripts/measure-rust-debug.py": "pass\n"})
+        rc, output = self.check(base, head)
+        self.assertEqual(rc, 1)
+        for kind in ("keel-local-sku", "keel-cpu-pixels", "keel-boilerplate"):
+            self.assertIn(kind, output)
+        baseline = self.commit({sc.BASELINE: "\n".join(sc.keel_departures(sc.Tree(self.repo, head)))})
+        self.assertEqual(self.check(head, baseline)[0], 1)
+        self.commit({"src/shop.rs": "use keel_commerce::Sku;\n",
+                     "src/art.rs": "fn shader() {}\n", sc.BASELINE: ""})
+        self.git("rm", "docs/BUILDING.md", "scripts/measure-rust-debug.py")
+        self.git("commit", "-qm", "remove boilerplate")
+        self.assertEqual(self.check(base, self.git("rev-parse", "HEAD"))[0], 0)
 
     def test_obligation_table_guard_over_commits(self):
         """Only migrations added in the range are checked: a table that is

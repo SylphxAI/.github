@@ -76,7 +76,7 @@ jobs:
             lint:
             test: src/* tests/*
             migrations: migrations/*
-            stack: *sylphx.toml *package.json *Cargo.toml *Dockerfile* *.sql .github/stack-departures.txt
+            stack: *sylphx.toml *package.json *Cargo.toml *Dockerfile* *.sql *.rs docs/BUILDING.md scripts/measure-rust-debug.py .github/stack-departures.txt
 
   lint:
     needs: plan

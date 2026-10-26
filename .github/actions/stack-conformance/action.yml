@@ -23,6 +23,9 @@ description: >
   entities, entity, relations, relation, contacts, contact or
   customer_profiles) unless policy/knowledge-tables.json here records it for
   the repository and its expiry date has not passed.
+  Keel game consumers also reject local *Sku structs, *_pixels functions
+  returning Vec<u8>, and docs/BUILDING.md or scripts/measure-rust-debug.py
+  boilerplate. These boundaries cannot be waived in the local baseline.
   See docs/stack-conformance.md.
 
 inputs:

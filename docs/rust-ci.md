@@ -99,7 +99,12 @@ fallback when BuildCache is not available), and
 
 Fixed by the workflow, because they are part of the cache key: the checkout
 path, `CARGO_HOME` under the runner temp directory, `CARGO_INCREMENTAL=0`,
-and `debug = 0` for the dev and test profiles. Callers never set `SCCACHE_*`,
+and `debug = "line-tables-only"` for the dev profile (`debug = 0` for tests).
+The shared `rust-check.yml` uses the same dev setting. Repositories need no
+local `[profile.dev]` debug override or debug-measurement script. Line tables
+retain file/line backtraces without full variable/type debug information
+([Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html#debug),
+read 2026-10-26). Callers never set `SCCACHE_*`,
 `AWS_*` or `RUSTC_WRAPPER`; the `rust-sccache` action owns them.
 
 Arguments and features are checked against a strict character set before
