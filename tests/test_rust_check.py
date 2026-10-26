@@ -17,6 +17,10 @@ class RustCheckWorkflow(unittest.TestCase):
     def setUp(self) -> None:
         self.text = WORKFLOW.read_text()
 
+    def test_remote_check_uses_the_shared_dev_debug_profile(self) -> None:
+        spec = yaml.safe_load(self.text)
+        self.assertEqual(spec["jobs"]["check"]["env"]["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
+
     def test_inputs_are_not_spliced_into_run_bodies(self) -> None:
         for block in re.findall(r"run: \|\n((?:          .*\n|\n)+)", self.text):
             self.assertNotIn("${{", block)

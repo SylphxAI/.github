@@ -120,6 +120,26 @@ no such table.
 these tables. A delivered customer repository (`sylphx_delivery` = `delivered`)
 is not checked at all, as for the agent-runtime parts.
 
+## Keel game boundaries
+
+A Cargo workspace that depends on `keel`, a `keel-*` crate or `cubeage-kit`
+is a game consumer. The shared engine/commerce owner workspaces themselves
+are excluded by their package declarations, not by a product-name list.
+The same stack check rejects:
+
+| Line | Found when |
+| --- | --- |
+| `keel-local-sku <path>:<line> <struct>` | game source declares `struct *Sku` rather than using `keel_commerce`, `keel::commerce::iap` or `cubeage_kit` commerce types |
+| `keel-cpu-pixels <path>:<line> <function>` | game source declares `fn *_pixels(...) -> Vec<u8>` rather than using Keel shaders or shared primitives |
+| `keel-boilerplate <path>` | the game contains `docs/BUILDING.md` or `scripts/measure-rust-debug.py`; the build/debug defaults belong in shared CI |
+
+Comments and string literals are not source declarations. Importing an engine
+commerce type does not excuse a second local SKU struct. These rules cannot
+be seeded or waived in a game's own departures baseline; no boilerplate-file
+exceptions are approved. Any exception needs a change to this shared check.
+The stack lane must run for `*.rs` and the two boilerplate paths as well as
+manifests; the optimistic gate template includes those patterns.
+
 ## The rule at a pull request
 
 The check reads git objects at the base and the head; it needs no second
@@ -144,7 +164,8 @@ checkout.
    [`workflow-templates/optimistic-gate.yml`](../workflow-templates/optimistic-gate.yml)
    to the repository's gate, pinned by commit, and add `stack` to `ci-ok`'s
    `needs`. The lane runs when `sylphx.toml`, a `package.json`, a
-   `Cargo.toml`, a Dockerfile, a `.sql` file or the baseline changes.
+    `Cargo.toml`, a Dockerfile, a `.sql` or `.rs` file, either Keel boilerplate
+    path, or the baseline changes.
 
 ## The portfolio number
 

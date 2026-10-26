@@ -363,6 +363,93 @@ def departures(tree) -> list[str]:
     return sorted(found)
 
 
+def keel_game(tree) -> bool:
+    """Detect consumers from Cargo dependencies, including workspace/renamed/target deps.
+
+    Engine workspaces own their primitives and commerce types; only consumers are checked.
+    No repository-name allowlist or network metadata is needed.
+    """
+    uses_keel = False
+    for manifest in named(tree, "Cargo.toml"):
+        text = tree.read(manifest) or ""
+        data = parse_toml(text)
+        name = package_name((data.get("package") or {}).get("name", ""))
+        if name in ("keel", "keel-commerce", "sylphx-keel-engine", "sylphx-keel-commerce", "cubeage-kit"):
+            return False
+        # Read dependency sections directly as well, for runners without tomllib.
+        section = ""
+        for raw in text.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if line.startswith("["):
+                section = line.strip("[] ")
+            if "dependencies" not in section.split("."):
+                continue
+            if re.search(r'\b(?:(?:sylphx[-_])?keel(?:[-_]\w+)?|cubeage[-_]kit)\b\s*(?:=|[\]"\'])', line):
+                uses_keel = True
+    return uses_keel
+
+
+def rust_code(text: str) -> str:
+    """Mask comments and Rust string/character literals while retaining line offsets."""
+    tokens = re.compile(r'//[^\n]*|/\*|\br(\#*)"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'', re.S)
+    chars = list(text)
+    end = 0
+    while (match := tokens.search(text, end)) is not None:
+        end = match.end()
+        if match.group() == "/*":
+            depth = 1
+            while depth and end < len(text):
+                if text.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif text.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+        elif match.group(1) is not None:
+            close = '"' + match.group(1)
+            stop = text.find(close, end)
+            end = len(text) if stop < 0 else stop + len(close)
+        for i in range(match.start(), end):
+            if chars[i] != "\n":
+                chars[i] = " "
+    return "".join(chars)
+
+
+def keel_departures(tree) -> list[str]:
+    """Hard boundaries for Keel game consumers; not seedable in a local baseline."""
+    if not keel_game(tree):
+        return []
+    found = []
+    sku = re.compile(r"\bstruct\s+(\w*Sku)\b")
+    pixels = re.compile(r"\bfn\s+(\w+_pixels)\s*(?:<[^{};]*>)?\s*\([^{};]*?\)\s*->\s*"
+                        r"(?:(?:std|alloc)\s*::\s*vec\s*::\s*)?Vec\s*<\s*u8\s*>")
+    for path in tree.paths():
+        if skipped(path):
+            continue
+        if path in ("docs/BUILDING.md", "scripts/measure-rust-debug.py"):
+            found.append(f"keel-boilerplate {path}")
+        if not path.endswith(".rs") or "src" not in path.split("/"):
+            continue
+        code = rust_code(tree.read(path) or "")
+        for kind, pattern in (("keel-local-sku", sku), ("keel-cpu-pixels", pixels)):
+            for match in pattern.finditer(code):
+                found.append(f"{kind} {path}:{code.count(chr(10), 0, match.start()) + 1} {match.group(1)}")
+    return sorted(found)
+
+
+def decide_keel(found: list[str]) -> list[str]:
+    remedies = {
+        "keel-local-sku": "use keel_commerce, keel::commerce::iap or cubeage_kit commerce types, not a local SKU/catalog struct",
+        "keel-cpu-pixels": "use Keel shaders or shared primitives, not game-local CPU pixel texture generation",
+        "keel-boilerplate": "use the shared Rust CI profile and build documentation; remove per-game boilerplate",
+    }
+    return [f"Keel game boundary: '{line}'; {remedies[line.split()[0]]}. "
+            "This rule cannot be waived in .github/stack-departures.txt."
+            for line in found]
+
+
 def package_name(norm: str) -> str:
     return norm.lower().replace("_", "-")
 
@@ -697,6 +784,8 @@ def cmd_check(args) -> int:
         if base_baseline is not None:
             base_baseline = {l for l in base_baseline if not l.startswith(AGENT_RUNTIME)}
     errors += decide(found, head_baseline, base_baseline)
+    keel = keel_departures(head)
+    errors += decide_keel(keel)
     runtime = agent_runtime(head)
     policy = load_agent_runtime_policy(args.agent_runtime_policy)
     today = datetime.date.fromisoformat(args.today) if args.today else datetime.datetime.now(
@@ -723,7 +812,8 @@ def cmd_check(args) -> int:
     print(f"{len(found)} departure(s) found, {len(head_baseline or ())} recorded in {args.baseline}; "
           f"{len(runtime)} agent-runtime part(s) found in {args.repository or 'this repository'}; "
           f"{len(obligations)} new work-engine table(s) without an owner header; "
-          f"{len(knowledge)} new knowledge or CRM table(s)")
+          f"{len(knowledge)} new knowledge or CRM table(s); "
+          f"{len(keel)} Keel game boundary violation(s)")
     if errors:
         print(f"Move the change onto the default stack. A departure is recorded only through a "
               f"company decision, by the owner of {args.baseline}.")
@@ -739,6 +829,8 @@ def cmd_scan(args) -> int:
         print(line)
     for line in agent_runtime(tree):
         print(f"# not recordable here (SylphxAI/.github policy/agent-runtime.json): {line}")
+    for line in keel_departures(tree):
+        print(f"# not recordable in a local baseline: {line}")
     return 0
 
 
@@ -746,7 +838,7 @@ def cmd_all(args) -> int:
     clean = 0
     for repo in args.dirs:
         tree = Tree(repo, args.rev)
-        found = departures(tree) + agent_runtime(tree)
+        found = departures(tree) + agent_runtime(tree) + keel_departures(tree)
         if not found:
             clean += 1
         print(f"{repo}\t{len(found)}\t{'; '.join(found)}")

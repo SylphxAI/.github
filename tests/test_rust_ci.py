@@ -48,6 +48,10 @@ class RustCiWorkflow(unittest.TestCase):
     def setUp(self) -> None:
         self.text = WORKFLOW.read_text()
 
+    def test_shared_dev_profile_keeps_line_tables_without_repo_boilerplate(self) -> None:
+        self.assertEqual(job()["env"]["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
+        self.assertEqual(job()["env"]["CARGO_PROFILE_TEST_DEBUG"], "0")
+
     def test_inputs_are_not_spliced_into_run_bodies(self) -> None:
         for s in job()["steps"]:
             if "run" in s:
