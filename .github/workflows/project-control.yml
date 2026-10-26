@@ -59,6 +59,58 @@ jobs:
         run: python -m pip install --quiet pyyaml
       - name: Unit tests
         run: python -m unittest discover -s tests
+      - name: Prepare Keel tools cache consumer
+        run: |
+          python3 - <<'PYTHON'
+          import os, pathlib, runpy, subprocess
+          suite = runpy.run_path('tests/test_setup_keel_tools.py')
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'keel-tools-consumer'
+          source = root / 'source'
+          (source / 'crates/keel-cli').mkdir(parents=True)
+          (source / 'crates/keel-cli/Cargo.toml').write_text('[package]\nname="keel-cli"\n')
+          git = lambda *args: subprocess.check_output(['git', '-C', str(source), *args],
+              env={**os.environ, **suite['GIT_ENV']}, text=True).strip()
+          git('init', '-q', '-b', 'main')
+          git('add', '.')
+          git('commit', '-qm', 'Consumer fixture ' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          fake = root / 'fakebin'
+          fake.mkdir()
+          (fake / 'cargo').write_text(suite['FAKE_CARGO'])
+          (fake / 'cargo').chmod(0o755)
+          with open(os.environ['GITHUB_PATH'], 'a') as stream:
+              stream.write(str(fake) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write(f'KEEL_CONSUMER_SOURCE={source}\nKEEL_CONSUMER_PIN={git("rev-parse", "HEAD")}\n')
+              stream.write(f'CARGO_LOG={root / "cargo.log"}\n')
+              # A synthetic version cannot collide with a real tool artifact.
+              stream.write(f'KEEL_CONSUMER_BINDGEN=0.0.{os.environ["GITHUB_RUN_ID"]}\n')
+          PYTHON
+      - name: Install consumer tools
+        uses: ./.github/actions/setup-keel-tools
+        with:
+          pin: ${{ env.KEEL_CONSUMER_PIN }}
+          keel-src: ${{ env.KEEL_CONSUMER_SOURCE }}
+          wasm-bindgen: ${{ env.KEEL_CONSUMER_BINDGEN }}
+      - name: Move only the consumer Keel pin
+        run: |
+          git -C "$KEEL_CONSUMER_SOURCE" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m 'Move consumer pin'
+          echo "KEEL_CONSUMER_PIN=$(git -C "$KEEL_CONSUMER_SOURCE" rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "BINDGEN_INSTALLS=$(grep -c wasm-bindgen-cli "$CARGO_LOG" || true)" >> "$GITHUB_ENV"
+          # Force the next invocation to restore from the cache service.
+          rm -rf "${RUNNER_TEMP:?}/keel-tools"
+      - name: Restore unchanged wasm-bindgen for the new Keel pin
+        uses: ./.github/actions/setup-keel-tools
+        with:
+          pin: ${{ env.KEEL_CONSUMER_PIN }}
+          keel-src: ${{ env.KEEL_CONSUMER_SOURCE }}
+          wasm-bindgen: ${{ env.KEEL_CONSUMER_BINDGEN }}
+      - name: Verify independent tool cache reuse
+        run: |
+          test "$(grep -c wasm-bindgen-cli "$CARGO_LOG" || true)" = "$BINDGEN_INSTALLS"
+          test "$(grep -c 'install --path' "$CARGO_LOG")" = 2
+          test "$(wasm-bindgen --version)" = "wasm-bindgen $KEEL_CONSUMER_BINDGEN"
+          wasm-bindgen-test-runner --version
+          keel --version
       - name: Lint authenticated JUnit consumer workflows
         uses: ./.github/actions/workflow-lint
         with:
