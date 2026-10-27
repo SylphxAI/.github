@@ -62,11 +62,21 @@ runs:
         umask 077
         printf 'https://x-access-token:%s@github.com\n' "$APP_TOKEN" >"$cred_file"
         chmod 600 "$cred_file"
-        # A reused runner can carry another job's helper in its persistent
-        # global config. Git tries helpers in list order and keeps the first
-        # non-empty answer, so reset both helper lists before adding this job's
-        # file. Preserve any command-scoped configuration the caller already
-        # exported instead of replacing its indices or tokenizing a remote.
+        # A reused runner can also carry another job's URL rewrite, which
+        # bypasses credential helpers entirely. Give this job a fresh global
+        # config and carry forward only checkout-safe directory declarations;
+        # inherited helpers, insteadOf rules and credentials cannot leak in.
+        job_global="${RUNNER_TEMP}/git-app-credentials-global"
+        : >"$job_global"
+        chmod 600 "$job_global"
+        while IFS= read -r safe_dir; do
+          [ -n "$safe_dir" ] || continue
+          git config --file "$job_global" --add safe.directory "$safe_dir"
+        done < <(git config --global --get-all safe.directory 2>/dev/null || true)
+        # Git tries helpers in list order and keeps the first non-empty answer,
+        # so reset both helper lists before adding this job's file. Preserve
+        # command-scoped configuration the caller already exported instead of
+        # replacing its indices or tokenizing a remote.
         offset="${GIT_CONFIG_COUNT:-0}"
         if ! [[ "$offset" =~ ^[0-9]+$ ]]; then
           echo "::error::invalid existing Git configuration count" >&2
@@ -82,6 +92,8 @@ runs:
           echo "GIT_CONFIG_KEY_$((offset + 3))=credential.https://github.com.helper"
           echo "GIT_CONFIG_VALUE_$((offset + 3))=store --file=${cred_file}"
           echo "GIT_CONFIG_COUNT=$((offset + 4))"
+          echo "GIT_CONFIG_GLOBAL=${job_global}"
+          echo "GIT_CONFIG_NOSYSTEM=1"
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true"
           echo "CARGO_GIT_CREDENTIALS_FILE=${cred_file}"
           echo "GIT_TERMINAL_PROMPT=0"
