@@ -38,20 +38,21 @@ def test_job_credential_wins_over_inherited_helpers_and_preserves_command_config
             "GIT_CONFIG_VALUE_0": "false",
         }
     )
+    stale_file = tmp_path / "stale-credentials"
+    stale_file.write_text("https://x-access-token:stale-test-token@github.com\n")
+    stale_file.chmod(0o600)
+    for key, value in [
+        ("credential.helper", f"store --file={stale_file}"),
+        ("safe.directory", "/tmp/example-safe"),
+        ("url.https://stale.invalid/.insteadOf", "https://github.com/"),
+    ]:
+        subprocess.run(["git", "config", "--global", key, value], env=env, check=True)
+
     subprocess.run(["bash", "-c", step["run"]], env=env, check=True, capture_output=True, text=True)
 
     credential_file = runner_temp / "git-app-credentials"
     assert stat.S_IMODE(credential_file.stat().st_mode) == 0o600
     assert credential_file.read_text() == "https://x-access-token:fresh-test-token@github.com\n"
-
-    stale_file = tmp_path / "stale-credentials"
-    stale_file.write_text("https://x-access-token:stale-test-token@github.com\n")
-    stale_file.chmod(0o600)
-    subprocess.run(
-        ["git", "config", "--global", "credential.helper", f"store --file={stale_file}"],
-        env=env,
-        check=True,
-    )
 
     exported = dict(line.split("=", 1) for line in github_env.read_text().splitlines())
     env.update(exported)
@@ -73,5 +74,16 @@ def test_job_credential_wins_over_inherited_helpers_and_preserves_command_config
     assert exported["GIT_CONFIG_VALUE_1"] == ""
     assert exported["GIT_CONFIG_KEY_3"] == "credential.https://github.com.helper"
     assert exported["GIT_CONFIG_VALUE_3"] == ""
-    assert "insteadOf" not in (home / ".gitconfig").read_text()
-    assert "fresh-test-token" not in (home / ".gitconfig").read_text()
+    assert exported["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert Path(exported["GIT_CONFIG_GLOBAL"]).parent == runner_temp
+    isolated_global = subprocess.run(
+        ["git", "config", "--global", "--list"],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert isolated_global == "safe.directory=/tmp/example-safe\n"
+    original_global = (home / ".gitconfig").read_text()
+    assert "stale.invalid" in original_global
+    assert "fresh-test-token" not in original_global

@@ -23,6 +23,9 @@ def run_check(
             subprocess.run(["git", *args], cwd=tmp, check=True, capture_output=True)
 
         git("init", "-q")
+        # No detached auto-GC may write into the repository while TemporaryDirectory
+        # is being removed (merge-group failure: .git/objects/pack not empty).
+        git("config", "gc.auto", "0")
         git("config", "user.email", "t@example.com")
         git("config", "user.name", "t")
         doc = pathlib.Path(tmp, path)
