@@ -62,12 +62,26 @@ runs:
         umask 077
         printf 'https://x-access-token:%s@github.com\n' "$APP_TOKEN" >"$cred_file"
         chmod 600 "$cred_file"
+        # A reused runner can carry another job's helper in its persistent
+        # global config. Git tries helpers in list order and keeps the first
+        # non-empty answer, so reset both helper lists before adding this job's
+        # file. Preserve any command-scoped configuration the caller already
+        # exported instead of replacing its indices or tokenizing a remote.
+        offset="${GIT_CONFIG_COUNT:-0}"
+        if ! [[ "$offset" =~ ^[0-9]+$ ]]; then
+          echo "::error::invalid existing Git configuration count" >&2
+          exit 1
+        fi
         {
-          echo "GIT_CONFIG_COUNT=2"
-          echo "GIT_CONFIG_KEY_0=credential.helper"
-          echo "GIT_CONFIG_VALUE_0=store --file=${cred_file}"
-          echo "GIT_CONFIG_KEY_1=credential.https://github.com.helper"
-          echo "GIT_CONFIG_VALUE_1=store --file=${cred_file}"
+          echo "GIT_CONFIG_KEY_${offset}=credential.helper"
+          echo "GIT_CONFIG_VALUE_${offset}="
+          echo "GIT_CONFIG_KEY_$((offset + 1))=credential.helper"
+          echo "GIT_CONFIG_VALUE_$((offset + 1))=store --file=${cred_file}"
+          echo "GIT_CONFIG_KEY_$((offset + 2))=credential.https://github.com.helper"
+          echo "GIT_CONFIG_VALUE_$((offset + 2))="
+          echo "GIT_CONFIG_KEY_$((offset + 3))=credential.https://github.com.helper"
+          echo "GIT_CONFIG_VALUE_$((offset + 3))=store --file=${cred_file}"
+          echo "GIT_CONFIG_COUNT=$((offset + 4))"
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true"
           echo "CARGO_GIT_CREDENTIALS_FILE=${cred_file}"
           echo "GIT_TERMINAL_PROMPT=0"
