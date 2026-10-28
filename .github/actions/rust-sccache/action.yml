@@ -10,7 +10,8 @@ description: >
   event - main, the merge queue and schedules write the protected scope, every
   other event a dev scope that reads protected - and the token goes only to
   the sccache server, never to the job's environment; (2) the organization's
-  own bucket when the s3-* inputs carry its SYLPHX_CI_CACHE_* pair; (3) the
+  own bucket when the s3-* inputs carry its SYLPHX_CI_CACHE_* pair and an
+  explicit endpoint; (3) the
   repository's GitHub Actions cache, which needs no secret. A backend that
   fails or whose server will not start falls through to the next. Never the
   platform's ci-sccache bucket. The cache only ever speeds a job up: if no
@@ -23,19 +24,19 @@ inputs:
       S3 access key - the organization secret SYLPHX_CI_CACHE_ACCESS_KEY, an
       object-store user of the organization's own (never shared across
       organizations). The fallback when BuildCache is not available to the
-      job. Empty selects the GitHub Actions cache backend.
+      job. Static S3 requires both keys and an explicit s3-endpoint; otherwise
+      the next fallback is the GitHub Actions cache backend.
     default: ""
   s3-secret-key:
     description: S3 secret key.
     default: ""
   s3-endpoint:
     description: >
-      S3 endpoint URL. The default is the cluster Service's fully qualified
-      name: a pod's default ndots setting sends the short name out to the
-      upstream resolver, which answers NXDOMAIN for it. A cluster name that the
-      runner cannot resolve (any runner outside the cluster) skips this backend
-      with one warning and the next backend is tried.
-    default: http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc.cluster.local:80
+      Explicit S3 endpoint URL reachable from this runner. Empty skips static
+      S3, even when both keys are set: no cell's cluster Service is assumed.
+      A cluster name that the runner cannot resolve skips this backend with
+      one warning and the next backend is tried.
+    default: ""
   s3-bucket:
     description: >
       S3 bucket. Empty means `ci-sccache-<organization, lowercase>`, created on
@@ -79,7 +80,7 @@ runs:
   using: composite
   steps:
     - name: Export the Actions cache service to sccache
-      if: inputs.s3-access-key == '' && inputs.actions-cache != 'false' && runner.os == 'Linux' && runner.arch == 'X64'
+      if: inputs.actions-cache != 'false' && runner.os == 'Linux' && runner.arch == 'X64'
       uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
       with:
         script: |

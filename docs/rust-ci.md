@@ -19,7 +19,8 @@ decision and its reasons are
    for a short-lived BuildCache token (see below). Keep passing the
    organization secrets `SYLPHX_CI_CACHE_ACCESS_KEY` and
    `SYLPHX_CI_CACHE_SECRET_KEY` by name while a fallback is wanted: they
-   carry the job when BuildCache is not available to it. Without them the
+   carry the job when BuildCache is not available to it and the action is
+   given an explicit, reachable `s3-endpoint`. Without an explicit endpoint the
    action falls back to the repository's GitHub Actions cache, which works but
    is slower and capped.
 4. Make `ci-ok` the required check.
@@ -36,7 +37,7 @@ the first cargo command, on every Rust job, with a `push: branches: [main]`
 run of those jobs. Add `permissions: id-token: write` (with `contents: read`)
 to each job that uses the action, or to the workflow. Without it the job has
 no OIDC identity, BuildCache is skipped with one warning, and the action falls
-back to the static secrets (`static`), then the Actions cache (`gha`). Pull
+back to the static secrets with an explicit `s3-endpoint` (`static`), then the Actions cache (`gha`). Pull
 requests from forks never get `id-token: write` and take the same fallback.
 
 ## The compile cache backend
@@ -48,7 +49,7 @@ the job summary and to its `backend` output (`buildcache`, `static`, `gha` or
 1. **`buildcache`.** The job requests a GitHub OIDC token (audience
    `sylphx-build-cache`) and exchanges it at the BuildCache gateway
    (`build-cache-url`, default `https://build-cache.sylphx.net`;
-   `build-cache-network` `public` or `cluster`) for a run token. The gateway
+   `build-cache-network` defaults to `public`, or explicitly `cluster`) for a run token. The gateway
    maps the repository's owner to the organization and scopes the token by
    the event: `merge_group`, `schedule` and a push to `main` write the
    protected scope (and read only it); every other event, pull requests
@@ -57,7 +58,12 @@ the job summary and to its `backend` output (`buildcache`, `static`, `gha` or
    is masked, goes only to the sccache server, and is never written to
    `$GITHUB_ENV`, an output or the summary. `build-cache: 'false'` skips this
    backend.
-2. **`static`.** The organization's own object-store user, from the secrets.
+2. **`static`.** The organization's own object-store user, from both secrets
+   and an explicit `s3-endpoint`. No endpoint is assumed, even when the keys
+   are present: a cluster Service belongs to one cell, not the fleet. An
+   unresolvable explicit cluster Service name is skipped. The reusable
+   workflows omit an endpoint and therefore use BuildCache or their existing
+   fallback instead.
 3. **`gha`.** The repository's Actions cache.
 4. **`none`.** The job compiles cold.
 

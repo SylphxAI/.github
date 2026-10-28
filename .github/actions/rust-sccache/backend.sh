@@ -13,7 +13,7 @@
 #                  BUILD_CACHE is false.
 #   2. static      the organization's own object-store user, passed as the
 #                  s3-access-key / s3-secret-key inputs (SYLPHX_CI_CACHE_*),
-#                  when the runner can resolve its endpoint: an in-cluster name
+#                  with an explicit endpoint: an unresolvable in-cluster name
 #                  is skipped on a runner outside the cluster instead of
 #                  failing a server start
 #   3. gha         the repository's GitHub Actions cache, unless ACTIONS_CACHE
@@ -125,12 +125,11 @@ if ! _backend_skipped buildcache && [ "${BUILD_CACHE:-true}" != false ]; then
   if _buildcache; then backend=buildcache; fi
 fi
 
-# An in-cluster endpoint (rook-ceph-rgw-ceph-objectstore.rook-ceph.svc and the
-# like) resolves only from inside the cluster's own network. On any other runner
-# it is not the cache's address, so the static backend is skipped instead of
+# An in-cluster endpoint resolves only from inside the cluster's own network.
+# On any other runner it is not the cache's address, so static is skipped instead of
 # spending a server start on a name that cannot resolve. A host that does not
 # answer `getent` at all counts as out of the cluster.
-_endpoint_in_cluster() {
+_endpoint_available() {
   local rest host
   rest="${S3_ENDPOINT#*://}"
   rest="${rest%%/*}"
@@ -142,17 +141,19 @@ _endpoint_in_cluster() {
     *.*.svc|*.*.svc.cluster.local)
       ;;
     *)
-      return 1
+      return 0
       ;;
   esac
   command -v getent >/dev/null 2>&1 && getent hosts "$host" >/dev/null 2>&1
 }
 
-if [ "$backend" = none ] && ! _backend_skipped static && [ -n "${S3_ACCESS_KEY:-}" ] && [ -n "${S3_SECRET_KEY:-}" ]; then
+# Organization secrets can be present in every cell. They never imply an
+# endpoint; in particular, do not probe DNS or start static S3 without one.
+if [ "$backend" = none ] && ! _backend_skipped static && [ -n "${S3_ACCESS_KEY:-}" ] && [ -n "${S3_SECRET_KEY:-}" ] && [ -n "${S3_ENDPOINT:-}" ]; then
   S3_BUCKET="${S3_BUCKET:-ci-sccache-$(printf '%s' "${GITHUB_REPOSITORY_OWNER:?}" | tr '[:upper:]' '[:lower:]')}"
   if [ "$S3_BUCKET" = ci-sccache ]; then
     echo "::warning::the platform's ci-sccache bucket is not a repository cache; ignoring the S3 inputs"
-  elif _endpoint_in_cluster; then
+  elif _endpoint_available; then
     backend=static
     unset AWS_SESSION_TOKEN
     export SCCACHE_BUCKET="$S3_BUCKET" SCCACHE_ENDPOINT="${S3_ENDPOINT:?}" SCCACHE_REGION=us-east-1 \
