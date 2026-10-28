@@ -38,6 +38,7 @@ STATIC = {
 FIELDS = [
     "backend",
     "SCCACHE_BUCKET",
+    "SCCACHE_ENDPOINT",
     "SCCACHE_S3_KEY_PREFIX",
     "AWS_ACCESS_KEY_ID",
     "AWS_SESSION_TOKEN",
@@ -195,7 +196,7 @@ def choose(env: dict[str, str]) -> tuple[dict[str, str], str]:
 
 class resolved:
     """The cluster's object-store name resolves while this guard is active: the
-    static backend's default endpoint, on a runner that is not inside the
+    static backend's explicit endpoint, on a runner that is not inside the
     cluster. Tests about resolution stub the resolver themselves."""
 
     def __enter__(self):
@@ -417,6 +418,52 @@ class RustSccacheBackend(unittest.TestCase):
 
     # --- the cluster's object store ----------------------------------------
 
+    def test_static_credentials_without_an_endpoint_never_try_dns(self) -> None:
+        # A job can inherit the org secrets in any cell. They are not consent
+        # to use another cell's Service, even if its name happens to resolve.
+        with tempfile.TemporaryDirectory() as d:
+            resolver = pathlib.Path(d, "getent")
+            calls = pathlib.Path(d, "dns-calls")
+            resolver.write_text(f'#!/bin/sh\necho called >> "{calls}"\nexit 0\n')
+            resolver.chmod(0o755)
+            for endpoint in (None, ""):
+                for actions_cache, expected in (("true", "gha"), ("false", "none")):
+                    with self.subTest(endpoint=endpoint, actions_cache=actions_cache):
+                        env = {k: v for k, v in STATIC.items() if k != "S3_ENDPOINT"}
+                        env.update(BUILD_CACHE="false", ACTIONS_CACHE=actions_cache,
+                                   PATH=f"{d}:{os.environ['PATH']}")
+                        if endpoint is not None:
+                            env["S3_ENDPOINT"] = endpoint
+                        got, out = choose(env)
+                        self.assertEqual(got["backend"], expected)
+                        self.assertEqual(got["SCCACHE_BUCKET"], "")
+                        self.assertEqual(got["AWS_ACCESS_KEY_ID"], "")
+                        self.assertNotIn(CLUSTER_HOST, out)
+                        self.assertFalse(calls.exists())
+
+    def test_buildcache_with_org_secrets_needs_no_static_endpoint(self) -> None:
+        env = {k: v for k, v in STATIC.items() if k != "S3_ENDPOINT"}
+        got, out = choose({**self.fake.oidc_env(), **env})
+        self.assertEqual(got["backend"], "buildcache")
+        self.assertNotIn(CLUSTER_HOST, out)
+
+    def test_unavailable_buildcache_with_org_secrets_and_no_endpoint_uses_gha(self) -> None:
+        self.fake.mode = "503"
+        env = {k: v for k, v in STATIC.items() if k != "S3_ENDPOINT"}
+        got, out = choose({**self.fake.oidc_env(), **env})
+        self.assertEqual(got["backend"], "gha")
+        self.assertIn("HTTP 503", out)
+        self.assertEqual(got["SCCACHE_ENDPOINT"], "")
+        self.assertNotIn(CLUSTER_HOST, out)
+        self.assertNoSecrets(out)
+
+    def test_explicit_public_endpoint_is_allowed_without_cluster_dns(self) -> None:
+        got, out = self.static_on("https://cache.example:443", resolves=False)
+        self.assertEqual(got["backend"], "static")
+        self.assertEqual(got["SCCACHE_ENDPOINT"], "https://cache.example:443")
+        self.assertEqual(got["SCCACHE_BUCKET"], "ci-sccache-org-a")
+        self.assertNotIn("::warning::", out)
+
     def static_on(self, endpoint: str, resolves: bool) -> tuple[dict[str, str], str]:
         host = (endpoint.split("//", 1)[1].split("/", 1)[0]).rsplit(":", 1)[0]
         d = stub_getent(resolves, host)
@@ -555,20 +602,28 @@ class RustSccacheStart(unittest.TestCase):
         self.assertIn("backend=none", self.read("output"))
         self.assertEqual(self.log.exists(), False)
 
-    def test_default_s3_endpoint_is_the_fully_qualified_cluster_name(self) -> None:
-        # A pod's default ndots sends the short Service name out to the
-        # upstream resolver, which has no record for it: sccache then starts no
-        # server at all. The default must carry the cluster's own domain.
-        text = (ACTION / "action.yml").read_text()
-        default = ""
-        in_input = False
-        for line in text.splitlines():
-            if line.startswith("  s3-endpoint:"):
-                in_input = True
-            elif in_input and line.startswith("    default:"):
-                default = line.split(":", 1)[1].strip()
-                break
-        self.assertEqual(default, "http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc.cluster.local:80")
+    def test_default_s3_endpoint_is_empty_and_buildcache_is_public(self) -> None:
+        import yaml
+
+        action = yaml.safe_load((ACTION / "action.yml").read_text())
+        self.assertEqual(action["inputs"]["s3-endpoint"]["default"], "")
+        self.assertEqual(action["inputs"]["build-cache-network"]["default"], "public")
+        self.assertNotIn(CLUSTER_HOST, (ACTION / "action.yml").read_text())
+
+    def test_actions_cache_service_is_exported_for_static_fallback_too(self) -> None:
+        import yaml
+
+        action = yaml.safe_load((ACTION / "action.yml").read_text())
+        condition = action["runs"]["steps"][0]["if"]
+        self.assertNotIn("inputs.s3-", condition)
+        self.assertIn("inputs.actions-cache != 'false'", condition)
+
+    def test_server_with_secrets_but_no_endpoint_starts_only_on_gha(self) -> None:
+        env = {k: v for k, v in STATIC.items() if k != "S3_ENDPOINT"}
+        self.start({**env, "BUILD_CACHE": "false"})
+        self.assertIn("backend=gha", self.read("output"))
+        self.assertEqual(self.log.read_text(), "start gha webdav_token=no bucket= gha=true\n")
+        self.assertNotIn("AWS_ACCESS_KEY_ID", self.read("env"))
 
     def test_action_never_exports_the_webdav_settings_to_the_job(self) -> None:
         for path in (ACTION / "action.yml", START):

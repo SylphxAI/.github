@@ -232,7 +232,13 @@ and write `protected` only.
   this repository and bump callers, or have the operator delete the
   organization's prefix; the expiry bounds what remains.
 - **Phase 2** keeps the static backend as the next fallback until every
-  caller has moved; rollback is the previous action commit.
+  caller has moved. Static S3 requires an explicit `s3-endpoint` as well as
+  both keys; there is no default cluster Service, since its DNS name belongs
+  to one cell only. Without an endpoint, the public BuildCache gateway is
+  still tried first, then the Actions cache (or the caller's own fallback
+  when `actions-cache: false`). Explicit public endpoints are allowed;
+  explicit cluster Service names are skipped when the runner cannot resolve
+  them. Rollback is the previous action commit.
 - **Secrets**: widening an organization secret's visibility is reverted by
   narrowing it again; no value changes.
 
