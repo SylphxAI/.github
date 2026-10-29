@@ -3,7 +3,8 @@ description: >
   Flags a coined term that the company replaces with standard
   vocabulary (owner standards/docs.md, "Plain language"). Checks only the lines
   this pull request or merge group adds, so existing text does not block a
-  change. The calling job checks out with `fetch-depth: 0` and `filter: blob:none` (full commit graph, file contents on demand). A line that must keep
+  change. The action owns checkout: two commits for merge groups and pushes,
+  or a blobless commit graph for pull-request merge-base calculation. A line that must keep
   a term (quoting it, or a standard sense) carries `plain-language: allow`.
   With `list: product-names`, a platform repository fails a change that names a
   product (owner standards/architecture.md).
@@ -35,6 +36,12 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Checkout the checked revision
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      with:
+        fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '2' }}
+        filter: blob:none
+        persist-credentials: true
     - name: Check added lines for coined terms
       shell: bash
       env:
@@ -52,19 +59,7 @@ runs:
         PLAIN_LANGUAGE_BASELINE: ${{ inputs.baseline }}
       run: |
         set -euo pipefail
-        case "$EVENT_NAME" in
-          pull_request)
-            # The event's base sha can predate commits the branch merged in from
-            # its base; diff from the merge base with the current base branch so
-            # only the pull request's own lines are checked.
-            base="$PR_BASE_SHA"
-            if git fetch --quiet --no-tags origin "$PR_BASE_REF" 2>/dev/null; then
-              base="$(git merge-base FETCH_HEAD "$PR_HEAD_SHA")"
-            fi
-            range="${base}..${PR_HEAD_SHA}" ;;
-          merge_group) range="${MG_BASE_SHA}..${MG_HEAD_SHA}" ;;
-          *) range="${PUSH_BEFORE:-${GIT_SHA}~1}..${GIT_SHA}" ;;
-        esac
+        range="$(bash "$GITHUB_ACTION_PATH/range.sh")"
         case "$LIST" in
           terms) mode="${MODE:-warn}" ;;
           product-names) mode="${MODE:-fail}" ;;

@@ -12,12 +12,14 @@ jobs:
     runs-on: sylphx-linux-standard
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@<sha>
-        with:
-          fetch-depth: 0
-          filter: blob:none
       - uses: SylphxAI/.github/.github/actions/plain-language@<sha>
 ```
+
+The action owns checkout; callers do not add a checkout step. Merge groups
+and pushes fetch depth 2 with historical blobs excluded. If a merge group's
+base falls outside those parents, only that exact commit is fetched at depth 1.
+Pull requests retain a blobless commit graph for correct merge-base calculation.
+This bounds cold merge-group work independently of repository history size.
 
 Only added lines are checked, so a repository adopts it without first cleaning
 its history. Mark a line that must keep a term, such as a quotation or a
