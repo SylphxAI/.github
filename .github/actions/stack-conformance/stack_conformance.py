@@ -78,6 +78,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import weakref
 
 try:
     import tomllib
@@ -154,22 +155,74 @@ class Tree:
 
     def __init__(self, repo: str, rev: str):
         self.repo, self.rev = repo, rev
-        out = git(repo, "ls-tree", "-r", "-z", "--name-only", rev)
-        self._paths = [p for p in out.split("\0") if p]
+        out = git(repo, "ls-tree", "-r", "-z", rev)
+        self._paths = []
+        self._blobs = {}
+        for entry in filter(None, out.split("\0")):
+            metadata, path = entry.split("\t", 1)
+            _, kind, oid = metadata.split()
+            self._paths.append(path)
+            if kind == "blob":
+                self._blobs[path] = oid
+        self._reader = None
+        self._finish = None
 
     def paths(self) -> list[str]:
         return self._paths
 
     def read(self, path: str) -> str | None:
-        r = subprocess.run(
-            ["git", "-C", self.repo, "cat-file", "blob", f"{self.rev}:{path}"],
-            capture_output=True)
-        if r.returncode != 0:
+        oid = self._blobs.get(path)
+        if oid is None:
             return None
+        if self._reader is None:
+            self._reader = subprocess.Popen(
+                ["git", "-C", self.repo, "cat-file", "--batch"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            # Short-lived Tree instances in the policy readers must reap their
+            # child too; the callback holds the process, never the Tree itself.
+            self._finish = weakref.finalize(self, self._close_reader, self._reader)
+        reader = self._reader
         try:
-            return r.stdout.decode("utf-8")
+            # Request immutable object IDs, so even newline-containing paths
+            # cannot become extra batch commands. Read exactly the byte length:
+            # blob contents may contain newlines, NULs or batch-looking text.
+            reader.stdin.write(oid.encode("ascii") + b"\n")
+            reader.stdin.flush()
+            header = reader.stdout.readline().split()
+            if len(header) != 3 or header[:2] != [oid.encode("ascii"), b"blob"]:
+                self.close()
+                return None
+            contents = reader.stdout.read(int(header[2]))
+            if len(contents) != int(header[2]) or reader.stdout.read(1) != b"\n":
+                self.close()
+                return None
+            text = contents.decode("utf-8")
         except UnicodeDecodeError:
+            text = None
+        except (OSError, ValueError):
+            self.close()
             return None
+        return text
+
+    @staticmethod
+    def _close_reader(reader):
+        try:
+            reader.stdin.close()
+        except BrokenPipeError:
+            pass  # A failed Git process may already have closed its input.
+        reader.stdout.close()
+        reader.wait()
+
+    def close(self):
+        if self._finish is not None:
+            self._finish()
+        self._reader = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 class DictTree:
