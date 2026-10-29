@@ -51,6 +51,17 @@ class UnityCompileScripts(unittest.TestCase):
                 prepare.prepare(root, project.name, "Temp/compile", "Android")
             self.assertEqual(entry.read_text(), "consumer work")
 
+    def test_rejects_linked_editor_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = self.fixture(root)
+            outside = root / "other project"
+            outside.mkdir()
+            (project / "Assets/Editor").symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                prepare.prepare(root, project.name, "Temp/compile", "Android")
+            self.assertEqual(list(outside.iterdir()), [])
+
     def test_compiler_uses_real_store_target_without_native_build_or_signing(self):
         source = (ACTION / "SylphxCompilePlayerScripts.cs").read_text()
         self.assertIn("PlayerBuildInterface.CompilePlayerScripts", source)

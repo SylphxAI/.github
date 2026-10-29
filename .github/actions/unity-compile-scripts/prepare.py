@@ -30,7 +30,11 @@ def prepare(workspace, project, output, target):
         raise ValueError("output resolves outside the Unity project")
     editor = project / "Assets/Editor"
     editor.mkdir(exist_ok=True)
+    if not editor.resolve().is_relative_to(project):
+        raise ValueError("editor entry resolves outside the Unity project")
     entry = editor / "SylphxCompilePlayerScripts.cs"
+    if entry.is_symlink():
+        raise ValueError("refusing to overwrite a linked compiler entry")
     if entry.exists() and not entry.read_text().startswith(MARKER):
         raise ValueError("refusing to overwrite a consumer-owned compiler entry")
     source = Path(__file__).with_name("SylphxCompilePlayerScripts.cs")
