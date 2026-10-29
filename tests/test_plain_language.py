@@ -235,3 +235,58 @@ class ProductNameGuardV2Test(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ColdMergeGroupTest(unittest.TestCase):
+    def test_large_history_fetches_only_checked_endpoints_and_still_flags_new_lines(self):
+        """A cold shallow checkout must not download the graph to diff two trees."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp, 'source')
+            target = pathlib.Path(tmp, 'cold')
+            source.mkdir(); target.mkdir()
+            def git(where, *args, data=None):
+                return subprocess.run(['git', '-C', str(where), *args], input=data,
+                                      text=True, capture_output=True, check=True).stdout.strip()
+            git(source, 'init', '-q', '-b', 'main')
+            git(source, 'config', 'uploadpack.allowFilter', 'true')
+            records = []
+            for n in range(1, 2001):
+                doc = 'old residual text\n' if n < 2000 else 'old residual text\nnew residual text\n'
+                parent = f'from :{n-1}\n' if n > 1 else ''
+                records.append(f'commit refs/heads/main\nmark :{n}\ncommitter t <t@example.com> {1700000000+n} +0000\ndata 4\ntest\n{parent}M 100644 inline doc.md\ndata {len(doc)}\n{doc}\n')
+            git(source, 'fast-import', '--quiet', data=''.join(records))
+            base = git(source, 'rev-parse', 'HEAD~10')
+            self.assertEqual(git(source, 'rev-list', '--count', 'HEAD'), '2000')
+            git(source, 'config', 'user.name', 't')
+            git(source, 'config', 'user.email', 't@example.com')
+            git(source, 'checkout', '-qb', 'feature', 'HEAD~2')
+            (source / 'other.md').write_text('plain text\n')
+            git(source, 'add', 'other.md'); git(source, 'commit', '-qm', 'feature')
+            git(source, 'checkout', '-q', 'main')
+            git(source, 'merge', '-q', '--no-ff', '-m', 'merge group', 'feature')
+            head = git(source, 'rev-parse', 'HEAD')
+            git(target, 'init', '-q')
+            git(target, 'remote', 'add', 'origin', source.as_uri())
+            git(target, 'fetch', '--quiet', '--depth=2', '--filter=blob:none', 'origin', 'main')
+            git(target, 'checkout', '-q', 'FETCH_HEAD')
+            result = subprocess.run(['bash', str(ACTION / 'range.sh')], cwd=target,
+                                    env={**os.environ, 'EVENT_NAME': 'merge_group',
+                                         'MG_BASE_SHA': base, 'MG_HEAD_SHA': head},
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), f'{base}..{head}')
+            self.assertLessEqual(int(git(target, 'rev-list', '--count', '--all')), 4)
+            check = subprocess.run([str(ACTION / 'check.sh'), result.stdout.strip(), str(ACTION / 'terms.tsv')],
+                                   cwd=target, env={**os.environ, 'PLAIN_LANGUAGE_MODE': 'fail'},
+                                   text=True, capture_output=True)
+            self.assertEqual(check.returncode, 1, check.stdout + check.stderr)
+            self.assertIn('file=doc.md,line=2::', check.stdout)
+            self.assertNotIn('file=doc.md,line=1::', check.stdout)
+
+    def test_invalid_merge_group_revision_fails_before_fetch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(['bash', str(ACTION / 'range.sh')], cwd=tmp,
+                                    env={**os.environ, 'EVENT_NAME': 'merge_group',
+                                         'MG_BASE_SHA': '--all', 'MG_HEAD_SHA': 'a' * 40},
+                                    text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('invalid merge-group revision', result.stderr)
