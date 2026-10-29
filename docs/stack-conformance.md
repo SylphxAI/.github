@@ -1,7 +1,7 @@
 # Stack conformance
 
 `.github/actions/stack-conformance` fails a change that adds a departure from
-the default stack in SylphxAI/owner `standards/stack.md`: backend services in
+the default stack in SylphxAI/skills `skills/self-challenge/references/stack.md`: backend services in
 Rust, first-party schema under Atlas. Departures a repository already has are
 listed in its baseline, `.github/stack-departures.txt`, which may only shrink.
 This is a ratchet in the style of Betterer, scoped like a Backstage Tech
@@ -137,8 +137,8 @@ Comments and string literals are not source declarations. Importing an engine
 commerce type does not excuse a second local SKU struct. These rules cannot
 be seeded or waived in a game's own departures baseline; no boilerplate-file
 exceptions are approved. Any exception needs a change to this shared check.
-The stack lane must run for `*.rs` and the two boilerplate paths as well as
-manifests; the optimistic gate template includes those patterns.
+The stack lane runs for every change; it includes source, boilerplate and
+manifests as well as documentation and configuration.
 
 ## The rule at a pull request
 
@@ -163,9 +163,8 @@ checkout.
 2. Add the `stack` lane and job from
    [`workflow-templates/optimistic-gate.yml`](../workflow-templates/optimistic-gate.yml)
    to the repository's gate, pinned by commit, and add `stack` to `ci-ok`'s
-   `needs`. The lane runs when `sylphx.toml`, a `package.json`, a
-    `Cargo.toml`, a Dockerfile, a `.sql` or `.rs` file, either Keel boilerplate
-    path, or the baseline changes.
+   `needs`. Require `stack` to succeed through `needs-pass`; the lane runs
+   for every change, including documentation-only changes.
 
 ## The portfolio number
 
@@ -188,3 +187,139 @@ A backend with no framework dependency and no Dockerfile named in
 `sylphx.toml` (for example a server started by a build strategy other than
 `dockerfile`) is not found. Widen the rules here, with a test, when one is
 seen; every caller gains the rule on its next pin move.
+
+## Architecture classes C1–C7
+
+The existing action also checks structural regressions against the seven-class
+[architecture contract](https://github.com/SylphxAI/owner/blob/main/company/architecture-audit.md).
+The governing references are SylphxAI/skills
+[`architecture.md`](https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/architecture.md)
+and [`stack.md`](https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/stack.md),
+plus the company's `AGENTS.md`.
+
+| Class | Supported seed | Clean control |
+| --- | --- | --- |
+| C1 | An explicit first-party or network-trust branch immediately returns authorization success | The branch uses the ordinary grant check; consumer names in comments and documentation |
+| C2 | Direct provider constructors or provider-key reads in a product | An ordinary platform call; a provider adapter in the capability's owning platform |
+| C3 | A shared engine imports downstream behavior, compiles a downstream identity, or bundles company Skills | Consumer-supplied generic configuration; isolated examples and test modules |
+| C4 | Literal environment reads lack declarations; unconditional Python defaults conflict | One declared setting and override precedence |
+| C5 | Unbounded read/sleep loops, state-polling intervals, request-driven idle floors or unnamed progress cron | Events, finite transport retries, UI animation/debounce, frame loops, named calendar obligations |
+| C6 | Unexplained lint suppressions or executable routes declared retired by a completed migration | A specific suppression reason; a route whose migration remains incomplete |
+| C7 | Failure-only CI verdicts or merge-only completion branches | Canceled dependencies fail the existing `needs-pass` verdict; completion carries environment evidence |
+
+Run the same public entry point locally:
+
+```sh
+python3 stack_conformance.py check --base BASE --head HEAD \
+  --repository ORG/REPO --report /tmp/stack-conformance-report.json
+```
+
+The JSON report gives repository, immutable source and checker commits, class,
+file and line, reason, violated contract, exact source-file hash, decisions,
+inherited findings, reviewed/excluded paths, unreadable input and known limits.
+It contains no source excerpts or credential values. The action's `report`
+output names this file in the runner's temporary directory. A finding marked
+`inherited` remains open debt; an exception is reported as an exception, never
+as fixed. A passing static check does not certify a semantic source audit.
+
+Each changed file is examined with its surrounding control flow. Editing a
+loop header therefore cannot hide an unchanged polling body. Changes to the
+environment declaration or architecture decision/migration files recheck the
+consumers. Relevant unreadable blobs, invalid Python, malformed configuration
+and stale decisions fail explicitly. Other languages and unrecognized
+constructs are reported limits, not a claim of zero violations.
+
+The action requires Python 3.11 or newer. It supports Rust, Python,
+JavaScript/TypeScript, Go, shell, TOML and ordinary YAML blocks. It excludes documentation, dependency/build output, test/fixture
+paths and inline Rust `#[cfg(test)] mod` bodies. Generated production source is
+checked, including `bundled_skills_generated.rs`. It does not resolve arbitrary
+macros, YAML templates/aliases, cross-module setting precedence or general
+program behavior. C2 does not prove database ownership from arbitrary SQL, and
+C6 does not establish that arbitrary code has no callers. Source review retains
+those responsibilities.
+
+### Existing debt uses the same baseline
+
+`scan --repository ORG/REPO` also emits exact records of the form:
+
+```text
+# architecture-ratchet-v1
+architecture C5 polling-loop src/jobs.rs SOURCE_FILE_SHA256
+```
+
+On first adoption, only findings independently present at the base can be
+recorded. After adoption these records may only shrink; the marker remains
+even when the last record is removed. A stale record fails until removed.
+Baseline records expose existing debt and never suppress a changed violation
+or replace a decision. The existing Rust/Atlas baseline and central ownership
+policies retain their behavior.
+
+### Recorded decisions
+
+`.github/architecture-decisions.json` has `version: 1` and a `decisions` array.
+Every entry names `repository`, `path`, `class`, `rule`, `source_sha256`,
+`owner`, `reason`, `contract`, `expires`, `authority`, `evidence` and
+`reconsideration`. The hash covers the exact file, so changed context cannot
+silently inherit an old decision. Contract, authority and evidence are HTTPS
+links; the reason must be specific. Wildcards, duplicate entries, expired
+entries, wrong repositories and unmatched/stale records fail. A decision
+explains why a static candidate is justified; it cannot authorize a backdoor,
+unauthorized spend or loss of user data.
+
+TOML `min_instances` and Knative `min-scale`/`minScale` above zero need such
+a recorded always-on decision. TOML `[env.NAME]` and `[env] NAME = ...`
+declare environment settings. HPA `minReplicas` and KEDA `minReplicaCount` above zero are checked
+when `conformance.request-driven: "true"` or an HTTP trigger identifies the
+workload as request-driven. Unclassified autoscalers remain a stated limit.
+A CronJob that is the work itself names its contract in
+`conformance.calendar-obligation: "https://...#daily-report"` (or its expiry or
+safety-resync contract). A cron frequency alone is not a calendar obligation.
+Finite transport retry is recognized from finite ranges or an attempts bound
+with progress; a bare `allow` comment does not suppress polling.
+
+A completed migration can declare `{"completed": true, "retired_routes":
+["/old"]}` in `.github/architecture-migrations.json`. This is an explicit
+migration contract, not a route-deletion instruction inferred from a match.
+
+### Required CI and rollout evidence
+
+The optimistic gate template runs `stack` for every change, including
+configuration-only and documentation-only changes, and requires its successful
+result through the existing `needs-pass` action. This repository uses that same
+required chain. Adoption in another repository means moving its shared pin and
+required workflow together. A merged action or template is not portfolio
+rollout: each included repository still needs a seeded red run and a clean
+green run at its actual required verdict. Delivered customer repositories stay
+excluded. Refresh the repository population across all declared organizations,
+including Cubeage-limited, before rollout.
+
+The former standalone proposal in PR #283 is consolidated here: its progress
+polling rules and paired negatives are part of stack-conformance. This delivery
+does not introduce a second `standards-lint` action or a second baseline.
+
+### Pinned repository identities
+
+C3 derives consumer names from `policy/architecture-repositories.json`; the
+checker contains no hand-maintained product list. The dated paginated census
+covers SylphxAI, Cubeage and Cubeage-limited (636 repository IDs, 203
+unarchived at the 2026-10-29 read). Numeric IDs retain identity across canonical
+names. Archived rows remain visible as history and do not seed import rules.
+The policy declares which layers are shared, including Cubeage's platform,
+kit and tycoon engine; Cubeage layers use their own title population.
+
+Refresh from a complete metadata snapshot with
+`scripts/build_architecture_catalog.py --snapshot SNAPSHOT.json`; its input
+records each organization's query, page sizes, read time and repository count.
+It rejects missing organizations, count mismatches and duplicate identities.
+The generated file ships with the action's immutable pin. It is a bounded
+identity vocabulary, not an assertion that every repository name is a product
+or that every import has been semantically classified. New aliases appear on
+the next catalog refresh; a name-only rule cannot infer an arbitrary renamed
+crate or a downstream relationship hidden behind a generic interface.
+
+C2 includes the witnessed provider-host forms (Stripe, Nexmo, Apple receipt
+verification, Android Publisher, FCM, fal.ai and Replicate). An owning service
+path permits its own capability's adapter; placing a Stripe call in the Auth
+service does not turn it into a Money adapter. Provider literals in comments,
+documentation and fixtures pass. These are regression candidates for migration,
+not authorization to remove live-user continuity or the existing payment path.

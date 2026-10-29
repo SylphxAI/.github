@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stack conformance: a ratchet on departures from the company's default stack.
 
-The default stack (SylphxAI/owner standards/stack.md) puts every backend
+The default stack (SylphxAI/skills skills/self-challenge/references/stack.md) puts every backend
 service in Rust and every first-party schema under Atlas. A repository lists
 the departures it already has in a baseline file (default
 `.github/stack-departures.txt`); the baseline may only shrink. This script
@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import pathlib
@@ -84,6 +85,11 @@ except ModuleNotFoundError:  # Python < 3.11: the regex reader below is enough.
     tomllib = None
 
 BASELINE = ".github/stack-departures.txt"
+
+_architecture_spec = importlib.util.spec_from_file_location(
+    "architecture", pathlib.Path(__file__).with_name("architecture.py"))
+architecture = importlib.util.module_from_spec(_architecture_spec)
+_architecture_spec.loader.exec_module(architecture)
 
 # The company-level allowance for agent-runtime parts: this repository's
 # policy/agent-runtime.json, three levels above this action's directory.
@@ -160,7 +166,10 @@ class Tree:
             capture_output=True)
         if r.returncode != 0:
             return None
-        return r.stdout.decode("utf-8", "replace")
+        try:
+            return r.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
 
 
 class DictTree:
@@ -177,7 +186,7 @@ class DictTree:
 
 
 def git(repo: str, *args: str) -> str:
-    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, errors="surrogateescape")
     if r.returncode != 0:
         raise SystemExit(f"git {' '.join(args)} failed in {repo}: {r.stderr.strip()}")
     return r.stdout
@@ -754,7 +763,7 @@ def decide(found: list[str], head_baseline: set[str] | None,
     for line in found:
         if line not in allowed:
             errors.append(f"new departure from the default stack: '{line}' (backend services are "
-                          "Rust and schema is Atlas, SylphxAI/owner standards/stack.md)")
+                          "Rust and schema is Atlas, SylphxAI/skills skills/self-challenge/references/stack.md)")
     for line in sorted(head - set(found)):
         errors.append(f"stale baseline line: '{line}' is no longer found; delete it so the "
                       "baseline keeps shrinking")
@@ -766,22 +775,64 @@ def has_rev(repo: str, rev: str) -> bool:
                           capture_output=True).returncode == 0
 
 
+def added_lines(repo, base, head):
+    """NUL-delimited names and hunk line numbers; source text is never logged."""
+    if not base:
+        return None
+    paths = git(repo, "diff", "--name-only", "--no-renames", "-z", base, head, "--").split("\0")
+    changed = {}
+    for path in filter(None, paths):
+        diff = git(repo, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0", base, head, "--", path)
+        lines = set()
+        for match in re.finditer(r"(?m)^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", diff):
+            start, count = int(match[1]), int(match[2] if match[2] is not None else 1)
+            lines.update(range(start, start + count))
+        changed[path] = lines
+    return changed
+
+
+def workflow_escape(value, property=False):
+    value = str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return value.replace(":", "%3A").replace(",", "%2C") if property else value
+
+
+def checker_revision():
+    supplied = os.environ.get("STACK_CONFORMANCE_CHECKER_COMMIT", "")
+    if re.fullmatch(r"[0-9a-f]{40}", supplied):
+        return supplied
+    local = subprocess.run(["git", "-C", str(pathlib.Path(__file__).parent), "rev-parse", "HEAD"],
+                           text=True, capture_output=True)
+    if local.returncode == 0:
+        return local.stdout.strip()
+    raise ValueError("checker revision is not immutable; pin the shared action by commit")
+
+
 def cmd_check(args) -> int:
     head = Tree(args.repo, args.head)
     found = departures(head)
     head_baseline = parse_baseline(head.read(args.baseline))
+    head_architecture_adopted = architecture.BASELINE_MARKER in (head.read(args.baseline) or "").splitlines()
+    head_architecture_baseline = {line for line in head_baseline or () if line.startswith("architecture ")}
+    head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline
     errors = []
     for line in sorted(l for l in (head_baseline or ()) if l.startswith(AGENT_RUNTIME)):
         errors.append(f"'{line}' is in {args.baseline}; an agent-runtime part is allowed only by "
                       "SylphxAI/.github policy/agent-runtime.json, with an expiry date")
         head_baseline.discard(line)
     base_baseline = None
+    base_architecture_baseline = set()
+    base_architecture_adopted = False
     if args.base:
         if not has_rev(args.repo, args.base):
             subprocess.run(["git", "-C", args.repo, "fetch", "--quiet", "--no-tags",
                             "--depth=1", "--filter=blob:none", "origin", args.base], check=False)
+        if not has_rev(args.repo, args.base):
+            raise SystemExit("base commit is unavailable; check did not review the change")
         base_baseline = parse_baseline(Tree(args.repo, args.base).read(args.baseline))
+        base_architecture_adopted = architecture.BASELINE_MARKER in (Tree(args.repo, args.base).read(args.baseline) or "").splitlines()
         if base_baseline is not None:
+            base_architecture_baseline = {line for line in base_baseline if line.startswith("architecture ")}
+            base_baseline -= base_architecture_baseline
             base_baseline = {l for l in base_baseline if not l.startswith(AGENT_RUNTIME)}
     errors += decide(found, head_baseline, base_baseline)
     keel = keel_departures(head)
@@ -805,6 +856,41 @@ def cmd_check(args) -> int:
         present=knowledge_tables_in(head))
     errors += knowledge_errors
     notices += knowledge_notices
+    checker_commit = None
+    try:
+        checker_commit = checker_revision()
+        report = architecture.evaluate(head, args.repository, added_lines(args.repo, args.base, args.head), today)
+    except (ValueError, TypeError, AttributeError) as error:
+        report = {"findings": [], "unreadable": [{"path": "architecture configuration", "reason": str(error)}],
+                  "semantic_census_complete": False, "limits": architecture.LIMITS}
+    if base_architecture_adopted and not head_architecture_adopted:
+        errors.append("architecture ratchet marker cannot be removed")
+    if head_architecture_baseline and not head_architecture_adopted:
+        errors.append("architecture baseline records require " + architecture.BASELINE_MARKER)
+    if head_architecture_baseline or base_architecture_baseline:
+        try:
+            base_findings = architecture.evaluate(Tree(args.repo, args.base), args.repository, None, today)["findings"] if args.base else []
+            errors += architecture.baseline_errors(report["findings"], head_architecture_baseline,
+                                                    base_architecture_baseline, base_findings, base_architecture_adopted)
+        except (ValueError, TypeError, AttributeError) as error:
+            report["unreadable"].append({"path": args.baseline, "reason": str(error)})
+    report.update({"repository": args.repository, "commit": git(args.repo, "rev-parse", f"{args.head}^{{commit}}").strip(),
+                   "base_commit": git(args.repo, "rev-parse", f"{args.base}^{{commit}}").strip() if args.base else None,
+                   "checker_commit": checker_commit,
+                   "legacy_departures": found, "legacy_errors": errors.copy()})
+    for row in report["findings"]:
+        row.update({"repository": report["repository"], "commit": report["commit"]})
+        row["disposition"] = "justified-exception" if row["decision"] else "regression" if row["changed"] else "inherited"
+        if row["changed"] and not row["decision"]:
+            message = f"{row['class']} {row['rule']}: {row['reason']} ({row['contract']})"
+            print(f"::error file={workflow_escape(row['path'], True)},line={row['line']}::{workflow_escape(message)}")
+            errors.append(message)
+    for row in report["unreadable"]:
+        errors.append("input not reviewed: " + row["path"] + ": " + row["reason"])
+    report["passed"] = not errors
+    destination = pathlib.Path(getattr(args, "report", "stack-conformance-report.json"))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     for n in notices:
         print(f"::notice::{n}")
     for e in errors:
@@ -822,11 +908,18 @@ def cmd_check(args) -> int:
 
 
 def cmd_scan(args) -> int:
-    print("# Recorded departures from the default stack (SylphxAI/owner standards/stack.md).")
+    print("# Recorded departures from the default stack (SylphxAI/skills skills/self-challenge/references/stack.md).")
     print("# This list may only shrink; the stack-conformance check enforces it.")
     tree = Tree(args.repo, args.rev)
     for line in departures(tree):
         print(line)
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    report = architecture.evaluate(tree, getattr(args, "repository", ""), None, today)
+    print(architecture.BASELINE_MARKER)
+    for row in report["findings"]:
+        print(architecture.baseline_key(row))
+    if report["unreadable"]:
+        raise SystemExit("source unreadable; baseline scan incomplete")
     for line in agent_runtime(tree):
         print(f"# not recordable here (SylphxAI/.github policy/agent-runtime.json): {line}")
     for line in keel_departures(tree):
@@ -861,9 +954,11 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--agent-runtime-policy", default=str(AGENT_RUNTIME_POLICY))
     c.add_argument("--knowledge-policy", default=str(KNOWLEDGE_POLICY))
     c.add_argument("--today", default="", help="YYYY-MM-DD; default today in UTC (tests)")
+    c.add_argument("--report", default="stack-conformance-report.json", help="Structured C1–C7 findings, coverage and limits")
     s = sub.add_parser("scan")
     s.add_argument("--repo", default=".")
     s.add_argument("--rev", default="HEAD")
+    s.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     a = sub.add_parser("all")
     a.add_argument("--rev", default="HEAD")
     a.add_argument("dirs", nargs="+")

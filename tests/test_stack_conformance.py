@@ -237,11 +237,15 @@ class KeelGameGuardTest(unittest.TestCase):
                                 "src/commerce.rs": "struct CoinSku;"})
             self.assertEqual(sc.keel_departures(tree), [])
 
-    def test_stack_lane_is_selected_for_source_and_boilerplate_changes(self):
+    def test_stack_lane_also_runs_for_document_only_and_empty_ranges(self):
         text = (ROOT / "workflow-templates" / "optimistic-gate.yml").read_text()
         lane = next(line for line in text.splitlines() if line.strip().startswith("stack:"))
-        for pattern in ("*.rs", "docs/BUILDING.md", "scripts/measure-rust-debug.py"):
-            self.assertIn(pattern, lane)
+        spec = importlib.util.spec_from_file_location("range_stack_test", ROOT / ".github/actions/ci-range/ci_range.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        lanes = module.parse_lanes(lane)
+        for paths in ([], ["README.md"], ["src/a.rs"], ["infra/service.yml"], ["docs/BUILDING.md"]):
+            self.assertTrue(module.select(lanes, paths)["stack"])
 
 
 class AgentRuntimeTest(unittest.TestCase):

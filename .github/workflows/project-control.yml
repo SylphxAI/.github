@@ -22,6 +22,19 @@ permissions:
   contents: read
 
 jobs:
+  stack:
+    # The shared check participates in this repository's real required verdict.
+    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/stack-conformance
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+
   project-control:
     runs-on: ubuntu-latest
     steps:
@@ -291,12 +304,15 @@ jobs:
   # Aggregate verdict required by the main merge queue ruleset. Skipped jobs
   # pass; failed or cancelled jobs fail.
   ci-ok:
-    needs: [project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer]
+    needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every needed job
-        env:
-          NEEDS: ${{ toJSON(needs) }}
-        run: jq -e 'all(.[]; .result != "failure" and .result != "cancelled")' <<<"$NEEDS"
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/needs-pass
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: stack,project-control,tests
