@@ -76,7 +76,7 @@ jobs:
             lint:
             test: src/* tests/*
             migrations: migrations/*
-            stack: *sylphx.toml *package.json *Cargo.toml *Dockerfile* *.sql *.rs docs/BUILDING.md scripts/measure-rust-debug.py .github/stack-departures.txt
+            stack:
 
   lint:
     needs: plan
@@ -125,7 +125,6 @@ jobs:
   # policy/knowledge-tables.json allows it until a date.
   stack:
     needs: plan
-    if: fromJSON(needs.plan.outputs.run).stack
     runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
     timeout-minutes: 5
     steps:
@@ -160,5 +159,5 @@ jobs:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main
         with:
           needs: ${{ toJSON(needs) }}
-          required: plan
+          required: plan,stack
           required-unless-merge-group: ${{ github.event.pull_request.draft && ' ' || 'suite' }}
