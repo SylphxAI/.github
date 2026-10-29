@@ -17,9 +17,13 @@ tag) and calls the `keel-repin` action in three modes:
    branch exists: close it to stop the repin; close it and delete the branch to have the next poll
    rebuild it.
 2. **repin** (only when needed): moves every pin, refreshes `Cargo.lock` for the Keel crates,
-   and, for Keel-tag repins, downloads the target tag's prebuilt CLI through its
-   `scripts/install_cli.sh` and runs
-   `keel migrate --check` from the title repository root before the title's build check.
+   and, for Keel-tag repins, reads the target commit's published version with
+   `python3 tools/release.py --version-only`, installs that exact crates.io CLI through
+   `bash scripts/install_cli.sh <published-version> <cargo-install-root>`, and runs
+   `<cargo-install-root>/bin/keel migrate --check`
+   from the title repository root before the title's build check. The release checkout has
+   full history so its version calculation matches publication. A version lookup or install
+   failure stops the migration preflight; there is no CLI from PATH or source-build fallback.
    A migration failure, including `[mobile.android]` without `[mobile.android.signing]`
    (Keel #5144), opens a failed draft with the migration diagnostic instead of passing
    the build preflight. The action then pushes `chore/keel-repin-<tag>`, opens the pull request with the

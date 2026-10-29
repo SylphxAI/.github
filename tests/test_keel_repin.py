@@ -34,21 +34,29 @@ def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, text=True, capture_output=True).stdout.strip()
 
 
-def make_keel_remote(base: pathlib.Path, cli: str = "exit 0\n") -> tuple[str, str]:
+def make_keel_remote(base: pathlib.Path, cli: str = "exit 0\n", *,
+                     version: str = "0.3.1234", version_status: int = 0) -> tuple[str, str]:
     """A tagged Keel repository with a stand-in release installer and CLI."""
     work = base / "keel-work"
     work.mkdir()
     git(work, "init", "-q", "-b", "main")
     (work / "f").write_text("keel")
     (work / "scripts").mkdir()
+    (work / "tools").mkdir()
+    (work / "tools/release.py").write_text(
+        'import sys\n'
+        'assert sys.argv[1:] == ["--version-only"]\n'
+        f'print({version!r})\n'
+        f'sys.exit({version_status})\n')
     (work / "scripts/install_cli.sh").write_text(
         '#!/bin/sh\nset -eu\n'
-        f'test "$2" = "{NEW_TAG}"\n'
-        'mkdir -p "$3"\n'
-        'cat > "$3/keel" <<\'CLI\'\n'
+        'test "$#" -eq 2\n'
+        f'test "$1" = "{version}"\n'
+        'mkdir -p "$2/bin"\n'
+        'cat > "$2/bin/keel" <<\'CLI\'\n'
         '#!/bin/sh\nset -eu\n'
         'test "$*" = "migrate --check"\n' + cli +
-        'CLI\nchmod +x "$3/keel"\n')
+        'CLI\nchmod +x "$2/bin/keel"\n')
     git(work, "add", ".")
     git(work, "commit", "-q", "-m", "keel")
     sha = git(work, "rev-parse", "HEAD")
@@ -237,6 +245,29 @@ class RunTest(unittest.TestCase):
             self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "check"))
             self.assertIn("SavePort", rep["log"])
             self.assertIn("Cargo.toml", rep["changed"])  # the pin still moves; the break is the content of the draft
+
+    def test_the_target_release_version_installs_into_the_cargo_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, _ = make_keel_remote(base, 'touch migrated\n', version="0.7.9876")
+            repo = make_title(base, TITLE)
+            rc, rep = self.run_cmd(repo, remote, "touch build-checked")
+            self.assertEqual((rc, rep["status"], rep["stage"]), (0, "ok", ""), rep["log"])
+            self.assertTrue((repo / "migrated").exists())
+            self.assertTrue((repo / "build-checked").exists())
+            self.assertIn("0.7.9876", rep["log"])
+
+    def test_release_version_failure_stops_before_install_or_build(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            remote, _ = make_keel_remote(base, 'touch migrated\n', version_status=41)
+            repo = make_title(base, TITLE)
+            rc, rep = self.run_cmd(repo, remote, "touch build-checked")
+            self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "migrate"))
+            self.assertIn("--version-only", rep["log"])
+            self.assertFalse((repo / "migrated").exists())
+            self.assertFalse((repo / "build-checked").exists())
+            self.assertNotIn("$ bash", rep["log"])
 
     def test_android_signing_migration_failure_stops_the_repin_preflight(self):
         with tempfile.TemporaryDirectory() as d:
