@@ -1,9 +1,11 @@
 """Git-backed checker reads must preserve reports without per-file processes."""
 
 import datetime
+import contextlib
 import hashlib
 import importlib.util
 import json
+import io
 import os
 import pathlib
 import statistics
@@ -77,7 +79,9 @@ class GitTreeTests(unittest.TestCase):
         with sc.Tree(str(self.repo), "HEAD") as tree:
             self.assertEqual(tree.paths(), reference.paths())
             for _ in range(2):
-                for path in tree.paths() + ["absent", "folder", "link/child"]:
+                for path in tree.paths() + ["absent", "folder", "link/child", "./space name",
+                                            ".//space name", "./folder/../space name",
+                                            "./space name/", "folder/../space name", "../space name"]:
                     with self.subTest(path=path):
                         self.assertEqual(tree.read(path), reference.read(path))
             reader = tree._reader
@@ -91,6 +95,16 @@ class GitTreeTests(unittest.TestCase):
                 self.assertEqual(tree.read("src/app.rs"), "fn base() {}\n")
                 self.assertIsNone(tree.read("new"))
                 self.assertEqual(newer.read("src/app.rs"), "fn head() {}\n")
+
+    def test_public_baseline_option_accepts_relative_dot_prefix(self):
+        rev = self.commit({
+            "sylphx.toml": '[database.migrations]\nengine="drizzle"\n',
+            "custom-baseline": "migrations sylphx.toml drizzle\n",
+        })
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = sc.main(["check", "--repo", str(self.repo), "--base", rev, "--head", rev,
+                              "--baseline", "./custom-baseline", "--report", str(self.repo / "report.json")])
+        self.assertEqual(result, 0)
 
     def test_missing_blob_is_unreadable_and_next_blob_still_reads(self):
         rev = self.commit({"missing": "missing contents", "present": "present contents"})

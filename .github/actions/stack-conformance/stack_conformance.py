@@ -171,6 +171,10 @@ class Tree:
         return self._paths
 
     def read(self, path: str) -> str | None:
+        # Git interprets a leading ./ relative to the repository root. The
+        # public --baseline argument may use it even though ls-tree never does.
+        if path.startswith("./") and not path.endswith("/"):
+            path = posixpath.normpath(path)
         oid = self._blobs.get(path)
         if oid is None:
             return None
