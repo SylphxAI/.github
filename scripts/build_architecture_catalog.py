@@ -11,24 +11,21 @@ import pathlib
 
 # Architectural layers are decisions; consumer names come only from the census.
 LAYERS = {
-    'SylphxAI/spiron': ['SylphxAI', 'Cubeage', 'Cubeage-limited'],
-    'SylphxAI/cloud': ['SylphxAI', 'Cubeage', 'Cubeage-limited'],
-    'SylphxAI/sylphx': ['SylphxAI', 'Cubeage', 'Cubeage-limited'],
-    'SylphxAI/keel': ['SylphxAI', 'Cubeage', 'Cubeage-limited'],
-    'SylphxAI/keel-engine': ['SylphxAI', 'Cubeage', 'Cubeage-limited'],
+    **{name: ['SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd', 'TseFamily']
+       for name in ['SylphxAI/spiron', 'SylphxAI/cloud', 'SylphxAI/sylphx', 'SylphxAI/keel', 'SylphxAI/keel-engine']},
     **{org + '/' + name: ['Cubeage', 'Cubeage-limited']
        for org in ['Cubeage', 'Cubeage-limited']
        for name in ['cubeage-platform', 'cubeage-kit', 'tycoon-engine']},
 }
 
 
-def build(snapshot):
+def build(snapshot, products=None):
     if snapshot.get('version') != 1:
         raise ValueError('unsupported repository snapshot')
     sources, repos = snapshot['sources'], snapshot['repositories']
     organizations = {s['organization'] for s in sources}
-    if organizations != {'SylphxAI', 'Cubeage', 'Cubeage-limited'}:
-        raise ValueError('all three declared organizations are required')
+    if not {'SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd', 'TseFamily'} <= organizations:
+        raise ValueError('all declared organizations are required')
     if len({r['id'] for r in repos}) != len(repos):
         raise ValueError('repository IDs must be unique across the snapshot')
     if len({r['full_name'].casefold() for r in repos}) != len(repos):
@@ -41,7 +38,11 @@ def build(snapshot):
             raise ValueError('a dated, complete final page is required')
     # Archived identities remain visible for history; they do not generate import
     # rules. Numeric IDs retain canonical identity across names and organizations.
+    products = products or {'source': snapshot['product_source'], 'products': snapshot['products']}
+    if any(row['repository_id'] not in {r['id'] for r in repos} for row in products['products']):
+        raise ValueError('product identity is outside the repository census')
     return {'version': 1, 'sources': sources, 'shared_layers': LAYERS,
+            'product_source': products['source'], 'products': products['products'],
             'repositories': sorted(repos, key=lambda r: r['id'])}
 
 
@@ -55,9 +56,10 @@ def render(data):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--snapshot', required=True)
+    p.add_argument('--products', required=True, help='Dated product rows from the architecture map, resolved by repository ID')
     p.add_argument('--output', default='policy/architecture-repositories.json')
     args = p.parse_args()
-    data = build(json.loads(pathlib.Path(args.snapshot).read_text()))
+    data = build(json.loads(pathlib.Path(args.snapshot).read_text()), json.loads(pathlib.Path(args.products).read_text()))
     pathlib.Path(args.output).write_text(render(data))
 
 

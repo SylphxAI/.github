@@ -244,7 +244,7 @@ those responsibilities.
 
 ```text
 # architecture-ratchet-v1
-architecture C5 polling-loop src/jobs.rs SOURCE_FILE_SHA256
+architecture C5 polling-loop src/jobs.rs:12 SOURCE_FILE_SHA256
 ```
 
 On first adoption, only findings independently present at the base can be
@@ -257,7 +257,7 @@ policies retain their behavior.
 ### Recorded decisions
 
 `.github/architecture-decisions.json` has `version: 1` and a `decisions` array.
-Every entry names `repository`, `path`, `class`, `rule`, `source_sha256`,
+Every entry names `repository`, `path`, `line`, `class`, `rule`, `source_sha256`,
 `owner`, `reason`, `contract`, `expires`, `authority`, `evidence` and
 `reconsideration`. The hash covers the exact file, so changed context cannot
 silently inherit an old decision. Contract, authority and evidence are HTTPS
@@ -291,7 +291,7 @@ required workflow together. A merged action or template is not portfolio
 rollout: each included repository still needs a seeded red run and a clean
 green run at its actual required verdict. Delivered customer repositories stay
 excluded. Refresh the repository population across all declared organizations,
-including Cubeage-limited, before rollout.
+including Cubeage-limited and the declared product organizations, before rollout.
 
 The former standalone proposal in PR #283 is consolidated here: its progress
 polling rules and paired negatives are part of stack-conformance. This delivery
@@ -299,16 +299,18 @@ does not introduce a second `standards-lint` action or a second baseline.
 
 ### Pinned repository identities
 
-C3 derives consumer names from `policy/architecture-repositories.json`; the
-checker contains no hand-maintained product list. The dated paginated census
-covers SylphxAI, Cubeage and Cubeage-limited (636 repository IDs, 203
-unarchived at the 2026-10-29 read). Numeric IDs retain identity across canonical
+C3 derives product identities from the dated architecture-map product rows,
+resolved by numeric repository ID in `policy/architecture-repositories.json`;
+the checker contains no hand-maintained product list. Engine, service and tool
+repositories do not become downstream products merely because of their org. The dated paginated census
+covers SylphxAI, Cubeage, Cubeage-limited, EpiowAI, OzyrixLtd and TseFamily
+(657 repository IDs, 218 unarchived at the 2026-10-29 read). Numeric IDs retain identity across canonical
 names. Archived rows remain visible as history and do not seed import rules.
 The policy declares which layers are shared, including Cubeage's platform,
 kit and tycoon engine; Cubeage layers use their own title population.
 
 Refresh from a complete metadata snapshot with
-`scripts/build_architecture_catalog.py --snapshot SNAPSHOT.json`; its input
+`scripts/build_architecture_catalog.py --snapshot SNAPSHOT.json --products PRODUCTS.json`; its input
 records each organization's query, page sizes, read time and repository count.
 It rejects missing organizations, count mismatches and duplicate identities.
 The generated file ships with the action's immutable pin. It is a bounded

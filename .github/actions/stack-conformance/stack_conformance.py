@@ -857,19 +857,28 @@ def cmd_check(args) -> int:
     errors += knowledge_errors
     notices += knowledge_notices
     checker_commit = None
+    changed = added_lines(args.repo, args.base, args.head)
     try:
         checker_commit = checker_revision()
-        report = architecture.evaluate(head, args.repository, added_lines(args.repo, args.base, args.head), today)
+        report = architecture.evaluate(head, args.repository, changed, today)
     except (ValueError, TypeError, AttributeError) as error:
         report = {"findings": [], "unreadable": [{"path": "architecture configuration", "reason": str(error)}],
                   "semantic_census_complete": False, "limits": architecture.LIMITS}
+    try:
+        base_findings = architecture.evaluate(Tree(args.repo, args.base), args.repository, None, today)["findings"] if args.base else []
+    except (ValueError, TypeError, AttributeError):
+        base_findings = []
+    previous = {architecture.baseline_key(row): row for row in base_findings}
+    for row in report["findings"]:
+        old = previous.get(architecture.baseline_key(row))
+        if changed is not None and row["path"] not in changed and old and not (old["decision"] and not row["decision"]):
+            row["changed"] = False
     if base_architecture_adopted and not head_architecture_adopted:
         errors.append("architecture ratchet marker cannot be removed")
     if head_architecture_baseline and not head_architecture_adopted:
         errors.append("architecture baseline records require " + architecture.BASELINE_MARKER)
     if head_architecture_baseline or base_architecture_baseline:
         try:
-            base_findings = architecture.evaluate(Tree(args.repo, args.base), args.repository, None, today)["findings"] if args.base else []
             errors += architecture.baseline_errors(report["findings"], head_architecture_baseline,
                                                     base_architecture_baseline, base_findings, base_architecture_adopted)
         except (ValueError, TypeError, AttributeError) as error:

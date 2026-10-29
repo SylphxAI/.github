@@ -61,11 +61,17 @@ def downstream_pattern(repository):
     scope = layers.get(repository)
     if scope is None:
         return None
-    tokens = set(scope)
-    for row in data["repositories"]:
+    tokens = set(scope) | {org.lower() for org in scope}
+    repositories = {row["id"]: row for row in data["repositories"]}
+    for product in data["products"]:
+        row = repositories[product["repository_id"]]
         org, name = row["full_name"].split("/", 1)
         if org in scope and row["full_name"] not in layers and not row["archived"]:
-            tokens.add(name)
+            if name not in {"website", "web", "api", "app", "main", "frontend", "backend"}:
+                tokens.add(name)
+            brand = product["product"]
+            tokens.add(brand)
+            tokens.add(re.sub(r"\s+", "-", brand.lower()))
     return "(?:" + "|".join(re.escape(n).replace(r"\-", "[_-]") for n in sorted(tokens, key=lambda n: (-len(n), n))) + ")"
 
 
@@ -179,6 +185,24 @@ def finding(path, text, at, cls, rule, reason, end=None):
 def env_declarations(tree):
     names = set()
     for path in tree.paths():
+        if pathlib.PurePosixPath(path).suffix in {".yaml", ".yml"} and path.startswith(".github/"):
+            text = tree.read(path)
+            if text is None:
+                raise ValueError("unreadable environment declaration: " + path)
+            env_indent = None
+            for line in text.splitlines():
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                indent = len(line) - len(line.lstrip())
+                if env_indent is not None and indent <= env_indent:
+                    env_indent = None
+                if re.match(r"\s*(?:-\s*)?env:\s*(?:#.*)?$", line):
+                    env_indent = indent + (2 if line.lstrip().startswith("- ") else 0)
+                elif env_indent is not None:
+                    match = re.match(r"\s*([A-Z][A-Z0-9_]+):", line)
+                    if match:
+                        names.add(match[1])
+            continue
         if pathlib.PurePosixPath(path).name not in {".env.example", ".env.sample", "env.schema.json", "sylphx.toml"}:
             continue
         text = tree.read(path)
@@ -285,12 +309,12 @@ def scan_file(path, text, repository, declared, retired_routes):
             add(m.start(), "C2", "provider-bypass", "Product calls an offered capability's provider host directly")
     downstream = downstream_pattern(repository)
     if downstream:
-        for m in re.finditer(r"\b(?:use|import|from)\s+" + downstream + r"(?=\W|$)", code, re.I):
+        for m in re.finditer(r"\b(?:use|import|from)\s+" + downstream + r"(?=\W|$)", code):
             add(m.start(), "C3", "downstream-import", "Shared engine imports downstream company/product behavior")
-        for m in re.finditer(r'\b(?:from\s+|require\s*\(\s*)["\x27]@?' + downstream + r'(?=[/"\x27])[^"\x27]*["\x27]', clean, re.I):
+        for m in re.finditer(r'\b(?:from\s+|require\s*\(\s*)["\x27]@?' + downstream + r'(?=[/"\x27])[^"\x27]*["\x27]', clean):
             if code[m.start():m.start()+4].strip():
                 add(m.start(), "C3", "downstream-import", "Shared engine imports a downstream product module")
-        for m in re.finditer(r"\b(?:const|static|let)\b[^\n;=]*=\s*[\"'](?:" + downstream + r"|org_[A-Za-z0-9]+|tenant_[A-Za-z0-9]+)[\"']", clean, re.I):
+        for m in re.finditer(r"\b(?:const|static|let)\b[^\n;=]*=\s*[\"'](?:" + downstream + r"|org_[A-Za-z0-9]+|tenant_[A-Za-z0-9]+)[\"']", clean):
             if code[m.start():m.start()+3].strip():
                 add(m.start(), "C3", "downstream-config", "Shared engine compiles a downstream identity into executable configuration")
         if "bundled_skills" in pathlib.PurePosixPath(path).name and clean.strip():
@@ -358,8 +382,10 @@ def decisions(text, repository, today):
         raise ValueError("architecture decisions must be an array")
     seen = set()
     for row in rows:
-        required = {"repository", "path", "class", "rule", "source_sha256", "owner", "reason", "contract", "expires", "authority", "evidence", "reconsideration"}
-        if not isinstance(row, dict) or set(row) != required or any(not isinstance(v, str) or not v.strip() for v in row.values()):
+        required = {"repository", "path", "line", "class", "rule", "source_sha256", "owner", "reason", "contract", "expires", "authority", "evidence", "reconsideration"}
+        if (not isinstance(row, dict) or set(row) != required
+                or any(not isinstance(v, str) or not v.strip() for k, v in row.items() if k != "line")
+                or type(row.get("line")) is not int or row["line"] < 1):
             raise ValueError("decision must name exact finding, owner, reason, contract and expiry")
         if row["repository"] != repository or row["class"] not in {f"C{i}" for i in range(1, 8)} or any(c in row["path"] for c in "*?["):
             raise ValueError("decision scope does not match this repository or contains a wildcard")
@@ -367,7 +393,7 @@ def decisions(text, repository, today):
             raise ValueError("decision needs an exact source hash and specific rationale")
         if not all(row[k].startswith("https://") for k in ("contract", "authority", "evidence")):
             raise ValueError("decision must link its contract, authority and evidence")
-        identity = tuple(row[k] for k in ("path", "class", "rule", "source_sha256"))
+        identity = tuple(row[k] for k in ("path", "line", "class", "rule", "source_sha256"))
         if identity in seen:
             raise ValueError("duplicate architecture decision: " + row["path"])
         seen.add(identity)
@@ -399,6 +425,8 @@ def evaluate(tree, repository, changed, today):
     if changed is not None and any(pathlib.PurePosixPath(p).name in {
         ".env.example", ".env.sample", "env.schema.json", "sylphx.toml"} for p in changed):
         rescan = True
+    if changed is not None and any(p.startswith(".github/") and pathlib.PurePosixPath(p).suffix in {".yml", ".yaml"} for p in changed):
+        rescan = True
     for path in sorted(tree.paths()):
         if excluded(path) or pathlib.PurePosixPath(path).suffix not in SOURCE | CONFIG:
             skipped.append({"path": path, "reason": "fixture/documentation/dependency" if excluded(path) else "unsupported format"})
@@ -418,11 +446,11 @@ def evaluate(tree, repository, changed, today):
         for row in rows:
             lines = None if rescan else changed.get(path, set())
             row["changed"] = lines is None or any(row["line"] <= n <= row["end_line"] for n in lines)
-            row["decision"] = next((d for d in allowed if all(d[k] == row[k] for k in ("path", "class", "rule", "source_sha256"))), None)
+            row["decision"] = next((d for d in allowed if all(d[k] == row[k] for k in ("path", "line", "class", "rule", "source_sha256"))), None)
             findings.append(row)
-    matched = {tuple(f[k] for k in ("path", "class", "rule", "source_sha256")) for f in findings}
+    matched = {tuple(f[k] for k in ("path", "line", "class", "rule", "source_sha256")) for f in findings}
     for row in allowed:
-        if tuple(row[k] for k in ("path", "class", "rule", "source_sha256")) not in matched:
+        if tuple(row[k] for k in ("path", "line", "class", "rule", "source_sha256")) not in matched:
             unreadable.append({"path": ".github/architecture-decisions.json", "reason": "stale or mismatched architecture decision for " + row["path"]})
     return {"findings": findings, "unreadable": unreadable, "reviewed_paths": reviewed,
             "excluded_paths": skipped, "decisions": allowed,
@@ -431,7 +459,7 @@ def evaluate(tree, repository, changed, today):
 
 
 def baseline_key(row):
-    return " ".join(("architecture", row["class"], row["rule"], row["path"], row["source_sha256"]))
+    return " ".join(("architecture", row["class"], row["rule"], row["path"] + ":" + str(row["line"]), row["source_sha256"]))
 
 
 def baseline_errors(findings, head_records, base_records, base_findings, adopted=False):

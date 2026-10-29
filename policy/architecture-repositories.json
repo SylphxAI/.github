@@ -1,4 +1,362 @@
 {
+  "product_source": {
+    "blob": "3184496f252281e4bb024096c0613b6bdbc8f1f0",
+    "path": "company/architecture-map/edges.tsv",
+    "read_at_utc": "2026-10-29T16:28:27.876179+00:00",
+    "repository": "SylphxAI/owner"
+  },
+  "products": [
+    {
+      "product": "Epiow",
+      "repository": "EpiowAI/epiow",
+      "repository_id": 1126983394
+    },
+    {
+      "product": "Epiow Legacy",
+      "repository": "EpiowAI/epiow-legacy",
+      "repository_id": 1287699702
+    },
+    {
+      "product": "Epiow Minutes",
+      "repository": "EpiowAI/epiow-minutes",
+      "repository_id": 1416925519
+    },
+    {
+      "product": "Keel",
+      "repository": "SylphxAI/keel",
+      "repository_id": 1319349063
+    },
+    {
+      "product": "LearningQuest",
+      "repository": "TseFamily/tse-family-learning",
+      "repository_id": 1182537018
+    },
+    {
+      "product": "Mark",
+      "repository": "SylphxAI/readme-mark",
+      "repository_id": 1302331101
+    },
+    {
+      "product": "Ozyrix",
+      "repository": "OzyrixLtd/website",
+      "repository_id": 1100735834
+    },
+    {
+      "product": "Spiron",
+      "repository": "SylphxAI/spiron",
+      "repository_id": 1159310989
+    },
+    {
+      "product": "Sylphx AI",
+      "repository": "SylphxAI/cloud",
+      "repository_id": 1117000933
+    },
+    {
+      "product": "Sylphx Auth",
+      "repository": "SylphxAI/cloud",
+      "repository_id": 1117000933
+    },
+    {
+      "product": "Sylphx Billing",
+      "repository": "SylphxAI/cloud",
+      "repository_id": 1117000933
+    },
+    {
+      "product": "Sylphx Cloud",
+      "repository": "SylphxAI/cloud",
+      "repository_id": 1117000933
+    },
+    {
+      "product": "Sylphx Data",
+      "repository": "SylphxAI/cloud",
+      "repository_id": 1117000933
+    },
+    {
+      "product": "Sylphx Money",
+      "repository": "SylphxAI/cloud",
+      "repository_id": 1117000933
+    },
+    {
+      "product": "Sylphx Notify",
+      "repository": "SylphxAI/cloud",
+      "repository_id": 1117000933
+    },
+    {
+      "product": "Sylphx Release",
+      "repository": "SylphxAI/cloud",
+      "repository_id": 1117000933
+    },
+    {
+      "product": "Sylphx Sandboxes",
+      "repository": "SylphxAI/cloud",
+      "repository_id": 1117000933
+    },
+    {
+      "product": "big2-tycoon",
+      "repository": "Cubeage/big2-tycoon",
+      "repository_id": 1401947937
+    },
+    {
+      "product": "big2-tycoon-2",
+      "repository": "Cubeage/big2-tycoon-2",
+      "repository_id": 1401970807
+    },
+    {
+      "product": "big2-tycoon-keel",
+      "repository": "Cubeage/big2-tycoon-keel",
+      "repository_id": 1401967107
+    },
+    {
+      "product": "big2-tycoon-tw",
+      "repository": "Cubeage/big2-tycoon-tw",
+      "repository_id": 1401964966
+    },
+    {
+      "product": "blackjack-showdown",
+      "repository": "Cubeage/blackjack-showdown",
+      "repository_id": 1401965906
+    },
+    {
+      "product": "block-sort-keel",
+      "repository": "Cubeage/block-sort-keel",
+      "repository_id": 1401951218
+    },
+    {
+      "product": "bloomkin-keel",
+      "repository": "Cubeage/bloomkin-keel",
+      "repository_id": 1401947336
+    },
+    {
+      "product": "crumple-keel",
+      "repository": "Cubeage/crumple-keel",
+      "repository_id": 1401971749
+    },
+    {
+      "product": "cubeage-cs-agent",
+      "repository": "Cubeage/cubeage-cs-agent",
+      "repository_id": 1401969557
+    },
+    {
+      "product": "cubeage-game-sdk",
+      "repository": "Cubeage-limited/cubeage-game-sdk",
+      "repository_id": 1184625118
+    },
+    {
+      "product": "cubeage-kit",
+      "repository": "Cubeage/cubeage-kit",
+      "repository_id": 1387365360
+    },
+    {
+      "product": "cubeage-native-sdk",
+      "repository": "Cubeage/cubeage-native-sdk",
+      "repository_id": 1401951874
+    },
+    {
+      "product": "cubeage-platform",
+      "repository": "Cubeage/cubeage-platform",
+      "repository_id": 1158091575
+    },
+    {
+      "product": "dearhouse-keel",
+      "repository": "Cubeage/dearhouse-keel",
+      "repository_id": 1401961011
+    },
+    {
+      "product": "drop-rivals-keel",
+      "repository": "Cubeage/drop-rivals-keel",
+      "repository_id": 1409589281
+    },
+    {
+      "product": "fun-big2-hk",
+      "repository": "Cubeage/fun-big2-hk",
+      "repository_id": 1157251049
+    },
+    {
+      "product": "fun-big2-keel",
+      "repository": "Cubeage/fun-big2-keel",
+      "repository_id": 1401954620
+    },
+    {
+      "product": "fun-big2-tw",
+      "repository": "Cubeage/fun-big2-tw",
+      "repository_id": 1157251117
+    },
+    {
+      "product": "fun-mahjong",
+      "repository": "Cubeage/fun-mahjong",
+      "repository_id": 1157251452
+    },
+    {
+      "product": "fun-mahjong-keel",
+      "repository": "Cubeage/fun-mahjong-keel",
+      "repository_id": 1401945713
+    },
+    {
+      "product": "fun-server-kit",
+      "repository": "Cubeage/fun-server-kit",
+      "repository_id": 1401968847
+    },
+    {
+      "product": "fun-showhand",
+      "repository": "Cubeage/fun-showhand",
+      "repository_id": 1157254358
+    },
+    {
+      "product": "fun-showhand-keel",
+      "repository": "Cubeage/fun-showhand-keel",
+      "repository_id": 1402532415
+    },
+    {
+      "product": "fun-texas-holdem",
+      "repository": "Cubeage/fun-texas-holdem",
+      "repository_id": 1401949509
+    },
+    {
+      "product": "fun-texas-holdem-keel",
+      "repository": "Cubeage/fun-texas-holdem-keel",
+      "repository_id": 1402532349
+    },
+    {
+      "product": "godsmith-keel",
+      "repository": "Cubeage/godsmith-keel",
+      "repository_id": 1400661279
+    },
+    {
+      "product": "harbourpop-keel",
+      "repository": "Cubeage/harbourpop-keel",
+      "repository_id": 1435335579
+    },
+    {
+      "product": "hk-mahjong-tycoon",
+      "repository": "Cubeage-limited/hk-mahjong-tycoon",
+      "repository_id": 1169758188
+    },
+    {
+      "product": "hk-mahjong-tycoon-keel",
+      "repository": "Cubeage-limited/hk-mahjong-tycoon-keel",
+      "repository_id": 1323385387
+    },
+    {
+      "product": "kalkas",
+      "repository": "SylphxAI/kalkas",
+      "repository_id": 1335409037
+    },
+    {
+      "product": "keel-engine repository",
+      "repository": "SylphxAI/keel-engine",
+      "repository_id": 1398843601
+    },
+    {
+      "product": "keel-website",
+      "repository": "SylphxAI/keel-website",
+      "repository_id": 1319782144
+    },
+    {
+      "product": "korvana",
+      "repository": "SylphxAI/korvana",
+      "repository_id": 1157527716
+    },
+    {
+      "product": "last-minute-keel",
+      "repository": "Cubeage/last-minute-keel",
+      "repository_id": 1401967996
+    },
+    {
+      "product": "lootling-keel",
+      "repository": "Cubeage/lootling-keel",
+      "repository_id": 1401955311
+    },
+    {
+      "product": "luzzy",
+      "repository": "SylphxAI/luzzy",
+      "repository_id": 1109755059
+    },
+    {
+      "product": "mahjong-tycoon-tw",
+      "repository": "Cubeage/mahjong-tycoon-tw",
+      "repository_id": 1401961160
+    },
+    {
+      "product": "mahjong-tycoon-tw-2",
+      "repository": "Cubeage/mahjong-tycoon-tw-2",
+      "repository_id": 1157259967
+    },
+    {
+      "product": "mahjong-xgmj-java",
+      "repository": "Cubeage-limited/mahjong-xgmj-java",
+      "repository_id": 185906126
+    },
+    {
+      "product": "number-grove-keel",
+      "repository": "SylphxAI/number-grove-keel",
+      "repository_id": 1319586950
+    },
+    {
+      "product": "opencity-keel",
+      "repository": "Cubeage/opencity-keel",
+      "repository_id": 1399998166
+    },
+    {
+      "product": "pinpoint-keel",
+      "repository": "Cubeage/pinpoint-keel",
+      "repository_id": 1401946805
+    },
+    {
+      "product": "planet-post-keel",
+      "repository": "Cubeage/planet-post-keel",
+      "repository_id": 1401959232
+    },
+    {
+      "product": "puzzled",
+      "repository": "SylphxAI/puzzled",
+      "repository_id": 1180846641
+    },
+    {
+      "product": "rank-system",
+      "repository": "Cubeage/rank-system",
+      "repository_id": 1401972649
+    },
+    {
+      "product": "tachyn",
+      "repository": "SylphxAI/tachyn",
+      "repository_id": 1387457847
+    },
+    {
+      "product": "tenkind-keel",
+      "repository": "Cubeage/tenkind-keel",
+      "repository_id": 1401955683
+    },
+    {
+      "product": "tryit",
+      "repository": "SylphxAI/tryit",
+      "repository_id": 1152968983
+    },
+    {
+      "product": "tycoon-engine",
+      "repository": "Cubeage/tycoon-engine",
+      "repository_id": 1386530724
+    },
+    {
+      "product": "viszy.ai",
+      "repository": "SylphxAI/viszy.ai",
+      "repository_id": 1048013293
+    },
+    {
+      "product": "voidbite-keel",
+      "repository": "Cubeage/voidbite-keel",
+      "repository_id": 1401958013
+    },
+    {
+      "product": "warden-keel",
+      "repository": "Cubeage/warden-keel",
+      "repository_id": 1400217766
+    },
+    {
+      "product": "worldreign-keel",
+      "repository": "Cubeage/worldreign-keel",
+      "repository_id": 1401956866
+    }
+  ],
   "shared_layers": {
     "Cubeage-limited/cubeage-kit": [
       "Cubeage",
@@ -27,27 +385,42 @@
     "SylphxAI/cloud": [
       "SylphxAI",
       "Cubeage",
-      "Cubeage-limited"
+      "Cubeage-limited",
+      "EpiowAI",
+      "OzyrixLtd",
+      "TseFamily"
     ],
     "SylphxAI/keel": [
       "SylphxAI",
       "Cubeage",
-      "Cubeage-limited"
+      "Cubeage-limited",
+      "EpiowAI",
+      "OzyrixLtd",
+      "TseFamily"
     ],
     "SylphxAI/keel-engine": [
       "SylphxAI",
       "Cubeage",
-      "Cubeage-limited"
+      "Cubeage-limited",
+      "EpiowAI",
+      "OzyrixLtd",
+      "TseFamily"
     ],
     "SylphxAI/spiron": [
       "SylphxAI",
       "Cubeage",
-      "Cubeage-limited"
+      "Cubeage-limited",
+      "EpiowAI",
+      "OzyrixLtd",
+      "TseFamily"
     ],
     "SylphxAI/sylphx": [
       "SylphxAI",
       "Cubeage",
-      "Cubeage-limited"
+      "Cubeage-limited",
+      "EpiowAI",
+      "OzyrixLtd",
+      "TseFamily"
     ]
   },
   "sources": [
@@ -81,6 +454,33 @@
       "query": "orgs/Cubeage-limited/repos?per_page=100&type=all",
       "read_at_utc": "2026-10-29T16:19:42.263254+00:00",
       "repository_count": 297
+    },
+    {
+      "organization": "EpiowAI",
+      "page_sizes": [
+        13
+      ],
+      "query": "orgs/EpiowAI/repos?per_page=100&type=all",
+      "read_at_utc": "2026-10-29T16:29:13.052063+00:00",
+      "repository_count": 13
+    },
+    {
+      "organization": "OzyrixLtd",
+      "page_sizes": [
+        4
+      ],
+      "query": "orgs/OzyrixLtd/repos?per_page=100&type=all",
+      "read_at_utc": "2026-10-29T16:29:13.745773+00:00",
+      "repository_count": 4
+    },
+    {
+      "organization": "TseFamily",
+      "page_sizes": [
+        4
+      ],
+      "query": "orgs/TseFamily/repos?per_page=100&type=all",
+      "read_at_utc": "2026-10-29T16:29:14.458371+00:00",
+      "repository_count": 4
     }
   ],
   "version": 1,
@@ -364,10 +764,13 @@
     {"archived": true, "full_name": "SylphxAI/solid-tui", "id": 1097917345},
     {"archived": true, "full_name": "SylphxAI/axon", "id": 1097922082},
     {"archived": true, "full_name": "SylphxAI/node-webgpu", "id": 1097975629},
+    {"archived": true, "full_name": "EpiowAI/website", "id": 1098540636},
+    {"archived": false, "full_name": "EpiowAI/.github", "id": 1098564396},
     {"archived": true, "full_name": "SylphxAI/bun-workflow-test", "id": 1098643566},
     {"archived": true, "full_name": "SylphxAI/zenjs", "id": 1099058961},
     {"archived": true, "full_name": "SylphxAI/webgpu", "id": 1099151447},
     {"archived": true, "full_name": "SylphxAI/tsnum", "id": 1100267920},
+    {"archived": false, "full_name": "OzyrixLtd/website", "id": 1100735834},
     {"archived": true, "full_name": "SylphxAI/pura", "id": 1100888249},
     {"archived": true, "full_name": "SylphxAI/optimistic", "id": 1101649288},
     {"archived": true, "full_name": "SylphxAI/lens", "id": 1101664001},
@@ -385,10 +788,13 @@
     {"archived": true, "full_name": "SylphxAI/reify", "id": 1106844314},
     {"archived": true, "full_name": "SylphxAI/standard-entity", "id": 1107250597},
     {"archived": true, "full_name": "SylphxAI/hookyard", "id": 1107590831},
+    {"archived": false, "full_name": "EpiowAI/chatbot-mvp", "id": 1108723118},
     {"archived": false, "full_name": "SylphxAI/luzzy", "id": 1109755059},
     {"archived": true, "full_name": "SylphxAI/rosetta", "id": 1111715554},
     {"archived": true, "full_name": "SylphxAI/photo-dedup", "id": 1114078600},
     {"archived": false, "full_name": "SylphxAI/cloud", "id": 1117000933},
+    {"archived": false, "full_name": "EpiowAI/epiow", "id": 1126983394},
+    {"archived": true, "full_name": "EpiowAI/hris-public", "id": 1131221692},
     {"archived": true, "full_name": "SylphxAI/video", "id": 1138178709},
     {"archived": true, "full_name": "SylphxAI/stocks", "id": 1143293827},
     {"archived": true, "full_name": "SylphxAI/gphotos_to_icloud", "id": 1143786374},
@@ -422,6 +828,8 @@
     {"archived": true, "full_name": "Cubeage-limited/devsdk", "id": 1157768689},
     {"archived": true, "full_name": "Cubeage-limited/newsdk", "id": 1157809143},
     {"archived": false, "full_name": "Cubeage/cubeage-platform", "id": 1158091575},
+    {"archived": true, "full_name": "EpiowAI/demo-taskboard", "id": 1158448507},
+    {"archived": true, "full_name": "EpiowAI/demo-calendar-mobile", "id": 1158616642},
     {"archived": false, "full_name": "SylphxAI/spiron", "id": 1159310989},
     {"archived": false, "full_name": "Cubeage-limited/solar2d-ironsource", "id": 1161842714},
     {"archived": false, "full_name": "Cubeage-limited/cubeage-cs-agent", "id": 1162564275},
@@ -451,6 +859,7 @@
     {"archived": false, "full_name": "SylphxAI/puzzled", "id": 1180846641},
     {"archived": true, "full_name": "Cubeage-limited/oapi-gateway", "id": 1181006514},
     {"archived": false, "full_name": "Cubeage-limited/.github", "id": 1181742633},
+    {"archived": false, "full_name": "TseFamily/tse-family-learning", "id": 1182537018},
     {"archived": true, "full_name": "Cubeage-limited/cubeage-platform-v2", "id": 1182760573},
     {"archived": false, "full_name": "Cubeage-limited/cubeage-game-sdk", "id": 1184625118},
     {"archived": false, "full_name": "Cubeage-limited/solar2d-singular", "id": 1186814095},
@@ -472,13 +881,18 @@
     {"archived": true, "full_name": "SylphxAI/sylphx-testing-playbook", "id": 1208096135},
     {"archived": false, "full_name": "Cubeage-limited/mahjong-verifier", "id": 1211437948},
     {"archived": false, "full_name": "Cubeage-limited/hkmj-analytics", "id": 1211458393},
+    {"archived": true, "full_name": "EpiowAI/careops", "id": 1216876361},
     {"archived": false, "full_name": "Cubeage-limited/jery", "id": 1223658726},
     {"archived": true, "full_name": "SylphxAI/doctrine", "id": 1265184361},
+    {"archived": false, "full_name": "EpiowAI/renovate-config", "id": 1267886476},
+    {"archived": false, "full_name": "TseFamily/renovate-config", "id": 1267886494},
+    {"archived": false, "full_name": "OzyrixLtd/renovate-config", "id": 1267886526},
     {"archived": true, "full_name": "SylphxAI/alpha-foundry", "id": 1270110999},
     {"archived": true, "full_name": "Cubeage-limited/word-grove", "id": 1271356689},
     {"archived": true, "full_name": "SylphxAI/consultant-mcp", "id": 1275566313},
     {"archived": true, "full_name": "SylphxAI/gpt-review", "id": 1281738272},
     {"archived": true, "full_name": "SylphxAI/skills-history-archive", "id": 1285275370},
+    {"archived": false, "full_name": "EpiowAI/epiow-legacy", "id": 1287699702},
     {"archived": true, "full_name": "SylphxAI/groundatlas", "id": 1288384029},
     {"archived": true, "full_name": "SylphxAI/mission-control", "id": 1291515887},
     {"archived": true, "full_name": "SylphxAI/agent-workbench", "id": 1292980066},
@@ -495,8 +909,11 @@
     {"archived": true, "full_name": "SylphxAI/skills-public-staging-quarantine", "id": 1297721845},
     {"archived": true, "full_name": "SylphxAI/skills-public-cleanroom-quarantine", "id": 1297818831},
     {"archived": true, "full_name": "SylphxAI/skills-public-cleanroom", "id": 1297840366},
+    {"archived": false, "full_name": "EpiowAI/brand", "id": 1302214753},
     {"archived": false, "full_name": "Cubeage-limited/brand", "id": 1302252477},
     {"archived": false, "full_name": "SylphxAI/brand", "id": 1302252496},
+    {"archived": false, "full_name": "OzyrixLtd/brand", "id": 1302311461},
+    {"archived": false, "full_name": "OzyrixLtd/.github", "id": 1302311490},
     {"archived": false, "full_name": "SylphxAI/readme-mark", "id": 1302331101},
     {"archived": false, "full_name": "SylphxAI/homebrew-tap", "id": 1309329151},
     {"archived": true, "full_name": "SylphxAI/sylphx-model-policy", "id": 1313297528},
@@ -540,6 +957,7 @@
     {"archived": true, "full_name": "SylphxAI/spot-diff-bench", "id": 1320151181},
     {"archived": true, "full_name": "SylphxAI/vpb-website", "id": 1320188693},
     {"archived": true, "full_name": "SylphxAI/sportbet", "id": 1320824341},
+    {"archived": true, "full_name": "EpiowAI/staffora", "id": 1322029672},
     {"archived": false, "full_name": "Cubeage-limited/big2-tycoon-keel", "id": 1323170691},
     {"archived": false, "full_name": "Cubeage-limited/hk-mahjong-tycoon-keel", "id": 1323385387},
     {"archived": true, "full_name": "SylphxAI/kres", "id": 1323541088},
@@ -600,6 +1018,7 @@
     {"archived": true, "full_name": "Cubeage-limited/blackjack21-keel", "id": 1389834699},
     {"archived": true, "full_name": "SylphxAI/runner-bench", "id": 1389927638},
     {"archived": true, "full_name": "SylphxAI/runner-bench-private", "id": 1389927670},
+    {"archived": false, "full_name": "TseFamily/mail-mcp", "id": 1389932644},
     {"archived": true, "full_name": "SylphxAI/model-bench", "id": 1391237036},
     {"archived": false, "full_name": "Cubeage-limited/bloomkin-keel", "id": 1391440668},
     {"archived": true, "full_name": "SylphxAI/ws-hold-test", "id": 1392490712},
@@ -679,6 +1098,7 @@
     {"archived": false, "full_name": "SylphxAI/temporal", "id": 1414483643},
     {"archived": false, "full_name": "SylphxAI/topolvm", "id": 1414661755},
     {"archived": false, "full_name": "SylphxAI/longlived-proof", "id": 1416350549},
+    {"archived": false, "full_name": "EpiowAI/epiow-minutes", "id": 1416925519},
     {"archived": false, "full_name": "SylphxAI/metric-liveness-probe", "id": 1422155399},
     {"archived": false, "full_name": "Cubeage/mahjong-verifier-sx", "id": 1422286907},
     {"archived": false, "full_name": "Cubeage/MahJong3DArt-sx", "id": 1422293297},
@@ -719,6 +1139,7 @@
     {"archived": false, "full_name": "Cubeage/MahJongUnity-sx", "id": 1422343196},
     {"archived": false, "full_name": "SylphxAI/anyagents", "id": 1424221229},
     {"archived": false, "full_name": "SylphxAI/skills", "id": 1427716146},
+    {"archived": false, "full_name": "TseFamily/homelab", "id": 1432650851},
     {"archived": false, "full_name": "Cubeage/harbourpop-keel", "id": 1435335579},
     {"archived": false, "full_name": "Cubeage/cargo-index", "id": 1437747667}
   ]

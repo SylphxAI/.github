@@ -230,7 +230,7 @@ class StructuralBoundaryTests(unittest.TestCase):
             self.assertEqual(bool(self.evaluate({'src/goal.rs': code})['findings']), fail)
 
     def decision(self, row):
-        return {k: row[k] for k in ('path', 'class', 'rule', 'source_sha256')} | {
+        return {k: row[k] for k in ('path', 'line', 'class', 'rule', 'source_sha256')} | {
             'repository': 'SylphxAI/spiron', 'owner': 'owner-infrastructure',
             'reason': 'Required minimum for database quorum', 'contract': a.CONTRACT + '#scale',
             'authority': 'https://company.test/decision/1', 'evidence': 'https://company.test/proof/1',
@@ -465,7 +465,7 @@ class StandardFitRegressionTests(unittest.TestCase):
         snapshot = json.loads((ROOT / 'policy/architecture-repositories.json').read_text())
         generated = build(snapshot)
         self.assertEqual(len(generated['repositories']), sum(s['repository_count'] for s in generated['sources']))
-        self.assertEqual({s['organization'] for s in generated['sources']}, {'SylphxAI', 'Cubeage', 'Cubeage-limited'})
+        self.assertEqual({s['organization'] for s in generated['sources']}, {'SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd', 'TseFamily'})
         snapshot['sources'][0]['repository_count'] += 1
         with self.assertRaises(ValueError):
             build(snapshot)
@@ -483,6 +483,45 @@ class CompletionAndConfigNegatives(unittest.TestCase):
     def test_toml_documentation_string_is_not_a_service_floor(self):
         source = 'description = """\nmin_instances = 2\n"""\n'
         self.assertEqual(self.evaluate({'sylphx.toml': source})['findings'], [])
+
+class CatalogAndDeclarationCorrections(unittest.TestCase):
+    evaluate = StructuralBoundaryTests.evaluate
+
+    def test_upstream_services_and_tooling_are_not_downstream_products(self):
+        files = {
+            'services/build/crates/build-api/src/metering.rs': 'pub const SERVICE: &str = "build";\n',
+            'services/ai/crates/ai-server/src/paid_dispatch.rs': 'pub const POOL: &str = "ai";\n',
+            'tools/sylphx-gen/src/products.rs': 'pub const PLATFORM: &str = "platform";\n',
+            'services/sandboxes/crates/sandboxes-api/src/cell.rs': 'let image = "build";\n',
+        }
+        self.assertEqual(self.evaluate(files, 'SylphxAI/cloud')['findings'], [])
+        self.assertEqual(self.evaluate({'src/a.rs': 'const LEVEL: &str = "info";\n'}, 'Cubeage/cubeage-platform')['findings'], [])
+
+    def test_epiow_and_ozyrix_are_engine_consumers(self):
+        for name in ['epiow', 'Epiow', 'epiow-minutes', 'ozyrix', 'Ozyrix']:
+            self.assertEqual(self.evaluate({'src/a.rs': 'const TENANT: &str = "' + name + '";\n'})['findings'][0]['class'], 'C3')
+        self.assertEqual(self.evaluate({'src/a.rs': 'const TENANT: &str = "TACHYN";\n'})['findings'], [])
+        self.assertEqual(self.evaluate({'src/a.rs': 'use tachyn_suffix;\n'})['findings'], [])
+
+    def test_action_environment_mapping_is_a_declaration(self):
+        files = {'.github/actions/action/action.yml': 'runs:\n  steps:\n    - env:\n        DECLARED_SETTING: ${{ inputs.setting }}\n      run: command\n',
+                 'src/a.py': 'import os\na = os.getenv("DECLARED_SETTING")\n'}
+        self.assertEqual(self.evaluate(files)['findings'], [])
+
+    def test_yaml_declaration_removal_flags_new_gap_and_preserves_old_debt(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = GitFixture(d)
+            f.write({'.github/workflows/check.yml': 'jobs:\n  test:\n    env:\n      WAS_DECLARED: literal\n',
+                     'src/a.py': 'import os\na = os.getenv("WAS_DECLARED")\nb = os.getenv("OLD_UNDECLARED")\n'})
+            f.commit()
+            before = f.git('rev-parse', 'HEAD').strip()
+            f.write({'.github/workflows/check.yml': 'jobs:\n  test:\n    name: changed\n'})
+            f.commit()
+            result, report = f.check(base=before)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            rows = {r['line']: r['disposition'] for r in report['findings']}
+            self.assertEqual(rows[2], 'regression')
+            self.assertEqual(rows[3], 'inherited')
 
 
 if __name__ == '__main__':
