@@ -460,11 +460,18 @@ def check_migrations(root, remote, tag, sha, log):
         except Refused as error:
             log.append(str(error))
             return "migrate"
-        binary = Path(d) / "bin"
-        installer = Path(source) / "scripts/install_cli.sh"
-        commands = (["bash", str(installer), remote, tag, str(binary)],
-                    [str(binary / "keel"), "migrate", "--check"])
         env = {**os.environ, "GH_TOKEN": os.environ.get("KEEL_API_TOKEN", "")}
+        version_command = [sys.executable, str(Path(source) / "tools/release.py"), "--version-only"]
+        proc = run(version_command, cwd=source, check=False, env=env)
+        log.append(f"$ {' '.join(version_command)}\n{proc.stdout}{proc.stderr}")
+        version = proc.stdout.strip()
+        if proc.returncode or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
+            log.append("The target release did not report a published CLI version; installation was not attempted.")
+            return "migrate"
+        install_root = Path(d) / "cli"
+        installer = Path(source) / "scripts/install_cli.sh"
+        commands = (["bash", str(installer), version, str(install_root)],
+                    [str(install_root / "bin/keel"), "migrate", "--check"])
         for cmd in commands:
             proc = run(cmd, cwd=root, check=False, env=env)
             log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
