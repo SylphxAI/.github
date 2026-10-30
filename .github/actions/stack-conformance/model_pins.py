@@ -10,6 +10,8 @@ from urllib.parse import quote
 
 POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy/model-aliases.json"
 BASELINE_MARKER = "# model-alias-ratchet-v1"
+SELECTOR_RULE = "model-selector"
+SELECTOR_MARKER = "# stack-rule-adopted-v1 " + SELECTOR_RULE
 CONTRACT = ("https://github.com/SylphxAI/cloud/blob/main/docs/adr/"
             "ADR-01M58DAMBRRTBRYRD3HSQQVD1S-model-identity-naming-and-price-binding.md")
 _scope_spec = importlib.util.spec_from_file_location("source_scope", pathlib.Path(__file__).with_name("source_scope.py"))
@@ -58,7 +60,8 @@ FAMILIES = ("deepseek", "claude", "gpt", "chatgpt", "gemini", "grok", "mistral",
 FAMILY = (r"(?:(?:" + "|".join(FAMILIES) + r")[.-][a-z0-9][a-z0-9.:-]*"
           r"|o[134](?:[-.][a-z0-9][a-z0-9.:-]*)?)")
 TOKEN = re.compile(r"(?<![\w./-])(?:[a-z0-9][a-z0-9_.-]*/)*" + FAMILY + r"(?![\w/-])", re.I)
-IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9_.:-]*(?:/[a-z0-9][a-z0-9_.:-]*)+", re.I)
+IDENTIFIER = re.compile(r"(?<![\w./:-])[a-z0-9][a-z0-9_.:-]*(?:/[a-z0-9][a-z0-9_.:-]*)+(?![\w/:-])", re.I)
+BARE_FAMILY = re.compile(r"(?:" + "|".join(FAMILIES) + r"|o[134])(?:[.-][a-z0-9][a-z0-9.:-]*)?", re.I)
 ALIAS = re.compile(r"[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*-latest")
 VENDOR_NAMESPACES = {"anthropic", "openai", "deepseek", "google", "mistralai", "meta-llama",
                      "qwen", "moonshotai", "x-ai", "z-ai", "cohere", "amazon", "microsoft", "soniox"}
@@ -126,7 +129,55 @@ def scalar_model(clean, start, end, config):
     line_end = clean.find("\n", end)
     prefix = clean[line_start:start].rstrip()
     suffix = clean[end:line_end if line_end >= 0 else len(clean)].strip()
+    if not prefix:
+        prefix = clean[:start].rstrip()
     return prefix.endswith((":", "=")) and not suffix
+
+
+def model_selector(clean, start, code=None):
+    """Recognize selection fields, constants and calls, across line breaks.
+
+    Inspect the adjacent expression rather than any earlier word containing
+    'model': repository paths and provider dependencies are not selectors.
+    """
+    boundary = max(clean.rfind(delimiter, 0, start) for delimiter in ";{},")
+    prefix = clean[boundary + 1:start].rstrip("\"'` \t\r\n")
+    # An array item, fallback, optional wrapper or typed assignment keeps the
+    # same selecting field. Stop at a statement/object boundary; quoted values
+    # cannot supply selector names for their neighbours.
+    candidate = re.search(
+        r"(?:^|[\s.,(\[{])[\"']?(?P<name>[A-Za-z_$][\w$]*)[\"']?\s*"
+        r"(?:\s*:\s*(?:&(?:'static\s+)?str|[A-Za-z_][\w:<>?\[\] &.]*))?"
+        r"\s*(?::=|[:=]|\()\s*(?:[\w.]+\s*\(\s*)?"
+        r"(?:\[\s*)?$", prefix)
+    if candidate is None:
+        # Null-coalescing / environment fallbacks are still hard-coded
+        # defaults for the directly assigned model selector.
+        candidate = re.search(
+            r"\b(?P<name>[A-Za-z_$][\w$]*)\s*[:=]\s*"
+            r"[^;{}\n]*?(?:\?\?|\|\|)\s*$", prefix)
+    if candidate is None:
+        # Every literal in a declared model list is a selector, including
+        # later items whose immediate prefix is another literal and a comma.
+        view = code if code is not None else clean
+        opening = view.rfind("[", 0, start)
+        if opening > view.rfind("]", 0, start) and opening + 1 < start:
+            return model_selector(clean, opening + 1, code)
+        return False
+    if code is not None:
+        at = boundary + 1 + candidate.start("name")
+        end = boundary + 1 + candidate.end("name")
+        if not code[at:end].strip():
+            # A quoted object key has a real colon outside its string. Words
+            # inside a description literal cannot select the next literal.
+            tail = end + 1
+            while tail < start and clean[tail].isspace():
+                tail += 1
+            if not (clean[at - 1:at] == clean[end:end + 1] in {"\"", "'"}
+                    and code[tail:tail + 1] == ":"):
+                return False
+    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", candidate["name"]).lower()
+    return bool(re.search(r"(?:^|_)(?:models?|model_(?:id|name|slug))(?:_(?:default|fallback))?$", name))
 
 
 def scan(tree, repository, aliases, source_views):
@@ -152,7 +203,7 @@ def scan(tree, repository, aliases, source_views):
         # Literal substring searches run in C and avoid the full boundary regex
         # across large generated protocols and data assets with no candidate.
         lowered = text.lower()
-        if not any(family + separator in lowered for family in FAMILIES for separator in ("-", ".")) and not re.search(
+        if "model" not in lowered and not any(family + separator in lowered for family in FAMILIES for separator in ("-", ".")) and not re.search(
                 r"(?<![\w.-])o[134](?!\w)", lowered) and not any(v + "/" in lowered for v in vendors):
             continue
         try:
@@ -166,14 +217,24 @@ def scan(tree, repository, aliases, source_views):
             continue
         matches = {(m.start(), m.end()): m.group() for m in TOKEN.finditer(clean)
                    if re.search(r"\d|-latest$", m.group()) or m.group() in {"deepseek-chat", "deepseek-reasoner"}}
+        original_matches = set(matches)
         # Model fields cover vendor families absent from the recognizer. A
         # vendor namespace alone could also be a dependency or repository id.
         for m in IDENTIFIER.finditer(clean):
             context = clean[clean.rfind("\n", 0, m.start()) + 1:m.start()]
             if (m.group().count("/") == 1 and m.group().split("/", 1)[0] in vendors
                     and m.group()[-1].isalnum()
-                    and re.search(r"\b\w*model\w*\b", context, re.I)):
+                    and re.search(r"\b\w*model\w*\b", context, re.I)
+                    and model_selector(clean, m.start(), code)):
                 matches[(m.start(), m.end())] = m.group()
+        original_matches |= set(matches)
+        # A selecting field supplies the context for arbitrary provider lines
+        # and unversioned families. No provider allowlist determines coverage.
+        for pattern in (IDENTIFIER, BARE_FAMILY):
+            for m in pattern.finditer(clean):
+                if (m.group()[-1].isalnum() and model_selector(clean, m.start(), code)
+                        and scalar_model(clean, m.start(), m.end(), code is None)):
+                    matches[(m.start(), m.end())] = m.group()
         seen = collections.Counter()
         for (start, end), model in sorted(matches.items()):
             if code is not None and code[start:start + len(model)].strip():
@@ -182,14 +243,18 @@ def scan(tree, repository, aliases, source_views):
                 continue
             if model.endswith((".tar.bz2", ".tar.gz", ".zip", ".json", ".rs", ".py")):
                 continue
-            if re.fullmatch(r"o[134]", model) and not re.search(
-                    r"\b\w*model\w*\b", clean[clean.rfind("\n", 0, start) + 1:start], re.I):
+            if (re.fullmatch(r"o[134]", model.rsplit("/", 1)[-1])
+                    and not ("/" in model and model.split("/", 1)[0].lower() in vendors)
+                    and not model_selector(clean, start, code)):
                 continue  # Short reasoning-model ids also occur as ordinary record ids.
             if ALIAS.fullmatch(model) and (aliases is None or model in aliases):
                 continue
             seen[model] += 1
-            findings.append({"path": path, "line": clean.count("\n", 0, start) + 1,
-                             "model": model, "occurrence": seen[model], "contract": CONTRACT})
+            row = {"path": path, "line": clean.count("\n", 0, start) + 1,
+                   "model": model, "occurrence": seen[model], "contract": CONTRACT}
+            if (start, end) not in original_matches:
+                row["rule"] = SELECTOR_RULE
+            findings.append(row)
     return {"findings": findings, "unreadable": unreadable, "exemptions": exemptions, "limits": LIMITS}
 
 
@@ -197,8 +262,12 @@ def baseline_key(row):
     return f"model-pin {quote(row['path'], safe='/._-')} {row['model']} {row['occurrence']}"
 
 
+def rule_id(row):
+    return row.get("rule", "model-pin")
+
+
 def decide(findings, head_records, base_records, base_findings, head_adopted, base_adopted,
-           *, allow_seed=False):
+           *, allow_seed=False, seed_rules=frozenset()):
     actual = {baseline_key(row) for row in findings}
     inherited = {baseline_key(row) for row in base_findings}
     errors = []
@@ -207,6 +276,8 @@ def decide(findings, head_records, base_records, base_findings, head_adopted, ba
     if head_records and not head_adopted:
         errors.append("model-pin baseline records require " + BASELINE_MARKER)
     allowed = base_records | (inherited if allow_seed and not base_adopted else set())
+    allowed |= {baseline_key(row) for row in base_findings
+                if rule_id(row) == SELECTOR_RULE and SELECTOR_RULE in seed_rules}
     for key in sorted(head_records - allowed):
         errors.append("model-pin baseline cannot grow or seed new debt: " + key)
     for key in sorted(head_records - actual):
