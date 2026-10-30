@@ -1,7 +1,9 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 
@@ -72,6 +74,30 @@ class StaticPublication(unittest.TestCase):
             self.run_publish(package)
         self.assertEqual((self.root / "Version.json").read_bytes(), self.previous)
         self.assertFalse((self.root / "releases").exists())
+
+    def test_serving_files_and_directories_are_readable_under_a_private_umask(self):
+        package = self.package()
+        original_umask = os.umask(0o077)
+        try:
+            self.run_publish(package)
+        finally:
+            os.umask(original_umask)
+        for directory in [self.root / "releases", self.root / "releases/one"]:
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((self.root / "releases/one/asset.bundle").stat().st_mode), 0o644)
+        for receipt in self.state.joinpath("receipts").glob("*"):
+            self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
+
+    def test_pointer_permissions_survive_activation_and_rollback(self):
+        target = self.root / "Version.json"
+        target.chmod(0o640)
+        def serving(_):
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+            raise RuntimeError("serving failure")
+        with self.assertRaisesRegex(RuntimeError, "serving failure"):
+            self.run_publish(self.package(), serving=serving)
+        self.assertEqual(target.read_bytes(), self.previous)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
 
     def test_missing_or_refused_load_proof_cannot_change_pointer(self):
         for verdict in ("fail", "missing"):
