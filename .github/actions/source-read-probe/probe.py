@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
-from access_ready import ReadinessError, wait_for_identity
+from access_ready import ReadinessError, issued_subject, wait_for_identity
 
 API = "https://api.sylphx.com"
 POLICY = re.compile(r"orgs/[A-Za-z0-9_-]+/trust_policies/[a-z][a-z0-9_-]{0,62}\Z")
@@ -170,12 +170,10 @@ def run(receipts, ci_name, mode, targets, denied_policy):
     exchange = receipts.request(API + "/v1/access/github/token", body={"name": ci_name, "token": oidc})
     access = mask(exchange.get("api_key"))
     key = exchange.get("key", {})
-    principal = key.get("status", {}).get("principal")
-    org = key.get("name", "").split("/api_keys/", 1)[0]
-    if (not isinstance(principal, str)
-            or not principal.startswith(org + "/principals/")
-            or not re.fullmatch(r"orgs/[A-Za-z0-9_-]+/principals/prn_[A-Za-z0-9]+", principal)):
-        raise ProbeError("Access response lacks the stable workload principal")
+    try:
+        org, principal = issued_subject(exchange)
+    except ReadinessError:
+        raise ProbeError("Access response lacks the stable workload principal") from None
     receipts.data.update(principal=principal, ci_name=ci_name, mode=mode,
                          access_key=key.get("name"), access_expires_at=exchange.get("expires_at"))
     receipts.save()

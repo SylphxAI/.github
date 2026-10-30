@@ -54,7 +54,7 @@ def run_script(replies: dict[str, str], env: dict[str, str]) -> tuple[int, str, 
         if isinstance(raw,str):
             issued = __import__("json").loads(raw)
             if issued.get("api_key"):
-                issued["key"] = {"name":"orgs/example/api_keys/test","status":{"principal":"orgs/example/principals/prn_test"}}
+                issued["key"] = {"name":"orgs/example/projects/prj_test/envs/env_test/api_keys/test","status":{"principal":"orgs/example/principals/prn_test"}}
                 data["/v1/access/github/token"] = __import__("json").dumps(issued)
                 Path(tmp,"replies.json").write_text(__import__("json").dumps(data))
         proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)

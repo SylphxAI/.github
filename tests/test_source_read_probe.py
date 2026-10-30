@@ -36,7 +36,7 @@ class FakeReceipts:
         if label == "GitHub Actions OIDC":
             return {"value": "test-oidc"}
         if url.endswith("/access/github/token"):
-            return {"api_key": "test-access", "key": {"name": "orgs/org_test/api_keys/key1", "status": {"principal": "orgs/org_test/principals/prn_test"}},
+            return {"api_key": "test-access", "key": {"name": "orgs/org_test/projects/prj_test/envs/env_test/api_keys/key1", "status": {"principal": "orgs/org_test/principals/prn_test"}},
                     "active_after_ms": 3000, **self.overrides.get("access", {})}
         if url.endswith("/v1/whoami"):
             return {"org": "orgs/org_test", "principal": "prn_test", **self.overrides.get("identity", {})}
