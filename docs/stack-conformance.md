@@ -289,12 +289,19 @@ schedule. Fetch the Git objects in bulk without materializing a working tree:
 git clone --depth 1 --no-checkout <url> <dir>
 ```
 
-The checker never lazily fetches individual source blobs. A `blob:none` clone
-with sparse checkout must already contain every blob the check reads; otherwise
-it fails promptly and names the missing path and checkout setting. Unsupported
-assets may remain absent. In Actions, omit `sparse-checkout` so checkout fetches
-the required objects together. The check prints each scanning phase and reports
-Git-read progress at least every five seconds while it walks blobs.
+The checker never lazily fetches individual source blobs. With a `blob:none`
+partial clone, it inventories missing objects for each compared tree, then
+fetches missing source, configuration and policy candidates together from the
+configured promisor remote. This also covers historical base blobs that an
+ordinary depth-one checkout never materialized. Sparse checkouts and renamed
+remotes use the same path; unrelated binary assets may remain absent. A failed
+or timed-out bulk fetch fails the check and names the affected revision rather
+than silently skipping its source. Complete clones retain their existing
+missing-object behavior without additional Git processes.
+
+The check prints each scanning phase, announces each bulk fetch, bounds that
+fetch to 60 seconds, and reports Git-read progress at least every five seconds
+while it walks blobs.
 
 ## Limits
 
