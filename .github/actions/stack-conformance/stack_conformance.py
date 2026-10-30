@@ -168,7 +168,44 @@ JS_LAUNCHERS = frozenset({
 })
 
 
+def partial_clone(repo):
+    """Avoid extra Git processes for ordinary, complete repositories.
+
+    Git records a partial clone in its config and marks downloaded promisor
+    packs. Inspect those local markers; unfamiliar layouts take the safe,
+    inventory-first path. Linked worktrees share their common object store.
+    """
+    root = pathlib.Path(repo).resolve()
+    gitdir = pathlib.Path(os.environ.get("GIT_DIR", root / ".git"))
+    if not gitdir.is_absolute():
+        gitdir = root / gitdir
+    try:
+        if gitdir.is_file():
+            marker = gitdir.read_text().strip()
+            if not marker.startswith("gitdir: "):
+                return True
+            gitdir = (gitdir.parent / marker[8:]).resolve()
+        elif not gitdir.is_dir():
+            if (root / "HEAD").is_file() and (root / "config").is_file():
+                gitdir = root  # A bare repository.
+            else:
+                return True
+        common = gitdir
+        if (gitdir / "commondir").is_file():
+            common = (gitdir / (gitdir / "commondir").read_text().strip()).resolve()
+        for config in {common / "config", gitdir / "config.worktree"}:
+            if config.is_file() and re.search(
+                    r"(?im)^\s*(?:promisor(?:\s*=\s*(?:true|yes|on|1))?\s*(?:[#;].*)?$|"
+                    r"partialclone\s*=\s*\S+)", config.read_text()):
+                return True
+        return any((common / "objects" / "pack").glob("*.promisor"))
+    except (OSError, UnicodeError):
+        return True
+
+
 def missing_git_objects(repo, rev):
+    if not partial_clone(repo):
+        return frozenset()
     tree = git(repo, "rev-parse", rev + "^{tree}").strip()
     return _missing_git_tree_objects(repo, tree)
 

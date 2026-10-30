@@ -147,6 +147,7 @@ class ScannerWalkTests(unittest.TestCase):
                 target.write_text(text)
             git(origin, 'add', '.')
             git(origin, 'commit', '-qm', 'fixture')
+            self.assertFalse(sc.partial_clone(str(origin)))
             subprocess.run(['git', 'clone', '--filter=blob:none', '--no-checkout', origin.as_uri(), str(clone)],
                            check=True, capture_output=True)
             git(clone, 'sparse-checkout', 'set', '--cone', '.github')
@@ -167,6 +168,19 @@ class ScannerWalkTests(unittest.TestCase):
             fetches = [event for event in events if event.get('event') == 'child_start'
                        and 'fetch' in event.get('argv', [])]
             self.assertEqual(fetches, [])
+
+            # The remote need not be named origin, and linked worktrees use
+            # their common repository's promisor packs and configuration.
+            git(clone, 'remote', 'rename', 'origin', 'upstream')
+            linked = root / 'linked'
+            git(clone, 'worktree', 'add', '--no-checkout', '-b', 'linked', str(linked))
+            for repository in (clone, linked):
+                with self.subTest(repository=repository.name):
+                    self.assertTrue(sc.partial_clone(str(repository)))
+                    with sc.Tree(str(repository), 'HEAD') as tree:
+                        self.assertIsNone(tree.read('absent.ts'))
+                        with self.assertRaisesRegex(ValueError, 'required Git blob is missing: src/product.ts'):
+                            tree.read('src/product.ts')
 
 
 if __name__ == '__main__':
