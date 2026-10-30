@@ -152,6 +152,19 @@ PY
         self.assertEqual(report["unreadable"], [])
         self.assertEqual([r["line"] for r in report["findings"]], [11, 1])
 
+    def test_indented_workflow_python_heredoc(self):
+        report = scan('''jobs:
+  publish:
+    steps:
+      - run: |
+          python3 - <<'PY'
+          import subprocess
+          subprocess.run(['git', 'push', '--force', 'origin', 'pin'])
+          PY
+''', ".github/workflows/publish.yml")
+        self.assertEqual(report["unreadable"], [])
+        self.assertEqual([r["line"] for r in report["findings"]], [7])
+
 
 class RatchetTests(unittest.TestCase):
     def setUp(self):

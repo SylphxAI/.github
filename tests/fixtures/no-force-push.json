@@ -15,6 +15,7 @@
     "bash -c 'git push --force origin HEAD:pin'",
     "git push -- origin +HEAD:pin",
     "git push --mirror origin",
+    "git push --repo=origin +HEAD:pin",
     "git push -f origin refs/tags/v1 HEAD:refs/heads/pin",
     "gh api --method PATCH 'repos/example/repo/git/refs/heads/pin' --field sha=abc --field force=true"
   ],
@@ -36,6 +37,7 @@
     "git push --force-with-lease origin refs/tags/v1 refs/tags/v2",
     "gh api --method PATCH 'repos/example/repo/git/refs/heads/pin' --field sha=abc --field force=false",
     "gh api --method PATCH 'repos/example/repo/git/refs/tags/v1' --field sha=abc --field force=true",
-    "git clone --mirror https://example.invalid/repo"
+    "git clone --mirror https://example.invalid/repo",
+    "git push --force --tags origin"
   ]
 }

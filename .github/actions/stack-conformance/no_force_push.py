@@ -12,6 +12,7 @@ import json
 import pathlib
 import re
 import shlex
+import textwrap
 from urllib.parse import quote
 
 BASELINE_MARKER = "# force-push-ratchet-v1"
@@ -45,11 +46,16 @@ def unsafe_push(argv):
     forced = None
     destinations = []
     remote_seen = False
+    only_tags = False
     i += 1
     while i < len(argv):
         arg = argv[i]
         if options and arg == "--":
             options = False
+        elif options and arg == "--tags":
+            only_tags = True
+        elif options and arg.startswith("--repo="):
+            remote_seen = True
         elif options and arg in {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}:
             if arg == "--repo":
                 remote_seen = True
@@ -67,8 +73,8 @@ def unsafe_push(argv):
         i += 1
     # Explicit tag-only refspecs cannot rewrite branch history. Unqualified
     # destinations and mixed branch/tag pushes remain subject to the rule.
-    tags_only = bool(destinations) and all(arg.lstrip("+").rsplit(":", 1)[-1].startswith("refs/tags/")
-                                         for arg in destinations)
+    tags_only = (only_tags and not destinations) or (bool(destinations) and all(
+        arg.lstrip("+").rsplit(":", 1)[-1].startswith("refs/tags/") for arg in destinations))
     if tags_only:
         return None
     return forced or ("forced refspec" if any(arg.startswith("+") for arg in destinations) else None)
@@ -235,7 +241,7 @@ def workflow_scripts(text):
 
 
 def python_commands(text):
-    module = ast.parse(text)
+    module = ast.parse(textwrap.dedent(text))
     literals = {}
     for node in ast.walk(module):
         if isinstance(node, ast.Assign):
@@ -300,7 +306,7 @@ def shell_wrappers(sources):
                 continue
             try:
                 commands = list(executable_commands(body))
-            except ValueError:
+            except (ValueError, SyntaxError):
                 continue
             for argv, _ in commands:
                 expanded = expand_wrapper(argv, templates)
@@ -331,7 +337,7 @@ def expand_wrapper(argv, templates):
 def unsafe_ref_update(argv):
     if (len(argv) >= 3 and argv[:2] == ["gh", "api"] and "PATCH" in argv
             and any("/git/refs/heads/" in arg for arg in argv)
-            and any(arg in {"force=true", "-Fforce=true", "--field=force=true"} for arg in argv)):
+            and any(arg in {"force=true", "-Fforce=true", "-fforce=true", "--field=force=true", "--raw-field=force=true"} for arg in argv)):
         return "forced GitHub branch-ref update"
     return None
 
