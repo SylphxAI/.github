@@ -1,5 +1,14 @@
 # Stack conformance
 
+The economy cache rule concerns player balances, grants, rewards, purchases and
+entitlements. Infrastructure caches, credential permissions and queue leases do
+not become player economy authority because a function contains `claim` or
+`grant`. Reviewed repository domains live in the checker's immutable
+`cache-economy-profiles.json`: Spiron has no player economy; Cloud is checked in
+Money and entitlement paths. Other rules still scan those repositories. The
+domain policy is included in the checker source fingerprint, and existing cache
+approval and shrinking-baseline checks still apply inside the economy domain.
+
 `.github/actions/stack-conformance` fails a change that adds a departure from
 the default stack in SylphxAI/skills `skills/self-challenge/references/stack.md`: backend services in
 Rust, first-party schema under Atlas. Departures a repository already has are
@@ -363,6 +372,15 @@ The same stack check rejects:
 | `keel-local-sku <path>:<line> <struct>` | game source declares `struct *Sku` rather than using `keel_commerce`, `keel::commerce::iap` or `cubeage_kit` commerce types |
 | `keel-cpu-pixels <path>:<line> <function>` | game source declares `fn *_pixels(...) -> Vec<u8>` rather than using Keel shaders or shared primitives |
 | `keel-boilerplate <path>` | the game contains `docs/BUILDING.md` or `scripts/measure-rust-debug.py`; the build/debug defaults belong in shared CI |
+| `keel-pack-source <path>:<line> <stage>` | a Docker stage runs a web pack without importing `ARG SYLPHX_GIT_COMMIT_SHA` before its packing `RUN`; add that declaration after the stage's `FROM` |
+
+The platform supplies the exact source commit as a Docker build argument. A
+global declaration before `FROM` does not expose it inside a stage. A stage
+may declare the argument itself or inherit it from a prior stage. The check
+follows tracked wrapper scripts and literal pack argument arrays, and the
+repin repair uses the same detector. Unrelated build/runtime stages, native
+profiles and pack inspection commands need no web source argument. Script
+generation and arbitrary computed commands remain outside static detection.
 
 Comments and string literals are not source declarations. Importing an engine
 commerce type does not excuse a second local SKU struct. These rules cannot
@@ -631,8 +649,9 @@ C3 derives product identities from the dated architecture-map product rows,
 resolved by numeric repository ID in `policy/architecture-repositories.json`;
 the checker contains no hand-maintained product list. Engine, service and tool
 repositories do not become downstream products merely because of their org. The dated paginated census
-covers SylphxAI, Cubeage, Cubeage-limited, EpiowAI, OzyrixLtd and TseFamily
-(657 repository IDs, 218 unarchived at the 2026-10-29 read). Numeric IDs retain identity across canonical
+covers SylphxAI, Cubeage, Cubeage-limited, EpiowAI and OzyrixLtd
+(653 repository IDs, 214 unarchived at the 2026-10-29 read). TseFamily is a
+personal organization and is excluded from company censuses, baselines and rollouts. Numeric IDs retain identity across canonical
 names. Archived rows remain visible as history and do not seed import rules.
 The policy declares which layers are shared, including Cubeage's platform,
 kit and tycoon engine; Cubeage layers use their own title population.

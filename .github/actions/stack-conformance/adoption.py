@@ -115,6 +115,27 @@ def source_profile(tree):
             raise ValueError("unreadable checker source: " + force_path)
         ast.parse(value)
         sources[force_path] = hashlib.sha256(value.encode()).hexdigest()
+    domain_path = PREFIX + "cache-economy-profiles.json"
+    if domain_path in tree.paths():
+        value = tree.read(domain_path)
+        if value is None:
+            raise ValueError("unreadable checker source: " + domain_path)
+        json.loads(value)
+        sources[domain_path] = hashlib.sha256(value.encode()).hexdigest()
+    deal_path = PREFIX + "deal_randomness.py"
+    if deal_path in tree.paths():
+        value = tree.read(deal_path)
+        if value is None:
+            raise ValueError("unreadable checker source: " + deal_path)
+        ast.parse(value)
+        sources[deal_path] = hashlib.sha256(value.encode()).hexdigest()
+    scope_path = "policy/deal-randomness-scope.json"
+    if deal_path in sources:
+        value = tree.read(scope_path)
+        if value is None:
+            raise ValueError("deal randomness scope policy missing")
+        json.loads(value)
+        sources[scope_path] = hashlib.sha256(value.encode()).hexdigest()
     if texts["stack_conformance.py"] is None or "stack_conformance.py" not in (texts["action.yml"] or ""):
         raise ValueError("unrecognized stack checker entrypoint")
     module = ast.parse(texts["stack_conformance.py"])
@@ -127,6 +148,8 @@ def source_profile(tree):
         if texts["architecture.py"] is None:
             raise ValueError("architecture checker source missing")
         rules |= architecture_rules(texts["architecture.py"])
+        if "architecture/C1/deal-randomness" in rules and deal_path not in sources:
+            raise ValueError("deal randomness checker source missing")
         if "architecture/C2/tenant-read-functions" in rules and tenant_path not in sources:
             raise ValueError("tenant declaration checker source missing")
     if ("model_pins", "decide") in calls:
@@ -357,8 +380,10 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
              lambda row: "architecture/" + row["class"] + "/" + row["rule"]),
             (base_models, head_models, sc.model_pins.baseline_key, lambda row: "model-pin"),
             (base_force, head_force, sc.no_force_push.baseline_key, lambda row: "force-push")):
-        inherited = {key(row) for row in before["findings"]}
+        inherited = {key(row) for row in before["findings"] if not row.get("scope_warning")}
         for row in after["findings"]:
+            if row.get("scope_warning"):
+                continue
             if rule_id(row) in introduced:
                 if key(row) not in inherited:
                     raise ValueError("new head debt cannot be adopted: " + key(row))
