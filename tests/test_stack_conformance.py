@@ -550,6 +550,16 @@ class ModelPinTest(unittest.TestCase):
             "thirdparty/legacy.py": 'print "Python 2"\n',
         }), [])
 
+    def test_vendor_prefix_predicates_are_not_complete_model_ids(self):
+        self.assertEqual(self.scan({
+            "src/policy.py": 'any(model.startswith("openai/gpt-") for model in models)\n',
+            "src/policy.ts": 'const modelPrefix = "anthropic/claude-";\n',
+            "config.yml": 'model_prefix: "deepseek/deepseek-"\n',
+        }), [])
+        self.assertEqual(len(self.scan({
+            "src/policy.py": 'model = "openai/custom-version-v7"\n',
+        })), 1)
+
     def test_test_files_comments_and_inline_rust_test_modules_pass(self):
         pinned = 'const MODEL = "gpt-5.1-2025-11-13";'
         for path in ("tests/client.ts", "fixtures/client.json", "src/client.test.ts",
