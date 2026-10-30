@@ -122,6 +122,8 @@ class SqlTests(unittest.TestCase):
             "WITH gone AS (DELETE FROM accounts WHERE id = 42 RETURNING id) SELECT * FROM gone;",
             "SELECT * FROM accounts FOR UPDATE;",
             "CREATE TABLE links (id int REFERENCES accounts ON UPDATE CASCADE);",
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON accounts TO app_role;",
+            "REVOKE UPDATE, DELETE ON accounts FROM app_role;",
             "INSERT INTO accounts (id) VALUES (1) ON DUPLICATE KEY UPDATE id = 1;",
             "INSERT INTO accounts (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET id = 1;",
             "SELECT TRUNCATE(1.23, 1);",
