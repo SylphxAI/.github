@@ -11,6 +11,7 @@ import datetime
 import functools
 import hashlib
 import io
+import importlib.util
 import json
 import pathlib
 import re
@@ -19,6 +20,9 @@ import tomllib
 from urllib.parse import quote
 
 CONTRACT = "https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/architecture.md"
+_scope_spec = importlib.util.spec_from_file_location("source_scope", pathlib.Path(__file__).with_name("source_scope.py"))
+source_scope = importlib.util.module_from_spec(_scope_spec)
+_scope_spec.loader.exec_module(source_scope)
 BASELINE_MARKER = "# architecture-ratchet-v2"
 LEGACY_BASELINE_MARKER = "# architecture-ratchet-v1"
 SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "examples", "docs",
@@ -51,7 +55,7 @@ LIMITS = [
 
 def excluded(path):
     p = pathlib.PurePosixPath(path)
-    return (bool(set(p.parts) & SKIP) or p.name.startswith("test_")
+    return (bool({part.casefold() for part in p.parts} & SKIP) or p.name.startswith("test_")
             or bool(re.search(r"(?:[._-](?:test|spec)|_test)\.", p.name)))
 
 
@@ -153,7 +157,7 @@ def matching_end(code, start, opening, closing):
 
 
 def loops(clean, code, suffix):
-    """(start,end,bounded) offsets, preserving the body of multiline loops."""
+    """Known unbounded loop bodies, excluding collection iteration and traits."""
     if suffix == ".py":
         lines = clean.splitlines(keepends=True)
         offsets = [0]
@@ -161,27 +165,31 @@ def loops(clean, code, suffix):
             offsets.append(offsets[-1] + len(line))
         tree = ast.parse(clean)
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.While, ast.For, ast.AsyncFor)):
+            retry = isinstance(node, ast.While) and bool(re.search(r"\battempt\w*\s*<", lines[node.lineno - 1]))
+            if not (isinstance(node, ast.While) and (retry or isinstance(node.test, ast.Constant)
+                    and node.test.value in (True, 1))):
                 continue
-            header = lines[node.lineno - 1]
             body = clean[offsets[node.lineno - 1]:offsets[node.end_lineno]]
-            bounded = bool((isinstance(node, ast.For) and isinstance(node.iter, (ast.List, ast.Tuple, ast.Set)))
-                           or (isinstance(node, ast.For) and isinstance(node.iter, ast.Call)
-                               and isinstance(node.iter.func, ast.Name) and node.iter.func.id == "range")
-                           or re.search(r"(?:monotonic\(\)|time\(\)|now\(\))\s*<", header)
-                           or (re.search(r"attempt\w*\s*<", header) and re.search(r"attempt\w*\s*\+=\s*[1-9]", body)))
+            bounded = (any(isinstance(child, (ast.Break, ast.Return, ast.Raise)) for child in ast.walk(node))
+                       or retry and bool(re.search(r"\battempt\w*\s*\+=\s*[1-9]", body)))
             yield offsets[node.lineno - 1], offsets[node.end_lineno], bounded
         return
     if suffix in {".sh", ".bash"}:
-        for m in re.finditer(r"\b(?:while|for)\b([\s\S]*?)\bdone\b", code):
-            yield m.start(), m.end(), bool(re.match(r"for\s+\w+\s+in\b", m.group()))
+        for m in re.finditer(r"\bwhile\s+(?:true|:)\s*;?\s*do\b[\s\S]*?\bdone\b", code):
+            yield m.start(), m.end(), bool(re.search(r"\b(?:break|return|exit)\b", m.group()))
         return
-    for m in re.finditer(r"\b(?:while|loop|for)\b[^{}]*\{", code):
+    pattern = r"\bwhile\s*(?:\(\s*true\s*\)|true\b|\(?\s*attempt\w*\s*<\s*\d+\s*\)?)\s*\{"
+    if suffix == ".rs":
+        pattern += r"|\bloop\s*\{"
+    elif suffix == ".go":
+        pattern += r"|\bfor\s*(?:true\s*)?\{"
+    else:
+        pattern += r"|\bfor\s*\(\s*;\s*;\s*\)\s*\{"
+    for m in re.finditer(pattern, code):
         end = brace_end(code, m.end())
-        header = code[m.start():m.end()]
-        bounded = bool(re.search(r"\bfor\b.*\bin\s+\d+\s*\.\.|now\(\)\s*<", header)
-                       or (re.search(r"attempt\w*\s*<", header)
-                           and re.search(r"attempt\w*\s*(?:\+\+|\+=\s*[1-9])", code[m.start():end])))
+        body = code[m.end():end]
+        bounded = bool(re.search(r"\b(?:break|return|throw)\b", body)
+                       or "attempt" in m.group() and re.search(r"\battempt\w*\s*(?:\+\+|\+=\s*[1-9])", body))
         yield m.start(), end, bounded
 
 
@@ -275,7 +283,7 @@ def economy_name(name):
                 or re.search(r"recharge.*call_?back", words))
 
 
-def named_bodies(clean, code, suffix):
+def named_bodies(clean, code, suffix, name_filter=None):
     """Ordinary declarations only; balanced bodies never bleed into a neighbour."""
     ident = r"[A-Za-z_$][\w$]*"
     if suffix == ".rs":
@@ -290,33 +298,33 @@ def named_bodies(clean, code, suffix):
                    r"(?P<method>" + ident + r")(?:\s*<[^{};]*?>)?\s*\()")
     for match in re.finditer(pattern, code):
         name = next((v for v in match.groupdict().values() if v), "")
-        if name in {"if", "for", "while", "switch", "catch", "with"}:
+        if name in {"if", "for", "while", "switch", "catch", "with"} or name_filter and not name_filter(name):
             continue
         params_end = matching_end(code, match.end(), "(", ")")
         # A declaration ends at a semicolon; a call is not a function body.
-        tail = re.match(r"[^;{}=]*?(?:=>\s*)?\{", code[params_end:])
+        tail = re.compile(r"[^;{}=]*?(?:=>\s*)?\{").match(code, params_end)
         if tail is None:
             continue
-        start = params_end + tail.end()
+        start = tail.end()
         end = brace_end(code, start)
         yield name, match.start(), start, end
     if suffix in {".ts", ".tsx", ".js", ".mjs", ".cjs"}:
         route = r"\.(?:post|put|patch)\s*\(\s*(['\"])(?P<name>[^'\"]+)\1\s*,\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{"
         for match in re.finditer(route, clean):
-            if code[match.start()] == ".":
+            if code[match.start()] == "." and (name_filter is None or name_filter(match["name"])):
                 yield match["name"], match.start(), match.end(), brace_end(code, match.end())
 
 
 def economy_cache_reads(clean, code, suffix):
     if suffix not in {".java", ".rs", ".ts", ".tsx", ".js", ".mjs", ".cjs"}:
         return
+    if not any(token in code.lower() for token in ("cache", "redis", "valkey")):
+        return
     cache_type = r"\w*(?:Cache|cache)\w*"
     # A field/parameter's cache type also identifies a receiver called `offers`.
     aliases = set(re.findall(r"\b" + cache_type + r"(?:\s*<[^;={}()]*>)?\s+(\w+)\b", code))
     aliases.update(re.findall(r"\b(\w+)\s*:\s*&?(?:mut\s+)?(?:[\w:]+::)?" + cache_type + r"\b", code))
-    for name, header, start, end in named_bodies(clean, code, suffix):
-        if not economy_name(name):
-            continue
+    for name, header, start, end in named_bodies(clean, code, suffix, economy_name):
         body = code[start:end]
         candidates = []
         # Java TemplateCache.getCache(), cached_price(), Cache::get(), etc.
@@ -492,6 +500,12 @@ def scan_file(path, text, repository, declared, retired_routes):
         end = matching_end(code, m.end(), "(", ")")
         if READ.search(code[m.end():end]):
             add(m.start(), "C5", "polling-timer", "An interval advances ordinary state reads instead of subscribing to events", end)
+    if suffix in {".ts", ".tsx", ".js", ".mjs", ".cjs"} and "setTimeout" in code:
+        for name, header, start, end in named_bodies(clean, code, suffix):
+            body = code[start:end]
+            rearm = r"\bsetTimeout\s*\(\s*(?:\(\s*\)\s*=>\s*)?" + re.escape(name) + r"\b"
+            if READ.search(body) and re.search(rearm, body) and not re.search(r"\b(?:if|return|throw)\b", body):
+                add(header, "C5", "polling-timer", "A timer re-arms a state read without an exit instead of subscribing to events", end)
     suppressions = re.finditer(r"#\s*\[allow\s*\([^)]*\)\]|eslint-disable[^\n]*|#\s*(?:noqa|type:\s*ignore)[^\n]*", text)
     for m in suppressions:
         # A suppression must be an actual comment or Rust attribute, not quoted text.
@@ -585,6 +599,9 @@ def evaluate(tree, repository, changed, today):
             # Deleted paths are outside the head, not unreadable inputs.
             if path in tree.paths():
                 unreadable.append({"path": path, "reason": "git blob unreadable"})
+            continue
+        if source_scope.compiler_generated(text):
+            skipped.append({"path": path, "reason": "protocol compiler output; scan its authored schema instead"})
             continue
         reviewed.append(path)
         try:

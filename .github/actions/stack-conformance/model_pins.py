@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import collections
 import json
+import importlib.util
 import pathlib
 import re
 from urllib.parse import quote
@@ -11,6 +12,10 @@ POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy/model-aliases.jso
 BASELINE_MARKER = "# model-alias-ratchet-v1"
 CONTRACT = ("https://github.com/SylphxAI/cloud/blob/main/docs/adr/"
             "ADR-01M58DAMBRRTBRYRD3HSQQVD1S-model-identity-naming-and-price-binding.md")
+_scope_spec = importlib.util.spec_from_file_location("source_scope", pathlib.Path(__file__).with_name("source_scope.py"))
+source_scope = importlib.util.module_from_spec(_scope_spec)
+_scope_spec.loader.exec_module(source_scope)
+
 SOURCE = {".rs", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
           ".cs", ".java", ".kt", ".swift", ".dart", ".c", ".h", ".cpp", ".hpp",
           ".vue", ".svelte", ".sh", ".bash", ".json", ".toml", ".yaml", ".yml", ".sql", ".proto"}
@@ -47,10 +52,11 @@ EXEMPTIONS = [
 # Recognition is deliberately separate from authorization. Versioned and
 # undated upstream names are candidates; the alias contract authorizes names.
 # An optional pinned catalog can tighten that contract to exact declarations.
-FAMILY = (r"(?:(?:deepseek|claude|gpt|chatgpt|gemini|grok|mistral|mixtral|codestral|"
-          r"ministral|magistral|devstral|pixtral|llama|qwen|qwq|kimi|glm|doubao|"
-          r"command-r|jamba|nova|phi|gemma|yi|sonar|text-embedding|whisper|"
-          r"dall-e|tts)[-.][a-z0-9][a-z0-9.:-]*|o[134](?:[-.][a-z0-9][a-z0-9.:-]*)?)")
+FAMILIES = ("deepseek", "claude", "gpt", "chatgpt", "gemini", "grok", "mistral", "mixtral", "codestral",
+            "ministral", "magistral", "devstral", "pixtral", "llama", "qwen", "qwq", "kimi", "glm", "doubao",
+            "command-r", "jamba", "nova", "phi", "gemma", "yi", "sonar", "text-embedding", "whisper", "dall-e", "tts")
+FAMILY = (r"(?:(?:" + "|".join(FAMILIES) + r")[.-][a-z0-9][a-z0-9.:-]*"
+          r"|o[134](?:[-.][a-z0-9][a-z0-9.:-]*)?)")
 TOKEN = re.compile(r"(?<![\w./-])(?:[a-z0-9][a-z0-9_.-]*/)*" + FAMILY + r"(?![\w/-])", re.I)
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9_.:-]*(?:/[a-z0-9][a-z0-9_.:-]*)+", re.I)
 ALIAS = re.compile(r"[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*-latest")
@@ -84,7 +90,7 @@ def load_aliases(path=None):
 
 def excluded(path):
     p = pathlib.PurePosixPath(path)
-    return (bool(set(p.parts) & SKIP) or p.name.startswith(("test_", "tests_")) or p.stem in {"test", "tests", "spec"}
+    return (bool({part.casefold() for part in p.parts} & SKIP) or p.name.startswith(("test_", "tests_")) or p.stem in {"test", "tests", "spec"}
             or bool(re.search(r"(?:[._-](?:tests?|spec))\.", p.name)))
 
 
@@ -138,9 +144,16 @@ def scan(tree, repository, aliases, source_views):
         if text is None:
             unreadable.append({"path": path, "reason": "git blob unreadable"})
             continue
+        if source_scope.compiler_generated(text):
+            exemptions.append({"path": path, "reason": "protocol compiler output; scan its authored schema instead"})
+            continue
         # Most blobs contain no model-shaped token; they need no parser. This
         # also avoids treating unrelated legacy language syntax as model debt.
-        if not TOKEN.search(text) and not any(v + "/" in text for v in vendors):
+        # Literal substring searches run in C and avoid the full boundary regex
+        # across large generated protocols and data assets with no candidate.
+        lowered = text.lower()
+        if not any(family + separator in lowered for family in FAMILIES for separator in ("-", ".")) and not re.search(
+                r"(?<![\w.-])o[134](?!\w)", lowered) and not any(v + "/" in lowered for v in vendors):
             continue
         try:
             if suffix in {".json", ".toml", ".yaml", ".yml", ".sql", ".proto"}:

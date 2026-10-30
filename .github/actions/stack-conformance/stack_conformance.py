@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import functools
 import importlib.util
 import json
 import os
@@ -84,6 +85,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import time
 import weakref
 
 try:
@@ -166,11 +168,65 @@ JS_LAUNCHERS = frozenset({
 })
 
 
+def partial_clone(repo):
+    """Avoid extra Git processes for ordinary, complete repositories.
+
+    Git records a partial clone in its config and marks downloaded promisor
+    packs. Inspect those local markers; unfamiliar layouts take the safe,
+    inventory-first path. Linked worktrees share their common object store.
+    """
+    root = pathlib.Path(repo).resolve()
+    gitdir = pathlib.Path(os.environ.get("GIT_DIR", root / ".git"))
+    if not gitdir.is_absolute():
+        gitdir = root / gitdir
+    try:
+        if gitdir.is_file():
+            marker = gitdir.read_text().strip()
+            if not marker.startswith("gitdir: "):
+                return True
+            gitdir = (gitdir.parent / marker[8:]).resolve()
+        elif not gitdir.is_dir():
+            if (root / "HEAD").is_file() and (root / "config").is_file():
+                gitdir = root  # A bare repository.
+            else:
+                return True
+        common = gitdir
+        if (gitdir / "commondir").is_file():
+            common = (gitdir / (gitdir / "commondir").read_text().strip()).resolve()
+        for config in {common / "config", gitdir / "config.worktree"}:
+            if config.is_file() and re.search(
+                    r"(?im)^\s*(?:promisor(?:\s*=\s*(?:true|yes|on|1))?\s*(?:[#;].*)?$|"
+                    r"partialclone\s*=\s*\S+)", config.read_text()):
+                return True
+        return any((common / "objects" / "pack").glob("*.promisor"))
+    except (OSError, UnicodeError):
+        return True
+
+
+def missing_git_objects(repo, rev):
+    if not partial_clone(repo):
+        return frozenset()
+    tree = git(repo, "rev-parse", rev + "^{tree}").strip()
+    return _missing_git_tree_objects(repo, tree)
+
+
+@functools.lru_cache(maxsize=128)
+def _missing_git_tree_objects(repo, tree):
+    # --missing=print inventories promisor objects without triggering lazy
+    # fetches. A sparse checkout may legitimately omit unsupported assets.
+    out = git(repo, "rev-list", "--objects", "--no-object-names", "--missing=print", "--no-walk", tree)
+    return frozenset(line[1:] for line in out.splitlines() if line.startswith("?"))
+
+
 class Tree:
     """Read-only view of one git revision."""
 
-    def __init__(self, repo: str, rev: str):
+    def __init__(self, repo: str, rev: str, progress=None):
         self.repo, self.rev = repo, rev
+        self._missing = missing_git_objects(repo, rev)
+        self._progress = progress
+        self._reads = 0
+        self._last_progress = time.monotonic()
         out = git(repo, "ls-tree", "-r", "-z", rev)
         self._paths = []
         self._blobs = {}
@@ -194,10 +250,21 @@ class Tree:
         oid = self._blobs.get(path)
         if oid is None:
             return None
+        if oid in self._missing:
+            raise ValueError("required Git blob is missing: " + path + "; a blob:none partial clone with "
+                             "sparse-checkout can fetch one blob at a time. Remove sparse-checkout from "
+                             "actions/checkout or fetch the required blobs in bulk before running this check; "
+                             "source was not reviewed")
+        self._reads += 1
+        now = time.monotonic()
+        if self._progress is not None and now - self._last_progress >= 5:
+            self._progress(self._reads)
+            self._last_progress = now
         if self._reader is None:
             self._reader = subprocess.Popen(
                 ["git", "-C", self.repo, "cat-file", "--batch"],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
             # Short-lived Tree instances in the policy readers must reap their
             # child too; the callback holds the process, never the Tree itself.
             self._finish = weakref.finalize(self, self._close_reader, self._reader)
@@ -888,7 +955,13 @@ def checker_revision():
 
 
 def cmd_check(args) -> int:
-    head = Tree(args.repo, args.head)
+    started = time.monotonic()
+    def progress(message):
+        print("stack conformance: " + message, file=sys.stderr, flush=True)
+    def reads(count):
+        progress(f"read {count} Git blobs ({time.monotonic() - started:.1f}s elapsed)")
+    progress("reading the head Git tree")
+    head = Tree(args.repo, args.head, progress=reads)
     found = departures(head)
     head_text = head.read(args.baseline)
     head_baseline = parse_baseline(head_text)
@@ -948,8 +1021,10 @@ def cmd_check(args) -> int:
     errors += decide(found, head_baseline, base_baseline)
     try:
         aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
+        progress("scanning head vendor model references")
         models = model_pins.scan(head, args.repository, aliases, architecture.source_views)
-        base_models = model_pins.scan(Tree(args.repo, args.base), args.repository, aliases,
+        progress("scanning base vendor model references")
+        base_models = model_pins.scan(Tree(args.repo, args.base, progress=reads), args.repository, aliases,
                                      architecture.source_views) if args.base else models
         errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
                                    base_models["findings"], head_model_adopted, base_model_adopted,
@@ -984,12 +1059,14 @@ def cmd_check(args) -> int:
     changed = added_lines(args.repo, args.base, args.head)
     try:
         checker_commit = checker_revision()
+        progress("scanning head architecture rules")
         report = architecture.evaluate(head, args.repository, changed, today)
     except (ValueError, TypeError, AttributeError) as error:
         report = {"findings": [], "unreadable": [{"path": "architecture configuration", "reason": str(error)}],
                   "semantic_census_complete": False, "limits": architecture.LIMITS}
     try:
-        base_report = architecture.evaluate(Tree(args.repo, args.base), args.repository, None, today) if args.base else {"findings": [], "unreadable": []}
+        progress("scanning base architecture rules")
+        base_report = architecture.evaluate(Tree(args.repo, args.base, progress=reads), args.repository, None, today) if args.base else {"findings": [], "unreadable": []}
         base_findings = base_report["findings"]
         if introduced:
             report["unreadable"] += base_report["unreadable"]
@@ -1123,7 +1200,11 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--rev", default="HEAD")
     a.add_argument("dirs", nargs="+")
     args = p.parse_args(argv)
-    return {"check": cmd_check, "scan": cmd_scan, "all": cmd_all}[args.cmd](args)
+    try:
+        return {"check": cmd_check, "scan": cmd_scan, "all": cmd_all}[args.cmd](args)
+    except ValueError as error:
+        print("::error::" + str(error), file=sys.stderr, flush=True)
+        return 2
 
 
 if __name__ == "__main__":
