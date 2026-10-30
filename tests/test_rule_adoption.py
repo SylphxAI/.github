@@ -17,7 +17,7 @@ a = sc.adoption
 TODAY = datetime.date(2026, 10, 30)
 OLD = "bc664ac7410c00d233fe4f729b6747969a4a9bed"
 ARCH = "096601dfd98afa27345312c615250212b9ea5e55"
-UNKNOWN = "e" * 40
+UNKNOWN = "083eff31aa012b3a24d5601abfc524ad461b2394"
 WORKFLOW = ".github/workflows/ci.yml"
 SOURCE = "src/jobs.rs"
 POLL = "fn run() {\n loop {\n  query();\n  sleep(1);\n }\n}\n"
@@ -59,7 +59,7 @@ class Fixture:
         report = self.root.parent / (self.root.name + ".json")
         result = subprocess.run(["python3", str(ACTION / "stack_conformance.py"), "check",
             "--repo", str(self.root), "--base", base, "--head", "HEAD", "--repository", "example/app",
-            "--today", TODAY.isoformat(), "--report", str(report)], capture_output=True, text=True)
+            "--today", TODAY.isoformat(), "--report", str(report), "--shared-source", str(ROOT)], capture_output=True, text=True)
         if result.returncode != expected:
             raise AssertionError(result.stdout + result.stderr)
         return result.stdout, json.loads(report.read_text())
@@ -102,7 +102,7 @@ class AdoptionTests(unittest.TestCase):
     def test_pin_only_bump_and_line_shift_keep_debt_but_span_edit_fails(self):
         f = self.fixture()
         _, adopted, _ = self.adopt(f)
-        f.commit({WORKFLOW: "# moved header\n" + workflow("d" * 40, verdict=True), SOURCE: "// context\n" + POLL})
+        f.commit({WORKFLOW: "# moved header\n" + workflow("422fdbf8529ec11f95c8ffa2de6e0a26ec251c67", verdict=True), SOURCE: "// context\n" + POLL})
         _, report = f.check(adopted, 0)
         self.assertTrue(all(not row["changed"] for row in report["findings"]))
         previous = f.git("rev-parse", "HEAD")

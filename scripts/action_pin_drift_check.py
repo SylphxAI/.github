@@ -1,25 +1,16 @@
 #!/usr/bin/env python3
-"""Fail shared SylphxAI/.github SHA pins without # main or more than N days behind main.
+"""Fail invalid, unreleased, missing-target or stale SylphxAI/.github pins.
 
-SylphxAI/.github holds the shared actions every repository pins by commit (needs-pass, ci-ok,
-main-red-gate, secret-scan, ...). A repo that pins a stale commit keeps running the old logic, so a
-verifier fix in .github reaches nobody until each pin moves. Renovate keeps the pins current when it can
-follow .github main, but a pin it cannot reach, or one whose update was never merged, drifts silently:
-the old commit still resolves, so nothing turns red. This check turns that silence into a failure.
+Callers require full SHAs with # main so Renovate follows the branch. Every pin
+must be an ancestor of the captured shared main anchor and contain the exact
+action metadata or workflow file. The source repository alone exempts the
+comment and resolves @main to that anchor. Missing proof always fails.
 
-  action_pin_drift_check.py check --dir REPO   judge REPO's workflows and actions, plus .github main
-  action_pin_drift_check.py audit --org ORG    judge every non-archived repository of ORG (read-only)
-
-A pin is `uses: SylphxAI/.github/.github/actions/<name>@<40-hex>` (or a pinned reusable workflow). The
-check requires the trailing `# main` version comment that lets Renovate follow the branch, even for
-the current head. It also reads each pinned commit's committer date and fails a pin whose date is more
-than DRIFT_DAYS behind main's. It is read-only (GitHub reads through the `gh` CLI) and exits 1 on any
-untracked or drifted pin.
-
-DRIFT_DAYS exists so drift alerts while it is still cheap: the org bump of six stale needs-pass SHAs
-(2026-10-15) had gone 11 to 16 days without a signal. A week is long enough for Renovate to
-open and land its grouped pull request after a .github commit, and short enough that a broken gate is
-caught within one working week rather than found by an unrelated incident.
+The shared caller gate uses this pure validator without an age limit. The
+standalone check and central audit additionally enforce DRIFT_DAYS: a week
+allows Renovate to land a grouped update while exposing stale shared logic
+within a working week. GitHub reads use gh; --shared-source explicitly selects
+a complete offline origin/main snapshot, reported with its full anchor SHA.
 """
 from __future__ import annotations
 
@@ -28,8 +19,10 @@ import base64
 import datetime
 import fnmatch
 import json
+import os
 import re
 import sys
+import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -39,28 +32,80 @@ ROOT = Path(__file__).resolve().parents[1]
 SHARED_REPO = "SylphxAI/.github"
 # Days a shared-action pin may lag .github main before the check fails. See the module docstring.
 DRIFT_DAYS = 7
-USES = re.compile(r"^\s*-?\s*uses\s*:\s*(['\"]?)(SylphxAI/\.github)((?:/[^@\s'\"]+)?)@([0-9a-fA-F]{40})\1\s*(?:#(?P<version>.*))?$")
+USES = re.compile(r"^\s*-?\s*uses\s*:\s*(?P<value>'[^']*'|\"[^\"]*\"|[^\s'\"]+)(?:\s+#(?P<version>.*))?\s*$")
+SHARED_USE = re.compile(r"SylphxAI/\.github(?P<path>/[^@\s]+)?(?:@(?P<ref>.*))?", re.IGNORECASE)
+FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 
 
 def find_pins(text: str) -> list[dict]:
-    """Every full-SHA pin of a SylphxAI/.github action or workflow in one file, with its line."""
+    """Every shared-source reference, including invalid branch/tag/short-SHA refs."""
     pins = []
     for number, line in enumerate(text.splitlines(), 1):
-        if line.lstrip().startswith("#"):
-            continue
         match = USES.match(line)
-        if match:
-            pins.append({"line": number, "path": match.group(3).lstrip("/"), "sha": match.group(4).lower(),
+        if not match:
+            continue
+        value = match.group("value")
+        if value.startswith(("'", '\"')):
+            value = value[1:-1]
+        reference = SHARED_USE.fullmatch(value)
+        if reference:
+            ref = reference.group("ref") or ""
+            full_sha = FULL_SHA.fullmatch(ref) is not None
+            pins.append({"line": number, "path": (reference.group("path") or "").lstrip("/"),
+                         "sha": ref.lower() if full_sha else ref, "full_sha": full_sha,
                          "tracks_main": (match.group("version") or "").strip() == "main"})
     return pins
 
 
-def main_marker_errors(files: dict[str, str]) -> list[dict]:
-    """Missing Renovate branch markers, without network or commit-date reads."""
-    return [{"file": name, "line": pin["line"], "path": pin["path"], "sha": pin["sha"], "days": None,
-             "why": "missing # main version comment; append # main after the SHA "
-                    "so Renovate can follow the shared-action branch"}
-            for name in sorted(files) for pin in find_pins(files[name] or "") if not pin["tracks_main"]]
+def _offender(name, pin, why, days=None):
+    return {"file": name, "line": pin["line"], "path": pin["path"], "sha": pin["sha"],
+            "days": days, "why": why}
+
+
+def main_marker_errors(files: dict[str, str], require_main_marker: bool = True) -> list[dict]:
+    """Pure format checks; only the source exempts its comment and may use @main."""
+    errors = []
+    for name in sorted(files):
+        for pin in find_pins(files[name] or ""):
+            if not pin["full_sha"] and not (not require_main_marker and pin["sha"] == "main"):
+                errors.append(_offender(name, pin, "shared-action ref must be a full 40-hex commit SHA"))
+            elif require_main_marker and not pin["tracks_main"]:
+                errors.append(_offender(name, pin, "missing # main version comment; append # main after the SHA "
+                                        "so Renovate can follow the shared-action branch"))
+    return errors
+
+
+def validate_pin_provenance(files: dict[str, str], head_sha: str, facts: dict,
+                            require_main_marker: bool = True) -> list[dict]:
+    """Pure validation of acquired main ancestry and exact target-file evidence."""
+    errors = main_marker_errors(files, require_main_marker)
+    for name in sorted(files):
+        for pin in find_pins(files[name] or ""):
+            source_main = not require_main_marker and pin["sha"] == "main"
+            if not pin["full_sha"] and not source_main:
+                continue
+            sha = head_sha if source_main else pin["sha"]
+            proof = facts.get(sha, {})
+            if not FULL_SHA.fullmatch(head_sha or "") or "ancestor" not in proof or proof.get("error"):
+                errors.append(_offender(name, pin, "pin provenance could not be read: " +
+                                        proof.get("error", "main ancestry/target evidence is unavailable")))
+                continue
+            if proof["ancestor"] is not True:
+                errors.append(_offender(name, pin, f"{pin['sha'][:9]} is not on {SHARED_REPO} main "
+                                        f"(anchor {head_sha[:9]}); use a merged main commit"))
+                continue
+            if not isinstance(proof.get("files"), (set, frozenset, list, tuple)):
+                errors.append(_offender(name, pin, "pin target evidence is unavailable"))
+                continue
+            path = pin["path"]
+            if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
+                targets = {path}
+            else:
+                targets = {f"{path}/action.yml", f"{path}/action.yaml"} if path else {"action.yml", "action.yaml"}
+            if not targets.intersection(proof["files"]):
+                errors.append(_offender(name, pin, f"target is absent at {sha[:9]}: " +
+                                        " or ".join(sorted(targets))))
+    return errors
 
 
 def _date(value: str) -> datetime.datetime:
@@ -68,44 +113,132 @@ def _date(value: str) -> datetime.datetime:
 
 
 class Commits:
-    """A commit's committer date, one REST read per distinct (repo, sha)."""
+    """Public source proof, cached by immutable commit and main anchor."""
+    mode = "live"
 
     def __init__(self, gh):
-        self.gh, self.dates = gh, {}
+        self.gh, self.dates, self.commits, self.proofs = gh, {}, {}, {}
 
-    def date(self, repo: str, sha: str) -> datetime.datetime:
-        if sha not in self.dates:
-            commit = self.gh.rest(f"repos/{repo}/commits/{sha}")
-            self.dates[sha] = _date(commit["commit"]["committer"]["date"])
+    def commit(self, ref):
+        if ref not in self.commits:
+            value = self.gh.rest(f"repos/{SHARED_REPO}/commits/{ref}")
+            if not FULL_SHA.fullmatch(value["sha"]):
+                raise ValueError("shared main did not resolve to an immutable commit")
+            if FULL_SHA.fullmatch(ref) and value["sha"].lower() != ref.lower():
+                raise ValueError("source commit response does not match requested SHA")
+            self.commits[ref] = self.commits[value["sha"]] = value
+            self.dates[value["sha"]] = _date(value["commit"]["committer"]["date"])
+        return self.commits[ref]
+
+    def date(self, repo, sha):
+        self.commit(sha)
         return self.dates[sha]
 
-    def main_head(self, repo: str) -> tuple[str, datetime.datetime]:
-        commit = self.gh.rest(f"repos/{repo}/commits/main")
-        return commit["sha"], _date(commit["commit"]["committer"]["date"])
+    def main_head(self, repo):
+        value = self.commit("main")
+        return value["sha"], self.dates[value["sha"]]
 
-
-def judge(files: dict[str, str], commits: Commits, head_sha: str, head_date: datetime.datetime,
-          days: int = DRIFT_DAYS) -> list[dict]:
-    """Drifted pins in `files` ({path: text}): [{file, line, path, sha, days, why}]."""
-    offenders = main_marker_errors(files)
-    for name in sorted(files):
-        for pin in find_pins(files[name] or ""):
-            if pin["sha"] == head_sha:
-                continue
+    def evidence(self, sha, head):
+        key = (sha, head)
+        if key not in self.proofs:
             try:
-                pinned = commits.date(SHARED_REPO, pin["sha"])
-            except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
-                offenders.append({"file": name, "line": pin["line"], "path": pin["path"], "sha": pin["sha"],
-                                  "days": None,
-                                  "why": f"{pin['sha'][:9]} could not be read on {SHARED_REPO} ({str(err)[:80]})"})
-                continue
-            behind = (head_date - pinned).days
-            if behind > days:
-                offenders.append({"file": name, "line": pin["line"], "path": pin["path"], "sha": pin["sha"],
-                                  "days": behind,
-                                  "why": f"pins {SHARED_REPO}@{pin['sha'][:9]}, {behind} days behind main "
-                                         f"(head {head_sha[:9]}); move it to or past {head_sha[:9]}"})
+                status = "identical" if sha == head else self.gh.rest(
+                    f"repos/{SHARED_REPO}/compare/{head}...{sha}")["status"]
+                if status not in ("identical", "behind", "ahead", "diverged"):
+                    raise ValueError("unrecognized compare status: " + str(status))
+                proof = {"ancestor": status in ("identical", "behind")}
+                if proof["ancestor"]:
+                    commit = self.commit(sha)
+                    tree = self.gh.rest(f"repos/{SHARED_REPO}/git/trees/{commit['commit']['tree']['sha']}?recursive=1")
+                    if tree.get("truncated"):
+                        raise ValueError("source Git tree was truncated")
+                    proof["files"] = {item["path"] for item in tree["tree"]
+                                      if item["type"] == "blob" and item.get("mode") in ("100644", "100755")}
+                self.proofs[key] = proof
+            except Exception as error:  # noqa: BLE001 - reason: every acquisition failure must become a failed proof
+                self.proofs[key] = {"error": str(error)[:200]}
+        return self.proofs[key]
+
+
+class GitCommits:
+    """Explicit offline proof from a complete checkout's origin/main snapshot."""
+    mode = "offline origin/main snapshot"
+
+    def __init__(self, root):
+        self.root, self.dates, self.proofs = str(root), {}, {}
+
+    def git(self, *args):
+        result = subprocess.run(["git", "-C", self.root, *args], text=True, capture_output=True, timeout=60,
+                                env={**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0"})
+        if result.returncode:
+            raise ValueError((result.stderr or "shared source Git read failed").strip()[:200])
+        return result.stdout
+
+    def date(self, repo, sha):
+        if sha not in self.dates:
+            self.dates[sha] = datetime.datetime.fromtimestamp(
+                int(self.git("show", "-s", "--format=%ct", sha)), datetime.timezone.utc)
+        return self.dates[sha]
+
+    def main_head(self, repo):
+        if self.git("rev-parse", "--is-shallow-repository").strip() != "false":
+            raise ValueError("offline shared source is shallow; ancestry cannot be proved")
+        head = self.git("rev-parse", "refs/remotes/origin/main^{commit}").strip()
+        return head, self.date(repo, head)
+
+    def evidence(self, sha, head):
+        key = (sha, head)
+        if key not in self.proofs:
+            try:
+                result = subprocess.run(["git", "-C", self.root, "merge-base", "--is-ancestor", sha, head],
+                                        text=True, capture_output=True, timeout=60,
+                                env={**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0"})
+                if result.returncode not in (0, 1):
+                    raise ValueError((result.stderr or "shared ancestry unavailable").strip())
+                proof = {"ancestor": result.returncode == 0}
+                if proof["ancestor"]:
+                    proof["files"] = set()
+                    for entry in self.git("ls-tree", "-r", "-z", sha).split("\0"):
+                        if entry:
+                            meta, path = entry.split("\t", 1)
+                            mode, kind, _ = meta.split()
+                            if kind == "blob" and mode in ("100644", "100755"):
+                                proof["files"].add(path)
+                self.proofs[key] = proof
+            except Exception as error:  # noqa: BLE001 - reason: offline input failures must become failed proofs
+                self.proofs[key] = {"error": str(error)[:200]}
+        return self.proofs[key]
+
+
+def judge(files: dict[str, str], commits, head_sha: str, head_date: datetime.datetime,
+          days: int | None = DRIFT_DAYS, require_main_marker: bool = True) -> list[dict]:
+    shas = {head_sha if pin["sha"] == "main" and not require_main_marker else pin["sha"]
+            for text in files.values() for pin in find_pins(text or "")
+            if pin["full_sha"] or (pin["sha"] == "main" and not require_main_marker)}
+    facts = {sha: commits.evidence(sha, head_sha) for sha in sorted(shas)}
+    offenders = validate_pin_provenance(files, head_sha, facts, require_main_marker)
+    if days is not None:
+        for name in sorted(files):
+            for pin in find_pins(files[name] or ""):
+                sha = head_sha if pin["sha"] == "main" and not require_main_marker else pin["sha"]
+                if sha not in facts or not facts[sha].get("ancestor"):
+                    continue
+                behind = (head_date - commits.date(SHARED_REPO, sha)).days
+                if behind > days:
+                    offenders.append(_offender(name, pin, f"pins {SHARED_REPO}@{pin['sha'][:9]}, {behind} days behind main "
+                                               f"(head {head_sha[:9]}); move it to or past {head_sha[:9]}", behind))
     return offenders
+
+
+def review_pins(files, repository="", shared_source=None, gh=None):
+    """Caller gate: live proof by default, explicitly anchored offline proof when requested."""
+    source = GitCommits(shared_source) if shared_source else Commits(gh or om.Gh())
+    if not any(find_pins(text or "") for text in files.values()):
+        return {"head": None, "mode": "no shared pins", "offenders": []}
+    head, date = source.main_head(SHARED_REPO)
+    return {"head": head, "mode": source.mode,
+            "offenders": judge(files, source, head, date, days=None,
+                               require_main_marker=repository.lower() != SHARED_REPO.lower())}
 
 
 def read_dir(root: Path) -> dict[str, str]:
@@ -175,16 +308,14 @@ def audit(gh, orgs: list[str], hands_off: list[str], days: int = DRIFT_DAYS, pub
             continue
         for base in bases:
             repo = f"{org}/{base['name']}"
-            # Updating the source repository's own immutable pins would advance main again forever.
-            if repo.lower() == SHARED_REPO.lower():
-                continue
             if (public_only and base["isPrivate"]) or any(fnmatch.fnmatchcase(repo, pattern) for pattern in hands_off):
                 continue
             files, error = read_repo(gh, org, base["name"])
             if files is None:
                 repos.append({"repo": repo, "status": "UNREADABLE", "offenders": [], "error": error})
                 continue
-            offenders = judge(files, commits, head_sha, head_date, days)
+            offenders = judge(files, commits, head_sha, head_date, days,
+                              require_main_marker=repo.lower() != SHARED_REPO.lower())
             repos.append({"repo": repo, "status": "FAIL" if offenders else "PASS", "offenders": offenders,
                           "pins": sum(len(find_pins(t)) for t in files.values())})
     counts = {s: sum(1 for r in repos if r["status"] == s) for s in ("PASS", "FAIL", "UNREADABLE")}
@@ -315,6 +446,8 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     sub = parser.add_subparsers(dest="mode", required=True)
     check = sub.add_parser("check", help="judge one checked-out repository")
     check.add_argument("--dir", default=".")
+    check.add_argument("--repository", default="", help="owner/name; only the shared source exempts # main and permits @main")
+    check.add_argument("--shared-source", help="explicit offline checkout with complete origin/main history")
     scan = sub.add_parser("audit", help="judge every repository of the organizations")
     scan.add_argument("--org", action="append", required=True)
     scan.add_argument("--json", dest="json_out")
@@ -327,20 +460,22 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     args = parser.parse_args(argv)
     gh = gh or om.Gh()
     if args.mode == "check":
-        commits = Commits(gh)
+        commits = GitCommits(args.shared_source) if args.shared_source else Commits(gh)
         try:
             head_sha, head_date = commits.main_head(SHARED_REPO)
         except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
             print(f"could not read {SHARED_REPO} main: {err}", file=sys.stderr)
             return 2
-        offenders = judge(read_dir(Path(args.dir)), commits, head_sha, head_date, args.days)
+        offenders = judge(read_dir(Path(args.dir)), commits, head_sha, head_date, args.days,
+                          require_main_marker=args.repository.lower() != SHARED_REPO.lower())
+        print(f"shared pin proof: {commits.mode}, main anchor {head_sha}")
         if offenders:
             print(render_offenders(offenders))
             for o in offenders:
                 print(f"::error file={o['file']},line={o['line']}::{o['why']}")
             return 1
-        print(f"shared-action pins have # main and are at most {args.days} days behind "
-              f"{SHARED_REPO} main ({head_sha[:9]})")
+        print(f"shared-action pins have valid format, main ancestry and targets; "
+              f"at most {args.days} days behind {SHARED_REPO} main ({head_sha[:9]})")
         return 0
     policy = json.loads((ROOT / "policy" / "optimistic-merge.json").read_text())
     hands_off = [r for e in policy.get("exemptions", []) if e["class"] == "hands-off" for r in e["repos"]]
