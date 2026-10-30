@@ -227,14 +227,9 @@ def routine_kind(stmt: list[Token]) -> str | None:
 
 def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int) -> list[tuple[int, str]]:
     opaque = [(stmt[0].line, "opaque procedural body requires a contract reference")]
-    if kind in {"TRIGGER", "EVENT"}:
+    if kind in {"TRIGGER", "EVENT"} or dialect != "postgres":
         return opaque
     flat = top_level(stmt)
-    if dialect == "mysql":
-        # MySQL routine bodies are inline SQL, not string literals. Later
-        # semicolon-delimited statements are also inspected by the caller.
-        start = next((i for i, t in enumerate(flat) if kw(t, "BEGIN") or kw(t, "RETURN")), None)
-        return opaque if start is None else token_violations(stmt[stmt.index(flat[start]) + 1:], dialect, nesting + 1)
     language = "PLPGSQL" if kind == "DO" else None
     for i, token in enumerate(flat[:-1]):
         if kw(token, "LANGUAGE"):
@@ -258,9 +253,7 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
         inner, _ = lex(source, dialect)
         inner = [Token(t.value, t.kind, body.line + t.line - 1, t.raw) for t in inner]
         return token_violations(inner, dialect, nesting + 1)
-    # PostgreSQL also supports SQL-standard unquoted function/procedure bodies.
-    start = next((i for i, t in enumerate(stmt) if kw(t, "BEGIN") or kw(t, "RETURN")), None)
-    return opaque if start is None else token_violations(stmt[start + 1:], dialect, nesting + 1)
+    return opaque
 
 
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> list[tuple[int, str]]:
@@ -270,15 +263,12 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
     defaults: set[tuple[str, str]] = set()
     created: set[str] = set()
     statements = split(tokens, ";")
-    routine_context = nesting or any(routine_kind(stmt) in {"DO", "FUNCTION", "PROCEDURE"} for stmt in statements)
-    inline_definition = any(routine_kind(stmt) in {"FUNCTION", "PROCEDURE"} and has(stmt, "BEGIN") for stmt in statements)
-    uncertain_flow = inline_definition or routine_context and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
+    uncertain_flow = nesting and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
     for stmt in statements:
         if uncertain_flow:
             # A conditional/loop may not run, and an exception handler can
-            # continue after failed DDL. Inline definitions are not executed
-            # when declared. Credit facts only within one SQL statement,
-            # where its clauses execute together.
+            # continue after failed DDL. Credit facts only within one SQL
+            # statement, where its clauses execute together.
             defaults.clear()
             created.clear()
         control_stmt = procedural_statement(stmt)
@@ -324,6 +314,10 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
         routine = routine_kind(stmt)
         if routine:
             out.extend(routine_violations(stmt, dialect, routine, nesting))
+            if routine == "DO":
+                # Executed bodies can remove defaults established outside,
+                # but their local facts never authorize enclosing statements.
+                defaults.clear()
         if (starts(stmt, "CALL") or starts(stmt, "EXECUTE")
                 or starts(stmt, "PREPARE") or starts(stmt, "DELIMITER")):
             out.append((stmt[0].line, "procedural or dynamic SQL requires a contract reference"))

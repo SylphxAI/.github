@@ -20,8 +20,6 @@ class ProcedureTests(unittest.TestCase):
             "CREATE PROCEDURE expand() LANGUAGE SQL AS $$ CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; $$;",
             "DO $grants$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reader') THEN CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; END IF; END; $grants$;",
             "DO LANGUAGE plpgsql 'BEGIN CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; END;';",
-            "CREATE FUNCTION report() RETURNS int LANGUAGE sql RETURN 1;",
-            "CREATE PROCEDURE expand() LANGUAGE sql BEGIN ATOMIC CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; END;",
             "DO $$ BEGIN RETURN QUERY SELECT 'DROP TABLE accounts'; END $$;",
             "DO $$ BEGIN UPDATE accounts SET active=1 WHERE id=42; END $$;",
             "DO $$ BEGIN CREATE TABLE fresh (id int); ALTER TABLE fresh ADD region text NOT NULL; END; $$;",
@@ -77,10 +75,6 @@ class ProcedureTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertIn('NOT NULL', str(guard.check_sql(sql, 'postgres')))
                 self.assertEqual(guard.check_sql('-- contract: released-expand-42\n' + sql, 'postgres'), [])
-        sql = "CREATE PROCEDURE p() BEGIN IF false THEN CREATE TABLE accounts(id int); END IF; ALTER TABLE accounts ADD region text NOT NULL; END;"
-        self.assertIn('NOT NULL', str(guard.check_sql(sql, 'mysql')))
-        sql = "CREATE PROCEDURE p() BEGIN DECLARE CONTINUE HANDLER FOR 1050 SET @ignored=1; CREATE TABLE accounts(id int); ALTER TABLE accounts ADD region text NOT NULL; END;"
-        self.assertIn('NOT NULL', str(guard.check_sql(sql, 'mysql')))
 
     def test_opaque_execution_and_other_languages_still_require_review(self):
         for sql in [
@@ -110,20 +104,33 @@ class ProcedureTests(unittest.TestCase):
             ]:
                 sql = header + ' SELECT 1; ' + setup + ' END; ' + contraction
                 with self.subTest(dialect=dialect, setup=setup):
-                    self.assertIn('NOT NULL', str(guard.check_sql(sql, dialect)))
+                    self.assertIn('opaque procedural body', str(guard.check_sql(sql, dialect)))
                     self.assertEqual(guard.check_sql('-- contract: released-expand-42\n' + sql, dialect), [])
 
-    def test_mysql_inline_bodies_are_inspected(self):
+    def test_unsupported_inline_bodies_fail_closed(self):
+        for dialect, sql in [
+            ('postgres', "CREATE FUNCTION report() RETURNS int LANGUAGE sql RETURN 1;"),
+            ('postgres', "CREATE PROCEDURE expand() LANGUAGE sql BEGIN ATOMIC CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; END;"),
+            ('mysql', "CREATE FUNCTION report() RETURNS int RETURN 1;"),
+            ('mysql', "CREATE PROCEDURE expand() BEGIN CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; END;"),
+            ('mysql', "CREATE PROCEDURE p() BEGIN DECLARE CONTINUE HANDLER FOR 1050 SET @ignored=1; CREATE TABLE accounts(id int); ALTER TABLE accounts ADD region text NOT NULL; END;"),
+        ]:
+            with self.subTest(dialect=dialect, sql=sql):
+                self.assertIn('opaque procedural body', str(guard.check_sql(sql, dialect)))
+                self.assertEqual(guard.check_sql('-- contract: released-expand-42\n' + sql, dialect), [])
+
+    def test_quoted_bodies_keep_safety_facts_in_their_own_scope(self):
         for sql in [
-            "CREATE FUNCTION report() RETURNS int RETURN 1;",
-            "CREATE PROCEDURE expand() BEGIN CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; END;",
+            "CREATE TABLE IF NOT EXISTS aux(id int); CREATE TABLE fresh(id int); ALTER TABLE fresh ADD region text NOT NULL; CREATE FUNCTION report() RETURNS int LANGUAGE SQL AS $$SELECT 1;$$;",
+            "CREATE TABLE IF NOT EXISTS aux(id int); ALTER TABLE accounts ALTER region SET DEFAULT ''; CREATE FUNCTION report() RETURNS int LANGUAGE sql AS $$SELECT 1;$$; ALTER TABLE accounts ALTER region SET NOT NULL;",
+            "ALTER TABLE accounts ALTER region SET DEFAULT ''; CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ALTER TABLE accounts ALTER region DROP DEFAULT;$$; ALTER TABLE accounts ALTER region SET NOT NULL;",
         ]:
-            self.assertEqual(guard.check_sql(sql, "mysql"), [])
-        for sql, reason in [
-            ("CREATE PROCEDURE cleanup() BEGIN DELETE FROM accounts; END;", "DELETE without WHERE"),
-            ("CREATE PROCEDURE cleanup() BEGIN IF true THEN ALTER TABLE accounts MODIFY region varchar(2); END IF; END;", "column type change"),
+            self.assertEqual(guard.check_sql(sql, 'postgres'), [])
+        for sql in [
+            "CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ALTER TABLE accounts ALTER region SET DEFAULT '';$$; ALTER TABLE accounts ALTER region SET NOT NULL;",
+            "ALTER TABLE accounts ALTER region SET DEFAULT ''; DO $$BEGIN ALTER TABLE accounts ALTER region DROP DEFAULT; END;$$; ALTER TABLE accounts ALTER region SET NOT NULL;",
         ]:
-            self.assertIn(reason, str(guard.check_sql(sql, "mysql")))
+            self.assertIn('SET NOT NULL', str(guard.check_sql(sql, 'postgres')))
 
 
 if __name__ == "__main__":

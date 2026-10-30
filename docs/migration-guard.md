@@ -79,9 +79,9 @@ PostgreSQL SQL and PL/pgSQL functions, procedures, and `DO` blocks are inspected
 recursively. Dollar-quoted and ordinary single-quoted bodies use the same SQL
 rules as the surrounding migration, including SQL inside control blocks.
 Additive report functions and create/grant blocks pass without a marker;
-destructive bodies report the underlying operation. MySQL inline routine bodies
-are also inspected. Other procedural languages, escape-string bodies, and opaque
-dynamic execution require a contract reference. A marker inside a body string
+destructive bodies report the underlying operation. Unquoted inline bodies,
+including MySQL routine definitions, other procedural languages, escape-string
+bodies, and opaque dynamic execution require a contract reference. A marker inside a body string
 does not authorize the surrounding migration.
 In bodies with conditional, loop, exception, nested `DO`, or rollback paths,
 earlier statements do not establish that a table was created or a default was
