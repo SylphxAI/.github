@@ -17,7 +17,7 @@ a = sc.adoption
 TODAY = datetime.date(2026, 10, 30)
 OLD = "bc664ac7410c00d233fe4f729b6747969a4a9bed"
 ARCH = "096601dfd98afa27345312c615250212b9ea5e55"
-UNKNOWN = "083eff31aa012b3a24d5601abfc524ad461b2394"
+UNKNOWN = "6c3557dbf5a9169417ba915a643395dc752709f6"
 WORKFLOW = ".github/workflows/ci.yml"
 SOURCE = "src/jobs.rs"
 POLL = "fn run() {\n loop {\n  query();\n  sleep(1);\n }\n}\n"
@@ -195,6 +195,26 @@ class AdoptionTests(unittest.TestCase):
                 profiles = a.old_checkers(sc.DictTree({WORKFLOW: workflow(pin)}), shared_repo=str(ROOT))
                 self.assertEqual(profiles[0]["rules"], [])
                 self.assertIsNone(profiles[0]["sources"][a.PREFIX + "architecture.py"])
+
+    def test_published_model_checkers_allow_only_new_cache_rule_adoption(self):
+        cache_rule = "architecture/C1/cache-economy"
+        for pin in ("083eff31aa012b3a24d5601abfc524ad461b2394",
+                    "77bd558b917b6926d2fe7695d347deff6c9b0fa4"):
+            with self.subTest(pin=pin):
+                tree = sc.DictTree({WORKFLOW: workflow(pin)})
+                profiles = a.old_checkers(tree, shared_repo=str(ROOT))
+                enforced = set(profiles[0]["rules"])
+                self.assertEqual(len(enforced), 16)
+                self.assertIn("model-pin", enforced)
+                self.assertNotIn(cache_rule, enforced)
+                with mock.patch.object(a, "current_rules", return_value=enforced | {cache_rule}):
+                    introduced, _ = a.introduced_rules(tree, "", shared_repo=str(ROOT))
+                    self.assertEqual(introduced, {cache_rule})
+                    self.assertEqual(a.seed_permissions(tree, a.RULE_MARKER + cache_rule + "\n", "", set()),
+                                     {cache_rule})
+                    for rule in enforced:
+                        with self.assertRaisesRegex(ValueError, "already enforced"):
+                            a.seed_permissions(tree, a.RULE_MARKER + rule + "\n", "", set())
 
     def test_forged_capability_profile_and_wrong_source_are_rejected(self):
         data = a.load_registry()
