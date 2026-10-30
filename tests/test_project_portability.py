@@ -20,6 +20,8 @@ class ProjectPortabilityTests(unittest.TestCase):
             'const origin = "http://api.tenant.sylphx.internal";',
             'client.post("http://gate:24001/touch");',
             'client.post("http://user:placeholder@gate:24001/touch");',
+            'client.get("https://user:placeholder@api.tenant.svc.cluster.local/v1");',
+            'const database = "postgresql://user:placeholder@db.tenant.svc.cluster.local/app";',
             'client.get("https://kubernetes.default/api");',
         ]
         for source in sources:
@@ -55,6 +57,11 @@ class ProjectPortabilityTests(unittest.TestCase):
             ('src/client.ts', 'client.get("https://api.svc.example.invalid");'),
             ('src/client.py', 'url = "https://x-access-token:%s@github.com/example/repo"'),
             ('src/client.ts', 'client.get("https://user:placeholder@api.example.invalid");'),
+            ('src/client.cs', 'var endpoint = "https://api.example.invalid/Billing.svc";'),
+            ('src/client.ts', 'client.get("https://bot.svc@api.example.invalid/v1");'),
+            ('src/client.ts', 'client.get("https://api.example.invalid/?next=api.tenant.svc.cluster.local");'),
+            ('src/client.ts', 'client.get("https://api.example.invalid/kubernetes.default");'),
+            ('src/client.sh', 'curl https://api.example.invalid/Billing.svc\n'),
         ]
         for path, source in cases:
             with self.subTest(source=source):

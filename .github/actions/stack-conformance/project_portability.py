@@ -15,7 +15,8 @@ CONFIG = {'.yaml', '.yml', '.toml', '.json', '.xml'}
 MANIFEST_DIRS = {'deploy', 'deployment', 'deployments', 'infra', 'infrastructure',
                  'k8s', 'kubernetes', 'helm', 'charts', 'gitops', '.github'}
 SUFFIX = re.compile(r'\.(?:svc(?:\.cluster\.local)?|cluster\.local|sylphx\.internal)(?![\w.-])', re.I)
-PRIVATE_URL = re.compile(r'https?://([^/\s\"\x27`]+)', re.I)
+PRIVATE_URL = re.compile(r'https?://([^/?#\s\"\x27`]+)', re.I)
+URL = re.compile(r'\b[a-z][a-z0-9+.-]*://([^/?#\s\"\x27`]+)[^\s\"\x27`]*', re.I)
 LITERAL = re.compile(r'\br(\#*)"[\s\S]*?"\1|"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27|`(?:\\.|[^`\\])*`')
 IN_CLUSTER = re.compile(r'\b(?:load_incluster_config|loadInClusterConfig|InClusterConfig|'
                         r'inClusterConfig|loadFromCluster)\s*\(|'
@@ -45,6 +46,17 @@ def short_service_url(value):
         if re.fullmatch(r'[a-z][a-z0-9_-]*', host, re.I) and host.lower() != 'localhost':
             return True
     return False
+
+
+def destination_host_span(value, start, end):
+    """URL paths, queries and userinfo do not name the destination host."""
+    for url in URL.finditer(value):
+        if url.start() <= start < url.end():
+            authority = url.group(1)
+            host_start = url.start(1) + authority.rfind('@') + 1
+            host = value[host_start:url.end(1)].split(':', 1)[0]
+            return host_start <= start and end <= host_start + len(host)
+    return True
 
 
 def views(text, suffix, source_views):
@@ -83,6 +95,8 @@ def scan(path, text, source_views):
             continue
         value = literal.group()
         for match in SUFFIX.finditer(value):
+            if not destination_host_span(value, match.start(), match.end()):
+                continue
             before = value[:match.start()]
             # A suffix vocabulary or ends_with(".svc") refusal is not a host.
             # A concatenated suffix or template host still constructs a target.
@@ -91,7 +105,8 @@ def scan(path, text, source_views):
             out.append((literal.start(), literal.end(), 'Runtime source embeds cluster-private DNS; configure a reachable public API origin'))
             break
         else:
-            if short_service_url(value) or re.search(r'\bkubernetes\.default\b', value):
+            if short_service_url(value) or any(destination_host_span(value, m.start(), m.end())
+                    for m in re.finditer(r'\bkubernetes\.default\b', value)):
                 out.append((literal.start(), literal.end(), 'Runtime source embeds a single-label service or Kubernetes API hostname'))
             elif MOUNT.search(value):
                 out.append((literal.start(), literal.end(), 'Runtime source assumes the Kubernetes service-account secret mount'))
@@ -104,6 +119,7 @@ def scan(path, text, source_views):
     if suffix in {'.sh', '.bash'}:
         # Shell destinations need not be quoted. Quoted ones are already masked.
         for match in re.finditer(r'https?://[^\s;|&]+', code):
-            if SUFFIX.search(match.group()) or short_service_url(match.group()):
+            value = match.group()
+            if any(destination_host_span(value, m.start(), m.end()) for m in SUFFIX.finditer(value)) or short_service_url(value):
                 out.append((match.start(), match.end(), 'Runtime shell command embeds a cluster-private service destination'))
     return sorted(set(out))

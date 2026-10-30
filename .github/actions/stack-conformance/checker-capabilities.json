@@ -170,6 +170,44 @@
         "policy/deal-randomness-scope.json": "0cd4a11053555576b7603564ef17dd9ebf8b6647af03811e581c9bba514b84ab"
       }
     },
+    "1fbe577de1548aea477eaa924fcb96a06014a839f7a0dfd58be38bea33216904": {
+      "rules": [
+        "architecture/C1/cache-economy",
+        "architecture/C1/deal-randomness",
+        "architecture/C1/privileged-branch",
+        "architecture/C1/project-portability",
+        "architecture/C2/provider-bypass",
+        "architecture/C2/tenant-read-functions",
+        "architecture/C3/bundled-method",
+        "architecture/C3/downstream-config",
+        "architecture/C3/downstream-import",
+        "architecture/C4/competing-default",
+        "architecture/C4/undeclared-setting",
+        "architecture/C5/cron-progress",
+        "architecture/C5/idle-floor",
+        "architecture/C5/polling-loop",
+        "architecture/C5/polling-timer",
+        "architecture/C6/retired-route",
+        "architecture/C6/unexplained-suppression",
+        "architecture/C7/failure-only-verdict",
+        "architecture/C7/merge-only-completion",
+        "force-push",
+        "model-pin",
+        "model-selector"
+      ],
+      "sources": {
+        ".github/actions/stack-conformance/action.yml": "1d44d2ed36b9468f7366a6a4bda602470d67c9ae673c66a52b8656261588e7ba",
+        ".github/actions/stack-conformance/architecture.py": "9c876eee5dc1428b397e4d8d32417a1a8bf5e33320198ee6f0db86e68deb40be",
+        ".github/actions/stack-conformance/cache-economy-profiles.json": "4ba6b2037e88da964adc9cb85a71577ee82072d1cc220e7c0d2f5447184ccee7",
+        ".github/actions/stack-conformance/deal_randomness.py": "217ae9616e7d0db3600eaca497d21c3bf190f1cd2c4140256d83f422b7388c97",
+        ".github/actions/stack-conformance/model_pins.py": "ddfacc88cdb5c1d465ed19a3a1653dad44906e1be9eab931601af2c11dc56111",
+        ".github/actions/stack-conformance/no_force_push.py": "00e8a1f2de8b1eebc12ab7856d2dd37d7bdd6ea7c4f99953fca44f56b282cec9",
+        ".github/actions/stack-conformance/project_portability.py": "db21349c065cb1dee56d9b4aa4ce2c60de916d446efd30025f7be9752605f4cf",
+        ".github/actions/stack-conformance/stack_conformance.py": "224679e51b904890296be04930b8b5858cdbd5c28b90a500ad98e37737fc625b",
+        ".github/actions/stack-conformance/tenant_reads.py": "9d7773fbae89ba37fb2510686aae0fb11b0b117105a40edc671b0d9a52c9e412",
+        "policy/deal-randomness-scope.json": "0cd4a11053555576b7603564ef17dd9ebf8b6647af03811e581c9bba514b84ab"
+      }
+    },
     "2c2dabcf75de7644982b8bbaae1bd9d40f7fe51bbfedd7d0dcb7f3fa14777898": {
       "rules": [],
       "sources": {
@@ -375,44 +413,6 @@
         ".github/actions/stack-conformance/architecture.py": "e7614a5775ac6ac37b44f731ef4a24adb90a17a0db31af51c2d6b1222cd09e86",
         ".github/actions/stack-conformance/model_pins.py": "f3ff7c5676921ab2457d78c4610e69115f0a670ffe1c2ec98b10d857f076af15",
         ".github/actions/stack-conformance/stack_conformance.py": "f9cf88e078c4c59f3e95dc706a421c2f91e3edda8e8346102c14b1e9409ba6c3"
-      }
-    },
-    "8eb74d2c58dad7275a5ce8e599b89d9458a81c3bcaafc8b236f18fc9103eb4c2": {
-      "rules": [
-        "architecture/C1/cache-economy",
-        "architecture/C1/deal-randomness",
-        "architecture/C1/privileged-branch",
-        "architecture/C1/project-portability",
-        "architecture/C2/provider-bypass",
-        "architecture/C2/tenant-read-functions",
-        "architecture/C3/bundled-method",
-        "architecture/C3/downstream-config",
-        "architecture/C3/downstream-import",
-        "architecture/C4/competing-default",
-        "architecture/C4/undeclared-setting",
-        "architecture/C5/cron-progress",
-        "architecture/C5/idle-floor",
-        "architecture/C5/polling-loop",
-        "architecture/C5/polling-timer",
-        "architecture/C6/retired-route",
-        "architecture/C6/unexplained-suppression",
-        "architecture/C7/failure-only-verdict",
-        "architecture/C7/merge-only-completion",
-        "force-push",
-        "model-pin",
-        "model-selector"
-      ],
-      "sources": {
-        ".github/actions/stack-conformance/action.yml": "1d44d2ed36b9468f7366a6a4bda602470d67c9ae673c66a52b8656261588e7ba",
-        ".github/actions/stack-conformance/architecture.py": "9c876eee5dc1428b397e4d8d32417a1a8bf5e33320198ee6f0db86e68deb40be",
-        ".github/actions/stack-conformance/cache-economy-profiles.json": "4ba6b2037e88da964adc9cb85a71577ee82072d1cc220e7c0d2f5447184ccee7",
-        ".github/actions/stack-conformance/deal_randomness.py": "217ae9616e7d0db3600eaca497d21c3bf190f1cd2c4140256d83f422b7388c97",
-        ".github/actions/stack-conformance/model_pins.py": "ddfacc88cdb5c1d465ed19a3a1653dad44906e1be9eab931601af2c11dc56111",
-        ".github/actions/stack-conformance/no_force_push.py": "00e8a1f2de8b1eebc12ab7856d2dd37d7bdd6ea7c4f99953fca44f56b282cec9",
-        ".github/actions/stack-conformance/project_portability.py": "531f0962491b3e407c1d863801fbf8235b353f577ca7dd3b3e47e04946761577",
-        ".github/actions/stack-conformance/stack_conformance.py": "224679e51b904890296be04930b8b5858cdbd5c28b90a500ad98e37737fc625b",
-        ".github/actions/stack-conformance/tenant_reads.py": "9d7773fbae89ba37fb2510686aae0fb11b0b117105a40edc671b0d9a52c9e412",
-        "policy/deal-randomness-scope.json": "0cd4a11053555576b7603564ef17dd9ebf8b6647af03811e581c9bba514b84ab"
       }
     },
     "9be3dc9d57c55867b0997af9b26fd8a86db4df788f459a3fa90c59ccef5afac2": {
