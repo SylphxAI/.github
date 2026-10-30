@@ -237,7 +237,7 @@ def _fetch_svid(
         raise RuntimeError(f"SPIFFE Workload API socket missing at {socket}")
     deadline = time.monotonic() + timeout_seconds
     last_error = "publisher identity unavailable"
-    while True:
+    while time.monotonic() < deadline:
         try:
             completed = subprocess.run(
                 [
@@ -271,6 +271,7 @@ def _fetch_svid(
         if time.monotonic() + 2 >= deadline:
             raise RuntimeError(last_error)
         time.sleep(2)
+    raise RuntimeError(last_error)
 
 
 def _request_registry_token(
