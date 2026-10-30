@@ -55,11 +55,19 @@ def job_log(repo, job_id):
 
 def log_entries(text, repository_id, run_id):
     """Only completed store receipts identify keys; commands and packed bytes do not."""
-    prefix = r"^\d{4}-\d{2}-\d{2}T[0-9:.]+Z run-store put (?P<name>junit-[A-Za-z0-9._-]{1,94}): "
+    timestamp = r"^\d{4}-\d{2}-\d{2}T[0-9:.]+Z "
+    name = r"(?P<name>junit-[A-Za-z0-9._-]{1,94})"
+    prefix = timestamp + r"run-store put " + name + r": "
     stored = re.compile(prefix + r"[0-9]+ bytes as run-store\.v1\." + re.escape(str(repository_id))
                         + r"\." + re.escape(str(run_id)) + r"\.(?P=name)$", re.MULTILINE)
     retained = re.compile(prefix + r"an entry already exists; it is kept$", re.MULTILINE)
-    return sorted({match["name"] for pattern in (stored, retained) for match in pattern.finditer(text)})
+    attempted = re.compile(timestamp + r"(?:::(?:error|warning|notice)::)?run-store put " + name + r":", re.MULTILINE)
+    declared = re.compile(timestamp + r"##\[start-action display=run-store put " + name + r";", re.MULTILINE)
+    expected = {match["name"] for pattern in (attempted, declared) for match in pattern.finditer(text)}
+    complete = {match["name"] for pattern in (stored, retained) for match in pattern.finditer(text)}
+    if expected - complete:
+        raise ValueError("JUnit producer lacks a completed store receipt; refusing partial shard discovery")
+    return sorted(complete)
 
 
 def discover(rows, repo, repository_id, run_id):

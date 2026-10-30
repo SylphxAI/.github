@@ -114,10 +114,32 @@ class JunitDiscoveryTest(unittest.TestCase):
             'run-store put junit-a: 291 bytes as run-store.v1.991.44.junit-b',
             'echo run-store put junit-a: 291 bytes as run-store.v1.991.44.junit-a',
         ]
-        text = '\n'.join('2026-10-30T18:48:28.0842415Z ' + line for line in lines)
-        self.assertEqual(store.log_entries(text, 991, 44), [])
+        for line in lines[:-1]:
+            with self.subTest(line=line), self.assertRaisesRegex(ValueError, 'completed store receipt'):
+                store.log_entries('2026-10-30T18:48:28.0842415Z ' + line, 991, 44)
+        self.assertEqual(store.log_entries('2026-10-30T18:48:28.0842415Z ' + lines[-1], 991, 44), [])
         retained = '2026-10-30T18:48:28.0842415Z run-store put junit-kept: an entry already exists; it is kept\n'
         self.assertEqual(store.log_entries(retained, 991, 44), ['junit-kept'])
+
+    def test_one_good_and_one_failed_omitted_step_producer_refuses_before_any_get(self):
+        rows = [{'id': shard, 'run_id': 44, 'status': 'completed', 'name': f'JUnit fixture ({shard})',
+                 'steps': []} for shard in (1, 701)]
+        def api(path):
+            return {'id': 991} if path == 'repos/tenant/project' else {'jobs': rows}
+        def log(repo, job_id):
+            start = f'2026-10-30T18:48:26.0635479Z ##[start-action display=run-store put junit-consumer-{job_id};id=__self.run]\n'
+            if job_id == 1:
+                return start + ('2026-10-30T18:48:28.0842415Z run-store put junit-consumer-1: '
+                                '291 bytes as run-store.v1.991.44.junit-consumer-1\n')
+            return start + ('2026-10-30T18:48:26.9483174Z run-store put junit-consumer-701: packed_bytes=293\n'
+                            '2026-10-30T18:48:28.0842415Z ::warning::run-store put junit-consumer-701: could not store the bundle\n')
+        with tempfile.TemporaryDirectory() as tmp, patch.object(store, 'api', api), \
+                patch.object(store, 'job_log', log), patch.object(store.subprocess, 'run') as get:
+            destination = Path(tmp) / 'reports'
+            with self.assertRaisesRegex(ValueError, 'refusing partial shard discovery'):
+                store.fetch('tenant/project', 44, destination)
+            get.assert_not_called()
+            self.assertFalse(destination.exists())
 
     def test_unavailable_or_empty_discovery_never_exposes_a_partial_shard_set(self):
         rows = [{'id': shard, 'run_id': 44, 'status': 'completed', 'name': str(shard), 'steps': []}
