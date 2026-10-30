@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit_optimistic_merge as om  # noqa: E402  (same reader, same conventions)
-import action_pin_drift_check as provenance  # noqa: E402 - shared immutable source proof
+import action_pin_drift_check as provenance  # noqa: E402 - reason: reuse the adjacent immutable source proof reader
 
 ROOT = Path(__file__).resolve().parents[1]
 USES = re.compile(r"^\s*-?\s*uses\s*:\s*['\"]?([\w.-]+)/([\w.-]+)((?:/[^@\s'\"]+)?)@([0-9a-fA-F]{40})['\"]?\s*(?:#.*)?$")
@@ -88,6 +88,10 @@ def judge(files: dict[str, str], owners: list[str], reach: Reachability) -> list
             ok, why = reach.check(pin["repo"], pin["sha"], pin["path"])
             if not ok:
                 offenders.append({"file": name, "line": pin["line"], "repo": pin["repo"], "sha": pin["sha"], "why": why})
+    for repo, source in reach.sources.items():
+        if repo.lower() == provenance.SHARED_REPO.lower() and repo in reach.anchors:
+            offenders.extend({**finding, "repo": repo} for finding in
+                             provenance.dependency_errors(files, source, reach.anchors[repo]))
     return offenders
 
 

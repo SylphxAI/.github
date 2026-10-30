@@ -31,6 +31,18 @@ Each repository's anchor and each distinct commit's proof are read once per run,
 files reference different actions at that commit. The source reader and target resolution are shared
 with the installed stack-conformance guard.
 
+For `SylphxAI/.github`, both entrypoints also inspect the referenced action or workflow's shared
+dependencies at their pinned commits. A valid parent workflow cannot conceal a missing action or
+off-main pin in an older source revision. Failures name the caller's file and line, the failing source
+file and line, and the dependency chain. Nested source references retain the source repository's
+version-comment exemption.
+
+Local reusable workflows and `$/` self-repository actions are read at the running source commit.
+Ordinary `./` actions resolve in the caller's checked-out workspace and are not read from the remote
+source. This follows [GitHub's workflow syntax](https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions)
+(read 2026-10-30). Immutable source blobs are cached, and repeated dependencies are inspected once per
+root reference.
+
 A failure prints `file:line: pin owner/repo@sha: reason` and a `::error file=,line=` annotation. Tags,
 branches and `./` calls are not judged here; third-party owners (`actions/*`) are out of scope. After
 the dependency merges, repin to its merge commit.
@@ -62,3 +74,5 @@ main fail with file and line; a valid action or exact reusable workflow on main 
 commit or truncated tree fails; the default branch name is read rather than assumed; and each distinct
 commit's proof is read once. `tests/test_shared_pin_provenance_gate.py` exercises the installed caller
 entrypoint with valid, missing-target and off-main fixtures.
+It also covers nested missing and off-main targets, valid source chains, same-commit reusable
+workflows, self-repository actions, repeated references, and caller-workspace action paths.

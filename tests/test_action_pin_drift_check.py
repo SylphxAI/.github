@@ -55,7 +55,10 @@ class FakeGh:
             return {"status": "behind"}
         if "/git/trees/" in path:
             targets = [f".github/actions/{name}/action.yml" for name in ("x", "y", "needs-pass")]
-            return {"truncated": False, "tree": [{"type": "blob", "mode": "100644", "path": target} for target in targets]}
+            return {"truncated": False, "tree": [{"type": "blob", "mode": "100644", "path": target,
+                                                   "sha": "fixture-blob"} for target in targets]}
+        if "/git/blobs/" in path:
+            return {"encoding": "base64", "content": base64.b64encode(b"name: Example\n").decode()}
         sha = HEAD if path.endswith("/main") else path.rsplit("/", 1)[1]
         if sha == GONE:
             raise RuntimeError("Not Found (HTTP 404)")
@@ -145,6 +148,16 @@ class Judge(unittest.TestCase):
                 return super().rest(path)
         found, _ = judge(files, NoTree())
         self.assertIn("tree token refused", found[0]["why"])
+
+    def test_unreadable_dependency_blob_fails_closed(self):
+        class NoBlob(FakeGh):
+            def rest(self, path):
+                if "/git/blobs/" in path:
+                    raise RuntimeError("source blob unavailable")
+                return super().rest(path)
+        found, _ = judge({"ci.yml": workflow(f"SylphxAI/.github/.github/actions/x@{HEAD} # main")}, NoBlob())
+        self.assertEqual(len(found), 1)
+        self.assertIn("source blob unavailable", found[0]["why"])
 
     def test_source_exempts_comment_but_not_provenance_or_full_sha(self):
         files = {"ci.yml": workflow(f"SylphxAI/.github/.github/actions/absent@{HEAD}")}

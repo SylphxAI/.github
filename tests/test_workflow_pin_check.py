@@ -6,6 +6,7 @@ GitHub is a fake that answers repository, immutable commit, compare and tree rea
 from __future__ import annotations
 
 import importlib.util
+import base64
 import pathlib
 import sys
 import tempfile
@@ -42,7 +43,9 @@ class FakeGh:
             return {"status": self.status[sha]}
         if "/git/trees/" in path:
             return {"truncated": self.truncated, "tree": [
-                {"path": target, "type": "blob", "mode": "100644"} for target in self.targets]}
+                {"path": target, "type": "blob", "mode": "100644", "sha": "fixture-blob"} for target in self.targets]}
+        if "/git/blobs/" in path:
+            return {"encoding": "base64", "content": base64.b64encode(b"name: Example\n").decode()}
         if "/commits/" in path:
             sha = path.rsplit("/", 1)[1]
             sha = ON_MAIN if sha == self.branch else sha
