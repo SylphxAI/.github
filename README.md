@@ -50,6 +50,11 @@ child manifest can expose the same image content but have different digests.
 Missing headers, an unreadable digest, or inconsistent identity/content fail
 publication readback; the scoped publisher credential never appears in logs.
 
+The same credential helper supports declared read-only CI consumers with
+`--identity github-oidc --actions pull`; see
+[registry pull credentials](docs/registry-pull-auth.md). The default remains
+the existing publisher's `pull,push` request.
+
 ## Repository settings
 
 Company repositories delete a pull request's head branch when it merges

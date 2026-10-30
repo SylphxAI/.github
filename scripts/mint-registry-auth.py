@@ -160,7 +160,7 @@ def _validate_svid(token: str, now: int, repository: str | None = None) -> None:
         raise ValueError("JWT-SVID lifetime exceeds the publisher contract")
 
 
-def _validate_registry_token(token: str, now: int, repository: str) -> None:
+def _validate_registry_token(token: str, now: int, repository: str, requested_actions: str = "pull,push") -> None:
     claims = _jwt_claims(token)
     if REGISTRY_TOKEN_SERVICE not in _audiences(claims):
         raise ValueError("registry JWT audience mismatch")
@@ -185,8 +185,8 @@ def _validate_registry_token(token: str, now: int, repository: str) -> None:
     if len(exact) != 1:
         raise ValueError("registry JWT does not contain exactly one repository grant for this image")
     actions = exact[0].get("actions")
-    if not isinstance(actions, list) or set(actions) != {"pull", "push"}:
-        raise ValueError("registry JWT grant is not exact pull,push authority")
+    if not isinstance(actions, list) or len(actions) != len(set(actions)) or set(actions) != set(requested_actions.split(",")):
+        raise ValueError(f"registry JWT grant is not exact {requested_actions} authority")
     if len(grants) != 1:
         raise ValueError("registry JWT contains authority outside the requested repository")
 
@@ -313,13 +313,15 @@ def _request_registry_token(
         raise RuntimeError("registry token issuer returned invalid JSON") from error
 
 
-def _mint_registry_token(svid: str, account: str, repository: str, host: str, timeout_seconds: float) -> str:
+def _mint_registry_token(svid: str, account: str, repository: str, host: str, timeout_seconds: float, actions: str = "pull,push") -> str:
+    if actions not in ("pull", "pull,push"):
+        raise ValueError("registry actions must be pull or pull,push")
     mint_url = f"https://{host}/token" if host != DEFAULT_REGISTRY_HOST else DEFAULT_MINT_URL
     query = urllib.parse.urlencode(
         [
             ("service", REGISTRY_TOKEN_SERVICE),
             ("account", account),
-            ("scope", f"repository:{repository}:pull,push"),
+            ("scope", f"repository:{repository}:{actions}"),
             ("ttl", str(MAX_REGISTRY_TOKEN_LIFETIME_SECONDS)),
         ]
     )
@@ -334,7 +336,7 @@ def _mint_registry_token(svid: str, account: str, repository: str, host: str, ti
     token = body.get("token") or body.get("access_token")
     if not isinstance(token, str):
         raise RuntimeError("registry token issuer response omitted the token")
-    _validate_registry_token(token, int(time.time()), repository)
+    _validate_registry_token(token, int(time.time()), repository, actions)
     return token
 
 
@@ -408,6 +410,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, help="directory for docker/skopeo auth files (not used with --probe)")
     parser.add_argument("--run-id", default="probe", help="GitHub run id used as the token account subject")
     parser.add_argument("--probe", action="store_true", help="mint, validate, print, and discard the credential")
+    parser.add_argument("--actions", choices=("pull", "pull,push"), default="pull,push", help="exact requested registry actions; pull for a declared read-only CI consumer")
     parser.add_argument(
         "--identity",
         choices=("spiffe", "github-oidc"),
@@ -435,7 +438,7 @@ def main() -> int:
             agent = _copy_agent(args.agent_bin, Path(temporary))
             credential = _fetch_svid(agent, args.socket, args.identity_wait_seconds, repository)
         token = _mint_registry_token(
-            credential, f"gha:{args.run_id}", repository, host, args.timeout_seconds
+            credential, f"gha:{args.run_id}", repository, host, args.timeout_seconds, args.actions
         )
         if args.probe:
             print(
