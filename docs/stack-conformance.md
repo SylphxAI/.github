@@ -236,6 +236,16 @@ read, including on the same line, creates another occurrence and fails; removing
 a read requires deleting its stale baseline record. No repository-wide cache
 allowance or separate baseline format is introduced.
 
+First adoption of this rule also checks `cache-safe-reads.json` in the shared
+action. Its reviewed display reads are bound to the repository, path, exact
+expression hash and occurrence, with a reason. Unrelated lines may change;
+changing or duplicating the read does not inherit its approval. Both the
+offline adoption helper and the required check reject unapproved inherited
+reads, including a pin-only bump that omits the adoption marker. Fix or delete
+those reads before adopting. Existing CI on its current pin keeps its current
+behavior. After adoption, the normal baseline may only shrink; this policy
+does not permit growth, new reads or a repository-wide exception.
+
 ## Keel game boundaries
 
 A Cargo workspace that depends on `keel`, a `keel-*` crate or `cubeage-kit`

@@ -1137,6 +1137,12 @@ def cmd_check(args) -> int:
         if introduced:
             report["unreadable"].append({"path": "base architecture configuration", "reason": str(error)})
     previous = {architecture.baseline_key(row): row for row in base_findings}
+    if args.base and any(row["rule"] == "cache-economy" for row in report["findings"]):
+        try:
+            if adoption.cache_adoption_requested(Tree(args.repo, args.base), head, base_text, head_text):
+                errors += adoption.cache_approval_errors(report["findings"], args.repository)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            errors.append("cache rule adoption refused: " + str(error))
     for row in report["findings"]:
         old = previous.get(architecture.baseline_key(row))
         if changed is not None:
