@@ -9,9 +9,11 @@ import argparse
 import json
 import pathlib
 
+ORGANIZATIONS = {'SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd'}
+
 # Architectural layers are decisions; consumer names come only from the census.
 LAYERS = {
-    **{name: ['SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd', 'TseFamily']
+    **{name: sorted(ORGANIZATIONS)
        for name in ['SylphxAI/spiron', 'SylphxAI/cloud', 'SylphxAI/sylphx', 'SylphxAI/keel', 'SylphxAI/keel-engine']},
     **{org + '/' + name: ['Cubeage', 'Cubeage-limited']
        for org in ['Cubeage', 'Cubeage-limited']
@@ -22,9 +24,10 @@ LAYERS = {
 def build(snapshot, products=None):
     if snapshot.get('version') != 1:
         raise ValueError('unsupported repository snapshot')
-    sources, repos = snapshot['sources'], snapshot['repositories']
+    sources = [source for source in snapshot['sources'] if source['organization'] in ORGANIZATIONS]
+    repos = [row for row in snapshot['repositories'] if row['full_name'].split('/')[0] in ORGANIZATIONS]
     organizations = {s['organization'] for s in sources}
-    if not {'SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd', 'TseFamily'} <= organizations:
+    if not ORGANIZATIONS <= organizations:
         raise ValueError('all declared organizations are required')
     if len({r['id'] for r in repos}) != len(repos):
         raise ValueError('repository IDs must be unique across the snapshot')
@@ -39,10 +42,11 @@ def build(snapshot, products=None):
     # Archived identities remain visible for history; they do not generate import
     # rules. Numeric IDs retain canonical identity across names and organizations.
     products = products or {'source': snapshot['product_source'], 'products': snapshot['products']}
-    if any(row['repository_id'] not in {r['id'] for r in repos} for row in products['products']):
+    product_rows = [row for row in products['products'] if row['repository'].split('/')[0] in ORGANIZATIONS]
+    if any(row['repository_id'] not in {r['id'] for r in repos} for row in product_rows):
         raise ValueError('product identity is outside the repository census')
     return {'version': 1, 'sources': sources, 'shared_layers': LAYERS,
-            'product_source': products['source'], 'products': products['products'],
+            'product_source': products['source'], 'products': product_rows,
             'repositories': sorted(repos, key=lambda r: r['id'])}
 
 

@@ -320,15 +320,27 @@ class AdversarialContextTests(unittest.TestCase):
         for workflow in (ROOT / '.github/workflows/project-control.yml', ROOT / 'workflow-templates/optimistic-gate.yml'):
             jobs = yaml.safe_load(workflow.read_text())['jobs']
             self.assertIn('stack', jobs['ci-ok']['needs'])
-            step = next(s for s in jobs['ci-ok']['steps'] if s.get('uses', '').split('@')[0].endswith('/needs-pass'))
+            step = next(s for s in jobs['ci-ok']['steps']
+                        if s.get('uses', '').split('@')[0].endswith(('/needs-pass', '/ci-ok')))
+            action = step['uses'].split('@')[0].rsplit('/', 1)[1]
+            script = ROOT / f'.github/actions/{action}/{action.replace("-", "_")}.py'
             required = step['with']['required']
             self.assertIn('stack', required.split(','))
-            for event in ('pull_request', 'merge_group', 'push'):
+            for event in ('pull_request', 'merge_group', 'push', 'workflow_dispatch'):
+                # Resolve the two event selections used by Project control;
+                # GitHub evaluates these before setting the action's inputs.
+                selected_required = required.replace(
+                    "${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }}",
+                    'template-plan,template-verdict' if event != 'push' else '')
+                selected_required = selected_required.replace(
+                    "${{ github.event_name != 'workflow_dispatch' && 'junit-producer' || 'junit-consumer' }}",
+                    'junit-producer' if event != 'workflow_dispatch' else 'junit-consumer')
+                self.assertNotIn('${{', selected_required)
                 for result in ('success', 'failure', 'cancelled', 'skipped'):
                     needs = {k: {'result': 'success'} for k in jobs['ci-ok']['needs']}
                     needs['stack']['result'] = result
-                    run = subprocess.run(['python3', str(ROOT / '.github/actions/needs-pass/needs_pass.py')],
-                        env=os.environ | {'NEEDS': json.dumps(needs), 'REQUIRED': required, 'ADVISORY': '', 'EVENT_NAME': event,
+                    run = subprocess.run(['python3', str(script)],
+                        env=os.environ | {'NEEDS': json.dumps(needs), 'REQUIRED': selected_required, 'ADVISORY': '', 'EVENT_NAME': event,
                             'REQUIRED_UNLESS_MERGE_GROUP': ''}, capture_output=True, text=True)
                     self.assertEqual(run.returncode, int(result != 'success'), (workflow, event, result, run.stdout))
 
@@ -517,7 +529,11 @@ class StandardFitRegressionTests(unittest.TestCase):
         snapshot = json.loads((ROOT / 'policy/architecture-repositories.json').read_text())
         generated = build(snapshot)
         self.assertEqual(len(generated['repositories']), sum(s['repository_count'] for s in generated['sources']))
-        self.assertEqual({s['organization'] for s in generated['sources']}, {'SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd', 'TseFamily'})
+        self.assertEqual({s['organization'] for s in generated['sources']}, {'SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd'})
+        snapshot['sources'].append({'organization': 'TseFamily'})
+        snapshot['repositories'].append({'full_name': 'TseFamily/personal', 'id': -1, 'archived': False})
+        snapshot['products'].append({'repository': 'TseFamily/personal', 'repository_id': -1, 'product': 'Personal'})
+        self.assertEqual(build(snapshot), generated)
         snapshot['sources'][0]['repository_count'] += 1
         with self.assertRaises(ValueError):
             build(snapshot)

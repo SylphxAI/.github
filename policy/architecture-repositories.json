@@ -27,11 +27,6 @@
       "repository_id": 1319349063
     },
     {
-      "product": "LearningQuest",
-      "repository": "TseFamily/tse-family-learning",
-      "repository_id": 1182537018
-    },
-    {
       "product": "Mark",
       "repository": "SylphxAI/readme-mark",
       "repository_id": 1302331101
@@ -383,44 +378,39 @@
       "Cubeage-limited"
     ],
     "SylphxAI/cloud": [
-      "SylphxAI",
       "Cubeage",
       "Cubeage-limited",
       "EpiowAI",
       "OzyrixLtd",
-      "TseFamily"
+      "SylphxAI"
     ],
     "SylphxAI/keel": [
-      "SylphxAI",
       "Cubeage",
       "Cubeage-limited",
       "EpiowAI",
       "OzyrixLtd",
-      "TseFamily"
+      "SylphxAI"
     ],
     "SylphxAI/keel-engine": [
-      "SylphxAI",
       "Cubeage",
       "Cubeage-limited",
       "EpiowAI",
       "OzyrixLtd",
-      "TseFamily"
+      "SylphxAI"
     ],
     "SylphxAI/spiron": [
-      "SylphxAI",
       "Cubeage",
       "Cubeage-limited",
       "EpiowAI",
       "OzyrixLtd",
-      "TseFamily"
+      "SylphxAI"
     ],
     "SylphxAI/sylphx": [
-      "SylphxAI",
       "Cubeage",
       "Cubeage-limited",
       "EpiowAI",
       "OzyrixLtd",
-      "TseFamily"
+      "SylphxAI"
     ]
   },
   "sources": [
@@ -471,15 +461,6 @@
       ],
       "query": "orgs/OzyrixLtd/repos?per_page=100&type=all",
       "read_at_utc": "2026-10-29T16:29:13.745773+00:00",
-      "repository_count": 4
-    },
-    {
-      "organization": "TseFamily",
-      "page_sizes": [
-        4
-      ],
-      "query": "orgs/TseFamily/repos?per_page=100&type=all",
-      "read_at_utc": "2026-10-29T16:29:14.458371+00:00",
       "repository_count": 4
     }
   ],
@@ -859,7 +840,6 @@
     {"archived": false, "full_name": "SylphxAI/puzzled", "id": 1180846641},
     {"archived": true, "full_name": "Cubeage-limited/oapi-gateway", "id": 1181006514},
     {"archived": false, "full_name": "Cubeage-limited/.github", "id": 1181742633},
-    {"archived": false, "full_name": "TseFamily/tse-family-learning", "id": 1182537018},
     {"archived": true, "full_name": "Cubeage-limited/cubeage-platform-v2", "id": 1182760573},
     {"archived": false, "full_name": "Cubeage-limited/cubeage-game-sdk", "id": 1184625118},
     {"archived": false, "full_name": "Cubeage-limited/solar2d-singular", "id": 1186814095},
@@ -885,7 +865,6 @@
     {"archived": false, "full_name": "Cubeage-limited/jery", "id": 1223658726},
     {"archived": true, "full_name": "SylphxAI/doctrine", "id": 1265184361},
     {"archived": false, "full_name": "EpiowAI/renovate-config", "id": 1267886476},
-    {"archived": false, "full_name": "TseFamily/renovate-config", "id": 1267886494},
     {"archived": false, "full_name": "OzyrixLtd/renovate-config", "id": 1267886526},
     {"archived": true, "full_name": "SylphxAI/alpha-foundry", "id": 1270110999},
     {"archived": true, "full_name": "Cubeage-limited/word-grove", "id": 1271356689},
@@ -1018,7 +997,6 @@
     {"archived": true, "full_name": "Cubeage-limited/blackjack21-keel", "id": 1389834699},
     {"archived": true, "full_name": "SylphxAI/runner-bench", "id": 1389927638},
     {"archived": true, "full_name": "SylphxAI/runner-bench-private", "id": 1389927670},
-    {"archived": false, "full_name": "TseFamily/mail-mcp", "id": 1389932644},
     {"archived": true, "full_name": "SylphxAI/model-bench", "id": 1391237036},
     {"archived": false, "full_name": "Cubeage-limited/bloomkin-keel", "id": 1391440668},
     {"archived": true, "full_name": "SylphxAI/ws-hold-test", "id": 1392490712},
@@ -1139,7 +1117,6 @@
     {"archived": false, "full_name": "Cubeage/MahJongUnity-sx", "id": 1422343196},
     {"archived": false, "full_name": "SylphxAI/anyagents", "id": 1424221229},
     {"archived": false, "full_name": "SylphxAI/skills", "id": 1427716146},
-    {"archived": false, "full_name": "TseFamily/homelab", "id": 1432650851},
     {"archived": false, "full_name": "Cubeage/harbourpop-keel", "id": 1435335579},
     {"archived": false, "full_name": "Cubeage/cargo-index", "id": 1437747667}
   ]

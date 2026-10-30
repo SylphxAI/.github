@@ -54,6 +54,7 @@ retain their existing hooks and read credentials.
 
 import argparse
 import calendar
+import importlib.util
 import json
 import os
 import re
@@ -65,6 +66,10 @@ import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+_pack_spec = importlib.util.spec_from_file_location("keel_pack_source", Path(__file__).with_name("pack_source.py"))
+pack_source = importlib.util.module_from_spec(_pack_spec)
+_pack_spec.loader.exec_module(pack_source)
 
 TAG_RE = re.compile(r"keel-(verified|weekly)-(\d{4}-\d{2}-\d{2})(?:-(\d+))?")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -586,57 +591,26 @@ def refresh_registry_locks(root, version, log):
     return None
 
 
-SCRIPT_RE = re.compile(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|py|mjs|js)\b")
-PACK_RE = re.compile(r"(?:\bkeel|\$\{?KEEL[A-Z_]*(?::-[^}]+)?\}?)[\"']?\s+pack\b")
-
-
 def ensure_pack_source_args(root):
     """Import the platform source argument into each stage that invokes the packer."""
     root = Path(root)
     files = set(tracked_files(root))
 
-    def packs(text, seen):
-        text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-        if PACK_RE.search(text.replace("\\\n", " ")):
-            return True
-        for name in SCRIPT_RE.findall(text):
-            if name in files and name not in seen:
-                path = root / name
-                if path.is_file() and not path.is_symlink() and is_text(path) and packs(path.read_text(), seen | {name}):
-                    return True
-        return False
+    def read(name):
+        path = root / name
+        return path.read_text() if path.is_file() and not path.is_symlink() and is_text(path) else None
 
     changed = []
     for name in sorted(files):
-        base = Path(name).name
-        if not (base == "Dockerfile" or base.startswith("Dockerfile.") or base.endswith(".Dockerfile")) or base.endswith(".dockerignore") or name.startswith(SKIP_DIRS):
+        if not pack_source.dockerfile(name):
             continue
         path = root / name
         if not path.is_file() or path.is_symlink() or not is_text(path):
             continue
         lines = path.read_text().splitlines(keepends=True)
-        starts = [i for i, line in enumerate(lines) if re.match(r"^\s*FROM\s", line, re.I)]
-        inserts = []
-        for begin, end in zip(starts, starts[1:] + [len(lines)]):
-            # Commands span continuation lines. Comments never select a stage.
-            command, packing_line = "", None
-            for i in range(begin + 1, end):
-                line = lines[i]
-                if line.lstrip().startswith("#"):
-                    continue
-                command += line
-                if line.rstrip().endswith("\\"):
-                    continue
-                if re.match(r"^\s*RUN\s", command, re.I) and packs(command, set()):
-                    packing_line = i
-                    break
-                command = ""
-            if packing_line is not None and not any(
-                    re.match(r"^\s*ARG\s+SYLPHX_GIT_COMMIT_SHA(?:\s|=|$)", line, re.I)
-                    for line in lines[begin + 1:packing_line + 1]):
-                inserts.append(begin + 1)
+        inserts = [line for line, _, _ in pack_source.missing_stages("".join(lines), name, files, read)]
         for index in reversed(inserts):
-            lines.insert(index, "ARG SYLPHX_GIT_COMMIT_SHA\n")
+            lines.insert(index, f"ARG {pack_source.ARG}\n")
         if inserts:
             path.write_text("".join(lines))
             changed.append(name)

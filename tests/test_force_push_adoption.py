@@ -64,9 +64,14 @@ class ForcePushAdoptionTests(unittest.TestCase):
         # profiles without that module keep their original identity.
         import hashlib
         directory = ROOT / sc.adoption.PREFIX
-        tree = sc.DictTree({sc.adoption.PREFIX + path.name: path.read_text()
-                            for path in directory.iterdir() if path.suffix == ".py" or path.name == "action.yml"})
+        files = {sc.adoption.PREFIX + path.name: path.read_text()
+                 for path in directory.iterdir()
+                 if path.suffix in (".py", ".json") or path.name == "action.yml"}
+        scope_path = "policy/deal-randomness-scope.json"
+        files[scope_path] = (ROOT / scope_path).read_text()
+        tree = sc.DictTree(files)
         source = sc.adoption.source_profile(tree)
+        self.assertEqual(source, sc.adoption.source_profile(sc.Tree(str(ROOT), "HEAD")))
         self.assertIn("force-push", source["rules"])
         self.assertIn(sc.adoption.PREFIX + "no_force_push.py", source["sources"])
         self.assertEqual(source["sources"][sc.adoption.PREFIX + "no_force_push.py"],

@@ -9,7 +9,7 @@
   "attribution_names": [
     "AI", "LLM", "assistant", "agent", "bot", "Claude", "Codex", "Copilot", "Cursor",
     "ChatGPT", "Gemini", "GPT", "OpenAI", "Anthropic", "Aider", "Devin", "CodeRabbit",
-    "Windsurf", "Codeium", "DeepSeek", "Qwen", "OpenCode", "AnyAgents"
+    "Windsurf", "Codeium", "DeepSeek", "Qwen", "OpenCode", "AnyAgents", "Spiron", "Sylphx Desk"
   ],
   "harness_names": ["codex", "opencode", "claude-code", "agy", "muse", "omp", "dsh", "grok"],
   "internal_patterns": {
