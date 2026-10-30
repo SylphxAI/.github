@@ -83,6 +83,10 @@ destructive bodies report the underlying operation. MySQL inline routine bodies
 are also inspected. Other procedural languages, escape-string bodies, and opaque
 dynamic execution require a contract reference. A marker inside a body string
 does not authorize the surrounding migration.
+In bodies with conditional, loop, exception, nested `DO`, or rollback paths,
+earlier statements do not establish that a table was created or a default was
+set. Required-column changes must carry their default in the same SQL statement
+or have a contract reference.
 
 After the expand step has shipped and old readers/writers have stopped using
 the old contract, a **new** migration may name that released step on its own line:

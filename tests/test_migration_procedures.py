@@ -24,6 +24,8 @@ class ProcedureTests(unittest.TestCase):
             "CREATE PROCEDURE expand() LANGUAGE sql BEGIN ATOMIC CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; END;",
             "DO $$ BEGIN RETURN QUERY SELECT 'DROP TABLE accounts'; END $$;",
             "DO $$ BEGIN UPDATE accounts SET active=1 WHERE id=42; END $$;",
+            "DO $$ BEGIN CREATE TABLE fresh (id int); ALTER TABLE fresh ADD region text NOT NULL; END; $$;",
+            "DO $$ BEGIN IF true THEN ALTER TABLE accounts ALTER region SET DEFAULT '', ALTER region SET NOT NULL; END IF; END; $$;",
         ]:
             with self.subTest(sql=sql):
                 self.assertEqual(guard.check_sql(sql, "postgres"), [])
@@ -60,6 +62,25 @@ class ProcedureTests(unittest.TestCase):
         self.assertTrue(guard.check_sql("DO $$\n-- contract: inner-only\nBEGIN DELETE FROM accounts; END; $$;", "postgres"))
         with self.assertRaises(guard.SqlError):
             guard.check_sql("-- contract: released-expand-42\nDO $$ BEGIN SELECT 'unterminated; END; $$;", "postgres")
+
+    def test_conditional_and_caught_ddl_cannot_establish_required_column_safety(self):
+        for body in [
+            "BEGIN IF false THEN CREATE TABLE accounts(id int); END IF; ALTER TABLE accounts ADD COLUMN region text NOT NULL; END;",
+            "BEGIN IF false THEN ALTER TABLE accounts ALTER COLUMN region SET DEFAULT ''; END IF; ALTER TABLE accounts ALTER COLUMN region SET NOT NULL; END;",
+            "BEGIN BEGIN CREATE TABLE accounts(id int); EXCEPTION WHEN duplicate_table THEN NULL; END; ALTER TABLE accounts ADD COLUMN region text NOT NULL; END;",
+            "BEGIN BEGIN ALTER TABLE accounts ALTER region SET DEFAULT ''; EXCEPTION WHEN others THEN NULL; END; ALTER TABLE accounts ALTER region SET NOT NULL; END;",
+            "BEGIN WHILE false LOOP CREATE TABLE accounts(id int); END LOOP; ALTER TABLE accounts ADD region text NOT NULL; END;",
+            "BEGIN CASE WHEN false THEN ALTER TABLE accounts ALTER region SET DEFAULT ''; ELSE NULL; END CASE; ALTER TABLE accounts ALTER region SET NOT NULL; END;",
+            "BEGIN ALTER TABLE accounts ALTER region SET DEFAULT ''; DO $nested$ BEGIN ALTER TABLE accounts ALTER region DROP DEFAULT; END; $nested$; ALTER TABLE accounts ALTER region SET NOT NULL; END;",
+        ]:
+            sql = 'DO $$ ' + body + ' $$;'
+            with self.subTest(body=body):
+                self.assertIn('NOT NULL', str(guard.check_sql(sql, 'postgres')))
+                self.assertEqual(guard.check_sql('-- contract: released-expand-42\n' + sql, 'postgres'), [])
+        sql = "CREATE PROCEDURE p() BEGIN IF false THEN CREATE TABLE accounts(id int); END IF; ALTER TABLE accounts ADD region text NOT NULL; END;"
+        self.assertIn('NOT NULL', str(guard.check_sql(sql, 'mysql')))
+        sql = "CREATE PROCEDURE p() BEGIN DECLARE CONTINUE HANDLER FOR 1050 SET @ignored=1; CREATE TABLE accounts(id int); ALTER TABLE accounts ADD region text NOT NULL; END;"
+        self.assertIn('NOT NULL', str(guard.check_sql(sql, 'mysql')))
 
     def test_opaque_execution_and_other_languages_still_require_review(self):
         for sql in [

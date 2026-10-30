@@ -269,7 +269,16 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
     out: list[tuple[int, str]] = []
     defaults: set[tuple[str, str]] = set()
     created: set[str] = set()
-    for stmt in split(tokens, ";"):
+    statements = split(tokens, ";")
+    routine_context = nesting or any(routine_kind(stmt) in {"DO", "FUNCTION", "PROCEDURE"} for stmt in statements)
+    uncertain_flow = routine_context and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
+    for stmt in statements:
+        if uncertain_flow:
+            # A conditional/loop may not run, and an exception handler can
+            # continue after failed DDL. Credit facts only within one SQL
+            # statement, where its clauses execute together.
+            defaults.clear()
+            created.clear()
         control_stmt = procedural_statement(stmt)
         out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(stmt))
         if starts(control_stmt, "SET") and any(
