@@ -14,6 +14,8 @@ class ProcedureTests(unittest.TestCase):
     def test_additive_reports_and_grant_blocks_pass(self):
         for sql in [
             "CREATE OR REPLACE FUNCTION report() RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM accounts; $$;",
+            "CREATE FUNCTION report(p text DEFAULT 'DROP TABLE accounts') RETURNS text AS $$ SELECT p; $$ LANGUAGE sql;",
+            "CREATE FUNCTION report() RETURNS text LANGUAGE sql AS 'SELECT ''it''''s safe'';';",
             "CREATE FUNCTION report() RETURNS bigint AS $report$ BEGIN RETURN (SELECT count(*) FROM accounts); END; $report$ LANGUAGE plpgsql;",
             "CREATE PROCEDURE expand() LANGUAGE SQL AS $$ CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; $$;",
             "DO $grants$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='reader') THEN CREATE TABLE fresh (id int); GRANT SELECT ON fresh TO reader; END IF; END; $grants$;",
@@ -32,6 +34,8 @@ class ProcedureTests(unittest.TestCase):
             ("BEGIN TRUNCATE accounts; END;", "TRUNCATE"),
             ("BEGIN DELETE FROM accounts; END;", "DELETE without WHERE"),
             ("BEGIN UPDATE accounts SET active=0; END;", "UPDATE without WHERE"),
+            ("BEGIN IF true THEN DELETE FROM accounts; END IF; END;", "DELETE without WHERE"),
+            ("BEGIN LOOP UPDATE accounts SET active=0; END LOOP; END;", "UPDATE without WHERE"),
             ("BEGIN ALTER TABLE accounts ALTER COLUMN region TYPE varchar(2); END;", "column type change"),
             ("BEGIN IF true THEN ALTER TABLE accounts ALTER COLUMN region SET NOT NULL; END IF; END;", "SET NOT NULL"),
             ("BEGIN IF true THEN NULL; ELSE ALTER TABLE accounts ADD region text NOT NULL; END IF; END;", "ADD COLUMN NOT NULL"),
@@ -68,6 +72,8 @@ class ProcedureTests(unittest.TestCase):
             "CREATE FUNCTION f() RETURNS int AS 'file', 'symbol' LANGUAGE C;",
             "DO E'BEGIN SELECT 1; END;';",
             "DO U&'BEGIN \\0044ROP TABLE accounts; END;';",
+            "CREATE FUNCTION f() RETURNS void LANGUAGE sql AS E'\\x44ROP TABLE accounts;';",
+            "CREATE FUNCTION f() RETURNS void LANGUAGE sql AS E'\\104ROP TABLE accounts;';",
         ]:
             with self.subTest(sql=sql):
                 self.assertTrue(guard.check_sql(sql, "postgres"))
