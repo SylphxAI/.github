@@ -170,7 +170,7 @@ class PublicGuardTests(unittest.TestCase):
         f = self.fixture()
         base = f.commit({WORKFLOW: workflow(), "sylphx.toml": MANIFEST})
         plan = f.plan(base)
-        self.assertEqual(plan["introduced_rules"], ["architecture/C1/deal-randomness", RULE, "force-push"])
+        self.assertEqual(plan["introduced_rules"], ["architecture/C1/deal-randomness", RULE, "force-push", "model-selector"])
         self.assertEqual(len(plan["evidence"]["added_records"]), 1)
         adopted = f.commit({sc.BASELINE: plan["baseline_text"]})
         f.check(base, 0)
