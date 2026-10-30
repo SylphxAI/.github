@@ -255,10 +255,9 @@ class ContributionPolicy(unittest.TestCase):
             step = doc['runs']['steps'][0]
             self.assertIn('contribution_policy.py', step['run'])
             self.assertNotIn('if', step)
-        for name in ('optimistic-gate', 'ci-fast-path', 'rust-ci'):
-            document = yaml.safe_load((ROOT / 'workflow-templates' / (name + '.yml')).read_text())
-            self.assertIn('edited', document[True]['pull_request']['types'])
-            self.assertEqual(document['permissions']['pull-requests'], 'read')
+        document = yaml.safe_load((ROOT / 'workflow-templates/pr-metadata.yml').read_text())
+        self.assertIn('edited', document[True]['pull_request']['types'])
+        self.assertEqual(document['permissions']['pull-requests'], 'read')
 
 
 if __name__ == '__main__':

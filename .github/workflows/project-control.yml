@@ -6,7 +6,7 @@ on:
     branches:
       - main
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       junit-producer-run:
@@ -281,6 +281,7 @@ jobs:
           cp workflow-templates/red-main.yml "$work/.github/workflows/red-main.yml"
           cp workflow-templates/rust-check.yml "$work/.github/workflows/sylphx-check.yml"
           cp workflow-templates/rust-ci.yml "$work/.github/workflows/rust-ci.yml"
+          cp workflow-templates/pr-metadata.yml "$work/.github/workflows/pr-metadata.yml"
           cp workflow-templates/keel-repin.yml "$work/.github/workflows/keel-repin.yml"
           cp workflow-templates/keel-pin-check.yml "$work/.github/workflows/keel-pin-check.yml"
           cp workflow-templates/pages-publish.yml "$work/.github/workflows/pages-publish.yml"
@@ -301,6 +302,7 @@ jobs:
             ${{ runner.temp }}/starter/.github/workflows/red-main.yml
             ${{ runner.temp }}/starter/.github/workflows/sylphx-check.yml
             ${{ runner.temp }}/starter/.github/workflows/rust-ci.yml
+            ${{ runner.temp }}/starter/.github/workflows/pr-metadata.yml
             ${{ runner.temp }}/starter/.github/workflows/keel-repin.yml
             ${{ runner.temp }}/starter/.github/workflows/keel-pin-check.yml
             ${{ runner.temp }}/starter/.github/workflows/pages-publish.yml

@@ -1,7 +1,8 @@
 # Rust CI on the organization's shared compile cache (docs/rust-ci.md in
 # SylphxAI/.github). Copy to .github/workflows/ci.yml (or merge the `rust`
 # job into an existing gate) and replace `@main` with the commit of
-# SylphxAI/.github main you adopt: callers pin by commit.
+# SylphxAI/.github main you adopt: callers pin by commit. Install
+# pr-metadata.yml alongside this workflow for title, body and ready events.
 #
 # The push to main is what keeps the cache warm: every pull request and merge
 # group reads the entries the last main run wrote. Keep it.
@@ -9,7 +10,7 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   merge_group:
   push:
     branches: [main]

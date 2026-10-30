@@ -294,7 +294,7 @@ class StarterWorkflowTest(unittest.TestCase):
         self.assertIn("ci-ok", gate["jobs"])
         # A bot-opened pull request gets its ci-ok from a dispatched run.
         self.assertIn("workflow_dispatch", gate[True])
-        self.assertIn("pull_request", gate["jobs"]["suite"]["if"])
+        self.assertEqual(gate["jobs"]["suite"]["if"], "github.event_name != 'merge_group'")
 
     def test_verify_starter_supersedes_the_trunk_run(self) -> None:
         # The latest trunk push wins: a newer run supersedes an in-flight one,

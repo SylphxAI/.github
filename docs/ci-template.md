@@ -35,7 +35,13 @@ reports every pull-request workflow without it.
 
 ## Triggers
 
-`pull_request`, `merge_group` and `push: branches: [main]` only. A bare `push`
+Code CI uses `pull_request: types: [opened, synchronize, reopened]`,
+`merge_group` and `push: branches: [main]` only. Install the companion
+[`pr-metadata.yml`](../workflow-templates/pr-metadata.yml) and require its
+`pr-metadata` check separately. Its own concurrency group handles PR title/body
+edits and `ready_for_review` without starting or cancelling code CI. It never
+publishes `ci-ok`; the code workflow retains its exact-head dependencies.
+Draft pushes run the same affected tests as ready PRs. A bare `push`
 on every branch plus `pull_request` runs each commit twice. For docs, rely on
 the `changes` job rather than trigger-level `paths-ignore`: a skipped required
 workflow never reports, which blocks the merge; a skipped job does report.
@@ -56,9 +62,9 @@ workflow never reports, which blocks the merge; a skipped job does report.
 ## Which events run the heavy jobs
 
 Follow [optimistic-merge.md](optimistic-merge.md): the merge group runs the
-gate only; a ready pull request runs the heavy jobs its change affects; the
-trunk and the nightly schedule run everything. A heavy job that cannot run on
-every ready pull request (a device matrix, a store build) is gated on
+gate only; every pull request push, including a draft, runs the heavy jobs its
+change affects; the trunk and the nightly schedule run everything. A heavy
+job that cannot run on every pull request (a device matrix, a store build) is gated on
 `github.event_name == 'merge_group' || github.event_name == 'schedule'` or on
 `workflow_dispatch`, and the PR path keeps the light checks. Say so in the
 workflow: a skipped heavy job is only safe when something still runs it before

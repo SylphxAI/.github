@@ -1,7 +1,8 @@
 # Post-merge verification for optimistic merge (docs/optimistic-merge.md in
 # SylphxAI/.github). Everything the gate dropped - integration, database and
 # browser tests, device matrices, release builds - runs here on each push to
-# the trunk, and on a pull request marked ready (ci.yml calls this file). The `verified` job's check run on the head commit is the marker
+# the trunk, and on every pull request push, including drafts (ci.yml calls
+# this file). The `verified` job's check run on the head commit is the marker
 # the platform's Release reads: only verified commits deploy.
 #
 # One run covers every commit since the last one whose suite passed, so a

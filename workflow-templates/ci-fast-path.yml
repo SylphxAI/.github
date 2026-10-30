@@ -2,12 +2,13 @@
 # supersedes the pull request's run, heavy jobs wait for the cheap gate, and
 # one `ci-ok` aggregate (skipped = pass) is the required check. See
 # docs/ci-template.md in SylphxAI/.github. Replace each `@main` with the
-# commit you adopt (callers pin by commit), then fill in the jobs.
+# commit you adopt (callers pin by commit), then fill in the jobs. Install
+# pr-metadata.yml alongside this workflow for title, body and ready events.
 name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   merge_group:
   push:
     branches: [main]
@@ -38,11 +39,11 @@ jobs:
       - run: echo "format, lint, typecheck, unit tests"
 
   # Heavy jobs (release build, e2e, iOS/Android) wait for the gate, skip on a
-  # docs-only change, and run on a ready pull request, the trunk and nightly -
-  # not on a draft.
+  # docs-only change. Drafts run the same checks: marking ready is metadata
+  # only and must never restart or cancel the head's code evidence.
   heavy:
     needs: [changes, gate]
-    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-xlarge-merge' || 'sylphx-linux-xlarge' }}
     timeout-minutes: 45
     steps:

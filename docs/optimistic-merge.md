@@ -12,8 +12,8 @@ no half state.
 
 | Event | Runs | Required check |
 | --- | --- | --- |
-| Draft pull request | gate lanes only - the draft is the compiler | `ci-ok` |
-| Pull request marked ready | gate lanes + the full suite the change affects | `ci-ok` |
+| Pull request opened or pushed, including a draft | gate lanes + the full suite the change affects | `ci-ok` and `pr-metadata` |
+| PR title/body edited or marked ready | contribution metadata only; code CI continues on the same head | `pr-metadata`; existing `ci-ok` code evidence is retained |
 | Merge group | gate lanes only (target p90 under 5 min); while the trunk is red and its way back is in motion, only a revert or the labelled fix is admitted | `ci-ok` |
 | Push to the trunk | the full suite over every commit since the last verified one | none; `verified` marks the commit |
 | `verify.yml` fails on the trunk | red-main handler: trace and revert (never a rerun; a flake is quarantined through the quarantine list) | - |
@@ -44,9 +44,14 @@ proofs - is a suite lane.
 
 2. **`.github/workflows/ci.yml`** from
    [`workflow-templates/optimistic-gate.yml`](../workflow-templates/optimistic-gate.yml):
-   the gate lanes, a `suite` job that calls `verify.yml` on ready pull
-   requests, and the `ci-ok` aggregate. Keep the job name the ruleset
-   requires.
+   the gate lanes, a `suite` job that calls `verify.yml` on every pull request
+   push, including drafts, and the `ci-ok` aggregate. Install the companion
+   [`pr-metadata.yml`](../workflow-templates/pr-metadata.yml), pin its action,
+   and require `pr-metadata` separately after observing its PR and merge-group
+   producer. Code CI accepts only `opened`, `synchronize`, and `reopened` PR
+   events; metadata concurrency must never share the code group. Keep the
+   `ci-ok` name and dependencies the ruleset requires. See
+   [contribution-policy.md](contribution-policy.md) for adoption.
    **A gate that was its own workflow.** `ci-ok` `needs:` the jobs of
    `ci.yml`, so it does not wait for another workflow's check run on the same
    commit. A check that gated the merge on its own - `keel-pin-check`,

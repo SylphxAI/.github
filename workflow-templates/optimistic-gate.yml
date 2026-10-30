@@ -1,19 +1,19 @@
 # The merge-queue gate for optimistic merge (docs/optimistic-merge.md in
-# SylphxAI/.github). Merge groups and draft pull requests run only the fast
+# SylphxAI/.github). Merge groups run only the fast
 # lanes: format, lint, typecheck, workflow parse, and the unit tests the change
-# affects - a draft is the compiler. A pull request marked ready also runs the
-# full suite its change affects (verify.yml, called below), so it is green
-# before it is armed. After merge, verify.yml runs again on the trunk. `ci-ok`
-# is the one required check.
+# affects. Every pull request push, including a draft, also runs the full suite
+# its change affects (verify.yml, called below). Marking ready runs metadata
+# only. After merge, verify.yml runs again on the trunk. `ci-ok`
+# is the required code check; the separate pr-metadata check validates PR text.
 #
 # Adopting: replace each `@main` below with the commit of SylphxAI/.github
-# main you adopt (callers pin by commit), then fill in the lanes.
+# main you adopt (callers pin by commit), then fill in the lanes. Install
+# pr-metadata.yml alongside this workflow for title, body and ready events.
 name: CI
 
 on:
   pull_request:
-    # ready_for_review: marking a draft ready runs the full suite.
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   merge_group:
   # A pull request opened with GITHUB_TOKEN triggers no CI: its opener
   # dispatches this workflow on the branch (`gh workflow run ci.yml --ref
@@ -135,18 +135,17 @@ jobs:
         with:
           base: ${{ needs.plan.outputs.base }}
 
-  # The full suite on a pull request that is ready: the same lanes verify.yml
-  # runs after merge, selected by this change. Never in a merge group or a
-  # draft; it also runs on workflow_dispatch, where the aggregator requires it.
+  # The same affected suite on every PR push, including drafts. Metadata-only
+  # events never enter this workflow. Dispatch also requires the suite.
   suite:
-    if: github.event_name != 'merge_group' && !github.event.pull_request.draft
+    if: github.event_name != 'merge_group'
     uses: ./.github/workflows/verify.yml
     secrets: inherit
 
   # The required check. Skipped lanes pass; a failed lane fails; a cancelled lane
   # (a superseded push) is reported CANCELLED and does not fail; the
-  # PR-time suite must succeed everywhere but the merge group and a draft (which
-  # runs the gate lanes only), so a skipped suite on a dispatch run never turns
+  # PR-time suite must succeed everywhere but the merge group, so a skipped
+  # suite on a draft or dispatch run never turns
   # a red check green.
   ci-ok:
     if: always() && !cancelled()
@@ -160,4 +159,4 @@ jobs:
         with:
           needs: ${{ toJSON(needs) }}
           required: plan,stack
-          required-unless-merge-group: ${{ github.event.pull_request.draft && ' ' || 'suite' }}
+          required-unless-merge-group: suite
