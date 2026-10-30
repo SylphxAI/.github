@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import datetime
 import hashlib
 import importlib.util
@@ -150,16 +151,61 @@ def load_registry():
     return data
 
 
-def old_checkers(base_tree, *, shared_repo=None):
+class PublishedCheckerTree:
+    """Read immutable public Git blobs through the existing provenance client."""
+
+    def __init__(self, pin, gh=None):
+        checker = pin_checker()
+        self.gh = gh or checker.om.Gh()
+        commit = checker.Commits(self.gh).commit(pin)
+        tree_sha = commit["commit"]["tree"]["sha"]
+        tree = self.gh.rest(f"repos/{checker.SHARED_REPO}/git/trees/{tree_sha}?recursive=1")
+        if tree.get("truncated") or tree.get("sha") != tree_sha:
+            raise ValueError("immutable checker tree is incomplete or mismatched")
+        self.blobs = {row["path"]: row["sha"] for row in tree["tree"]
+                      if row["type"] == "blob" and row.get("mode") in ("100644", "100755")}
+        self.repo = checker.SHARED_REPO
+
+    def paths(self):
+        return list(self.blobs)
+
+    def read(self, path):
+        sha = self.blobs.get(path)
+        if sha is None:
+            return None
+        blob = self.gh.rest(f"repos/{self.repo}/git/blobs/{sha}")
+        if blob.get("sha") != sha or blob.get("encoding") != "base64":
+            raise ValueError("immutable checker blob response mismatch")
+        raw = base64.b64decode("".join(blob["content"].split()), validate=True)
+        actual = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        if actual != sha:
+            raise ValueError("immutable checker blob content mismatch")
+        return raw.decode("utf-8")
+
+
+def old_checkers(base_tree, *, shared_repo=None, source_tree=None):
     registry = load_registry()
     evidence = []
     for pin in checker_pins(base_tree):
         identity = registry["commits"].get(pin)
+        actual = None
         if identity is None:
-            raise ValueError("unknown old checker pin; register verified source capabilities before adoption: " + pin)
+            unknown = "unknown old checker pin; register verified source capabilities before adoption: " + pin
+            if shared_repo is None and source_tree is None:
+                raise ValueError(unknown)
+            try:
+                actual = source_profile(_checker().Tree(shared_repo, pin) if shared_repo is not None
+                                        else source_tree(pin))
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError, SyntaxError,
+                    StopIteration, subprocess.SubprocessError) as error:
+                raise ValueError(unknown + "; checker source is unavailable or invalid: " + str(error)) from None
+            identity = profile_id(actual)
+            if identity not in registry["profiles"]:
+                raise ValueError(unknown + "; immutable source profile has not been reviewed")
         profile = registry["profiles"][identity]
         if shared_repo is not None:
-            actual = source_profile(_checker().Tree(shared_repo, pin))
+            if actual is None:
+                actual = source_profile(_checker().Tree(shared_repo, pin))
             if actual != profile:
                 raise ValueError("old checker source capability provenance mismatch: " + pin)
         evidence.append({"commit": pin, "profile": identity, **profile})
@@ -207,8 +253,8 @@ def cache_adoption_requested(base_tree, head_tree, base_text, head_text):
     return bool(after) and before != after
 
 
-def introduced_rules(base_tree, baseline_text, *, shared_repo=None):
-    profiles = old_checkers(base_tree, shared_repo=shared_repo)
+def introduced_rules(base_tree, baseline_text, *, shared_repo=None, source_tree=None):
+    profiles = old_checkers(base_tree, shared_repo=shared_repo, source_tree=source_tree)
     enforced = {rule for profile in profiles for rule in profile["rules"]}
     adopted = adopted_rules(baseline_text)
     if "# model-alias-ratchet-v1" in (baseline_text or "").splitlines():
@@ -239,11 +285,11 @@ def baseline_validation(head_text, base_text, architecture):
     return errors
 
 
-def seed_permissions(base_tree, head_text, base_text, grown_records):
+def seed_permissions(base_tree, head_text, base_text, grown_records, *, shared_repo=None, source_tree=None):
     requested = adopted_rules(head_text) - adopted_rules(base_text)
     if not grown_records and not requested:
         return set()
-    introduced, _ = introduced_rules(base_tree, base_text)
+    introduced, _ = introduced_rules(base_tree, base_text, shared_repo=shared_repo, source_tree=source_tree)
     if requested - introduced:
         raise ValueError("cannot adopt rules already enforced by an old checker: " + ", ".join(sorted(requested - introduced)))
     return introduced
