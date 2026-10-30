@@ -134,8 +134,15 @@ These checks need no builder App secret or manually copied credential.
 - A `protected` entry is written once. When a re-run producer writes a key the
   first attempt already wrote, the first entry (built from the same commit) is
   kept and a notice says so; a `dev` entry is replaced.
-- A put packs with `tar | gzip -1`, refuses a bundle over 1 GiB (the gateway's
-  largest entry) before uploading, retries three times, treats a write the
+- A put packs with `tar | gzip -1`, refuses a bundle over 1 GiB before
+  uploading, and sends bodies of at most 64 MiB through ordinary authenticated
+  Turbo entries. Larger bundles use the existing `ci-run-store-parts-v1`
+  manifest wire format: `<key>.part-0`, `<key>.part-1`, then a small root
+  manifest committed last. Producers and consumers use the same action pin.
+  The consumer also accepts existing unsplit bundles, verifies the assembled
+  size and SHA256 before validating/unpacking, and leaves the destination
+  untouched for missing or corrupt parts. Partial immutable part collisions
+  fail before a manifest is committed. It retries three times, treats a write the
   gateway accepted but dropped (`x-build-cache: dropped`, its store was down)
   as a failure, and reads the entry back with `HEAD` before it succeeds.
 - A get retries three times, a miss included, then fails with the key and run
@@ -154,3 +161,9 @@ These checks need no builder App secret or manually copied credential.
   organization's BuildCache byte cap (50 GiB by default).
 - Linux and macOS runners; `python3` is required (`jq` is used when present).
   Both tokens are masked first and passed to curl on stdin only.
+
+Upload diagnostics log packed byte count before transmission. A refused upload
+records its HTTP status, transmitted request bytes and only a validated
+Cloudflare ray or hexadecimal request identifier. Response bodies, arbitrary
+headers, URLs and credentials are never printed. These diagnostics do not
+attribute an earlier 413 whose response metadata was not retained.
