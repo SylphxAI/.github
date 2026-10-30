@@ -4,6 +4,7 @@
     "007762c9d6ca92cc836f520c9411ec2299045b7b": "d7a504a05f71d72324f66be76d1c6fc4e6bafc1e018601eb9af5d18f4c890bbe",
     "021dedc8c8ecf4a4322c0e6b6a39b059f75b0634": "2c4da75821fe6685d540bb8800db9156b765fa8c2acc2a4c5b63547bd9e5e3df",
     "023c0a49447e6e67627f5b072a0488603ffb1852": "2c4da75821fe6685d540bb8800db9156b765fa8c2acc2a4c5b63547bd9e5e3df",
+    "054710a09ce85a2e0edbc14599bd00df0db879be": "a9f7d2ae56310714266744d5280c90b363c0f32575071a26339efff2efdcc381",
     "0615477e7ae3a7bfc25c0ed89e9e5b4dfcf34d98": "85011ce25de81243d2025609a68e01c316d2f5609b65f26e2118c9a7d7ba6e72",
     "07a6b2eb84abb2c99ac635cdf073224a003cdfb9": "2c4da75821fe6685d540bb8800db9156b765fa8c2acc2a4c5b63547bd9e5e3df",
     "083eff31aa012b3a24d5601abfc524ad461b2394": "f5eda8056b2dd9e6af791c64bda04df8661b1e8e51cd3b4ab505d439daf88454",
@@ -447,6 +448,42 @@
         ".github/actions/stack-conformance/architecture.py": null,
         ".github/actions/stack-conformance/model_pins.py": null,
         ".github/actions/stack-conformance/stack_conformance.py": "5c3aa9747de3f0e2f3e3bd6fee99f84339e3ff3bd29b28ffa9b0f72b2bd03cdb"
+      }
+    },
+    "a9f7d2ae56310714266744d5280c90b363c0f32575071a26339efff2efdcc381": {
+      "rules": [
+        "architecture/C1/cache-economy",
+        "architecture/C1/deal-randomness",
+        "architecture/C1/privileged-branch",
+        "architecture/C2/provider-bypass",
+        "architecture/C2/tenant-read-functions",
+        "architecture/C3/bundled-method",
+        "architecture/C3/downstream-config",
+        "architecture/C3/downstream-import",
+        "architecture/C4/competing-default",
+        "architecture/C4/undeclared-setting",
+        "architecture/C5/cron-progress",
+        "architecture/C5/idle-floor",
+        "architecture/C5/polling-loop",
+        "architecture/C5/polling-timer",
+        "architecture/C6/retired-route",
+        "architecture/C6/unexplained-suppression",
+        "architecture/C7/failure-only-verdict",
+        "architecture/C7/merge-only-completion",
+        "force-push",
+        "model-pin",
+        "model-selector"
+      ],
+      "sources": {
+        ".github/actions/stack-conformance/action.yml": "1d44d2ed36b9468f7366a6a4bda602470d67c9ae673c66a52b8656261588e7ba",
+        ".github/actions/stack-conformance/architecture.py": "3e1f05b063ad58c508744a6a192260f28b76b5abe78d6b0c1c248ac5bc77c0b5",
+        ".github/actions/stack-conformance/cache-economy-profiles.json": "4ba6b2037e88da964adc9cb85a71577ee82072d1cc220e7c0d2f5447184ccee7",
+        ".github/actions/stack-conformance/deal_randomness.py": "217ae9616e7d0db3600eaca497d21c3bf190f1cd2c4140256d83f422b7388c97",
+        ".github/actions/stack-conformance/model_pins.py": "ddfacc88cdb5c1d465ed19a3a1653dad44906e1be9eab931601af2c11dc56111",
+        ".github/actions/stack-conformance/no_force_push.py": "00e8a1f2de8b1eebc12ab7856d2dd37d7bdd6ea7c4f99953fca44f56b282cec9",
+        ".github/actions/stack-conformance/stack_conformance.py": "c564030e9bf943410c90863e2d04b5c7ee6d1d3389a60fd22ba3190e9335254b",
+        ".github/actions/stack-conformance/tenant_reads.py": "9d7773fbae89ba37fb2510686aae0fb11b0b117105a40edc671b0d9a52c9e412",
+        "policy/deal-randomness-scope.json": "0cd4a11053555576b7603564ef17dd9ebf8b6647af03811e581c9bba514b84ab"
       }
     },
     "ac15b3c021607f58db68bd112db9933817ae2bf0c7f02bf9ec022c4c7918deca": {

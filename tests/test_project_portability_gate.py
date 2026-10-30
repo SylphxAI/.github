@@ -56,6 +56,17 @@ class ProjectPortabilityGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'new head debt'):
             f.plan(base)
 
+    def test_selector_release_adopts_only_the_new_portability_rule(self):
+        f = self.fixture()
+        old = '054710a09ce85a2e0edbc14599bd00df0db879be'
+        base = f.commit({WORKFLOW: workflow(old), SOURCE: BAD})
+        f.commit({WORKFLOW: workflow(UNKNOWN)})
+        result = f.plan(base)
+        self.assertEqual(result['introduced_rules'], [RULE])
+        self.assertEqual(len(result['evidence']['added_records']), 1)
+        f.commit({sc.BASELINE: result['baseline_text']})
+        f.check(base, 0)
+
     def test_capability_profile_binds_the_executable_module(self):
         self.assertIn(RULE, sc.adoption.current_rules())
         action = pathlib.Path(sc.__file__).parent
