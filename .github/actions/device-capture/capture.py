@@ -44,7 +44,7 @@ class Receipt:
     def save(self):
         self.path.write_text(json.dumps(self.data, indent=2) + "\n")
 
-    def request(self, endpoint, bearer=None, body=None, label=None):
+    def request(self, endpoint, bearer=None, body=None, label=None, allow_propagation=False, timeout=60):
         row = {"utc": utc(), "endpoint": label or endpoint.split("?", 1)[0],
                "method": "POST" if body is not None else "GET", "state": "submitted"}
         self.data["requests"].append(row)
@@ -61,7 +61,7 @@ class Receipt:
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 raise CaptureError("unexpected credential endpoint redirect")
         try:
-            response = urllib.request.build_opener(NoRedirect).open(request, timeout=60)
+            response = urllib.request.build_opener(NoRedirect).open(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             response = error
         except Exception:
@@ -83,7 +83,9 @@ class Receipt:
             row["access_key"] = value["key"].get("name")
         self.save()
         print(json.dumps(row), flush=True)
-        if row["status"] != 200:
+        propagation = (allow_propagation and body is None and endpoint == API + "/v1/whoami"
+                       and row["status"] == 401 and value.get("code") == "key_not_yet_propagated")
+        if row["status"] != 200 and not propagation:
             raise CaptureError("identity request refused before leasing")
         return value
 
@@ -93,6 +95,24 @@ def mask(token):
         raise CaptureError("identity response lacks a credential; no lease requested")
     print("::add-mask::" + token, flush=True)
     return token
+
+
+def propagated_identity(receipt, token):
+    # The advertised active_after_ms was exceeded by one real issued token.
+    # Re-read only that same token for at most 30 seconds, and only for the
+    # explicit propagation refusal. Never mint again or retry another denial.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        identity = receipt.request(API + "/v1/whoami", token, allow_propagation=True, timeout=remaining)
+        if time.monotonic() >= deadline:
+            break
+        if identity.get("code") != "key_not_yet_propagated":
+            return identity
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+    raise CaptureError("issued identity did not propagate within 30 seconds; no lease requested")
 
 
 def execute(receipt, options):
@@ -123,7 +143,7 @@ def execute(receipt, options):
     if not isinstance(delay, int) or not 0 <= delay <= 60000:
         raise CaptureError("invalid identity propagation interval")
     time.sleep(delay / 1000)
-    identity = receipt.request(API + "/v1/whoami", token)
+    identity = propagated_identity(receipt, token)
     check_identity(identity, parent)
     receipt.data.update(ci_name=ci_name, environment=parent, identity=identity, cli_version=version)
     receipt.save()
