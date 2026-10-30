@@ -12,6 +12,8 @@ import base64
 import hashlib
 import importlib.util
 import json
+import io
+import contextlib
 import tempfile
 import time
 import unittest
@@ -87,6 +89,21 @@ class RegistryTokenValidationTests(unittest.TestCase):
     def test_accepts_exactly_one_repository_grant(self) -> None:
         token = jwt(self.claims([{"type": "repository", "name": "library/sylphx-hands", "actions": ["pull", "push"]}]))
         mint._validate_registry_token(token, int(time.time()), "library/sylphx-hands")
+
+    def test_pull_only_requires_exact_actions_and_repository(self) -> None:
+        for actions in [["pull"], ["pull", "push"], ["pull", "pull"], ["push"], ["*"]]:
+            token = jwt(self.claims([{"type":"repository", "name":"library/sylphx-hands", "actions":actions}]))
+            if actions == ["pull"]:
+                mint._validate_registry_token(token, int(time.time()), "library/sylphx-hands", "pull")
+            else:
+                with self.subTest(actions=actions), self.assertRaises(ValueError):
+                    mint._validate_registry_token(token, int(time.time()), "library/sylphx-hands", "pull")
+        for grants in [
+            [{"type":"repository", "name":"library/foreign", "actions":["pull"]}],
+            [{"type":"repository", "name":"library/sylphx-hands", "actions":["pull"]}, {"type":"repository", "name":"library/foreign", "actions":["pull"]}],
+        ]:
+            with self.assertRaises(ValueError):
+                mint._validate_registry_token(jwt(self.claims(grants)), int(time.time()), "library/sylphx-hands", "pull")
 
     def test_rejects_a_grant_for_another_repository(self) -> None:
         token = jwt(self.claims([{"type": "repository", "name": "library/other", "actions": ["pull", "push"]}]))
@@ -257,6 +274,36 @@ class RegistryMintRetryTests(unittest.TestCase):
         self.assertIsInstance(result, str)
         self.assertEqual(len(calls), 2)
         self.assertEqual(sleeps, [mint.MINT_BACKOFF_SECONDS[0]])
+
+    def test_pull_exchange_requests_only_pull(self) -> None:
+        now = int(time.time())
+        token = jwt({"aud":[mint.REGISTRY_TOKEN_SERVICE], "iat":now, "exp":now+300,
+                     "access":[{"type":"repository", "name":self.REPOSITORY, "actions":["pull"]}]})
+        with mock.patch.object(mint, "_request_registry_token", return_value={"token":token}) as exchange:
+            self.assertEqual(mint._mint_registry_token("oidc", "gha:42", self.REPOSITORY, mint.DEFAULT_REGISTRY_HOST, 5, "pull"), token)
+        query = mint.urllib.parse.parse_qs(mint.urllib.parse.urlsplit(exchange.call_args.args[0].full_url).query)
+        self.assertEqual(query["scope"], [f"repository:{self.REPOSITORY}:pull"])
+
+    def test_pull_cli_keeps_credentials_private(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "auth"
+            stdout = io.StringIO()
+            args = ["mint-registry-auth", "--identity", "github-oidc", "--actions", "pull",
+                    "--image", LANE_IMAGE, "--run-id", "42", "--output-dir", str(path)]
+            with mock.patch.object(mint.sys, "argv", args), \
+                    mock.patch.object(mint, "_fetch_github_oidc_token", return_value="private-oidc"), \
+                    mock.patch.object(mint, "_mint_registry_token", return_value="private-registry") as exchange, \
+                    contextlib.redirect_stdout(stdout):
+                self.assertEqual(mint.main(), 0)
+            self.assertEqual(exchange.call_args.args[-1], "pull")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+            for name in ["config.json", "skopeo-auth.json"]:
+                self.assertEqual((path/name).stat().st_mode & 0o777, 0o600)
+            skopeo = json.loads((path/"skopeo-auth.json").read_text())
+            encoded = skopeo["auths"][mint.DEFAULT_REGISTRY_HOST]["auth"]
+            self.assertEqual(base64.b64decode(encoded).decode(), "oauth2accesstoken:private-registry")
+            self.assertNotIn("private-oidc", stdout.getvalue())
+            self.assertNotIn("private-registry", stdout.getvalue())
 
     def test_read_timeout_and_5xx_are_retried(self) -> None:
         result, calls, _ = self.run_mint([TimeoutError("read"), self.http_error(503), self.response()])
