@@ -53,6 +53,26 @@ Repositories already running required `stack-conformance` use its shared-pin pro
 `SylphxAI/.github` references; they do not need another required job. This standalone action also
 checks references to other repositories in the configured organizations.
 
+For repositories that need only the shared-reference contract, set `shared-only: 'true'` on this
+action. That opt-in mode calls the same validator as stack-conformance: every `SylphxAI/.github`
+reference needs a full SHA, `# main`, main ancestry, an existing target, and valid shared dependencies.
+Malformed branch, tag, missing and short-SHA refs fail. Other repositories are outside this mode,
+so the ordinary read-only job token only needs to read the public shared source. The `owners` input
+is ignored in this mode. Generic standalone behavior remains the default.
+
+Copy `workflow-templates/shared-pin-check.yml`, replace its commit placeholder with a reviewed main
+commit, and require `workflow-pin-check` on pull requests and merge groups. This template runs on
+every pull request, so an unrelated change still receives its required verdict. Install one required
+provenance gate per caller; a repository already requiring the current stack-conformance gate keeps
+using that gate. Existing invalid references and missing version comments must be repaired in the
+same caller change.
+
+The equivalent local invocation is:
+
+```
+python3 scripts/workflow_pin_check.py check --shared-only --dir REPO
+```
+
 For a standalone installation, copy `workflow-templates/workflow-pin-check.yml` to the repository's `.github/workflows/`, replace
 `PINNED_COMMIT_SHA` with the reviewed commit of this repository, and add the `workflow-pin-check` job
 to the required checks. The token must read every repository the workflows pin (the reader App the
@@ -76,3 +96,6 @@ commit's proof is read once. `tests/test_shared_pin_provenance_gate.py` exercise
 entrypoint with valid, missing-target and off-main fixtures.
 It also covers nested missing and off-main targets, valid source chains, same-commit reusable
 workflows, self-repository actions, repeated references, and caller-workspace action paths.
+`tests/test_shared_pin_action.py` runs the actual installed action shell in shared-only mode with a
+read-only GitHub fixture, including malformed refs, missing comments, incomplete acquisition,
+direct and nested violations, a clean YAML target, and an unrelated private reference.

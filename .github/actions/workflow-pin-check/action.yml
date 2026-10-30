@@ -14,6 +14,9 @@ inputs:
   owners:
     description: Space-separated owners whose pins are judged. Empty means the organizations in policy/optimistic-merge.json.
     default: ''
+  shared-only:
+    description: Check only SylphxAI/.github refs, including full SHA, main comment, ancestry, target and nested dependencies. Ignores owners.
+    default: 'false'
 
 runs:
   using: composite
@@ -35,8 +38,11 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         ACTION_PATH: ${{ github.action_path }}
         OWNERS: ${{ inputs.owners }}
+        SHARED_ONLY: ${{ inputs.shared-only }}
       run: |
         set -euo pipefail
         args=()
         for owner in $OWNERS; do args+=(--owner "$owner"); done
-        python3 "$ACTION_PATH/../../../scripts/workflow_pin_check.py" ${args[@]+"${args[@]}"} check --dir "$GITHUB_WORKSPACE"
+        scope=()
+        if [ "${SHARED_ONLY:-false}" = true ]; then scope=(--shared-only); fi
+        python3 "$ACTION_PATH/../../../scripts/workflow_pin_check.py" ${args[@]+"${args[@]}"} check --dir "$GITHUB_WORKSPACE" ${scope[@]+"${scope[@]}"}
