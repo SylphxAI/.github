@@ -73,30 +73,26 @@ check list. Both metadata and code starters accept `workflow_dispatch`.
 
 An existing PR can retain a merge definition from before the companion was
 installed. Editing that PR can start its old code workflow and still produce no
-metadata check. Do not use an edit or a code rerun to fill that missing producer.
+metadata check. Install and verify the companion before requiring it, and
+refresh existing PR branches through their normal source owner when their
+stored workflow definition predates the companion.
 
-The source repository's `pr-metadata-backfill.yml` runs trusted default-branch
-code and publishes only `pr-metadata` on an explicit, current PR head:
+Use the supported branch-update operation with the exact current head, then
+observe the resulting branch ref, PR head and native `pr-metadata` workflow.
+An accepted asynchronous update is not a completed update; inspect the branch
+and PR before sending another request. The new head receives ordinary code CI
+and metadata validation, then enters the normal merge queue. No check is copied
+from the previous head. A later title/body edit or readiness change uses the
+installed metadata-only path and preserves that head's code evidence.
 
-```sh
-gh workflow run pr-metadata-backfill.yml --ref main \
-  -f pull-request=360 -f expected-head=FULL_PR_HEAD_SHA
-```
-
-Both inputs are required together. The publisher refuses a changed head,
-checks current PR text and original commit attribution without executing PR
-code, and writes a GitHub Actions check on that exact head. It never writes
-`ci-ok` or starts code CI. Correcting text can recover through a new metadata
-dispatch while the existing code result remains unchanged.
-
-Omit both inputs to backfill every open PR head with no `pr-metadata` producer.
-The workflow also does that once when its source is installed or updated on
-main. It paginates the open PR and check inventories and preserves existing
-producers, including queued, running and failed checks. A failed existing
-producer needs its normal metadata correction, or an explicit PR/head dispatch;
-the missing-only sweep does not replace it. Keep the separate required check
-bound to GitHub Actions (integration 15368). A backfill green is metadata
-evidence and cannot satisfy the separately required code verdict.
+A generic Check Run created through the API is not a supported replacement for
+this migration. On PR #360, an exact-head, PR-associated successful
+`pr-metadata` Check Run from GitHub Actions remained expected in GitHub's merge
+box despite the API marking it required and successful. The same publisher
+worked on other PRs, so its API response does not establish merge eligibility.
+The source-only backfill workflow and publisher have been removed. Keep both
+required checks and their GitHub Actions identity (integration 15368); never
+relax a gate or manufacture code evidence to recover a missing producer.
 
 Before requiring a new release, run the checker over all merged PRs from the
 last seven days across the complete active repository inventory. Keep the
