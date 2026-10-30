@@ -49,12 +49,17 @@ class FakeGh:
 
     def rest(self, path):
         self.calls.append(path)
-        if path == f"repos/{drift.SHARED_REPO}/commits/main":
-            return {"sha": HEAD, "commit": {"committer": {"date": self.HEAD_DATE}}}
-        sha = path.rsplit("/", 1)[1]
+        if "/compare/" in path:
+            if path.endswith(GONE):
+                raise RuntimeError("Not Found (HTTP 404)")
+            return {"status": "behind"}
+        if "/git/trees/" in path:
+            targets = [f".github/actions/{name}/action.yml" for name in ("x", "y", "needs-pass")]
+            return {"truncated": False, "tree": [{"type": "blob", "mode": "100644", "path": target} for target in targets]}
+        sha = HEAD if path.endswith("/main") else path.rsplit("/", 1)[1]
         if sha == GONE:
             raise RuntimeError("Not Found (HTTP 404)")
-        return {"sha": sha, "commit": {"committer": {"date": self.dates[sha]}}}
+        return {"sha": sha, "commit": {"committer": {"date": self.dates[sha]}, "tree": {"sha": sha}}}
 
 
 def judge(files, gh=None, days=drift.DRIFT_DAYS):
@@ -65,17 +70,18 @@ def judge(files, gh=None, days=drift.DRIFT_DAYS):
 
 
 class FindPins(unittest.TestCase):
-    def test_only_full_sha_github_pins(self):
+    def test_all_shared_refs_are_found(self):
         text = workflow(
             f"SylphxAI/.github/.github/actions/needs-pass@{BEHIND} # main",
             f"SylphxAI/.github/.github/workflows/rust-ci.yml@{FRESH} # main",
-            "SylphxAI/.github/.github/actions/needs-pass@main",  # a branch, not judged here
+            "SylphxAI/.github/.github/actions/needs-pass@main",  # invalid refs must be judged
             "actions/checkout@" + "f" * 40,
             "./.github/actions/local")
         found = drift.find_pins(text)
         self.assertEqual([(p["path"], p["sha"][0]) for p in found],
-                         [(".github/actions/needs-pass", "d"), (".github/workflows/rust-ci.yml", "b")])
-        self.assertEqual([p["line"] for p in found], [7, 8])
+                         [(".github/actions/needs-pass", "d"), (".github/workflows/rust-ci.yml", "b"),
+                          (".github/actions/needs-pass", "m")])
+        self.assertEqual([p["line"] for p in found], [7, 8, 9])
 
     def test_a_comment_is_not_a_pin(self):
         self.assertEqual(drift.find_pins(f"# uses: SylphxAI/.github/.github/actions/needs-pass@{BEHIND}\n"), [])
@@ -93,10 +99,68 @@ class FindPins(unittest.TestCase):
                 self.assertFalse(drift.find_pins(workflow(pin))[0]["tracks_main"])
 
     def test_main_inside_the_quoted_value_is_not_a_version_comment(self):
-        self.assertEqual(drift.find_pins(workflow(f'"SylphxAI/.github/.github/actions/x@{HEAD} # main"')), [])
+        self.assertFalse(drift.find_pins(workflow(f'"SylphxAI/.github/.github/actions/x@{HEAD} # main"'))[0]["full_sha"])
 
 
 class Judge(unittest.TestCase):
+    def test_branch_tag_short_and_quoted_comment_refs_fail_format(self):
+        for ref in ("", "main", "v1", "abc123", "z" * 40):
+            found, _ = judge({"ci.yml": workflow(f"SylphxAI/.github/.github/actions/x@{ref} # main")})
+            self.assertIn("full 40-hex", found[0]["why"])
+
+    def test_missing_ref_is_rejected(self):
+        found = drift.main_marker_errors({"ci.yml": workflow("SylphxAI/.github/.github/actions/x")})
+        self.assertEqual(len(found), 1)
+        self.assertIn("full 40-hex", found[0]["why"])
+
+    def test_recent_feature_sha_is_not_main_even_with_marker_and_target(self):
+        class Feature(FakeGh):
+            def rest(self, path):
+                if "/compare/" in path:
+                    return {"status": "diverged"}
+                return super().rest(path)
+        found, _ = judge({"ci.yml": workflow(f"SylphxAI/.github/.github/actions/x@{FRESH} # main")}, Feature())
+        self.assertIn("not on", found[0]["why"])
+
+    def test_current_head_still_requires_target_file(self):
+        found, _ = judge({"ci.yml": workflow(f"SylphxAI/.github/.github/actions/absent@{HEAD} # main")})
+        self.assertIn("target is absent", found[0]["why"])
+
+    def test_action_yaml_and_exact_workflow_file_pass_pure_validation(self):
+        files = {"ci.yml": workflow(f"SylphxAI/.github/.github/actions/x@{HEAD} # main",
+                                    f"SylphxAI/.github/.github/workflows/build.yaml@{HEAD} # main")}
+        proof = {HEAD: {"ancestor": True, "files": {".github/actions/x/action.yaml", ".github/workflows/build.yaml"}}}
+        self.assertEqual(drift.validate_pin_provenance(files, HEAD, proof), [])
+        proof[HEAD]["files"].remove(".github/workflows/build.yaml")
+        self.assertIn("target is absent", drift.validate_pin_provenance(files, HEAD, proof)[0]["why"])
+
+    def test_missing_compare_tree_or_partial_evidence_fails_closed(self):
+        files = {"ci.yml": workflow(f"SylphxAI/.github/.github/actions/x@{FRESH} # main")}
+        for evidence in ({}, {FRESH: {"error": "token refused"}}, {FRESH: {"ancestor": True}}):
+            self.assertTrue(drift.validate_pin_provenance(files, HEAD, evidence))
+        class NoTree(FakeGh):
+            def rest(self, path):
+                if "/git/trees/" in path:
+                    raise RuntimeError("tree token refused")
+                return super().rest(path)
+        found, _ = judge(files, NoTree())
+        self.assertIn("tree token refused", found[0]["why"])
+
+    def test_source_exempts_comment_but_not_provenance_or_full_sha(self):
+        files = {"ci.yml": workflow(f"SylphxAI/.github/.github/actions/absent@{HEAD}")}
+        source = drift.review_pins(files, drift.SHARED_REPO, gh=FakeGh())
+        self.assertEqual(len(source["offenders"]), 1)
+        self.assertIn("target is absent", source["offenders"][0]["why"])
+        self.assertTrue(drift.main_marker_errors({"ci.yml": workflow("SylphxAI/.github/x@v1")}, False))
+
+    def test_provenance_reads_are_cached_across_paths_and_files(self):
+        text = workflow(f"SylphxAI/.github/.github/actions/x@{FRESH} # main",
+                        f"SylphxAI/.github/.github/actions/y@{FRESH} # main")
+        found, gh = judge({"a.yml": text, "b.yml": text})
+        self.assertEqual(found, [])
+        self.assertEqual(sum("/compare/" in call for call in gh.calls), 1)
+        self.assertEqual(sum("/git/trees/" in call for call in gh.calls), 1)
+
     def test_bare_sha_fails_even_at_current_head(self):
         for sha in (HEAD, FRESH, AT_LIMIT):
             with self.subTest(sha=sha):
@@ -135,7 +199,7 @@ class Judge(unittest.TestCase):
         text = workflow(f"SylphxAI/.github/.github/actions/x@{FRESH} # main",
                         f"SylphxAI/.github/.github/actions/x@{FRESH} # main")
         _, gh = judge({"a.yml": text, "b.yml": text})
-        self.assertEqual(sum(1 for c in gh.calls if c.endswith(FRESH)), 1)
+        self.assertEqual(sum(1 for c in gh.calls if "/commits/" in c and c.endswith(FRESH)), 1)
 
     def test_days_argument_widens_the_window(self):
         found, _ = judge({"a.yml": workflow(f"SylphxAI/.github/.github/actions/x@{BEHIND} # main")},
@@ -202,8 +266,8 @@ class Audit(unittest.TestCase):
                 mock.patch.object(drift, "read_repo", return_value=(files, "")) as reader:
             report = drift.audit(FakeGh(), ["SylphxAI"], ["SylphxAI/delivered"], public_only=True)
         self.assertEqual(report["scope"], "public")
-        self.assertEqual(report["summary"], {"repos": 1, "PASS": 0, "FAIL": 1, "UNREADABLE": 0})
-        self.assertEqual(reader.call_args.args[1:], ("SylphxAI", "public"))
+        self.assertEqual(report["summary"], {"repos": 2, "PASS": 1, "FAIL": 1, "UNREADABLE": 0})
+        self.assertEqual([call.args[2] for call in reader.call_args_list], [".github", "public"])
 
     def test_repository_list_failure_is_not_a_zero_repository_pass(self):
         with mock.patch.object(drift.om, "list_org", side_effect=RuntimeError("token refused")):

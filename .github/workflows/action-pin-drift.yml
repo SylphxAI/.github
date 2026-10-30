@@ -1,7 +1,7 @@
 name: Shared-action pin drift
 
 # Weekly, and on demand: public repositories' shared SylphxAI/.github SHA pins must carry # main and be
-# within DRIFT_DAYS of .github main; every red trunk must have drawn a Red main run that reached its repair
+# on main with an existing target and within DRIFT_DAYS of .github main; every red trunk must have drawn a Red main run that reached its repair
 # step within 30 minutes. Both failures are silent otherwise - a stale commit still resolves, and a
 # red-main run that ends green at classification (or is skipped) looks like a handled trunk - so they are
 # checked here rather than found by an unrelated incident (docs/action-pin-drift-check.md).
@@ -49,7 +49,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           case "$rc" in
             0) ;;
-            1) echo "::error::a shared-action pin lacks # main, is stale, or could not be read (docs/action-pin-drift-check.md)"; exit 1 ;;
+            1) echo "::error::a shared-action pin is invalid, off main, missing its target, stale, or unreadable (docs/action-pin-drift-check.md)"; exit 1 ;;
             *) echo "::error::could not read a repository's workflows or .github main"; exit "$rc" ;;
           esac
       - name: Every red trunk drew a red-main run

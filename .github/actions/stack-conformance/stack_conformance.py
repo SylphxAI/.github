@@ -898,10 +898,14 @@ def cmd_check(args) -> int:
     head_model_baseline = {line for line in head_baseline or () if line.startswith("model-pin ")}
     head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline - head_model_baseline
     errors = []
+    pin_report = {"head": None, "mode": "unavailable", "offenders": []}
     try:
-        errors += adoption.main_marker_errors(head, args.repository)
-    except (OSError, ValueError, ImportError) as error:
-        errors.append("shared-action pin markers not reviewed: " + str(error))
+        pin_report = adoption.pin_provenance(head, args.repository, getattr(args, "shared_source", None))
+        errors += [f"{row['file']}:{row['line']}: {row['why']}" for row in pin_report["offenders"]]
+        print(f"shared pin proof: {pin_report['mode']}, main anchor {pin_report['head']}")
+    except (OSError, ValueError, ImportError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        errors.append("shared-action pin provenance not reviewed: " + str(error))
+        pin_report["error"] = str(error)
     for line in sorted(l for l in (head_baseline or ()) if l.startswith(AGENT_RUNTIME)):
         errors.append(f"'{line}' is in {args.baseline}; an agent-runtime part is allowed only by "
                       "SylphxAI/.github policy/agent-runtime.json, with an expiry date")
@@ -1020,7 +1024,8 @@ def cmd_check(args) -> int:
                    "base_commit": git(args.repo, "rev-parse", f"{args.base}^{{commit}}").strip() if args.base else None,
                    "checker_commit": checker_commit,
                    "model_pins": models,
-                   "legacy_departures": found, "legacy_errors": errors.copy()})
+                   "legacy_departures": found, "legacy_errors": errors.copy(),
+                   "shared_pin_provenance": pin_report})
     for row in report["findings"]:
         row.update({"repository": report["repository"], "commit": report["commit"]})
         row["disposition"] = "justified-exception" if row["decision"] else "regression" if row["changed"] else "inherited"
@@ -1103,6 +1108,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="owner/name of the checked repository (default $GITHUB_REPOSITORY)")
     c.add_argument("--agent-runtime-policy", default=str(AGENT_RUNTIME_POLICY))
     c.add_argument("--knowledge-policy", default=str(KNOWLEDGE_POLICY))
+    c.add_argument("--shared-source", help="Explicit offline shared checkout; proves pins against its complete origin/main snapshot")
     c.add_argument("--model-aliases", help="Optional pinned catalog alias declaration; default permits the <provider>/<line>-latest contract")
     c.add_argument("--today", default="", help="YYYY-MM-DD; default today in UTC (tests)")
     c.add_argument("--report", default="stack-conformance-report.json", help="Structured C1–C7 findings, coverage and limits")

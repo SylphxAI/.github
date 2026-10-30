@@ -35,16 +35,22 @@ def workflow_files(tree):
     return files
 
 
-def main_marker_errors(tree, repository):
-    # The shared source cannot pin and Renovate itself on every commit.
-    if repository.lower() == "sylphxai/.github":
-        return []
+def pin_checker():
     path = HERE.parents[2] / "scripts/action_pin_drift_check.py"
     spec = importlib.util.spec_from_file_location("stack_action_pin_drift", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def main_marker_errors(tree, repository):
     return [f"{row['file']}:{row['line']}: {row['why']}"
-            for row in module.main_marker_errors(workflow_files(tree))]
+            for row in pin_checker().main_marker_errors(workflow_files(tree),
+                require_main_marker=repository.lower() != "sylphxai/.github")]
+
+
+def pin_provenance(tree, repository, shared_source=None):
+    return pin_checker().review_pins(workflow_files(tree), repository, shared_source)
 
 
 def checker_pins(tree):

@@ -1,77 +1,98 @@
-# Shared-action pin drift check
+# Shared-action pin provenance and drift
 
-Every repository pins the shared actions in `SylphxAI/.github` by commit
-(`uses: SylphxAI/.github/.github/actions/needs-pass@<40-hex> # main`). A pin that stays
-put keeps running the old logic, so a fix in `.github` reaches nobody until each
-pin moves. On 2026-10-15 the fleet held six different `needs-pass` SHAs from
-2026-09-29 to 2026-10-04: a cancelled-lane verifier fix (`.github#258`) had
-landed, and no repository was running it. Nothing turned red, because a stale
-commit still resolves.
+Every caller of `SylphxAI/.github` must use a full commit SHA followed by
+`# main`, for example:
 
-`action_pin_drift_check.py` fails a SHA pin without the trailing `# main`
-version comment, or one more than `DRIFT_DAYS` (7) days behind
-`SylphxAI/.github` main. Renovate uses the comment to follow the branch; a bare
-SHA can resolve successfully while receiving no updates.
+```yaml
+- uses: SylphxAI/.github/.github/actions/needs-pass@<40-hex> # main
+```
+
+Renovate uses the comment to follow the branch. A bare SHA can keep resolving
+while receiving no updates. A recent commit can also come from an unmerged
+branch, or predate the action it names. Resolving a commit alone proves neither
+that it was released on main nor that GitHub can load the target.
 
 ## What it decides
 
-For every `uses: SylphxAI/.github/.github/{actions,workflows}/<name>@<40-hex>` in
-a repository's `.github/workflows/` and nested `.github/actions/`, it first
-requires `# main` after the SHA (outside quotes, if the value is quoted).
-Repinning must preserve that comment. It then reads the pinned commit's
-committer date and `.github` main's, and fails when the pin is more than
-`DRIFT_DAYS` days older. `DRIFT_DAYS` is a named constant in the script with its
-reasoning: a week is long enough for Renovate to open and land its grouped pull
-request after a `.github` commit, and short enough that a broken gate is caught
-within a working week rather than found by an unrelated incident.
+The shared parser reads `.github/workflows/` and nested `.github/actions/` YAML
+files. Each `SylphxAI/.github` reference must have a full 40-hex SHA and an
+external `# main` comment, including a reference to the current head. For quoted
+values the comment belongs outside the quotes. Branches, tags, short SHAs and
+malformed refs fail.
 
-A pin equal to `.github` main's head still needs `# main`; its date is never read. An unreadable
-commit fails (a 404 is a drift we cannot measure, not a pass). A pin to a branch
-or a tag is not judged here.
+The checker captures shared `main` once as an immutable SHA. Every pin must be
+an ancestor of that anchor, and its Git tree must contain the exact reusable
+workflow file or the action directory's `action.yml` or `action.yaml`. A
+feature-branch commit fails even when it is recent and contains the action.
+Missing main, compare or tree evidence fails with the acquisition reason;
+truncated trees fail too. Proof is cached per SHA and main anchor.
 
-## Using it
+The source repository `SylphxAI/.github` has a narrow exception to avoid updating
+its own pins after every release: its SHA references need no `# main` comment,
+and `@main` resolves to the captured immutable main anchor. Ancestry and target
+checks still apply. Other source branch/tag refs fail. External callers cannot
+use this exception.
 
+The central audit and standalone `check` also fail pins more than `DRIFT_DAYS`
+(7) days behind main's committer date. A week allows Renovate to open and land
+its grouped update while exposing stale shared logic within a working week.
+The caller gate enforces format, ancestry and target existence without an age
+limit. It uses the same pure `validate_pin_provenance` validator as the audit;
+`main_marker_errors` remains available for format-only inspection.
+
+## Caller gate and local use
+
+The shared `stack-conformance` action checks its caller's own Git objects,
+including private repositories. It uses the existing `github.token` to acquire
+proof from the public shared source, so it needs no cross-repository App or
+private-repository credential. Unavailable proof makes the gate fail and is
+recorded under `shared_pin_provenance` in its JSON report.
+
+Default CLI execution also acquires live proof through `gh`:
+
+```bash
+python3 .github/actions/stack-conformance/stack_conformance.py check \
+  --repo CALLER --repository ORG/REPO
+python3 scripts/action_pin_drift_check.py check \
+  --dir CALLER --repository ORG/REPO
 ```
-action_pin_drift_check.py check --dir REPO   judge one checked-out repository
-action_pin_drift_check.py audit --org ORG    judge every non-archived repository of ORG (read-only)
-action_pin_drift_check.py watcher --org ORG  the watch-the-watcher audit below (read-only)
+
+For explicit offline review, add `--shared-source /path/to/shared-checkout` to
+either command. This requires a complete, nonshallow local shared checkout and
+`refs/remotes/origin/main`; it never substitutes local HEAD for a missing main
+anchor. Output and the caller report identify the proof as an offline
+`origin/main` snapshot and print its full anchor SHA. This proves that snapshot,
+not live freshness. Git lazy fetching is disabled. The published action always
+uses live proof.
+
+```bash
+python3 scripts/action_pin_drift_check.py audit --org ORG --public-only
+python3 scripts/action_pin_drift_check.py watcher --org ORG --public-only
 ```
 
-Pass each organization with `--org`; the scheduled workflow names the four
-organizations in `policy/optimistic-merge.json`. The audit skips hands-off
-repositories and the shared source repository `SylphxAI/.github` itself.
-Tracking its own `main` would create an endless update chain: each self-pin
-update advances the branch it is trying to follow. This exception applies to
-the fleet pin audit, not the red-main watcher. Caller admission checks should
-apply the same source exception.
-
-`audit` exits 1 on an unmarked, drifted or unreadable pin/repository. A failed
-organization listing is unreadable, never a zero-repository pass. Partial
-GraphQL errors and truncated action trees fail closed. It is read-only:
-GitHub reads through the `gh` CLI. The pure `main_marker_errors(files)` function
-shares the parser and marker rule with offline caller admission checks, without
-requiring a token or reading commit dates.
+Pass each organization with `--org`. The audit skips archived and hands-off
+repositories. It includes the shared source with the exception described above.
+An unreadable repository or organization listing fails; an acquisition failure
+cannot become a zero-repository pass. All GitHub operations are read-only.
 
 ## Scheduled coverage and credentials
 
 `.github/workflows/action-pin-drift.yml` runs every Monday at 04:27 UTC and on
 `workflow_dispatch`, using `sylphx-linux-standard`. Both audits pass
-`--public-only` and use the job's read-only `github.token`. The report and job
-summary explicitly cover public, non-archived repositories only. Private
-repositories require a separately authorized cross-repository identity; this
-workflow does not claim coverage of them. An authorized local audit can omit
-`--public-only` to check all repositories visible to that identity.
+`--public-only` and use the job's read-only `github.token`. Their reports cover
+public, non-archived repositories only. Private callers enforce their own pins
+through `stack-conformance`; the central audit claims no private coverage. An
+authorized local audit can omit `--public-only` to read repositories visible to
+its existing identity.
 
 The obsolete `CUBEAGE_CI_READER_APP_ID` / `CUBEAGE_CI_READER_APP_KEY` mint path
-is removed. The scheduled run
+was removed. Scheduled run
 [40270369197](https://github.com/SylphxAI/.github/actions/runs/40270369197)
-on 2026-10-26 failed at `Mint read-only token`: the action reported that its
-`client-id` (or deprecated `app-id`) input was empty, and the pin audit was
-skipped. Those inputs are no longer used. The company identity policy allows
-the existing `sylphx-ai` App with Broker-held signing, not a new Reader App or
-a private key added here. Public reads need neither. If the job token is
-missing, either audit fails before acquisition with
-`read-only GitHub token is unavailable; public audit cannot run`.
+on 2026-10-26 failed at `Mint read-only token` because its `client-id` (or
+deprecated `app-id`) input was empty, skipping the audit. Those App inputs are
+no longer used, and the old App and organization settings are left for their
+owner to clean up. A missing job token fails before acquisition with
+`read-only GitHub token is unavailable`.
 
 ## Watch the watcher
 
@@ -108,13 +129,16 @@ waits excluded), so a merely queued or slow run does not read as unhandled. One
 
 ## Tests
 
-`tests/test_action_pin_drift_check.py` runs on a fake GitHub: a bare SHA fails
-even at the current head; quoted pins accept an external `# main`; a marked pin
-past the limit fails with file, line and days; a marked pin at or inside the
-limit passes; an unknown commit fails; each distinct pin is read once; nested
-composite actions are read; public scope excludes private repositories and the
-source repository; unreadable inputs fail. It also executes both audit shell
-steps with an empty token to prove a clear failure before acquisition.
-A red trunk with only a skipped `Red main` fails; a green `Red main` that
-stopped at classification is not a repair and fails; a run that reached the
-repair step inside the window passes; a late repair outside the window fails.
+`tests/test_action_pin_drift_check.py` covers full-SHA/comment rules, recent
+feature commits, missing target files, both action metadata extensions, exact
+workflow paths, cached proof, missing acquisition, drift age and public scope.
+It executes both audit shell steps with an empty token to verify clear failure.
+
+`tests/test_shared_pin_provenance_gate.py` executes the real caller CLI against
+complete local Git fixtures: a private caller passes with valid proof; a
+feature SHA, absent target, unavailable live source and missing offline main
+anchor fail. Source comment and `@main` exceptions still require target and
+ancestry proof. The action entrypoint also rejects a missing token before reads.
+
+The watcher tests distinguish a skipped or classification-only Red main run
+from one that reached its repair step inside the response window.
