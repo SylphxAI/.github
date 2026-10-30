@@ -158,6 +158,7 @@ def scan(tree, repository, aliases, source_views):
         for m in IDENTIFIER.finditer(clean):
             context = clean[clean.rfind("\n", 0, m.start()) + 1:m.start()]
             if (m.group().count("/") == 1 and m.group().split("/", 1)[0] in vendors
+                    and m.group()[-1].isalnum()
                     and re.search(r"\b\w*model\w*\b", context, re.I)):
                 matches[(m.start(), m.end())] = m.group()
         seen = collections.Counter()
