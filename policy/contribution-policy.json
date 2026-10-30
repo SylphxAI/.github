@@ -3,13 +3,15 @@
   "identities": [
     {"name": "Kyle Tse", "email": "hi@kylet.se", "roles": ["author", "committer"]},
     {"name": "renovate[bot]", "email": "29139614+renovate[bot]@users.noreply.github.com", "roles": ["author", "committer"]},
-    {"name": "sylphx-ai[bot]", "email": "212550965+sylphx-ai[bot]@users.noreply.github.com", "roles": ["author", "committer"]},
-    {"name": "GitHub", "email": "noreply@github.com", "roles": ["committer"]}
+    {"name": "sylphx-ai[bot]", "email": "212550965+sylphx-ai[bot]@users.noreply.github.com", "roles": ["author", "committer"]}
   ],
-  "merge_queue_identities": [
-    {"author": {"name": "Kyle Tse", "email": "shtse8@gmail.com"},
-     "committer": {"name": "GitHub", "email": "noreply@github.com"}}
-  ],
+  "github_generated": {
+    "committer": {"name": "GitHub", "email": "noreply@github.com", "login": "web-flow"},
+    "authors": [
+      {"name": "Kyle Tse", "email": "hi@kylet.se"},
+      {"name": "Kyle Tse", "email": "shtse8@gmail.com"}
+    ]
+  },
   "attribution_names": [
     "AI", "LLM", "assistant", "agent", "bot", "Claude", "Codex", "Copilot", "Cursor",
     "ChatGPT", "Gemini", "GPT", "OpenAI", "Anthropic", "Aider", "Devin", "CodeRabbit",

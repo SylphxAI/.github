@@ -22,12 +22,12 @@ class PolicyError(Exception):
     pass
 
 
-def evaluate(pull_request, commits, policy, *, merge_queue_commits=()):
+def evaluate(pull_request, commits, policy, *, verified_github_commits=()):
     """Return value-free findings for REST-shaped metadata; never mutate input."""
     identities = {role: {(item['name'], item['email']) for item in policy['identities'] if role in item['roles']}
                   for role in ('author', 'committer')}
-    queue_identities = {tuple((item[role]['name'], item[role]['email']) for role in ('author', 'committer'))
-                        for item in policy['merge_queue_identities']}
+    github = policy['github_generated']
+    github_authors = {(item['name'], item['email']) for item in github['authors']}
     names = '|'.join(re.escape(name) for name in policy['attribution_names'])
     harness_names = names + '|' + '|'.join(re.escape(name) for name in policy['harness_names'])
     attributed = re.compile(r'(?<![A-Za-z0-9])(?:' + names + r')(?![A-Za-z0-9])', re.I)
@@ -78,13 +78,16 @@ def evaluate(pull_request, commits, policy, *, merge_queue_commits=()):
         commit = item.get('commit', {})
         if not {'author', 'committer', 'message'} <= commit.keys():
             raise PolicyError('commit metadata is incomplete')
+        committer = commit.get('committer') or {}
+        github_committer = all(committer.get(key) == github['committer'][key] for key in ('name', 'email'))
+        verified = github_committer and sha in verified_github_commits
         for role in ('author', 'committer'):
             identity = commit.get(role) or {}
-            if (identity.get('name'), identity.get('email')) not in identities[role]:
-                pair = tuple(((commit.get(key) or {}).get('name'), (commit.get(key) or {}).get('email'))
-                             for key in ('author', 'committer'))
-                if role == 'author' and sha in merge_queue_commits and pair in queue_identities:
-                    continue
+            pair = (identity.get('name'), identity.get('email'))
+            approved = pair in identities[role]
+            if github_committer:
+                approved = verified and (role == 'committer' or pair in github_authors)
+            if not approved:
                 findings.append({'rule': 'unapproved-' + role, 'location': sha, 'line': 0})
         text(commit.get('message'), sha)
     return findings
@@ -191,6 +194,30 @@ def parse_commits(data):
     return result
 
 
+def verified_github_commits(api, commits, policy):
+    """Bind GitHub's signature verdict and web-flow identity to immutable objects."""
+    github = policy['github_generated']
+    verified = set()
+    for item in commits:
+        local = item.get('commit', {})
+        if not all((local.get('committer') or {}).get(key) == github['committer'][key]
+                   for key in ('name', 'email')):
+            continue
+        remote = api.get('commits/' + item['sha'])
+        metadata = remote.get('commit') or {}
+        if remote.get('sha') != item['sha'] or metadata.get('message') != local.get('message') or any(
+                (metadata.get(role) or {}).get(key) != (local.get(role) or {}).get(key)
+                for role in ('author', 'committer') for key in ('name', 'email')):
+            raise PolicyError('GitHub provenance does not match immutable commit metadata')
+        signature = metadata.get('verification') or {}
+        if (remote.get('committer') or {}).get('login') == github['committer']['login'] and \
+                signature.get('verified') is True and signature.get('reason') == 'valid' and \
+                isinstance(signature.get('signature'), str) and signature['signature'].strip() and \
+                isinstance(signature.get('payload'), str) and signature['payload'].strip():
+            verified.add(item['sha'])
+    return verified
+
+
 def dispatch_target(api, event, sha):
     """Bind an explicit PR-code dispatch to its immutable merge and current PR."""
     inputs = event.get('inputs') or {}
@@ -230,6 +257,10 @@ def pull_snapshot(api, number, expected_head=None, *, check_text=True, expected_
 
 
 def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
+    def verdict(pr, commits):
+        return evaluate(pr, commits, policy,
+                        verified_github_commits=verified_github_commits(api, commits, policy))
+
     def snapshot(number, head):
         if check_pull_text:
             return pull_snapshot(api, number, head)
@@ -238,12 +269,12 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
 
     if event_name in {'pull_request', 'pull_request_target'}:
         pr = event.get('pull_request', {})
-        return evaluate(*snapshot(event.get('number') or pr['number'], pr['head']['sha']), policy)
+        return verdict(*snapshot(event.get('number') or pr['number'], pr['head']['sha']))
     if event_name == 'merge_group':
         group = event['merge_group']
         commits = range_commits(group['base_sha'], group['head_sha'], api.repository, api.token)
         findings = []
-        pulls, covered, synthetic_shas = {}, set(), set()
+        pulls, covered = {}, set()
         group_shas = {commit['sha'] for commit in commits}
         branch = group['base_ref'].removeprefix('refs/heads/')
         for entry in api.queue_entries(branch):
@@ -252,11 +283,10 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
                 pr = entry['pullRequest']
                 pulls[pr['number']] = pr['headRefOid']
                 covered.add(synthetic)
-                synthetic_shas.add(synthetic)
         for number, expected_head in pulls.items():
             pr, original = snapshot(number, expected_head)
             covered.update(commit['sha'] for commit in original)
-            findings.extend(evaluate(pr, original, policy))
+            findings.extend(verdict(pr, original))
         for commit in commits:
             if commit['sha'] in covered:
                 continue
@@ -266,12 +296,11 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
                         pr.get('merge_commit_sha') == commit['sha']:
                     current, original = snapshot(pr['number'], pr['head']['sha'])
                     covered.add(commit['sha'])
-                    synthetic_shas.add(commit['sha'])
                     covered.update(item['sha'] for item in original)
-                    findings.extend(evaluate(current, original, policy))
+                    findings.extend(verdict(current, original))
         if group_shas - covered:
             raise PolicyError('merge group membership is incomplete')
-        findings.extend(evaluate(None, commits, policy, merge_queue_commits=synthetic_shas))
+        findings.extend(verdict(None, commits))
         return findings
     if event_name == 'workflow_dispatch':
         inputs = event.get('inputs') or {}
@@ -279,12 +308,12 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
             target, base, head = dispatch_target(api, event, sha)
             pr, commits = pull_snapshot(api, target['number'], head, check_text=check_pull_text,
                                         expected_base=(base, inputs['code-base-ref']))
-            return evaluate(pr if check_pull_text else None, commits, policy)
+            return verdict(pr if check_pull_text else None, commits)
         # A dispatch on a PR head must not replace a failed PR verdict with green.
         pulls = [pr for pr in api.pages('pulls?state=open') if pr['head']['sha'] == sha]
         findings = []
         for pr in pulls:
-            findings.extend(evaluate(*snapshot(pr['number'], sha), policy))
+            findings.extend(verdict(*snapshot(pr['number'], sha)))
         return findings
     return []
 

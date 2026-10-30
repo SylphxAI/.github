@@ -1,0 +1,34 @@
+{
+  "sha": "26dfb76cdb88cedecd598cf18ab4a438b6cb0902",
+  "commit": {
+    "author": {
+      "name": "Kyle Tse",
+      "email": "shtse8@gmail.com",
+      "date": "2026-10-30T18:05:38Z"
+    },
+    "committer": {
+      "name": "GitHub",
+      "email": "noreply@github.com",
+      "date": "2026-10-30T18:05:38Z"
+    },
+    "message": "Merge branch 'main' into ci/model-selector-358",
+    "verification": {
+      "verified": true,
+      "reason": "valid",
+      "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJq5NxyCRC1aQ7uu5UhlAAAdB8QAD0E42+1ey67yhiLYZ07Gnww\nDtzeeiyG5quWHQuS4iltrBxTHK4NiCtNSaSEXSWW8vjKq0HCyjUifMpYeDCzPXgD\nlqpT5XpKvIAD02Osyu9aK5Oe2l2UUnxVTJ2OSot7T1GRlOaARlQ+okYdewMFXLfo\n95MIRzZdIwU3eIpFBQRR+Cioj8+YnqPNv6iYMs4cd+IQ54oO8avRi3scM1Z/TL4/\n0CGkpBwFn+7WtEzthHxeJjbTFzLdUtwmBOJaJPpfWfukOrh1HILXeesBICxtHhXW\nQjblq+3co7k9n0NIMq9aGfPj58K7NvSIuDhvHWR326DC4rE+w2SgkuctmgRR029g\nSSNGzBrnYAbj6+PTRaEJ3cWYzGQoMqTFy+ZHzirAe3o6KMU+idK87/1CvVPg6hLJ\nYtYx/geB80LZTNKG1eW3sqilhxLU6uVrBzHXpAX0wS+E7ScpCwqQSQW3Fi0zHH7x\nciCHPAzdQ3PQmBV7V6cAJAcdwLOpZMYGknwv5gWgQuzYcvCLwT689ohnClzt9uO/\nKiYXz4zeWB8+fjwn4cZorTA1givrun2dftR8tYxB41Thpz9FBoJ+nfl68IzDHV33\nCrKXMay7saaCYeEtoascD2/ix0o8lOPIsZOfsIZL4wFnhKJpnUhRM3MYI6zkFHBa\nSyQOCAzMGeILpzeB30xL\n=sQlG\n-----END PGP SIGNATURE-----\n",
+      "payload": "tree e492ed4b7cf0ea12605577a38aebc19327a8978e\nparent 360b0b330c6485bf0b21196aee29a7ffb62409ab\nparent fb0b068c9d66085bd4771347128a3aafd06a1690\nauthor Kyle Tse <shtse8@gmail.com> 1793383538 +0800\ncommitter GitHub <noreply@github.com> 1793383538 +0800\n\nMerge branch 'main' into ci/model-selector-358",
+      "verified_at": "2026-10-30T18:05:39Z"
+    }
+  },
+  "committer": {
+    "login": "web-flow"
+  },
+  "parents": [
+    {
+      "sha": "360b0b330c6485bf0b21196aee29a7ffb62409ab"
+    },
+    {
+      "sha": "fb0b068c9d66085bd4771347128a3aafd06a1690"
+    }
+  ]
+}
