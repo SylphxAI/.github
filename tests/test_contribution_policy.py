@@ -1,5 +1,6 @@
 """Acceptance fixtures and complete acquisition through the public entry point."""
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -33,6 +34,14 @@ def pull():
     return {'number': 1, 'state': 'open', 'title': 'Improve parser', 'body': 'Validated parser behavior.',
             'head': {'sha': HEAD, 'repo': {'updated_at': 'before'}},
             'base': {'sha': BASE, 'ref': 'main', 'repo': {'updated_at': 'before'}}}
+
+
+def signed_github(item):
+    remote = copy.deepcopy(item)
+    remote['committer'] = {'login': 'web-flow'}
+    remote['commit']['verification'] = {'verified': True, 'reason': 'valid',
+                                         'signature': 'test signature', 'payload': 'test payload'}
+    return remote
 
 
 class ContributionPolicy(unittest.TestCase):
@@ -141,6 +150,157 @@ class ContributionPolicy(unittest.TestCase):
         with mock.patch.object(checker, 'range_commits', return_value=[commit()]):
             with self.assertRaises(checker.PolicyError):
                 checker.check_event(api, 'merge_group', event, HEAD, POLICY)
+
+    def test_verified_github_queue_author_allows_only_configured_human(self):
+        event = {'merge_group': {'base_sha': BASE, 'head_sha': HEAD, 'base_ref': 'refs/heads/main'}}
+        cases = [
+            ('account email', 'Kyle Tse', 'shtse8@gmail.com', 'GitHub', 'noreply@github.com', 'Improve parser', None),
+            ('default email', 'Kyle Tse', 'hi@kylet.se', 'GitHub', 'noreply@github.com', 'Improve parser', None),
+            ('other email', 'Kyle Tse', 'other@example.com', 'GitHub', 'noreply@github.com', 'Improve parser', 'unapproved-author'),
+            ('other name', 'Example', 'shtse8@gmail.com', 'GitHub', 'noreply@github.com', 'Improve parser', 'unapproved-author'),
+            ('bot author', 'example[bot]', 'shtse8@gmail.com', 'GitHub', 'noreply@github.com', 'Improve parser', 'unapproved-author'),
+            ('automation author', 'sylphx-ai[bot]', '212550965+sylphx-ai[bot]@users.noreply.github.com',
+             'GitHub', 'noreply@github.com', 'Improve parser', 'unapproved-author'),
+            ('human committer', 'Kyle Tse', 'shtse8@gmail.com', 'Kyle Tse', 'hi@kylet.se', 'Improve parser', 'unapproved-author'),
+            ('wrong committer email', 'Kyle Tse', 'shtse8@gmail.com', 'GitHub', 'other@example.com', 'Improve parser', 'unapproved-author'),
+            ('tool coauthor', 'Kyle Tse', 'shtse8@gmail.com', 'GitHub', 'noreply@github.com',
+             'Improve parser\n\nCo-authored-by: Codex <codex@example.com>', 'tool-coauthor'),
+        ]
+        for label, name, email, committer, committer_email, message, refused in cases:
+            with self.subTest(case=label):
+                synthetic = commit(message=message)
+                synthetic['commit']['author'] = {'name': name, 'email': email}
+                synthetic['commit']['committer'] = {'name': committer, 'email': committer_email}
+                api = mock.Mock(repository='example/repo', token='read-token')
+                api.get.return_value = signed_github(synthetic)
+                api.queue_entries.return_value = [{'headCommit': {'oid': HEAD},
+                                                  'pullRequest': {'number': 1, 'headRefOid': 'c' * 40}}]
+                with mock.patch.object(checker, 'range_commits', return_value=[synthetic]), \
+                        mock.patch.object(checker, 'pull_snapshot', return_value=(pull(), [commit('c' * 40)])):
+                    findings = checker.check_event(api, 'merge_group', event, HEAD, POLICY)
+                if refused:
+                    self.assertIn(refused, {row['rule'] for row in findings})
+                else:
+                    self.assertEqual(findings, [])
+
+    def test_queue_email_never_exempts_pushed_or_unsigned_original_pr_commits(self):
+        api = mock.Mock(repository='example/repo', token='read-token')
+        api.queue_entries.return_value = [{'headCommit': {'oid': HEAD},
+                                          'pullRequest': {'number': 1, 'headRefOid': 'c' * 40}}]
+        synthetic = commit()
+        synthetic['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+        for author in ({'name': 'Kyle Tse', 'email': 'shtse8@gmail.com'},
+                       {'name': 'Example', 'email': 'hi@kylet.se'}):
+            with self.subTest(author=author):
+                original = commit('c' * 40)
+                original['commit']['author'] = author
+                api.get.side_effect = lambda path: signed_github(synthetic) if path.endswith(HEAD) else original
+                event = {'merge_group': {'base_sha': BASE, 'head_sha': HEAD, 'base_ref': 'refs/heads/main'}}
+                with mock.patch.object(checker, 'range_commits', return_value=[synthetic, original]), \
+                        mock.patch.object(checker, 'pull_snapshot', return_value=(pull(), [original])):
+                    findings = checker.check_event(api, 'merge_group', event, HEAD, POLICY)
+                    self.assertIn('unapproved-author', {row['rule'] for row in findings})
+                with mock.patch.object(checker, 'pull_snapshot', return_value=(pull(), [original])):
+                    findings = checker.check_event(api, 'pull_request', {'number': 1, 'pull_request': pull()}, HEAD, POLICY)
+                    self.assertIn('unapproved-author', {row['rule'] for row in findings})
+
+    def test_github_email_on_unmapped_queue_commit_still_fails_membership(self):
+        api = mock.Mock(repository='example/repo', token='read-token')
+        api.queue_entries.return_value = []
+        api.pages.return_value = []
+        synthetic = commit()
+        synthetic['commit']['author']['email'] = 'shtse8@gmail.com'
+        synthetic['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+        api.get.return_value = signed_github(synthetic)
+        event = {'merge_group': {'base_sha': BASE, 'head_sha': HEAD, 'base_ref': 'refs/heads/main'}}
+        with mock.patch.object(checker, 'range_commits', return_value=[synthetic]):
+            with self.assertRaisesRegex(checker.PolicyError, 'membership is incomplete'):
+                checker.check_event(api, 'merge_group', event, HEAD, POLICY)
+
+    def test_account_email_remains_valid_after_earlier_entry_merges(self):
+        api = mock.Mock(repository='example/repo', token='read-token')
+        api.queue_entries.return_value = []
+        merged = pull()
+        merged.update(state='closed', merged_at='2026-10-30T09:00:00Z', merge_commit_sha=HEAD)
+        api.pages.return_value = [merged]
+        synthetic = commit()
+        synthetic['commit']['author']['email'] = 'shtse8@gmail.com'
+        synthetic['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+        api.get.return_value = signed_github(synthetic)
+        event = {'merge_group': {'base_sha': BASE, 'head_sha': HEAD, 'base_ref': 'refs/heads/main'}}
+        with mock.patch.object(checker, 'range_commits', return_value=[synthetic]), \
+                mock.patch.object(checker, 'pull_snapshot', return_value=(merged, [commit('c' * 40)])):
+            self.assertEqual(checker.check_event(api, 'merge_group', event, HEAD, POLICY), [])
+
+    def test_actual_verified_update_branch_commit_passes_in_original_pr_range(self):
+        remote = json.loads((ROOT / 'tests/fixtures/github-update-commit.json').read_text())
+        self.assertEqual(remote['sha'], '26dfb76cdb88cedecd598cf18ab4a438b6cb0902')
+        original = {'sha': remote['sha'], 'commit': {key: remote['commit'][key]
+                    for key in ('author', 'committer', 'message')}}
+        api = mock.Mock(repository='example/repo', token='read-token')
+        api.get.return_value = remote
+        pr = pull()
+        pr['head']['sha'] = original['sha']
+        with mock.patch.object(checker, 'pull_snapshot', return_value=(pr, [original])):
+            self.assertEqual(checker.check_event(api, 'pull_request', {'number': 1, 'pull_request': pr},
+                                                original['sha'], POLICY), [])
+        api.get.assert_called_once_with('commits/' + original['sha'])
+
+    def test_unsigned_or_non_web_flow_lookalikes_fail_for_both_human_emails(self):
+        for email in ('hi@kylet.se', 'shtse8@gmail.com'):
+            original = commit()
+            original['commit']['author']['email'] = email
+            original['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+            mutations = [
+                ('unsigned', lambda remote: remote['commit']['verification'].update(verified=False, reason='unsigned')),
+                ('other account', lambda remote: remote['committer'].update(login='example')),
+                ('missing account', lambda remote: remote.update(committer=None)),
+                ('missing signature', lambda remote: remote['commit']['verification'].update(signature=None)),
+                ('missing payload', lambda remote: remote['commit']['verification'].update(payload='')),
+                ('invalid reason', lambda remote: remote['commit']['verification'].update(reason='unknown_key')),
+            ]
+            for label, mutate in mutations:
+                with self.subTest(email=email, case=label):
+                    remote = signed_github(original)
+                    mutate(remote)
+                    api = mock.Mock(repository='example/repo', token='read-token')
+                    api.get.return_value = remote
+                    with mock.patch.object(checker, 'pull_snapshot', return_value=(pull(), [original])):
+                        findings = checker.check_event(api, 'pull_request', {'number': 1, 'pull_request': pull()}, HEAD, POLICY)
+                    self.assertIn('unapproved-committer', {row['rule'] for row in findings})
+
+    def test_signature_verdict_cannot_be_used_for_different_immutable_metadata(self):
+        original = commit()
+        original['commit']['author']['email'] = 'shtse8@gmail.com'
+        original['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+        for key in ('sha', 'message', 'author', 'committer'):
+            with self.subTest(field=key):
+                remote = signed_github(original)
+                if key == 'sha':
+                    remote[key] = 'd' * 40
+                elif key == 'message':
+                    remote['commit'][key] = 'Different commit'
+                else:
+                    remote['commit'][key]['email'] = 'other@example.com'
+                api = mock.Mock(repository='example/repo', token='read-token')
+                api.get.return_value = remote
+                with self.assertRaisesRegex(checker.PolicyError, 'does not match immutable'):
+                    checker.verified_github_commits(api, [original], POLICY)
+
+    def test_verified_web_edit_still_rejects_attribution_and_unapproved_author(self):
+        for author, message, rule in [
+                ({'name': 'Kyle Tse', 'email': 'shtse8@gmail.com'},
+                 'Improve parser\n\nCo-authored-by: Codex <codex@example.com>', 'tool-coauthor'),
+                ({'name': 'Example', 'email': 'shtse8@gmail.com'}, 'Improve parser', 'unapproved-author')]:
+            with self.subTest(rule=rule):
+                original = commit(message=message)
+                original['commit']['author'] = author
+                original['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+                api = mock.Mock(repository='example/repo', token='read-token')
+                api.get.return_value = signed_github(original)
+                with mock.patch.object(checker, 'pull_snapshot', return_value=(pull(), [original])):
+                    findings = checker.check_event(api, 'pull_request', {'number': 1, 'pull_request': pull()}, HEAD, POLICY)
+                self.assertIn(rule, {row['rule'] for row in findings})
 
     def test_merged_queue_entry_remains_checked_after_leaving_queue(self):
         api = mock.Mock(repository='example/repo', token='read-token')

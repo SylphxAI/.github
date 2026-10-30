@@ -7,11 +7,23 @@ repository to a released full commit SHA followed by `# main`.
 
 The single configuration is [policy/contribution-policy.json](../policy/contribution-policy.json).
 Author and committer names and email addresses must match one configured pair
-and its permitted role exactly. GitHub's merge identity is committer-only.
+and its permitted role exactly. GitHub's verified identity is committer-only.
 Bot exceptions are individual identities, never an email domain or a
 name suffix. The approved pairs were read from actual Renovate, application,
-and GitHub merge commits. This checks declared identity; it does not verify a
-signature or establish who operated an account.
+and GitHub merge commits. Ordinary identity checks do not establish who
+operated an account; GitHub-generated exceptions also require server-verified
+signature provenance.
+
+GitHub can use Kyle's account email (`shtse8@gmail.com`) when it creates queue
+squashes, branch-update merges, and web edits. The `github_generated` policy
+permits Kyle's default or account email only with `GitHub <noreply@github.com>`
+as committer and a verified GitHub signature. The checker reads the immutable
+commit's REST metadata, matches its SHA, identities, and message to the fetched
+Git object, and requires the `web-flow` committer account and a valid signature
+with its signed payload. An unsigned look-alike fails even with Kyle's default
+email. Kyle's pushed commits continue to use `Kyle Tse <hi@kylet.se>`; Gmail
+with an ordinary committer fails. The exception never waives commit-message or
+PR-text checks, and merge-group membership must still resolve completely.
 
 The check rejects attribution trailers, tool coauthors, and the configured
 coordination identifiers in commit messages and PR titles and bodies. Ordinary
