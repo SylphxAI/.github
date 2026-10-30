@@ -62,7 +62,8 @@ class CacheEconomyDomainTests(unittest.TestCase):
         policy_path = sc.adoption.PREFIX + "cache-economy-profiles.json"
         tree = sc.Tree(str(pathlib.Path(a.__file__).resolve().parents[3]), "HEAD")
         files = {path: tree.read(path) for path in tree.paths()
-                 if path.startswith(sc.adoption.PREFIX) and path != policy_path}
+                 if (path.startswith(sc.adoption.PREFIX) or path == "policy/deal-randomness-scope.json")
+                 and path != policy_path}
         old = sc.adoption.source_profile(sc.DictTree(files))
         self.assertNotIn(policy_path, old["sources"])
         policy = pathlib.Path(a.__file__).with_name("cache-economy-profiles.json").read_text()

@@ -1211,8 +1211,12 @@ def cmd_check(args) -> int:
                    "shared_pin_provenance": pin_report})
     for row in report["findings"]:
         row.update({"repository": report["repository"], "commit": report["commit"]})
-        if row["rule"] == "tenant-read-functions":
+        if row["rule"] in {"tenant-read-functions", "deal-randomness"}:
             row["changed"] = architecture.baseline_key(row) not in head_architecture_baseline
+        if row.get("scope_warning"):
+            row["changed"] = False
+            row["disposition"] = "warning"
+            continue
         row["disposition"] = "justified-exception" if row["decision"] else "regression" if row["changed"] else "inherited"
         if row["changed"] and not row["decision"]:
             message = f"{row['class']} {row['rule']}: {row['reason']} ({row['contract']})"
@@ -1220,6 +1224,8 @@ def cmd_check(args) -> int:
             errors.append(message)
     for row in report["unreadable"]:
         errors.append("input not reviewed: " + row["path"] + ": " + row["reason"])
+    deal_rows = [row for row in report["findings"] if row["rule"] == "deal-randomness"]
+    report["deal_randomness"] = {"raw_emissions": len(deal_rows), "warnings": sum(row["disposition"] == "warning" for row in deal_rows), "refusals": sum(row["disposition"] == "regression" for row in deal_rows)}
     report["passed"] = not errors
     destination = pathlib.Path(getattr(args, "report", "stack-conformance-report.json"))
     destination.parent.mkdir(parents=True, exist_ok=True)

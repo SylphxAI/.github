@@ -187,6 +187,125 @@
       "reason": "This analytics/verifier replays recorded seeds to check historical results; it does not author a live deal.",
       "repository": "Cubeage-limited/mahjong-verifier",
       "source_sha256": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
+    },
+    {
+      "caller_pattern": "\\bInstanceModule\\b",
+      "callers": {
+        "ConsoleApp1/Robot/Robot.cs": "9ccd5e6e7dd83970e9ba82e290a27bc9af17843a556a650d4ffef4c3af0aed37",
+        "ConsoleApp1/Robot/strategy/pressure/gStrategy/moduleImpl/InstanceModule.cs": "45876215dc3e2fae4ea53bb6f94bb4452383427c9530efbe67fac0a3cbf17771",
+        "ConsoleApp1/Robot/strategy/pressure/msgHandler/InstanceChapterDataResp_8001_handler.cs": "a9bf04f154ca1767ff80011926bea9ed7c34ac445bdb53d0e0af3a85ae52aacc",
+        "ConsoleApp1/Robot/strategy/pressure/msgHandler/InstancePushChapterData_8006_handler.cs": "a35f4a49eceb42e8b7eab13163ad74d2bab74befe760e1c961df801d17cb5654",
+        "ConsoleApp1/cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.cs": "e22a2e01a48416c2309ed99f167f5814e319b286b71924e5426302a4b2d8d11a",
+        "ConsoleApp1/cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/InstanceMessageHandler.cs": "990415ebee54c02f23a62ef0fc19cdd7d4352e26154435b0ffd304d464533df3",
+        "ConsoleApp1/cft.game.hall.server.v1.0/src/com/game/hall/server/module/chat/GMChatCommand.cs": "ed4d783fe1fef9128ba5e8815891b1ee72b880fac83028589d3476e749ac94bb",
+        "ConsoleApp1/cft.game.hall.server.v1.0/src/com/game/hall/server/module/instance/InstanceModule.cs": "00d656794ee039105fc218dc0cad6edacb9446d8bacdca3f91c15b12ce496a63",
+        "ConsoleApp1/cft.game.hall.server.v1.0/src/com/game/hall/server/module/mission/fun/MissionFun_75.cs": "a0cab632a578065e0187bd8044a16a2840bb7d6daaedb7857fa8bf778faad129"
+      },
+      "evidence": {},
+      "path": "ConsoleApp1/Robot/strategy/pressure/gStrategy/moduleImpl/InstanceModule.cs",
+      "reason": "A robot pressure-test client chooses protocol requests and known chapter indexes; the server defines reward grants and deals.",
+      "repository": "Cubeage/Mahjong-CSharpBackend-sx",
+      "source_sha256": "45876215dc3e2fae4ea53bb6f94bb4452383427c9530efbe67fac0a3cbf17771"
+    },
+    {
+      "caller_pattern": "\\bInstanceModule\\b",
+      "callers": {
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java": "f6dbfc027b0b05a86697072225e8ce9f02faf2e1b2d1bbd0b94a6960f9cf3379",
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/InstanceMessageHandler.java": "1042dd5d498525b937341510677525eb7927e987d66c581564be5b6d727ccfc3",
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/module/chat/GMChatCommand.java": "d1a79ef2ea43931ee9d012bcaab4e64b7e394cb34c6783210287f0261fcd5b29",
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/module/instance/InstanceModule.java": "597e9d37a5fb8a300922f7b74b763d4ce24e8cfd97376a12b7cd475fcb7505cc",
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/module/mission/fun/MissionFun_75.java": "e2f07b67040f6bdd0e44472d88e06f4f91e5c1e444f34009c82d639b2299aff6",
+        "backend/cft.game.code/cft.game.robot/src/main/java/com/game/robot/Robot.java": "5145012e1a3f0256321cd3b9ea0fb622fd64b9a5d4eaeace2e39c666cc216ef2",
+        "backend/cft.game.code/cft.game.robot/src/main/java/com/game/robot/strategy/pressure/gStrategy/moduleImpl/InstanceModule.java": "e166b487467fd64f3daa55ec4f6e773768c686232c5946e55c804db7e59b2242"
+      },
+      "evidence": {
+        "backend/game-rs/Cargo.toml": "870c0faf2ca8d07456e95382702e3d07e5e30562d2777d26fa73d3096a27e343",
+        "backend/game-rs/engine/Cargo.toml": "cb94b95a549be7cb3d920ab86087051c0e07d8df98fe2dede2f0589291ab35f7",
+        "backend/game-rs/engine/crates/tycoon-core/Cargo.toml": "76ae2f2571c660ef5ff0091485f84fa6ccccbe138cbc7eae93334a0fe39e2457",
+        "backend/game-rs/engine/crates/tycoon-identity/Cargo.toml": "336298eae88fc38bdbe3c4f5503e34085f4b8102c85ee4dc56d099c1dcd53d0d",
+        "backend/game-rs/engine/crates/tycoon-rules-big2/Cargo.toml": "1601c9a81974e68a2ec20c8fed350604d0c080f1cc37b2260117ec7405849404",
+        "backend/game-rs/engine/crates/tycoon-rules-mahjong-hk13/Cargo.toml": "021c3564a5514ea0d84ee13cebcb8833d293a2f3bb0c6977e2669178f83cca80",
+        "backend/game-rs/engine/crates/tycoon-rules-mahjong-tw16/Cargo.toml": "1e1501f8685ef1448f29b2a75946d32bfa58fd0d878877bdedeef609da3131c9",
+        "backend/game-rs/engine/crates/tycoon-rules-xgmj/Cargo.toml": "bf5df545569ea4b78ea1c9fecbc0361e05bc01b5282261cdfcb5560161ce322c",
+        "backend/game-rs/engine/crates/tycoon-server/Cargo.toml": "80ffb98fe595d7dfbc222bbf7ce9946ee4a503bef0991b1c424cfba2f9c07562",
+        "backend/game-rs/engine/crates/tycoon-server/src/main.rs": "f6282ef151d18cc832783165c28f6373822cf4f8e61e0676b0ca4723a6e273af",
+        "backend/game-rs/engine/crates/tycoon-store/Cargo.toml": "91ebf24be7ce3ed2b3bacea68aca2a38debef0d321ef6508546e0b84c6e93e5d",
+        "backend/game-rs/engine/crates/tycoon-wire-cft/Cargo.toml": "30a2462e5356d3c51154653db95292474f505d583be00a369031d2fefbf48789",
+        "backend/game-rs/src/main.rs": "f65d742eb25a471b054a5c2c66ab17314c0d696b7ac03eb4a53b1fd7a5ca3f63",
+        "client/TaiwanMJClient/Assets/Graphy - Ultimate Stats Monitor/package.json": "f6249a400e12abd9f575287b1fd304c84ca3e36360cba9b3ed2ef97f40e67ad7",
+        "client/TaiwanMJClient/Assets/Spine/package.json": "f6496a535bdca4435a0081cc11f614c9c6c4a3aa40f7dbed36a44264f4399d5a",
+        "client/TaiwanMJClient/Assets/UnityChanToonShaderVer2_Project-urp-2.2.3/package.json": "0b4762e497c57b4e0f2bf55a69a5c42361dbb9b59bfa145887028e4aac2dd390",
+        "sylphx.toml": "f6c238bd07420ac8a7471d136957e9d2a7e38b331ca1bddabbc0a70af4b1202b"
+      },
+      "path": "backend/cft.game.code/cft.game.robot/src/main/java/com/game/robot/strategy/pressure/gStrategy/moduleImpl/InstanceModule.java",
+      "reason": "A robot pressure-test client chooses protocol requests and known chapter indexes; the server defines reward grants and deals.",
+      "repository": "Cubeage/mahjong-tycoon-tw",
+      "source_sha256": "e166b487467fd64f3daa55ec4f6e773768c686232c5946e55c804db7e59b2242"
+    },
+    {
+      "caller_pattern": "\\bInstanceModule\\b",
+      "callers": {
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java": "f6dbfc027b0b05a86697072225e8ce9f02faf2e1b2d1bbd0b94a6960f9cf3379",
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/InstanceMessageHandler.java": "1042dd5d498525b937341510677525eb7927e987d66c581564be5b6d727ccfc3",
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/module/chat/GMChatCommand.java": "d1a79ef2ea43931ee9d012bcaab4e64b7e394cb34c6783210287f0261fcd5b29",
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/module/instance/InstanceModule.java": "597e9d37a5fb8a300922f7b74b763d4ce24e8cfd97376a12b7cd475fcb7505cc",
+        "backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/module/mission/fun/MissionFun_75.java": "e2f07b67040f6bdd0e44472d88e06f4f91e5c1e444f34009c82d639b2299aff6",
+        "backend/cft.game.code/cft.game.robot/src/main/java/com/game/robot/Robot.java": "5145012e1a3f0256321cd3b9ea0fb622fd64b9a5d4eaeace2e39c666cc216ef2",
+        "backend/cft.game.code/cft.game.robot/src/main/java/com/game/robot/strategy/pressure/gStrategy/moduleImpl/InstanceModule.java": "e166b487467fd64f3daa55ec4f6e773768c686232c5946e55c804db7e59b2242"
+      },
+      "evidence": {
+        "backend/game-rs/Cargo.toml": "7c19fa8de31aa1b3428ec5ba58f2ce5dafd84d685497c4aa0036e990e61f92c3",
+        "backend/game-rs/engine/Cargo.toml": "cb94b95a549be7cb3d920ab86087051c0e07d8df98fe2dede2f0589291ab35f7",
+        "backend/game-rs/engine/crates/tycoon-core/Cargo.toml": "76ae2f2571c660ef5ff0091485f84fa6ccccbe138cbc7eae93334a0fe39e2457",
+        "backend/game-rs/engine/crates/tycoon-identity/Cargo.toml": "f545b06d6dcda753fa97956d9e7c6975fdbf2d0d8e2be0ad08c71ac04558d10b",
+        "backend/game-rs/engine/crates/tycoon-rules-mahjong-tw16/Cargo.toml": "91685c32f276e026fbf765cf531fe671a0b9bff466784aa0c2f06ad7d0480b70",
+        "backend/game-rs/engine/crates/tycoon-rules-xgmj/Cargo.toml": "bf5df545569ea4b78ea1c9fecbc0361e05bc01b5282261cdfcb5560161ce322c",
+        "backend/game-rs/engine/crates/tycoon-server/Cargo.toml": "2aa84345c9423534fdd16c23aa2c3d82a8b23d072d97add42f67d6e371c46181",
+        "backend/game-rs/engine/crates/tycoon-store/Cargo.toml": "24ce2a93e7be910b41b377d2c88fe79b919fe167dc8c93f030f0f1cedcf11a96",
+        "backend/game-rs/engine/crates/tycoon-wire-cft/Cargo.toml": "30a2462e5356d3c51154653db95292474f505d583be00a369031d2fefbf48789",
+        "backend/game-rs/src/main.rs": "3c4e91a20a5024aaabb4d954bc97af312dff58eff4e1513e9fcfb6c07064e56f",
+        "client/TaiwanMJClient/Assets/Graphy - Ultimate Stats Monitor/package.json": "f6249a400e12abd9f575287b1fd304c84ca3e36360cba9b3ed2ef97f40e67ad7",
+        "client/TaiwanMJClient/Assets/Spine/package.json": "f6496a535bdca4435a0081cc11f614c9c6c4a3aa40f7dbed36a44264f4399d5a",
+        "client/TaiwanMJClient/Assets/UnityChanToonShaderVer2_Project-urp-2.2.3/package.json": "0b4762e497c57b4e0f2bf55a69a5c42361dbb9b59bfa145887028e4aac2dd390",
+        "sylphx.toml": "c443238e02e55be2c5eb928759a5440593b50fea8a5278823b4d23b1a22422bb"
+      },
+      "path": "backend/cft.game.code/cft.game.robot/src/main/java/com/game/robot/strategy/pressure/gStrategy/moduleImpl/InstanceModule.java",
+      "reason": "A robot pressure-test client chooses protocol requests and known chapter indexes; the server defines reward grants and deals.",
+      "repository": "Cubeage-limited/mahjong-tycoon-tw",
+      "source_sha256": "e166b487467fd64f3daa55ec4f6e773768c686232c5946e55c804db7e59b2242"
+    },
+    {
+      "caller_pattern": "\\bAIController\\b",
+      "callers": {
+        "client/src/features/game/ai/AIController.lua": "fd52939f44b944eee9c86d3352957e63f1698b2cf7c5633a9085d422b7d9de02",
+        "client/src/features/game/ai/evaluators/advancedShantenEvaluator.lua": "c82ecb080def0d180e121b3cac438c726c6e6e963f28b8adde61770d8f0b440d",
+        "client/src/features/game/ai/evaluators/defenseEvaluator.lua": "0aa12a3f9289ca0f4d39ae1fd99521fa376606cdc17051d5b2af903e275ace1e",
+        "client/src/features/game/ai/evaluators/expectedValueEvaluator.lua": "035b3a3e0930997fd6959b20c146517278d15bf319956985800d15f8c653279d",
+        "client/src/features/game/ai/evaluators/handReadingEvaluator.lua": "de8e4f981fa4471873156c60a89a404beb306c3ce745752ed4fe47f92d9a483f",
+        "client/src/features/game/ai/evaluators/valueEvaluator.lua": "9b6411861e0cdccd253d39451e4f0ccfc1fde88b2f0c48d6478b238db2a705bd",
+        "client/src/features/ui/game/players/mj_player_ui_react.lua": "64e344a52fec5115bfb221b2c81c26393d812c8df83f242954edc1dd7a454004"
+      },
+      "evidence": {
+        "server-online/Cargo.toml": "68ef3a871fef41615381851d1adbe33c5f4f763fbe7923df86d0b8dc4c57f56b",
+        "server-online/engine/Cargo.toml": "cb94b95a549be7cb3d920ab86087051c0e07d8df98fe2dede2f0589291ab35f7",
+        "server-online/engine/crates/tycoon-core/Cargo.toml": "76ae2f2571c660ef5ff0091485f84fa6ccccbe138cbc7eae93334a0fe39e2457",
+        "server-online/engine/crates/tycoon-identity/Cargo.toml": "336298eae88fc38bdbe3c4f5503e34085f4b8102c85ee4dc56d099c1dcd53d0d",
+        "server-online/engine/crates/tycoon-rules-big2/Cargo.toml": "1601c9a81974e68a2ec20c8fed350604d0c080f1cc37b2260117ec7405849404",
+        "server-online/engine/crates/tycoon-rules-mahjong-hk13/Cargo.toml": "021c3564a5514ea0d84ee13cebcb8833d293a2f3bb0c6977e2669178f83cca80",
+        "server-online/engine/crates/tycoon-rules-mahjong-tw16/Cargo.toml": "1e1501f8685ef1448f29b2a75946d32bfa58fd0d878877bdedeef609da3131c9",
+        "server-online/engine/crates/tycoon-rules-xgmj/Cargo.toml": "bf5df545569ea4b78ea1c9fecbc0361e05bc01b5282261cdfcb5560161ce322c",
+        "server-online/engine/crates/tycoon-server/Cargo.toml": "80ffb98fe595d7dfbc222bbf7ce9946ee4a503bef0991b1c424cfba2f9c07562",
+        "server-online/engine/crates/tycoon-server/src/main.rs": "f6282ef151d18cc832783165c28f6373822cf4f8e61e0676b0ca4723a6e273af",
+        "server-online/engine/crates/tycoon-store/Cargo.toml": "91ebf24be7ce3ed2b3bacea68aca2a38debef0d321ef6508546e0b84c6e93e5d",
+        "server-online/engine/crates/tycoon-wire-cft/Cargo.toml": "30a2462e5356d3c51154653db95292474f505d583be00a369031d2fefbf48789",
+        "server-online/src/main.rs": "d88b87c0004e3ce396b15ce1e181cf105874032609f74dd0b5447c55b4418a12",
+        "server/package.json": "0d5147f9a06341ef262dbdd2d0388a37139073fe1072bd3d0fa2c7e6e0a9945f",
+        "sylphx.toml": "fe8bd592bb6203fbd83a80c0f351e12a974fb7a1fd1f1d995a57769dfba0e712"
+      },
+      "path": "client/src/features/game/ai/AIController.lua",
+      "reason": "The AI ranks already-known hand tiles and chooses a discard; this helper does not generate or promote a wall tile or deal.",
+      "repository": "Cubeage/fun-mahjong",
+      "source_sha256": "fd52939f44b944eee9c86d3352957e63f1698b2cf7c5633a9085d422b7d9de02"
     }
   ]
 }

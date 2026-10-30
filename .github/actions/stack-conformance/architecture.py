@@ -27,12 +27,15 @@ _scope_spec.loader.exec_module(source_scope)
 _tenant_spec = importlib.util.spec_from_file_location("tenant_reads", pathlib.Path(__file__).with_name("tenant_reads.py"))
 tenant_reads = importlib.util.module_from_spec(_tenant_spec)
 _tenant_spec.loader.exec_module(tenant_reads)
+_deal_spec = importlib.util.spec_from_file_location("deal_randomness", pathlib.Path(__file__).with_name("deal_randomness.py"))
+deal_randomness = importlib.util.module_from_spec(_deal_spec)
+_deal_spec.loader.exec_module(deal_randomness)
 BASELINE_MARKER = "# architecture-ratchet-v2"
 LEGACY_BASELINE_MARKER = "# architecture-ratchet-v1"
 SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "examples", "docs",
         "node_modules", "vendor", "thirdparty", "third_party", "third-party", "external",
         "target", "dist", "build", ".next"}
-SOURCE = {".rs", ".py", ".go", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash", ".java"}
+SOURCE = {".rs", ".py", ".go", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash", ".java", ".lua", ".cs"}
 CONFIG = {".yml", ".yaml", ".toml"}
 PLATFORM = {"SylphxAI/cloud", "SylphxAI/sylphx"}
 CATALOG = pathlib.Path(__file__).resolve().parents[3] / "policy/architecture-repositories.json"
@@ -51,6 +54,7 @@ LIMITS = [
     "C5 recognizes polling loops, transport sleeps, polling interval callbacks and declared request-driven warm floors. Unclassified HPA/KEDA workloads are not assumed request-driven.",
     "C6 recognizes unexplained lint suppressions and routes declared retired in a migration contract; arbitrary dead code needs caller analysis.",
     "C7 recognizes failure-only CI verdicts and merge-only completion branches; it cannot infer every product's acceptance contract.",
+    "Deal randomness recognizes named Rust/JS/TS/Java/Lua/C# deal, shuffle and card/tile/dice draw paths, same-file helper calls and explicit RNG bindings/imports. Unknown cross-module seed origins, arbitrary aliases and native client distribution require the separate inventory and live verification.",
     "Source findings on changed lines fail the change gate. Production database declaration gaps require an explicit shrinking baseline even on unrelated changes. Unchanged or unread scope is not certified clean.",
     "Economy cache reads recognize named Java/TypeScript/Rust functions and literal JS/TS route callbacks, cache-named calls/types/receivers and typed aliases. Typed permission grants, typed cache leases, pure cache factories, keys and write targets are distinguished structurally; indirect helpers and arbitrary data flow need semantic review. Java supports this rule only.",
     "A cache-display-only exception requires a reason and an existing named assertion-bearing test. The static check verifies that evidence exists; the test runner and review establish that it proves an authoritative re-read in the granting transaction.",
@@ -453,10 +457,18 @@ def cache_display_proof(tree, path, text, line):
 
 def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
     suffix = pathlib.PurePosixPath(path).suffix
-    if excluded(path) or suffix not in SOURCE | CONFIG:
+    if (excluded(path) and deal_randomness.excluded(path)) or suffix not in SOURCE | CONFIG:
         return []
     out = []
     add = lambda at, cls, rule, why, end=None: out.append(finding(path, text, at, cls, rule, why, end))
+    scope_reason = None
+    for at, end, why in deal_randomness.scan(path, text, source_views, named_bodies, matching_end, tree=tree):
+        add(at, "C1", "deal-randomness", why, end)
+        scope_reason = scope_reason or deal_randomness.scope_reason(repository, path, text, tree)
+        out[-1]["scope_warning"] = scope_reason
+        out[-1]["contract"] = "https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/games.md#hard-lines"
+    if excluded(path) or suffix in {".lua", ".cs"}:
+        return with_occurrences(out)
     if suffix == ".toml":
         try:
             tomllib.loads(text)
@@ -661,12 +673,12 @@ def evaluate(tree, repository, changed, today):
     if changed is not None and any(p.startswith(".github/") and pathlib.PurePosixPath(p).suffix in {".yml", ".yaml"} for p in changed):
         rescan = True
     for path in sorted(tree.paths()):
-        if excluded(path) or pathlib.PurePosixPath(path).suffix not in SOURCE | CONFIG:
+        if (excluded(path) and deal_randomness.excluded(path)) or pathlib.PurePosixPath(path).suffix not in SOURCE | CONFIG:
             skipped.append({"path": path, "reason": "fixture/documentation/dependency" if excluded(path) else "unsupported format"})
             continue
         # Legacy Java plugins contain non-UTF-8 comments. Preserve every byte
         # while recognizing ASCII syntax; other languages still fail unreadable.
-        text = tree.read_model_source(path) if path.endswith(".java") else tree.read(path)
+        text = tree.read_model_source(path) if path.endswith((".java", ".lua", ".cs")) else tree.read(path)
         if text is None:
             # Deleted paths are outside the head, not unreadable inputs.
             if path in tree.paths():
@@ -686,7 +698,7 @@ def evaluate(tree, repository, changed, today):
             row["changed"] = lines is None or any(row["line"] <= n <= row["end_line"] for n in lines)
             row["decision"] = (cache_display_proof(tree, path, text, row["line"]) if row["rule"] == "cache-economy" else
                                next((d for d in allowed if all(d[k] == row[k] for k in ("path", "line", "class", "rule", "source_sha256"))), None))
-            if row["rule"] == "tenant-read-functions":
+            if row["rule"] in {"tenant-read-functions", "deal-randomness"}:
                 row["decision"] = None
             findings.append(row)
     matched = {tuple(f[k] for k in ("path", "line", "class", "rule", "source_sha256")) for f in findings}

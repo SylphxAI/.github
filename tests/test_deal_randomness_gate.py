@@ -17,6 +17,27 @@ RULE = "architecture/C1/deal-randomness"
 
 
 class DealRandomnessGateTests(unittest.TestCase):
+    def test_new_live_caller_cannot_adopt_a_previously_audited_warning(self):
+        f = self.fixture()
+        caller = 'if (demoMode) dealCards();\n'
+        base = f.commit({WORKFLOW: workflow(OLD), SOURCE: BAD, 'src/main.ts': caller})
+        f.commit({WORKFLOW: workflow(UNKNOWN)})
+        digest = lambda value: hashlib.sha256(value.encode()).hexdigest()
+        entry = dict(repository='example/app', path=SOURCE, source_sha256=digest(BAD),
+                     evidence={}, caller_pattern=r'\bdealCards\b',
+                     callers={SOURCE: digest(BAD), 'src/main.ts': digest(caller)},
+                     reason='The only caller is a demo branch.')
+        policy = f.root.parent / (f.root.name + '-adoption-scope.json')
+        policy.write_text(json.dumps(dict(version=1, warnings=[entry])))
+        with mock.patch.object(sc.architecture.deal_randomness, 'SCOPE_POLICY', policy), \
+                mock.patch.object(sc.adoption, '_checker', return_value=sc):
+            result = f.plan(base)
+            self.assertFalse(any(line.startswith('architecture C1 deal-randomness ')
+                                 for line in result['baseline_text'].splitlines()))
+            f.commit({'src/live.ts': 'dealCards();\n'})
+            with self.assertRaisesRegex(ValueError, 'new head debt'):
+                f.plan(base)
+
     def test_warning_reports_raw_count_without_refusal_until_new_caller(self):
         f = self.fixture()
         caller = 'if (demoMode) dealCards();\n'

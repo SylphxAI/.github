@@ -49,6 +49,8 @@ The present audited warning scopes are:
   MahjongTw16/HK13; the client has a separately pinned engine dependency.
 - Mahjong verifier/analytics scripts: recorded seeds reproduce historical
   outcomes; these scripts do not author a live deal.
+- Protocol pressure clients choose requests while the server grants rewards
+  and deals; the audited AI controller chooses discards from an already known hand.
 
 Slot reel results remain outcome paths. A dice-named helper is not sufficient
 evidence that its caller scores dice; unused APIs should be deleted through
