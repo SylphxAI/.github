@@ -9,7 +9,8 @@ description: >
   GitHub OIDC token is exchanged for a run token scoped by the event (main, the
   merge queue and schedules write the protected scope, every other event the
   dev scope), so a pull request run can never write what a main run reads.
-  Entries expire with the gateway's bucket after 7 days and are at most 1 GiB.
+  Bundles are at most 1 GiB, sent in requests of at most 64 MiB; a manifest
+  commits large bundles after their parts. Entries use the gateway retention.
   See docs/run-store.md.
 
 inputs:

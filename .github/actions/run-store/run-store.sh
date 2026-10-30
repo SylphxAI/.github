@@ -22,7 +22,13 @@ set -uo pipefail
 out="${GITHUB_OUTPUT:-/dev/null}"
 max_bytes="${RUN_STORE_MAX_BYTES:-1073741824}"
 delay="${RUN_STORE_RETRY_DELAY:-5}"
+part_bytes="${RUN_STORE_PART_BYTES:-67108864}"
+parts_helper="$(dirname "${BASH_SOURCE[0]}")/parts.py"
 required="${REQUIRED:-true}"
+if ! [[ "$part_bytes" =~ ^[0-9]{1,8}$ ]] || [ "$part_bytes" -eq 0 ] || [ "$part_bytes" -gt 67108864 ]; then
+  echo "::error::run-store: part size must be 1-67108864 bytes"
+  exit 1
+fi
 
 fail() {
   # A put with required=false and every get miss with required=false only warn.
@@ -165,6 +171,30 @@ call() {
 
 file_bytes() { wc -c < "$1" | tr -d ' '; }
 
+# Only canonical trace identifiers are diagnostics. Never emit response bodies,
+# arbitrary header values, URLs or authorization material from a refused PUT.
+response_id() {
+  python3 - "$work/headers" <<'PYID'
+import pathlib, re, sys
+try:
+    headers = pathlib.Path(sys.argv[1]).read_text(errors="replace")[-16384:]
+except OSError:
+    print("unavailable")
+    raise SystemExit
+for line in reversed(headers.splitlines()):
+    name, sep, value = line.partition(":")
+    value = value.strip()
+    if sep and name.lower() == "cf-ray" and re.fullmatch(r"[0-9a-fA-F]{16}-[A-Z]{3}", value):
+        print("cf-ray:" + value)
+        break
+    if sep and name.lower() in ("x-request-id", "request-id") and re.fullmatch(r"[0-9a-fA-F-]{16,64}", value):
+        print("request-id:" + value)
+        break
+else:
+    print("unavailable")
+PYID
+}
+
 if [ "$MODE" = put ]; then
   if [ -d "$STORE_PATH" ]; then
     tar -C "$STORE_PATH" -cf - . | gzip -1 > "$work/bundle.tgz"
@@ -178,47 +208,90 @@ if [ "$MODE" = put ]; then
   if [ "${rc[0]}" -ne 0 ] || [ "${rc[1]}" -ne 0 ]; then fail "could not pack $STORE_PATH"; fi
   bytes="$(file_bytes "$work/bundle.tgz")"
   echo "bytes=$bytes" >> "$out"
+  echo "run-store put $NAME: packed_bytes=$bytes"
   [ "$bytes" -le "$max_bytes" ] || fail "the packed bundle is $bytes bytes, over the gateway's $max_bytes"
-  stored=""
-  for attempt in 1 2 3; do
-    code="$(call PUT "$work/resp" -H 'Content-Type: application/octet-stream' -T "$work/bundle.tgz")"
+  parts=0
+  if [ "$bytes" -gt "$part_bytes" ]; then
+    parts="$(python3 "$parts_helper" split "$work/bundle.tgz" "$work" "$max_bytes" "$part_bytes")" || fail "could not split the packed bundle"
+  fi
+  root_entry="$entry"
+  # Keep an already committed protected root before touching any of its parts.
+  if [ "$parts" -gt 0 ]; then
+    code="$(call HEAD /dev/null -I)"
     case "$code" in
-      202)
-        if grep -qi '^x-build-cache: *dropped' "$work/headers" 2>/dev/null; then
-          reason="the gateway dropped the write (store unavailable)"
-        else
-          stored=yes
-          break
+      200)
+        if grep -qi '^x-build-cache-scope: *protected' "$work/headers"; then
+          echo "run-store put $NAME: an entry already exists; it is kept"
+          exit 0
         fi
         ;;
-      409)
-        # A protected entry is written once: a re-run of the producer keeps the
-        # first attempt's bundle, built from the same commit.
-        echo "::notice::run-store put $NAME: the entry exists from an earlier attempt of this run; it is kept"
-        stored=yes
-        break
-        ;;
-      503)
-        reason="store unavailable (HTTP 503 from the build cache)"
-        unavailable_report "$reason"
-        ;;
-      403 | 411 | 413 | 507) reason="HTTP $code"; break ;;
-      *) reason="HTTP $code" ;;
+      404) ;;
+      503) unavailable_report "HTTP 503 while checking the existing bundle" ;;
+      *) fail "could not check the existing bundle (HTTP $code)" ;;
     esac
-    [ "$attempt" -lt 3 ] && sleep "$delay"
-  done
-  [ -n "$stored" ] || fail "could not store the bundle ($reason)"
-  # The PUT has already been accepted. Recheck its receipt with the same
-  # bounded read policy as GET; never send the accepted upload again.
-  for attempt in 1 2 3; do
-    code="$(call HEAD /dev/null -I)"
-    case "$code" in 200 | 401 | 403) break ;; esac
-    [ "$attempt" -lt 3 ] && sleep "$delay"
-  done
-  if [ "$code" = 503 ]; then
-    unavailable_report "HTTP $code while reading back the accepted bundle"
   fi
-  [ "$code" = 200 ] || fail "the stored bundle does not read back (HTTP $code)"
+  store_entry() {
+    local payload="$1"
+    stored=""
+    for attempt in 1 2 3; do
+      code="$(call PUT "$work/resp" -H 'Content-Type: application/octet-stream' -T "$payload")"
+      case "$code" in
+        202)
+          if grep -qi '^x-build-cache: *dropped' "$work/headers" 2>/dev/null; then
+            reason="the gateway dropped the write (store unavailable)"
+          else
+            stored=yes
+            break
+          fi
+          ;;
+        409)
+          # A protected entry is written once: a re-run of the producer keeps the
+          # first attempt's bundle, built from the same commit.
+          echo "::notice::run-store put $NAME: the entry exists from an earlier attempt of this run; it is kept"
+          if [ "${is_part:-false}" = true ]; then
+            code="$(call GET "$work/existing-part" --max-filesize "$part_bytes")"
+            [ "$code" = 200 ] && cmp -s "$payload" "$work/existing-part" || fail "an existing immutable part differs; no manifest was committed"
+          fi
+          stored=yes
+          break
+          ;;
+        503)
+          reason="store unavailable (HTTP 503 from the build cache)"
+          unavailable_report "$reason"
+          ;;
+        403 | 411 | 413 | 507) reason="HTTP $code packed_bytes=$bytes request_bytes=$(file_bytes "$payload") response_id=$(response_id)"; break ;;
+        *) reason="HTTP $code" ;;
+      esac
+      [ "$attempt" -lt 3 ] && sleep "$delay"
+    done
+    [ -n "$stored" ] || fail "could not store the bundle ($reason)"
+    # The PUT has already been accepted. Recheck its receipt with the same
+    # bounded read policy as GET; never send the accepted upload again.
+    for attempt in 1 2 3; do
+      code="$(call HEAD /dev/null -I)"
+      case "$code" in 200 | 401 | 403) break ;; esac
+      [ "$attempt" -lt 3 ] && sleep "$delay"
+    done
+    if [ "$code" = 503 ]; then
+      unavailable_report "HTTP $code while reading back the accepted bundle"
+    fi
+    [ "$code" = 200 ] || fail "the stored bundle does not read back (HTTP $code)"
+  }
+  if [ "$parts" -gt 0 ]; then
+    index=0
+    is_part=true
+    while [ "$index" -lt "$parts" ]; do
+      entry="$root_entry.part-$index"
+      store_entry "$work/part-$index"
+      index=$((index + 1))
+    done
+    is_part=false
+    entry="$root_entry"
+    # Commit last: an absent or refused part never exposes a completed bundle.
+    store_entry "$work/manifest"
+  else
+    store_entry "$work/bundle.tgz"
+  fi
   echo "run-store put $NAME: $bytes bytes as $key"
   exit 0
 fi
@@ -226,7 +299,7 @@ fi
 # get
 code=000
 for attempt in 1 2 3; do
-  code="$(call GET "$work/bundle.tgz")"
+  code="$(call GET "$work/bundle.tgz" --max-filesize "$max_bytes")"
   case "$code" in 200 | 401 | 403) break ;; esac
   [ "$attempt" -lt 3 ] && sleep "$delay"
 done
@@ -237,7 +310,26 @@ if [ "$code" = 404 ]; then
   fail "no entry $key (the producer job did not store it in run $STORE_RUN_ID, or it expired)"
 fi
 [ "$code" = 200 ] || fail "could not fetch $key (HTTP $code)"
+parts="$(python3 "$parts_helper" inspect "$work/bundle.tgz" "$work" "$max_bytes" "$part_bytes")" || fail "invalid parts manifest"
+if [ "$parts" -gt 0 ]; then
+  root_entry="$entry"
+  index=0
+  while [ "$index" -lt "$parts" ]; do
+    entry="$root_entry.part-$index"
+    for attempt in 1 2 3; do
+      code="$(call GET "$work/part-$index" --max-filesize "$part_bytes")"
+      case "$code" in 200 | 401 | 403 | 503) break ;; esac
+      [ "$attempt" -lt 3 ] && sleep "$delay"
+    done
+    [ "$code" != 503 ] || unavailable_report "HTTP 503 while reading bundle parts"
+    [ "$code" = 200 ] || fail "bundle part $index is missing or unreadable (HTTP $code)"
+    index=$((index + 1))
+  done
+  python3 "$parts_helper" join "$work/bundle.tgz" "$work" "$max_bytes" "$part_bytes" || fail "incomplete or corrupt parts bundle"
+  mv "$work/bundle-joined.tgz" "$work/bundle.tgz" || fail "could not assemble bundle"
+fi
 bytes="$(file_bytes "$work/bundle.tgz")"
+[ "$bytes" -le "$max_bytes" ] || fail "the stored bundle exceeds the size limit"
 # The bundle's tar members are untrusted: reject an escaping or special member
 # before anything is written, so a bundle can never overwrite a trusted file or
 # reach outside STORE_PATH.

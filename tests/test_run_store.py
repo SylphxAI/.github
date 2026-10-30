@@ -7,6 +7,7 @@ GitHub OIDC issuer and the gateway."""
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -59,6 +60,10 @@ class Fake:
         self.store: dict[str, bytes] = {}
         self.requests: list[tuple[str, str, str | None]] = []
         self.put_mode = "ok"  # ok | dropped | exists | full
+        self.failure_headers: dict[str, str] = {}
+        self.failed_part: str | None = None
+        self.protected = False
+        self.put_sizes: list[int] = []
         self.read_misses = 0  # answer this many GETs 404 before serving
         self.head_statuses: list[int] = []
         self.minted = MINTED  # the run token the exchange answers with
@@ -100,7 +105,7 @@ class Fake:
 
             def do_HEAD(self) -> None:
                 owner.requests.append(("HEAD", self.path, self.headers.get("Authorization")))
-                self._reply(owner.head_statuses.pop(0) if owner.head_statuses else 200 if self._key() in owner.store else 404)
+                self._reply(owner.head_statuses.pop(0) if owner.head_statuses else 200 if self._key() in owner.store else 404, headers={"x-build-cache-scope": "protected" if owner.protected else "dev"})
 
             def do_POST(self) -> None:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -122,7 +127,14 @@ class Fake:
                 owner.requests.append(("PUT", self.path, self.headers.get("Authorization")))
                 n = int(self.headers["Content-Length"])
                 body = self.rfile.read(n)
+                owner.put_sizes.append(n)
                 key = self._key()
+                if owner.failed_part and key.endswith(owner.failed_part):
+                    self._reply(413, b"body rejected", owner.failure_headers)
+                    return
+                if owner.protected and key in owner.store:
+                    self._reply(409)
+                    return
                 if owner.put_mode == "dropped":
                     self._reply(202, b'{"urls":[]}', {"x-build-cache": "dropped"})
                 elif owner.put_mode == "exists":
@@ -130,6 +142,8 @@ class Fake:
                     self._reply(409, b'{"error":{}}')
                 elif owner.put_mode == "full":
                     self._reply(507, b'{"error":{}}')
+                elif owner.put_mode == "too_large":
+                    self._reply(413, b"private response body: " + MINTED.encode(), owner.failure_headers)
                 else:
                     owner.store[key] = body
                     self._reply(202, b'{"urls":[]}')
@@ -186,6 +200,125 @@ class RunStoreTest(unittest.TestCase):
                     self.assertTrue(line.startswith("::add-mask::"), line)
         outputs = dict(line.split("=", 1) for line in output.read_text().splitlines() if "=" in line)
         return p.returncode, log, outputs
+
+    def test_refused_upload_records_bytes_and_only_safe_response_id(self) -> None:
+        src = self.dir / "upload.bin"
+        src.write_bytes(os.urandom(512))
+        self.fake.put_mode = "too_large"
+        self.fake.failure_headers = {"cf-ray": "a5275677b84d2bcd-FRA"}
+        rc, log, out = self.run_store("put", "upload", src)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("packed_bytes=" + out["bytes"], log)
+        self.assertIn("HTTP 413", log)
+        self.assertIn("response_id=cf-ray:a5275677b84d2bcd-FRA", log)
+        self.assertNotIn("private response body", log)
+        self.assertEqual(sum(method == "PUT" for method, _, _ in self.fake.requests), 1)
+
+    def test_response_diagnostics_refuse_arbitrary_header_content(self) -> None:
+        src = self.dir / "upload.bin"
+        src.write_bytes(b"fixture")
+        self.fake.put_mode = "too_large"
+        self.fake.failure_headers = {"x-request-id": MINTED, "cf-ray": "Bearer " + MINTED}
+        rc, log, _ = self.run_store("put", "upload", src)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("response_id=unavailable", log)
+        self.assertNotIn("private response body", log)
+
+    def test_parts_manifest_last_roundtrip_below_each_request_limit(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        rc, log, _ = self.run_store("put", "parts", src, RUN_STORE_PART_BYTES="1024")
+        self.assertEqual(rc, 0, log)
+        key = "run-store.v1.77.4242.parts"
+        self.assertTrue(self.fake.store[key].startswith(b"ci-run-store-parts-v1\n"))
+        self.assertTrue(all(size <= 1024 for size in self.fake.put_sizes))
+        puts = [path for method, path, _ in self.fake.requests if method == "PUT"]
+        self.assertEqual(puts[-1], "/v8/artifacts/" + key)
+        dest = self.dir / "parts-out"
+        rc, log, out = self.run_store("get", "parts", dest, RUN_STORE_PART_BYTES="1024")
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(out["found"], "true")
+        self.assertEqual((dest / src.name).read_bytes(), src.read_bytes())
+
+    def test_large_repeats_replace_dev_and_preserve_protected_root(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        rc, log, _ = self.run_store("put", "parts", src, RUN_STORE_PART_BYTES="1024")
+        self.assertEqual(rc, 0, log)
+        src.write_bytes(os.urandom(4096))
+        rc, log, _ = self.run_store("put", "parts", src, RUN_STORE_PART_BYTES="1024")
+        self.assertEqual(rc, 0, log)
+        dest = self.dir / "dev-repeat-out"
+        rc, log, _ = self.run_store("get", "parts", dest, RUN_STORE_PART_BYTES="1024")
+        self.assertEqual(rc, 0, log)
+        self.assertEqual((dest / src.name).read_bytes(), src.read_bytes())
+        self.fake.protected = True
+        retained = dict(self.fake.store)
+        puts = len(self.fake.put_sizes)
+        src.write_bytes(os.urandom(4096))
+        rc, log, _ = self.run_store("put", "parts", src, RUN_STORE_PART_BYTES="1024")
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(self.fake.store, retained)
+        self.assertEqual(len(self.fake.put_sizes), puts)
+
+    def test_missing_or_corrupt_part_never_unpacks(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        rc, log, _ = self.run_store("put", "parts", src, RUN_STORE_PART_BYTES="1024")
+        self.assertEqual(rc, 0, log)
+        key = "run-store.v1.77.4242.parts.part-1"
+        original = self.fake.store.pop(key)
+        dest = self.dir / "missing-out"
+        rc, log, out = self.run_store("get", "parts", dest, RUN_STORE_PART_BYTES="1024")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(out["found"], "false")
+        self.assertFalse(dest.exists())
+        self.fake.store[key] = b"x" * len(original)
+        dest = self.dir / "corrupt-out"
+        rc, log, out = self.run_store("get", "parts", dest, RUN_STORE_PART_BYTES="1024")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("corrupt parts bundle", log)
+        self.assertFalse(dest.exists())
+
+    def test_failed_part_never_commits_root_manifest(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        self.fake.failed_part = ".part-1"
+        rc, log, _ = self.run_store("put", "parts", src, RUN_STORE_PART_BYTES="1024")
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("run-store.v1.77.4242.parts", self.fake.store)
+        self.assertIn("request_bytes=1024", log)
+
+    def test_incomplete_immutable_part_collision_fails_before_commit(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        self.fake.protected = True
+        self.fake.store["run-store.v1.77.4242.parts.part-0"] = b"prior incomplete producer"
+        rc, log, _ = self.run_store("put", "parts", src, RUN_STORE_PART_BYTES="1024")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("immutable part differs", log)
+        self.assertNotIn("run-store.v1.77.4242.parts", self.fake.store)
+
+    def test_manifest_bounds_refuse_unbounded_part_fetches(self) -> None:
+        key = "run-store.v1.77.4242.invalid"
+        self.fake.store[key] = b"ci-run-store-parts-v1\n" + json.dumps({
+            "parts": 10001, "size": 1, "sha256": "0" * 64}).encode()
+        rc, log, _ = self.run_store("get", "invalid", self.dir / "dest")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("invalid parts manifest", log)
+        self.assertFalse(any(".part-" in path for _, path, _ in self.fake.requests))
+
+    def test_existing_cloud_parts_wire_format_is_readable(self) -> None:
+        key = "run-store.v1.77.4242.cloud"
+        data = bundle([regular("fixture.txt", b"existing client bytes")])
+        self.fake.store[key] = b"ci-run-store-parts-v1\n" + json.dumps({
+            "parts": 2, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}).encode() + b"\n"
+        self.fake.store[key + ".part-0"] = data[:50]
+        self.fake.store[key + ".part-1"] = data[50:]
+        dest = self.dir / "cloud-out"
+        rc, log, _ = self.run_store("get", "cloud", dest)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual((dest / "fixture.txt").read_bytes(), b"existing client bytes")
 
     def test_directory_round_trip(self) -> None:
         src = self.dir / "venue"
@@ -289,7 +422,7 @@ class RunStoreTest(unittest.TestCase):
         self.fake.put_mode = "full"
         rc, log, _ = self.run_store("put", "f", src, REQUIRED="false")
         self.assertEqual(rc, 0, log)
-        self.assertIn("::warning::run-store put f: could not store the bundle (HTTP 507)", log)
+        self.assertIn("::warning::run-store put f: could not store the bundle (HTTP 507 ", log)
         self.assertEqual(sum(1 for r in self.fake.requests if r[0] == "PUT"), 1)
 
     def test_protected_rerun_keeps_the_first_entry(self) -> None:
