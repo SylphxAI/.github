@@ -92,9 +92,10 @@ if [ "$(cat "$keel_root/stamp" 2>/dev/null || true)" != "$keel_stamp" ] || [ ! -
     cloned=1
   fi
   [ "$(git -C "$src" rev-parse HEAD)" = "$pin" ] || { echo "the Keel checkout $src is not at the pin $pin" >&2; exit 1; }
+  # Bash 3.2 treats an empty array as unset under nounset. Expand only when set.
   feature_args=()
   if [ -n "$features" ]; then feature_args=(--features "$features"); fi
-  cargo install --path "$src/crates/keel-cli" --locked --root "$keel_root" "${feature_args[@]}"
+  cargo install --path "$src/crates/keel-cli" --locked --root "$keel_root" ${feature_args[@]+"${feature_args[@]}"}
   [ -x "$keel_root/bin/keel" ] || { echo "no keel binary in $keel_root/bin" >&2; exit 1; }
   if [ -n "$cloned" ]; then rm -rf "$src"; fi
   printf '%s' "$keel_stamp" > "$keel_root/stamp"

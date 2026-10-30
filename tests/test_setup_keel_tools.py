@@ -21,6 +21,7 @@ GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
 FAKE_CARGO = r"""#!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >> "$CARGO_LOG"
+if [ -n "${CARGO_ARGV_LOG:-}" ]; then printf '%s\0' "$@" >> "$CARGO_ARGV_LOG"; fi
 root=""; version=""; path=""; crate=""
 shift  # install
 while [ $# -gt 0 ]; do
@@ -87,11 +88,13 @@ class InstallerTest(unittest.TestCase):
         (fakebin / "cargo").write_text(FAKE_CARGO)
         (fakebin / "cargo").chmod(0o755)
         self.cargo_log = base / "cargo.log"
+        self.cargo_argv_log = base / "cargo-argv.log"
         self.github_path = base / "github_path"
         self.root = base / "runner" / "keel-tools"
         (base / "runner").mkdir()
         self.env = {**os.environ, **GIT_ENV, "PATH": f"{fakebin}:{os.environ['PATH']}",
-                    "CARGO_LOG": str(self.cargo_log), "KEEL_REPO": str(self.keel_repo),
+                    "CARGO_LOG": str(self.cargo_log), "CARGO_ARGV_LOG": str(self.cargo_argv_log),
+                    "KEEL_REPO": str(self.keel_repo),
                     "RUNNER_TEMP": str(base / "runner"), "GITHUB_PATH": str(self.github_path)}
         for k in ("KEEL_PIN", "KEEL_PIN_FILE", "WASM_BINDGEN", "CARGO_LOCK", "KEEL_SRC", "KEEL_FEATURES"):
             self.env.pop(k, None)
@@ -100,7 +103,7 @@ class InstallerTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def run_installer(self, *args, **env):
-        return subprocess.run(["bash", str(INSTALLER), *args], cwd=self.title, env={**self.env, **env},
+        return subprocess.run([os.environ.get("BASH_UNDER_TEST", "bash"), "--posix", str(INSTALLER), *args], cwd=self.title, env={**self.env, **env},
                               text=True, capture_output=True)
 
     def builds(self):
@@ -257,6 +260,24 @@ class InstallerTest(unittest.TestCase):
         (self.title / "KEEL_PIN").unlink()
         r = self.run_installer("key", KEEL_PIN=self.pin)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_optional_features_preserve_cargo_arguments_in_posix_shell(self):
+        # BASH_UNDER_TEST lets this same installer fixture exercise macOS Bash
+        # 3.2, whose nounset mode rejects a direct empty-array expansion.
+        for features, expected in (("", []), ("texture-encoder", ["--features", "texture-encoder"]),
+                                   ("texture-encoder,foo", ["--features", "texture-encoder foo"])):
+            with self.subTest(features=features):
+                root = self.root / (features or "defaults")
+                self.cargo_argv_log.unlink(missing_ok=True)
+                result = self.run_installer("install", str(root), WASM_BINDGEN="none",
+                                            KEEL_FEATURES=features)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                argv = self.cargo_argv_log.read_bytes().decode().split("\0")[:-1]
+                self.assertEqual(argv, ["install", "--path",
+                    str(pathlib.Path(self.tmp.name) / "runner" / f"keel-src-{self.pin}" / "crates/keel-cli"),
+                    "--locked", "--root", str(root / "keel"), *expected])
+                self.assertTrue((root / "bin/keel").is_file())
+                self.assertTrue((root / "stamp").is_file())
 
     def test_features_are_passed_and_stamped(self):
         r = self.run_installer("install", str(self.root), KEEL_FEATURES="texture-encoder")

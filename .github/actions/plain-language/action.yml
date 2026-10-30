@@ -68,4 +68,4 @@ runs:
         export PLAIN_LANGUAGE_MODE="$mode"
         specs=()
         while IFS= read -r p; do [ -n "$p" ] && specs+=(":(exclude)$p"); done <<<"$EXCLUDE"
-        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/$LIST.tsv" "${specs[@]}"
+        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/$LIST.tsv" ${specs[@]+"${specs[@]}"}
