@@ -44,12 +44,24 @@ class SqlTests(unittest.TestCase):
         ]
         extra = {
             "postgres": [
+                "ALTER TABLE accounts DROP identity;",
+                "ALTER TABLE accounts DROP index;",
+                "ALTER FOREIGN TABLE accounts DROP nickname;",
+                "DROP OWNED BY app;",
+                "DROP TYPE account_state CASCADE;",
+                "DROP DOMAIN account_state CASCADE;",
                 'ALTER TABLE "public"."accounts" DROP COLUMN "balance";',
                 "DO $$ BEGIN EXECUTE 'DROP TABLE accounts'; END $$;",
                 "CREATE OR REPLACE FUNCTION cleanup() RETURNS void AS $$ DELETE FROM accounts; $$ LANGUAGE SQL;",
                 "/* outer /* inner */ still comment */ DROP TABLE accounts;",
             ],
             "mysql": [
+                "UPDATE accounts SET nickname = @where;",
+                "UPDATE accounts SET nickname = @@global.where;",
+                "DELETE FROM accounts ORDER BY @where;",
+                "CREATE EVENT cleanup ON SCHEDULE EVERY 1 DAY DO CALL cleanup_accounts();",
+                "ALTER TABLE accounts DISCARD TABLESPACE;",
+                "ALTER TABLE accounts CONVERT TO CHARACTER SET ascii;",
                 "DROP TEMPORARY TABLE accounts;",
                 "ALTER TABLE `accounts` DROP COLUMN `balance`;",
                 "ALTER TABLE accounts ADD (id int, region text NOT NULL);",
@@ -71,6 +83,7 @@ class SqlTests(unittest.TestCase):
     def test_additive_and_scoped_data_changes_pass(self):
         safe = [
             "CREATE TABLE accounts (id int NOT NULL, region varchar(8) NOT NULL);",
+            "CREATE TABLE event (id int, event text);",
             "ALTER TABLE accounts ADD COLUMN nickname text;",
             "ALTER TABLE accounts ADD COLUMN region text NOT NULL DEFAULT 'unknown';",
             "ALTER TABLE accounts ADD COLUMN region text NOT NULL DEFAULT concat('a', 'b');",

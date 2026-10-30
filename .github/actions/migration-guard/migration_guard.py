@@ -72,6 +72,13 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
                 inner, _ = lex(body, dialect)
                 tokens.extend(Token(t.value, t.kind, line + t.line - 1) for t in inner)
             line += sql[start:i].count("\n")
+        elif dialect == "mysql" and ch == "@":
+            variable = re.match(r'''@@?(?:[\w.$]+|`(?:[^`]|``)*`|'(?:[^']|'')*'|"(?:[^"]|"")*")''', sql[i:])
+            if not variable:
+                raise SqlError(f"line {line}: cannot inspect MySQL variable")
+            tokens.append(Token("<variable>", "literal", line))
+            line += variable[0].count("\n")
+            i += len(variable[0])
         elif ch in "'\"`" or (dialect == "postgres" and ch == "$" and re.match(r"\$(?:[A-Za-z_][\w]*)?\$", sql[i:])):
             start, start_line = i, line
             dollar = re.match(r"\$(?:[A-Za-z_][\w]*)?\$", sql[i:]) if ch == "$" else None
@@ -172,6 +179,8 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
                 out.append((token.line, "DROP " + tail[1].value))
             if starts(tail, "DROP", "TEMPORARY", "TABLE"):
                 out.append((token.line, "DROP TEMPORARY TABLE"))
+            if any(starts(tail, "DROP", obj) for obj in ("OWNED", "TYPE", "DOMAIN")):
+                out.append((token.line, "DROP " + tail[1].value))
             if kw(token, "TRUNCATE") and not (i + 1 < len(stmt) and stmt[i + 1].value == "("):
                 out.append((token.line, "TRUNCATE"))
             if kw(token, "RENAME"):
@@ -194,9 +203,19 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
                 lock_or_upsert = kw(token, "UPDATE") and i and any(kw(stmt[i - 1], w) for w in ("FOR", "KEY", "ON", "DO"))
                 if not lock_or_upsert and not has(suffix, "WHERE"):
                     out.append((token.line, token.value + " without WHERE"))
+        create_procedure = False
+        if starts(stmt, "CREATE"):
+            for token in stmt[1:]:
+                if token.kind != "word":
+                    continue
+                if token.value in {"TABLE", "VIEW", "INDEX", "SCHEMA", "DATABASE", "SEQUENCE", "TYPE", "DOMAIN", "EXTENSION", "POLICY"}:
+                    break
+                if token.value in {"FUNCTION", "PROCEDURE", "TRIGGER", "EVENT"}:
+                    create_procedure = True
+                    break
         if (starts(stmt, "DO") or starts(stmt, "CALL") or starts(stmt, "EXECUTE")
                 or starts(stmt, "PREPARE") or starts(stmt, "DELIMITER")
-                or (starts(stmt, "CREATE") and any(has(stmt[:8], kind) for kind in ("FUNCTION", "PROCEDURE", "TRIGGER")))):
+                or create_procedure):
             out.append((stmt[0].line, "procedural or dynamic SQL requires a contract reference"))
         if starts(stmt, "CREATE", "TABLE"):
             conditional = starts(stmt[2:], "IF", "NOT", "EXISTS")
@@ -206,9 +225,10 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
             # required-column additions still need a default.
             if not conditional:
                 created.add(table)
-        if not starts(stmt, "ALTER", "TABLE"):
+        table_at = 2 if starts(stmt, "ALTER", "TABLE") else 3 if starts(stmt, "ALTER", "FOREIGN", "TABLE") else None
+        if table_at is None:
             continue
-        at = 4 if starts(stmt[2:], "IF", "EXISTS") else 2
+        at = table_at + 2 if starts(stmt[table_at:], "IF", "EXISTS") else table_at
         if at < len(stmt) and kw(stmt[at], "ONLY"):
             at += 1
         table, at = name(stmt, at)
@@ -225,9 +245,11 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
             if not flat:
                 continue
             first = flat[0]
-            if kw(first, "DROP") and not any(starts(flat[1:], safe) for safe in (
-                    "CONSTRAINT", "DEFAULT", "NOT", "IDENTITY", "EXPRESSION", "INDEX", "KEY", "PRIMARY", "FOREIGN", "CHECK")):
+            safe_drops = ("CONSTRAINT",) if dialect == "postgres" else ("CONSTRAINT", "INDEX", "KEY", "PRIMARY", "FOREIGN", "CHECK")
+            if kw(first, "DROP") and not any(starts(flat[1:], safe) for safe in safe_drops):
                 out.append((first.line, "DROP COLUMN"))
+            if starts(flat, "DISCARD", "TABLESPACE") or starts(flat, "CONVERT", "TO", "CHARACTER", "SET"):
+                out.append((first.line, "table data discard or character set conversion"))
             if kw(first, "MODIFY") or kw(first, "CHANGE"):
                 # Without the previous type no widening can be proved. This
                 # also covers MySQL CHANGE's implicit column rename.
