@@ -92,8 +92,8 @@ class ExchangeTest(unittest.TestCase):
             "REPO": "SylphxAI/.github",
             "API_URL": "https://api.example",
             "SOFT_FAIL": "false",
-            "OIDC_URL": "https://actions.example/token",
-            "OIDC_TOKEN": "request-token",
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "https://actions.example/token?job=123",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-token",
         }
         base.update(over)
         return base
@@ -122,10 +122,43 @@ class ExchangeTest(unittest.TestCase):
 
     def test_missing_oidc_grant_is_named(self) -> None:
         replies = {"__self__": ""}
-        code, out, err, token = run_script(replies, self.env(OIDC_URL=""))
+        code, out, err, token = run_script(replies, self.env(ACTIONS_ID_TOKEN_REQUEST_URL=""))
         text = out + err
         self.assertIn("id-token: write", text)
         self.assertEqual(code, 1)
+        self.assertEqual(token, "")
+
+    def test_runner_oidc_environment_is_not_projected_through_expression_aliases(self) -> None:
+        step = action()["runs"]["steps"][0]
+        for name in ("OIDC_URL", "OIDC_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+                     "ACTIONS_ID_TOKEN_REQUEST_TOKEN"):
+            self.assertNotIn(name, step["env"])
+        replies = {
+            "actions.example": '{"value":"oidc-jwt"}',
+            "/v1/access/github/token": '{"api_key":"syl_ci_key","active_after_ms":0}',
+            "/v1/whoami": '{"org":"orgs/example","principal":"prn_test"}',
+            ":exchangeToken": '{"token":"ghs_install"}',
+        }
+        # GitHub's runtime variables exist even when the env expression context
+        # has no corresponding values. Empty legacy aliases must not hide them.
+        code, out, err, token = run_script(replies, self.env(OIDC_URL="", OIDC_TOKEN=""))
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(token, "ghs_install")
+
+    def test_missing_runtime_oidc_token_fails_before_any_http(self) -> None:
+        code, out, err, token = run_script({}, self.env(ACTIONS_ID_TOKEN_REQUEST_TOKEN=""))
+        self.assertEqual(code, 1)
+        self.assertIn("id-token: write", out + err)
+        self.assertNotIn("no stub for curl", err)
+        self.assertEqual(token, "")
+
+    def test_aliases_cannot_supply_missing_runtime_oidc_authority(self) -> None:
+        code, out, err, token = run_script({}, self.env(
+            ACTIONS_ID_TOKEN_REQUEST_URL="", ACTIONS_ID_TOKEN_REQUEST_TOKEN="",
+            OIDC_URL="https://actions.example/token?job=123", OIDC_TOKEN="request-token"))
+        self.assertEqual(code, 1)
+        self.assertIn("id-token: write", out + err)
+        self.assertNotIn("no stub for curl", err)
         self.assertEqual(token, "")
 
     def test_access_refusal_names_the_ci_declaration(self) -> None:
