@@ -5,6 +5,7 @@ import { createReviewInput, parseReviewResult, reviewerVersion } from '../.githu
 import { bundleFile, GitHub } from '../.github/actions/pr-review/github.mjs';
 import { credentials } from '../.github/actions/pr-review/auth.mjs';
 import { eventTargets } from '../.github/actions/pr-review/events.mjs';
+import { createHash } from 'node:crypto';
 
 function inputFor(before = 'return value\n', after = 'return undefined\n') {
   return createReviewInput({ schema_version: 1, repository: 'example/repo', repository_id: '1',
@@ -130,4 +131,20 @@ test('trusted event resolves fork-safe API associations and ignores unrelated ru
   const targets = await eventTargets(github, 'workflow_run', event, '12');
   assert.equal(targets[0].target.number, 7); assert.equal(targets[0].target.head_sha, head);
   assert.deepEqual(await eventTargets(github, 'workflow_run', { ...event, workflow_run: { ...event.workflow_run, event: 'push' } }, '13'), []);
+});
+
+test('source provenance reads the exact Git tree and refuses followed links and mismatched blobs', async () => {
+  const bytes = Buffer.from('source\n');
+  const sha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+  const github = new GitHub({ repository: 'example/repo', readToken: 'read' });
+  let mode = '100644', corrupted = false;
+  github.request = async path => path.includes('/git/trees/') ? { tree: [{ path: 'file.js', mode, type: 'blob', sha }] } : {
+    sha, encoding: 'base64', size: bytes.length, content: (corrupted ? Buffer.from('forged\n') : bytes).toString('base64'),
+  };
+  assert.equal(await github.source('file.js', 'a'.repeat(40)), 'source\n');
+  assert.equal(await github.source('absent', 'a'.repeat(40), true), null);
+  mode = '120000'; github.sourceTrees.clear();
+  await assert.rejects(() => github.source('file.js', 'a'.repeat(40)), /ordinary file/);
+  mode = '100644'; corrupted = true; github.sourceTrees.clear();
+  await assert.rejects(() => github.source('file.js', 'a'.repeat(40)), /incomplete/);
 });

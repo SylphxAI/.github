@@ -22,6 +22,14 @@ export class GitHub {
     this.checkToken = checkToken;
     this.apiOrigin = apiOrigin.replace(/\/$/, '');
     this.fetcher = fetcher;
+    this.sourceTrees = new Map();
+  }
+
+  async tree(sha) {
+    if (!this.sourceTrees.has(sha)) this.sourceTrees.set(sha, this.request(`/git/trees/${sha}`));
+    const tree = await this.sourceTrees.get(sha);
+    if (tree.truncated || !Array.isArray(tree.tree)) throw new Unavailable('Pinned source tree is incomplete.');
+    return tree.tree;
   }
 
   async request(path, { method = 'GET', body, checks = false } = {}) {
@@ -54,18 +62,26 @@ export class GitHub {
 
   async source(path, sha, optional = false) {
     if (!validSha(sha) || !validPath(path)) throw new Unavailable('Invalid pinned source reference.');
-    let object;
-    try {
-      object = await this.request(`/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${sha}`);
-    } catch (error) {
-      if (optional && error.message.endsWith('HTTP 404.')) return null;
-      throw error;
+    let object, treeSha = sha;
+    const segments = path.split('/');
+    for (let i = 0; i < segments.length; i++) {
+      object = (await this.tree(treeSha)).find(entry => entry.path === segments[i]);
+      if (!object) {
+        if (optional) return null;
+        throw new Unavailable(`Pinned source ${path} is absent.`);
+      }
+      if (i < segments.length - 1) {
+        if (object.type !== 'tree' || !validSha(object.sha)) throw new Unavailable(`Source ${path} crosses a non-directory.`);
+        treeSha = object.sha;
+      }
     }
-    if (object.type !== 'file' || !validSha(object.sha) || object.submodule_git_url || object.target) {
+    // Contents follows internal symlinks. Git trees prove the path's actual
+    // object/mode instead, so a link or submodule cannot masquerade as source.
+    if (object.type !== 'blob' || !['100644', '100755'].includes(object.mode) || !validSha(object.sha)) {
       throw new Unavailable(`Source ${path} is not an ordinary file.`);
     }
     const blobSha = object.sha;
-    if (object.encoding !== 'base64') object = await this.request(`/git/blobs/${blobSha}`);
+    object = await this.request(`/git/blobs/${blobSha}`);
     if (object.encoding !== 'base64' || typeof object.content !== 'string') {
       throw new Unavailable(`Source ${path} has no complete content.`);
     }
