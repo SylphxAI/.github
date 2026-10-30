@@ -197,6 +197,8 @@ def foreign_delete_actions(tokens: list[Token]) -> list[tuple[int, str]]:
 
 def procedural_statement(stmt: list[Token]) -> list[Token]:
     """Expose SQL after a procedural control prefix without interpreting values."""
+    if starts(stmt, "CREATE") or starts(stmt, "DO"):
+        return stmt
     depth = 0
     commands = {"ALTER", "CREATE", "SET", "DO", "CALL", "EXECUTE", "PREPARE", "DELIMITER"}
     boundaries = {"BEGIN", "ATOMIC", "THEN", "ELSE", "LOOP"}
