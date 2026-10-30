@@ -1,5 +1,10 @@
 name: needs-pass
 description: >
+  Automatically scans the added commits of every pull request and merge group
+  for secrets before returning the aggregate verdict. Fetches immutable Git
+  objects into a temporary bare repository; no caller checkout is needed.
+  Requires contents: read. Exact reasoned exceptions use
+  .desk-secret-allowlist.json (see docs/secret-scan.md).
   The aggregate verdict of a workflow: pass when every needed job succeeded or
   was skipped (except `required` and, outside merge_group,
   `required-unless-merge-group`, which must succeed), fail on any failure,
@@ -51,3 +56,8 @@ runs:
         REQUIRED_UNLESS_MERGE_GROUP: ${{ inputs.required-unless-merge-group }}
         EVENT_NAME: ${{ github.event_name }}
       run: python3 "$GITHUB_ACTION_PATH/needs_pass.py"
+    - name: Scan added commits for secrets
+      shell: bash
+      env:
+        SECRET_SCAN_TOKEN: ${{ github.token }}
+      run: python3 "$GITHUB_ACTION_PATH/../secret-scan/secret_scan.py" --fetch --pre-merge-only
