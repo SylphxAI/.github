@@ -1,0 +1,48 @@
+# optimistic-merge: gate-external
+name: PR metadata backfill
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/pr-metadata-backfill.yml
+      - .github/actions/pr-metadata-backfill/**
+  workflow_dispatch:
+    inputs:
+      pull-request:
+        description: PR number. Omit both inputs to backfill every open head missing metadata.
+        type: string
+      expected-head:
+        description: Exact PR head SHA; required when pull-request is supplied.
+        type: string
+
+# A dispatch never joins any PR code concurrency group. Distinct dispatches
+# retain their accepted work, including while waiting for a runner.
+concurrency:
+  group: pr-metadata-backfill-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+
+jobs:
+  metadata-backfill:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: sylphx-linux-control
+    timeout-minutes: 10
+    steps:
+      # Never check out a PR head. Git objects are read without executing code.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Publish metadata for explicit or missing PR heads
+        env:
+          PR_METADATA_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ inputs.pull-request }}
+          TARGET_HEAD: ${{ inputs.expected-head }}
+        run: |
+          python3 .github/actions/pr-metadata-backfill/pr_metadata_backfill.py \
+            --pull-request "$TARGET_PR" --expected-head "$TARGET_HEAD"

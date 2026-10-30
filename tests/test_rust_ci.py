@@ -90,7 +90,10 @@ class RustCiWorkflow(unittest.TestCase):
             self.assertLess(names.index("Compile cache (sccache)"), names.index(later))
 
     def test_never_uses_the_platform_key_or_a_ref_scoped_key(self) -> None:
-        body = "\n".join(l for l in self.text[self.text.index("jobs:"):].splitlines() if not l.strip().startswith("#"))
+        declaration = job()
+        checkout = next(s for s in declaration['steps'] if s.get('name') == 'Checkout')
+        self.assertEqual(checkout['with'].pop('ref'), '${{ github.event.inputs.code-merge || github.sha }}')
+        body = yaml.safe_dump(declaration)
         for banned in ("RGW_S3", "ci-sccache", "AWS_ACCESS_KEY_ID", "github.ref", "github.head_ref", "github.sha", "run_id"):
             self.assertNotIn(banned, body)
 

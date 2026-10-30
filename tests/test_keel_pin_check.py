@@ -6,6 +6,9 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import hashlib
+import json
+import tarfile
 import os
 import pathlib
 import subprocess
@@ -396,6 +399,106 @@ class ManifestTest(unittest.TestCase):
             got = eval(py.replace("github.event_name", repr(event)), {"__builtins__": {}})  # noqa: S307
             self.assertEqual(got, want, event)
 
+
+
+class RegistryPinCheckTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.fx = Fixture(pathlib.Path(cls._tmp.name))
+        cls.n = 0
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def check(self, files, source=None):
+        type(self).n += 1
+        repo = self.fx.title(f"registry{self.n}", files)
+        self.fx.keel._cache.clear()
+        with unittest.mock.patch.object(kpc, 'registry_commit', return_value=(source or self.fx.c3, None)):
+            return run_check(self.fx, repo)
+
+    def graph(self, version='0.1.5938'):
+        return {
+            'KEEL_PIN': version + '\n',
+            'Cargo.toml': '[dependencies]\nkeel = { package = "sylphx-keel-engine", version = "=' + version + '" }\n',
+            'Cargo.lock': '[[package]]\nname="sylphx-keel-engine"\nversion="' + version + '"\nsource="' + kpc.REGISTRY_SOURCE + '"\n',
+        }
+
+    def test_exact_public_pin_and_graph_pass_and_can_retain_source_provenance(self):
+        self.assertEqual(self.check(self.graph())[:2], ([], []))
+        files = self.graph()
+        files['KEEL_PIN'] = self.fx.c3 + '\n'
+        self.assertEqual(self.check(files)[:2], ([], []))
+
+    def test_mixed_registry_versions_fail_even_when_they_share_source(self):
+        files = self.graph()
+        files['Cargo.lock'] += '[[package]]\nname="sylphx-keel-ui"\nversion="0.1.5930"\nsource="' + kpc.REGISTRY_SOURCE + '"\n'
+        errors, _, _ = self.check(files)
+        self.assertTrue(any('multiple Keel registry versions' in error for error in errors), errors)
+
+    def test_caret_ranges_and_alternate_registries_are_rejected(self):
+        files = self.graph()
+        files['Cargo.toml'] = files['Cargo.toml'].replace('=0.1.5938', '0.1.5938')
+        errors, _, _ = self.check(files)
+        self.assertTrue(any('exact registry version' in error for error in errors), errors)
+        files = self.graph()
+        files['Cargo.lock'] = files['Cargo.lock'].replace(kpc.REGISTRY_SOURCE, 'registry+https://example.invalid/index')
+        errors, _, _ = self.check(files)
+        self.assertTrue(any('from crates.io' in error for error in errors), errors)
+
+    def test_git_and_registry_cannot_create_two_engine_type_graphs(self):
+        files = self.graph()
+        files['Cargo.lock'] += lock(self.fx.c3)
+        errors, _, _ = self.check(files)
+        self.assertTrue(any('cannot share one graph' in error for error in errors), errors)
+
+    def test_public_source_still_obeys_main_and_verified_tag_rules(self):
+        errors, warnings, _ = self.check(self.graph(), self.fx.x1)
+        self.assertTrue(any('not on Keel main' in error for error in errors), errors)
+        errors, warnings, _ = self.check(self.graph(), self.fx.c5)
+        self.assertEqual(errors, [])
+        self.assertTrue(any('not a keel-verified' in warning for warning in warnings), warnings)
+
+    def test_renamed_workspace_and_target_dependencies_are_discovered(self):
+        text = '[workspace.dependencies]\nengine={package="sylphx-keel-engine",version="=0.1.5938"}\n[target.\'cfg(unix)\'.dev-dependencies]\nui={package="sylphx-keel-ui",version="=0.1.5938"}\n'
+        pins = kpc.registry_manifest_pins('Cargo.toml', text)
+        self.assertEqual([(p.kind, p.value) for p in pins], [('registry', '0.1.5938')] * 2)
+
+
+class PublicRegistryIdentityTest(unittest.TestCase):
+    def responses(self, *, yanked=False, bad_checksum=False, mismatched_source=False):
+        version = '0.1.5938'
+        result = {}
+        for i, package in enumerate(('sylphx-keel-engine', 'sylphx-keel-cli')):
+            source = ('b' if mismatched_source and i else 'a') * 40
+            data = json.dumps({'git': {'sha1': source, 'dirty': True}}).encode()
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode='w:gz') as archive:
+                info = tarfile.TarInfo(f'{package}-{version}/.cargo_vcs_info.json')
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+            archive = stream.getvalue()
+            checksum = hashlib.sha256(archive).hexdigest()
+            result[f'https://crates.io/api/v1/crates/{package}/{version}'] = json.dumps({'version': {'crate': package, 'num': version, 'yanked': yanked, 'checksum': '0'*64 if bad_checksum else checksum}}).encode()
+            result[f'https://static.crates.io/crates/{package}/{package}-{version}.crate'] = archive
+        return result
+
+    def resolve(self, **options):
+        responses = self.responses(**options)
+        with unittest.mock.patch.object(kpc.urllib.request, 'urlopen', side_effect=lambda req, **kw: io.BytesIO(responses[req.full_url])):
+            return kpc.registry_commit('0.1.5938')
+
+    def test_checksum_verified_facade_and_cli_share_the_published_source(self):
+        self.assertEqual(self.resolve(), ('a' * 40, None))
+
+    def test_yanked_corrupt_or_mismatched_packages_never_qualify(self):
+        for options, expected in [({'yanked': True}, 'yanked'), ({'bad_checksum': True}, 'checksum'), ({'mismatched_source': True}, 'different source commits')]:
+            with self.subTest(options=options):
+                sha, reason = self.resolve(**options)
+                self.assertIsNone(sha)
+                self.assertIn(expected, reason)
 
 if __name__ == "__main__":
     unittest.main()

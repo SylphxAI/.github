@@ -1,5 +1,7 @@
 name: keel-pin-check
 description: >
+  Accepts an exact public x.y.z version or a full source commit. Public versions require one registry graph,
+  non-yanked checksum-verified facade and CLI packages, and their matching source lineage.
   Fails a pull request that moves a repository's Keel pin to a commit that is not on Keel main, a branch,
   or a second commit, and warns when the pinned commit is not a keel-verified-* or keel-weekly-* tag
   (the consumer guide: a title pins a weekly tag, never a moving main and never an arbitrary commit).

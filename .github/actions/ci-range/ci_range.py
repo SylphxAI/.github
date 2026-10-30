@@ -129,6 +129,12 @@ def base_for(event: str, payload: dict, repo: str, workflow_file: str, branch: s
         return payload["pull_request"]["base"]["sha"]
     if event == "merge_group":
         return payload["merge_group"]["base_sha"]
+    if event == "workflow_dispatch" and (payload.get("inputs") or {}).get("code-merge"):
+        # The aggregate binds these inputs to the immutable merge/current PR.
+        base = payload["inputs"].get("code-base", "")
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base):
+            raise ValueError("PR-code dispatch has no immutable base")
+        return base
     if event in ("push", "workflow_dispatch"):
         return last_verified(repo, workflow_file, branch)
     return ""

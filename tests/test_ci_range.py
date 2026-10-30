@@ -74,6 +74,13 @@ class SelectTest(unittest.TestCase):
 
 
 class BaseTest(unittest.TestCase):
+    def test_pr_code_dispatch_selects_the_dispatched_base(self) -> None:
+        payload = {'inputs': {'code-merge': 'c' * 40, 'code-base': 'b' * 40}}
+        self.assertEqual(ci_range.base_for('workflow_dispatch', payload, 'o/r', 'ci.yml', 'main'), 'b' * 40)
+        payload['inputs']['code-base'] = 'missing'
+        with self.assertRaises(ValueError):
+            ci_range.base_for('workflow_dispatch', payload, 'o/r', 'ci.yml', 'main')
+
     def test_pull_request_and_merge_group(self) -> None:
         self.assertEqual(ci_range.base_for("pull_request", {"pull_request": {"base": {"sha": "a1"}}}, "o/r", "ci.yml", "main"), "a1")
         self.assertEqual(ci_range.base_for("merge_group", {"merge_group": {"base_sha": "b2"}}, "o/r", "ci.yml", "main"), "b2")
@@ -294,7 +301,7 @@ class StarterWorkflowTest(unittest.TestCase):
         self.assertIn("ci-ok", gate["jobs"])
         # A bot-opened pull request gets its ci-ok from a dispatched run.
         self.assertIn("workflow_dispatch", gate[True])
-        self.assertIn("pull_request", gate["jobs"]["suite"]["if"])
+        self.assertEqual(gate["jobs"]["suite"]["if"], "github.event_name != 'merge_group'")
 
     def test_verify_starter_supersedes_the_trunk_run(self) -> None:
         # The latest trunk push wins: a newer run supersedes an in-flight one,

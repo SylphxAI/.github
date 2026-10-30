@@ -88,3 +88,18 @@ verified tag's commit passes, an untagged main commit passes with a warning, two
 fail, and the ratchet, each pin location, short hashes, tags, branches, the exit codes and the rollout audit
 (a fork the ratchet only warns about fails it) each have a case.
 Run them with `python -m unittest discover -s tests`.
+
+## Public registry versions
+
+`KEEL_PIN` may contain an exact public `x.y.z` version. Registry manifest
+dependencies use `=x.y.z`; aliases, workspace and target dependencies are
+recognized. Every locked Keel package must use the same crates.io version.
+A registry graph cannot include Git engine dependencies, though a revision
+file may retain the matching source commit as provenance.
+
+The check reads the exact facade and CLI version records from crates.io,
+refuses absent or yanked packages, verifies each archive's registry checksum,
+and reads its packaged `.cargo_vcs_info.json` without extracting files. Both
+packages must name the same source commit, which follows the existing
+main/verified-tag rules. The release's staged manifest edits can mark VCS
+metadata dirty; the source commit is the lineage authority.

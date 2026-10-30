@@ -478,6 +478,8 @@ class RequiredCheckTests(unittest.TestCase):
                 expected = [
                     {"context": "ci-ok", "integration_id": 15368},
                     {"context": "always-loaded", "integration_id": 15368}]
+            if entry["repo"] == "SylphxAI/.github":
+                expected.append({"context": "pr-metadata", "integration_id": 15368})
             self.assertEqual(entry["checks"], expected)
 
     def test_scoped_missing_review_check_is_reported_with_exact_issuer(self):

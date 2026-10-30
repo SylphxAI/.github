@@ -340,6 +340,32 @@ class AgentRuntimePolicyTest(unittest.TestCase):
             self.assertNotIn(key, seen)
             seen.add(key)
 
+    def test_spiron_relocated_session_schema_keeps_the_original_expiry_and_scope(self):
+        policy = json.loads(sc.AGENT_RUNTIME_POLICY.read_text())
+        path = "crates/spiron-core/src/session/local_schema.sql"
+        found = sc.agent_runtime(sc.DictTree({path:
+            "CREATE TABLE session_entries (id TEXT);\nCREATE TABLE session_turns (id TEXT);\n"}))
+        expected = {f"agent-runtime-table {path} {table}"
+                    for table in ("session_entries", "session_turns")}
+        self.assertEqual(set(found), expected)
+        admitted = {entry["departure"]: entry["expires"] for entry in policy["baseline"]
+                    if entry["repo"] == "SylphxAI/spiron" and entry["departure"] in expected}
+        self.assertEqual(admitted, dict.fromkeys(expected, "2026-11-30"))
+        self.assertFalse(any("20260306000000_initial.sql session_entries" in entry["departure"]
+                             or "20260722234500_session_turn_settlement_authority.sql session_turns"
+                             in entry["departure"] for entry in policy["baseline"]))
+        errors, _ = sc.decide_agent_runtime(found, "SylphxAI/spiron", policy, datetime.date(2026, 11, 30))
+        self.assertEqual(errors, [])
+        errors, _ = sc.decide_agent_runtime(found, "SylphxAI/spiron", policy, datetime.date(2026, 12, 1))
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all("expired on 2026-11-30" in error for error in errors))
+        for repo, findings in (("example/other", found),
+                               ("SylphxAI/spiron", [line.replace(path, "src/copied.sql") for line in found]),
+                               ("SylphxAI/spiron", [f"agent-runtime-table {path} tool_calls"])):
+            errors, _ = sc.decide_agent_runtime(findings, repo, policy, datetime.date(2026, 10, 30))
+            self.assertEqual(len(errors), len(findings))
+            self.assertTrue(all("new agent-runtime part" in error for error in errors))
+
 
 KNOWLEDGE_SQL = "CREATE TABLE knowledge_entities (id uuid PRIMARY KEY, title text);\n"
 

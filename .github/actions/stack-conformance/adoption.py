@@ -115,6 +115,27 @@ def source_profile(tree):
             raise ValueError("unreadable checker source: " + force_path)
         ast.parse(value)
         sources[force_path] = hashlib.sha256(value.encode()).hexdigest()
+    domain_path = PREFIX + "cache-economy-profiles.json"
+    if domain_path in tree.paths():
+        value = tree.read(domain_path)
+        if value is None:
+            raise ValueError("unreadable checker source: " + domain_path)
+        json.loads(value)
+        sources[domain_path] = hashlib.sha256(value.encode()).hexdigest()
+    deal_path = PREFIX + "deal_randomness.py"
+    if deal_path in tree.paths():
+        value = tree.read(deal_path)
+        if value is None:
+            raise ValueError("unreadable checker source: " + deal_path)
+        ast.parse(value)
+        sources[deal_path] = hashlib.sha256(value.encode()).hexdigest()
+    scope_path = "policy/deal-randomness-scope.json"
+    if deal_path in sources:
+        value = tree.read(scope_path)
+        if value is None:
+            raise ValueError("deal randomness scope policy missing")
+        json.loads(value)
+        sources[scope_path] = hashlib.sha256(value.encode()).hexdigest()
     if texts["stack_conformance.py"] is None or "stack_conformance.py" not in (texts["action.yml"] or ""):
         raise ValueError("unrecognized stack checker entrypoint")
     module = ast.parse(texts["stack_conformance.py"])
@@ -127,13 +148,14 @@ def source_profile(tree):
         if texts["architecture.py"] is None:
             raise ValueError("architecture checker source missing")
         rules |= architecture_rules(texts["architecture.py"])
+        if "architecture/C1/deal-randomness" in rules and deal_path not in sources:
+            raise ValueError("deal randomness checker source missing")
         if "architecture/C2/tenant-read-functions" in rules and tenant_path not in sources:
             raise ValueError("tenant declaration checker source missing")
     if ("model_pins", "decide") in calls:
         if texts["model_pins.py"] is None:
             raise ValueError("model checker source missing")
-        ast.parse(texts["model_pins.py"])
-        rules.add("model-pin")
+        rules |= model_rules(texts["model_pins.py"])
     if ("no_force_push", "decide") in calls:
         if force_path not in sources:
             raise ValueError("force-push checker source missing")
@@ -141,8 +163,21 @@ def source_profile(tree):
     return {"sources": sources, "rules": sorted(rules)}
 
 
+def model_rules(source):
+    """Read declared coverage without importing a historical recognizer."""
+    rules = {"model-pin"}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "SELECTOR_RULE" for target in node.targets):
+            if not isinstance(node.value, ast.Constant) or node.value.value != "model-selector":
+                raise ValueError("unrecognized model selector capability")
+            rules.add(node.value.value)
+    return rules
+
+
 def current_rules():
-    return architecture_rules((HERE / "architecture.py").read_text()) | {"model-pin", "force-push"}
+    return (architecture_rules((HERE / "architecture.py").read_text())
+            | model_rules((HERE / "model_pins.py").read_text()) | {"force-push"})
 
 
 def profile_id(profile):
@@ -355,10 +390,12 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     for before, after, key, rule_id in (
             (base_arch, head_arch, sc.architecture.baseline_key,
              lambda row: "architecture/" + row["class"] + "/" + row["rule"]),
-            (base_models, head_models, sc.model_pins.baseline_key, lambda row: "model-pin"),
+            (base_models, head_models, sc.model_pins.baseline_key, sc.model_pins.rule_id),
             (base_force, head_force, sc.no_force_push.baseline_key, lambda row: "force-push")):
-        inherited = {key(row) for row in before["findings"]}
+        inherited = {key(row) for row in before["findings"] if not row.get("scope_warning")}
         for row in after["findings"]:
+            if row.get("scope_warning"):
+                continue
             if rule_id(row) in introduced:
                 if key(row) not in inherited:
                     raise ValueError("new head debt cannot be adopted: " + key(row))
@@ -369,7 +406,7 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     lines = []
     if any(rule.startswith("architecture/") for rule in introduced) and sc.architecture.BASELINE_MARKER not in (original or "").splitlines():
         lines.append(sc.architecture.BASELINE_MARKER)
-    if "model-pin" in introduced and sc.model_pins.BASELINE_MARKER not in (original or "").splitlines():
+    if introduced & {"model-pin", "model-selector"} and sc.model_pins.BASELINE_MARKER not in (original or "").splitlines():
         lines.append(sc.model_pins.BASELINE_MARKER)
     if "force-push" in introduced and sc.no_force_push.BASELINE_MARKER not in (original or "").splitlines():
         lines.append(sc.no_force_push.BASELINE_MARKER)

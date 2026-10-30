@@ -1,7 +1,8 @@
 # Post-merge verification for optimistic merge (docs/optimistic-merge.md in
 # SylphxAI/.github). Everything the gate dropped - integration, database and
 # browser tests, device matrices, release builds - runs here on each push to
-# the trunk, and on a pull request marked ready (ci.yml calls this file). The `verified` job's check run on the head commit is the marker
+# the trunk, and on every pull request push, including drafts (ci.yml calls
+# this file). The `verified` job's check run on the head commit is the marker
 # the platform's Release reads: only verified commits deploy.
 #
 # One run covers every commit since the last one whose suite passed, so a
@@ -25,6 +26,16 @@ on:
         default: ""
   workflow_dispatch:
     inputs:
+      code-merge:
+        type: string
+      code-head:
+        type: string
+      code-base:
+        type: string
+      code-pr:
+        type: string
+      code-base-ref:
+        type: string
       lanes:
         description: Comma-separated lanes to run. Empty runs every lane the range selects.
         type: string
@@ -53,6 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           filter: blob:none
       - id: range
         uses: SylphxAI/.github/.github/actions/ci-range@main
@@ -69,6 +81,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
       - run: echo "the full test suite; write a JUnit report"
       # Keep this explicit step name equal to "run-store put <name>".
       # red-main discovers exact names (including matrix shards) from run jobs.
@@ -90,6 +104,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
       - run: echo "browser, device or release-build lanes"
 
   # The marker. Named exactly `verified`; never a required check (it exists
@@ -106,5 +122,6 @@ jobs:
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
           required: plan

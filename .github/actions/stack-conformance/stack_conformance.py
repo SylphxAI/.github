@@ -638,10 +638,19 @@ def keel_departures(tree) -> list[str]:
     if not keel_game(tree):
         return []
     found = []
+    pack_path = pathlib.Path(__file__).parent.parent / "keel-repin" / "pack_source.py"
+    pack_spec = importlib.util.spec_from_file_location("keel_pack_source", pack_path)
+    pack_source = importlib.util.module_from_spec(pack_spec)
+    pack_spec.loader.exec_module(pack_source)
+    paths = set(tree.paths())
+    for path in sorted(paths):
+        if pack_source.dockerfile(path):
+            for _, line, stage in pack_source.missing_stages(tree.read(path) or "", path, paths, tree.read):
+                found.append(f"keel-pack-source {path}:{line} {stage}")
     sku = re.compile(r"\bstruct\s+(\w*Sku)\b")
     pixels = re.compile(r"\bfn\s+(\w+_pixels)\s*(?:<[^{};]*>)?\s*\([^{};]*?\)\s*->\s*"
                         r"(?:(?:std|alloc)\s*::\s*vec\s*::\s*)?Vec\s*<\s*u8\s*>")
-    for path in tree.paths():
+    for path in sorted(paths):
         if skipped(path):
             continue
         if path in ("docs/BUILDING.md", "scripts/measure-rust-debug.py"):
@@ -657,6 +666,7 @@ def keel_departures(tree) -> list[str]:
 
 def decide_keel(found: list[str]) -> list[str]:
     remedies = {
+        "keel-pack-source": "add ARG SYLPHX_GIT_COMMIT_SHA after FROM in the stage running keel pack, before its packing RUN, so VERSION.json names the exact source commit",
         "keel-local-sku": "use keel_commerce, keel::commerce::iap or cubeage_kit commerce types, not a local SKU/catalog struct",
         "keel-cpu-pixels": "use Keel shaders or shared primitives, not game-local CPU pixel texture generation",
         "keel-boilerplate": "use the shared Rust CI profile and build documentation; remove per-game boilerplate",
@@ -1106,7 +1116,7 @@ def cmd_check(args) -> int:
                                      architecture.source_views) if args.base else models
         errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
                                    base_models["findings"], head_model_adopted, base_model_adopted,
-                                   allow_seed="model-pin" in introduced)
+                                   allow_seed="model-pin" in introduced, seed_rules=introduced)
         for row in models["unreadable"] + base_models["unreadable"]:
             errors.append("model policy input not reviewed: " + row["path"] + ": " + row["reason"])
     except (OSError, ValueError, TypeError) as error:
@@ -1201,8 +1211,12 @@ def cmd_check(args) -> int:
                    "shared_pin_provenance": pin_report})
     for row in report["findings"]:
         row.update({"repository": report["repository"], "commit": report["commit"]})
-        if row["rule"] == "tenant-read-functions":
+        if row["rule"] in {"tenant-read-functions", "deal-randomness"}:
             row["changed"] = architecture.baseline_key(row) not in head_architecture_baseline
+        if row.get("scope_warning"):
+            row["changed"] = False
+            row["disposition"] = "warning"
+            continue
         row["disposition"] = "justified-exception" if row["decision"] else "regression" if row["changed"] else "inherited"
         if row["changed"] and not row["decision"]:
             message = f"{row['class']} {row['rule']}: {row['reason']} ({row['contract']})"
@@ -1210,6 +1224,8 @@ def cmd_check(args) -> int:
             errors.append(message)
     for row in report["unreadable"]:
         errors.append("input not reviewed: " + row["path"] + ": " + row["reason"])
+    deal_rows = [row for row in report["findings"] if row["rule"] == "deal-randomness"]
+    report["deal_randomness"] = {"raw_emissions": len(deal_rows), "warnings": sum(row["disposition"] == "warning" for row in deal_rows), "refusals": sum(row["disposition"] == "regression" for row in deal_rows)}
     report["passed"] = not errors
     destination = pathlib.Path(getattr(args, "report", "stack-conformance-report.json"))
     destination.parent.mkdir(parents=True, exist_ok=True)
