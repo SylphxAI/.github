@@ -649,8 +649,9 @@ C3 derives product identities from the dated architecture-map product rows,
 resolved by numeric repository ID in `policy/architecture-repositories.json`;
 the checker contains no hand-maintained product list. Engine, service and tool
 repositories do not become downstream products merely because of their org. The dated paginated census
-covers SylphxAI, Cubeage, Cubeage-limited, EpiowAI, OzyrixLtd and TseFamily
-(657 repository IDs, 218 unarchived at the 2026-10-29 read). Numeric IDs retain identity across canonical
+covers SylphxAI, Cubeage, Cubeage-limited, EpiowAI and OzyrixLtd
+(653 repository IDs, 214 unarchived at the 2026-10-29 read). TseFamily is a
+personal organization and is excluded from company censuses, baselines and rollouts. Numeric IDs retain identity across canonical
 names. Archived rows remain visible as history and do not seed import rules.
 The policy declares which layers are shared, including Cubeage's platform,
 kit and tycoon engine; Cubeage layers use their own title population.
