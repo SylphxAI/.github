@@ -266,7 +266,8 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
                 # A user function can alter the caller's path. Do not infer
                 # its effects from a secured caller's routine header.
                 catalog_format = False
-        return token_violations(inner, dialect, nesting + 1, catalog_format)
+        finite_executes = finite_query_executes(inner, dialect, catalog_format, nesting + 1)
+        return token_violations(inner, dialect, nesting + 1, catalog_format, finite_executes)
     return opaque
 
 
@@ -397,8 +398,259 @@ def constant_acl_execute(stmt: list[Token], dialect: str, catalog_format: bool =
                     for t in signature))
 
 
+def finite_read_query(sql: str, dialect: str, nesting: int, *, predicate: bool = False) -> bool:
+    """One syntactically read-only query, with a small builtin call vocabulary.
+
+    This is not a planner: relation definitions and column/operator types remain
+    the database's responsibility, just as they do for static report queries.
+    """
+    tokens, _ = lex(sql, dialect)
+    statements = split(tokens, ";")
+    if len(statements) != 1 or not any(starts(tokens, w) for w in ("SELECT", "WITH")):
+        return False
+    forbidden = {"INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "RETURNING", "CALL",
+                 "EXECUTE", "COPY", "CREATE", "ALTER", "DROP", "TRUNCATE", "GRANT",
+                 "REVOKE", "SELECTINTO", "LOCK", "FOR"}
+    if any(t.kind == "word" and t.value in forbidden for t in tokens):
+        return False
+    calls = {"isfinite", "to_regclass"} if predicate else {"min", "max", "count", "sum", "avg", "bool_and", "bool_or", "coalesce",
+             "nullif", "greatest", "least", "split_part", "to_timestamp", "extract"}
+    types = {"text", "date", "timestamp", "timestamptz", "bigint", "integer", "int", "int4",
+             "int8", "smallint", "boolean", "bool", "numeric", "decimal", "real", "float8"}
+    for i in range(len(tokens) - 2):
+        if [t.value for t in tokens[i:i + 2]] == [":", ":"]:
+            target, _ = name(tokens, i + 2)
+            if target.removeprefix("pg_catalog.") not in types:
+                return False
+    # Typed literals can invoke a user type's input function without ().
+    literal_prefixes = {"SELECT", "WHEN", "THEN", "ELSE", "ZONE", "LIKE", "ILIKE",
+                        "ESCAPE", "FROM", "BETWEEN", "AND", "OR", "IS"}
+    for i, token in enumerate(tokens):
+        if token.kind != "literal" or not i or tokens[i - 1].kind not in {"word", "identifier"}:
+            continue
+        before = tokens[i - 1]
+        if before.kind == "word" and before.value in literal_prefixes:
+            continue
+        typed = before.value if before.kind == "identifier" else before.value.lower()
+        if typed not in types:
+            return False
+        if i > 1 and tokens[i - 2].value == ".":
+            qualified, _ = qualified_name(tokens, i - 3)
+            if qualified != ("pg_catalog", typed):
+                return False
+    cte_columns: set[int] = set()
+    if starts(tokens, "WITH"):
+        at = 1
+        while at < len(tokens):
+            if tokens[at].kind not in {"word", "identifier"}:
+                return False
+            cte = at
+            at += 1
+            if at < len(tokens) and tokens[at].value == "(":
+                columns, at = group(tokens, at)
+                if any(len(part) != 1 or part[0].kind not in {"word", "identifier"}
+                       for part in split(columns, ",")):
+                    return False
+                cte_columns.add(cte)
+            if not starts(tokens[at:], "AS"):
+                return False
+            _, at = group(tokens, at + 1)
+            if at >= len(tokens) or tokens[at].value != ",":
+                break
+            at += 1
+        if not starts(tokens[at:], "SELECT"):
+            return False
+    syntax = {"AS", "IN", "EXISTS", "FILTER", "OVER", "ON", "LATERAL", "FROM"}
+    for i, token in enumerate(tokens[:-1]):
+        if tokens[i + 1].value != "(" or token.kind not in {"word", "identifier"}:
+            continue
+        qualified_call = i and tokens[i - 1].value == "."
+        if i in cte_columns or token.kind == "word" and token.value in syntax and not qualified_call:
+            continue
+        function = token.value if token.kind == "identifier" else token.value.lower()
+        if function not in calls:
+            return False
+        if i and tokens[i - 1].value == ".":
+            qualified, _ = qualified_name(tokens, i - 2)
+            if qualified != ("pg_catalog", function):
+                return False
+    return not token_violations(tokens, dialect, nesting)
+
+
+def finite_query_executes(tokens: list[Token], dialect: str, catalog_format: bool,
+                          nesting: int) -> set[int]:
+    """Recognize a complete, bounded, local text-construction program.
+
+    Unsupported syntax invalidates the whole proof. Every IF arm is explored;
+    no condition is assumed true, and an uninitialized reaching value fails.
+    Only one assignment per local per path is supported (a literal declaration
+    default may precede it). Loops, handlers, nested blocks and SQL assignments
+    cannot silently mutate a credited query. Bounds fail closed.
+    """
+    if dialect != "postgres" or not catalog_format:
+        return set()
+    limit, size_limit = 64, 1_000_000
+    at = 0
+    initial: dict[str, str | None] = {}
+
+    def fail():
+        raise ValueError("not a finite literal query program")
+
+    def expression(parts, values):
+        result, pos = "", 0
+        while pos < len(parts):
+            token = parts[pos]
+            if token.kind == "literal":
+                raw = token.raw
+                dollar = DOLLAR.match(raw)
+                value = raw[len(dollar[0]):-len(dollar[0])] if dollar else raw[1:-1].replace("''", "'") if raw.startswith("'") else None
+            elif token.kind == "word":
+                value = values.get(token.value)
+            else:
+                value = None
+            if value is None:
+                fail()
+            result += value
+            if len(result) > size_limit:
+                fail()
+            pos += 1
+            if pos < len(parts):
+                if [t.value for t in parts[pos:pos + 2]] != ["|", "|"]:
+                    fail()
+                pos += 2
+                if pos == len(parts):
+                    fail()
+        if not parts:
+            fail()
+        return result
+
+    def through(word):
+        nonlocal at
+        start, depth = at, 0
+        while at < len(tokens):
+            token = tokens[at]
+            if depth == 0 and (token.value == word if word == ";" else kw(token, word)):
+                parts = tokens[start:at]
+                at += 1
+                return parts
+            if token.kind == "symbol":
+                depth += (token.value == "(") - (token.value == ")")
+            at += 1
+        fail()
+
+    def sequence(depth=0):
+        nonlocal at
+        if depth > 32:
+            fail()
+        nodes = []
+        while at < len(tokens) and not any(kw(tokens[at], w) for w in ("END", "ELSE", "ELSIF")):
+            if kw(tokens[at], "IF"):
+                branches = []
+                while kw(tokens[at], "IF") or kw(tokens[at], "ELSIF"):
+                    at += 1
+                    condition = through("THEN")
+                    if not condition or any(t.kind == "word" and t.value in {
+                            "CASE", "LOOP", "EXECUTE", "SELECT", "INTO", "UPDATE", "DELETE", "INSERT"} for t in condition):
+                        fail()
+                    if not finite_read_query("SELECT " + " ".join(t.raw for t in condition),
+                                             dialect, nesting, predicate=True):
+                        fail()
+                    branches.append(sequence(depth + 1))
+                    if at >= len(tokens):
+                        fail()
+                otherwise = []
+                if kw(tokens[at], "ELSE"):
+                    at += 1
+                    otherwise = sequence(depth + 1)
+                if not starts(tokens[at:], "END", "IF") or at + 2 >= len(tokens) or tokens[at + 2].value != ";":
+                    fail()
+                at += 3
+                nodes.append(("if", branches + [otherwise]))
+            else:
+                nodes.append(("statement", through(";")))
+        return nodes
+
+    accepted: set[int] = set()
+    generated: set[str] = set()
+
+    def evaluate(nodes, states):
+        for kind, node in nodes:
+            if kind == "if":
+                states = [state for branch in node for state in evaluate(branch, [(dict(v), set(w)) for v, w in states])]
+            else:
+                part = node
+                if not part:
+                    fail()
+                if len(part) >= 4 and part[0].kind == "word" and [t.value for t in part[1:3]] == [":", "="]:
+                    key = part[0].value
+                    for values, written in states:
+                        if key not in values or key in written:
+                            fail()
+                        values[key] = expression(part[3:], values)
+                        written.add(key)
+                elif starts(part, "RETURN", "QUERY", "EXECUTE"):
+                    if (len(part) < 4 or part[3].kind != "word" or part[3].value not in initial):
+                        fail()
+                    if len(part) > 4:
+                        if not kw(part[4], "USING") or len(part) < 6:
+                            fail()
+                        args = split(part[5:], ",")
+                        if any(len(arg) != 1 or arg[0].kind != "word" for arg in args):
+                            fail()
+                    for values, _ in states:
+                        query = values[part[3].value]
+                        if query is None:
+                            fail()
+                        generated.add(query)
+                        if len(generated) > limit or sum(map(len, generated)) > size_limit:
+                            fail()
+                        if not finite_read_query(query, dialect, nesting):
+                            fail()
+                    # An unreachable statement is still checked by the normal
+                    # scanner; only credit an EXECUTE with a reaching state.
+                    if states:
+                        accepted.add(id(part[2]))
+                elif len(part) == 1 and kw(part[0], "RETURN"):
+                    states = []
+                elif starts(part, "RAISE", "EXCEPTION") and len(part) == 3 and part[2].kind == "literal":
+                    states = []
+                elif len(part) == 1 and kw(part[0], "NULL"):
+                    pass
+                else:
+                    fail()
+            if len(states) > limit:
+                fail()
+        return states
+
+    try:
+        if at < len(tokens) and kw(tokens[at], "DECLARE"):
+            at += 1
+            while at < len(tokens) and not kw(tokens[at], "BEGIN"):
+                declaration = through(";")
+                if len(declaration) < 2 or declaration[0].kind != "word" or not kw(declaration[1], "TEXT"):
+                    fail()
+                key = declaration[0].value
+                if key in initial:
+                    fail()
+                initial[key] = None
+                if len(declaration) > 2:
+                    if [t.value for t in declaration[2:4]] != [":", "="] or len(declaration) != 5 or declaration[4].kind != "literal":
+                        fail()
+                    initial[key] = expression(declaration[4:], {})
+        if at >= len(tokens) or not kw(tokens[at], "BEGIN"):
+            fail()
+        at += 1
+        nodes = sequence()
+        if not starts(tokens[at:], "END") or any(t.value != ";" for t in tokens[at + 1:]):
+            fail()
+        evaluate(nodes, [(initial.copy(), set())])
+        return accepted
+    except (ValueError, IndexError, RecursionError):
+        return set()
+
+
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
-                     catalog_format: bool = False) -> list[tuple[int, str]]:
+                     catalog_format: bool = False, finite_executes: set[int] | None = None) -> list[tuple[int, str]]:
     if nesting > 64:
         raise SqlError("procedural body nesting is too deep to inspect")
     out: list[tuple[int, str]] = []
@@ -488,7 +740,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 defaults.clear()
                 trigger_tables.clear()
                 trigger_functions.clear()
-        if (starts(stmt, "CALL") or starts(stmt, "EXECUTE") and not constant_acl_execute(stmt, dialect, catalog_format)
+        if (starts(stmt, "CALL") or starts(stmt, "EXECUTE") and id(stmt[0]) not in (finite_executes or set())
+                and not constant_acl_execute(stmt, dialect, catalog_format)
                 or starts(stmt, "PREPARE") or starts(stmt, "DELIMITER")):
             out.append((stmt[0].line, "procedural or dynamic SQL requires a contract reference"))
         if starts(stmt, "CREATE", "TABLE"):

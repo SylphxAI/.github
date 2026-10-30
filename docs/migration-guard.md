@@ -96,9 +96,32 @@ routine search-path changes require a contract reference. The template prefix is
 the final placeholder, so a literal grantee cannot impersonate it.
 Identifier quoting prevents role names from adding SQL syntax. Other privilege
 scopes, grant options, SQL interpolation (`%s`/`%L`), concatenated templates,
-extra commands and assembled queries remain opaque. This does not authorize
-`RETURN QUERY EXECUTE query_text` or prove that a granted role should have access;
-the repository still owns that access policy.
+extra commands and other assembled queries remain opaque. ACL inspection does
+not prove that a granted role should have access; the repository owns that policy.
+
+`RETURN QUERY EXECUTE local_text [USING parameter, ...]` is also inspected in a
+routine with that fixed catalog-only search path when its complete body fits a
+closed literal construction: local `text` declarations, optional literal defaults,
+plain/dollar-quoted strings, `||`, and `IF`/`ELSIF`/`ELSE` branches. Every branch is
+explored, including the unchanged path of an `IF` without `ELSE`. Each local may
+be assigned once per path after its declaration default; every value reaching an
+execution must be known. Plain `RETURN` and literal `RAISE EXCEPTION` end a path.
+Conditions admit builtin `isfinite`/`to_regclass` calls and ordinary comparisons,
+not unknown function calls. `USING` binds simple parameter names, never query text.
+
+Every generated query must be one `SELECT` or `WITH ... SELECT`, pass the existing
+recursive checks, and contain no data-changing CTE, `RETURNING`, `INTO`, locking
+clause, or extra statement. Calls are limited to `min`, `max`, `count`, `sum`,
+`avg`, `bool_and`, `bool_or`, `coalesce`, `nullif`, `greatest`, `least`, `split_part`,
+`to_timestamp`, and `extract`, bare or qualified with `pg_catalog`; explicit casts
+and typed literals use builtin types. Unknown inputs, reassignment, SQL `INTO`,
+loops, exception handlers, nested scopes, formatter interpolation, and unsupported
+siblings invalidate the complete construction proof. The limits are 64 live paths,
+64 distinct generated queries, 32 nested conditions, and 1 MB of generated text;
+exceeding a limit keeps the execution opaque. Crediting one execution does not
+skip inspection of sibling statements or surrounding migrations. Relation
+implementations, column/operator types, existing ACL continuity, and application
+access policy still require review; this syntax check is not a database planner.
 Simple PostgreSQL `BEFORE INSERT` and `AFTER INSERT` row triggers pass when the
 target table was created unconditionally earlier in the same migration and the
 zero-argument trigger function was defined and inspected there too. Both table
