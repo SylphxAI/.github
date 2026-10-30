@@ -69,7 +69,8 @@ This category does not reseed or loosen existing stack or architecture debt.
 When checking without a base, the committed baseline is used, as for the
 original stack rules; pull requests must supply their actual base.
 
-For staged adoption, change the shared-action SHA and baseline in the same PR;
+For staged adoption, change the shared-action SHA and baseline in the same PR
+using the [offline adoption helper](#adopting-new-rules-with-a-pin-bump);
 older checkers do not understand model-pin records. Keep `# main` after the SHA
 so Renovate can discover subsequent shared-action commits. A workflow planner
 must run stack conformance for source/config changes, not only manifests.
@@ -303,19 +304,80 @@ those responsibilities.
 
 ### Existing debt uses the same baseline
 
-`scan --repository ORG/REPO` also emits exact records of the form:
+Architecture records identify the exact violation span and occurrence:
 
 ```text
-# architecture-ratchet-v1
-architecture C5 polling-loop src/jobs.rs:12 SOURCE_FILE_SHA256
+# architecture-ratchet-v2
+# stack-rule-adopted-v1 architecture/C5/polling-loop
+architecture C5 polling-loop src/jobs.rs VIOLATION_SPAN_SHA256 1
 ```
 
-On first adoption, only findings independently present at the base can be
-recorded. After adoption these records may only shrink; the marker remains
-even when the last record is removed. A stale record fails until removed.
-Baseline records expose existing debt and never suppress a changed violation
-or replace a decision. The existing Rust/Atlas baseline and central ownership
-policies retain their behavior.
+Only findings independently present at the base, for rules absent from every
+old checker pin, can be adopted. After adoption each rule's recorded set may
+only shrink; its marker remains even when the last record is removed. A stale
+record fails until removed. Paths are URL encoded. The span hash survives
+unrelated workflow pin edits and line movement; edited violation spans and
+additional identical occurrences fail. The whole-file `source_sha256` remains
+separate and still binds exception decisions to exact file evidence. Legacy
+v1 architecture baselines fail closed and require an explicit reviewed
+migration; the helper does not silently convert them. Existing Rust/Atlas
+ratchets and central ownership policies retain their behavior.
+
+### Adopting new rules with a pin bump
+
+Use an immutable checkout of the newly published shared release. Its
+`.github/actions/stack-conformance/adoption.py` helper reads local git objects,
+never executes an old checker, and never accesses the network. It discovers
+actual `stack-conformance` pins from the fresh caller base, including multiple
+different old pins. Unrelated shared actions' pins do not determine checker
+capabilities. Its bundled `checker-capabilities.json` binds published commit
+SHAs to source hashes and enforced rule identities. A rule already enforced
+by any old checker cannot receive new baseline records.
+
+Stage the caller's full-SHA pin updates, each with `# main`, and any required
+workflow fixes. Keep its baseline unchanged. Then use a staged tree OID so the
+entire update can be published in one commit:
+
+```sh
+base=$(git rev-parse origin/main)
+git add .github
+candidate=$(git write-tree)
+python "$shared/.github/actions/stack-conformance/adoption.py" adopt \
+  --repo "$caller" --base "$base" --head "$candidate" \
+  --shared-repo "$shared" --repository ORG/REPO \
+  --output "$caller/.github/stack-departures.txt" \
+  --evidence /tmp/adoption-evidence.json
+git add .github/stack-departures.txt
+git commit -m 'Update shared CI pins and adopt newly introduced rules'
+python "$shared/.github/actions/stack-conformance/stack_conformance.py" check \
+  --repo "$caller" --base "$base" --head HEAD --repository ORG/REPO
+```
+
+Run the git commands in the caller checkout. `$shared` may be an immutable
+worktree whose local git object store contains the old pinned commits. The
+helper verifies those old sources against the bundled registry and appends
+only base-existing, head-surviving findings for newly introduced rules. The
+original baseline bytes remain an exact prefix; existing records are never
+reseeded. New head debt, duplicate baseline lines, modified candidate baseline
+text, unreadable source, and unknown checker provenance refuse adoption.
+The evidence JSON is a local review artifact containing immutable base/head
+identities, old pins/source hashes, introduced rules and added records.
+
+The Python API is
+`plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, baseline=...)`.
+It returns `baseline_text`, `introduced_rules` and `evidence`, or raises
+`ValueError`. It does not write either input tree. The CLI writes output only
+after planning succeeds. A run without `--base` uses the committed baseline
+as its ratchet, including architecture records.
+
+Ordinary Renovate pin-only updates and shrinking baselines do not consult the
+capability registry, so a later merged checker SHA need not be registered for
+routine updates. Before shipping a new rule, refresh the registry for the
+old pins that need adoption. `adoption.py register --shared-repo PATH --rev SHA`
+emits a profile for review; include its commit/profile mapping and content in
+the bundled registry. Unknown profiles fail only an adoption request. Keep
+rule identities stable; an intentional new rule gets a new identity and its
+own adoption marker. No custom updater or broker is involved.
 
 ### Recorded decisions
 

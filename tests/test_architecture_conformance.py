@@ -336,12 +336,14 @@ class BaselineEntryPointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             f = GitFixture(d)
             path, source = VIOLATIONS['C5']
-            f.write({path: source})
+            f.write({path: source, '.github/workflows/stack.yml':
+                     'uses: SylphxAI/.github/.github/actions/stack-conformance@bc664ac7410c00d233fe4f729b6747969a4a9bed # main\n'})
             f.commit()
             existing = f.git('rev-parse', 'HEAD').strip()
             row = a.evaluate(sc.DictTree({path: source}), 'SylphxAI/spiron', None, TODAY)['findings'][0]
             record = a.baseline_key(row)
-            f.write({'.github/stack-departures.txt': a.BASELINE_MARKER + '\n' + record + '\n'})
+            f.write({'.github/stack-departures.txt': a.BASELINE_MARKER + '\n' +
+                     sc.adoption.RULE_MARKER + 'architecture/C5/polling-loop\n' + record + '\n'})
             f.commit()
             result, report = f.check(base=existing)
             self.assertEqual(result.returncode, 0, result.stdout)
@@ -400,6 +402,9 @@ class DistributionTests(unittest.TestCase):
             source = root / 'downloaded'
             action = source / '.github/actions/stack-conformance'
             shutil.copytree(ACTION, action)
+            (source / 'scripts').mkdir()
+            for name in ('action_pin_drift_check.py', 'audit_optimistic_merge.py'):
+                shutil.copy(ROOT / 'scripts' / name, source / 'scripts' / name)
             (source / 'policy').mkdir()
             shutil.copy(ROOT / 'policy/architecture-repositories.json', source / 'policy/architecture-repositories.json')
             (root / 'consumer').mkdir()
@@ -416,6 +421,52 @@ class DistributionTests(unittest.TestCase):
 
 class StandardFitRegressionTests(unittest.TestCase):
     evaluate = StructuralBoundaryTests.evaluate
+
+    def test_negative_fixture_declarations_are_excluded_but_real_invalid_configs_fail(self):
+        invalid = {'sylphx.toml': 'this is = = not toml\n', 'env.schema.json': '{invalid\n'}
+        for name, source in invalid.items():
+            with self.subTest(name=name):
+                fixture = 'tools/launch-gates/fixtures/b-invalid/' + name
+                report = self.evaluate({fixture: source})
+                self.assertEqual(report['unreadable'], [])
+                self.assertEqual(report['findings'], [])
+                self.assertIn(fixture, [row['path'] for row in report['excluded_paths']])
+                with self.assertRaisesRegex(ValueError, 'invalid environment declaration'):
+                    self.evaluate({'config/' + name: source})
+
+    def test_fixture_environment_keys_cannot_authorize_production_reads(self):
+        fixtures = {
+            'tools/fixtures/valid/sylphx.toml': '[env]\nFIXTURE_SETTING = "example"\n',
+            'tests/env.schema.json': '{"properties":{"FIXTURE_SETTING":{"type":"string"}}}\n',
+            'tools/__fixtures__/.env.example': 'FIXTURE_SETTING=\n',
+            '.github/actions/test/fixture.yml': 'env:\n  FIXTURE_SETTING: example\n',
+        }
+        source = 'import os\nvalue = os.getenv("FIXTURE_SETTING")\n'
+        for path, declaration in fixtures.items():
+            with self.subTest(path=path):
+                report = self.evaluate({path: declaration, 'src/settings.py': source})
+                self.assertEqual([row['rule'] for row in report['findings']], ['undeclared-setting'])
+                real = 'config/' + pathlib.PurePosixPath(path).name
+                if path.endswith('.yml'):
+                    real = '.github/workflows/ci.yml'
+                self.assertEqual(self.evaluate({real: declaration, 'src/settings.py': source})['findings'], [])
+
+    def test_vendor_scope_excludes_dependency_sources_and_configuration_only(self):
+        for scope in ('thirdparty', 'third_party', 'third-party', 'external'):
+            with self.subTest(scope=scope):
+                vendor = 'client/robot_socket/bot/' + scope + '/linux/scons/'
+                files = {vendor + 'setup.py': 'print "Python 2 dependency"\n',
+                         vendor + 'sylphx.toml': 'this is = = not toml\n',
+                         vendor + '.env.example': 'VENDOR_SETTING=\n',
+                         'src/thirdparty_adapter.py': 'import os\nvalue = os.getenv("VENDOR_SETTING")\n'}
+                report = self.evaluate(files)
+                self.assertEqual(report['unreadable'], [])
+                self.assertEqual([row['path'] for row in report['findings']], ['src/thirdparty_adapter.py'])
+                self.assertEqual(report['findings'][0]['rule'], 'undeclared-setting')
+                self.assertEqual(len(report['excluded_paths']), 3)
+                files['client/robot_socket/bot/src/setup.py'] = 'print "invalid production Python"\n'
+                self.assertEqual([row['path'] for row in self.evaluate(files)['unreadable']],
+                                 ['client/robot_socket/bot/src/setup.py'])
 
     def test_sylphx_environment_tables_and_inline_tables_declare_names(self):
         toml = '[env.CUBEAGE_ADMIN_CONNECT_URL]\nvalue = "https://example.invalid"\n[env]\nSECOND_SETTING = { value = "x" }\n'

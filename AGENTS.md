@@ -7,7 +7,9 @@ Reusable standards are in `SylphxAI/skills` `skills/self-challenge/references/`.
 The seven-class contract is `SylphxAI/owner` `company/architecture-audit.md`.
 
 - A change to a shared action or workflow reaches every caller that pins it, so
-  callers pin by commit SHA and move deliberately.
+  callers use a full commit SHA followed by `# main`. Existing Renovate grouped
+  auto-merge updates move these pins; no custom updater is needed. New checker
+  rules ship with rule-scoped caller baseline adoption in the same pin bump.
 - Keep secrets, tokens, and `.env` files out of the repository.
 - Test with `python -m pytest`, narrowest target first.
 

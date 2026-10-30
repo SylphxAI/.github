@@ -103,6 +103,11 @@ _model_spec = importlib.util.spec_from_file_location(
 model_pins = importlib.util.module_from_spec(_model_spec)
 _model_spec.loader.exec_module(model_pins)
 
+_adoption_spec = importlib.util.spec_from_file_location(
+    "adoption", pathlib.Path(__file__).with_name("adoption.py"))
+adoption = importlib.util.module_from_spec(_adoption_spec)
+_adoption_spec.loader.exec_module(adoption)
+
 # The company-level allowance for agent-runtime parts: this repository's
 # policy/agent-runtime.json, three levels above this action's directory.
 AGENT_RUNTIME_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy" / "agent-runtime.json"
@@ -885,13 +890,18 @@ def checker_revision():
 def cmd_check(args) -> int:
     head = Tree(args.repo, args.head)
     found = departures(head)
-    head_baseline = parse_baseline(head.read(args.baseline))
+    head_text = head.read(args.baseline)
+    head_baseline = parse_baseline(head_text)
     head_architecture_adopted = architecture.BASELINE_MARKER in (head.read(args.baseline) or "").splitlines()
     head_architecture_baseline = {line for line in head_baseline or () if line.startswith("architecture ")}
     head_model_adopted = model_pins.BASELINE_MARKER in (head.read(args.baseline) or "").splitlines()
     head_model_baseline = {line for line in head_baseline or () if line.startswith("model-pin ")}
     head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline - head_model_baseline
     errors = []
+    try:
+        errors += adoption.main_marker_errors(head, args.repository)
+    except (OSError, ValueError, ImportError) as error:
+        errors.append("shared-action pin markers not reviewed: " + str(error))
     for line in sorted(l for l in (head_baseline or ()) if l.startswith(AGENT_RUNTIME)):
         errors.append(f"'{line}' is in {args.baseline}; an agent-runtime part is allowed only by "
                       "SylphxAI/.github policy/agent-runtime.json, with an expiry date")
@@ -901,13 +911,15 @@ def cmd_check(args) -> int:
     base_architecture_adopted = False
     base_model_baseline = set()
     base_model_adopted = False
+    base_text = None
     if args.base:
         if not has_rev(args.repo, args.base):
             subprocess.run(["git", "-C", args.repo, "fetch", "--quiet", "--no-tags",
                             "--depth=1", "--filter=blob:none", "origin", args.base], check=False)
         if not has_rev(args.repo, args.base):
             raise SystemExit("base commit is unavailable; check did not review the change")
-        base_baseline = parse_baseline(Tree(args.repo, args.base).read(args.baseline))
+        base_text = Tree(args.repo, args.base).read(args.baseline)
+        base_baseline = parse_baseline(base_text)
         base_architecture_adopted = architecture.BASELINE_MARKER in (Tree(args.repo, args.base).read(args.baseline) or "").splitlines()
         if base_baseline is not None:
             base_architecture_baseline = {line for line in base_baseline if line.startswith("architecture ")}
@@ -916,6 +928,19 @@ def cmd_check(args) -> int:
             base_model_adopted = model_pins.BASELINE_MARKER in (Tree(args.repo, args.base).read(args.baseline) or "").splitlines()
             base_baseline -= base_model_baseline
             base_baseline = {l for l in base_baseline if not l.startswith(AGENT_RUNTIME)}
+    errors += adoption.baseline_validation(head_text, base_text if args.base else head_text, architecture)
+    introduced = set()
+    if args.base:
+        try:
+            introduced = adoption.seed_permissions(Tree(args.repo, args.base), head_text, base_text,
+                (head_architecture_baseline | head_model_baseline) - (base_architecture_baseline | base_model_baseline))
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            errors.append("rule adoption refused: " + str(error))
+    else:
+        # A base-less trunk run validates the committed ratchet against itself.
+        base_architecture_baseline = head_architecture_baseline
+        base_model_baseline = head_model_baseline
+        base_model_adopted = head_model_adopted
     errors += decide(found, head_baseline, base_baseline)
     try:
         aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
@@ -923,7 +948,8 @@ def cmd_check(args) -> int:
         base_models = model_pins.scan(Tree(args.repo, args.base), args.repository, aliases,
                                      architecture.source_views) if args.base else models
         errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
-                                   base_models["findings"], head_model_adopted, base_model_adopted)
+                                   base_models["findings"], head_model_adopted, base_model_adopted,
+                                   allow_seed="model-pin" in introduced)
         for row in models["unreadable"] + base_models["unreadable"]:
             errors.append("model policy input not reviewed: " + row["path"] + ": " + row["reason"])
     except (OSError, ValueError, TypeError) as error:
@@ -959,14 +985,24 @@ def cmd_check(args) -> int:
         report = {"findings": [], "unreadable": [{"path": "architecture configuration", "reason": str(error)}],
                   "semantic_census_complete": False, "limits": architecture.LIMITS}
     try:
-        base_findings = architecture.evaluate(Tree(args.repo, args.base), args.repository, None, today)["findings"] if args.base else []
-    except (ValueError, TypeError, AttributeError):
+        base_report = architecture.evaluate(Tree(args.repo, args.base), args.repository, None, today) if args.base else {"findings": [], "unreadable": []}
+        base_findings = base_report["findings"]
+        if introduced:
+            report["unreadable"] += base_report["unreadable"]
+    except (ValueError, TypeError, AttributeError) as error:
         base_findings = []
+        if introduced:
+            report["unreadable"].append({"path": "base architecture configuration", "reason": str(error)})
     previous = {architecture.baseline_key(row): row for row in base_findings}
     for row in report["findings"]:
         old = previous.get(architecture.baseline_key(row))
-        if changed is not None and row["path"] not in changed and old and not (old["decision"] and not row["decision"]):
-            row["changed"] = False
+        if changed is not None:
+            if old and not (old["decision"] and not row["decision"]):
+                row["changed"] = False
+            elif row["path"] in changed:
+                # An inserted identical span can shift the old occurrence onto
+                # unchanged lines; the newly increased count must still fail.
+                row["changed"] = True
     if base_architecture_adopted and not head_architecture_adopted:
         errors.append("architecture ratchet marker cannot be removed")
     if head_architecture_baseline and not head_architecture_adopted:
@@ -974,7 +1010,10 @@ def cmd_check(args) -> int:
     if head_architecture_baseline or base_architecture_baseline:
         try:
             errors += architecture.baseline_errors(report["findings"], head_architecture_baseline,
-                                                    base_architecture_baseline, base_findings, base_architecture_adopted)
+                                                    base_architecture_baseline, base_findings, introduced)
+            for row in report["findings"]:
+                if row["baseline_recorded"] and not args.base:
+                    row["changed"] = False
         except (ValueError, TypeError, AttributeError) as error:
             report["unreadable"].append({"path": args.baseline, "reason": str(error)})
     report.update({"repository": args.repository, "commit": git(args.repo, "rev-parse", f"{args.head}^{{commit}}").strip(),

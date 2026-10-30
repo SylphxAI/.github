@@ -60,6 +60,7 @@ class Fake:
         self.requests: list[tuple[str, str, str | None]] = []
         self.put_mode = "ok"  # ok | dropped | exists | full
         self.read_misses = 0  # answer this many GETs 404 before serving
+        self.head_statuses: list[int] = []
         self.minted = MINTED  # the run token the exchange answers with
         owner = self
 
@@ -99,7 +100,7 @@ class Fake:
 
             def do_HEAD(self) -> None:
                 owner.requests.append(("HEAD", self.path, self.headers.get("Authorization")))
-                self._reply(200 if self._key() in owner.store else 404)
+                self._reply(owner.head_statuses.pop(0) if owner.head_statuses else 200 if self._key() in owner.store else 404)
 
             def do_POST(self) -> None:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -239,6 +240,36 @@ class RunStoreTest(unittest.TestCase):
         rc, log, out = self.run_store("get", "f", self.dir / "d")
         self.assertEqual(rc, 0, log)
         self.assertEqual(out["found"], "true")
+
+    def test_accepted_put_survives_transient_head_503_without_resending_upload(self) -> None:
+        src = self.dir / "f.txt"
+        src.write_text("x")
+        self.fake.head_statuses = [503, 200]
+        rc, log, _ = self.run_store("put", "f", src)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(sum(r[0] == "PUT" for r in self.fake.requests), 1)
+        self.assertEqual(sum(r[0] == "HEAD" for r in self.fake.requests), 2)
+
+    def test_persistent_head_503_fails_after_bounded_reads(self) -> None:
+        src = self.dir / "f.txt"
+        src.write_text("x")
+        self.fake.head_statuses = [503, 503, 503]
+        rc, log, out = self.run_store("put", "f", src)
+        self.assertEqual(rc, 1, log)
+        self.assertIn("store unavailable", log)
+        self.assertEqual(out["unavailable"], "true")
+        self.assertEqual(sum(r[0] == "PUT" for r in self.fake.requests), 1)
+        self.assertEqual(sum(r[0] == "HEAD" for r in self.fake.requests), 3)
+
+    def test_head_auth_failure_is_not_retried(self) -> None:
+        src = self.dir / "f.txt"
+        src.write_text("x")
+        self.fake.head_statuses = [403, 200]
+        rc, log, _ = self.run_store("put", "f", src)
+        self.assertEqual(rc, 1, log)
+        self.assertIn("HTTP 403", log)
+        self.assertEqual(sum(r[0] == "PUT" for r in self.fake.requests), 1)
+        self.assertEqual(sum(r[0] == "HEAD" for r in self.fake.requests), 1)
 
     def test_dropped_write_fails_the_put(self) -> None:
         src = self.dir / "f.txt"
