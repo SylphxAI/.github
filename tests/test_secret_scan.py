@@ -201,9 +201,11 @@ class SecretScanTest(unittest.TestCase):
 class ManifestTest(unittest.TestCase):
     def test_needs_pass_invokes_scan_automatically(self):
         import yaml
-        manifest = yaml.safe_load((ROOT / '.github/actions/needs-pass/action.yml').read_text())
-        steps = manifest['runs']['steps']
-        scanner = next(step for step in steps if 'secret_scan.py' in step.get('run', ''))
-        self.assertIn('--fetch', scanner['run'])
-        self.assertIn('--pre-merge-only', scanner['run'])
-        self.assertIn('${{ github.token }}', scanner['env'].values())
+        for action in ('needs-pass', 'ci-ok'):
+            with self.subTest(action=action):
+                manifest = yaml.safe_load((ROOT / f'.github/actions/{action}/action.yml').read_text())
+                steps = manifest['runs']['steps']
+                scanner = next(step for step in steps if 'secret_scan.py' in step.get('run', ''))
+                self.assertIn('--fetch', scanner['run'])
+                self.assertIn('--pre-merge-only', scanner['run'])
+                self.assertTrue(scanner['env']['SECRET_SCAN_TOKEN'].startswith('${{ '))

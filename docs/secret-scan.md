@@ -1,7 +1,9 @@
 # Secret scanning in the shared verdict
 
-`needs-pass` scans the commits added by every `pull_request` and `merge_group`
-before returning a green verdict. Updating the existing action pin enables the
+`needs-pass` and `ci-ok` scan the commits added by every `pull_request` and `merge_group`
+before returning a green verdict. A repository calling both gates scans twice
+by design; a scan takes seconds and needs no shared receipt or deduplication
+state. Updating the existing action pin enables the
 check; callers need no new workflow step or checkout. The job needs
 `contents: read` and a self-hosted Linux runner (`sylphx-linux-control` is enough).
 No license or paid service is used.
@@ -58,7 +60,7 @@ positive. Review changes to this file as security policy changes.
 
 The standalone `secret-scan` action uses this same detector and exact exceptions.
 Its existing explicit `config-path` input remains available for callers with a
-reviewed gitleaks policy; it never changes the default policy of `needs-pass`.
+reviewed gitleaks policy; it never changes the default policy of the aggregate gates.
 The standalone action also retains push-range scanning and needs a checkout with
 full history. Both Linux x64 and arm64 release archives have pinned checksums.
 
