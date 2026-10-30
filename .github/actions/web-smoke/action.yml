@@ -89,6 +89,22 @@ inputs:
       With live-url: the full Keel commit the live title must run. The check fails when the live `keel`
       field is missing or names another commit. Empty (default): record only.
     default: ""
+  first-load-baseline:
+    description: >
+      Optional measured per-title JSON baseline, relative to the workspace. Enables the required
+      first-load byte check: Brotli q11 bytes of files the cold page requests before any tap.
+      Missing baseline or request evidence fails and a lower measured baseline is proposed.
+    default: ""
+  first-load-base:
+    description: >
+      PR or merge-group base commit for the baseline comparison. Must be available in the title's
+      checkout (use fetch-depth 0). The baseline may only shrink; growth tolerance is fixed at 2%.
+    default: ""
+  allow-host:
+    description: >
+      Additional hosts the boot check may request, one per line (Keel's --allow-host).
+      Use explicit hosts for required boot APIs; this does not ignore their errors.
+    default: ""
 
 outputs:
   keel-ref:
@@ -97,6 +113,12 @@ outputs:
   live-keel:
     description: The `keel` commit the live title's VERSION.json reports (empty when live-url is empty or it names none).
     value: ${{ steps.live.outputs.keel }}
+  first-load-report:
+    description: JSON per-file compressed size report (when first-load-baseline is enabled).
+    value: ${{ runner.temp }}/web-first-load-report.json
+  first-load-candidate:
+    description: Proposed measured baseline; commit it when adopting or materially shrinking.
+    value: ${{ runner.temp }}/web-first-load-baseline.json
 
 runs:
   using: composite
@@ -163,15 +185,24 @@ runs:
         TIMEOUT_S: ${{ inputs.timeout-s }}
         ACTION_PATH: ${{ github.action_path }}
         REPORT: ${{ runner.temp }}/web-smoke-report.json
+        FIRST_LOAD_BASELINE: ${{ inputs.first-load-baseline }}
+        FIRST_LOAD_BASE: ${{ inputs.first-load-base }}
+        FIRST_LOAD_REPORT: ${{ runner.temp }}/web-first-load-report.json
+        ALLOW_HOST: ${{ inputs.allow-host }}
       run: |
         set -euo pipefail
         args=(run --keel "$KEEL_DIR" --pack "$PACK" --chrome "$CHROME_DIR" --ref "$KEEL_REF"
               --slow-3g-splash "$SLOW_3G" --splash-budget-ms "$SPLASH_BUDGET_MS" --tap "$TAP"
               --viewport "$VIEWPORT" --budget-s "$BUDGET_S" --timeout-s "$TIMEOUT_S" --report "$REPORT"
+              --first-load-baseline "$FIRST_LOAD_BASELINE" --first-load-base "$FIRST_LOAD_BASE"
+              --first-load-report "$FIRST_LOAD_REPORT"
               --max-served-ratio "$MAX_SERVED_RATIO" --require-precompressed "$REQUIRE_PRECOMPRESSED")
         while IFS= read -r pattern; do
           if [ -n "$pattern" ]; then args+=(--ignore-console "$pattern"); fi
         done <<< "$IGNORE_CONSOLE"
+        while IFS= read -r host; do
+          if [ -n "$host" ]; then args+=(--allow-host "$host"); fi
+        done <<< "$ALLOW_HOST"
         # Always pass the flag, even for an empty input, so an empty list is "none" and not "the default".
         args+=(--offline-dependency "")
         while IFS= read -r pattern; do

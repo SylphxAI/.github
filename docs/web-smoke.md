@@ -18,6 +18,7 @@ older Keel pin:
 | `slow-3g-splash` | a cold load (empty cache) on Chrome's "Slow 3G" (400 ms round trip, 400 kbit/s) paints the title's splash within 1 s, the splash holds the title's name, shows no failure, and its progress bar then moves. This is the web boot standard: no black page while the title downloads. |
 | `boot` (`--live`) | the title draws a ready frame (`data-keel-ready`) within 10 s with no boot failure, the console holds no error (a panic, an uncaught exception, a failed request), no synchronous wasm instance, large module compile or XHR on the main thread, and, with `tap`, one touch tap on that control changes the accessibility mirror. A black screen never gets a ready frame, so it fails here. |
 | `served-q11` | every wasm module in the pack that has a precompressed `<file>.br` beside it is within 3 % of brotli quality 11 of the module (served/q11 at most 1.03), and the copy decodes to the module. This is what a host with brotli_static, or a worker that serves the `.br` copies, sends to `Accept-Encoding: br`; a host that compresses on the fly sends about 1.25. A module with no `.br` copy is reported, and fails only with `require-precompressed: "true"`. |
+| `first-load` (with `first-load-baseline`) | the cold first page's requested pack files stay within the title's recorded compressed bytes plus 2%, and its recorded baseline has not increased from the PR/merge-group base. A material reduction requires a lower record. |
 
 The browser is a runner's headless Chrome on a software GPU, not a phone: it proves a title shows a
 splash and starts and answers a touch, not how fast it draws. Frame times are judged on devices.
@@ -70,6 +71,50 @@ action stops with an error before it does anything.
 
 Outputs: `keel-ref`, the Keel revision used, and `live-keel`, the live title's `keel` commit (empty when
 `live-url` is empty or the title names none). A run writes its verdict to the job summary.
+
+## First-load byte baseline
+
+Set `first-load-baseline` to the title's JSON file, relative to the workspace,
+and `first-load-base` to `${{ github.event.pull_request.base.sha ||
+github.event.merge_group.base_sha || '' }}`. Check out the title with
+`fetch-depth: 0` so that commit is available. The check is part of the same
+`web-smoke` verdict; call that workflow from `ci.yml` and include its calling
+job in `ci-ok`'s `needs` on both pull requests and merge groups.
+
+```json
+{"version": 1, "brotli_bytes": 123456}
+```
+
+The number above is an example. Seed the real number from the title's own CI
+pack: the first adoption run fails with a proposed baseline, which is available
+at the action's `first-load-candidate` output. Commit that file and rerun. Initial
+adoption must equal the measurement. Later increases to the baseline fail,
+including a PR that raises both the pack's size and its baseline. The fixed 2%
+tolerance matches Keel's existing pack-module tolerance; it never increases the
+recorded baseline. If measured bytes fall more than that tolerance, commit the
+new lower candidate. The check passes once the lower record is present.
+
+The cold boot's browser request report selects the files. Count each requested
+pack file once: HTML, JavaScript, WASM, CSS, fonts, images and data, at Brotli
+quality 11 with a 24-bit window, matching the existing first-load pack report.
+This is a deterministic compressed-body budget for the built pack, not CDN
+telemetry or HTTP header bytes. The separate `served-q11` check judges actual
+WASM sidecars. Unrequested assets and on-demand compute modules stay outside
+the initial budget. An eagerly fetched asset counts even if the app never
+uses it. External API responses are listed separately because they are outside
+the built pack. Missing local files, failed boots or absent request evidence
+fail; use a `keel-ref` whose browser report includes `requests`.
+
+No tap is included in that report. A configured `tap` still runs in a separate
+session, so opening a game scene cannot inflate the first-page record. The
+existing Slow 3G first-contentful-paint and ready-frame budgets still run, and
+the byte report carries the existing `first_frame_s` measurement.
+
+Upload both `first-load-report` (per-file sizes, measured total and verdict)
+and `first-load-candidate` with `if: always()` so a failing run is reviewable.
+These are action outputs containing paths. `allow-host` accepts additional
+boot API hosts, one per line, for newer Keel scripts' request admission; it
+does not ignore their errors.
 
 ## When it is red
 
