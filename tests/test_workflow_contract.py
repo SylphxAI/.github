@@ -31,6 +31,63 @@ class ContractTest(unittest.TestCase):
     def test_valid(self):
         self.assertEqual(self.scan(workflow()), [])
 
+    def test_repository_workflows_have_no_manual_gates(self):
+        # Existing timeout/failure-mask findings have a report-only rollout.
+        self.assertEqual([f for f in contract.scan_dir(ROOT) if ": manual " in f.problem], [])
+
+    def test_manual_approval_actions_are_forbidden(self):
+        problem = "job build: manual approval gate is forbidden; deployments and checks must run automatically"
+        for action in ("trstringer/manual-approval@v1", "org/manual-approval@" + "a" * 40,
+                       "./.github/actions/manual-approval"):
+            with self.subTest(action=action):
+                found = self.scan(workflow(steps=f"      - uses: {action}"))
+                self.assertEqual(found, [contract.Finding("ci.yml", 7, problem, blocking=True)])
+
+    def test_manual_booking_in_job_and_step_conditions_and_run(self):
+        problem = (
+            "job build: manual maintenance-window booking (window:booked) is forbidden; "
+            "use rolling updates or workload-scheduled automatic windows"
+        )
+        for marker in ("window:booked", "booked-maintenance-window", "maintenance-window"):
+            condition = "contains(github.event.pull_request.labels.*.name, '" + marker + "')"
+            cases = (
+                (workflow(build=f"    if: {condition}\n"), 6),
+                (workflow(steps=f"      - if: {condition}\n        run: deploy"), 7),
+                (workflow(steps=f"      - run: |\n          test label = {marker}\n          deploy"), 7),
+            )
+            for text, line in cases:
+                with self.subTest(marker=marker, text=text):
+                    self.assertEqual(self.scan(text), [contract.Finding("ci.yml", line, problem, blocking=True)])
+
+    def test_optional_jobs_cannot_require_manual_gates(self):
+        extra = (
+            "  deploy:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n"
+            "    if: contains(github.event.pull_request.labels.*.name, 'window:booked')\n"
+            "    steps:\n      - uses: trstringer/manual-approval@v1\n"
+        )
+        found = self.scan(workflow(extra=extra))
+        self.assertEqual(len(found), 2)
+        self.assertTrue(all(f.problem.startswith("job deploy:") for f in found))
+
+    def test_reusable_workflow_calls_cannot_require_booking(self):
+        found = self.scan(
+            "jobs:\n  deploy:\n    uses: org/repo/.github/workflows/deploy.yml@main\n"
+            "    if: contains(github.event.pull_request.labels.*.name, 'window:booked')\n"
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("manual maintenance-window booking", found[0].problem)
+
+    def test_automatic_rollouts_and_unrelated_text_pass(self):
+        self.assertEqual(self.scan(workflow(
+            build="    name: Replace window:booked and manual-approval\n",
+            steps=("      # Retire the window:booked gate and trstringer/manual-approval.\n"
+                   "      - uses: org/automatic-deploy@v1\n"
+                   "      - if: github.ref == 'refs/heads/main'\n"
+                   "        run: |\n"
+                   "          deploy --rolling\n"
+                   "          schedule --from-workload --batch --announce --execute"),
+        )), [])
+
     def test_missing_timeout(self):
         found = self.scan(workflow().replace("    timeout-minutes: 10\n", ""))
         self.assertEqual(len(found), 1)
@@ -108,6 +165,24 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(contract.exit_code(findings, "report-only"), 0)
         self.assertEqual(contract.exit_code(findings, "enforce"), 1)
         self.assertEqual(contract.exit_code([], "enforce"), 0)
+
+    def test_manual_gates_always_fail_and_emit_errors(self):
+        for steps in ("      - uses: trstringer/manual-approval@v1",
+                      "      - run: check window:booked"):
+            # The same job also has a legacy finding: report-only keeps it a warning.
+            findings = self.scan(workflow(build="    continue-on-error: true\n", steps=steps))
+            for mode in ("report-only", "enforce"):
+                with self.subTest(steps=steps, mode=mode), \
+                        patch.dict(contract.os.environ, {"CONTRACT_MODE": mode}, clear=True), \
+                        patch.object(contract, "delivered", return_value=False), \
+                        patch.object(contract, "scan_dir", return_value=findings), \
+                        patch("builtins.print") as output:
+                    self.assertEqual(contract.main(), 1)
+                    annotations = [c.args[0] for c in output.call_args_list[:-1]]
+                    self.assertEqual(len(annotations), 2)
+                    self.assertTrue(any(a.startswith("::error ") and ": manual " in a for a in annotations))
+                    legacy = next(a for a in annotations if "continue-on-error" in a)
+                    self.assertTrue(legacy.startswith("::warning " if mode == "report-only" else "::error "))
 
 
 if __name__ == "__main__":
