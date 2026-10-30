@@ -130,57 +130,116 @@ class ScannerWalkTests(unittest.TestCase):
         with mock.patch.object(sc.architecture, 'matching_end', side_effect=AssertionError('unrelated body walked')):
             self.assertEqual(list(sc.architecture.named_bodies(clean, code, '.java', lambda name: False)), [])
 
-    def test_sparse_blobless_clone_fails_promptly_without_any_lazy_fetch(self):
+    def test_sparse_blobless_clone_bulk_fetches_candidates_once(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
-            origin, clone = root / 'origin', root / 'clone'
-            origin.mkdir()
-            def git(path, *args):
-                return subprocess.check_output(['git', '-C', str(path), *args], text=True, stderr=subprocess.PIPE)
-            git(origin, 'init', '-q', '-b', 'main')
-            git(origin, 'config', 'user.name', 'Test')
-            git(origin, 'config', 'user.email', 'test@example.invalid')
-            git(origin, 'config', 'uploadpack.allowFilter', 'true')
-            for path, text in {'.github/workflows/check.yml': 'name: Check\n', 'src/product.ts': 'export const value = 1;\n'}.items():
-                target = origin / path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(text)
-            git(origin, 'add', '.')
-            git(origin, 'commit', '-qm', 'fixture')
-            self.assertFalse(sc.partial_clone(str(origin)))
-            subprocess.run(['git', 'clone', '--filter=blob:none', '--no-checkout', origin.as_uri(), str(clone)],
-                           check=True, capture_output=True)
-            git(clone, 'sparse-checkout', 'set', '--cone', '.github')
-            git(clone, 'checkout', 'main')
-            self.assertIn('?', git(clone, 'rev-list', '--objects', '--missing=print', '--no-walk', 'HEAD'))
-            trace = root / 'trace.jsonl'
-            started = time.monotonic()
-            result = subprocess.run(['python3', str(ACTION / 'stack_conformance.py'), 'check', '--repo', str(clone),
-                '--head', 'HEAD', '--repository', 'example/app', '--shared-source', str(ROOT),
-                '--report', str(root / 'report.json')], capture_output=True, text=True, timeout=5,
-                env={**os.environ, 'GIT_TRACE2_EVENT': str(trace)})
-            self.assertLess(time.monotonic() - started, 5)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('required Git blob is missing', result.stdout + result.stderr)
-            self.assertIn('sparse-checkout', result.stdout + result.stderr)
-            self.assertIn('stack conformance:', result.stderr)
-            events = [json.loads(line) for line in trace.read_text().splitlines()]
-            fetches = [event for event in events if event.get('event') == 'child_start'
-                       and 'fetch' in event.get('argv', [])]
-            self.assertEqual(fetches, [])
-
-            # The remote need not be named origin, and linked worktrees use
-            # their common repository's promisor packs and configuration.
-            git(clone, 'remote', 'rename', 'origin', 'upstream')
-            linked = root / 'linked'
-            git(clone, 'worktree', 'add', '--no-checkout', '-b', 'linked', str(linked))
-            for repository in (clone, linked):
-                with self.subTest(repository=repository.name):
-                    self.assertTrue(sc.partial_clone(str(repository)))
+            origin = self.blobless_origin(root)
+            for layout in ('ordinary', 'renamed', 'linked'):
+                with self.subTest(layout=layout):
+                    clone = root / layout
+                    self.clone_blobless(origin, clone, sparse=True)
+                    if layout != 'ordinary':
+                        self.git(clone, 'remote', 'rename', 'origin', 'upstream')
+                    repository = clone
+                    if layout == 'linked':
+                        repository = root / 'worktree'
+                        self.git(clone, 'worktree', 'add', '--no-checkout', '-b', 'linked', str(repository))
+                    result, fetches = self.run_blobless_check(root, repository)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(len(fetches), 1)
+                    self.assertIn('--stdin', fetches[0]['argv'])
+                    self.assertIn('bulk-fetching', result.stderr)
                     with sc.Tree(str(repository), 'HEAD') as tree:
+                        self.assertEqual(tree.read('src/input-0.ts'), 'export const value = 2; // input 0\n')
                         self.assertIsNone(tree.read('absent.ts'))
-                        with self.assertRaisesRegex(ValueError, 'required Git blob is missing: src/product.ts'):
-                            tree.read('src/product.ts')
+                    missing = self.git(repository, 'rev-list', '--objects', '--missing=print', '--no-walk', 'HEAD')
+                    self.assertIn('?', missing)  # Unscanned binary assets stay absent.
+
+    def test_checkout_blob_none_depth_one_compares_unmaterialized_base(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            origin = self.blobless_origin(root)
+            base = self.git(origin, 'rev-parse', 'HEAD~1').strip()
+            clone = root / 'clone'
+            self.clone_blobless(origin, clone, sparse=False)
+            # The shared workflow materializes HEAD, then acquires the base
+            # using blob:none. Its historical source/baseline are still absent.
+            self.git(clone, 'fetch', '--depth=1', '--filter=blob:none', 'origin', base)
+            head_missing = self.git(clone, 'rev-list', '--objects', '--missing=print', '--no-walk', 'HEAD')
+            base_missing = self.git(clone, 'rev-list', '--objects', '--missing=print', '--no-walk', base)
+            self.assertNotIn('?', head_missing)
+            self.assertGreaterEqual(base_missing.count('?'), 33)
+            result, fetches = self.run_blobless_check(root, clone, base)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(len(fetches), 1)
+            self.assertIn('--stdin', fetches[0]['argv'])
+            self.assertIn('reading the base Git tree', result.stderr)
+            with sc.Tree(str(clone), base) as tree:
+                self.assertEqual(tree.read('.github/stack-departures.txt'), '# base baseline\n')
+                for index in range(32):
+                    self.assertEqual(tree.read(f'src/input-{index}.ts'), f'export const value = 1; // input {index}\n')
+
+    def test_unavailable_promisor_fails_after_one_explicit_fetch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            origin = self.blobless_origin(root)
+            clone = root / 'clone'
+            self.clone_blobless(origin, clone, sparse=True)
+            self.git(clone, 'remote', 'set-url', 'origin', str(root / 'unavailable'))
+            result, fetches = self.run_blobless_check(root, clone)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('bulk-fetch of required Git blobs failed', result.stderr)
+            self.assertIn('source was not reviewed', result.stderr)
+            self.assertEqual(len(fetches), 1)
+            self.assertIn('--stdin', fetches[0]['argv'])
+
+    @staticmethod
+    def git(path, *args):
+        return subprocess.check_output(['git', '-C', str(path), *args], text=True, stderr=subprocess.PIPE)
+
+    def blobless_origin(self, root):
+        origin = root / 'origin'
+        origin.mkdir()
+        self.git(origin, 'init', '-q', '-b', 'main')
+        self.git(origin, 'config', 'user.name', 'Test')
+        self.git(origin, 'config', 'user.email', 'test@example.invalid')
+        self.git(origin, 'config', 'uploadpack.allowFilter', 'true')
+        for revision, value in (('base', 1), ('head', 2)):
+            files = {'.github/workflows/check.yml': 'name: Check\n',
+                     '.github/stack-departures.txt': f'# {revision} baseline\n',
+                     'assets/image.png': f'binary asset {revision}'}
+            files.update({f'src/input-{i}.ts': f'export const value = {value}; // input {i}\n' for i in range(32)})
+            for name, content in files.items():
+                target = origin / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
+            self.git(origin, 'add', '.')
+            self.git(origin, 'commit', '-qm', revision)
+        return origin
+
+    def clone_blobless(self, origin, clone, *, sparse):
+        self.git(origin, 'clone', '--filter=blob:none', '--depth=1', '--no-checkout',
+                 origin.as_uri(), str(clone))
+        if sparse:
+            self.git(clone, 'sparse-checkout', 'set', '--cone', '.github')
+        else:
+            self.git(clone, 'sparse-checkout', 'disable')
+        self.git(clone, 'checkout', '--force', 'main')
+
+    def run_blobless_check(self, root, clone, base=''):
+        trace = root / (clone.name + '-trace.jsonl')
+        started = time.monotonic()
+        result = subprocess.run(['python3', str(ACTION / 'stack_conformance.py'), 'check', '--repo', str(clone),
+            '--base', base, '--head', 'HEAD', '--repository', 'example/app', '--shared-source', str(ROOT),
+            '--report', str(root / 'report.json')], capture_output=True, text=True, timeout=5,
+            env={**os.environ, 'GIT_TRACE2_EVENT': str(trace)})
+        self.assertLess(time.monotonic() - started, 5)
+        events = [json.loads(line) for line in trace.read_text().splitlines()]
+        self.assertFalse([event for event in events if event.get('event') == 'child_start'
+                          and 'fetch' in event.get('argv', [])], 'unexpected per-blob lazy fetch')
+        fetches = [event for event in events if event.get('event') == 'start'
+                   and 'fetch' in event.get('argv', [])]
+        return result, fetches
 
 
 if __name__ == '__main__':

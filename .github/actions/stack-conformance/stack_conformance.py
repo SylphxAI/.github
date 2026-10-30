@@ -76,7 +76,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import functools
 import importlib.util
 import json
 import os
@@ -210,12 +209,54 @@ def missing_git_objects(repo, rev):
     return _missing_git_tree_objects(repo, tree)
 
 
-@functools.lru_cache(maxsize=128)
 def _missing_git_tree_objects(repo, tree):
     # --missing=print inventories promisor objects without triggering lazy
     # fetches. A sparse checkout may legitimately omit unsupported assets.
     out = git(repo, "rev-list", "--objects", "--no-object-names", "--missing=print", "--no-walk", tree)
     return frozenset(line[1:] for line in out.splitlines() if line.startswith("?"))
+
+
+def blob_candidate(path):
+    """Source, configuration and policy inputs; leave unrelated binary assets absent."""
+    p = pathlib.PurePosixPath(path)
+    if path == BASELINE or path.startswith(".github/") and p.suffix in {".yml", ".yaml", ".json"}:
+        return True
+    if not model_pins.excluded(path) and p.suffix in model_pins.SOURCE:
+        return True
+    if not architecture.excluded(path) and (p.suffix in architecture.SOURCE | architecture.CONFIG
+            or p.name in {".env.example", ".env.sample", "env.schema.json"}):
+        return True
+    return not skipped(path) and (p.name in {"package.json", "Cargo.toml", "sylphx.toml"}
+        or p.suffix in {".rs", ".sql"} or p.name.startswith("Dockerfile") or not p.suffix)
+
+
+class GitObjectFetchError(Exception):
+    """A required source acquisition failed; stop instead of retrying other rules."""
+
+
+def fetch_missing_blobs(repo, rev, objects):
+    """One explicit promisor fetch, never one automatic fetch per cat-file request."""
+    config = subprocess.run(["git", "-C", repo, "config", "--get-regexp", r"^remote\..*\.promisor$"],
+                            text=True, capture_output=True)
+    remotes = [line.split()[0][7:-9] for line in config.stdout.splitlines()
+               if len(line.split()) == 2 and line.split()[1].lower() in {"true", "yes", "on", "1"}]
+    if not remotes:
+        raise GitObjectFetchError("cannot bulk-fetch required Git blobs for " + rev +
+                         ": blob:none/partial checkout has no configured promisor remote; source was not reviewed")
+    print(f"stack conformance: bulk-fetching {len(objects)} missing candidate Git blobs for {rev}",
+          file=sys.stderr, flush=True)
+    try:
+        result = subprocess.run(["git", "-C", repo, "-c", "fetch.negotiationAlgorithm=noop", "fetch",
+            "--no-tags", "--no-write-fetch-head", "--recurse-submodules=no", "--filter=blob:none",
+            remotes[0], "--stdin"], input="".join(oid + "\n" for oid in sorted(objects)),
+            text=True, capture_output=True, timeout=60,
+            env={**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        raise GitObjectFetchError("bulk-fetch of required Git blobs timed out after 60s for " + rev +
+                         "; blob:none/partial checkout source was not reviewed") from None
+    if result.returncode:
+        raise GitObjectFetchError("bulk-fetch of required Git blobs failed for " + rev +
+                         f" (exit {result.returncode}); blob:none/partial checkout source was not reviewed")
 
 
 class Tree:
@@ -238,6 +279,23 @@ class Tree:
                 self._blobs[path] = oid
         self._reader = None
         self._finish = None
+        self._prefetch()
+
+    def _prefetch(self, requested=None):
+        # Include every ordinary scan input in this tree in the same request.
+        # An explicitly requested nonstandard baseline/Dockerfile is an input
+        # too, independent of its extension. Missing assets need no download.
+        if not self._missing:
+            return
+        objects = {oid for path, oid in self._blobs.items()
+                   if oid in self._missing and (blob_candidate(path) or path == requested)}
+        if not objects:
+            return
+        fetch_missing_blobs(self.repo, self.rev, objects)
+        self._missing = missing_git_objects(self.repo, self.rev)
+        if objects & self._missing:
+            raise GitObjectFetchError("bulk-fetch left required Git blobs missing for " + self.rev +
+                             "; blob:none/partial checkout source was not reviewed")
 
     def paths(self) -> list[str]:
         return self._paths
@@ -251,10 +309,7 @@ class Tree:
         if oid is None:
             return None
         if oid in self._missing:
-            raise ValueError("required Git blob is missing: " + path + "; a blob:none partial clone with "
-                             "sparse-checkout can fetch one blob at a time. Remove sparse-checkout from "
-                             "actions/checkout or fetch the required blobs in bulk before running this check; "
-                             "source was not reviewed")
+            self._prefetch(path)
         self._reads += 1
         now = time.monotonic()
         if self._progress is not None and now - self._last_progress >= 5:
@@ -929,6 +984,12 @@ def added_lines(repo, base, head):
     paths = git(repo, "diff", "--name-only", "--no-renames", "-z", base, head, "--").split("\0")
     changed = {}
     for path in filter(None, paths):
+        # Only structural source/configuration consumes line hunks. Retain
+        # other changed names for contract/schema rescan triggers, but never
+        # materialize an unrelated binary asset just to calculate its diff.
+        if architecture.excluded(path) or pathlib.PurePosixPath(path).suffix not in architecture.SOURCE | architecture.CONFIG:
+            changed[path] = set()
+            continue
         diff = git(repo, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0", base, head, "--", path)
         lines = set()
         for match in re.finditer(r"(?m)^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", diff):
@@ -990,6 +1051,7 @@ def cmd_check(args) -> int:
     base_model_adopted = False
     base_text = None
     if args.base:
+        progress("reading the base Git tree")
         if not has_rev(args.repo, args.base):
             subprocess.run(["git", "-C", args.repo, "fetch", "--quiet", "--no-tags",
                             "--depth=1", "--filter=blob:none", "origin", args.base], check=False)
@@ -1202,7 +1264,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     try:
         return {"check": cmd_check, "scan": cmd_scan, "all": cmd_all}[args.cmd](args)
-    except ValueError as error:
+    except (ValueError, GitObjectFetchError) as error:
         print("::error::" + str(error), file=sys.stderr, flush=True)
         return 2
 
