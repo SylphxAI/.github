@@ -99,6 +99,20 @@ class ProcedureTests(unittest.TestCase):
             with self.subTest(sql=sql):
                 self.assertTrue(guard.check_sql(sql, "postgres"))
 
+    def test_inline_definition_facts_cannot_authorize_enclosing_migration(self):
+        for dialect, header in [
+            ('postgres', 'CREATE PROCEDURE p() LANGUAGE SQL BEGIN ATOMIC'),
+            ('mysql', 'CREATE PROCEDURE p() BEGIN'),
+        ]:
+            for setup, contraction in [
+                ("ALTER TABLE accounts ALTER region SET DEFAULT '';", "ALTER TABLE accounts ALTER region SET NOT NULL;"),
+                ("CREATE TABLE accounts(id int);", "ALTER TABLE accounts ADD region text NOT NULL;"),
+            ]:
+                sql = header + ' SELECT 1; ' + setup + ' END; ' + contraction
+                with self.subTest(dialect=dialect, setup=setup):
+                    self.assertIn('NOT NULL', str(guard.check_sql(sql, dialect)))
+                    self.assertEqual(guard.check_sql('-- contract: released-expand-42\n' + sql, dialect), [])
+
     def test_mysql_inline_bodies_are_inspected(self):
         for sql in [
             "CREATE FUNCTION report() RETURNS int RETURN 1;",

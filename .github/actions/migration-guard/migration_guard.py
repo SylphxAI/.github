@@ -271,12 +271,14 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
     created: set[str] = set()
     statements = split(tokens, ";")
     routine_context = nesting or any(routine_kind(stmt) in {"DO", "FUNCTION", "PROCEDURE"} for stmt in statements)
-    uncertain_flow = routine_context and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
+    inline_definition = any(routine_kind(stmt) in {"FUNCTION", "PROCEDURE"} and has(stmt, "BEGIN") for stmt in statements)
+    uncertain_flow = inline_definition or routine_context and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
     for stmt in statements:
         if uncertain_flow:
             # A conditional/loop may not run, and an exception handler can
-            # continue after failed DDL. Credit facts only within one SQL
-            # statement, where its clauses execute together.
+            # continue after failed DDL. Inline definitions are not executed
+            # when declared. Credit facts only within one SQL statement,
+            # where its clauses execute together.
             defaults.clear()
             created.clear()
         control_stmt = procedural_statement(stmt)
