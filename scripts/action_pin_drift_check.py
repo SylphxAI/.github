@@ -6,7 +6,8 @@ must be an ancestor of the captured shared main anchor and contain the exact
 action metadata or workflow file. The source repository alone exempts the
 comment and resolves @main to that anchor. Missing proof always fails.
 
-The shared caller gate uses this pure validator without an age limit. The
+The shared caller gate uses this validator without an age limit and follows
+shared dependencies at their pinned source commits. The
 standalone check and central audit additionally enforce DRIFT_DAYS: a week
 allows Renovate to land a grouped update while exposing stale shared logic
 within a working week. GitHub reads use gh; --shared-source explicitly selects
@@ -23,6 +24,7 @@ import os
 import re
 import sys
 import subprocess
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -62,6 +64,13 @@ def _offender(name, pin, why, days=None):
             "days": days, "why": why}
 
 
+def target_paths(path: str) -> set[str]:
+    """The exact regular files GitHub loads for an action or reusable workflow."""
+    if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
+        return {path}
+    return {f"{path}/action.yml", f"{path}/action.yaml"} if path else {"action.yml", "action.yaml"}
+
+
 def main_marker_errors(files: dict[str, str], require_main_marker: bool = True) -> list[dict]:
     """Pure format checks; only the source exempts its comment and may use @main."""
     errors = []
@@ -97,11 +106,7 @@ def validate_pin_provenance(files: dict[str, str], head_sha: str, facts: dict,
             if not isinstance(proof.get("files"), (set, frozenset, list, tuple)):
                 errors.append(_offender(name, pin, "pin target evidence is unavailable"))
                 continue
-            path = pin["path"]
-            if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
-                targets = {path}
-            else:
-                targets = {f"{path}/action.yml", f"{path}/action.yaml"} if path else {"action.yml", "action.yaml"}
+            targets = target_paths(pin["path"])
             if not targets.intersection(proof["files"]):
                 errors.append(_offender(name, pin, f"target is absent at {sha[:9]}: " +
                                         " or ".join(sorted(targets))))
@@ -116,12 +121,14 @@ class Commits:
     """Public source proof, cached by immutable commit and main anchor."""
     mode = "live"
 
-    def __init__(self, gh):
+    def __init__(self, gh, repository=SHARED_REPO):
         self.gh, self.dates, self.commits, self.proofs = gh, {}, {}, {}
+        self.repository = repository
+        self.blobs, self.texts = {}, {}
 
     def commit(self, ref):
         if ref not in self.commits:
-            value = self.gh.rest(f"repos/{SHARED_REPO}/commits/{ref}")
+            value = self.gh.rest(f"repos/{self.repository}/commits/{ref}")
             if not FULL_SHA.fullmatch(value["sha"]):
                 raise ValueError("shared main did not resolve to an immutable commit")
             if FULL_SHA.fullmatch(ref) and value["sha"].lower() != ref.lower():
@@ -134,8 +141,8 @@ class Commits:
         self.commit(sha)
         return self.dates[sha]
 
-    def main_head(self, repo):
-        value = self.commit("main")
+    def main_head(self, repo, branch="main"):
+        value = self.commit(branch)
         return value["sha"], self.dates[value["sha"]]
 
     def evidence(self, sha, head):
@@ -143,21 +150,33 @@ class Commits:
         if key not in self.proofs:
             try:
                 status = "identical" if sha == head else self.gh.rest(
-                    f"repos/{SHARED_REPO}/compare/{head}...{sha}")["status"]
+                    f"repos/{self.repository}/compare/{head}...{sha}")["status"]
                 if status not in ("identical", "behind", "ahead", "diverged"):
                     raise ValueError("unrecognized compare status: " + str(status))
                 proof = {"ancestor": status in ("identical", "behind")}
                 if proof["ancestor"]:
                     commit = self.commit(sha)
-                    tree = self.gh.rest(f"repos/{SHARED_REPO}/git/trees/{commit['commit']['tree']['sha']}?recursive=1")
+                    tree = self.gh.rest(f"repos/{self.repository}/git/trees/{commit['commit']['tree']['sha']}?recursive=1")
                     if tree.get("truncated"):
                         raise ValueError("source Git tree was truncated")
                     proof["files"] = {item["path"] for item in tree["tree"]
                                       if item["type"] == "blob" and item.get("mode") in ("100644", "100755")}
+                    self.blobs[sha] = {item["path"]: item["sha"] for item in tree["tree"]
+                                       if item["path"] in proof["files"]}
                 self.proofs[key] = proof
             except Exception as error:  # noqa: BLE001 - reason: every acquisition failure must become a failed proof
                 self.proofs[key] = {"error": str(error)[:200]}
         return self.proofs[key]
+
+
+    def read_text(self, sha, path):
+        blob = self.blobs[sha][path]
+        if blob not in self.texts:
+            value = self.gh.rest(f"repos/{self.repository}/git/blobs/{blob}")
+            if value.get("encoding") != "base64":
+                raise ValueError("source blob is not readable base64")
+            self.texts[blob] = base64.b64decode(value["content"], validate=False).decode("utf-8")
+        return self.texts[blob]
 
 
 class GitCommits:
@@ -166,6 +185,7 @@ class GitCommits:
 
     def __init__(self, root):
         self.root, self.dates, self.proofs = str(root), {}, {}
+        self.texts = {}
 
     def git(self, *args):
         result = subprocess.run(["git", "-C", self.root, *args], text=True, capture_output=True, timeout=60,
@@ -210,6 +230,78 @@ class GitCommits:
         return self.proofs[key]
 
 
+    def read_text(self, sha, path):
+        if (sha, path) not in self.texts:
+            self.texts[sha, path] = self.git("show", f"{sha}:{path}")
+        return self.texts[sha, path]
+
+
+def local_targets(text):
+    """Self-repository actions and local reusable workflows resolve at the running commit.
+
+    Ordinary ./ action paths use the caller's workspace, so they are not source dependencies.
+    See GitHub's workflow syntax, jobs.<job_id>.uses and jobs.<job_id>.steps[*].uses.
+    """
+    for number, line in enumerate(text.splitlines(), 1):
+        match = USES.match(line)
+        if not match:
+            continue
+        value = match.group("value").strip("'\"")
+        if value.startswith("$/"):
+            yield number, value[2:]
+        elif value.startswith("./.github/workflows/") and value.endswith((".yml", ".yaml")):
+            yield number, value[2:]
+
+
+def dependency_errors(files, source, head_sha):
+    """Inspect the pinned source graph, attributing each broken nested reference to its caller."""
+    errors = []
+    for name in sorted(files):
+        for root in find_pins(files[name] or ""):
+            if not root["full_sha"] and root["sha"] != "main":
+                continue
+            sha = head_sha if root["sha"] == "main" else root["sha"]
+            queue, seen = deque([(sha, root["path"], [])]), set()
+            while queue:
+                commit, path, chain = queue.popleft()
+                proof = source.evidence(commit, head_sha)
+                if proof.get("ancestor") is not True or proof.get("error"):
+                    continue  # The direct or parent reference already reports this failed proof.
+                targets = target_paths(path).intersection(proof.get("files", ()))
+                if not targets:
+                    continue
+                # GitHub loads action.yml before action.yaml when both are present.
+                preferred = f"{path}/action.yml" if path else "action.yml"
+                target = preferred if preferred in targets else sorted(targets)[0]
+                if (commit, target) in seen:
+                    continue
+                seen.add((commit, target))
+                trail = chain + [f"{commit}:{target}"]
+                try:
+                    text = source.read_text(commit, target)
+                except Exception as error:  # noqa: BLE001 - reason: unreadable dependency source must fail closed
+                    finding = _offender(name, root, f"dependency {target}@{commit[:9]} could not be read: {str(error)[:160]}")
+                    errors.append({**finding, "dependency_chain": trail})
+                    continue
+                nested = find_pins(text)
+                facts = {pin["sha"] if pin["full_sha"] else head_sha:
+                         source.evidence(pin["sha"] if pin["full_sha"] else head_sha, head_sha)
+                         for pin in nested if pin["full_sha"] or pin["sha"] == "main"}
+                for failure in validate_pin_provenance({target: text}, head_sha, facts, require_main_marker=False):
+                    finding = _offender(name, root, f"dependency {target}@{commit[:9]}:{failure['line']}: {failure['why']}")
+                    errors.append({**finding, "dependency_chain": trail})
+                for pin in nested:
+                    if pin["full_sha"] or pin["sha"] == "main":
+                        queue.append((pin["sha"] if pin["full_sha"] else head_sha, pin["path"], trail))
+                for line, local in local_targets(text):
+                    if target_paths(local).intersection(proof["files"]):
+                        queue.append((commit, local, trail))
+                    else:
+                        finding = _offender(name, root, f"dependency {target}@{commit[:9]}:{line}: local target is absent: {local}")
+                        errors.append({**finding, "dependency_chain": trail})
+    return errors
+
+
 def judge(files: dict[str, str], commits, head_sha: str, head_date: datetime.datetime,
           days: int | None = DRIFT_DAYS, require_main_marker: bool = True) -> list[dict]:
     shas = {head_sha if pin["sha"] == "main" and not require_main_marker else pin["sha"]
@@ -217,6 +309,7 @@ def judge(files: dict[str, str], commits, head_sha: str, head_date: datetime.dat
             if pin["full_sha"] or (pin["sha"] == "main" and not require_main_marker)}
     facts = {sha: commits.evidence(sha, head_sha) for sha in sorted(shas)}
     offenders = validate_pin_provenance(files, head_sha, facts, require_main_marker)
+    offenders.extend(dependency_errors(files, commits, head_sha))
     if days is not None:
         for name in sorted(files):
             for pin in find_pins(files[name] or ""):

@@ -77,6 +77,58 @@ class CallerGate(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("target is absent", result.stdout)
 
+    def wrapper(self, text, extra=None):
+        files = {".github/workflows/wrapper.yml": text, **(extra or {})}
+        commit = self.commit(self.source, files)
+        self.git(self.source, "update-ref", "refs/remotes/origin/main", commit)
+        return commit
+
+    def test_reachable_workflow_with_off_main_nested_action_fails(self):
+        ref = self.wrapper(f"steps:\n  - uses: SylphxAI/.github/.github/actions/example@{self.feature}\n")
+        result, report = self.check(ref, path=".github/workflows/wrapper.yml")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("dependency .github/workflows/wrapper.yml", result.stdout)
+        self.assertIn("not on", result.stdout)
+        self.assertTrue(report["shared_pin_provenance"]["offenders"][0]["dependency_chain"])
+
+    def test_reachable_workflow_with_missing_nested_action_fails(self):
+        ref = self.wrapper(f"steps:\n  - uses: SylphxAI/.github/.github/actions/absent@{self.good}\n")
+        result, _ = self.check(ref, path=".github/workflows/wrapper.yml")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("target is absent", result.stdout)
+
+    def test_valid_nested_pin_passes_without_source_version_comment(self):
+        ref = self.wrapper(f"steps:\n  - uses: SylphxAI/.github/.github/actions/example@{self.good}\n")
+        result, _ = self.check(ref, path=".github/workflows/wrapper.yml")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_same_commit_local_reusable_workflow_is_followed(self):
+        ref = self.wrapper("jobs:\n  nested:\n    uses: ./.github/workflows/internal.yml\n", {
+            ".github/workflows/internal.yml":
+                f"steps:\n  - uses: SylphxAI/.github/.github/actions/example@{self.feature}\n"})
+        result, _ = self.check(ref, path=".github/workflows/wrapper.yml")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("dependency .github/workflows/internal.yml", result.stdout)
+
+    def test_self_repository_action_is_followed(self):
+        ref = self.wrapper("steps:\n  - uses: $/.github/actions/internal\n", {
+            ".github/actions/internal/action.yml":
+                f"steps:\n  - uses: SylphxAI/.github/.github/actions/example@{self.feature}\n"})
+        result, _ = self.check(ref, path=".github/workflows/wrapper.yml")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("dependency .github/actions/internal/action.yml", result.stdout)
+
+    def test_workspace_action_is_not_read_from_remote_source(self):
+        ref = self.wrapper("steps:\n  - uses: ./.github/actions/caller-owned\n")
+        result, _ = self.check(ref, path=".github/workflows/wrapper.yml")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_repeated_source_dependencies_terminate(self):
+        ref = self.wrapper("steps:\n  - uses: $/.github/actions/internal\n", {
+            ".github/actions/internal/action.yml": "steps:\n  - uses: $/.github/actions/internal\n"})
+        result, _ = self.check(ref, path=".github/workflows/wrapper.yml")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_source_comment_exemption_does_not_exempt_target(self):
         result, _ = self.check(path=".github/actions/missing", marker="", repository="SylphxAI/.github")
         self.assertNotEqual(result.returncode, 0)

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Fail a workflow that pins another repository's action or reusable workflow to a commit
-that is not on that repository's default branch.
+"""Fail action or reusable-workflow pins whose commit or target is not on the default branch.
 
 A pin to the head of an unmerged pull request works until the pull request is squash-merged
 and its branch deleted: the commit becomes unreachable, and the next `merge_group` run fails
@@ -13,8 +12,8 @@ that adds it is open, and names the file and line.
 A pin is `uses: owner/repo[/path]@<40-hex>` where `owner` is one of the organizations in
 policy/optimistic-merge.json (override with --owner). Tags and branches are not judged here
 (the conformance audits and the Keel pin check cover them); a local `./` call has no pin.
-`owner/repo@sha` passes when GitHub's compare of `default...sha` says the pin is identical to
-the default branch or behind it; ahead, diverged, unknown (404) and unreadable all fail.
+`owner/repo@sha` passes when the SHA is on the captured default-branch commit and contains
+the action metadata or reusable workflow. Off-branch, missing and unreadable targets fail.
 
 Read-only: REST compare reads and GraphQL queries through the `gh` CLI (GH_TOKEN in CI).
 Exit 1 on any offender.
@@ -30,10 +29,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit_optimistic_merge as om  # noqa: E402  (same reader, same conventions)
+import action_pin_drift_check as provenance  # noqa: E402 - reason: reuse the adjacent immutable source proof reader
 
 ROOT = Path(__file__).resolve().parents[1]
 USES = re.compile(r"^\s*-?\s*uses\s*:\s*['\"]?([\w.-]+)/([\w.-]+)((?:/[^@\s'\"]+)?)@([0-9a-fA-F]{40})['\"]?\s*(?:#.*)?$")
-ANCESTOR = ("identical", "behind")
 
 
 def default_owners() -> list[str]:
@@ -55,24 +54,30 @@ def find_pins(text: str, owners: list[str]) -> list[dict]:
 
 
 class Reachability:
-    """`pin is on the default branch of repo`, one default-branch read per repo and one compare per pin."""
+    """One captured default-branch anchor per repository; cached ancestry and exact-file proof."""
 
     def __init__(self, gh):
-        self.gh, self.branches, self.status = gh, {}, {}
+        self.gh, self.branches, self.sources, self.anchors = gh, {}, {}, {}
 
-    def check(self, repo: str, sha: str) -> tuple[bool, str]:
+    def check(self, repo: str, sha: str, path: str = "") -> tuple[bool, str]:
         try:
             if repo not in self.branches:
                 self.branches[repo] = self.gh.rest(f"repos/{repo}")["default_branch"]
-            branch = self.branches[repo]
-            if (repo, sha) not in self.status:
-                self.status[(repo, sha)] = self.gh.rest(f"repos/{repo}/compare/{branch}...{sha}")["status"]
+                self.sources[repo] = provenance.Commits(self.gh, repository=repo)
+            if repo not in self.anchors:
+                self.anchors[repo], _ = self.sources[repo].main_head(repo, self.branches[repo])
+            head = self.anchors[repo]
+            proof = self.sources[repo].evidence(sha, head)
+            if proof.get("error"):
+                raise ValueError(proof["error"])
         except Exception as err:  # noqa: BLE001 - unreadable is a failure, whatever the reason
             return False, f"{sha[:9]} could not be read on {repo} ({str(err)[:80]}): not on its default branch, or no access"
-        status = self.status[(repo, sha)]
-        if status in ANCESTOR:
-            return True, ""
-        return False, f"{sha[:9]} is not on {repo} {self.branches[repo]} (compare says {status}): merge the pull request that holds it, then pin the merge commit"
+        if proof.get("ancestor") is not True:
+            return False, f"{sha[:9]} is not on {repo} {self.branches[repo]} (anchor {head[:9]}): merge the pull request that holds it, then pin the merge commit"
+        targets = provenance.target_paths(path)
+        if not targets.intersection(proof.get("files", ())):
+            return False, f"target is absent at {repo}@{sha[:9]}: " + " or ".join(sorted(targets))
+        return True, ""
 
 
 def judge(files: dict[str, str], owners: list[str], reach: Reachability) -> list[dict]:
@@ -80,9 +85,13 @@ def judge(files: dict[str, str], owners: list[str], reach: Reachability) -> list
     offenders = []
     for name in sorted(files):
         for pin in find_pins(files[name] or "", owners):
-            ok, why = reach.check(pin["repo"], pin["sha"])
+            ok, why = reach.check(pin["repo"], pin["sha"], pin["path"])
             if not ok:
                 offenders.append({"file": name, "line": pin["line"], "repo": pin["repo"], "sha": pin["sha"], "why": why})
+    for repo, source in reach.sources.items():
+        if repo.lower() == provenance.SHARED_REPO.lower() and repo in reach.anchors:
+            offenders.extend({**finding, "repo": repo} for finding in
+                             provenance.dependency_errors(files, source, reach.anchors[repo]))
     return offenders
 
 
@@ -98,20 +107,8 @@ def read_dir(root: Path) -> dict[str, str]:
 
 
 def read_repo(gh, org: str, name: str) -> tuple[dict[str, str] | None, str]:
-    """Workflow texts of one repository's default branch (None when unreadable)."""
-    query = ('query{repository(owner:%s,name:%s){wf: object(expression:"HEAD:.github/workflows"){... on Tree{entries{name object{... on Blob{text}}}}}}}'
-             % (json.dumps(org), json.dumps(name)))
-    try:
-        reply = gh.graphql(query)
-    except Exception as err:  # noqa: BLE001
-        return None, str(err)[:120]
-    node = (reply.get("data") or {}).get("repository")
-    if node is None:
-        return None, json.dumps(reply.get("errors"))[:120]
-    tree = node.get("wf")
-    entries = (tree or {}).get("entries") or []
-    return {f".github/workflows/{e['name']}": (e.get("object") or {}).get("text") or ""
-            for e in entries if e["name"].endswith((".yml", ".yaml"))}, ""
+    """Workflows and nested composite actions; incomplete reads fail closed."""
+    return provenance.read_repo(gh, org, name)
 
 
 def audit(gh, orgs: list[str], owners: list[str], hands_off: list[str]) -> dict:
