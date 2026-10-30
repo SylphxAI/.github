@@ -320,14 +320,17 @@ class AdversarialContextTests(unittest.TestCase):
         for workflow in (ROOT / '.github/workflows/project-control.yml', ROOT / 'workflow-templates/optimistic-gate.yml'):
             jobs = yaml.safe_load(workflow.read_text())['jobs']
             self.assertIn('stack', jobs['ci-ok']['needs'])
-            step = next(s for s in jobs['ci-ok']['steps'] if s.get('uses', '').split('@')[0].endswith('/needs-pass'))
+            step = next(s for s in jobs['ci-ok']['steps']
+                        if s.get('uses', '').split('@')[0].endswith(('/needs-pass', '/ci-ok')))
+            action = step['uses'].split('@')[0].rsplit('/', 1)[1]
+            script = ROOT / f'.github/actions/{action}/{action.replace("-", "_")}.py'
             required = step['with']['required']
             self.assertIn('stack', required.split(','))
             for event in ('pull_request', 'merge_group', 'push'):
                 for result in ('success', 'failure', 'cancelled', 'skipped'):
                     needs = {k: {'result': 'success'} for k in jobs['ci-ok']['needs']}
                     needs['stack']['result'] = result
-                    run = subprocess.run(['python3', str(ROOT / '.github/actions/needs-pass/needs_pass.py')],
+                    run = subprocess.run(['python3', str(script)],
                         env=os.environ | {'NEEDS': json.dumps(needs), 'REQUIRED': required, 'ADVISORY': '', 'EVENT_NAME': event,
                             'REQUIRED_UNLESS_MERGE_GROUP': ''}, capture_output=True, text=True)
                     self.assertEqual(run.returncode, int(result != 'success'), (workflow, event, result, run.stdout))
