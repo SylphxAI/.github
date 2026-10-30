@@ -320,7 +320,7 @@ jobs:
           required: template-plan
 
   required-job-fixture:
-    if: false
+    if: github.event_name == 'workflow_dispatch'
     runs-on: sylphx-linux-control
     timeout-minutes: 1
     steps:
