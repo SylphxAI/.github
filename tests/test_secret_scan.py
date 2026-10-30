@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCANNER = ROOT / '.github/actions/secret-scan/secret_scan.py'
@@ -197,8 +200,56 @@ class SecretScanTest(unittest.TestCase):
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
+    def test_pr_code_dispatch_runs_the_real_secret_gate_on_its_bound_range(self):
+        self.write('change.txt', 'ordinary change\n')
+        self.commit('clean change')
+        for bad in (False, True):
+            if bad:
+                self.add_token()
+            head = self.git('rev-parse', 'HEAD')
+            inputs = {'code-merge': 'c' * 40, 'code-base': self.base, 'code-head': head,
+                      'code-pr': '7', 'code-base-ref': 'main'}
+            event_path = self.root / 'dispatch.json'
+            event_path.write_text(json.dumps({'inputs': inputs}))
+            responses = [{'parents': [{'sha': self.base}, {'sha': head}]},
+                         {'number': 7, 'state': 'open', 'head': {'sha': head},
+                          'base': {'sha': self.base, 'ref': 'main'}}]
+            module = load()
+            output = io.StringIO()
+            with self.subTest(bad=bad), mock.patch.dict(os.environ,
+                    GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_EVENT_PATH=str(event_path),
+                    GITHUB_SHA=head, GITHUB_REPOSITORY='example/repo', SECRET_SCAN_TOKEN='fixture'), \
+                    mock.patch.object(sys, 'argv', ['secret_scan', '--pre-merge-only', '--repo',
+                                                  str(self.repo), '--gitleaks', self.binary]), \
+                    mock.patch.object(module.urllib.request, 'urlopen', side_effect=[
+                        io.BytesIO(json.dumps(response).encode()) for response in responses]), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(module.main(), int(bad))
+            self.assertNotIn(self.token, output.getvalue())
+            self.assertNotIn('no pre-merge range', output.getvalue())
+
 
 class ManifestTest(unittest.TestCase):
+    def test_pr_code_dispatch_must_validate_its_target_before_scanning(self):
+        module = load()
+        policy = mock.Mock()
+        policy.PolicyError = ValueError
+        spec = mock.Mock()
+        def validated(api, event, sha):
+            self.assertEqual(sha, 'a' * 40)
+            return {}, 'b' * 40, 'a' * 40
+        policy.dispatch_target.side_effect = validated
+        event = {'inputs': {'code-merge': 'c' * 40, 'code-head': 'a' * 40,
+                            'code-base': 'b' * 40, 'code-pr': '7', 'code-base-ref': 'main'}}
+        with mock.patch.object(module.importlib.util, 'spec_from_file_location', return_value=spec), \
+                mock.patch.object(module.importlib.util, 'module_from_spec', return_value=policy), \
+                mock.patch.dict(os.environ, SECRET_SCAN_TOKEN='fixture', GITHUB_REPOSITORY='example/repo'):
+            self.assertEqual(module.revisions('workflow_dispatch', event, 'a' * 40),
+                             ('b' * 40, 'a' * 40))
+            policy.dispatch_target.side_effect = ValueError('changed target')
+            with self.assertRaises(module.ScanError):
+                module.revisions('workflow_dispatch', event, 'a' * 40)
+
     def test_needs_pass_invokes_scan_automatically(self):
         import yaml
         for action in ('needs-pass', 'ci-ok'):

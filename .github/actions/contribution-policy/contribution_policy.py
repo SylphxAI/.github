@@ -185,13 +185,36 @@ def parse_commits(data):
     return result
 
 
-def pull_snapshot(api, number, expected_head=None, *, check_text=True):
+def dispatch_target(api, event, sha):
+    """Bind an explicit PR-code dispatch to its immutable merge and current PR."""
+    inputs = event.get('inputs') or {}
+    merge, head, base = (inputs.get('code-' + part, '') for part in ('merge', 'head', 'base'))
+    number, branch = inputs.get('code-pr', ''), inputs.get('code-base-ref', '')
+    if not all(isinstance(value, str) and SHA.fullmatch(value) and set(value) != {'0'}
+               for value in (merge, head, base)) or head != sha or \
+            not isinstance(number, str) or not re.fullmatch(r'[1-9][0-9]*', number) or not branch:
+        raise PolicyError('dispatched code evidence has no valid PR identity and immutable range')
+    parents = api.get('git/commits/' + merge).get('parents', [])
+    if [parent['sha'] for parent in parents] != [base, head]:
+        raise PolicyError('dispatched code merge does not match its base and head')
+    current = api.get('pulls/' + number)
+    if current.get('state') != 'open' or current['head']['sha'] != head or \
+            current['base']['sha'] != base or current['base']['ref'] != branch:
+        raise PolicyError('dispatched PR target changed; code CI must validate its current base')
+    return current, base, head
+
+
+def pull_snapshot(api, number, expected_head=None, *, check_text=True, expected_base=None):
     before = api.get(f'pulls/{number}')
     head = before['head']['sha']
     if expected_head and head != expected_head:
         raise PolicyError('pull request head changed; run the check on its current head')
     commits = range_commits(before['base']['sha'], head, api.repository, api.token)
     after = api.get(f'pulls/{number}')
+    if expected_base and any(pr['base']['sha'] != expected_base[0] or
+                             pr['base']['ref'] != expected_base[1] or pr.get('state') != 'open'
+                             for pr in (before, after)):
+        raise PolicyError('dispatched PR target changed during code validation')
     for key in ('title', 'body') if check_text else ():
         if before[key] != after[key]:
             raise PolicyError('pull request metadata changed during the check; rerun it')
@@ -243,13 +266,11 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
         return findings
     if event_name == 'workflow_dispatch':
         inputs = event.get('inputs') or {}
-        if inputs.get('code-merge'):
-            merge, head, base = (inputs.get('code-' + part, '') for part in ('merge', 'head', 'base'))
-            if not all(SHA.fullmatch(value) for value in (merge, head, base)) or head != sha:
-                raise PolicyError('dispatched code evidence does not match this head')
-            parents = api.get('git/commits/' + merge).get('parents', [])
-            if [parent['sha'] for parent in parents] != [base, head]:
-                raise PolicyError('dispatched code merge does not match its base and head')
+        if any(inputs.get('code-' + part) for part in ('merge', 'head', 'base', 'pr', 'base-ref')):
+            target, base, head = dispatch_target(api, event, sha)
+            pr, commits = pull_snapshot(api, target['number'], head, check_text=check_pull_text,
+                                        expected_base=(base, inputs['code-base-ref']))
+            return evaluate(pr if check_pull_text else None, commits, policy)
         # A dispatch on a PR head must not replace a failed PR verdict with green.
         pulls = [pr for pr in api.pages('pulls?state=open') if pr['head']['sha'] == sha]
         findings = []

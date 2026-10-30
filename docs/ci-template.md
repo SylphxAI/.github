@@ -26,7 +26,7 @@ merge-group or trunk run is never cancelled.
 
 ```yaml
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
@@ -41,7 +41,12 @@ Code CI uses `pull_request: types: [opened, synchronize, reopened]`,
 `pr-metadata` check separately. Its own concurrency group handles PR title/body
 edits and `ready_for_review` without starting or cancelling code CI. It never
 publishes `ci-ok`; the code workflow retains its exact-head dependencies.
-Base-branch edits dispatch code explicitly after a head/ref check. Bot PRs
+Base-branch edits dispatch code explicitly after a head/ref check. The dispatch
+carries the PR number, base branch, base and head SHAs, and immutable merge SHA.
+Its verdict refuses a changed target base. Each base-edit metadata run has a
+unique concurrency key so later text edits cannot discard that dispatch.
+PR numbers isolate fork branches and trunk pushes; an explicit retarget dispatch
+shares only its intended PR's code group. Bot PRs
 dispatch both metadata and code workflows. After the separate metadata check
 is required, set `separate-pr-metadata: 'true'` on all code verdict actions,
 including called Verify jobs, so correcting text cannot leave code CI red.

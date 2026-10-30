@@ -61,6 +61,24 @@ class MetadataEvents(unittest.TestCase):
                                  {'code-merge', 'code-head', 'code-base'},
                                  {'code-merge', 'code-head', 'code-base'})
 
+    def test_concurrency_binds_pr_identity_and_keeps_retarget_dispatch_durable(self):
+        for path in CODE:
+            group = document(path)['concurrency']['group']
+            # PRs and their explicit dispatch correlate by PR number, never a
+            # fork's common branch name or the trunk's branch name.
+            self.assertIn('github.event.pull_request.number || github.event.inputs.code-pr', group)
+            self.assertIn("format('pr-{0}'", group)
+            self.assertIn("format('{0}-{1}', github.event_name, github.ref)", group)
+            self.assertNotIn('github.head_ref', group)
+        for path in METADATA:
+            concurrency = document(path)['concurrency']
+            # A base edit has a unique run key: subsequent text edits cannot
+            # replace it while pending or cancel it after dispatch starts.
+            self.assertIn("github.event.changes.base && format('base-{0}', github.run_id)",
+                          concurrency['group'])
+            self.assertEqual(concurrency['cancel-in-progress'],
+                             "${{ github.event_name == 'pull_request' }}")
+
     def test_metadata_has_no_code_jobs_or_code_verdict(self):
         for path in METADATA:
             workflow = document(path)
@@ -107,6 +125,14 @@ class MetadataEvents(unittest.TestCase):
         settle = bot['jobs']['settle']['steps'][-1]['with']
         self.assertIn('pr-metadata', settle['required-checks'].split())
 
+    def test_source_retarget_preserves_stack_and_strict_junit_requirements(self):
+        jobs = document(CODE[0])['jobs']
+        self.assertIn('github.event.inputs.code-base', jobs['stack']['steps'][1]['with']['base'])
+        gate = jobs['ci-ok']['steps'][-1]
+        self.assertEqual(gate['uses'], './.github/actions/ci-ok')
+        self.assertIn("!inputs.junit-producer-run", gate['with']['required'])
+        self.assertIn("&& 'junit-producer' || 'junit-consumer'", gate['with']['required'])
+
 
 class BaseRetargeting(unittest.TestCase):
     def event(self):
@@ -134,7 +160,8 @@ class BaseRetargeting(unittest.TestCase):
             mock.call('GET', 'git/ref/heads/change'),
             mock.call('GET', 'git/commits/' + 'c' * 40),
             mock.call('POST', 'actions/workflows/ci.yml/dispatches', {'ref': 'change', 'inputs': {
-                'code-merge': 'c' * 40, 'code-head': 'a' * 40, 'code-base': 'b' * 40}})])
+                'code-merge': 'c' * 40, 'code-head': 'a' * 40, 'code-base': 'b' * 40,
+                'code-pr': '7', 'code-base-ref': 'main'}})])
 
     def test_stale_merge_never_dispatches_code_for_the_wrong_base(self):
         event = self.event()

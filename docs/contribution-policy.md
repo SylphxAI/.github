@@ -58,6 +58,11 @@ Keep code `workflow_dispatch` enabled. The metadata job dispatches it only for
 title/body edits and readiness make no dispatch request. Retargeted fork PRs
 fail metadata until a push or reopen supplies new code validation. The
 metadata job needs `actions: write` for retargeting, plus its read permissions.
+Retarget dispatches bind the PR number and base branch as well as the immutable
+base/head/merge SHAs. The code verdict rechecks that target before accepting
+evidence, and the added-commit secret gate scans the same base..head range.
+A separate concurrency key for each base edit preserves its dispatch even when
+a title/body edit arrives while it is pending or running.
 Change its `pr-base-ci` workflow filename if the code file is not `ci.yml`.
 
 Bot-created PRs dispatch both producers: list `pr-metadata.yml` before the code

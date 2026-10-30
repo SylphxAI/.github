@@ -74,6 +74,13 @@ class SelectTest(unittest.TestCase):
 
 
 class BaseTest(unittest.TestCase):
+    def test_pr_code_dispatch_selects_the_dispatched_base(self) -> None:
+        payload = {'inputs': {'code-merge': 'c' * 40, 'code-base': 'b' * 40}}
+        self.assertEqual(ci_range.base_for('workflow_dispatch', payload, 'o/r', 'ci.yml', 'main'), 'b' * 40)
+        payload['inputs']['code-base'] = 'missing'
+        with self.assertRaises(ValueError):
+            ci_range.base_for('workflow_dispatch', payload, 'o/r', 'ci.yml', 'main')
+
     def test_pull_request_and_merge_group(self) -> None:
         self.assertEqual(ci_range.base_for("pull_request", {"pull_request": {"base": {"sha": "a1"}}}, "o/r", "ci.yml", "main"), "a1")
         self.assertEqual(ci_range.base_for("merge_group", {"merge_group": {"base_sha": "b2"}}, "o/r", "ci.yml", "main"), "b2")

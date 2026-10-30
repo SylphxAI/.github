@@ -294,17 +294,34 @@ class ContributionPolicy(unittest.TestCase):
 
     def test_base_dispatch_cannot_publish_evidence_for_a_different_head_or_merge(self):
         api = mock.Mock(repository='example/repo', token='read-token')
-        event = {'inputs': {'code-head': HEAD, 'code-base': BASE, 'code-merge': 'c' * 40}}
+        event = {'inputs': {'code-head': HEAD, 'code-base': BASE, 'code-merge': 'c' * 40,
+                            'code-pr': '1', 'code-base-ref': 'main'}}
         with self.assertRaises(checker.PolicyError):
             checker.check_event(api, 'workflow_dispatch', event, 'd' * 40, POLICY)
         api.get.return_value = {'parents': [{'sha': 'd' * 40}, {'sha': HEAD}]}
         with self.assertRaises(checker.PolicyError):
             checker.check_event(api, 'workflow_dispatch', event, HEAD, POLICY)
         api.get.return_value = {'parents': [{'sha': BASE}, {'sha': HEAD}]}
-        api.get.side_effect = [api.get.return_value, pull(), pull()]
+        api.get.side_effect = [api.get.return_value, pull(), pull(), pull()]
         api.pages.return_value = [pull()]
         with mock.patch.object(checker, 'range_commits', return_value=[commit()]):
             self.assertEqual(checker.check_event(api, 'workflow_dispatch', event, HEAD, POLICY), [])
+
+    def test_base_dispatch_rejects_retarget_before_or_during_verdict(self):
+        event = {'inputs': {'code-head': HEAD, 'code-base': BASE, 'code-merge': 'c' * 40,
+                            'code-pr': '1', 'code-base-ref': 'main'}}
+        parents = {'parents': [{'sha': BASE}, {'sha': HEAD}]}
+        for field, value in [('sha', 'd' * 40), ('ref', 'release')]:
+            changed = pull()
+            changed['base'][field] = value
+            for responses in ([parents, changed], [parents, pull(), pull(), changed]):
+                api = mock.Mock(repository='example/repo', token='read-token')
+                api.get.side_effect = responses
+                with self.subTest(field=field, reads=len(responses)), \
+                        mock.patch.object(checker, 'range_commits', return_value=[commit()]):
+                    with self.assertRaises(checker.PolicyError):
+                        checker.check_event(api, 'workflow_dispatch', event, HEAD, POLICY,
+                                            check_pull_text=False)
 
 
 if __name__ == '__main__':

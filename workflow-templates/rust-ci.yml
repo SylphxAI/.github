@@ -20,13 +20,17 @@ on:
         type: string
       code-base:
         type: string
+      code-pr:
+        type: string
+      code-base-ref:
+        type: string
   push:
     branches: [main]
 
 # A new push supersedes a pull request's run; a main or merge-group run is
 # never cancelled, so it always finishes writing the cache.
 concurrency:
-  group: ci-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

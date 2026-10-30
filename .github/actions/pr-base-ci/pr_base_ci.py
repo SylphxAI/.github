@@ -38,7 +38,8 @@ def dispatch(api, event, workflow, repository):
     if parents != [current['base']['sha'], current['head']['sha']]:
         raise MergePending('PR merge does not yet represent the current base and head')
     api('POST', 'actions/workflows/' + workflow + '/dispatches', {'ref': branch, 'inputs': {
-        'code-merge': merge, 'code-head': current['head']['sha'], 'code-base': current['base']['sha']}})
+        'code-merge': merge, 'code-head': current['head']['sha'], 'code-base': current['base']['sha'],
+        'code-pr': str(event['number']), 'code-base-ref': current['base']['ref']}})
     return True
 
 

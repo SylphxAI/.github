@@ -7,6 +7,7 @@ import ast
 import base64
 import hashlib
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -69,6 +70,22 @@ def revisions(event_name, event, sha):
     elif event_name == 'merge_group':
         group = event.get('merge_group', {})
         base, head = group.get('base_sha', ''), group.get('head_sha', '')
+    elif event_name == 'workflow_dispatch' and any(
+            (event.get('inputs') or {}).get('code-' + part)
+            for part in ('merge', 'head', 'base', 'pr', 'base-ref')):
+        # Reuse the code verdict's current-PR/merge binding before scanning.
+        path = Path(__file__).resolve().parent.parent / 'contribution-policy/contribution_policy.py'
+        spec = importlib.util.spec_from_file_location('dispatch_policy', path)
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        token = os.environ.get('SECRET_SCAN_TOKEN', '')
+        if not token:
+            raise ScanError('PR-code dispatch scan requires a metadata read token')
+        try:
+            _, base, head = policy.dispatch_target(
+                policy.GitHub(os.environ['GITHUB_REPOSITORY'], token), event, sha)
+        except (policy.PolicyError, KeyError, ValueError):
+            raise ScanError('PR-code dispatch scan has no valid current PR range') from None
     else:
         base, head = event.get('before', ''), sha
         if not base or set(base) == {'0'}:
@@ -238,11 +255,16 @@ def main():
     parser.add_argument('--config', default='')
     args = parser.parse_args()
     event_name = os.environ.get('GITHUB_EVENT_NAME', '')
-    if args.pre_merge_only and event_name not in {'pull_request', 'merge_group'}:
+    if args.pre_merge_only and event_name not in {'pull_request', 'merge_group', 'workflow_dispatch'}:
         print('Secret scan: no pre-merge range for this event.')
         return 0
     try:
         event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())
+        if args.pre_merge_only and event_name == 'workflow_dispatch' and not any(
+                (event.get('inputs') or {}).get('code-' + part)
+                for part in ('merge', 'head', 'base', 'pr', 'base-ref')):
+            print('Secret scan: no pre-merge range for this event.')
+            return 0
         base, head = revisions(event_name, event, os.environ.get('GITHUB_SHA', ''))
         with tempfile.TemporaryDirectory(prefix='shared-secret-scan-') as tmp:
             directory = Path(tmp)

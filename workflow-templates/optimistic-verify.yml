@@ -32,6 +32,10 @@ on:
         type: string
       code-base:
         type: string
+      code-pr:
+        type: string
+      code-base-ref:
+        type: string
       lanes:
         description: Comma-separated lanes to run. Empty runs every lane the range selects.
         type: string
