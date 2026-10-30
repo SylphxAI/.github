@@ -65,8 +65,8 @@ New migrations are refused for:
   migration. Generated, identity, serial and auto-increment columns count as
   defaults. New tables can declare required columns directly.
 - MySQL `DISCARD TABLESPACE` and character-set conversions.
-- Opaque procedural or dynamic SQL, such as `DO`, `CALL`, `EXECUTE`, or function,
-  procedure, trigger, and scheduled-event definitions.
+- Opaque dynamic SQL, such as `CALL`, `EXECUTE`, and `PREPARE`, and trigger or
+  scheduled-event definitions whose effects cannot be established locally.
 - `SET` changes to `sql_mode` or `standard_conforming_strings`, including quoted
   setting names. Changing quote rules can hide later SQL from inspection.
 
@@ -74,6 +74,15 @@ Comments and string literals cannot manufacture SQL keywords or a contract
 marker. PostgreSQL dollar strings/nested comments and MySQL executable version
 comments are handled explicitly. This is a conservative SQL policy check, not a
 database planner or proof that a `WHERE` clause preserves all intended records.
+
+PostgreSQL SQL and PL/pgSQL functions, procedures, and `DO` blocks are inspected
+recursively. Dollar-quoted and ordinary single-quoted bodies use the same SQL
+rules as the surrounding migration, including SQL inside control blocks.
+Additive report functions and create/grant blocks pass without a marker;
+destructive bodies report the underlying operation. MySQL inline routine bodies
+are also inspected. Other procedural languages, escape-string bodies, and opaque
+dynamic execution require a contract reference. A marker inside a body string
+does not authorize the surrounding migration.
 
 After the expand step has shipped and old readers/writers have stopped using
 the old contract, a **new** migration may name that released step on its own line:

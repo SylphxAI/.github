@@ -52,8 +52,8 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
     """Keep identifiers/literals distinct from keywords; comments cannot hide SQL.
 
     PostgreSQL supports nested block comments and dollar strings; MySQL supports
-    backticks, backslash escapes and executable version comments. Opaque SQL in
-    procedural statements is refused separately, rather than assumed harmless.
+    backticks, backslash escapes and executable version comments. Inspectable
+    routine bodies are scanned recursively; opaque dynamic SQL is refused.
     """
     tokens, markers = [], []
     i, line = 0, 1
@@ -195,16 +195,87 @@ def foreign_delete_actions(tokens: list[Token]) -> list[tuple[int, str]]:
     return actions
 
 
-def token_violations(tokens: list[Token], dialect: str) -> list[tuple[int, str]]:
+def procedural_statement(stmt: list[Token]) -> list[Token]:
+    """Expose SQL after a procedural control prefix without interpreting values."""
+    depth = 0
+    commands = {"ALTER", "CREATE", "SET", "DO", "CALL", "EXECUTE", "PREPARE", "DELIMITER"}
+    boundaries = {"BEGIN", "ATOMIC", "THEN", "ELSE", "LOOP"}
+    for i, token in enumerate(stmt):
+        if depth == 0 and token.kind == "word" and token.value in commands:
+            after_control = i and stmt[i - 1].kind == "word" and stmt[i - 1].value in boundaries
+            query_execution = kw(token, "EXECUTE") and i and any(kw(stmt[i - 1], w) for w in ("QUERY", "IN", "FOR"))
+            if after_control or query_execution:
+                return stmt[i:]
+        if token.kind == "symbol":
+            depth += (token.value == "(") - (token.value == ")")
+    return stmt
+
+
+def routine_kind(stmt: list[Token]) -> str | None:
+    if starts(stmt, "DO"):
+        return "DO"
+    if starts(stmt, "CREATE"):
+        for token in stmt[1:]:
+            if token.kind != "word":
+                continue
+            if token.value in {"TABLE", "VIEW", "INDEX", "SCHEMA", "DATABASE", "SEQUENCE", "TYPE", "DOMAIN", "EXTENSION", "POLICY"}:
+                break
+            if token.value in {"FUNCTION", "PROCEDURE", "TRIGGER", "EVENT"}:
+                return token.value
+    return None
+
+
+def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int) -> list[tuple[int, str]]:
+    opaque = [(stmt[0].line, "opaque procedural body requires a contract reference")]
+    if kind in {"TRIGGER", "EVENT"}:
+        return opaque
+    flat = top_level(stmt)
+    if dialect == "mysql":
+        # MySQL routine bodies are inline SQL, not string literals. Later
+        # semicolon-delimited statements are also inspected by the caller.
+        start = next((i for i, t in enumerate(flat) if kw(t, "BEGIN") or kw(t, "RETURN")), None)
+        return opaque if start is None else token_violations(stmt[stmt.index(flat[start]) + 1:], dialect, nesting + 1)
+    language = "PLPGSQL" if kind == "DO" else None
+    for i, token in enumerate(flat[:-1]):
+        if kw(token, "LANGUAGE"):
+            value = flat[i + 1]
+            language = value.value.upper() if value.kind in {"word", "identifier"} else value.raw[1:-1].upper()
+    if language not in {"SQL", "PLPGSQL"}:
+        return opaque
+    if kind == "DO":
+        at = 3 if starts(flat[1:], "LANGUAGE") else 1
+        body = flat[at] if at < len(flat) and flat[at].kind == "literal" else None
+    else:
+        body = next((flat[i + 1] for i, t in enumerate(flat[:-1]) if kw(t, "AS") and flat[i + 1].kind == "literal"), None)
+    if body is not None:
+        delimiter = DOLLAR.match(body.raw)
+        if delimiter:
+            source = body.raw[len(delimiter[0]):-len(delimiter[0])]
+        elif body.raw.startswith("'"):
+            source = body.raw[1:-1].replace("''", "'")
+        else:
+            return opaque
+        inner, _ = lex(source, dialect)
+        inner = [Token(t.value, t.kind, body.line + t.line - 1, t.raw) for t in inner]
+        return token_violations(inner, dialect, nesting + 1)
+    # PostgreSQL also supports SQL-standard unquoted function/procedure bodies.
+    start = next((i for i, t in enumerate(stmt) if kw(t, "BEGIN") or kw(t, "RETURN")), None)
+    return opaque if start is None else token_violations(stmt[start + 1:], dialect, nesting + 1)
+
+
+def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> list[tuple[int, str]]:
+    if nesting > 64:
+        raise SqlError("procedural body nesting is too deep to inspect")
     out: list[tuple[int, str]] = []
     defaults: set[tuple[str, str]] = set()
     created: set[str] = set()
     for stmt in split(tokens, ";"):
+        control_stmt = procedural_statement(stmt)
         out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(stmt))
-        if starts(stmt, "SET") and any(
+        if starts(control_stmt, "SET") and any(
                 (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
                 or (t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I))
-                for t in stmt):
+                for t in control_stmt):
             # Changing quote semantics would invalidate subsequent lexical
             # inspection; these statements need an explicit contract review.
             out.append((stmt[0].line, "SQL lexical mode change requires a contract reference"))
@@ -238,19 +309,12 @@ def token_violations(tokens: list[Token], dialect: str) -> list[tuple[int, str]]
                 lock_or_upsert = kw(token, "UPDATE") and i and any(kw(stmt[i - 1], w) for w in ("FOR", "KEY", "ON", "DO"))
                 if not lock_or_upsert and not has(suffix, "WHERE"):
                     out.append((token.line, token.value + " without WHERE"))
-        create_procedure = False
-        if starts(stmt, "CREATE"):
-            for token in stmt[1:]:
-                if token.kind != "word":
-                    continue
-                if token.value in {"TABLE", "VIEW", "INDEX", "SCHEMA", "DATABASE", "SEQUENCE", "TYPE", "DOMAIN", "EXTENSION", "POLICY"}:
-                    break
-                if token.value in {"FUNCTION", "PROCEDURE", "TRIGGER", "EVENT"}:
-                    create_procedure = True
-                    break
-        if (starts(stmt, "DO") or starts(stmt, "CALL") or starts(stmt, "EXECUTE")
-                or starts(stmt, "PREPARE") or starts(stmt, "DELIMITER")
-                or create_procedure):
+        stmt = control_stmt
+        routine = routine_kind(stmt)
+        if routine:
+            out.extend(routine_violations(stmt, dialect, routine, nesting))
+        if (starts(stmt, "CALL") or starts(stmt, "EXECUTE")
+                or starts(stmt, "PREPARE") or starts(stmt, "DELIMITER")):
             out.append((stmt[0].line, "procedural or dynamic SQL requires a contract reference"))
         if starts(stmt, "CREATE", "TABLE"):
             conditional = starts(stmt[2:], "IF", "NOT", "EXISTS")
@@ -321,7 +385,8 @@ def token_violations(tokens: list[Token], dialect: str) -> list[tuple[int, str]]
 def check_sql(sql: str, dialect: str) -> list[tuple[int, str]]:
     tokens, markers = lex(sql, dialect)
     # Lexical failures remain errors even when a marker is present.
-    return [] if markers else violations(sql, dialect)
+    errors = token_violations(tokens, dialect)
+    return [] if markers else errors
 
 
 class Column(NamedTuple):
