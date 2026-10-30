@@ -58,11 +58,12 @@ class ContributionPolicy(unittest.TestCase):
                     if not case.get('pass'):
                         self.assertIn(case['rule'], {finding['rule'] for finding in result['findings']})
 
-    def test_each_approved_pair_passes_in_both_roles(self):
+    def test_each_approved_pair_passes_in_its_configured_roles(self):
         for identity in POLICY['identities']:
             with self.subTest(identity=identity):
                 item = commit()
-                item['commit'].update(author=identity, committer=identity)
+                for role in identity['roles']:
+                    item['commit'][role] = identity
                 self.assertEqual(checker.evaluate(pull(), [item], POLICY), [])
 
     def test_identity_pair_cannot_mix_approved_names_and_emails(self):
@@ -126,16 +127,70 @@ class ContributionPolicy(unittest.TestCase):
 
     def test_merge_group_checks_original_commits_even_when_squash_is_clean(self):
         api = mock.Mock(repository='example/repo', token='read-token')
-        api.pages.return_value = [pull()]
+        api.queue_entries.return_value = [{'headCommit': {'oid': HEAD},
+                                          'pullRequest': {'number': 1, 'headRefOid': HEAD}}]
+        api.pages.return_value = []
         event = {'merge_group': {'base_sha': BASE, 'head_sha': HEAD, 'base_ref': 'refs/heads/main'}}
         original = commit('c' * 40, 'Co-authored-by: Codex <codex@example.com>')
         with mock.patch.object(checker, 'range_commits', return_value=[commit()]), \
                 mock.patch.object(checker, 'pull_snapshot', return_value=(pull(), [original])):
             findings = checker.check_event(api, 'merge_group', event, HEAD, POLICY)
         self.assertIn('tool-coauthor', {row['rule'] for row in findings})
+        api.queue_entries.return_value = []
         api.pages.return_value = []
         with mock.patch.object(checker, 'range_commits', return_value=[commit()]):
             with self.assertRaises(checker.PolicyError):
+                checker.check_event(api, 'merge_group', event, HEAD, POLICY)
+
+    def test_merged_queue_entry_remains_checked_after_leaving_queue(self):
+        api = mock.Mock(repository='example/repo', token='read-token')
+        api.queue_entries.return_value = []
+        merged = pull()
+        merged.update(state='closed', merged_at='2026-10-30T09:00:00Z', merge_commit_sha=HEAD)
+        api.pages.return_value = [merged]
+        event = {'merge_group': {'base_sha': BASE, 'head_sha': HEAD, 'base_ref': 'refs/heads/main'}}
+        with mock.patch.object(checker, 'range_commits', return_value=[commit()]), \
+                mock.patch.object(checker, 'pull_snapshot', return_value=(merged, [commit(message='Implemented using Claude.')])):
+            findings = checker.check_event(api, 'merge_group', event, HEAD, POLICY)
+        self.assertIn('tool-authorship', {row['rule'] for row in findings})
+
+    def test_original_range_does_not_read_unrelated_open_pr_metadata(self):
+        api = mock.Mock(repository='example/repo', token='read-token')
+        api.queue_entries.return_value = [{'headCommit': {'oid': HEAD},
+                                          'pullRequest': {'number': 1, 'headRefOid': 'c' * 40}}]
+        unrelated = pull()
+        unrelated.update(number=2, body=WORK)
+        api.pages.return_value = [unrelated]
+        event = {'merge_group': {'base_sha': BASE, 'head_sha': HEAD, 'base_ref': 'refs/heads/main'}}
+        original = commit('c' * 40)
+        with mock.patch.object(checker, 'range_commits', return_value=[commit(), original]), \
+                mock.patch.object(checker, 'pull_snapshot', return_value=(pull(), [original])):
+            self.assertEqual(checker.check_event(api, 'merge_group', event, HEAD, POLICY), [])
+        api.pages.assert_not_called()
+
+    def test_synthetic_queue_commit_resolves_without_commit_associations(self):
+        api = mock.Mock(repository='example/repo', token='read-token')
+        api.queue_entries.return_value = [{'headCommit': {'oid': HEAD},
+                                          'pullRequest': {'number': 1, 'headRefOid': 'c' * 40}}]
+        api.pages.return_value = []
+        event = {'merge_group': {'base_sha': BASE, 'head_sha': HEAD, 'base_ref': 'refs/heads/main'}}
+        original = commit('c' * 40, 'Implemented using Claude.')
+        with mock.patch.object(checker, 'range_commits', return_value=[commit()]), \
+                mock.patch.object(checker, 'pull_snapshot', return_value=(pull(), [original])) as snapshot:
+            findings = checker.check_event(api, 'merge_group', event, HEAD, POLICY)
+        self.assertIn('tool-authorship', {row['rule'] for row in findings})
+        snapshot.assert_called_once_with(api, 1, 'c' * 40)
+        api.pages.assert_not_called()
+
+    def test_unmapped_group_commit_does_not_read_as_clean(self):
+        api = mock.Mock(repository='example/repo', token='read-token')
+        api.queue_entries.return_value = [{'headCommit': {'oid': HEAD},
+                                          'pullRequest': {'number': 1, 'headRefOid': 'c' * 40}}]
+        api.pages.return_value = []
+        event = {'merge_group': {'base_sha': BASE, 'head_sha': HEAD, 'base_ref': 'refs/heads/main'}}
+        with mock.patch.object(checker, 'range_commits', return_value=[commit(), commit('d' * 40)]), \
+                mock.patch.object(checker, 'pull_snapshot', return_value=(pull(), [commit('c' * 40)])):
+            with self.assertRaisesRegex(checker.PolicyError, 'membership is incomplete'):
                 checker.check_event(api, 'merge_group', event, HEAD, POLICY)
 
     def test_dispatch_on_pr_head_cannot_skip_policy(self):
@@ -146,12 +201,26 @@ class ContributionPolicy(unittest.TestCase):
         with mock.patch.object(checker, 'pull_snapshot', return_value=(bad, [commit()])):
             findings = checker.check_event(api, 'workflow_dispatch', {}, HEAD, POLICY)
         self.assertTrue(findings)
+        api.pages.assert_called_once_with('pulls?state=open')
 
     def test_paginated_associations_are_complete(self):
         api = checker.GitHub('example/repo', 'read-token')
         with mock.patch.object(api, 'get', side_effect=[[{'number': n} for n in range(100)], [{'number': 101}]]) as get:
             self.assertEqual(len(api.pages('commits/' + HEAD + '/pulls')), 101)
         self.assertTrue(get.call_args_list[1].args[0].endswith('page=2'))
+
+    def test_queue_pagination_and_permission_errors(self):
+        api = checker.GitHub('example/repo', 'read-token')
+        def page(nodes, more, cursor):
+            return {'data': {'repository': {'mergeQueue': {'entries': {'nodes': nodes,
+                    'pageInfo': {'hasNextPage': more, 'endCursor': cursor}}}}}}
+        with mock.patch.object(api, 'read', side_effect=[page([{'number': 1}], True, 'next'),
+                                                       page([{'number': 2}], False, 'last')]) as read:
+            self.assertEqual(len(api.queue_entries('main')), 2)
+            self.assertEqual(read.call_args_list[1].args[1]['variables']['cursor'], 'next')
+        with mock.patch.object(api, 'read', return_value={'errors': [{'message': 'denied'}]}):
+            with self.assertRaises(checker.PolicyError):
+                api.queue_entries('main')
 
     def test_missing_token_fails_pre_merge_but_push_needs_none(self):
         with mock.patch.dict(os.environ, {'GITHUB_EVENT_NAME': 'pull_request', 'CONTRIBUTION_POLICY_TOKEN': ''}), \

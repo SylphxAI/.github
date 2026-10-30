@@ -24,13 +24,14 @@ class PolicyError(Exception):
 
 def evaluate(pull_request, commits, policy):
     """Return value-free findings for REST-shaped metadata; never mutate input."""
-    identities = {(item['name'], item['email']) for item in policy['identities']}
+    identities = {role: {(item['name'], item['email']) for item in policy['identities'] if role in item['roles']}
+                  for role in ('author', 'committer')}
     names = '|'.join(re.escape(name) for name in policy['attribution_names'])
     attributed = re.compile(r'(?<![A-Za-z0-9])(?:' + names + r')(?![A-Za-z0-9])', re.I)
     coauthor = re.compile(r'co-authored-by\s*:\s*(.*)', re.I)
     generated = re.compile(r'^[\s>*_\-\[🤖]*generated\s+(?:with|by)\s*:?\s*\S', re.I)
     trailer = re.compile(r'^[\s>*_\-]*(?:agent(?:-id)?|harness)\s*:\s*\S', re.I)
-    authorship = re.compile(r'\b(?:written|authored|built|implemented|reviewed|assisted)\s+(?:by|with)\s*:?[\s\[]*(' + names + r')(?![A-Za-z0-9])', re.I)
+    authorship = re.compile(r'\b(?:written|authored|built|implemented|reviewed|assisted|generated)\s+(?:by|with|using)\s*:?[\s\[]*(?:the\s+|an?\s+)?(' + names + r')(?![A-Za-z0-9])', re.I)
     internal = [(rule, re.compile(pattern)) for rule, pattern in policy['internal_patterns'].items()]
     findings = []
 
@@ -67,7 +68,7 @@ def evaluate(pull_request, commits, policy):
             raise PolicyError('commit metadata is incomplete')
         for role in ('author', 'committer'):
             identity = commit.get(role) or {}
-            if (identity.get('name'), identity.get('email')) not in identities:
+            if (identity.get('name'), identity.get('email')) not in identities[role]:
                 findings.append({'rule': 'unapproved-' + role, 'location': sha, 'line': 0})
         text(commit.get('message'), sha)
     return findings
@@ -83,10 +84,11 @@ class GitHub:
         self.repository = repository
         self.token = token
 
-    def get(self, path):
-        request = urllib.request.Request(self.root + '/repos/' + self.repository + '/' + path,
+    def read(self, url, data=None):
+        request = urllib.request.Request(url, data=json.dumps(data).encode() if data is not None else None,
                                          headers={'Authorization': 'Bearer ' + self.token,
                                                   'Accept': 'application/vnd.github+json',
+                                                  'Content-Type': 'application/json',
                                                   'X-GitHub-Api-Version': '2022-11-28'})
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
@@ -96,17 +98,50 @@ class GitHub:
         except (OSError, ValueError):
             raise PolicyError('GitHub metadata read failed') from None
 
+    def get(self, path):
+        return self.read(self.root + '/repos/' + self.repository + '/' + path)
+
     def pages(self, path):
         result = []
         page = 1
         while True:
-            rows = self.get(f'{path}?per_page=100&page={page}')
+            separator = '&' if '?' in path else '?'
+            rows = self.get(f'{path}{separator}per_page=100&page={page}')
             if not isinstance(rows, list):
                 raise PolicyError('GitHub list response is invalid')
             result.extend(rows)
             if len(rows) < 100:
                 return result
             page += 1
+
+    def queue_entries(self, branch):
+        query = '''query($owner:String!, $name:String!, $branch:String!, $cursor:String) {
+          repository(owner:$owner, name:$name) { mergeQueue(branch:$branch) {
+            entries(first:100, after:$cursor) {
+              nodes { pullRequest { number headRefOid } headCommit { oid } }
+              pageInfo { hasNextPage endCursor }
+            }
+          } }
+        }'''
+        owner, name = self.repository.split('/')
+        cursor, entries = None, []
+        while True:
+            response = self.read(os.environ.get('GITHUB_GRAPHQL_URL', self.root + '/graphql'),
+                                 {'query': query, 'variables': {'owner': owner, 'name': name,
+                                  'branch': branch, 'cursor': cursor}})
+            if response.get('errors'):
+                raise PolicyError('GitHub merge queue metadata is unreadable')
+            queue = response['data']['repository']['mergeQueue']
+            if queue is None:
+                return entries
+            connection = queue['entries']
+            entries.extend(connection['nodes'])
+            page = connection['pageInfo']
+            if not page['hasNextPage']:
+                return entries
+            if not page['endCursor'] or page['endCursor'] == cursor:
+                raise PolicyError('GitHub merge queue pagination is incomplete')
+            cursor = page['endCursor']
 
 
 def range_commits(base, head, repository, token):
@@ -121,9 +156,8 @@ def range_commits(base, head, repository, token):
         repo = Path(directory)
         try:
             source.fetch(repo, server + '/' + repository + '.git', base, head, token, filter_spec='tree:0')
-            common = source.git(repo, 'merge-base', base, head).decode().strip()
             data = source.git(repo, 'log', '-z', '--no-show-signature',
-                              '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B', common + '..' + head)
+                              '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B', base + '..' + head)
         except source.ScanError:
             raise PolicyError('immutable commit acquisition failed') from None
     return parse_commits(data)
@@ -164,20 +198,36 @@ def check_event(api, event_name, event, sha, policy):
         group = event['merge_group']
         commits = range_commits(group['base_sha'], group['head_sha'], api.repository, api.token)
         findings = evaluate(None, commits, policy)
-        pulls = {}
+        pulls, covered = {}, set()
+        group_shas = {commit['sha'] for commit in commits}
+        branch = group['base_ref'].removeprefix('refs/heads/')
+        for entry in api.queue_entries(branch):
+            synthetic = (entry.get('headCommit') or {}).get('oid')
+            if synthetic in group_shas:
+                pr = entry['pullRequest']
+                pulls[pr['number']] = pr['headRefOid']
+                covered.add(synthetic)
+        for number, expected_head in pulls.items():
+            pr, original = pull_snapshot(api, number, expected_head)
+            covered.update(commit['sha'] for commit in original)
+            findings.extend(evaluate(pr, original, policy))
         for commit in commits:
+            if commit['sha'] in covered:
+                continue
+            # Earlier entries can merge while a later group is still building.
             for pr in api.pages(f"commits/{commit['sha']}/pulls"):
-                if pr['base']['ref'] == group['base_ref'].removeprefix('refs/heads/'):
-                    pulls[pr['number']] = pr
-        if not pulls:
-            raise PolicyError('merge group has no readable pull request metadata')
-        for number in pulls:
-            findings.extend(evaluate(*pull_snapshot(api, number), policy))
+                if pr['base']['ref'] == branch and pr.get('merged_at') and \
+                        pr.get('merge_commit_sha') == commit['sha']:
+                    snapshot, original = pull_snapshot(api, pr['number'], pr['head']['sha'])
+                    covered.add(commit['sha'])
+                    covered.update(item['sha'] for item in original)
+                    findings.extend(evaluate(snapshot, original, policy))
+        if group_shas - covered:
+            raise PolicyError('merge group membership is incomplete')
         return findings
     if event_name == 'workflow_dispatch':
         # A dispatch on a PR head must not replace a failed PR verdict with green.
-        pulls = [pr for pr in api.pages(f'commits/{sha}/pulls')
-                 if pr['state'] == 'open' and pr['head']['sha'] == sha]
+        pulls = [pr for pr in api.pages('pulls?state=open') if pr['head']['sha'] == sha]
         findings = []
         for pr in pulls:
             findings.extend(evaluate(*pull_snapshot(api, pr['number'], sha), policy))

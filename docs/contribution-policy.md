@@ -7,7 +7,8 @@ repository to a released full commit SHA followed by `# main`.
 
 The single configuration is [policy/contribution-policy.json](../policy/contribution-policy.json).
 Author and committer names and email addresses must match one configured pair
-exactly. Bot exceptions are individual identities, never an email domain or a
+and its permitted role exactly. GitHub's merge identity is committer-only.
+Bot exceptions are individual identities, never an email domain or a
 name suffix. The approved pairs were read from actual Renovate, application,
 and GitHub merge commits. This checks declared identity; it does not verify a
 signature or establish who operated an account.
@@ -19,8 +20,10 @@ the rule and location without repeating the rejected text.
 
 Commit metadata comes from immutable Git objects rather than the PR commits
 API, whose results stop at 250 commits. Only commits introduced by the change
-are checked. A merge group checks its generated commits and the original
-commits and current metadata of every associated PR. A manual dispatch on an
+are checked. A merge group resolves synthetic commits through the paginated
+merge queue, binding each to its original PR head. Earlier merged entries are
+resolved through their introducing PR. Every range commit must be covered.
+The check reads the original commits and current metadata of those PRs. A manual dispatch on an
 open PR head runs the same policy. Post-merge push events do not recheck old
 history. Missing permissions, missing PR metadata, unreadable Git objects, and
 metadata changing during a read fail the check.
