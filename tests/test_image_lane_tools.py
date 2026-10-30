@@ -628,6 +628,20 @@ class PublisherIdentityWaitTest(unittest.TestCase):
                 self.assertEqual(mint._fetch_svid(agent, socket, 60), "token")
             self.assertEqual(int(counter.read_text()), 3)
 
+    def test_identity_deadline_can_expire_before_the_next_attempt(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            socket = Path(directory) / "agent.sock"
+            socket.touch()
+            with mock.patch.object(mint.time, "monotonic", side_effect=[0, 1, 3, 7]), \
+                 mock.patch.object(mint.time, "sleep") as sleep, \
+                 mock.patch.object(mint.subprocess, "run", return_value=mock.Mock(returncode=1)) as run:
+                with self.assertRaisesRegex(RuntimeError, "SPIRE Workload API refused"):
+                    mint._fetch_svid(Path("spire-agent"), socket, 6)
+            self.assertEqual(run.call_count, 1)
+            sleep.assert_called_once_with(2)
+
     def test_the_identity_wait_outlasts_the_http_timeout(self) -> None:
         self.assertGreaterEqual(mint.DEFAULT_IDENTITY_WAIT_SECONDS, 120)
         self.assertLess(mint.DEFAULT_TIMEOUT_SECONDS, mint.DEFAULT_IDENTITY_WAIT_SECONDS)

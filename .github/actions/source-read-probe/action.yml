@@ -1,0 +1,37 @@
+name: source-read-probe
+description: >-
+  Bootstrap this workflow's declared Access identity, or prove bounded,
+  read-only GitHub source access through Broker with commit GET and shallow
+  fetch receipts. Never checks out or builds source, persists credentials, or
+  returns a token. The caller must grant id-token: write.
+inputs:
+  ci-name:
+    description: Exact published Access CI declaration name.
+    required: true
+  mode:
+    description: bootstrap reports only the principal; read also verifies targets.
+    default: bootstrap
+  targets:
+    description: JSON array of at most four objects with repository, commit and trust_policy.
+    default: '[]'
+  denied-policy:
+    description: Optional existing same-org policy which must refuse this subject with 403.
+    default: ''
+outputs:
+  receipt:
+    description: Local JSON receipt containing no credentials.
+    value: ${{ steps.probe.outputs.receipt }}
+runs:
+  using: composite
+  steps:
+    - name: Verify signed source-read authority without building
+      id: probe
+      shell: bash
+      env:
+        PROBE_CI_NAME: ${{ inputs.ci-name }}
+        PROBE_MODE: ${{ inputs.mode }}
+        PROBE_TARGETS: ${{ inputs.targets }}
+        PROBE_DENIED_POLICY: ${{ inputs.denied-policy }}
+        ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+      run: python3 "$GITHUB_ACTION_PATH/probe.py"

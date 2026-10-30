@@ -16,11 +16,14 @@ import pathlib
 import re
 import tokenize
 import tomllib
+from urllib.parse import quote
 
 CONTRACT = "https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/architecture.md"
-BASELINE_MARKER = "# architecture-ratchet-v1"
+BASELINE_MARKER = "# architecture-ratchet-v2"
+LEGACY_BASELINE_MARKER = "# architecture-ratchet-v1"
 SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "examples", "docs",
-        "node_modules", "vendor", "target", "dist", "build", ".next"}
+        "node_modules", "vendor", "thirdparty", "third_party", "third-party", "external",
+        "target", "dist", "build", ".next"}
 SOURCE = {".rs", ".py", ".go", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash"}
 CONFIG = {".yml", ".yaml", ".toml"}
 PLATFORM = {"SylphxAI/cloud", "SylphxAI/sylphx"}
@@ -117,7 +120,13 @@ def source_views(text, suffix):
                 comments.append((match.start(), match.end()))
         if suffix == ".rs":
             # Inline test modules are fixtures too; do not hide adjacent production.
-            for match in re.finditer(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{", "".join(code)):
+            for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*"
+                                     r"(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{", "".join(code)):
+                end = brace_end("".join(code), match.end())
+                comment_free[match.start():end] = blank(text[match.start():end])
+                code[match.start():end] = blank(text[match.start():end])
+            for match in re.finditer(r"#\[(?:(?:tokio|async_std)::)?test(?:\([^\]]*\))?\]\s*"
+                                     r"(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+\w+[^;{]*\{", "".join(code)):
                 end = brace_end("".join(code), match.end())
                 comment_free[match.start():end] = blank(text[match.start():end])
                 code[match.start():end] = blank(text[match.start():end])
@@ -176,8 +185,16 @@ def loops(clean, code, suffix):
 
 def finding(path, text, at, cls, rule, reason, end=None):
     line = text.count("\n", 0, at) + 1
-    return {"path": path, "line": line, "end_line": text.count("\n", 0, end or at) + 1,
+    # Debt follows the exact violation span, independently of surrounding edits
+    # and line movement. Exception evidence still binds the entire source file.
+    start = at if end is not None else text.rfind("\n", 0, at) + 1
+    finish = end if end is not None else text.find("\n", at)
+    if finish == -1:
+        finish = len(text)
+    return {"path": path, "line": line, "column": at - text.rfind("\n", 0, at),
+            "end_line": text.count("\n", 0, end or at) + 1,
             "class": cls, "rule": rule, "reason": reason,
+            "span_sha256": hashlib.sha256(text[start:finish].encode()).hexdigest(),
             "source_sha256": hashlib.sha256(text.encode()).hexdigest(),
             "contract": CONTRACT + ("#scale" if cls == "C5" else "#hard-lines")}
 
@@ -185,6 +202,10 @@ def finding(path, text, at, cls, rule, reason, end=None):
 def env_declarations(tree):
     names = set()
     for path in tree.paths():
+        # Fixture declarations are not configuration authority for production
+        # source, and may intentionally be malformed negative test inputs.
+        if excluded(path):
+            continue
         if pathlib.PurePosixPath(path).suffix in {".yaml", ".yml"} and path.startswith(".github/"):
             text = tree.read(path)
             if text is None:
@@ -237,6 +258,15 @@ def owns_provider(repository, path, capability):
                 or capability == "money" and path.startswith("kernel/billing/"))
 
 
+def with_occurrences(rows):
+    occurrences = {}
+    for row in rows:
+        identity = (row["class"], row["rule"], row["span_sha256"])
+        occurrences[identity] = occurrences.get(identity, 0) + 1
+        row["occurrence"] = occurrences[identity]
+    return rows
+
+
 def scan_file(path, text, repository, declared, retired_routes):
     suffix = pathlib.PurePosixPath(path).suffix
     if excluded(path) or suffix not in SOURCE | CONFIG:
@@ -254,7 +284,7 @@ def scan_file(path, text, repository, declared, retired_routes):
                 masked[m.start():m.end()] = blank(m.group())
             for m in re.finditer(r'(?m)^[^\S\n]*min_instances\s*=\s*([1-9]\d*)\b', "".join(masked)):
                 add(m.start(), "C5", "idle-floor", "Positive service idle floor requires a recorded always-on decision with its reason")
-        return out
+        return with_occurrences(out)
     if suffix in CONFIG:
         boundaries = [0] + [m.end() for m in re.finditer(r"(?m)^---[^\S\n]*\n", text)] + [len(text)]
         for offset, finish in zip(boundaries, boundaries[1:]):
@@ -278,7 +308,7 @@ def scan_file(path, text, repository, declared, retired_routes):
             for m in re.finditer(r"(?m)^[^\S\n]*(?:if:|(?:run:\s*(?:[|>][-+]?\s*)?)?jq\b)[^\n]*\.result\s*!=\s*[\"']failure[\"'][^\n]*$", document):
                 if not re.search(r"\.result\s*!=\s*[\"']cancelled[\"']", m.group()):
                     add(offset + m.start(), "C7", "failure-only-verdict", "A failure-only aggregate accepts canceled dependencies")
-        return out
+        return with_occurrences(out)
     clean, code, comments = source_views(text, suffix)
     # Require a control-flow token in real code; quoted examples never count.
     branch = re.compile(r"\bif\b[^\n{}:]*?(?:first_party|is_internal|is_loopback|is_private|cluster_local|tenant\w*\s*===?\s*[\"'](?:sylphx|cubeage)[^\"']*[\"'])[^\n{}:]*[{:]", re.I)
@@ -367,8 +397,8 @@ def scan_file(path, text, repository, declared, retired_routes):
                                 for term in terms[1:])
         if not positive_evidence:
             add(m.start(), "C7", "merge-only-completion", "Merge-only branch settles delivery without required environment evidence")
-    unique = {(f["line"], f["class"], f["rule"]): f for f in out}
-    return list(unique.values())
+    unique = {(f["line"], f["column"], f["class"], f["rule"]): f for f in out}
+    return with_occurrences(list(unique.values()))
 
 
 def decisions(text, repository, today):
@@ -459,10 +489,11 @@ def evaluate(tree, repository, changed, today):
 
 
 def baseline_key(row):
-    return " ".join(("architecture", row["class"], row["rule"], row["path"] + ":" + str(row["line"]), row["source_sha256"]))
+    return " ".join(("architecture", row["class"], row["rule"], quote(row["path"], safe="/._-"),
+                     row["span_sha256"], str(row["occurrence"])))
 
 
-def baseline_errors(findings, head_records, base_records, base_findings, adopted=False):
+def baseline_errors(findings, head_records, base_records, base_findings, introduced_rules=()):
     """The existing stack baseline can track exact inherited architecture debt.
 
     A record never suppresses a regression or replaces an exception decision.
@@ -470,9 +501,10 @@ def baseline_errors(findings, head_records, base_records, base_findings, adopted
     Thereafter the recorded set can only shrink.
     """
     actual = {baseline_key(row) for row in findings}
-    existing = {baseline_key(row) for row in base_findings}
+    existing = {baseline_key(row) for row in base_findings
+                if "architecture/" + row["class"] + "/" + row["rule"] in introduced_rules}
     errors = ["stale architecture baseline record: " + key for key in sorted(head_records - actual)]
-    allowed = base_records if adopted else existing
+    allowed = base_records | existing
     errors += ["architecture baseline cannot grow or seed new debt: " + key for key in sorted(head_records - allowed)]
     for row in findings:
         row["baseline_recorded"] = baseline_key(row) in head_records
