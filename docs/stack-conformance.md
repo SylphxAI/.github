@@ -86,6 +86,66 @@ vendor-name list is used to authorize aliases. Until such an export is
 published, the default naming-contract check is sufficient and has no catalog
 availability dependency.
 
+## Branch history in repository automation
+
+Automation creates a fresh branch, pushes normally, and opens a pull request
+through the repository's normal merge queue. The required `stack` lane refuses
+literal branch pushes using `--force`, `-f` (including combined short options),
+`--force-with-lease`, `--force-if-includes`, `+` refspecs or `--mirror`, and
+GitHub branch-ref PATCH calls with `force=true`. The red-main handler creates
+candidate and revert branches with a run/attempt suffix; a rejected create or
+push preserves the existing remote branch and stops that attempt.
+
+The recognizer reads shell scripts and libraries, workflow/action `run` blocks
+(including nested workflows and root `action.yml`), package scripts, and
+literal process calls in executable scripts. Literal shell helpers that forward
+arguments to Git are followed without sourcing repository code. Commands in
+comments, documentation and data strings are not executed commands. Computed
+executables, arguments and refspecs remain a semantic review responsibility;
+a passing static check is not a semantic census.
+
+Explicit tag-only pushes are outside this branch-history rule.
+Product VCS library methods offered to users are outside repository-automation scope.
+Archived and delivered customer repositories are outside rollout scope.
+
+Inherited occurrences use the same caller baseline, with an independent marker:
+
+```text
+# force-push-ratchet-v1
+# stack-rule-adopted-v1 force-push
+force-push scripts/publish.sh <command-sha256> 1
+```
+
+Use the [adoption helper](#adopting-new-rules-with-a-pin-bump) in the same PR as
+the checker pin bump. Only exact base-existing, head-surviving occurrences may
+seed a newly introduced rule. Each record binds the URL-escaped path, literal
+command digest and occurrence number. Commands and remote URLs are omitted
+from diagnostics because they may contain credentials. Moving a line preserves
+its identity; copying or changing the command creates new debt and fails.
+After adoption, markers cannot be removed, records cannot grow, and stale
+records must be deleted. Neither this rule nor its baseline loosens another
+stack category. `scan` prints records for inspection; its output alone does
+not authorize adoption. A run without a base checks the committed ratchet
+against itself. Unreadable automation inputs fail the check.
+
+The [2026-10-30 audit snapshot](../policy/force-push-audit.json) records 12 sites
+across 7 repositories, each with its observed default SHA and exact baseline
+record: cloud (4), sylphx-clients (2), this shared repository (2), mcp-registry
+(1), repomap (1), hk-mahjong-tycoon-sx (1), and mahjong-xgmj-java-sx (1).
+The two mirror workflows retain their named owning repositories and are
+baseline-only in this rollout. The shared red-main sites are repaired here;
+other inherited records can only shrink through their owning repository's PRs.
+This inventory is evidence, not an additional allowance file.
+
+The paginated inventory covered 339 repositories: 190 archived, AnyAgents and
+the delivered BGCA repository were excluded before source reads. All 147
+eligible active snapshots were processed (7 empty). The bounded selector read
+131,097 text files; 82 oversized or missing/truncated file reads across 25
+repositories remain explicitly listed in the snapshot. None is under
+`.github/`. Binary assets, dependency locks, vendored code and submodule
+contents are not an absence claim. Snapshot findings do not assert that
+moving default branches remain unchanged.
+
 ## Production database aggregate declarations
 
 A production database declared by `sylphx.toml` needs a companion

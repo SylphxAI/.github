@@ -1,0 +1,740 @@
+{
+  "version": 1,
+  "inventory_read_utc": "2026-10-30T08:24:24.727026Z",
+  "report_read_utc": "2026-10-30T09:10:01Z",
+  "scope": {
+    "organizations": [
+      "SylphxAI",
+      "Cubeage"
+    ],
+    "repository_count": 339,
+    "archived_excluded": 190,
+    "hands_off": [
+      "SylphxAI/anyagents",
+      "SylphxAI/BGCA"
+    ],
+    "active_eligible": 147,
+    "empty_default_branches": 7,
+    "supported_text_files_read": 131097,
+    "max_selected_blob_bytes": 2097152,
+    "limits": [
+      "Bounded supported text selector; binary assets, dependency locks, unsupported extensions, vendored code and submodule contents are not a semantic census.",
+      "Observed default SHAs are immutable snapshots; moving branch heads may change.",
+      "Explicit tag-only pushes and product VCS library methods are outside the branch-automation rule."
+    ]
+  },
+  "findings": [
+    {
+      "repo": "Cubeage/hk-mahjong-tycoon-sx",
+      "default_sha": "c948199aef6461fc5069db0017780d941398ffd3",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": ".github/workflows/backend-mirror.yml",
+      "line": 229,
+      "command_sha256": "ba948d9698f2e4151172ced1b3290ed470f3996360e2379dac1de227615bd3a6",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push .github/workflows/backend-mirror.yml ba948d9698f2e4151172ced1b3290ed470f3996360e2379dac1de227615bd3a6 1",
+      "sanitized_command": "git -c http.extraheader= push --force \"<authenticated remote>\" \"HEAD:refs/heads/${MIRROR_BRANCH}\""
+    },
+    {
+      "repo": "Cubeage/mahjong-xgmj-java-sx",
+      "default_sha": "9a684edfa8f93dc523aa3b5f065c68b071556b0c",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": ".github/workflows/backend-source-dispatcher.yml",
+      "line": 61,
+      "command_sha256": "45ccc0419f4f5b6df024d76d9e95419d756eea9794ed81f0ecf7d697890b6924",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push .github/workflows/backend-source-dispatcher.yml 45ccc0419f4f5b6df024d76d9e95419d756eea9794ed81f0ecf7d697890b6924 1",
+      "sanitized_command": "git push --force origin automation/mirror-trigger"
+    },
+    {
+      "repo": "SylphxAI/.github",
+      "default_sha": "f146fadf9673c51010a105dba736cf0ed5e6c388",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": ".github/workflows/red-main.yml",
+      "line": 1491,
+      "command_sha256": "253f4035a646772ab17f0170417ad6e66335e4847d68544b4bcbb2561e750e69",
+      "occurrence": 1,
+      "reason": "forced GitHub branch-ref update",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push .github/workflows/red-main.yml 253f4035a646772ab17f0170417ad6e66335e4847d68544b4bcbb2561e750e69 1",
+      "sanitized_command": "gh api --method PATCH \"repos/$REPO/git/refs/heads/$candidate_branch\" --field \"sha=$sha\" --field force=true"
+    },
+    {
+      "repo": "SylphxAI/.github",
+      "default_sha": "f146fadf9673c51010a105dba736cf0ed5e6c388",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": ".github/workflows/red-main.yml",
+      "line": 1934,
+      "command_sha256": "99e5086661c9c86cf9b9ca99bc0c9b2f728bdb327911c27389d310f25a5237ce",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push .github/workflows/red-main.yml 99e5086661c9c86cf9b9ca99bc0c9b2f728bdb327911c27389d310f25a5237ce 1",
+      "sanitized_command": "push_branch \"$branch\" --force-with-lease => git_c push --force-with-lease origin \"HEAD:refs/heads/$branch\""
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": "clients/.github/workflows/promote.yml",
+      "line": 88,
+      "command_sha256": "8384d8ff62bf7bca9afe6ded51af81b75c759d011fb6da2aee85a7c67e2cfc37",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push clients/.github/workflows/promote.yml 8384d8ff62bf7bca9afe6ded51af81b75c759d011fb6da2aee85a7c67e2cfc37 1",
+      "sanitized_command": "git push -q -f origin \"HEAD:refs/heads/$branch\""
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": "clients/localize-action/localize.sh",
+      "line": 309,
+      "command_sha256": "468980a78b24a08eb795f9cba109ed33526cbb10b79c0dee8d0c90affba041ea",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push clients/localize-action/localize.sh 468980a78b24a08eb795f9cba109ed33526cbb10b79c0dee8d0c90affba041ea 1",
+      "sanitized_command": "git push --force-with-lease origin \"$PR_BRANCH\""
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": "services/data/edge/scripts/promote-data-edge-pin.sh",
+      "line": 338,
+      "command_sha256": "b602679d1e85c9fc9d7b621e2c02b59b70ed955293b25145ab8ccd1eaf422f87",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push services/data/edge/scripts/promote-data-edge-pin.sh b602679d1e85c9fc9d7b621e2c02b59b70ed955293b25145ab8ccd1eaf422f87 1",
+      "sanitized_command": "git push --force-with-lease=\"refs/heads/${PIN_BRANCH}:${EXPECTED}\" origin \"HEAD:refs/heads/${PIN_BRANCH}\""
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": "services/sandboxes/scripts/promote-cell-pin.sh",
+      "line": 46,
+      "command_sha256": "fbaa9f3b2551487a50b893f43c6ee68d272e0cc94968aceece78319cde898fff",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push services/sandboxes/scripts/promote-cell-pin.sh fbaa9f3b2551487a50b893f43c6ee68d272e0cc94968aceece78319cde898fff 1",
+      "sanitized_command": "git push --force \"<authenticated remote>\" \"HEAD:refs/heads/${BRANCH}\""
+    },
+    {
+      "repo": "SylphxAI/mcp-registry",
+      "default_sha": "050547c639c7cfc93833d17201a4206f1541600e",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": ".github/workflows/update-pins.yaml",
+      "line": 199,
+      "command_sha256": "cebda1bb99ea74e9075ce9f9a561b2eed39086f8f3f790b2406b21fd70aa6d01",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push .github/workflows/update-pins.yaml cebda1bb99ea74e9075ce9f9a561b2eed39086f8f3f790b2406b21fd70aa6d01 1",
+      "sanitized_command": "git push --force origin \"$branch\""
+    },
+    {
+      "repo": "SylphxAI/repomap",
+      "default_sha": "042ed0f32342e93d44b0f2cf27689b2b72343e12",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": "action.yml",
+      "line": 106,
+      "command_sha256": "4651168a15597fdb23542be84eae82b6de320ed33cbecd38b829b52356a728f0",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push action.yml 4651168a15597fdb23542be84eae82b6de320ed33cbecd38b829b52356a728f0 1",
+      "sanitized_command": "git push --force origin \"$BRANCH\""
+    },
+    {
+      "repo": "SylphxAI/sylphx-clients",
+      "default_sha": "ebb624cad15cbd84a9559eef80e7a32e48d8300a",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": ".github/workflows/promote.yml",
+      "line": 96,
+      "command_sha256": "8384d8ff62bf7bca9afe6ded51af81b75c759d011fb6da2aee85a7c67e2cfc37",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push .github/workflows/promote.yml 8384d8ff62bf7bca9afe6ded51af81b75c759d011fb6da2aee85a7c67e2cfc37 1",
+      "sanitized_command": "git push -q -f origin \"HEAD:refs/heads/$branch\""
+    },
+    {
+      "repo": "SylphxAI/sylphx-clients",
+      "default_sha": "ebb624cad15cbd84a9559eef80e7a32e48d8300a",
+      "detector_sha256": "965813c6e96c18e8815094b8def3f05f8d9b6bfdb8a6f8f4fd416215b7337d31",
+      "detector_read_utc": "2026-10-30T08:46:34.067071+00:00",
+      "path": "localize-action/localize.sh",
+      "line": 309,
+      "command_sha256": "468980a78b24a08eb795f9cba109ed33526cbb10b79c0dee8d0c90affba041ea",
+      "occurrence": 1,
+      "reason": "force option",
+      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "baseline_key": "force-push localize-action/localize.sh 468980a78b24a08eb795f9cba109ed33526cbb10b79c0dee8d0c90affba041ea 1",
+      "sanitized_command": "git push --force-with-lease origin \"$PR_BRANCH\""
+    }
+  ],
+  "file_read_gaps": [
+    {
+      "repo": "Cubeage/fun-big2-tw",
+      "default_sha": "9a7d87f9da24e41267d5c59d697b17e9a725679c",
+      "path": "client/Assets/ScriptingDataEditor/Editor/NPOI 2.1.1/dotnet2/NPOI.XML",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/fun-big2-tw",
+      "default_sha": "9a7d87f9da24e41267d5c59d697b17e9a725679c",
+      "path": "client/Assets/Scripts/GamePlay/GamePlayManager.cs",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/fun-mahjong",
+      "default_sha": "286f4aa90d6aa987afcd81fe10795bf440dff5b4",
+      "path": "client/ios/FBAudienceNetwork.xcframework/ios-arm64/FBAudienceNetwork.framework/FBAudienceNetwork",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3716648
+    },
+    {
+      "repo": "Cubeage/fun-mahjong",
+      "default_sha": "286f4aa90d6aa987afcd81fe10795bf440dff5b4",
+      "path": "client/ios/FBAudienceNetwork.xcframework/ios-arm64_x86_64-simulator/FBAudienceNetwork.framework/FBAudienceNetwork",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 7195296
+    },
+    {
+      "repo": "Cubeage/fun-mahjong-keel",
+      "default_sha": "dc773e01544a92b092b44abfe803be23a5694e5f",
+      "path": "crates/fun-mahjong/src/scene.rs",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/GameAll-sx",
+      "default_sha": "a3d333ed722a71c121a3f68d2315dcdbd2af2633",
+      "path": "protobuf.message/src/main/java/com/message/hall/ActivityMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3200380
+    },
+    {
+      "repo": "Cubeage/GameAll-sx",
+      "default_sha": "a3d333ed722a71c121a3f68d2315dcdbd2af2633",
+      "path": "protobuf.message/src/main/java/com/message/hall/PlayerMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 5697811
+    },
+    {
+      "repo": "Cubeage/GameAll-sx",
+      "default_sha": "a3d333ed722a71c121a3f68d2315dcdbd2af2633",
+      "path": "protobuf.message/src/main/java/com/message/hall/TablesMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 5429285
+    },
+    {
+      "repo": "Cubeage/GameAll-sx",
+      "default_sha": "a3d333ed722a71c121a3f68d2315dcdbd2af2633",
+      "path": "xgmj.server/src/main/resources/gamelogic/majiang_ai_normal.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 87398052
+    },
+    {
+      "repo": "Cubeage/hk-mahjong-tycoon-sx",
+      "default_sha": "c948199aef6461fc5069db0017780d941398ffd3",
+      "path": "backend/cft.game.protobuf.messages.v1.0/src/com/message/hall/ActivityMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3727215
+    },
+    {
+      "repo": "Cubeage/hk-mahjong-tycoon-sx",
+      "default_sha": "c948199aef6461fc5069db0017780d941398ffd3",
+      "path": "backend/cft.game.protobuf.messages.v1.0/src/com/message/hall/PlayerMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 8755530
+    },
+    {
+      "repo": "Cubeage/hk-mahjong-tycoon-sx",
+      "default_sha": "c948199aef6461fc5069db0017780d941398ffd3",
+      "path": "backend/cft.game.protobuf.messages.v1.0/src/com/message/hall/TablesMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 5794047
+    },
+    {
+      "repo": "Cubeage/hk-mahjong-tycoon-sx",
+      "default_sha": "c948199aef6461fc5069db0017780d941398ffd3",
+      "path": "backend/cft.game.xgmj.server.v1.0/resource/gamelogic/majiang_ai_normal.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 87398052
+    },
+    {
+      "repo": "Cubeage/hk-mahjong-tycoon-sx",
+      "default_sha": "c948199aef6461fc5069db0017780d941398ffd3",
+      "path": "client/UnityProject/Assets/Project/Game/General/Protobuf/PlayerMessage.cs",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 2641909
+    },
+    {
+      "repo": "Cubeage/hk-mahjong-tycoon-sx",
+      "default_sha": "c948199aef6461fc5069db0017780d941398ffd3",
+      "path": "client/UnityProject/Assets/Project/MahJongConfig/Prefab/DataConfig/SkillData.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 2659456
+    },
+    {
+      "repo": "Cubeage/mahjong-tycoon-tw",
+      "default_sha": "9fea02c794d5023755bc51475dfe15699bff4e42",
+      "path": "backend/cft.game.code/cft.game.protobuf.messages.v1.0/src/com/message/hall/PlayerMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 4122528
+    },
+    {
+      "repo": "Cubeage/mahjong-tycoon-tw-2",
+      "default_sha": "34350c98576165c287114bdcbfa65d623dc3d853",
+      "path": "backend/cft.game.protobuf.messages.v1.0/src/com/message/hall/ActivityMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3068127
+    },
+    {
+      "repo": "Cubeage/mahjong-tycoon-tw-2",
+      "default_sha": "34350c98576165c287114bdcbfa65d623dc3d853",
+      "path": "backend/cft.game.protobuf.messages.v1.0/src/com/message/hall/PlayerMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 5458718
+    },
+    {
+      "repo": "Cubeage/mahjong-tycoon-tw-2",
+      "default_sha": "34350c98576165c287114bdcbfa65d623dc3d853",
+      "path": "backend/cft.game.protobuf.messages.v1.0/src/com/message/hall/TablesMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 5431311
+    },
+    {
+      "repo": "Cubeage/mahjong-tycoon-tw-2",
+      "default_sha": "34350c98576165c287114bdcbfa65d623dc3d853",
+      "path": "backend/game-rs/templates/SkillTemplate.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 2118203
+    },
+    {
+      "repo": "Cubeage/mahjong-xgmj-java-sx",
+      "default_sha": "9a684edfa8f93dc523aa3b5f065c68b071556b0c",
+      "path": "cft.game.protobuf.messages.v1.0/src/com/message/hall/ActivityMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3727215
+    },
+    {
+      "repo": "Cubeage/mahjong-xgmj-java-sx",
+      "default_sha": "9a684edfa8f93dc523aa3b5f065c68b071556b0c",
+      "path": "cft.game.protobuf.messages.v1.0/src/com/message/hall/PlayerMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 8755530
+    },
+    {
+      "repo": "Cubeage/mahjong-xgmj-java-sx",
+      "default_sha": "9a684edfa8f93dc523aa3b5f065c68b071556b0c",
+      "path": "cft.game.protobuf.messages.v1.0/src/com/message/hall/TablesMessage.java",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 5794047
+    },
+    {
+      "repo": "Cubeage/mahjong-xgmj-java-sx",
+      "default_sha": "9a684edfa8f93dc523aa3b5f065c68b071556b0c",
+      "path": "cft.game.xgmj.server.v1.0/resource/gamelogic/majiang_ai_normal.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 87398052
+    },
+    {
+      "repo": "Cubeage/MahJongUnity-sx",
+      "default_sha": "832e4aec77831760ca5a472d2c7626f5606c239f",
+      "path": "UnityProject/Assets/Project/Game/General/Protobuf/PlayerMessage.cs",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 2641909
+    },
+    {
+      "repo": "Cubeage/MahJongUnity-sx",
+      "default_sha": "832e4aec77831760ca5a472d2c7626f5606c239f",
+      "path": "UnityProject/Assets/Project/MahJongConfig/Prefab/DataConfig/SkillData.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 2659456
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Microsoft.AspNet.Mvc.5.2.4/lib/net45/System.Web.Mvc.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Microsoft.AspNet.Mvc.5.2.4/lib/net45/zh-Hans/System.Web.Mvc.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Microsoft.AspNet.Mvc.zh-Hans.5.2.4/lib/net45/zh-Hans/System.Web.Mvc.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Microsoft.AspNet.Razor.3.2.4/lib/net45/System.Web.Razor.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Microsoft.AspNet.WebApi.Core.5.2.4/lib/net45/System.Web.Http.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/MySql.Data.8.0.13/lib/net452/MySql.Data.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/MySql.Data.8.0.13/lib/netcoreapp2.0/MySql.Data.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/MySql.Data.8.0.13/lib/netstandard1.6/MySql.Data.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/MySql.Data.8.0.13/lib/netstandard2.0/MySql.Data.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/NLog.2.0.0.2000/lib/net20/NLog.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/NLog.2.0.0.2000/lib/net35/NLog.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/NLog.2.0.0.2000/lib/net40/NLog.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Newtonsoft.Json.11.0.1/lib/net20/Newtonsoft.Json.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Newtonsoft.Json.11.0.1/lib/net35/Newtonsoft.Json.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Newtonsoft.Json.11.0.1/lib/net40/Newtonsoft.Json.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Newtonsoft.Json.11.0.1/lib/net45/Newtonsoft.Json.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Newtonsoft.Json.11.0.1/lib/netstandard1.0/Newtonsoft.Json.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Newtonsoft.Json.11.0.1/lib/netstandard1.3/Newtonsoft.Json.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Newtonsoft.Json.11.0.1/lib/netstandard2.0/Newtonsoft.Json.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/OopsDaily_API_CMS-sx",
+      "default_sha": "9b0b2fe3aea47c6f37e630dab50158b4b1f809df",
+      "path": "packages/Newtonsoft.Json.11.0.1/lib/portable-net45%2Bwin8%2Bwp8%2Bwpa81/Newtonsoft.Json.xml",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "Cubeage/opencity-keel",
+      "default_sha": "8196fe7c5a7719983c467a572ed0ae653606c963",
+      "path": "vendor/keel/crates/keel-text/fixtures/unicode/LineBreakTest-16.0.0.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3037870
+    },
+    {
+      "repo": "Cubeage/voidies",
+      "default_sha": "730dea369312e6cb9f2d0e19bf9645fa7b52c3a5",
+      "path": "public/content-packs/mesh-catalog.v1.json",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "path": "clients/resource-codec/generated/openapi.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3790178
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "path": "clients/resource-codec/generated/registry.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 4958374
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "path": "contracts/generated/openapi.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3790178
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "path": "contracts/generated/registry.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 4958495
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "path": "docs/api/openapi.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 5103468
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "default_sha": "f9ec42787ed277fe689505f168ac497264df8cea",
+      "path": "kernel/billing/crates/commerce-contract/src/gen/messages/sylphx.commerce.v1.rs",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 4196592
+    },
+    {
+      "repo": "SylphxAI/keel",
+      "default_sha": "8094f2a19e872d974dcfb78fdc0adcc09d4ede9a",
+      "path": "crates/keel-text/fixtures/unicode/LineBreakTest-16.0.0.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3037870
+    },
+    {
+      "repo": "SylphxAI/number-grove-keel",
+      "default_sha": "8c5b9302fff06bac93f1fb0a30f88180a610b7fb",
+      "path": "crates/number-grove/src/view.rs",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi",
+      "default_sha": "57f598b6acf112f1c7f5bf2c15f13e1cae903f3a",
+      "path": "crates/pi-natives/tools/cache/deepseek-v3.tokenizer.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 7847652
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi",
+      "default_sha": "57f598b6acf112f1c7f5bf2c15f13e1cae903f3a",
+      "path": "crates/pi-natives/tools/cache/deepseek-v4.tokenizer.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 4363807
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi",
+      "default_sha": "57f598b6acf112f1c7f5bf2c15f13e1cae903f3a",
+      "path": "crates/pi-natives/tools/cache/glm-5.tokenizer.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 8683422
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi",
+      "default_sha": "57f598b6acf112f1c7f5bf2c15f13e1cae903f3a",
+      "path": "crates/pi-natives/tools/cache/qwen3.8.tokenizer.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 9089356
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi",
+      "default_sha": "57f598b6acf112f1c7f5bf2c15f13e1cae903f3a",
+      "path": "packages/catalog/src/models.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 11932600
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi-1",
+      "default_sha": "70d8aef08dd71f34e40ca67f11e66d1f1d4cd80a",
+      "path": "crates/pi-natives/tools/cache/deepseek-v3.tokenizer.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 7847652
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi-1",
+      "default_sha": "70d8aef08dd71f34e40ca67f11e66d1f1d4cd80a",
+      "path": "crates/pi-natives/tools/cache/deepseek-v4.tokenizer.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 4363807
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi-1",
+      "default_sha": "70d8aef08dd71f34e40ca67f11e66d1f1d4cd80a",
+      "path": "crates/pi-natives/tools/cache/glm-5.tokenizer.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 8683422
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi-1",
+      "default_sha": "70d8aef08dd71f34e40ca67f11e66d1f1d4cd80a",
+      "path": "crates/pi-natives/tools/cache/qwen3.8.tokenizer.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 9089356
+    },
+    {
+      "repo": "SylphxAI/oh-my-pi-1",
+      "default_sha": "70d8aef08dd71f34e40ca67f11e66d1f1d4cd80a",
+      "path": "packages/catalog/src/models.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 11932600
+    },
+    {
+      "repo": "SylphxAI/puzzled",
+      "default_sha": "60644319b0dff15e4b312902076615393c4be14f",
+      "path": "crates/puzzled-core/src/capabilities/puzzle_play/generate/data/word_box_words.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 2805003
+    },
+    {
+      "repo": "SylphxAI/puzzled-ghsa-j965-ffwx-7vxf",
+      "default_sha": "1ae01ef9991368ab045cb3ad5ecae677d8dfae98",
+      "path": "crates/puzzled-core/src/capabilities/puzzle_play/generate/data/word_box_words.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 2805003
+    },
+    {
+      "repo": "SylphxAI/rapier",
+      "default_sha": "5be41de6c7d51b880d598176a9c1849a715a66fd",
+      "path": "website/static/demos2d/index.js",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 4070354
+    },
+    {
+      "repo": "SylphxAI/rapier",
+      "default_sha": "5be41de6c7d51b880d598176a9c1849a715a66fd",
+      "path": "website/static/demos3d/index.js",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3285170
+    },
+    {
+      "repo": "SylphxAI/rapier",
+      "default_sha": "5be41de6c7d51b880d598176a9c1849a715a66fd",
+      "path": "bindings/c/include/rapier.h",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "SylphxAI/rapier",
+      "default_sha": "5be41de6c7d51b880d598176a9c1849a715a66fd",
+      "path": "website/static/benchmarks3d/index.js",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "SylphxAI/rapier",
+      "default_sha": "5be41de6c7d51b880d598176a9c1849a715a66fd",
+      "path": "website/static/demos2d/894.index.js",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "SylphxAI/rapier",
+      "default_sha": "5be41de6c7d51b880d598176a9c1849a715a66fd",
+      "path": "website/static/demos3d/898.index.js",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "SylphxAI/rapier",
+      "default_sha": "5be41de6c7d51b880d598176a9c1849a715a66fd",
+      "path": "website/static/img/convex_decomposition.afdesign",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "SylphxAI/spiron",
+      "default_sha": "c33741132f6825b8be032d64a488ed415bcaf9c8",
+      "path": "vendor/keel/crates/keel-text/fixtures/unicode/LineBreakTest-16.0.0.txt",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3037870
+    },
+    {
+      "repo": "SylphxAI/sylphx-clients",
+      "default_sha": "ebb624cad15cbd84a9559eef80e7a32e48d8300a",
+      "path": "resource-codec/generated/openapi.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 3559945
+    },
+    {
+      "repo": "SylphxAI/sylphx-clients",
+      "default_sha": "ebb624cad15cbd84a9559eef80e7a32e48d8300a",
+      "path": "resource-codec/generated/registry.json",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 4636376
+    },
+    {
+      "repo": "SylphxAI/talos",
+      "default_sha": "4095e4905fe58c803d799daed6c66ca93c4d8672",
+      "path": "CHANGELOG.md",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 2901274
+    },
+    {
+      "repo": "SylphxAI/temporal",
+      "default_sha": "0662b5dfac99238ca0933bf16ee8c8661494e3e9",
+      "path": "api/historyservice/v1/request_response.pb.go",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "SylphxAI/temporal",
+      "default_sha": "0662b5dfac99238ca0933bf16ee8c8661494e3e9",
+      "path": "tests/activity_standalone_test.go",
+      "reason": "GraphQL blob missing or truncated"
+    },
+    {
+      "repo": "SylphxAI/tree-sitter-kotlin",
+      "default_sha": "32556850d9f3b347e77f2bd32de4968f40ebab87",
+      "path": "src/parser.c",
+      "reason": "selected text blob exceeds 2MiB",
+      "size": 22443237
+    }
+  ]
+}

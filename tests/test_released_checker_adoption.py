@@ -177,9 +177,10 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
             base = fixture.commit({WORKFLOW: workflow(TENANT_RELEASE), SOURCE: POLL,
                                    sc.BASELINE: baseline})
             plan = fixture.plan(base)
-            self.assertEqual(plan["introduced_rules"], [])
+            self.assertEqual(plan["introduced_rules"], ["force-push"])
             self.assertEqual(plan["evidence"]["added_records"], [])
-            self.assertEqual(plan["baseline_text"], baseline)
+            self.assertEqual(plan["baseline_text"], baseline + sc.no_force_push.BASELINE_MARKER + "\n"
+                             + sc.adoption.RULE_MARKER + "force-push\n")
             self.assertEqual(len(plan["evidence"]["old_checkers"][0]["rules"]), 18)
 
     def test_released_profiles_match_immutable_source_and_enforce_existing_rules(self):
@@ -204,10 +205,12 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
                 base = fixture.commit({WORKFLOW: workflow(pin), SOURCE: POLL,
                                        sc.BASELINE: baseline})
                 plan = fixture.plan(base)
-                self.assertEqual(plan["introduced_rules"], [TENANT_RULE])
+                self.assertEqual(plan["introduced_rules"], [TENANT_RULE, "force-push"])
                 self.assertEqual(plan["evidence"]["added_records"], [])
                 self.assertEqual(plan["baseline_text"], baseline
-                                 + sc.adoption.RULE_MARKER + TENANT_RULE + "\n")
+                                 + sc.no_force_push.BASELINE_MARKER + "\n"
+                                 + sc.adoption.RULE_MARKER + TENANT_RULE + "\n"
+                                 + sc.adoption.RULE_MARKER + "force-push\n")
                 fixture.commit({WORKFLOW: workflow(UNKNOWN),
                                 sc.BASELINE: plan["baseline_text"]})
                 fixture.check(base, 0)

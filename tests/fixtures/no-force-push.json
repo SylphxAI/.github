@@ -1,0 +1,43 @@
+{
+  "must_fail": [
+    "git push --force origin HEAD:refs/heads/pin",
+    "git push origin --force-with-lease=refs/heads/pin:abc HEAD:pin",
+    "git push --force-if-includes origin HEAD:pin",
+    "git push -f origin HEAD:pin",
+    "git push -uf origin HEAD:pin",
+    "git push origin +HEAD:refs/heads/pin",
+    "git push origin '+refs/heads/a:refs/heads/b'",
+    "git -C repo -c advice.pushUpdateRejected=false push origin --force",
+    "env MODE=pin command git push --force-with-lease origin HEAD:pin",
+    "if git push --force origin HEAD:pin; then echo done; fi",
+    "git push \\\n  --force origin HEAD:pin",
+    "git push origin HEAD:pin && git push -f origin HEAD:other",
+    "bash -c 'git push --force origin HEAD:pin'",
+    "git push -- origin +HEAD:pin",
+    "git push --mirror origin",
+    "git push --repo=origin +HEAD:pin",
+    "git push -f origin refs/tags/v1 HEAD:refs/heads/pin",
+    "gh api --method PATCH 'repos/example/repo/git/refs/heads/pin' --field sha=abc --field force=true"
+  ],
+  "must_pass": [
+    "git push origin HEAD:refs/heads/pin",
+    "git push -u origin pin",
+    "git push --no-force origin pin",
+    "git push --force-with-lease-if-needed origin pin",
+    "git fetch --force origin main",
+    "git fetch origin +refs/heads/main:refs/remotes/origin/main",
+    "git push -o '--force' origin HEAD:pin",
+    "git push --push-option=+value origin HEAD:pin",
+    "# git push --force origin pin\ngit push origin pin",
+    "echo 'git push --force origin pin'",
+    "printf '%s\\n' 'git push -f origin pin'",
+    "rg 'git push --force' scripts/",
+    "git push -f origin 'refs/tags/v${V%%.*}'",
+    "git push origin '+HEAD:refs/tags/v1'",
+    "git push --force-with-lease origin refs/tags/v1 refs/tags/v2",
+    "gh api --method PATCH 'repos/example/repo/git/refs/heads/pin' --field sha=abc --field force=false",
+    "gh api --method PATCH 'repos/example/repo/git/refs/tags/v1' --field sha=abc --field force=true",
+    "git clone --mirror https://example.invalid/repo",
+    "git push --force --tags origin"
+  ]
+}

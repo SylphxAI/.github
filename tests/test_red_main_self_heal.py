@@ -310,7 +310,7 @@ class UnarmedStaticTest(unittest.TestCase):
         self.assertIn('contains($sha)', body[guard:])
         self.assertLess(guard, body.index("push_branch \"$branch\""))
         self.assertLess(guard, body.index("git_c revert"))
-        self.assertIn("exit 0", body[guard:body.index('branch="auto-revert/$SHORT_SHA"')])
+        self.assertIn("exit 0", body[guard:body.index('branch="auto-revert/$SHORT_SHA-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"')])
 
     def test_standing_searches_trust_only_the_apps_own_items(self):
         body = step_text("Revert the culprit or report it")

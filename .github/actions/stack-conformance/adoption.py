@@ -108,6 +108,13 @@ def source_profile(tree):
             raise ValueError("unreadable checker source: " + tenant_path)
         ast.parse(value)
         sources[tenant_path] = hashlib.sha256(value.encode()).hexdigest()
+    force_path = PREFIX + "no_force_push.py"
+    if force_path in tree.paths():
+        value = tree.read(force_path)
+        if value is None:
+            raise ValueError("unreadable checker source: " + force_path)
+        ast.parse(value)
+        sources[force_path] = hashlib.sha256(value.encode()).hexdigest()
     if texts["stack_conformance.py"] is None or "stack_conformance.py" not in (texts["action.yml"] or ""):
         raise ValueError("unrecognized stack checker entrypoint")
     module = ast.parse(texts["stack_conformance.py"])
@@ -127,11 +134,15 @@ def source_profile(tree):
             raise ValueError("model checker source missing")
         ast.parse(texts["model_pins.py"])
         rules.add("model-pin")
+    if ("no_force_push", "decide") in calls:
+        if force_path not in sources:
+            raise ValueError("force-push checker source missing")
+        rules.add("force-push")
     return {"sources": sources, "rules": sorted(rules)}
 
 
 def current_rules():
-    return architecture_rules((HERE / "architecture.py").read_text()) | {"model-pin"}
+    return architecture_rules((HERE / "architecture.py").read_text()) | {"model-pin", "force-push"}
 
 
 def profile_id(profile):
@@ -264,6 +275,8 @@ def introduced_rules(base_tree, baseline_text, *, shared_repo=None, source_tree=
     adopted = adopted_rules(baseline_text)
     if "# model-alias-ratchet-v1" in (baseline_text or "").splitlines():
         adopted.add("model-pin")
+    if "# force-push-ratchet-v1" in (baseline_text or "").splitlines():
+        adopted.add("force-push")
     return current_rules() - enforced - adopted, profiles
 
 
@@ -323,7 +336,9 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     head_arch = sc.architecture.evaluate(head_tree, repository, None, today)
     base_models = sc.model_pins.scan(base_tree, repository, None, sc.architecture.source_views)
     head_models = sc.model_pins.scan(head_tree, repository, None, sc.architecture.source_views)
-    if any(report["unreadable"] for report in (base_arch, head_arch, base_models, head_models)):
+    base_force = sc.no_force_push.scan(base_tree)
+    head_force = sc.no_force_push.scan(head_tree)
+    if any(report["unreadable"] for report in (base_arch, head_arch, base_models, head_models, base_force, head_force)):
         raise ValueError("adoption source unreadable; no baseline generated")
     if CACHE_RULE in introduced:
         errors = cache_approval_errors(head_arch["findings"], repository)
@@ -340,7 +355,8 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     for before, after, key, rule_id in (
             (base_arch, head_arch, sc.architecture.baseline_key,
              lambda row: "architecture/" + row["class"] + "/" + row["rule"]),
-            (base_models, head_models, sc.model_pins.baseline_key, lambda row: "model-pin")):
+            (base_models, head_models, sc.model_pins.baseline_key, lambda row: "model-pin"),
+            (base_force, head_force, sc.no_force_push.baseline_key, lambda row: "force-push")):
         inherited = {key(row) for row in before["findings"]}
         for row in after["findings"]:
             if rule_id(row) in introduced:
@@ -355,6 +371,8 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
         lines.append(sc.architecture.BASELINE_MARKER)
     if "model-pin" in introduced and sc.model_pins.BASELINE_MARKER not in (original or "").splitlines():
         lines.append(sc.model_pins.BASELINE_MARKER)
+    if "force-push" in introduced and sc.no_force_push.BASELINE_MARKER not in (original or "").splitlines():
+        lines.append(sc.no_force_push.BASELINE_MARKER)
     lines += [RULE_MARKER + rule for rule in sorted(introduced)]
     lines += sorted(additions)
     text = original or ""

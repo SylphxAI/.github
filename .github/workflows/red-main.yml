@@ -829,7 +829,7 @@ jobs:
       # App token, narrowed to the calling repository, carrying the four
       # permissions the handler writes through: contents, issues,
       # pull-requests and workflows. Workflows write is needed because a
-      # `sylphx-verify/<sha>` or revert branch points at a commit whose
+      # `sylphx-verify/<sha>-<run>-<attempt>` or revert branch points at a commit whose
       # `.github/workflows` differ from the default branch's (an older pin),
       # and the forge refuses that ref write from an App without it. It asks
       # for no `actions` permission: the builder App
@@ -1091,14 +1091,14 @@ jobs:
           set -euo pipefail
           . "$RUNNER_TEMP/red-main/lib.sh"
           quiet() { state_set quiet "$1"; echo "no action: $1"; exit 0; }
-          branch="auto-revert/$SHORT_SHA"
+          branch="auto-revert/$SHORT_SHA-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           open=$(gh api "repos/$REPO/pulls?head=$REPO:$branch&state=open" --jq 'length' 2>/dev/null || echo 0)
           [ "$open" = "0" ] || quiet "an open pull request already stands for $branch"
           label_q=$(enc "repo:$REPO is:pr is:open label:auto-revert")
           hand_in=$(gh api "search/issues?q=$label_q" --jq '.total_count' 2>/dev/null || echo 0)
           # An unarmed revert stays open until a person decides, so its label
           # must not silence a DIFFERENT breakage: that mode is keyed on the
-          # per-sha branch above alone.
+          # culprit-specific standing-revert check in the revert step.
           if [ "$MODE" != revert_pr_unarmed ]; then
             [ "$hand_in" = "0" ] || quiet "an open pull request already carries the auto-revert label"
           fi
@@ -1481,21 +1481,16 @@ jobs:
           refs_refused=no
           while IFS=$'\t' read -r sha subject; do
             [ -n "$sha" ] || continue
-            candidate_branch="sylphx-verify/$sha"
-            # Create the branch, or move it if a stale one is left over. Both
-            # errors are kept: on the App path a refused write stops the trace
-            # with the forge's answer, since a dispatch on a ref that does not
-            # exist can only answer "No ref found".
+            candidate_branch="sylphx-verify/$sha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            # Each run attempt creates its own branch. A rejected create never
+            # rewrites a branch left by an earlier trace.
             if ! gh api --method POST "repos/$REPO/git/refs" \
                  --field "ref=refs/heads/$candidate_branch" --field "sha=$sha" >/dev/null 2>"$WORK_DIR/ref.err"; then
-              if ! gh api --method PATCH "repos/$REPO/git/refs/heads/$candidate_branch" \
-                   --field "sha=$sha" --field force=true >/dev/null 2>>"$WORK_DIR/ref.err"; then
-                if [ "$TOKEN_MODE" = yes ]; then
-                  refs_refused=yes
-                else
-                  say "**No action:** the temporary branch \`$candidate_branch\` could not be created ($(head -c 400 "$WORK_DIR/ref.err" | tr '\n' ' ')); a person must decide."
-                  exit 0
-                fi
+              if [ "$TOKEN_MODE" = yes ]; then
+                refs_refused=yes
+              else
+                say "**No action:** the temporary branch \`$candidate_branch\` could not be created ($(head -c 400 "$WORK_DIR/ref.err" | tr '\n' ' ')); a person must decide."
+                exit 0
               fi
             fi
             if [ "$refs_refused" = yes ]; then break; fi
@@ -1513,7 +1508,7 @@ jobs:
             # caller does not grant. The trace is skipped and the notify
             # comment names every candidate commit instead.
             state_set blocked "contents: write"
-            say "Trace skipped: creating the temporary \`sylphx-verify/<sha>\` branches needs contents: write, which the workflow token does not hold; the $total unverified commit(s) are reported as candidates."
+            say "Trace skipped: creating the temporary \`sylphx-verify/<sha>-<run>-<attempt>\` branches needs contents: write, which the workflow token does not hold; the $total unverified commit(s) are reported as candidates."
             jq -R -s -c 'split("\n") | map(select(length > 0))' <<<"$(cut -f1 <<<"$rows")" >"$STATE_DIR/revert-all.json"
             echo "revert-all=yes" >>"$GITHUB_OUTPUT"
             exit 0
@@ -1859,7 +1854,7 @@ jobs:
               exit 0
             fi
           fi
-          branch="auto-revert/$SHORT_SHA"
+          branch="auto-revert/$SHORT_SHA-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           repo_dir="$WORK_DIR/repo"
           window=$(state_get window)
           case "$window" in ''|*[!0-9]*) window=0 ;; esac
@@ -1928,19 +1923,12 @@ jobs:
             say "**No action:** the revert conflicts with $TRUNK ($(head -c 200 "$WORK_DIR/revert.err" | tr '\n' ' ')); a person must decide."
             exit 0
           fi
+          # A new run attempt opens a new branch and pull request. A rejected
+          # push preserves the remote branch and stops this attempt.
           if ! push_branch "$branch" 2>"$WORK_DIR/push.err"; then
-            if grep -qE 'non-fast-forward|fetch first|stale info' "$WORK_DIR/push.err"; then
-              git_c fetch --quiet origin "$branch" || true
-              if ! push_branch "$branch" --force-with-lease 2>"$WORK_DIR/push.err"; then
-                write_refused "$(cat "$WORK_DIR/push.err")" "contents: write" "pushing $branch" || true
-                say "**Blocked:** the revert branch could not be pushed; no pull request."
-                exit 1
-              fi
-            else
-              write_refused "$(cat "$WORK_DIR/push.err")" "contents: write" "pushing $branch" || true
-              say "**Blocked:** the revert branch could not be pushed; no pull request."
-              exit 1
-            fi
+            write_refused "$(cat "$WORK_DIR/push.err")" "contents: write" "pushing $branch" || true
+            say "**Blocked:** the revert branch could not be pushed; no pull request."
+            exit 1
           fi
           original=""
           original_number=""
