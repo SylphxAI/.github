@@ -49,7 +49,9 @@ class SqlTests(unittest.TestCase):
                 "/* outer /* inner */ still comment */ DROP TABLE accounts;",
             ],
             "mysql": [
+                "DROP TEMPORARY TABLE accounts;",
                 "ALTER TABLE `accounts` DROP COLUMN `balance`;",
+                "ALTER TABLE accounts ADD (id int, region text NOT NULL);",
                 "ALTER TABLE accounts MODIFY COLUMN balance smallint;",
                 "ALTER TABLE accounts CHANGE COLUMN balance old_balance int;",
                 "RENAME TABLE accounts TO archived_accounts;",
@@ -85,6 +87,8 @@ class SqlTests(unittest.TestCase):
             "SELECT * FROM accounts FOR UPDATE;",
             "CREATE TABLE links (id int REFERENCES accounts ON UPDATE CASCADE);",
             "INSERT INTO accounts (id) VALUES (1) ON DUPLICATE KEY UPDATE id = 1;",
+            "INSERT INTO accounts (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET id = 1;",
+            "SELECT TRUNCATE(1.23, 1);",
             "SELECT 'DROP TABLE accounts; DELETE FROM accounts;'; -- TRUNCATE accounts\n",
             "/* DROP TABLE accounts; */ SELECT 1;",
         ]

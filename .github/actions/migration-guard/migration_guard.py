@@ -170,7 +170,9 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
             tail = stmt[i:]
             if any(starts(tail, "DROP", obj) for obj in ("TABLE", "COLUMN", "SCHEMA", "DATABASE")):
                 out.append((token.line, "DROP " + tail[1].value))
-            if kw(token, "TRUNCATE"):
+            if starts(tail, "DROP", "TEMPORARY", "TABLE"):
+                out.append((token.line, "DROP TEMPORARY TABLE"))
+            if kw(token, "TRUNCATE") and not (i + 1 < len(stmt) and stmt[i + 1].value == "("):
                 out.append((token.line, "TRUNCATE"))
             if kw(token, "RENAME"):
                 out.append((token.line, "RENAME"))
@@ -189,7 +191,7 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
                         suffix.append(following)
                     if following.kind == "symbol" and following.value == "(":
                         depth += 1
-                lock_or_upsert = kw(token, "UPDATE") and i and any(kw(stmt[i - 1], w) for w in ("FOR", "KEY", "ON"))
+                lock_or_upsert = kw(token, "UPDATE") and i and any(kw(stmt[i - 1], w) for w in ("FOR", "KEY", "ON", "DO"))
                 if not lock_or_upsert and not has(suffix, "WHERE"):
                     out.append((token.line, token.value + " without WHERE"))
         if (starts(stmt, "DO") or starts(stmt, "CALL") or starts(stmt, "EXECUTE")
@@ -206,7 +208,15 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
         if at < len(stmt) and kw(stmt[at], "ONLY"):
             at += 1
         table, at = name(stmt, at)
+        clauses = []
         for clause in split(stmt[at:], ","):
+            pos = 2 if starts(clause, "ADD", "COLUMN") else 1
+            if starts(clause, "ADD") and len(clause) > pos and clause[pos].value == "(" and clause[-1].value == ")":
+                # MySQL also accepts ADD (a int, b int NOT NULL).
+                clauses.extend([[clause[0], *part] for part in split(clause[pos + 1:-1], ",")])
+            else:
+                clauses.append(clause)
+        for clause in clauses:
             flat = top_level(clause)
             if not flat:
                 continue
