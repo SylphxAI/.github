@@ -137,6 +137,9 @@ selected branch, and `ci-ok` includes its verdict. The automatic completion
 consumer does not duplicate this dispatch. The pre-merge dispatch is necessary
 for a newly added workflow: completion triggers load the default-branch caller.
 These checks need no builder App secret or manually copied credential.
+Consumer qualification has a separate concurrency group so it cannot replace a
+pending native PR run. Its successful dispatch is consumer evidence; the native
+PR and merge-group checks still supply the required merge evidence.
 
 ## Behaviour
 
