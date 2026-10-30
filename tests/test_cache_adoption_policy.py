@@ -36,6 +36,16 @@ class CacheAdoptionPolicyTests(unittest.TestCase):
         output, _ = f.check(base, 1)
         self.assertIn("unapproved inherited cache read", output)
 
+    def test_existing_marker_is_not_proof_of_prior_approval(self):
+        f = self.fixture()
+        row = sc.architecture.scan_file(SOURCE, BAD, "example/app", set(), [])[0]
+        baseline = (sc.architecture.BASELINE_MARKER + "\n" + a.RULE_MARKER + a.CACHE_RULE + "\n"
+                    + sc.architecture.baseline_key(row) + "\n")
+        base = f.commit({WORKFLOW: workflow(OLD), SOURCE: BAD, sc.BASELINE: baseline})
+        f.commit({WORKFLOW: workflow(UNKNOWN)})
+        output, _ = f.check(base, 1)
+        self.assertIn("unapproved inherited cache read", output)
+
     def test_current_pin_unchanged_preserves_existing_ci(self):
         f = self.fixture()
         base = f.commit({WORKFLOW: workflow(OLD), SOURCE: BAD})

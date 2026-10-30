@@ -188,18 +188,13 @@ def cache_approval_errors(findings, repository):
 
 def cache_adoption_requested(base_tree, head_tree, base_text, head_text):
     """A pin-only bump cannot skip initial approval by omitting its marker."""
-    if CACHE_RULE in adopted_rules(base_text):
-        return False
-    if CACHE_RULE in adopted_rules(head_text):
+    if CACHE_RULE in adopted_rules(head_text) - adopted_rules(base_text):
         return True
     before = checker_pins(base_tree, required=False)
     after = checker_pins(head_tree, required=False)
-    if before == after:
-        return False
-    if not before:
-        return bool(after)
-    introduced, _ = introduced_rules(base_tree, base_text)
-    return CACHE_RULE in introduced
+    # A pre-existing marker is not evidence that the prior checker enforced
+    # approvals. Revalidate on pin adoption; unchanged-pin CI is unaffected.
+    return bool(after) and before != after
 
 
 def introduced_rules(base_tree, baseline_text, *, shared_repo=None):
