@@ -594,7 +594,7 @@ class ModelPinTest(unittest.TestCase):
         for entry in sc.model_pins.EXEMPTIONS:
             self.assertTrue(entry["reason"].strip())
             path = entry["path"] + "model.rs" if entry["path"].endswith("/") else entry["path"]
-            pinned = 'const MODEL: &str = "gpt-5.1-2025-11-13";'
+            pinned = 'MODEL = "gpt-5.1-2025-11-13"'
             with self.subTest(path=path):
                 self.assertEqual(self.scan({path: pinned}, entry["repository"]), [])
                 self.assertEqual(len(self.scan({path: pinned}, "example/product")), 1)

@@ -22,6 +22,8 @@ SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "docs", "examp
 # callers. Scope by repository AND path: a product cannot inherit an exemption
 # by naming a directory after a platform component.
 EXEMPTIONS = [
+    {"repository": "SylphxAI/.github", "path": ".github/actions/stack-conformance/model_pins.py",
+     "reason": "The static recognizer vocabulary identifies forbidden upstream names and never selects a runtime model."},
     {"repository": "SylphxAI/cloud", "path": "services/ai/crates/ai-core/src/",
      "reason": "AI catalog identity, revision and offering policy owns vendor model identities."},
     {"repository": "SylphxAI/cloud", "path": "services/ai/crates/ai-server/src/capabilities/control_plane/",
