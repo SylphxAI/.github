@@ -1,5 +1,5 @@
 name: migration-guard
-description: Refuse destructive SQL and changes to already merged migrations.
+description: Refuse destructive SQL, schema contractions and changes to already merged migrations.
 
 inputs:
   dialect:
@@ -7,7 +7,10 @@ inputs:
     required: true
   migration-directories:
     description: Repository-relative migration directories, one per line; SQL files are read recursively.
-    required: true
+    default: ''
+  schema-files:
+    description: Repository-relative CREATE TABLE schema snapshots to compare, one file per line. Configure this or migration-directories, or both.
+    default: ''
   base-ref:
     description: Base Git commit; defaults to the pull request, merge group, or push base.
     default: ''
@@ -23,6 +26,7 @@ runs:
       env:
         MIGRATION_DIALECT: ${{ inputs.dialect }}
         MIGRATION_DIRECTORIES: ${{ inputs.migration-directories }}
+        MIGRATION_SCHEMA_FILES: ${{ inputs.schema-files }}
         MIGRATION_BASE: ${{ inputs.base-ref }}
         MIGRATION_HEAD: ${{ inputs.head-ref }}
       run: python3 "$GITHUB_ACTION_PATH/migration_guard.py"

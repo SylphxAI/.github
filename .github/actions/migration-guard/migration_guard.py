@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from difflib import SequenceMatcher
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -22,10 +23,16 @@ class Token(NamedTuple):
     value: str
     kind: str
     line: int
+    raw: str = ""
 
 
 class SqlError(ValueError):
     pass
+
+
+WORD = re.compile(r"[\w$]+")
+VARIABLE = re.compile(r"[\w.$]+")
+DOLLAR = re.compile(r"\$(?:[A-Za-z_][\w]*)?\$")
 
 
 def quoted_end(sql: str, start: int, dialect: str, line: int) -> int:
@@ -83,7 +90,7 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
             if executable:
                 body = re.sub(r"^(?:!|M!)\d*\s*", "", sql[start + 2:i - 2])
                 inner, _ = lex(body, dialect)
-                tokens.extend(Token(t.value, t.kind, line + t.line - 1) for t in inner)
+                tokens.extend(Token(t.value, t.kind, line + t.line - 1, t.raw) for t in inner)
             line += sql[start:i].count("\n")
         elif dialect == "mysql" and ch == "@":
             start = i
@@ -91,15 +98,15 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
             if i < len(sql) and sql[i] in "'\"`":
                 i = quoted_end(sql, i, dialect, line)
             else:
-                variable = re.match(r"[\w.$]+", sql[i:])
+                variable = VARIABLE.match(sql, i)
                 if not variable:
                     raise SqlError(f"line {line}: cannot inspect MySQL variable")
                 i += len(variable[0])
-            tokens.append(Token(sql[start:i], "literal", line))
+            tokens.append(Token(sql[start:i], "literal", line, sql[start:i]))
             line += sql[start:i].count("\n")
-        elif ch in "'\"`" or (dialect == "postgres" and ch == "$" and re.match(r"\$(?:[A-Za-z_][\w]*)?\$", sql[i:])):
+        elif ch in "'\"`" or (dialect == "postgres" and ch == "$" and DOLLAR.match(sql, i)):
             start, start_line = i, line
-            dollar = re.match(r"\$(?:[A-Za-z_][\w]*)?\$", sql[i:]) if ch == "$" else None
+            dollar = DOLLAR.match(sql, i) if ch == "$" else None
             if dollar:
                 delim = dollar[0]
                 end = sql.find(delim, i + len(delim))
@@ -111,12 +118,12 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
                 i = quoted_end(sql, start, dialect, line)
                 kind = "literal" if ch == "'" or (dialect == "mysql" and ch == '"') else "identifier"
                 value = sql[start + 1:i - 1].replace(ch + ch, ch) if kind == "identifier" else "<literal>"
-            tokens.append(Token(value, kind, start_line))
+            tokens.append(Token(value, kind, start_line, sql[start:i]))
             line += sql[start:i].count("\n")
         else:
-            match = re.match(r"[\w$]+", sql[i:])
+            match = WORD.match(sql, i)
             value = match[0] if match else ch
-            tokens.append(Token(value.upper(), "word" if match else "symbol", line))
+            tokens.append(Token(value.upper(), "word" if match else "symbol", line, value))
             i += len(value)
     return tokens, markers
 
@@ -174,10 +181,26 @@ def name(tokens: list[Token], at: int) -> tuple[str, int]:
 
 def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
     tokens, _ = lex(sql, dialect)
+    return token_violations(tokens, dialect)
+
+
+def foreign_delete_actions(tokens: list[Token]) -> list[tuple[int, str]]:
+    actions = []
+    for i, token in enumerate(tokens):
+        tail = tokens[i:]
+        if starts(tail, "ON", "DELETE", "CASCADE"):
+            actions.append((token.line, "CASCADE"))
+        elif starts(tail, "ON", "DELETE", "SET", "NULL"):
+            actions.append((token.line, "SET NULL"))
+    return actions
+
+
+def token_violations(tokens: list[Token], dialect: str) -> list[tuple[int, str]]:
     out: list[tuple[int, str]] = []
     defaults: set[tuple[str, str]] = set()
     created: set[str] = set()
     for stmt in split(tokens, ";"):
+        out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(stmt))
         if starts(stmt, "SET") and any(
                 (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
                 or (t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I))
@@ -199,7 +222,7 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
                 out.append((token.line, "RENAME"))
             # Each mutation needs its own top-level WHERE. A WHERE in a nested
             # SELECT, quoted string, or a second statement does not qualify.
-            if kw(token, "DELETE") or (kw(token, "UPDATE") and not (i and kw(stmt[i - 1], "ON"))):
+            if (kw(token, "DELETE") or kw(token, "UPDATE")) and not (i and kw(stmt[i - 1], "ON")):
                 # Stop at the enclosing CTE/subquery boundary as well as the
                 # statement end. A later CTE's WHERE cannot qualify this one.
                 suffix, depth = [], 0
@@ -301,12 +324,260 @@ def check_sql(sql: str, dialect: str) -> list[tuple[int, str]]:
     return [] if markers else violations(sql, dialect)
 
 
+class Column(NamedTuple):
+    sql_type: tuple[tuple[str, str], ...]
+    required: bool
+    default: bool
+    line: int
+
+
+class Table(NamedTuple):
+    columns: dict[str, Column]
+    options: tuple[tuple[str, str], ...]
+    foreign_actions: dict[tuple, int]
+    line: int
+
+
+def signature(tokens: list[Token], *, exact_words: bool = False) -> tuple[tuple[str, str], ...]:
+    # Literal contents matter for enum definitions and changed data statements.
+    # Preserve statement word spelling too: MySQL table names may be case-sensitive.
+    return tuple((t.kind, t.raw if t.raw and (t.kind == "literal" or exact_words and t.kind == "word") else t.value) for t in tokens)
+
+
+def snapshot_name(tokens: list[Token], at: int, dialect: str) -> tuple[tuple[str, ...], int]:
+    parts = []
+    while at < len(tokens) and tokens[at].kind in {"word", "identifier"}:
+        token = tokens[at]
+        parts.append(token.value if token.kind == "identifier" else (token.raw or token.value) if dialect == "mysql" else token.value.lower())
+        at += 1
+        if at >= len(tokens) or tokens[at].value != ".":
+            break
+        at += 1
+    if not parts or at and tokens[at - 1].value == ".":
+        raise SqlError("expected an explicit schema identifier")
+    return tuple(parts), at
+
+
+def table_start(stmt: list[Token]) -> int | None:
+    if starts(stmt, "CREATE", "TABLE"):
+        return 2
+    if starts(stmt, "CREATE") and len(stmt) > 2 and any(kw(stmt[1], w) for w in ("TEMP", "TEMPORARY", "UNLOGGED", "FOREIGN")) and kw(stmt[2], "TABLE"):
+        return 3
+    return None
+
+
+def group(tokens: list[Token], at: int) -> tuple[list[Token], int]:
+    if at >= len(tokens) or tokens[at].value != "(":
+        raise SqlError("schema snapshots require explicit CREATE TABLE column definitions")
+    depth = 1
+    for end in range(at + 1, len(tokens)):
+        if tokens[end].kind == "symbol":
+            depth += (tokens[end].value == "(") - (tokens[end].value == ")")
+        if depth == 0:
+            return tokens[at + 1:end], end + 1
+    raise SqlError("unclosed schema definition")
+
+
+def table_options(tokens: list[Token]) -> tuple[tuple[str, str], ...]:
+    stable, at = [], 0
+    while at < len(tokens):
+        if any(kw(tokens[at], word) for word in ("AUTO_INCREMENT", "COMMENT")):
+            at += 1
+            if at < len(tokens) and tokens[at].value == "=":
+                at += 1
+            if at >= len(tokens):
+                raise SqlError("missing table option value")
+            at += 1
+        else:
+            stable.append(tokens[at])
+            at += 1
+    return signature(stable)
+
+
+def snapshot_foreign_actions(definition: list[Token], dialect: str,
+                             column: str | None = None) -> dict[tuple, int]:
+    actions = foreign_delete_actions(definition)
+    if not actions:
+        return {}
+    reference = next((i for i, t in enumerate(definition) if kw(t, "REFERENCES")), None)
+    if reference is None:
+        raise SqlError("foreign-key delete action has no explicit reference")
+    target, at = snapshot_name(definition, reference + 1, dialect)
+    def columns(parts):
+        result = []
+        for part in split(parts, ","):
+            key, _ = snapshot_name(part, 0, dialect)
+            if len(key) != 1:
+                raise SqlError("foreign keys require explicit column names")
+            result.append(key[0].casefold() if dialect == "mysql" else key[0])
+        return tuple(result)
+    referenced = ()
+    if at < len(definition) and definition[at].value == "(":
+        body, _ = group(definition, at)
+        referenced = columns(body)
+    if column is None:
+        opening = next((i for i, t in enumerate(definition[:reference]) if t.value == "("), reference)
+        body, _ = group(definition, opening)
+        source = columns(body)
+    else:
+        source = (column,)
+    return {(source, target, referenced, action): line for line, action in actions}
+
+
+def snapshot(sql: str, dialect: str) -> tuple[dict[tuple[str, ...], Table], list[list[Token]], set[str]]:
+    tokens, markers = lex(sql, dialect)
+    statements = split(tokens, ";")
+    tables = {}
+    for stmt in statements:
+        if starts(stmt, "SET"):
+            mysql_mode = any(t.value.upper() == "SQL_MODE" or t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I) for t in stmt)
+            postgres_mode = any(t.value.upper() == "STANDARD_CONFORMING_STRINGS" for t in stmt)
+            if (mysql_mode and any(t.kind == "literal" and any(mode in t.raw.upper() for mode in ("NO_BACKSLASH_ESCAPES", "ANSI_QUOTES")) for t in stmt)
+                    or postgres_mode and any(t.kind == "word" and t.value in {"OFF", "FALSE", "0"} or t.kind == "literal" and t.raw.strip("'\"").lower() in {"off", "false", "0"} for t in stmt)):
+                raise SqlError("schema snapshots require default SQL quote semantics")
+        drop_at = 2 if starts(stmt, "DROP", "TABLE") else 3 if starts(stmt, "DROP", "TEMPORARY", "TABLE") else None
+        if drop_at is not None:
+            if starts(stmt[drop_at:], "IF", "EXISTS"):
+                drop_at += 2
+            for part in split(stmt[drop_at:], ","):
+                dropped, _ = snapshot_name(part, 0, dialect)
+                if dropped in tables:
+                    raise SqlError(f"DROP TABLE follows the CREATE definition for {'.'.join(dropped)}")
+        if starts(stmt, "ALTER", "TABLE") or starts(stmt, "ALTER", "FOREIGN", "TABLE"):
+            raise SqlError("schema snapshots must declare table structure in CREATE TABLE rather than ALTER TABLE")
+        at = table_start(stmt)
+        if at is None:
+            if starts(stmt, "CREATE") and any(kw(t, "TABLE") for t in stmt[:5]):
+                raise SqlError("unsupported CREATE TABLE header in schema snapshot")
+            continue
+        prefix = stmt[1:at - 1]
+        if starts(stmt[at:], "IF", "NOT", "EXISTS"):
+            at += 3
+        table, at = snapshot_name(stmt, at, dialect)
+        if table in tables:
+            raise SqlError(f"duplicate CREATE TABLE definition for {'.'.join(table)}")
+        body, end = group(stmt, at)
+        if has(stmt[end:], "SELECT"):
+            raise SqlError("schema snapshots require explicit declarations rather than CREATE TABLE AS queries")
+        if has(stmt[end:], "INHERITS"):
+            raise SqlError("inherited schema columns require explicit definitions")
+        columns, primary, foreign_actions = {}, [], {}
+        for definition in split(body, ","):
+            constraint = definition
+            if starts(constraint, "CONSTRAINT"):
+                if len(constraint) < 3 or constraint[1].kind not in {"word", "identifier"}:
+                    raise SqlError("invalid named table constraint")
+                constraint = constraint[2:]
+            table_constraint = any(starts(constraint, *words) for words in (
+                ("PRIMARY", "KEY"), ("FOREIGN", "KEY"), ("UNIQUE",), ("CHECK",), ("EXCLUDE",)))
+            if dialect == "mysql" and any(starts(constraint, word) for word in ("KEY", "INDEX", "FULLTEXT", "SPATIAL")):
+                table_constraint = True
+            if table_constraint:
+                foreign_actions.update(snapshot_foreign_actions(constraint, dialect))
+                if starts(constraint, "PRIMARY", "KEY"):
+                    opening = next((i for i, t in enumerate(constraint) if t.value == "("), len(constraint))
+                    key_columns, _ = group(constraint, opening)
+                    for part in split(key_columns, ","):
+                        key, _ = snapshot_name(part, 0, dialect)
+                        if len(key) != 1:
+                            raise SqlError("unsupported qualified primary key column")
+                        primary.append(key[0].casefold() if dialect == "mysql" else key[0])
+                continue
+            if starts(definition, "LIKE") or starts(definition, "CONSTRAINT"):
+                raise SqlError("schema columns require explicit names and types")
+            column, at = snapshot_name(definition, 0, dialect)
+            if len(column) != 1:
+                raise SqlError("unsupported qualified column name")
+            column_name = column[0].casefold() if dialect == "mysql" else column[0]
+            foreign_actions.update(snapshot_foreign_actions(definition, dialect, column_name))
+            if column_name in columns:
+                raise SqlError(f"duplicate column {column_name}")
+            depth, type_end = 0, len(definition)
+            for i in range(at, len(definition)):
+                token = definition[i]
+                if depth == 0 and any(kw(token, word) for word in (
+                        "NOT", "NULL", "DEFAULT", "PRIMARY", "UNIQUE", "REFERENCES", "CHECK", "CONSTRAINT", "GENERATED", "AUTO_INCREMENT", "COMMENT")):
+                    type_end = i
+                    break
+                if token.kind == "symbol":
+                    depth += (token.value == "(") - (token.value == ")")
+            sql_type = definition[at:type_end]
+            if not sql_type:
+                raise SqlError(f"column {column_name} has no explicit type")
+            rest = definition[type_end:]
+            flat = top_level(rest)
+            # MySQL COLLATE is a column attribute and can follow DEFAULT or
+            # COMMENT, outside the leading type tokens.
+            collation = []
+            for i, token in enumerate(flat):
+                if kw(token, "COLLATE"):
+                    _, collation_end = snapshot_name(flat, i + 1, dialect)
+                    collation.extend(flat[i:collation_end])
+            generated = has(flat, "GENERATED") or has(flat, "AUTO_INCREMENT") or any(has(sql_type, t) for t in ("SERIAL", "BIGSERIAL", "SMALLSERIAL"))
+            default_at = next((i for i, t in enumerate(rest) if kw(t, "DEFAULT")), None)
+            default = generated or default_at is not None and default_at + 1 < len(rest) and not kw(rest[default_at + 1], "NULL")
+            required = has(flat, "NOT", "NULL") or has(flat, "PRIMARY", "KEY") or generated and (has(flat, "IDENTITY") or has(flat, "AUTO_INCREMENT") or has(sql_type, "SERIAL") or has(sql_type, "BIGSERIAL") or has(sql_type, "SMALLSERIAL"))
+            columns[column_name] = Column(signature(sql_type + collation), required, default, definition[0].line)
+        for column in primary:
+            if column not in columns:
+                raise SqlError(f"primary key references undeclared column {column}")
+            columns[column] = columns[column]._replace(required=True)
+        tables[table] = Table(columns, signature(prefix) + table_options(stmt[end:]), foreign_actions, stmt[0].line)
+    return tables, statements, set(markers)
+
+
+def check_schema(old_sql: str, new_sql: str, dialect: str) -> list[tuple[int, str]]:
+    old, old_statements, old_markers = snapshot(old_sql, dialect)
+    if old_sql == new_sql:
+        return []
+    new, new_statements, new_markers = snapshot(new_sql, dialect)
+    # A reference left in a mutable snapshot must not permanently exempt it.
+    if new_markers - old_markers:
+        return []
+    errors = []
+    for table, current in new.items():
+        previous_actions = old[table].foreign_actions if table in old else {}
+        for action, line in current.foreign_actions.items():
+            if action not in previous_actions:
+                errors.append((line, f"foreign key on {'.'.join(table)} introduces ON DELETE {action[-1]}, which changes child data"))
+    for table, previous in old.items():
+        label = '.'.join(table)
+        if table not in new:
+            errors.append((previous.line, f"table {label} was removed or renamed"))
+            continue
+        current = new[table]
+        if previous.options != current.options:
+            errors.append((current.line, f"table {label} options changed (storage or collation safety cannot be proved)"))
+        for column, before in previous.columns.items():
+            after = current.columns.get(column)
+            if after is None:
+                errors.append((current.line, f"column {label}.{column} was removed or renamed"))
+            elif before.sql_type != after.sql_type:
+                errors.append((after.line, f"column {label}.{column} type changed (narrowing cannot be excluded)"))
+        for column, after in current.columns.items():
+            before = previous.columns.get(column)
+            if after.required and not after.default and (before is None or not before.required):
+                errors.append((after.line, f"column {label}.{column} becomes NOT NULL without a DEFAULT"))
+    # Include CREATE statements as anchors, so moving an old DROP past its
+    # CREATE cannot make the destructive statement disappear in a multiset.
+    changes = SequenceMatcher(a=[signature(s, exact_words=True) for s in old_statements],
+                              b=[signature(s, exact_words=True) for s in new_statements], autojunk=False)
+    inserted = []
+    for tag, _, _, start, end in changes.get_opcodes():
+        if tag in {"insert", "replace"}:
+            for stmt in new_statements[start:end]:
+                if table_start(stmt) is None:
+                    inserted.extend([*stmt, Token(";", "symbol", stmt[-1].line)])
+    errors.extend(token_violations(inserted, dialect))
+    return sorted(set(errors))
+
+
 def git(root: Path, *args: str) -> str:
     result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=True)
     return result.stdout.decode("utf-8")
 
 
-def directories(raw: str) -> list[str]:
+def directories(raw: str, *, allow_empty: bool = False) -> list[str]:
     paths = []
     for line in raw.splitlines():
         value = line.strip().rstrip("/")
@@ -314,22 +585,22 @@ def directories(raw: str) -> list[str]:
             continue
         path = PurePosixPath(value)
         if path.is_absolute() or ".." in path.parts or any(ch in value for ch in "*?[]\\"):
-            raise ValueError(f"migration directory must be a repository-relative literal path: {value}")
-        paths.append(str(path))
-    if not paths:
+            raise ValueError(f"SQL scope must be a repository-relative literal path: {value}")
+        if str(path) not in paths:
+            paths.append(str(path))
+    if not paths and not allow_empty:
         raise ValueError("at least one migration directory is required")
     return paths
 
 
-def migration_files(root: Path, ref: str, dirs: list[str]) -> dict[str, tuple[str, str]]:
+def tree_files(root: Path, ref: str) -> dict[str, tuple[str, str]]:
     files = {}
     for entry in git(root, "ls-tree", "-rz", ref).split("\0"):
         if not entry:
             continue
         metadata, path = entry.split("\t", 1)
         mode, kind, oid = metadata.split()
-        if path.lower().endswith(".sql") and any(d == "." or path.startswith(d + "/") for d in dirs):
-            files[path] = mode, oid
+        files[path] = mode, oid
     return files
 
 
@@ -338,12 +609,15 @@ def version(path: str) -> int | None:
     return int(match[1]) if match else None
 
 
-def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str) -> tuple[list[str], int]:
+def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
+                schemas: list[str] | None = None) -> tuple[list[str], int]:
     # PRs can be behind main. Only their changes since the common ancestor
     # count; merge groups and pushes already have an ancestral base.
     ancestor = git(root, "merge-base", base, head).strip()
-    old = migration_files(root, ancestor, dirs)
-    new = migration_files(root, head, dirs)
+    old_tree, new_tree = tree_files(root, ancestor), tree_files(root, head)
+    def migrations(tree):
+        return {p: blob for p, blob in tree.items() if p.lower().endswith(".sql") and any(d == "." or p.startswith(d + "/") for d in dirs)}
+    old, new = migrations(old_tree), migrations(new_tree)
     errors = []
     for path, blob in old.items():
         if new.get(path) != blob:
@@ -369,6 +643,20 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str)
             errors.extend(f"{path}:{line}: {reason}" for line, reason in check_sql(sql, dialect))
         except (SqlError, UnicodeError) as exc:
             errors.append(f"{path}: cannot inspect SQL: {exc}")
+    for path in schemas or []:
+        before, after = old_tree.get(path), new_tree.get(path)
+        if after is None:
+            errors.append(f"{path}: configured schema file is missing or deleted")
+            continue
+        if any(blob and blob[0] not in {"100644", "100755"} for blob in (before, after)):
+            errors.append(f"{path}: schema must be a regular SQL file")
+            continue
+        try:
+            old_sql = git(root, "cat-file", "blob", before[1]) if before else ""
+            new_sql = git(root, "cat-file", "blob", after[1])
+            errors.extend(f"{path}:{line}: {reason}" for line, reason in check_schema(old_sql, new_sql, dialect))
+        except (SqlError, UnicodeError) as exc:
+            errors.append(f"{path}: cannot inspect schema: {exc}")
     return errors, len(added)
 
 
@@ -389,19 +677,23 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
     parser.add_argument("--base", default=env.get("MIGRATION_BASE", ""))
     parser.add_argument("--head", default=env.get("MIGRATION_HEAD", ""))
     parser.add_argument("--directory", action="append")
+    parser.add_argument("--schema-file", action="append")
     args = parser.parse_args(argv)
     try:
         if args.dialect not in {"postgres", "mysql"}:
             raise ValueError("dialect must be postgres or mysql")
-        dirs = directories("\n".join(args.directory) if args.directory else env.get("MIGRATION_DIRECTORIES", ""))
+        dirs = directories("\n".join(args.directory) if args.directory else env.get("MIGRATION_DIRECTORIES", ""), allow_empty=True)
+        schemas = directories("\n".join(args.schema_file) if args.schema_file else env.get("MIGRATION_SCHEMA_FILES", ""), allow_empty=True)
+        if not dirs and not schemas:
+            raise ValueError("at least one migration directory or schema file is required")
         base, head = event_range({**env, "MIGRATION_BASE": args.base, "MIGRATION_HEAD": args.head})
         root = Path(env.get("GITHUB_WORKSPACE", "."))
-        errors, count = check_range(root, base, head, dirs, args.dialect)
+        errors, count = check_range(root, base, head, dirs, args.dialect, schemas)
         if errors:
             print("\n".join(errors))
-            print("::error::Migration safety check failed. Merged files are immutable. Ship an expand step before contracting; a new contract migration must name that released step in `-- contract: <reference>`.")
+            print("::error::Migration safety check failed. Merged migrations are immutable. Ship an expand step before contracting; add `-- contract: <reference>` naming that released step in the new migration or changed schema snapshot.")
             return 1
-        print(f"Migration safety check passed ({count} new SQL migration file(s) inspected; merged files unchanged).")
+        print(f"Migration safety check passed ({count} new SQL migration file(s), {len(schemas)} schema snapshot(s) inspected; merged migrations unchanged).")
         return 0
     except (ValueError, OSError, UnicodeError, subprocess.CalledProcessError) as exc:
         print(f"::error::Migration safety check could not complete: {exc}")
