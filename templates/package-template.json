@@ -36,7 +36,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "test": "vitest",
+    "test": "vitest run",
+    "test:ci": "ci-test --format vitest --report .ci-test-vitest.json --shard package/unit -- vitest run --reporter=default --reporter=json --outputFile=.ci-test-vitest.json",
     "test:watch": "vitest --watch",
     "lint": "biome lint",
     "lint:fix": "biome lint --fix",
