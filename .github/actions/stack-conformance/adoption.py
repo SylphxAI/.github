@@ -129,6 +129,13 @@ def source_profile(tree):
             raise ValueError("unreadable checker source: " + deal_path)
         ast.parse(value)
         sources[deal_path] = hashlib.sha256(value.encode()).hexdigest()
+    portable_path = PREFIX + "project_portability.py"
+    if portable_path in tree.paths():
+        value = tree.read(portable_path)
+        if value is None:
+            raise ValueError("unreadable checker source: " + portable_path)
+        ast.parse(value)
+        sources[portable_path] = hashlib.sha256(value.encode()).hexdigest()
     scope_path = "policy/deal-randomness-scope.json"
     if deal_path in sources:
         value = tree.read(scope_path)
@@ -150,6 +157,8 @@ def source_profile(tree):
         rules |= architecture_rules(texts["architecture.py"])
         if "architecture/C1/deal-randomness" in rules and deal_path not in sources:
             raise ValueError("deal randomness checker source missing")
+        if "architecture/C1/project-portability" in rules and portable_path not in sources:
+            raise ValueError("project portability checker source missing")
         if "architecture/C2/tenant-read-functions" in rules and tenant_path not in sources:
             raise ValueError("tenant declaration checker source missing")
     if ("model_pins", "decide") in calls:

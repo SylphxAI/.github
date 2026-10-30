@@ -1211,7 +1211,7 @@ def cmd_check(args) -> int:
                    "shared_pin_provenance": pin_report})
     for row in report["findings"]:
         row.update({"repository": report["repository"], "commit": report["commit"]})
-        if row["rule"] in {"tenant-read-functions", "deal-randomness"}:
+        if row["rule"] in {"tenant-read-functions", "deal-randomness", "project-portability"}:
             row["changed"] = architecture.baseline_key(row) not in head_architecture_baseline
         if row.get("scope_warning"):
             row["changed"] = False

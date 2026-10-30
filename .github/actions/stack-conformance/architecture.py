@@ -30,6 +30,9 @@ _tenant_spec.loader.exec_module(tenant_reads)
 _deal_spec = importlib.util.spec_from_file_location("deal_randomness", pathlib.Path(__file__).with_name("deal_randomness.py"))
 deal_randomness = importlib.util.module_from_spec(_deal_spec)
 _deal_spec.loader.exec_module(deal_randomness)
+_portable_spec = importlib.util.spec_from_file_location("project_portability", pathlib.Path(__file__).with_name("project_portability.py"))
+project_portability = importlib.util.module_from_spec(_portable_spec)
+_portable_spec.loader.exec_module(project_portability)
 BASELINE_MARKER = "# architecture-ratchet-v2"
 LEGACY_BASELINE_MARKER = "# architecture-ratchet-v1"
 SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "examples", "docs",
@@ -46,6 +49,7 @@ except (OSError, ValueError):
 READ = re.compile(r"\b(?:fetch|get_status|query|poll|probe|list_items|status)\w*\s*\(", re.I)
 SLEEP = re.compile(r"\b(?:sleep\s*\(|sleep\s+\d|setInterval\s*\()")
 LIMITS = [
+    "Project portability recognizes literal/template cluster DNS, single-label HTTP service hosts, Kubernetes service-account mounts and explicit in-cluster client calls. Deployment manifests are allowed by path and format; source under those paths is still checked. Computed destinations, arbitrary aliases, API publicness and key grants require semantic review.",
     "Source rules support Rust/Go/JavaScript/TypeScript/Python/shell, TOML and ordinary YAML blocks; macros, templates and aliases may need semantic review.",
     "C1 recognizes explicit first-party/network-trust success branches; indirect authorization behavior requires semantic review.",
     "C2 recognizes provider constructors/secret environment names; it does not prove that all duplicate capabilities are absent.",
@@ -457,10 +461,15 @@ def cache_display_proof(tree, path, text, line):
 
 def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
     suffix = pathlib.PurePosixPath(path).suffix
-    if (excluded(path) and deal_randomness.excluded(path)) or suffix not in SOURCE | CONFIG:
+    if (excluded(path) and deal_randomness.excluded(path)) or not (suffix in SOURCE | CONFIG or project_portability.supported(path)):
         return []
     out = []
     add = lambda at, cls, rule, why, end=None: out.append(finding(path, text, at, cls, rule, why, end))
+    if not excluded(path):
+        for at, end, why in project_portability.scan(path, text, source_views):
+            add(at, "C1", "project-portability", why, end)
+    if suffix not in SOURCE | CONFIG:
+        return with_occurrences(out)
     scope_reason = None
     for at, end, why in deal_randomness.scan(path, text, source_views, named_bodies, matching_end, tree=tree):
         add(at, "C1", "deal-randomness", why, end)
@@ -673,12 +682,12 @@ def evaluate(tree, repository, changed, today):
     if changed is not None and any(p.startswith(".github/") and pathlib.PurePosixPath(p).suffix in {".yml", ".yaml"} for p in changed):
         rescan = True
     for path in sorted(tree.paths()):
-        if (excluded(path) and deal_randomness.excluded(path)) or pathlib.PurePosixPath(path).suffix not in SOURCE | CONFIG:
+        if (excluded(path) and deal_randomness.excluded(path)) or not (pathlib.PurePosixPath(path).suffix in SOURCE | CONFIG or project_portability.supported(path)):
             skipped.append({"path": path, "reason": "fixture/documentation/dependency" if excluded(path) else "unsupported format"})
             continue
         # Legacy Java plugins contain non-UTF-8 comments. Preserve every byte
         # while recognizing ASCII syntax; other languages still fail unreadable.
-        text = tree.read_model_source(path) if path.endswith((".java", ".lua", ".cs")) else tree.read(path)
+        text = tree.read_model_source(path) if path.endswith((".java", ".lua", ".cs", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".m", ".mm", ".php", ".rb")) else tree.read(path)
         if text is None:
             # Deleted paths are outside the head, not unreadable inputs.
             if path in tree.paths():
@@ -698,7 +707,7 @@ def evaluate(tree, repository, changed, today):
             row["changed"] = lines is None or any(row["line"] <= n <= row["end_line"] for n in lines)
             row["decision"] = (cache_display_proof(tree, path, text, row["line"]) if row["rule"] == "cache-economy" else
                                next((d for d in allowed if all(d[k] == row[k] for k in ("path", "line", "class", "rule", "source_sha256"))), None))
-            if row["rule"] in {"tenant-read-functions", "deal-randomness"}:
+            if row["rule"] in {"tenant-read-functions", "deal-randomness", "project-portability"}:
                 row["decision"] = None
             findings.append(row)
     matched = {tuple(f[k] for k in ("path", "line", "class", "rule", "source_sha256")) for f in findings}
