@@ -1,0 +1,21 @@
+name: setup-ci-test
+description: Install ci-test, which runs a test command and requires fresh evidence of executed tests.
+
+outputs:
+  script:
+    description: Absolute path to the standalone Python guard, also usable without the PATH installation.
+    value: ${{ steps.install.outputs.script }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 --version
+        bin="$(mktemp -d "$RUNNER_TEMP/ci-test.XXXXXXXX")"
+        cp "$GITHUB_ACTION_PATH/ci_test.py" "$bin/ci-test"
+        chmod +x "$bin/ci-test"
+        echo "$bin" >> "$GITHUB_PATH"
+        echo "script=$bin/ci-test" >> "$GITHUB_OUTPUT"

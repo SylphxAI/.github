@@ -69,8 +69,21 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependencies
-        run: python -m pip install --quiet pyyaml
+        run: python -m pip install --quiet pyyaml pytest
+      - name: Set up native report consumer
+        id: ci-test
+        uses: ./.github/actions/setup-ci-test
+      - name: Set up Node for the Vitest consumer
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.14.0"
+      - name: Install native Vitest reporter
+        run: npm install --prefix "$RUNNER_TEMP/ci-test-runners" --ignore-scripts --no-audit --no-fund vitest@4.0.18
       - name: Unit tests
+        env:
+          CI_TEST_SCRIPT: ${{ steps.ci-test.outputs.script }}
+          CI_TEST_VITEST_BIN: ${{ runner.temp }}/ci-test-runners/node_modules/.bin/vitest
+          CI_TEST_REQUIRE_RUNNERS: '1'
         run: python -m unittest discover -s tests
       - name: Prepare Keel tools cache consumer
         run: |

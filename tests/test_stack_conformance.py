@@ -12,6 +12,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -502,6 +503,129 @@ class ObligationTableGuardTest(unittest.TestCase):
         self.assertEqual(sc.obligation_tables("m.sql", "CREATE TABLE t AS SELECT * FROM agent_tasks;"), [])
 
 
+class ModelPinTest(unittest.TestCase):
+    # This fixture is an input declaration, never the production allowlist.
+    ALIASES = frozenset({"example-vendor/example-line-latest"})
+
+    def scan(self, files, repository="example/app"):
+        return sc.model_pins.scan(sc.DictTree(files), repository, self.ALIASES,
+                                  sc.architecture.source_views)["findings"]
+
+    def test_vendor_versions_are_refused_without_requiring_a_model_key(self):
+        for model in ("deepseek/deepseek-v4.1-flash", "claude-opus-4-5-20251101",
+                      "gpt-5.1-2025-11-13"):
+            with self.subTest(model=model):
+                rows = self.scan({"src/client.ts": f'const options = {{model: "{model}"}};\n'})
+                self.assertEqual(len(rows), 1)
+                errors = sc.model_pins.decide(rows, set(), set(), [], True, True)
+                self.assertTrue(any("runtime default" in e and "catalog alias" in e for e in errors))
+                self.assertEqual(len(self.scan({"src/client.rs": f'const MODEL: &str = "{model}";'})), 1)
+
+    def test_only_declared_aliases_pass(self):
+        self.assertEqual(self.scan({"src/client.ts": 'call({model: "example-vendor/example-line-latest"});'}), [])
+        self.assertEqual(self.scan({"src/client.ts": "call({prompt});"}), [])
+        self.assertEqual(len(self.scan({"src/client.ts": 'call({model: "deepseek/unlisted-line-latest"});'})), 1)
+
+    def test_default_contract_allows_latest_aliases_without_network_or_catalog_snapshot(self):
+        files = {"src/client.ts": 'call({model: "deepseek/deepseek-flash-latest"});'}
+        self.assertIsNone(sc.model_pins.load_aliases())
+        self.assertEqual(sc.model_pins.scan(sc.DictTree(files), "example/app", None,
+                                            sc.architecture.source_views)["findings"], [])
+
+    def test_variables_libraries_cli_names_and_non_model_metadata_pass(self):
+        self.assertEqual(self.scan({
+            "src/math.rs": "let o1 = phi.sin() + phi.cos();",
+            "src/client.py": "from llama_index.core.schema import Document\nwhisper_json = {}\n",
+            "src/client.ts": 'const GPT_TRANSCRIBE = "audio"; const TTS_URL = tts.generate();',
+            "settings.json": '{"hook": "--target claude-code", "bone": "yi_body_1"}',
+            "policy/repositories.json": '{"full_name": "SylphxAI/gpt-review"}',
+            "package.json": '{"dependencies": {"google/apiclient-services": "1"}}',
+            "src/fixture.ts": "const order = { id: 'o1' };",
+            "scripts/submit.sh": 'repository="microsoft/winget-pkgs"\n',
+            "scripts/benchmark.yml": 'command: "$RUNNER_TEMP/llama-b11177/llama-server"\n',
+            "ground-truth.json": '{"text": "The GPT-2 example explains the format."}',
+            "openapi.json": '{"description": "Call `gpt-5.1` for this example."}',
+            "scripts/eval.py": 'archive = "tts.tar.bz2"\n',
+            "src/tests.rs": 'const MODEL = "gpt-5.1-2025-11-13";',
+            "thirdparty/legacy.py": 'print "Python 2"\n',
+        }), [])
+
+    def test_test_files_comments_and_inline_rust_test_modules_pass(self):
+        pinned = 'const MODEL = "gpt-5.1-2025-11-13";'
+        for path in ("tests/client.ts", "fixtures/client.json", "src/client.test.ts",
+                     "src/test_client.py", "src/client_tests.rs", "src/client.spec.ts"):
+            with self.subTest(path=path):
+                self.assertEqual(self.scan({path: pinned}), [])
+        self.assertEqual(self.scan({"src/client.rs": '#[cfg(test)]\nmod tests { ' + pinned + " }"}), [])
+        self.assertEqual(self.scan({"src/client.rs": '#[cfg(test)]\npub(super) mod tests { ' + pinned + " }"}), [])
+        self.assertEqual(self.scan({"src/client.rs": '#[tokio::test]\nasync fn check() { ' + pinned + " }"}), [])
+        self.assertEqual(self.scan({"src/client.ts": "// " + pinned}), [])
+        self.assertEqual(self.scan({"config.yml": '# model: "gpt-5.1-2025-11-13"\n'}), [])
+        self.assertEqual(len(self.scan({"src/client.rs": pinned + '\n#[cfg(test)] mod tests { ' + pinned + " }"})), 1)
+
+    def test_configuration_and_raw_strings_are_checked(self):
+        for path, text in {
+            "config.yml": "model: deepseek/deepseek-v4.1-flash\n",
+            "config.toml": 'model = "gpt-5.1-2025-11-13"\n',
+            "config.json": '{"model": "claude-opus-4-5-20251101"}',
+            "src/client.rs": 'let request = r#"{"model":"gpt-5.1-2025-11-13"}"#;',
+            "src/Client.cs": 'const string Model = "gpt-5.1-2025-11-13";',
+            "src/client.swift": 'let model = "gpt-5.1-2025-11-13"',
+            "src/config.rs": 'const MODEL: &str = "soniox/stt-rt-v5";',
+            "config.yml": 'model: "soniox/stt-rt-v5"\n',
+        }.items():
+            with self.subTest(path=path):
+                self.assertEqual(len(self.scan({path: text})), 1)
+
+    def test_optional_catalog_declaration_is_validated_and_fails_closed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder, "aliases.json")
+            data = {"version": 1, "aliases": sorted(self.ALIASES),
+                    "source": {"repository": "SylphxAI/cloud", "commit": "a" * 40,
+                               "path": "catalog/aliases.json", "sha256": "b" * 64}}
+            path.write_text(json.dumps(data))
+            self.assertEqual(sc.model_pins.load_aliases(path), self.ALIASES)
+            del data["source"]
+            path.write_text(json.dumps(data))
+            with self.assertRaises(ValueError):
+                sc.model_pins.load_aliases(path)
+            with self.assertRaises(OSError):
+                sc.model_pins.load_aliases(path.with_name("missing.json"))
+
+    def test_every_reasoned_exemption_is_narrow_and_tested(self):
+        for entry in sc.model_pins.EXEMPTIONS:
+            self.assertTrue(entry["reason"].strip())
+            path = entry["path"] + "model.rs" if entry["path"].endswith("/") else entry["path"]
+            pinned = 'MODEL = "gpt-5.1-2025-11-13"'
+            with self.subTest(path=path):
+                self.assertEqual(self.scan({path: pinned}, entry["repository"]), [])
+                self.assertEqual(len(self.scan({path: pinned}, "example/product")), 1)
+        self.assertEqual(len(self.scan({"src/client.rs": 'const MODEL: &str = "gpt-5.1-2025-11-13";'}, "SylphxAI/cloud")), 1)
+
+    def test_duplicates_and_new_versions_cannot_hide_in_a_baseline(self):
+        first = self.scan({"src/client.ts": 'call("gpt-5.1-2025-11-13");'})
+        recorded = {sc.model_pins.baseline_key(row) for row in first}
+        self.assertEqual(sc.model_pins.decide(first, recorded, recorded, first, True, True), [])
+        duplicate = self.scan({"src/client.ts": 'call("gpt-5.1-2025-11-13");\ncall("gpt-5.1-2025-11-13");'})
+        self.assertTrue(sc.model_pins.decide(duplicate, recorded, recorded, first, True, True))
+        grown = {sc.model_pins.baseline_key(row) for row in duplicate}
+        self.assertTrue(any("cannot grow" in e for e in sc.model_pins.decide(duplicate, grown, recorded, first, True, True)))
+        self.assertTrue(sc.model_pins.decide([], recorded, recorded, first, True, True))
+
+    def test_adoption_seeds_only_base_findings_and_marker_cannot_disappear(self):
+        first = self.scan({"src/client.ts": 'call("gpt-5.1-2025-11-13");'})
+        recorded = {sc.model_pins.baseline_key(row) for row in first}
+        self.assertEqual(sc.model_pins.decide(first, recorded, set(), first, True, False), [])
+        self.assertTrue(sc.model_pins.decide(first, recorded, set(), [], True, False))
+        self.assertTrue(sc.model_pins.decide([], set(), set(), [], False, True))
+
+    def test_baseline_paths_with_spaces_are_lossless(self):
+        rows = self.scan({"src/model  examples.ts": 'call("gpt-5.1-2025-11-13");'})
+        key = sc.model_pins.baseline_key(rows[0])
+        self.assertIn("model%20%20examples.ts", key)
+        self.assertEqual(sc.parse_baseline(key), {key})
+
+
 class GitTest(unittest.TestCase):
     """check and all against a real repository with a base and a head commit."""
 
@@ -551,6 +675,36 @@ class GitTest(unittest.TestCase):
         rc, out = self.check(same, grown)
         self.assertEqual(rc, 1)
         self.assertIn("baseline grew", out)
+
+    def test_model_pin_adoption_preserves_existing_stack_ratchet(self):
+        with mock.patch.object(sc.model_pins, "load_aliases", return_value=ModelPinTest.ALIASES):
+            base = self.commit({"src/client.ts": 'call("gpt-5.1-2025-11-13");\n',
+                                sc.BASELINE: "# existing stack baseline\n"})
+            rows = sc.model_pins.scan(sc.Tree(self.repo, base), "", ModelPinTest.ALIASES,
+                                      sc.architecture.source_views)["findings"]
+            baseline = sc.model_pins.BASELINE_MARKER + "\n" + "\n".join(sc.model_pins.baseline_key(r) for r in rows) + "\n"
+            adopted = self.commit({sc.BASELINE: baseline})
+            self.assertEqual(self.check(base, adopted)[0], 0)
+            same = self.commit({"README.md": "documentation\n"})
+            self.assertEqual(self.check(adopted, same)[0], 0)
+            self.assertEqual(self.check("", same)[0], 0)
+            new = self.commit({"src/other.ts": 'call("claude-opus-4-5-20251101");\n'})
+            rc, output = self.check(same, new)
+            self.assertEqual(rc, 1)
+            self.assertIn("catalog alias", output)
+            grown = self.commit({sc.BASELINE: baseline + "model-pin src/other.ts claude-opus-4-5-20251101 1\n"})
+            self.assertEqual(self.check(same, grown)[0], 1)
+
+    def test_legacy_encoded_source_still_checks_ascii_model_ids(self):
+        path = pathlib.Path(self.repo, "client.cs")
+        path.write_bytes(b'// Legacy text: \x96\nconst string Model = "gpt-5.1-2025-11-13";\n')
+        self.git("add", "client.cs")
+        self.git("commit", "-qm", "legacy source")
+        with sc.Tree(self.repo, "HEAD") as tree:
+            self.assertIsNone(tree.read("client.cs"))
+            report = sc.model_pins.scan(tree, "example/app", None, sc.architecture.source_views)
+        self.assertEqual(report["unreadable"], [])
+        self.assertEqual(len(report["findings"]), 1)
 
     def test_agent_runtime_over_commits(self):
         policy = pathlib.Path(self.repo, "..", pathlib.Path(self.repo).name + "-policy.json").resolve()

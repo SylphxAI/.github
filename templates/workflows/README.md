@@ -1,5 +1,10 @@
 # Templates
 
+The package starter's `npm run test:ci` requires the shared
+[`setup-ci-test`](../../docs/ci-test.md) action before invoking Vitest. It
+requires fresh executed assertions; `npm test` runs once locally and
+`npm run test:watch` starts the interactive watcher.
+
 ## Delivered customer projects
 
 A finished, handed-over customer project carries the organization custom

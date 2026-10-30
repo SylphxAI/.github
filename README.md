@@ -15,6 +15,7 @@ Use one from another repository with
 | [metadata-sync](.github/actions/metadata-sync/README.md) | Offline required-region/field patching with whole-plan validation and deterministic check/write; caller owns rendering ([anymd/repomap adoption](.github/actions/metadata-sync/README.md#adoption-in-anymd-and-repomap)) |
 | [brand](.github/actions/brand/README.md) | Builds brand assets or checks provenance hashes and surface copies, with caller-owned masters and data |
 | [ci-ok](.github/actions/ci-ok/action.yml) | One required check that waits for every other GitHub Actions check on the commit and fails if any failed, a workflow failed to start, or no check ran |
+| [setup-ci-test](docs/ci-test.md) | Installs `ci-test`, which requires fresh evidence of executed libtest, JUnit or Vitest tests and preserves runner failures |
 | [main-red-gate](.github/actions/main-red-gate/action.yml) | Stop the line: while the trunk's newest conclusive Verify run is red and its way back is in motion, a merge group is admitted only for a revert, a live-outage fix or a pull request labelled `main-red-fix`; a red trunk with nothing in motion admits with a warning |
 | [needs-pass](.github/actions/needs-pass/action.yml) | The aggregate verdict of a workflow. A skipped job never counts as passing a required check outside `merge_group`: list PR-time jobs in `required-unless-merge-group` so a `workflow_dispatch` run cannot post a green check over a red one |
 | [workflow-lint](.github/actions/workflow-lint/README.md) | Actionlint syntax/reference checks, pre-merge performance rules, and job timeout/required-path failure contracts (report-only inventory or enforce) |
@@ -48,6 +49,11 @@ negotiated `skopeo --raw` response is not a promotion identity: an index and its
 child manifest can expose the same image content but have different digests.
 Missing headers, an unreadable digest, or inconsistent identity/content fail
 publication readback; the scoped publisher credential never appears in logs.
+
+The same credential helper supports declared read-only CI consumers with
+`--identity github-oidc --actions pull`; see
+[registry pull credentials](docs/registry-pull-auth.md). The default remains
+the existing publisher's `pull,push` request.
 
 ## Repository settings
 

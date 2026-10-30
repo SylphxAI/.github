@@ -8,6 +8,8 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 
 import yaml
@@ -35,6 +37,7 @@ def validate(**inputs: str) -> subprocess.CompletedProcess:
         "IN_CLASS": "standard",
         "IN_CLIPPY": "--workspace --all-targets -- -D warnings",
         "IN_TEST": "--workspace",
+        "IN_TEST_EXCEPTIONS": "",
         "IN_APT": "",
         "IN_TOOLCHAIN": "",
         "IN_FEATURES": "",
@@ -143,9 +146,35 @@ class ValidateInputs(unittest.TestCase):
             ("IN_PREFIX", ""),
             ("IN_PREFIX", "../x"),
             ("IN_PREFIX", "a b"),
+            ("IN_TEST_EXCEPTIONS", "../other.json"),
+            ("IN_TEST_EXCEPTIONS", "/tmp/empty.json"),
+            ("IN_TEST_EXCEPTIONS", "$(id)"),
         ):
             out = validate(**{field: bad})
             self.assertEqual(out.returncode, 2, (field, bad))
+
+
+class TestExecution(unittest.TestCase):
+    def test_reusable_test_step_fails_when_cargo_executes_nothing(self) -> None:
+        # Run the actual shell step with the guard installed on PATH, keeping
+        # Cargo's outputs and original failure statuses under test control.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            guard = root / "ci-test"
+            guard.write_text((ROOT / ".github/actions/setup-ci-test/ci_test.py").read_text())
+            guard.chmod(0o755)
+            cargo = root / "cargo"
+            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                   "IN_LOCKED": "true", "IN_FEATURES": "all", "IN_TEST": "--workspace",
+                   "IN_WORKSPACE": ".", "IN_TEST_EXCEPTIONS": ""}
+            for passed, status, expected in ((1, 0, 0), (0, 0, 1), (0, 101, 101)):
+                cargo.write_text(f'#!{sys.executable}\nimport sys\nprint("running {passed} tests")\n'
+                                 f'print("test result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out")\n'
+                                 f'sys.exit({status})\n')
+                cargo.chmod(0o755)
+                result = subprocess.run(["bash", "-c", step("Test")["run"]], cwd=root, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
 
 class Template(unittest.TestCase):

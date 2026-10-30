@@ -52,6 +52,12 @@ found - in this repository's policy/knowledge-tables.json, one entry per table
 with an expiry date; until the date passes the repository passes, and after it
 the entry stops applying. An entry whose table no longer exists is a notice.
 
+Product source also refuses literal vendor model version ids. Omit the id for
+the organization's runtime default, or use a Sylphx AI
+<provider>/<line>-latest alias. Catalog/routing owners and fixtures are exempt.
+Existing pins have a separate model-pin category in the same shrinking baseline;
+first adoption can seed only pins independently present at the base.
+
 Subcommands:
 
   check --base REV --head REV   the pull-request gate: fail on a departure the
@@ -91,6 +97,11 @@ _architecture_spec = importlib.util.spec_from_file_location(
     "architecture", pathlib.Path(__file__).with_name("architecture.py"))
 architecture = importlib.util.module_from_spec(_architecture_spec)
 _architecture_spec.loader.exec_module(architecture)
+
+_model_spec = importlib.util.spec_from_file_location(
+    "model_pins", pathlib.Path(__file__).with_name("model_pins.py"))
+model_pins = importlib.util.module_from_spec(_model_spec)
+_model_spec.loader.exec_module(model_pins)
 
 # The company-level allowance for agent-runtime parts: this repository's
 # policy/agent-runtime.json, three levels above this action's directory.
@@ -170,7 +181,7 @@ class Tree:
     def paths(self) -> list[str]:
         return self._paths
 
-    def read(self, path: str) -> str | None:
+    def read(self, path: str, *, encoding_errors="strict") -> str | None:
         # Git interprets a leading ./ relative to the repository root. The
         # public --baseline argument may use it even though ls-tree never does.
         if path.startswith("./") and not path.endswith("/"):
@@ -200,13 +211,18 @@ class Tree:
             if len(contents) != int(header[2]) or reader.stdout.read(1) != b"\n":
                 self.close()
                 return None
-            text = contents.decode("utf-8")
+            text = contents.decode("utf-8", errors=encoding_errors)
         except UnicodeDecodeError:
             text = None
         except (OSError, ValueError):
             self.close()
             return None
         return text
+
+    def read_model_source(self, path):
+        # Vendor ids are ASCII. Preserve non-UTF-8 legacy source bytes without
+        # guessing an encoding or silently skipping a model-bearing file.
+        return self.read(path, encoding_errors="surrogateescape")
 
     @staticmethod
     def _close_reader(reader):
@@ -240,6 +256,8 @@ class DictTree:
 
     def read(self, path: str) -> str | None:
         return self.files.get(path)
+
+    read_model_source = read
 
 
 def git(repo: str, *args: str) -> str:
@@ -870,7 +888,9 @@ def cmd_check(args) -> int:
     head_baseline = parse_baseline(head.read(args.baseline))
     head_architecture_adopted = architecture.BASELINE_MARKER in (head.read(args.baseline) or "").splitlines()
     head_architecture_baseline = {line for line in head_baseline or () if line.startswith("architecture ")}
-    head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline
+    head_model_adopted = model_pins.BASELINE_MARKER in (head.read(args.baseline) or "").splitlines()
+    head_model_baseline = {line for line in head_baseline or () if line.startswith("model-pin ")}
+    head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline - head_model_baseline
     errors = []
     for line in sorted(l for l in (head_baseline or ()) if l.startswith(AGENT_RUNTIME)):
         errors.append(f"'{line}' is in {args.baseline}; an agent-runtime part is allowed only by "
@@ -879,6 +899,8 @@ def cmd_check(args) -> int:
     base_baseline = None
     base_architecture_baseline = set()
     base_architecture_adopted = False
+    base_model_baseline = set()
+    base_model_adopted = False
     if args.base:
         if not has_rev(args.repo, args.base):
             subprocess.run(["git", "-C", args.repo, "fetch", "--quiet", "--no-tags",
@@ -890,8 +912,23 @@ def cmd_check(args) -> int:
         if base_baseline is not None:
             base_architecture_baseline = {line for line in base_baseline if line.startswith("architecture ")}
             base_baseline -= base_architecture_baseline
+            base_model_baseline = {line for line in base_baseline if line.startswith("model-pin ")}
+            base_model_adopted = model_pins.BASELINE_MARKER in (Tree(args.repo, args.base).read(args.baseline) or "").splitlines()
+            base_baseline -= base_model_baseline
             base_baseline = {l for l in base_baseline if not l.startswith(AGENT_RUNTIME)}
     errors += decide(found, head_baseline, base_baseline)
+    try:
+        aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
+        models = model_pins.scan(head, args.repository, aliases, architecture.source_views)
+        base_models = model_pins.scan(Tree(args.repo, args.base), args.repository, aliases,
+                                     architecture.source_views) if args.base else models
+        errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
+                                   base_models["findings"], head_model_adopted, base_model_adopted)
+        for row in models["unreadable"] + base_models["unreadable"]:
+            errors.append("model policy input not reviewed: " + row["path"] + ": " + row["reason"])
+    except (OSError, ValueError, TypeError) as error:
+        models = {"findings": [], "unreadable": [{"path": str(model_pins.POLICY), "reason": str(error)}]}
+        errors.append("model-alias policy unavailable: " + str(error))
     keel = keel_departures(head)
     errors += decide_keel(keel)
     runtime = agent_runtime(head)
@@ -943,6 +980,7 @@ def cmd_check(args) -> int:
     report.update({"repository": args.repository, "commit": git(args.repo, "rev-parse", f"{args.head}^{{commit}}").strip(),
                    "base_commit": git(args.repo, "rev-parse", f"{args.base}^{{commit}}").strip() if args.base else None,
                    "checker_commit": checker_commit,
+                   "model_pins": models,
                    "legacy_departures": found, "legacy_errors": errors.copy()})
     for row in report["findings"]:
         row.update({"repository": report["repository"], "commit": report["commit"]})
@@ -966,6 +1004,7 @@ def cmd_check(args) -> int:
           f"{len(obligations)} new work-engine table(s) without an owner header; "
           f"{len(knowledge)} new knowledge or CRM table(s); "
           f"{len(keel)} Keel game boundary violation(s)")
+    print(f"{len(models['findings'])} vendor model pin(s), {len(head_model_baseline)} recorded in {args.baseline}")
     if errors:
         print(f"Move the change onto the default stack. A departure is recorded only through a "
               f"company decision, by the owner of {args.baseline}.")
@@ -979,6 +1018,12 @@ def cmd_scan(args) -> int:
     tree = Tree(args.repo, args.rev)
     for line in departures(tree):
         print(line)
+    models = model_pins.scan(tree, getattr(args, "repository", ""), model_pins.load_aliases(getattr(args, "model_aliases", None)), architecture.source_views)
+    print(model_pins.BASELINE_MARKER)
+    for row in models["findings"]:
+        print(model_pins.baseline_key(row))
+    if models["unreadable"]:
+        raise SystemExit("source unreadable; model baseline scan incomplete")
     today = datetime.datetime.now(datetime.timezone.utc).date()
     report = architecture.evaluate(tree, getattr(args, "repository", ""), None, today)
     print(architecture.BASELINE_MARKER)
@@ -1019,12 +1064,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="owner/name of the checked repository (default $GITHUB_REPOSITORY)")
     c.add_argument("--agent-runtime-policy", default=str(AGENT_RUNTIME_POLICY))
     c.add_argument("--knowledge-policy", default=str(KNOWLEDGE_POLICY))
+    c.add_argument("--model-aliases", help="Optional pinned catalog alias declaration; default permits the <provider>/<line>-latest contract")
     c.add_argument("--today", default="", help="YYYY-MM-DD; default today in UTC (tests)")
     c.add_argument("--report", default="stack-conformance-report.json", help="Structured C1–C7 findings, coverage and limits")
     s = sub.add_parser("scan")
     s.add_argument("--repo", default=".")
     s.add_argument("--rev", default="HEAD")
     s.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
+    s.add_argument("--model-aliases", help="Optional pinned catalog alias declaration")
     a = sub.add_parser("all")
     a.add_argument("--rev", default="HEAD")
     a.add_argument("dirs", nargs="+")
