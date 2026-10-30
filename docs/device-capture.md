@@ -29,7 +29,8 @@ the exact environment and three scopes. The key stays in memory and the CLI
 child's environment, never a file, argument, action output or login store.
 There are no automatic exchange retries; unknown request receipts require
 inspection before another dispatch.
-Only an explicit `401 key_not_yet_propagated` from the subsequent `whoami` read
+Capture, source-read verification and Broker exchange reuse the same Access
+readiness helper. Only an explicit `401 key_not_yet_propagated` from the subsequent `whoami` read
 permits bounded read retries of the **same** issued key for up to 30 seconds.
 Other authentication/authorization refusals fail immediately. This handles a
 witnessed key whose propagation exceeded `active_after_ms`; it never mints a

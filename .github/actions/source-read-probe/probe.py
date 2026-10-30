@@ -8,9 +8,13 @@ import re
 import subprocess
 import tempfile
 import time
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
+from access_ready import ReadinessError, wait_for_identity
 
 API = "https://api.sylphx.com"
 POLICY = re.compile(r"orgs/[A-Za-z0-9_-]+/trust_policies/[a-z][a-z0-9_-]{0,62}\Z")
@@ -76,7 +80,7 @@ class Receipts:
     def save(self):
         self.path.write_text(json.dumps(self.data, indent=2) + "\n")
 
-    def request(self, url, token=None, body=None, label=None, expected=200):
+    def request(self, url, token=None, body=None, label=None, expected=200, allow_propagation=False, timeout=90):
         method = "POST" if body is not None else "GET"
         # OIDC request URLs include a query; neither they nor opaque bodies are logged.
         receipt = {"utc": utc(), "method": method, "endpoint": label or url.split("?", 1)[0], "state": "submitted"}
@@ -89,7 +93,7 @@ class Receipts:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, headers=headers, data=None if body is None else json.dumps(body).encode())
         try:
-            response = urllib.request.build_opener(NoRedirect).open(request, timeout=90)
+            response = urllib.request.build_opener(NoRedirect).open(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             response = error
         except Exception:
@@ -115,7 +119,9 @@ class Receipts:
             receipt["access_key"] = value["key"].get("name")
         self.save()
         print(json.dumps(receipt), flush=True)
-        if status != expected:
+        propagation = (allow_propagation and body is None and url == API + "/v1/whoami"
+                       and status == 401 and value.get("code") == "key_not_yet_propagated")
+        if status != expected and not propagation:
             raise ProbeError("unexpected HTTP status for " + receipt["endpoint"])
         return value
 
@@ -176,10 +182,12 @@ def run(receipts, ci_name, mode, targets, denied_policy):
     print(json.dumps({"principal": principal, "ci_name": ci_name, "mode": mode}), flush=True)
     if mode == "bootstrap":
         return
-    delay = exchange.get("active_after_ms")
-    if not isinstance(delay, int) or not 0 <= delay <= 60000:
-        raise ProbeError("invalid Access propagation interval")
-    time.sleep(delay / 1000)
+    try:
+        identity = wait_for_identity(receipts.request, access, exchange.get("active_after_ms"), API)
+    except ReadinessError as error:
+        raise ProbeError(str(error)) from None
+    if identity.get("org") != org or identity.get("principal") != principal.rsplit("/", 1)[1]:
+        raise ProbeError("ready Access identity differs from the issued workload principal")
     if any(not target["trust_policy"].startswith(org + "/trust_policies/") for target in targets):
         raise ProbeError("target policies must be in the issued key's org")
     if denied_policy:

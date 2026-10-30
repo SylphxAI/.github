@@ -9,9 +9,12 @@ description: >-
      `sylphx-access`) and the workflow's `[[ci]]` declaration name, for a
      short-lived Access key. The declaration pins the repository, the workflow
      file and the ref, so a fork or a pull-request event cannot trade.
-  2. `POST /v1/{trust_policy}:exchangeToken` with that key, narrowed to the one
+   2. `POST /v1/{trust_policy}:exchangeToken` with that key, narrowed to the one
      calling repository, for an installation token carrying only what the
-     TrustPolicy grants.
+      TrustPolicy grants.
+      The Access key's advertised propagation delay and same-key `whoami`
+      readiness are checked before this one Broker request; no mint or Broker
+      POST is retried.
 
   The token is written to a 0600 file under RUNNER_TEMP and returned as an
   output the caller masks as a secret; it is never printed. A failed hop writes
@@ -96,6 +99,13 @@ runs:
           exit 0
         fi
         echo "::add-mask::$api_key"
+        # A minted key is not necessarily visible to every serving verifier.
+        # Wait/read the SAME key before the one Broker POST; never remint or
+        # retry that write on a propagation refusal.
+        if ! printf '%s' "$key_reply" | python3 "$GITHUB_ACTION_PATH/../_shared/access_ready.py" --api-url "$API_URL"; then
+          fail "the issued Access key is not ready; no Broker exchange was sent"
+          exit 0
+        fi
         # 2. Access key -> one-repository installation token.
         policy="${BROKER_POLICY%/}"
         tok_reply=$(curl -sS -X POST "${API_URL}/v1/${policy}:exchangeToken" \

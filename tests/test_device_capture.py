@@ -106,9 +106,9 @@ class DeviceCaptureTests(unittest.TestCase):
         with patch.object(receipt,"request",side_effect=[{"code":"key_not_yet_propagated"},IDENTITY]) as read, \
              patch.object(capture.time,"sleep",side_effect=sleep_for) as sleep, \
              patch.object(capture.time,"monotonic",side_effect=lambda:now[0]):
-            self.assertEqual(capture.propagated_identity(receipt,"same-issued-key"),IDENTITY)
+            self.assertEqual(capture.wait_for_identity(receipt.request,"same-issued-key",0,capture.API),IDENTITY)
             self.assertEqual(read.call_count,2)
-            sleep.assert_called_once_with(2)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list],[0,2])
             for args in read.call_args_list:
                 self.assertEqual(args.args,(capture.API+"/v1/whoami","same-issued-key"))
                 self.assertTrue(args.kwargs["allow_propagation"])
@@ -117,16 +117,16 @@ class DeviceCaptureTests(unittest.TestCase):
         now[0] = 0.0
         with patch.object(receipt,"request",return_value={"code":"key_not_yet_propagated"}) as read, \
              patch.object(capture.time,"sleep",side_effect=sleep_for) as sleep, \
-             patch.object(capture.time,"monotonic",side_effect=lambda:now[0]), self.assertRaises(capture.CaptureError):
-            capture.propagated_identity(receipt,"same-issued-key")
+             patch.object(capture.time,"monotonic",side_effect=lambda:now[0]), self.assertRaises(capture.ReadinessError):
+            capture.wait_for_identity(receipt.request,"same-issued-key",0,capture.API)
         self.assertEqual(now[0],30)
         self.assertEqual(read.call_count,15)
-        self.assertEqual(sleep.call_count,15)
+        self.assertEqual(sleep.call_count,16)
         with patch.object(receipt,"request",side_effect=capture.CaptureError("other refusal")) as read, \
              patch.object(capture.time,"sleep") as sleep, self.assertRaises(capture.CaptureError):
-            capture.propagated_identity(receipt,"same-issued-key")
+            capture.wait_for_identity(receipt.request,"same-issued-key",0,capture.API)
         self.assertEqual(read.call_count,1)
-        sleep.assert_not_called()
+        sleep.assert_called_once_with(0)
 
     def test_request_allowlist_is_exact_http_status_code_and_read_endpoint(self):
         cases = ((401,"key_not_yet_propagated",capture.API+"/v1/whoami",None,True),
@@ -159,10 +159,10 @@ class DeviceCaptureTests(unittest.TestCase):
             return IDENTITY
         with patch.object(receipt,"request",side_effect=slow_read) as read, \
              patch.object(capture.time,"monotonic",side_effect=lambda:now[0]), \
-             patch.object(capture.time,"sleep") as sleep, self.assertRaises(capture.CaptureError):
-            capture.propagated_identity(receipt,"same-key")
+             patch.object(capture.time,"sleep") as sleep, self.assertRaises(capture.ReadinessError):
+            capture.wait_for_identity(receipt.request,"same-key",0,capture.API)
         self.assertEqual(read.call_count,1)
-        sleep.assert_not_called()
+        sleep.assert_called_once_with(0)
 
 
 if __name__ == "__main__":
