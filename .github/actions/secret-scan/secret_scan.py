@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import collections
 import hashlib
 import io
 import importlib.util
@@ -184,7 +185,8 @@ def merge_additions(repo, commit):
     return additions
 
 
-def scan(repo, base, head, binary, directory, config=''):
+def scan(repo, base, head, binary, directory, config='', event_name=''):
+    event_name = event_name or os.environ.get('GITHUB_EVENT_NAME', '')
     for rev in (base, head):
         if rev:
             git(repo, 'cat-file', '-e', rev + '^{commit}')
@@ -210,6 +212,7 @@ def scan(repo, base, head, binary, directory, config=''):
     refused = set()
     exempted = set()
     merges = {}
+    squash_budgets = {}
     secrets = {value for item in findings for value in
                [item.get('Secret', ''), *item.get('Secret', '').splitlines()] if value}
     for item in findings:
@@ -220,14 +223,27 @@ def scan(repo, base, head, binary, directory, config=''):
         if commit not in merges:
             parents = git(repo, 'rev-list', '--parents', '-n', '1', commit).split()
             merges[commit] = merge_additions(repo, commit) if len(parents) > 2 else None
+            if event_name == 'merge_group' and len(parents) == 2:
+                added = allowlist(repo, commit) - allowlist(repo, parents[1].decode())
+                squash_budgets[commit] = collections.Counter(
+                    (p, d) for c, p, _, d in added if c != commit)
         lines = git(repo, 'show', commit + ':' + path).split(b'\n')
         if end > len(lines):
             raise ScanError('gitleaks finding is outside its source blob')
         for number in range(start, end + 1):
             if merges[commit] is not None and (path, number) not in merges[commit]:
                 continue
-            key = commit, path, number, hashlib.sha256(lines[number - 1]).hexdigest()
-            (exempted if key in allowed else refused).add(key)
+            digest = hashlib.sha256(lines[number - 1]).hexdigest()
+            key = commit, path, number, digest
+            if key in exempted or key in refused:
+                continue
+            if key in allowed:
+                exempted.add(key)
+            elif squash_budgets.get(commit, {}).get((path, digest), 0) > 0:
+                squash_budgets[commit][(path, digest)] -= 1
+                exempted.add(key)
+            else:
+                refused.add(key)
     for commit, path, line, digest in sorted(refused):
         # Paths can themselves contain a finding; escape control characters and
         # prevent a crafted filename from injecting another workflow command.
