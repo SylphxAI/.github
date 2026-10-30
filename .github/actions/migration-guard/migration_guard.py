@@ -462,6 +462,13 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 if not lock_or_upsert and not has(suffix, "WHERE"):
                     out.append((token.line, token.value + " without WHERE"))
         stmt = control_stmt
+        if dialect == "postgres" and any(starts(stmt, "ALTER", kind) for kind in ("FUNCTION", "PROCEDURE", "ROUTINE")):
+            function_name, _ = name(stmt, 2)
+            if function_name.split(".")[-1] == "format":
+                out.append((stmt[0].line, "formatter redefinition requires a contract reference"))
+            if (any(t.kind in {"word", "identifier"} and t.value.lower() == "search_path" for t in stmt)
+                    or has(stmt, "RESET", "ALL")):
+                out.append((stmt[0].line, "routine search path change requires a contract reference"))
         routine = routine_kind(stmt)
         if routine:
             if routine == "FUNCTION":

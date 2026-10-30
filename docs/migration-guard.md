@@ -91,8 +91,8 @@ Bare `format` is accepted only inside a routine with a fixed local
 `SET search_path = pg_catalog` (optionally followed by `pg_temp`). An absent or
 user-schema path, a body that changes or resets that path, calls a function
 outside `pg_catalog` by a qualified name, or executes nested `DO` does not
-establish builtin formatter identity. Formatter redefinitions
-require a contract reference. The template prefix is parsed separately from
+establish builtin formatter identity. Formatter redefinitions and later
+routine search-path changes require a contract reference. The template prefix is parsed separately from
 the final placeholder, so a literal grantee cannot impersonate it.
 Identifier quoting prevents role names from adding SQL syntax. Other privilege
 scopes, grant options, SQL interpolation (`%s`/`%L`), concatenated templates,

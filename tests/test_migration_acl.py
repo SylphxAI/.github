@@ -55,6 +55,17 @@ class AclTests(unittest.TestCase):
                 self.assertIn("formatter redefinition", str(guard.check_sql(declaration + body(acl), "postgres")))
                 self.assertIn("formatter redefinition", str(guard.check_sql(declaration + routine(acl), "postgres")))
 
+    def test_later_routine_configuration_cannot_invalidate_formatter_identity(self):
+        acl = "EXECUTE format('GRANT USAGE ON SCHEMA reports TO %I', role_name)"
+        for kind in ["FUNCTION", "PROCEDURE", "ROUTINE"]:
+            for change in ["SET search_path = public", "RESET search_path", "RESET ALL"]:
+                sql = routine(acl) + " ALTER " + kind + " reports.grant_readers() " + change + ";"
+                with self.subTest(kind=kind, change=change):
+                    self.assertIn("routine search path change", str(guard.check_sql(sql, "postgres")))
+            sql = "ALTER " + kind + " public.format(text,name) SET SCHEMA pg_catalog;"
+            self.assertIn("formatter redefinition", str(guard.check_sql(sql, "postgres")))
+        self.assertEqual(guard.check_sql(routine(acl) + " ALTER FUNCTION reports.grant_readers() COST 10;", "postgres"), [])
+
     def test_placeholder_cannot_impersonate_a_constant_grantee(self):
         for template in [
             'GRANT USAGE ON SCHEMA %I TO "__guard_acl_role__"',
