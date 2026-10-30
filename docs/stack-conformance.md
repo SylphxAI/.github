@@ -22,6 +22,69 @@ Web apps, tools and scripts on TypeScript and Bun are the default stack, so a
 Next.js server or a static site is not a departure. Paths under
 `node_modules`, `vendor`, `target`, `dist`, `build` and `.next` are skipped.
 
+## Model versions in product source
+
+Product code uses the organization's runtime default (omit the model id), or a
+Sylphx AI alias of the form `<provider>/<line>-latest`, such as
+`deepseek/deepseek-flash-latest`. The catalog and runtime decide whether that
+alias exists and which dated revision it resolves to. CI checks this naming
+contract offline; a live catalog request cannot change a pull request's result.
+
+The policy follows cloud's
+[model identity, naming and price binding ADR](https://github.com/SylphxAI/cloud/blob/2eeaf2605f12ec2aec98b837870eccff5f66c0b0/docs/adr/ADR-01M58DAMBRRTBRYRD3HSQQVD1S-model-identity-naming-and-price-binding.md),
+including the dated-provider-locator amendment in
+[cloud#15331](https://github.com/SylphxAI/cloud/pull/15331). The cited source
+commit is `2eeaf2605f12ec2aec98b837870eccff5f66c0b0`. Sylphx owns alias movement;
+an upstream floating name is not the authority for the resolved revision.
+
+Both dated ids (`gpt-5.1-2025-11-13`, `claude-opus-4-5-20251101`) and undated
+version ids (`deepseek/deepseek-v4.1-flash`, `gpt-5.1`, `claude-opus-4-5`)
+fail. The diagnostic tells the author to omit the id or use a catalog alias.
+Recognition covers literal model names in Rust, Python, Go, JS/TS, C/C++, C#,
+Java, Kotlin, Swift, Dart, Vue/Svelte, shell,
+JSON, TOML, YAML, SQL and Protobuf. Variables, method names, comments,
+documentation, tests (including inline Rust tests), fixtures and dependencies
+are excluded. Computed or encoded ids still require semantic review.
+
+Catalog and routing source in cloud owns upstream locators. The reasoned,
+repository-and-path exemptions are declared in `model_pins.py`; every entry
+has an exemption test and a test that the same path in a product still fails.
+Other cloud source is checked normally. No repository-wide exemption is given
+to cloud.
+
+Existing hits use the normal baseline file with a rule-specific adoption marker:
+
+```text
+# model-alias-ratchet-v1
+model-pin src/client.ts gpt-5.1-2025-11-13 1
+```
+
+A record is one path, model id and occurrence number; paths use URL escaping
+for spaces. Moving a line within a file preserves its record, while copying
+the same id creates a new occurrence that fails. First adoption can record
+only hits independently scanned at the base commit. Thereafter the marker
+cannot be removed, records may only shrink, and stale records must be deleted.
+This category does not reseed or loosen existing stack or architecture debt.
+`scan --repository ORG/REPO` prints these records with the other categories.
+When checking without a base, the committed baseline is used, as for the
+original stack rules; pull requests must supply their actual base.
+
+For staged adoption, change the shared-action SHA and baseline in the same PR;
+older checkers do not understand model-pin records. Keep `# main` after the SHA
+so Renovate can discover subsequent shared-action commits. A workflow planner
+must run stack conformance for source/config changes, not only manifests.
+
+An optional `model-aliases` action input (`--model-aliases FILE` in the CLI)
+can tighten alias admission to an offline catalog declaration. The JSON shape
+is `version: 1`, `aliases: ["provider/line-latest", ...]`, and
+`source: {repository: "SylphxAI/cloud", commit: "<40-hex>", path: "...",
+sha256: "<64-hex>"}`. This mode requires exact declared membership as well as
+the naming contract and fails closed on an unreadable or invalid file. Refresh
+the declaration from the catalog with its immutable provenance; no hand-kept
+vendor-name list is used to authorize aliases. Until such an export is
+published, the default naming-contract check is sufficient and has no catalog
+availability dependency.
+
 ## Agent-runtime parts
 
 Sylphx Agents is the one owner of agent definitions, session logs, turn loops,

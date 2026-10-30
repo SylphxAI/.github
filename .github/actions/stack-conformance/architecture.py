@@ -117,7 +117,13 @@ def source_views(text, suffix):
                 comments.append((match.start(), match.end()))
         if suffix == ".rs":
             # Inline test modules are fixtures too; do not hide adjacent production.
-            for match in re.finditer(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{", "".join(code)):
+            for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*"
+                                     r"(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{", "".join(code)):
+                end = brace_end("".join(code), match.end())
+                comment_free[match.start():end] = blank(text[match.start():end])
+                code[match.start():end] = blank(text[match.start():end])
+            for match in re.finditer(r"#\[(?:(?:tokio|async_std)::)?test(?:\([^\]]*\))?\]\s*"
+                                     r"(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+\w+[^;{]*\{", "".join(code)):
                 end = brace_end("".join(code), match.end())
                 comment_free[match.start():end] = blank(text[match.start():end])
                 code[match.start():end] = blank(text[match.start():end])
