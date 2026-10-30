@@ -319,18 +319,24 @@ jobs:
           needs: ${{ toJSON(needs) }}
           required: template-plan
 
-  # Aggregate verdict required by the main merge queue ruleset. Skipped jobs
-  # pass; failed or cancelled jobs fail.
+  required-job-fixture:
+    if: false
+    runs-on: sylphx-linux-control
+    timeout-minutes: 1
+    steps:
+      - run: echo 'Required dependency fixture'
+
+  # Every required job must run and succeed before the merge gate can pass.
   ci-ok:
-    needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer]
-    if: always() && !cancelled()
+    needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer, required-job-fixture]
+    if: always()
     runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: ./.github/actions/needs-pass
+      - uses: ./.github/actions/ci-ok
         with:
           needs: ${{ toJSON(needs) }}
-          required: stack,project-control,tests
+          required: required-job-fixture,stack,project-control,tests,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ github.event_name != 'workflow_dispatch' && 'junit-producer' || 'junit-consumer' }}

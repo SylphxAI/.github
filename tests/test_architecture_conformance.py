@@ -326,12 +326,21 @@ class AdversarialContextTests(unittest.TestCase):
             script = ROOT / f'.github/actions/{action}/{action.replace("-", "_")}.py'
             required = step['with']['required']
             self.assertIn('stack', required.split(','))
-            for event in ('pull_request', 'merge_group', 'push'):
+            for event in ('pull_request', 'merge_group', 'push', 'workflow_dispatch'):
+                # Resolve the two event selections used by Project control;
+                # GitHub evaluates these before setting the action's inputs.
+                selected_required = required.replace(
+                    "${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }}",
+                    'template-plan,template-verdict' if event != 'push' else '')
+                selected_required = selected_required.replace(
+                    "${{ github.event_name != 'workflow_dispatch' && 'junit-producer' || 'junit-consumer' }}",
+                    'junit-producer' if event != 'workflow_dispatch' else 'junit-consumer')
+                self.assertNotIn('${{', selected_required)
                 for result in ('success', 'failure', 'cancelled', 'skipped'):
                     needs = {k: {'result': 'success'} for k in jobs['ci-ok']['needs']}
                     needs['stack']['result'] = result
                     run = subprocess.run(['python3', str(script)],
-                        env=os.environ | {'NEEDS': json.dumps(needs), 'REQUIRED': required, 'ADVISORY': '', 'EVENT_NAME': event,
+                        env=os.environ | {'NEEDS': json.dumps(needs), 'REQUIRED': selected_required, 'ADVISORY': '', 'EVENT_NAME': event,
                             'REQUIRED_UNLESS_MERGE_GROUP': ''}, capture_output=True, text=True)
                     self.assertEqual(run.returncode, int(result != 'success'), (workflow, event, result, run.stdout))
 

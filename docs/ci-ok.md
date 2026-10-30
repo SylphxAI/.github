@@ -40,8 +40,9 @@ Contribution metadata and added-commit secret scanning remain part of the
 verdict.
 
 GitHub keeps the verdict pending while a needed job runs. `if: always()` lets
-it report failure after a dependency failed or skipped. A cancelled required dependency never passes. If the verdict itself is
-cancelled, it does not publish success. The required check must be this verdict job.
+it report failure after a dependency failed or skipped. A cancelled required
+dependency never passes. If the verdict itself is cancelled, it does not publish
+success. The required check must be this verdict job.
 
 ## Several workflows
 
@@ -51,6 +52,12 @@ Where that workflow contains conditional jobs, give it its own strict verdict
 so a skipped required inner job cannot become a successful reusable-workflow
 result. Preserve existing pull-request and merge-group triggers as appropriate.
 A workflow that remains independent cannot be awaited through `needs:`.
+
+An existing required external status, such as a preview build, also needs an
+explicit completion boundary. Retain a proof job that requires that named
+status to succeed on the exact head, and include the proof job in the gate.
+An absent or still-running external status cannot establish success. Replacing
+the inventory action must preserve this obligation.
 
 Reusable workflows inherit the caller's `github.workflow` context. Give their
 concurrency groups distinct identities or remove a redundant callee group;
