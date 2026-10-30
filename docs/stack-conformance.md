@@ -200,8 +200,13 @@ even when a display template expires.
 | Rust | Named `fn` / `async fn`, including generic handlers; `offer_cache.get(...)`, `Cache::get(...)`, cache fields and receivers declared with a cache type |
 
 Comments, strings, test bodies, invalidation-only calls, cache writes and
-`fetch({cache: 'no-store'})` are excluded. Recognition is structural: a function
-called `claim` may claim a cache lease rather than a reward. Such candidates
+`fetch({cache: 'no-store'})` are excluded. Cache-key identifiers/builders and
+simple cache-factory accessors are not cached-value reads. Assignment targets
+are writes; equality comparisons and compound assignments still read values.
+Typed permission-grant handlers and claims with a `CacheKey` parameter and
+a typed `lease_*` parameter are excluded when their signature and body have no
+economic terms or grant call. Economic names, types or operations keep those
+handlers in scope. Recognition is structural; remaining ambiguous candidates
 need classification, not a claim that an exploit exists. Indirect helpers,
 renamed imports, computed routes and arbitrary data flow still need review.
 Java is supported by this cache rule; it does not gain the other C1–C7 rules.

@@ -48,7 +48,7 @@ LIMITS = [
     "C6 recognizes unexplained lint suppressions and routes declared retired in a migration contract; arbitrary dead code needs caller analysis.",
     "C7 recognizes failure-only CI verdicts and merge-only completion branches; it cannot infer every product's acceptance contract.",
     "Only findings on changed lines fail the change gate. Unchanged or unread scope is not certified clean.",
-    "Economy cache reads recognize named Java/TypeScript/Rust functions and literal JS/TS route callbacks, cache-named calls/types/receivers and typed aliases. Indirect helpers, renamed imports, computed routes and arbitrary data flow need semantic review. Java supports this rule only.",
+    "Economy cache reads recognize named Java/TypeScript/Rust functions and literal JS/TS route callbacks, cache-named calls/types/receivers and typed aliases. Typed permission grants, typed cache leases, pure cache factories, keys and write targets are distinguished structurally; indirect helpers and arbitrary data flow need semantic review. Java supports this rule only.",
     "A cache-display-only exception requires a reason and an existing named assertion-bearing test. The static check verifies that evidence exists; the test runner and review establish that it proves an authoritative re-read in the granting transaction.",
 ]
 
@@ -277,10 +277,39 @@ def with_occurrences(rows):
     return rows
 
 
+def identifier_words(name):
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
+
+
 def economy_name(name):
-    words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
+    words = identifier_words(name)
     return bool(re.search(r"(?:^|[^a-z])(?:purchase|claim|grant|buy|redeem)(?:s|ed|ing)?(?:$|[^a-z])", words)
                 or re.search(r"recharge.*call_?back", words))
+
+
+def non_economy_cache_context(name, signature, body):
+    """Require structural domain evidence; an economic operation overrides it."""
+    words = identifier_words(signature + body)
+    economic = (r"(?:purchase|buy|redeem|recharge|reward|item|inventory|price|stock|coin|currency|balance|"
+                r"gift|goods|offer|wallet|payment|entitlement)")
+    if (re.search(r"(?:^|[^a-z])" + economic + r"(?:s|ed|ing)?(?:$|[^a-z])", words)
+            or re.search(r"\bgrant\s*\(", body)):
+        # A pure factory accessor can have Buy in its cache type/name, but it
+        # does not consume cached policy. Its purchase caller remains checked.
+        return bool(re.match(r"get\w*Cache$", name)
+                    and re.fullmatch(r"\s*return\s+\w+(?:\.\w+)*\.get\w*Cache\s*"
+                                     r"\(\s*(?:\w+\.class\s*)?\)\s*;\s*\}", body))
+    name_words = identifier_words(name)
+    authorization = (re.search(r"(?:^|_)permissions?(?:_|$)", name_words)
+                     and re.search(r"\b\w*Permission\w*\b", signature))
+    lease = (re.search(r"(?:^|_)claim(?:_|$)", name_words)
+             and re.search(r"\b\w+\s*:\s*(?:[\w:]+::)?CacheKey\b", signature)
+             and re.search(r"\blease_\w*\s*:", signature))
+    return bool(authorization or lease)
+
+
+def cache_key_name(name):
+    return bool(re.search(r"(?:^|_)cache_key$", identifier_words(name)))
 
 
 def named_bodies(clean, code, suffix, name_filter=None):
@@ -326,12 +355,16 @@ def economy_cache_reads(clean, code, suffix):
     aliases.update(re.findall(r"\b(\w+)\s*:\s*&?(?:mut\s+)?(?:[\w:]+::)?" + cache_type + r"\b", code))
     for name, header, start, end in named_bodies(clean, code, suffix, economy_name):
         body = code[start:end]
+        if non_economy_cache_context(name, code[header:start], body):
+            continue
         candidates = []
         # Java TemplateCache.getCache(), cached_price(), Cache::get(), etc.
         calls = r"\b([A-Za-z_$][\w$]*)\s*(?:(?:::|\.)\s*([A-Za-z_$][\w$]*))?\s*\("
         for match in re.finditer(calls, body):
             receiver, method = match.groups()
             token = method or receiver
+            if cache_key_name(token):
+                continue
             if re.match(r"(?:invalidate|evict|clear|remove|delete|put|set|insert|refresh|save|write)", token, re.I):
                 continue
             if (re.search("cache", token, re.I)
@@ -341,7 +374,15 @@ def economy_cache_reads(clean, code, suffix):
         # fetch({cache: 'no-store'}) or a CacheKey type is not a cache read.
         for match in re.finditer(r"\b\w*cache\w*\b", body, re.I):
             tail = body[match.end():]
-            if match.group()[0].isupper() or re.match(r"\s*(?:[=:]|\.(?:invalidate|evict|clear|remove|delete|put|set|insert|refresh|save|write)\s*\()", tail):
+            if match.group()[0].isupper() or cache_key_name(match.group()):
+                continue
+            # Assignment targets are writes; equality and compound assignment
+            # still consume the old value. Bracket targets may contain reads.
+            if re.match(r"\s*(?:=(?!=|>)|:)", tail):
+                continue
+            if re.match(r"(?:\s*\.\s*\w+|\s*\[[^\[\]]*\])+\s*=(?!=|>)", tail):
+                continue
+            if re.match(r"\s*\.(?:invalidate|evict|clear|remove|delete|put|set|insert|refresh|save|write)\s*\(", tail):
                 continue
             if not re.match(r"(?:invalidate|evict|clear|remove|delete|put|set|insert|refresh|save|write)", match.group(), re.I):
                 candidates.append((start + match.start(), start + match.end()))
