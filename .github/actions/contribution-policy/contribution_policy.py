@@ -30,8 +30,16 @@ def evaluate(pull_request, commits, policy):
     attributed = re.compile(r'(?<![A-Za-z0-9])(?:' + names + r')(?![A-Za-z0-9])', re.I)
     coauthor = re.compile(r'co-authored-by\s*:\s*(.*)', re.I)
     generated = re.compile(r'^[\s>*_\-\[🤖]*generated\s+(?:with|by)\s*:?\s*\S', re.I)
-    trailer = re.compile(r'^[\s>*_\-]*(?:agent(?:-id)?|harness)\s*:\s*\S', re.I)
-    authorship = re.compile(r'\b(?:written|authored|built|implemented|reviewed|assisted|generated)\s+(?:by|with|using)\s*:?[\s\[]*(?:the\s+|an?\s+)?(' + names + r')(?![A-Za-z0-9])', re.I)
+    trailer = re.compile(r'^[\s>*_\-]*agent(?:-id)?\s*:\s*\S', re.I)
+    harness = re.compile(r'^[\s>*_\-]*harness\s*:\s*\[?(?:' + names + r')(?![A-Za-z0-9])', re.I)
+    auxiliary = r'(?:was|is|were|are|has\s+been|have\s+been)\s+'
+    contribution = (r'\b(?:(?:changes?|patch(?:es)?|commits?|pull\s+requests?|PRs?|implementations?|'
+                    r'code|fix(?:es)?|updates?|work)\s+(?:' + auxiliary + r')?|'
+                    r'(?:this|these|it|they)\s+' + auxiliary + r')')
+    authorship = re.compile(r'(?:^[\s>*_\-🤖]*|' + contribution +
+                            r')(?:written|authored|built|implemented|reviewed|assisted|generated)\s+'
+                            r'(?:by|with|using)\s*:?[\s\[]*(?:the\s+|an?\s+)?(' + names +
+                            r')(?![A-Za-z0-9])', re.I)
     internal = [(rule, re.compile(pattern)) for rule, pattern in policy['internal_patterns'].items()]
     findings = []
 
@@ -47,7 +55,7 @@ def evaluate(pull_request, commits, policy):
                 rules.append('tool-coauthor')
             if generated.search(line):
                 rules.append('generated-trailer')
-            if trailer.search(line):
+            if trailer.search(line) or harness.search(line):
                 rules.append('agent-trailer')
             if authorship.search(line):
                 rules.append('tool-authorship')
