@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import audit_optimistic_merge as om  # noqa: E402  (same reader, same conventions)
+import audit_optimistic_merge as om  # noqa: E402 - reason: the shared reader lives beside this standalone script
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARED_REPO = "SylphxAI/.github"
@@ -94,7 +94,7 @@ def judge(files: dict[str, str], commits: Commits, head_sha: str, head_date: dat
                 continue
             try:
                 pinned = commits.date(SHARED_REPO, pin["sha"])
-            except Exception as err:  # noqa: BLE001 - unreadable is a failure, whatever the reason
+            except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
                 offenders.append({"file": name, "line": pin["line"], "path": pin["path"], "sha": pin["sha"],
                                   "days": None,
                                   "why": f"{pin['sha'][:9]} could not be read on {SHARED_REPO} ({str(err)[:80]})"})
@@ -153,7 +153,7 @@ def read_repo(gh, org: str, name: str) -> tuple[dict[str, str] | None, str]:
                         raise RuntimeError(f"{path}: workflow text could not be read")
                     files[path] = content
         return files, ""
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
         return None, str(err)[:120]
 
 
@@ -161,7 +161,7 @@ def audit(gh, orgs: list[str], hands_off: list[str], days: int = DRIFT_DAYS, pub
     commits = Commits(gh)
     try:
         head_sha, head_date = commits.main_head(SHARED_REPO)
-    except Exception as err:  # noqa: BLE001 - an unreadable head fails the run rather than passing every repo
+    except Exception as err:  # noqa: BLE001 - reason: an unreadable head must fail the entire audit
         return {"head": None, "repos": [],
                 "summary": {"repos": 0, "PASS": 0, "FAIL": 0, "UNREADABLE": 0, "head_error": str(err)[:120]}}
     repos = []
@@ -170,7 +170,7 @@ def audit(gh, orgs: list[str], hands_off: list[str], days: int = DRIFT_DAYS, pub
             continue
         try:
             bases = om.list_org(gh, org)
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
             repos.append({"repo": f"{org}/*", "status": "UNREADABLE", "offenders": [], "error": str(err)[:120]})
             continue
         for base in bases:
@@ -254,7 +254,7 @@ def watcher_offenders(gh, repo: str, trunk: str, window_minutes: int = RED_MAIN_
     try:
         verify = _runs(gh, repo, VERIFY_WORKFLOW)
         red = _runs(gh, repo, RED_MAIN_WORKFLOW)
-    except Exception as err:  # noqa: BLE001 - unreadable is a failure, whatever the reason
+    except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
         return [{"verify_run": None, "verify_at": None, "why": f"runs could not be read ({str(err)[:80]})"}]
     if not verify:
         return []
@@ -283,7 +283,7 @@ def watch_main(gh, args, hands_off: list[str]) -> int:
             continue
         try:
             bases = om.list_org(gh, org)
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
             repos.append({"repo": f"{org}/*", "status": "FAIL",
                           "offenders": [{"why": f"repository list could not be read ({str(err)[:120]})"}]})
             continue
@@ -330,7 +330,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         commits = Commits(gh)
         try:
             head_sha, head_date = commits.main_head(SHARED_REPO)
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
             print(f"could not read {SHARED_REPO} main: {err}", file=sys.stderr)
             return 2
         offenders = judge(read_dir(Path(args.dir)), commits, head_sha, head_date, args.days)
