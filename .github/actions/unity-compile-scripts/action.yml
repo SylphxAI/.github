@@ -20,7 +20,7 @@ inputs:
     default: Android
   output-path:
     description: Output directory relative to the Unity project.
-    default: Temp/sylphx-player-scripts
+    default: Builds/sylphx-player-scripts
 
 outputs:
   receipt:

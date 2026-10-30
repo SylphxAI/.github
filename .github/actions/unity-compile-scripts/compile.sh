@@ -11,6 +11,8 @@ output="$(PLAN="$plan" python3 -c 'import json,os; print(json.loads(os.environ["
 receipt="$root/$project/$output/compile-receipt.json"
 # A stale successful receipt must not survive a failed compilation.
 rm -f "$receipt"
+echo "Player C# output: /workspace/$project/$output; host receipt: $receipt"
+set +e
 docker run --rm --workdir /workspace \
   --volume "$root:/workspace" --volume "$LICENSE_HOME:/root" \
   --env SYLPHX_COMPILE_TARGET="$COMPILE_TARGET" \
@@ -21,7 +23,15 @@ docker run --rm --workdir /workspace \
       -projectPath "$PROJECT_PATH" -buildTarget "$SYLPHX_COMPILE_TARGET" \
       -executeMethod SylphxCompilePlayerScripts.Run
   '
-test -s "$receipt"
+status=$?
+set -e
+echo "Unity player C# process exit: $status"
+if [ "$status" -ne 0 ]; then exit "$status"; fi
+if [ ! -s "$receipt" ]; then
+  echo "::error::Unity exited without a persistent receipt at $receipt"
+  find "$root/$project/Builds" -maxdepth 3 -type f -name 'compile-receipt.json' -print 2>/dev/null || true
+  exit 1
+fi
 python3 - "$receipt" "$COMPILE_TARGET" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))

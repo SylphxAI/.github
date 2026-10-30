@@ -25,6 +25,8 @@ def prepare(workspace, project, output, target):
     if not project.is_relative_to(workspace) or not (project / "Assets").is_dir() or not (project / "ProjectSettings/ProjectVersion.txt").is_file():
         raise ValueError("project must be a Unity project inside the workspace")
     output = relative(output)
+    if output.parts[0].lower() == "temp":
+        raise ValueError("Unity removes its Temp folder on shutdown; use a persistent output directory")
     destination = (project / output).resolve()
     if not destination.is_relative_to(project):
         raise ValueError("output resolves outside the Unity project")

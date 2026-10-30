@@ -27,7 +27,7 @@ class UnityCompileScripts(unittest.TestCase):
             root = Path(tmp)
             project = self.fixture(root)
             for _ in range(2):
-                plan = prepare.prepare(root, project.name, "Temp/compile", "Android")
+                plan = prepare.prepare(root, project.name, "Builds/compile", "Android")
                 self.assertEqual(plan["method"], "SylphxCompilePlayerScripts.Run")
             self.assertTrue((project / "Assets/Editor/SylphxCompilePlayerScripts.cs").read_text().startswith(prepare.MARKER))
             self.assertEqual((project / "ProjectSettings/ProjectVersion.txt").read_text(), "m_EditorVersion: 2020.3.49f1\n")
@@ -36,7 +36,7 @@ class UnityCompileScripts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project = self.fixture(root)
-            for project_name, output, target in (("../outside", "Temp/compile", "Android"), (project.name, "../outside", "Android"), (project.name, "/tmp/output", "Android"), (project.name, "Temp/compile", "WebGL")):
+            for project_name, output, target in (("../outside", "Builds/compile", "Android"), (project.name, "../outside", "Android"), (project.name, "/tmp/output", "Android"), (project.name, "Builds/compile", "WebGL"), (project.name, "Temp/compile", "Android")):
                 with self.assertRaises((ValueError, OSError)):
                     prepare.prepare(root, project_name, output, target)
 
@@ -48,7 +48,7 @@ class UnityCompileScripts(unittest.TestCase):
             entry = project / "Assets/Editor/SylphxCompilePlayerScripts.cs"
             entry.write_text("consumer work")
             with self.assertRaises(ValueError):
-                prepare.prepare(root, project.name, "Temp/compile", "Android")
+                prepare.prepare(root, project.name, "Builds/compile", "Android")
             self.assertEqual(entry.read_text(), "consumer work")
 
     def test_rejects_linked_editor_directory(self):
@@ -59,7 +59,7 @@ class UnityCompileScripts(unittest.TestCase):
             outside.mkdir()
             (project / "Assets/Editor").symlink_to(outside, target_is_directory=True)
             with self.assertRaises(ValueError):
-                prepare.prepare(root, project.name, "Temp/compile", "Android")
+                prepare.prepare(root, project.name, "Builds/compile", "Android")
             self.assertEqual(list(outside.iterdir()), [])
 
     def test_compiler_uses_real_store_target_without_native_build_or_signing(self):
@@ -78,7 +78,7 @@ class UnityCompileScripts(unittest.TestCase):
             project = self.fixture(root)
             license_home = root / "license"
             license_home.mkdir()
-            output = project / "Temp/compile"
+            output = project / "Builds/compile"
             output.mkdir(parents=True)
             receipt = output / "compile-receipt.json"
             receipt.write_text('{"target":"Android","assemblies":[{}]}')
@@ -86,7 +86,7 @@ class UnityCompileScripts(unittest.TestCase):
             fake.mkdir()
             (fake / "docker").write_text("#!/bin/sh\nexit 42\n")
             (fake / "docker").chmod(0o755)
-            env = os.environ | {"PATH": str(fake) + os.pathsep + os.environ["PATH"], "GITHUB_WORKSPACE": str(root), "GITHUB_ACTION_PATH": str(ACTION), "PROJECT_PATH": project.name, "COMPILE_OUTPUT": "Temp/compile", "COMPILE_TARGET": "Android", "LICENSE_HOME": str(license_home), "UNITY_IMAGE": "consumer/unity:pin", "GITHUB_OUTPUT": str(root / "out")}
+            env = os.environ | {"PATH": str(fake) + os.pathsep + os.environ["PATH"], "GITHUB_WORKSPACE": str(root), "GITHUB_ACTION_PATH": str(ACTION), "PROJECT_PATH": project.name, "COMPILE_OUTPUT": "Builds/compile", "COMPILE_TARGET": "Android", "LICENSE_HOME": str(license_home), "UNITY_IMAGE": "consumer/unity:pin", "GITHUB_OUTPUT": str(root / "out")}
             result = subprocess.run(["bash", str(ACTION / "compile.sh")], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 42)
             self.assertFalse(receipt.exists())
@@ -110,11 +110,11 @@ target.mkdir(parents=True, exist_ok=True)
 (target / 'compile-receipt.json').write_text(json.dumps({'target':'Android','unityVersion':'2020.3.49f1','assemblies':[{'file':'Assembly-CSharp.dll','sha256':'a'*64}]}))
 """)
             (fake / "docker").chmod(0o755)
-            env = os.environ | {"PATH": str(fake) + os.pathsep + os.environ["PATH"], "GITHUB_WORKSPACE": str(root), "GITHUB_ACTION_PATH": str(ACTION), "PROJECT_PATH": project.name, "COMPILE_OUTPUT": "Temp/compile", "COMPILE_TARGET": "Android", "LICENSE_HOME": str(license_home), "UNITY_IMAGE": "consumer/unity:pin", "GITHUB_OUTPUT": str(root / "out")}
+            env = os.environ | {"PATH": str(fake) + os.pathsep + os.environ["PATH"], "GITHUB_WORKSPACE": str(root), "GITHUB_ACTION_PATH": str(ACTION), "PROJECT_PATH": project.name, "COMPILE_OUTPUT": "Builds/compile", "COMPILE_TARGET": "Android", "LICENSE_HOME": str(license_home), "UNITY_IMAGE": "consumer/unity:pin", "GITHUB_OUTPUT": str(root / "out")}
             result = subprocess.run(["bash", str(ACTION / "compile.sh")], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Verified player C# receipt: Android", result.stdout)
-            self.assertIn(str(project / "Temp/compile/compile-receipt.json"), (root / "out").read_text())
+            self.assertIn(str(project / "Builds/compile/compile-receipt.json"), (root / "out").read_text())
 
 
 if __name__ == "__main__":

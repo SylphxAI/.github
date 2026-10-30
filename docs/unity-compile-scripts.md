@@ -27,6 +27,8 @@ refusing to overwrite consumer-owned code. Unity's `-buildTarget` and
 `PlayerBuildInterface.CompilePlayerScripts` compile non-development player C#;
 the receipt identifies the target, Unity version, UTC time and assembly hashes.
 Compiler errors, empty output, target mismatch and a stale receipt fail closed.
+Output defaults to `Builds/sylphx-player-scripts`, outside Unity's transient
+`Temp` directory; `Temp` is refused because editor shutdown removes it.
 
 No title names or source pins belong in the shared action. The consumer owns
 its project path, editor version, dependency pins, store-target selection and
