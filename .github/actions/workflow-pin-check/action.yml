@@ -38,4 +38,4 @@ runs:
         set -euo pipefail
         args=()
         for owner in $OWNERS; do args+=(--owner "$owner"); done
-        python3 "$ACTION_PATH/../../../scripts/workflow_pin_check.py" "${args[@]}" check --dir "$GITHUB_WORKSPACE"
+        python3 "$ACTION_PATH/../../../scripts/workflow_pin_check.py" ${args[@]+"${args[@]}"} check --dir "$GITHUB_WORKSPACE"

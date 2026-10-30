@@ -53,4 +53,4 @@ runs:
         export IDENTIFIERS_MODE="${MODE:-fail}"
         specs=()
         while IFS= read -r p; do [ -n "$p" ] && specs+=(":(exclude)$p"); done <<<"$EXCLUDE"
-        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/rules.tsv" "${specs[@]}"
+        "$GITHUB_ACTION_PATH/check.sh" "$range" "$GITHUB_ACTION_PATH/rules.tsv" ${specs[@]+"${specs[@]}"}
