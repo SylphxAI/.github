@@ -78,6 +78,11 @@ on:
         required: false
         type: string
         default: '--workspace'
+      test-exceptions:
+        description: Optional exact empty-test declarations JSON, relative to workspace (docs/ci-test.md).
+        required: false
+        type: string
+        default: ''
       locked:
         description: Pass `--locked` (needs a committed Cargo.lock).
         required: false
@@ -144,6 +149,7 @@ jobs:
       IN_PREFIX: ${{ inputs.key-prefix }}
       IN_CLIPPY: ${{ inputs.clippy-args }}
       IN_TEST: ${{ inputs.test-args }}
+      IN_TEST_EXCEPTIONS: ${{ inputs.test-exceptions }}
       IN_LOCKED: ${{ inputs.locked }}
       IN_APT: ${{ inputs.apt-packages }}
     steps:
@@ -157,6 +163,7 @@ jobs:
           [[ "$IN_PREFIX" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "bad key-prefix"; exit 2; }
           [[ "$IN_CLIPPY" =~ ^[A-Za-z0-9_.,:=/\ -]*$ ]] || { echo "bad clippy-args"; exit 2; }
           [[ "$IN_TEST" =~ ^[A-Za-z0-9_.,:=/\ -]*$ ]] || { echo "bad test-args"; exit 2; }
+          [[ "$IN_TEST_EXCEPTIONS" =~ ^[A-Za-z0-9_./-]{0,200}$ && "$IN_TEST_EXCEPTIONS" != /* && "$IN_TEST_EXCEPTIONS" != *..* ]] || { echo "bad test-exceptions"; exit 2; }
           [[ "$IN_APT" =~ ^[a-z0-9.+\ -]*$ ]] || { echo "bad apt-packages"; exit 2; }
           if [ ! -w "${HOME:-/}" ] || [ "${HOME:-/root}" = /root ]; then
             mkdir -p "$RUNNER_TEMP/home" && echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
@@ -275,6 +282,9 @@ jobs:
           esac
           read -ra args <<<"$IN_CLIPPY"
           cargo clippy "${locked[@]}" "${feat[@]}" "${args[@]}"
+      - name: Require test execution
+        if: inputs.test-args != ''
+        uses: SylphxAI/.github/.github/actions/setup-ci-test@c73ef37e84b294afcca191cf1b0e47e282830777 # guard implementation in this change
       - name: Test
         if: inputs.test-args != ''
         working-directory: ${{ inputs.workspace }}
@@ -288,7 +298,9 @@ jobs:
             *) feat=(--features "$IN_FEATURES") ;;
           esac
           read -ra args <<<"$IN_TEST"
-          cargo test "${locked[@]}" "${feat[@]}" "${args[@]}"
+          exception=(); [ -n "$IN_TEST_EXCEPTIONS" ] && exception=(--exceptions "$IN_TEST_EXCEPTIONS")
+          ci-test --format libtest --shard "rust:$IN_WORKSPACE" "${exception[@]}" -- \
+            cargo test "${locked[@]}" "${feat[@]}" "${args[@]}"
       - name: Cache report
         # Hit rate per run, for the before/after numbers (docs/rust-ci.md).
         if: always() && steps.sccache.outputs.backend != 'none' && steps.sccache.outputs.backend != ''
