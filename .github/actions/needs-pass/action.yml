@@ -1,6 +1,7 @@
 name: needs-pass
 description: >
-  Automatically scans the added commits of every pull request and merge group
+  Enforces shared contribution metadata policy (contents and pull-requests:
+  read), then automatically scans the added commits of every pull request and merge group
   for secrets before returning the aggregate verdict. Fetches immutable Git
   objects into a temporary bare repository; no caller checkout is needed.
   Requires contents: read. Exact reasoned exceptions use
@@ -48,6 +49,11 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Check contribution metadata
+      shell: bash
+      env:
+        CONTRIBUTION_POLICY_TOKEN: ${{ github.token }}
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py"
     - shell: bash
       env:
         NEEDS: ${{ inputs.needs }}
