@@ -56,7 +56,7 @@ jobs:
         run: node --check .github/actions/setup-changesets-publisher/changesets-publish.mjs
 
   tests:
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-standard
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -303,7 +303,7 @@ jobs:
   template-verdict:
     needs: template-plan
     if: always() && !cancelled() && github.event_name != 'push'
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -319,7 +319,7 @@ jobs:
   ci-ok:
     needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer]
     if: always() && !cancelled()
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
