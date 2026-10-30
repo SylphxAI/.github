@@ -1,6 +1,6 @@
 name: setup-keel-tools
 description: >
-  Puts the keel CLI, built from the Keel rev a title pins, and the wasm-bindgen
+  Puts the keel CLI, from the exact public version or source commit a title pins, and the wasm-bindgen
   CLI, at the version the title's Cargo.lock pins, on PATH. Each has a separate
   cache per runner OS and arch, its own revision/features and this action's
   installer, so moving one pin never rebuilds the other tool; a warm run
@@ -10,10 +10,10 @@ description: >
 
 inputs:
   pin:
-    description: The Keel commit (40 hex). Empty reads pin-file.
+    description: The full Keel source commit or exact public x.y.z version. Empty reads pin-file.
     default: ""
   pin-file:
-    description: File holding the Keel commit, relative to working-directory.
+    description: File holding the full source commit or public x.y.z version, relative to working-directory.
     default: KEEL_PIN
   wasm-bindgen:
     description: >

@@ -4,7 +4,8 @@
 The guide says a title pins a weekly tag, never a moving main and never an arbitrary commit. This check
 reads every Keel revision a repository pins, from the places a title keeps it:
 
-  KEEL_PIN, keel-ref, deps/keel.rev   a commit (or a keel tag) on the first line, at any depth, vendor/ included
+  KEEL_PIN, keel-ref, deps/keel.rev   an exact public x.y.z, commit or keel tag on the first line
+  registry Cargo.toml / Cargo.lock   exact public Keel versions, one graph backed by published facade/CLI source
   Cargo.toml                          rev / tag / branch on a line (or a per-dependency table) that names
                                       the Keel git repository; a Keel git dependency with none of them
                                       follows Keel's default branch
@@ -34,12 +35,20 @@ Exit status: 0 pass (warnings allowed), 1 a failure, 2 the check itself could no
 """
 
 import argparse
+import hashlib
+import io
+import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
+import tomllib
+import urllib.request
 from pathlib import Path
 
+VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
+REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 HEX_RE = re.compile(r"[0-9a-f]{7,40}")
 TAG_RE = re.compile(r"keel-(verified|weekly)-(\d{4}-\d{2}-\d{2})(?:-(\d+))?")
 KEEL_URL = re.compile(r"SylphxAI/keel(?:\.git)?(?![\w-])")
@@ -127,7 +136,8 @@ def pins_in_pin_file(path, text):
     for no, line in enumerate(text.splitlines(), 1):
         s = line.strip()
         if s and not s.startswith("#"):
-            return [Pin(path, no, "ref", s.split()[0])]
+            value = s.split()[0]
+            return [Pin(path, no, "registry" if VERSION_RE.fullmatch(value) else "ref", value)]
     return []
 
 
@@ -138,7 +148,7 @@ def is_keel_git(line):
 
 
 def pins_in_cargo_toml(path, text):
-    pins = []
+    pins = registry_manifest_pins(path, text)
     lines = text.splitlines()
     section_start, section_keel, in_dep_table = 0, False, False
     for i, raw in enumerate(lines + ["["]):  # a trailing header flushes the last section
@@ -153,6 +163,36 @@ def pins_in_cargo_toml(path, text):
         section_keel = True
         if not in_dep_table:
             pins += attrs_of(path, lines, i, i + 1, whole_section=False)
+    return pins
+
+
+def registry_manifest_pins(path, text):
+    if "sylphx-keel-" not in text:
+        return []
+    try:
+        manifest = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise Refused(f"{path}: invalid Cargo manifest: {error}") from error
+    pins = []
+
+    def visit(table):
+        if not isinstance(table, dict):
+            return
+        for key, value in table.items():
+            if key in {"dependencies", "dev-dependencies", "build-dependencies"} and isinstance(value, dict):
+                for alias, spec in value.items():
+                    package = spec.get("package", alias) if isinstance(spec, dict) else alias
+                    if not package.startswith("sylphx-keel-"):
+                        continue
+                    if isinstance(spec, dict) and any(k in spec for k in ("git", "path", "workspace")):
+                        continue
+                    version = spec.get("version", "") if isinstance(spec, dict) else spec
+                    exact = isinstance(version, str) and version.startswith("=") and VERSION_RE.fullmatch(version[1:])
+                    pins.append(Pin(path, 1, "registry" if exact else "registry-range", str(version).removeprefix("=")))
+            elif isinstance(value, dict):
+                visit(value)
+
+    visit(manifest)
     return pins
 
 
@@ -177,8 +217,18 @@ def attrs_of(path, lines, start, stop, whole_section):
 
 
 def pins_in_lock(path, text):
-    return [Pin(path, no, "ref", m.group(1)) for no, line in enumerate(text.splitlines(), 1)
+    pins = [Pin(path, no, "ref", m.group(1)) for no, line in enumerate(text.splitlines(), 1)
             for m in [LOCK_SOURCE.search(line)] if m]
+    if "sylphx-keel-" in text:
+        try:
+            packages = tomllib.loads(text).get("package", [])
+        except tomllib.TOMLDecodeError as error:
+            raise Refused(f"{path}: invalid Cargo lock: {error}") from error
+        for package in packages:
+            if package.get("name", "").startswith("sylphx-keel-") and package.get("source", "").startswith("registry+"):
+                kind = "registry" if package["source"] == REGISTRY_SOURCE else "registry-source"
+                pins.append(Pin(path, 1, kind, package.get("version", "")))
+    return pins
 
 
 def pins_in_config(path, text):
@@ -229,6 +279,36 @@ def ensure_keel(keel_dir, remote, main_ref):
          "+refs/tags/keel-verified-*:refs/tags/keel-verified-*", "+refs/tags/keel-weekly-*:refs/tags/keel-weekly-*"], d)
 
 
+def registry_commit(version):
+    """Read the checksum-verified public facade and CLI source identities."""
+    commits = []
+    for package in ("sylphx-keel-engine", "sylphx-keel-cli"):
+        def read(url):
+            request = urllib.request.Request(url, headers={"User-Agent": "keel-pin-check"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.read()
+        try:
+            item = json.loads(read(f"https://crates.io/api/v1/crates/{package}/{version}"))["version"]
+            if item.get("crate") != package or item.get("num") != version or item.get("yanked") is not False:
+                raise ValueError("exact package/version is absent or yanked")
+            archive = read(f"https://static.crates.io/crates/{package}/{package}-{version}.crate")
+            if hashlib.sha256(archive).hexdigest() != item.get("checksum"):
+                raise ValueError("published archive checksum differs from registry metadata")
+            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as source:
+                member = source.extractfile(f"{package}-{version}/.cargo_vcs_info.json")
+                if member is None:
+                    raise ValueError("package has no source identity")
+                sha = json.load(member)["git"]["sha1"]
+            if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+                raise ValueError("invalid package source commit")
+            commits.append(sha)
+        except (OSError, KeyError, TypeError, ValueError, tarfile.TarError) as error:
+            return None, f"public {package} {version} could not be verified: {error}"
+    if len(set(commits)) != 1:
+        return None, "public facade and CLI were published from different source commits"
+    return commits[0], None
+
+
 class Keel:
     def __init__(self, keel_dir, main_ref):
         self.dir, self.main_ref = keel_dir, main_ref
@@ -253,7 +333,9 @@ class Keel:
         """(full sha or None, why not). A tag name resolves through Keel's tags, a hex string as a commit."""
         if value in self._cache:
             return self._cache[value]
-        if TAG_RE.fullmatch(value):
+        if VERSION_RE.fullmatch(value):
+            res = registry_commit(value)
+        elif TAG_RE.fullmatch(value):
             sha = self.tag_commit.get(value)
             res = (sha, None) if sha else (None, "not a keel-verified-* or keel-weekly-* tag Keel has")
         elif HEX_RE.fullmatch(value):
@@ -273,6 +355,8 @@ class Keel:
 
 def commit_key(keel, pin):
     """What a pin stands for: its full commit, or its raw text when it cannot be resolved."""
+    if pin.kind.startswith("registry"):
+        return f"{pin.kind}:{pin.value}"
     if pin.kind == "branch":
         return f"branch:{pin.value}"
     sha, _ = keel.resolve(pin.value)
@@ -287,7 +371,19 @@ def where_of(group, limit=3):
 def judge(pins, keel):
     """[(level, pin or None, message)] for one tree's pins; level is "error" or "warning"."""
     findings, by_commit, unresolved = [], {}, {}
+    registry = [p for p in pins if p.kind.startswith("registry")]
+    versions = {p.value for p in registry}
+    if len(versions) > 1:
+        findings.append(("error", registry[0], f"multiple Keel registry versions are pinned: {', '.join(sorted(versions))}"))
+    if registry and any(p.kind == "ref" and p.file.endswith(("Cargo.toml", "Cargo.lock")) for p in pins):
+        findings.append(("error", registry[0], "Keel registry packages and Git engine dependencies cannot share one graph"))
     for pin in pins:
+        if pin.kind == "registry-range":
+            findings.append(("error", pin, f"{pin.where()} must pin an exact registry version as =x.y.z"))
+            continue
+        if pin.kind == "registry-source":
+            findings.append(("error", pin, f"{pin.where()} must resolve Keel packages from crates.io"))
+            continue
         if pin.kind == "branch":
             what = "follows Keel's default branch" if pin.value == "(default branch)" else f"follows the branch {pin.value}"
             findings.append(("error", pin, f"{pin.where()} {what}; pin a keel-verified-* tag's commit, never a moving branch"))

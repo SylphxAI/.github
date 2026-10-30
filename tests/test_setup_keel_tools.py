@@ -39,6 +39,12 @@ if [ "$crate" = wasm-bindgen-cli ]; then
   chmod +x "$root/bin/wasm-bindgen"
   cp "$root/bin/wasm-bindgen" "$root/bin/wasm-bindgen-test-runner"
   [ "${FAIL_BINDGEN:-}" != 1 ] || exit 1
+elif [ "$crate" = sylphx-keel-cli ]; then
+  [ -z "$path" ]
+  have="${INSTALLED_KEEL_VERSION:-${version#=}}"
+  printf '#!/bin/sh\necho "keel %s"\n' "$have" > "$root/bin/keel"
+  chmod +x "$root/bin/keel"
+  [ "${FAIL_KEEL:-}" != 1 ] || exit 1
 else
   test -f "$path/Cargo.toml"
   printf '#!/bin/sh\necho keel\n' > "$root/bin/keel"
@@ -108,6 +114,33 @@ class InstallerTest(unittest.TestCase):
 
     def builds(self):
         return self.cargo_log.read_text().splitlines() if self.cargo_log.exists() else []
+
+    def test_registry_pin_installs_exact_public_cli_and_reuses_warm_cache(self):
+        r = self.run_installer("install", str(self.root), KEEL_PIN="0.1.5938", WASM_BINDGEN="none",
+                               KEEL_REPO="/missing/source-repository")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.builds()), 1)
+        self.assertIn("sylphx-keel-cli --version =0.1.5938 --locked --root", self.builds()[0])
+        self.assertNotIn("--path", self.builds()[0])
+        r = self.run_installer("install", str(self.root), KEEL_PIN="0.1.5938", WASM_BINDGEN="none")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.builds()), 1)
+        self.assertIn("from cache", r.stdout)
+
+    def test_registry_wrong_version_is_never_stamped_or_exposed(self):
+        r = self.run_installer("install", str(self.root), KEEL_PIN="0.1.5938", WASM_BINDGEN="none",
+                               INSTALLED_KEEL_VERSION="0.1.0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("expected keel 0.1.5938", r.stderr)
+        self.assertFalse((self.root / "keel/stamp").exists())
+        self.assertFalse(self.github_path.exists())
+
+    def test_registry_warm_cache_is_checked_again(self):
+        self.assertEqual(self.run_installer("install", str(self.root), KEEL_PIN="0.1.5938", WASM_BINDGEN="none").returncode, 0)
+        (self.root / "keel/bin/keel").write_text('#!/bin/sh\necho "keel 0.1.0"\n')
+        r = self.run_installer("install", str(self.root), KEEL_PIN="0.1.5938", WASM_BINDGEN="none")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("expected keel 0.1.5938", r.stderr)
 
     def test_key_names_pin_and_bindgen(self):
         r = self.run_installer("key")
@@ -298,7 +331,7 @@ class InstallerTest(unittest.TestCase):
         (self.title / "KEEL_PIN").write_text("abc123\n")
         r = self.run_installer("key")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("not a full commit sha", r.stderr)
+        self.assertIn("full commit sha or exact x.y.z", r.stderr)
         (self.title / "KEEL_PIN").write_text(self.pin)
         (self.title / "Cargo.lock").write_text("version = 3\n")
         r = self.run_installer("key")

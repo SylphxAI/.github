@@ -3,7 +3,8 @@
 `.github/actions/setup-keel-tools` puts the two tools a Keel title's web pack
 needs on `PATH`:
 
-- `keel`, built from the Keel commit in the title's `KEEL_PIN`. `keel pack` is
+- `keel`, installed from the exact public version when `KEEL_PIN` is `x.y.z`,
+  or built from source when it is a full commit. `keel pack` is
   the only packer, and the shell it writes must be the one the title was
   migrated against, so the CLI is never taken from another revision.
 - `wasm-bindgen`, at the version the title's `Cargo.lock` pins for the
@@ -30,8 +31,8 @@ Inputs, all optional:
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `pin` | empty | The Keel commit; empty reads `pin-file`. |
-| `pin-file` | `KEEL_PIN` | File holding the Keel commit. |
+| `pin` | empty | Full source commit or exact public `x.y.z`; empty reads `pin-file`. |
+| `pin-file` | `KEEL_PIN` | File holding the full source commit or public version. |
 | `wasm-bindgen` | `auto` | `auto` reads `cargo-lock`; `none` skips it; or an exact `x.y.z`. |
 | `cargo-lock` | `Cargo.lock` | Lockfile read when `wasm-bindgen` is `auto`. |
 | `keel-src` | empty | An existing Keel checkout at the pin to build from; empty clones SylphxAI/keel. |
@@ -51,3 +52,12 @@ This replaces each title's own copy: an inline `cargo install --path
 .../crates/keel-cli` step, a local `.github/actions/keel-cli`, a separate
 wasm-bindgen install step, or a `scripts/install-keel-tools.sh`. A title moves
 by deleting its copy and calling this action at a pinned SHA.
+
+For a public registry title, write its exact engine version to `KEEL_PIN`
+(for example, `0.1.5938`). Registry mode runs
+`cargo install sylphx-keel-cli --version =0.1.5938 --locked --root ...`,
+checks `keel --version` before stamping or exposing it, and checks restored
+binaries too. It does not clone Keel or require a source checkout.
+The shared pin check verifies that the title's manifest and lock use that
+same public version; it also verifies the facade and CLI publication and
+source lineage.
