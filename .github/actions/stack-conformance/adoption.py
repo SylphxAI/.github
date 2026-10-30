@@ -18,6 +18,8 @@ import subprocess
 
 HERE = pathlib.Path(__file__).resolve().parent
 REGISTRY = HERE / "checker-capabilities.json"
+CACHE_APPROVALS = HERE / "cache-safe-reads.json"
+CACHE_RULE = "architecture/C1/cache-economy"
 PREFIX = ".github/actions/stack-conformance/"
 RULE_MARKER = "# stack-rule-adopted-v1 "
 STACK_USE = re.compile(
@@ -53,7 +55,7 @@ def pin_provenance(tree, repository, shared_source=None):
     return pin_checker().review_pins(workflow_files(tree), repository, shared_source)
 
 
-def checker_pins(tree):
+def checker_pins(tree, *, required=True):
     pins = set()
     for text in workflow_files(tree).values():
         for line in text.splitlines():
@@ -62,7 +64,7 @@ def checker_pins(tree):
                 if not re.fullmatch(r"[a-fA-F0-9]{40}", match[1]):
                     raise ValueError("old stack checker must use an immutable full SHA")
                 pins.add(match[1].lower())
-    if not pins:
+    if not pins and required:
         raise ValueError("no immutable old stack-conformance caller found at base")
     return sorted(pins)
 
@@ -158,6 +160,48 @@ def adopted_rules(text):
     return {line[len(RULE_MARKER):] for line in (text or "").splitlines() if line.startswith(RULE_MARKER)}
 
 
+def cache_approval_errors(findings, repository):
+    """Initial cache adoption admits only reviewed, exact read occurrences."""
+    data = json.loads(CACHE_APPROVALS.read_text())
+    if data.get("version") != 1 or not isinstance(data.get("reads"), list):
+        raise ValueError("invalid cache read approval policy")
+    approved = set()
+    for read in data["reads"]:
+        if not isinstance(read.get("reason"), str) or not read["reason"].strip() or not read.get("bindings"):
+            raise ValueError("cache read approval requires a reason and exact bindings")
+        for binding in read["bindings"]:
+            repo, record = binding.get("repository"), binding.get("record")
+            if (not isinstance(repo, str) or not re.fullmatch(r"[^/\s]+/[^/\s]+", repo)
+                    or not isinstance(record, str)
+                    or not re.fullmatch(r"architecture C1 cache-economy [^\s]+ [a-f0-9]{64} [1-9][0-9]*", record)):
+                raise ValueError("invalid exact cache read approval binding")
+            identity = (repo, record)
+            if identity in approved:
+                raise ValueError("duplicate cache read approval binding")
+            approved.add(identity)
+    return ["unapproved inherited cache read; fix or delete before adoption: " + row["path"]
+            + ":" + str(row["line"])
+            for row in findings if row["rule"] == "cache-economy" and not row.get("decision")
+            and (repository, "architecture " + row["class"] + " " + row["rule"] + " "
+                 + row["path"] + " " + row["span_sha256"] + " " + str(row["occurrence"])) not in approved]
+
+
+def cache_adoption_requested(base_tree, head_tree, base_text, head_text):
+    """A pin-only bump cannot skip initial approval by omitting its marker."""
+    if CACHE_RULE in adopted_rules(base_text):
+        return False
+    if CACHE_RULE in adopted_rules(head_text):
+        return True
+    before = checker_pins(base_tree, required=False)
+    after = checker_pins(head_tree, required=False)
+    if before == after:
+        return False
+    if not before:
+        return bool(after)
+    introduced, _ = introduced_rules(base_tree, base_text)
+    return CACHE_RULE in introduced
+
+
 def introduced_rules(base_tree, baseline_text, *, shared_repo=None):
     profiles = old_checkers(base_tree, shared_repo=shared_repo)
     enforced = {rule for profile in profiles for rule in profile["rules"]}
@@ -223,6 +267,10 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     head_models = sc.model_pins.scan(head_tree, repository, None, sc.architecture.source_views)
     if any(report["unreadable"] for report in (base_arch, head_arch, base_models, head_models)):
         raise ValueError("adoption source unreadable; no baseline generated")
+    if CACHE_RULE in introduced:
+        errors = cache_approval_errors(head_arch["findings"], repository)
+        if errors:
+            raise ValueError("; ".join(errors))
     additions = set()
     for before, after, key, rule_id in (
             (base_arch, head_arch, sc.architecture.baseline_key,

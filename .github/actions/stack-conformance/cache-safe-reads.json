@@ -1,0 +1,381 @@
+{
+  "version": 1,
+  "scope": "Reviewed source reads only; original225-record game census, identical HKMT trees counted once.32 read approvals have43 exact repository bindings. Stale and false-positive matches are excluded.",
+  "reads": [
+    {
+      "reason": "Only callers are Player.toMsgShopBuyLimitBuilder. This display getter can perform the normal daily reset, but purchase independently calls the same daily-reset helper; it is not a second rule period or an authorization decision. Do not describe it as a pure function.",
+      "bindings": [
+        {
+          "repository": "Cubeage/big2-tycoon-2",
+          "record": "architecture C1 cache-economy backend/cft.game.db.template.utils/src/com/game/server/database/model/player/DBPlayer.java ec3987abf87a25c36e952a44fbd872e341bc3914cc100f5a7064a9d29b303984 1",
+          "reviewed_commit": "7aa0800da4b54b691bd3054686d7d8c2e60d3c19"
+        }
+      ]
+    },
+    {
+      "reason": "Lookup occurs after clothing granted; LogicUtils.sendNotice renders/broadcasts through channel.sysSend and does not authorize or deliver goods.",
+      "bindings": [
+        {
+          "repository": "Cubeage/big2-tycoon-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/PlayerMessageHandler.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "7aa0800da4b54b691bd3054686d7d8c2e60d3c19"
+        }
+      ]
+    },
+    {
+      "reason": "Cached common config used only for notice id arrays before an independent goodsTemplate limit-counter update. No value from this read controls that update.",
+      "bindings": [
+        {
+          "repository": "Cubeage/big2-tycoon-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 2a56b08b9bb04c66a68a8b2d441fe87ac9f805fa20cd22e1634cc4af74570b0c 1",
+          "reviewed_commit": "7aa0800da4b54b691bd3054686d7d8c2e60d3c19"
+        }
+      ]
+    },
+    {
+      "reason": "Only selects an announcement passed to LogicUtils.sendNotice/sysSend; neither grants nor changes buy eligibility.",
+      "bindings": [
+        {
+          "repository": "Cubeage/big2-tycoon-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "7aa0800da4b54b691bd3054686d7d8c2e60d3c19"
+        }
+      ]
+    },
+    {
+      "reason": "This occurrence forwards only the immutable catalog key, identical to the selected/requested gift id across reloads. The downstream helper independently fetches its current policy caches; the id itself has no stale price/reward/cap. This does not certify those separately cached helper policies.",
+      "bindings": [
+        {
+          "repository": "Cubeage/big2-tycoon-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 1",
+          "reviewed_commit": "7aa0800da4b54b691bd3054686d7d8c2e60d3c19"
+        }
+      ]
+    },
+    {
+      "reason": "This occurrence forwards only the immutable catalog key, identical to the selected/requested gift id across reloads. The downstream helper independently fetches its current policy caches; the id itself has no stale price/reward/cap. This does not certify those separately cached helper policies.",
+      "bindings": [
+        {
+          "repository": "Cubeage/big2-tycoon-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 2",
+          "reviewed_commit": "7aa0800da4b54b691bd3054686d7d8c2e60d3c19"
+        }
+      ]
+    },
+    {
+      "reason": "Only the stable product key is read by this exact occurrence. Mutable goods content on the same line is classified separately (candidate33). The key remains request/order id; claim cap policy is looked up separately.",
+      "bindings": [
+        {
+          "repository": "Cubeage/big2-tycoon-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 3",
+          "reviewed_commit": "7aa0800da4b54b691bd3054686d7d8c2e60d3c19"
+        }
+      ]
+    },
+    {
+      "reason": "Only stable identity is forwarded; mutable exItems in the same call is candidate37. No stale policy scalar is read by this occurrence.",
+      "bindings": [
+        {
+          "repository": "Cubeage/big2-tycoon-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 4",
+          "reviewed_commit": "7aa0800da4b54b691bd3054686d7d8c2e60d3c19"
+        }
+      ]
+    },
+    {
+      "reason": "This cached template only chooses daily normalization while serializing shop counters. Purchase independently performs the same daily normalization. Lifetime maxNum is separate from buyNum, so this daily reset does not erase the lifetime cap. This getter is mutating, not pure display, but no separate grant rule is supplied by this occurrence.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.db.template.utils/src/com/game/server/database/model/player/DBPlayer.java ec3987abf87a25c36e952a44fbd872e341bc3914cc100f5a7064a9d29b303984 1",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.db.template.utils/src/com/game/server/database/model/player/DBPlayer.java ec3987abf87a25c36e952a44fbd872e341bc3914cc100f5a7064a9d29b303984 1",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "The immutable hash binds itemTemplate.getId(, not the surrounding map lookup or DAO read. It forwards the identity of an already selected item. No price, coupon lifetime, inventory quantity, or eligibility flag is read by this occurrence. The DAO reads inventory directly; coupon expiry policy is separately read at line 166 and is not pronounced safe.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java 448f104496de68a03f9f21901afe04b8ea154789ea7fb0fd807de762c29c6d9e 1",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java 448f104496de68a03f9f21901afe04b8ea154789ea7fb0fd807de762c29c6d9e 1",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "The immutable hash binds itemTemplate.getId(, not the surrounding map lookup or DAO read. It forwards the identity of an already selected item. No price, coupon lifetime, inventory quantity, or eligibility flag is read by this occurrence. The DAO reads inventory directly; coupon expiry policy is separately read at line 166 and is not pronounced safe.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java 448f104496de68a03f9f21901afe04b8ea154789ea7fb0fd807de762c29c6d9e 2",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java 448f104496de68a03f9f21901afe04b8ea154789ea7fb0fd807de762c29c6d9e 2",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "This NoticeTemplate read supplies only the post-purchase announcement. The clothing grant and response occur before this read; it does not decide price, cap, eligibility or reward.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/PlayerMessageHandler.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/PlayerMessageHandler.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "The common template is read for notice ID arrays and the NoticeTemplate read supplies announcement content. Their values do not set cap rules or reward amounts. Later cap accounting uses the independent goodsTemplate argument. Exceptions from malformed notice data are not a stale-rule wrong-grant claim.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 2a56b08b9bb04c66a68a8b2d441fe87ac9f805fa20cd22e1634cc4af74570b0c 1",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 2a56b08b9bb04c66a68a8b2d441fe87ac9f805fa20cd22e1634cc4af74570b0c 1",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "The common template is read for notice ID arrays and the NoticeTemplate read supplies announcement content. Their values do not set cap rules or reward amounts. Later cap accounting uses the independent goodsTemplate argument. Exceptions from malformed notice data are not a stale-rule wrong-grant claim.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 1",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 1",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 2",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 2",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 3",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 3",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 4",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 4",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
+      "bindings": [
+        {
+          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 5",
+          "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
+        },
+        {
+          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 5",
+          "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
+        }
+      ]
+    },
+    {
+      "reason": "Display serialization selects a daily-reset view. It does not select a second period or grant; purchase independently invokes the identical daily reset. This getter can persist the normal reset, so it is not called pure.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw",
+          "record": "architecture C1 cache-economy backend/cft.game.code/cft.game.db.template.utils/src/com/game/server/database/model/player/DBPlayer.java ec3987abf87a25c36e952a44fbd872e341bc3914cc100f5a7064a9d29b303984 1",
+          "reviewed_commit": "318449899e9594f45fd3fb93e48708c7de3067a3"
+        }
+      ]
+    },
+    {
+      "reason": "Second clothing-template lookup occurs after addRoleClothing; it only selects notice metadata for a broadcast.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw",
+          "record": "architecture C1 cache-economy backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/PlayerMessageHandler.java 23a69b7f9200a1f382ea22ad2428c5d670970f824603307e8834bdc10d95157d 2",
+          "reviewed_commit": "318449899e9594f45fd3fb93e48708c7de3067a3"
+        }
+      ]
+    },
+    {
+      "reason": "Notice-template lookup after the clothing grant reaches channel.sysSend; it neither grants items nor changes purchase eligibility.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw",
+          "record": "architecture C1 cache-economy backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/PlayerMessageHandler.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "318449899e9594f45fd3fb93e48708c7de3067a3"
+        }
+      ]
+    },
+    {
+      "reason": "Common template contributes only announcement selection; buy-limit updates and claimable chat goods use separate goodsTemplate fields, not this occurrence.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw",
+          "record": "architecture C1 cache-economy backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 9a0f38fde0f5996569b79d41d1343d84253d74e00dc621cbdf23288b07785003 1",
+          "reviewed_commit": "318449899e9594f45fd3fb93e48708c7de3067a3"
+        }
+      ]
+    },
+    {
+      "reason": "Cached notice template only supplies channel.sysSend announcement. The distinct goodsTemplate chat payload is not approved by this occurrence.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw",
+          "record": "architecture C1 cache-economy backend/cft.game.code/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "318449899e9594f45fd3fb93e48708c7de3067a3"
+        }
+      ]
+    },
+    {
+      "reason": "Only callers are Player.toMsgShopBuyLimitBuilder. This display getter can perform the normal daily reset, but purchase independently calls the same daily-reset helper; it is not a second rule period or an authorization decision. Do not describe it as a pure function.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw-2",
+          "record": "architecture C1 cache-economy backend/cft.game.db.template.utils/src/com/game/server/database/model/player/DBPlayer.java ec3987abf87a25c36e952a44fbd872e341bc3914cc100f5a7064a9d29b303984 1",
+          "reviewed_commit": "b384f69dbce082a8528657abaf646f1cb6c60baa"
+        }
+      ]
+    },
+    {
+      "reason": "Lookup occurs after clothing granted; LogicUtils.sendNotice renders/broadcasts through channel.sysSend and does not authorize or deliver goods.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/PlayerMessageHandler.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "b384f69dbce082a8528657abaf646f1cb6c60baa"
+        }
+      ]
+    },
+    {
+      "reason": "Cached common config used only for notice id arrays before an independent goodsTemplate limit-counter update. No value from this read controls that update.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 2a56b08b9bb04c66a68a8b2d441fe87ac9f805fa20cd22e1634cc4af74570b0c 1",
+          "reviewed_commit": "b384f69dbce082a8528657abaf646f1cb6c60baa"
+        }
+      ]
+    },
+    {
+      "reason": "Only selects an announcement passed to LogicUtils.sendNotice/sysSend; neither grants nor changes buy eligibility.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
+          "reviewed_commit": "b384f69dbce082a8528657abaf646f1cb6c60baa"
+        }
+      ]
+    },
+    {
+      "reason": "This occurrence forwards only the immutable catalog key, identical to the selected/requested gift id across reloads. The downstream helper independently fetches its current policy caches; the id itself has no stale price/reward/cap. This does not certify those separately cached helper policies.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 1",
+          "reviewed_commit": "b384f69dbce082a8528657abaf646f1cb6c60baa"
+        }
+      ]
+    },
+    {
+      "reason": "This occurrence forwards only the immutable catalog key, identical to the selected/requested gift id across reloads. The downstream helper independently fetches its current policy caches; the id itself has no stale price/reward/cap. This does not certify those separately cached helper policies.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 2",
+          "reviewed_commit": "b384f69dbce082a8528657abaf646f1cb6c60baa"
+        }
+      ]
+    },
+    {
+      "reason": "Only the stable product key is read by this exact occurrence. Mutable goods content on the same line is classified separately (candidate33). The key remains request/order id; claim cap policy is looked up separately.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 3",
+          "reviewed_commit": "b384f69dbce082a8528657abaf646f1cb6c60baa"
+        }
+      ]
+    },
+    {
+      "reason": "Only stable identity is forwarded; mutable exItems in the same call is candidate37. No stale policy scalar is read by this occurrence.",
+      "bindings": [
+        {
+          "repository": "Cubeage/mahjong-tycoon-tw-2",
+          "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 4",
+          "reviewed_commit": "b384f69dbce082a8528657abaf646f1cb6c60baa"
+        }
+      ]
+    }
+  ]
+}
