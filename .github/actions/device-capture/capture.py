@@ -142,8 +142,9 @@ def execute(receipt, options):
 
 
 def main():
-    names = ("CI_NAME", "ENVIRONMENT", "APP", "SCENARIO", "SIZE", "CLI_VERSION", "OUTPUT")
-    options = tuple(os.environ["CAPTURE_" + name] for name in names)
+    options = (os.environ["CAPTURE_CI_NAME"], os.environ["CAPTURE_ENVIRONMENT"],
+               os.environ["CAPTURE_APP"], os.environ["CAPTURE_SCENARIO"],
+               os.environ["CAPTURE_SIZE"], os.environ["CAPTURE_CLI_VERSION"], os.environ["CAPTURE_OUTPUT"])
     output = Path(options[-1])
     if output.exists() and any(output.iterdir()):
         raise CaptureError("output directory is not empty; inspect previous evidence")
