@@ -28,6 +28,12 @@ targets can proceed independently. A terminal refused or rolled-back package is
 not republished by retrying it. A rollback whose public readback has not completed
 remains `ROLLBACK_SWITCHED`; a continuation reconciles that rollback.
 
+New serving files/directories use `0644`/`0755`, even when the executor has a
+private umask. Pointer activation and rollback preserve the captured pointer's
+owner, group and permission bits; refusal to preserve that metadata stops before
+replacement. Existing directories keep their permissions. Journal and backup
+files remain private (`0600`) outside the serving root.
+
 The deployment adapter must ensure that all pointer writers use this transaction,
 the output filesystem supports durable rename, the source package cannot change
 while being read, and the public verifier reads the configured serving route.
@@ -48,9 +54,10 @@ Validation:
 python3 -m unittest discover -s tests -p 'test_static_publication.py' -v
 ```
 
-Thirteen cases exercise exact installation, corrupt/refused inputs, stale parents,
+Fifteen cases exercise exact installation, corrupt/refused inputs, stale parents,
 candidate failure, installed failure and rollback, out-of-order completion,
 unchanged unrelated state, immutable-directory refusal, path/symlink refusal, and
-process crashes before/after pointer switching and during rollback. They are
+process crashes before/after pointer switching and during rollback, public read
+permissions under a private umask, and pointer permissions through rollback. They are
 filesystem acceptance cases; a consuming deployment must supply actual public
 readback and runtime load evidence before claiming installed delivery.

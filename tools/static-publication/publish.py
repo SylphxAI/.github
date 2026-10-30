@@ -45,13 +45,18 @@ def within(root, name):
     return path
 
 
-def durable_write(path, data):
+def durable_write(path, data, mode=0o600, owner=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, filename = tempfile.mkstemp(prefix=".publication-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(data)
             stream.flush()
+            if owner is not None:
+                current = os.fstat(stream.fileno())
+                if (current.st_uid, current.st_gid) != tuple(owner):
+                    os.fchown(stream.fileno(), *owner)
+            os.fchmod(stream.fileno(), mode)
             os.fsync(stream.fileno())
         os.replace(filename, path)
         sync_dir(path.parent)
@@ -66,6 +71,21 @@ def sync_dir(path):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def public_directories(path, root):
+    """Give only newly created serving directories ordinary web read access."""
+    missing = []
+    while path != root:
+        if not path.exists():
+            missing.append(path)
+        path = path.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o755)
+        except FileExistsError:
+            continue
+        directory.chmod(0o755)  # A private executor umask must not hide assets.
 
 
 @contextmanager
@@ -143,13 +163,15 @@ def install_directory(package, root, release):
             if path.stat().st_size != item["bytes"] or digest(path.read_bytes()) != item["sha256"]:
                 raise Refused("Existing immutable release differs; never overwrite")
         return destination
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    public_directories(destination.parent, root)
     temporary = Path(tempfile.mkdtemp(prefix=".static-release-", dir=destination.parent))
     try:
         for item in release["files"]:
             source = within(package / "files", item["path"])
             target = within(temporary, item["path"])
-            durable_write(target, source.read_bytes())
+            public_directories(target.parent, temporary)
+            durable_write(target, source.read_bytes(), mode=0o644)
+        temporary.chmod(0o755)
         # The pointer transaction serializes attempts on this same target, so
         # the directory rename can never replace another accepted release.
         os.rename(temporary, destination)
@@ -215,9 +237,12 @@ def publish(package, root, state_root, expected_package_sha, required_proofs, ve
             if digest(current) == digest(pointer_bytes):
                 raise Refused("No-op pointer cannot identify a new publication")
             durable_write(backup_path, current)
+            metadata = target.stat()
             journal = {"schemaVersion": 1, "packageSha256": key, "source": release["source"],
                        "pointerSha256": digest(pointer_bytes), "targetPointer": release["targetPointer"],
-                       "releaseDirectory": release["releaseDirectory"]}
+                       "releaseDirectory": release["releaseDirectory"],
+                       "pointerMode": metadata.st_mode & 0o777,
+                       "pointerOwner": [metadata.st_uid, metadata.st_gid]}
             save(journal, "PREPARED")
         install_directory(package, root, release)
 
@@ -231,7 +256,7 @@ def publish(package, root, state_root, expected_package_sha, required_proofs, ve
             current = target.read_bytes()
             if digest(current) == release["parentPointerSha256"]:
                 save(journal, "SWITCHING")
-                durable_write(target, pointer_bytes)
+                durable_write(target, pointer_bytes, journal["pointerMode"], journal["pointerOwner"])
                 checkpoint("POINTER_REPLACED")
                 save(journal, "SWITCHED")
             elif digest(current) != digest(pointer_bytes):
@@ -252,7 +277,7 @@ def publish(package, root, state_root, expected_package_sha, required_proofs, ve
                 previous = backup_path.read_bytes()
                 if digest(previous) != release["parentPointerSha256"]:
                     raise Refused("Rollback bytes differ from captured parent")
-                durable_write(target, previous)
+                durable_write(target, previous, journal["pointerMode"], journal["pointerOwner"])
                 save(journal, "ROLLBACK_SWITCHED")
                 rolled_back = True
             elif digest(current) == release["parentPointerSha256"]:
