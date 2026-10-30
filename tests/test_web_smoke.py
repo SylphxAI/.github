@@ -158,6 +158,16 @@ class RunnerGuard(unittest.TestCase):
 
 
 class Commands(unittest.TestCase):
+    def test_first_load_report_is_captured_before_a_touch_loads_more_assets(self):
+        cmds = dict(web_smoke.smoke_commands("/k", "/c", "http://h/index.html", Options(
+            tap="begin", report="/boot.json", first_load_baseline="/baseline.json",
+            allow_host=["api.example.com"])))
+        self.assertNotIn("--tap", cmds["boot"])
+        self.assertIn("--tap", cmds["touch"])
+        self.assertIn("/boot.json", cmds["boot"])
+        self.assertIn("/boot.json.touch.json", cmds["touch"])
+        self.assertIn("api.example.com", cmds["boot"])
+
     def test_both_checks_with_the_options(self):
         cmds = dict(web_smoke.smoke_commands("/k", "/c", "http://h/index.html",
                                              Options(tap="begin", report="/r.json")))

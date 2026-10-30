@@ -314,13 +314,23 @@ def smoke_commands(keel: str, chrome: str, url: str, opts) -> list[tuple[str, li
                                             "--budget-s", str(opts.budget_s), url]))
     live = [sys.executable, script, "--chrome", chrome, "--live", "--viewport", opts.viewport, "--dpr", "1",
             "--budget-s", str(opts.budget_s)]
-    if opts.tap:
+    first_load = bool(getattr(opts, "first_load_baseline", ""))
+    if opts.tap and not first_load:
         live += ["--tap", opts.tap]
     for pattern in [*opts.ignore_console, *offline_ignores(opts.offline_dependency)]:
         live += ["--ignore-console", pattern]
+    for host in getattr(opts, "allow_host", []):
+        live += ["--allow-host", host]
     if opts.report:
         live += ["--report", opts.report]
     commands.append(("boot", live + [url]))
+    if opts.tap and first_load:
+        # First-load evidence stops before interaction. Preserve the existing touch check
+        # in a separate cold session so a tap cannot add lazy scenes to the byte baseline.
+        touched = list(live)
+        if opts.report:
+            touched[touched.index("--report") + 1] = opts.report + ".touch.json"
+        commands.append(("touch", touched + ["--tap", opts.tap, url]))
     return commands
 
 
@@ -388,7 +398,10 @@ def summary_text(results: list[tuple[str, bool, str]], url: str, ref: str, offli
     for name, ok, _ in results:
         lines.append("| %s | %s |" % (name, "pass" if ok else "FAIL"))
     for name, ok, out in results:
-        if not ok:
+        if not ok or name == "first-load":
+            if name == "first-load":
+                lines += ["", "```", out, "```"]
+                continue
             fails = [l for l in out.splitlines() if l.startswith("FAIL")] or out.strip().splitlines()[-5:]
             lines += ["", "`%s`:" % name, "", "```", *fails, "```"]
     if offline:
@@ -399,12 +412,29 @@ def summary_text(results: list[tuple[str, bool, str]], url: str, ref: str, offli
     return "\n".join(lines) + "\n"
 
 
+def first_paint(results):
+    """Keep the existing Slow 3G measurement with the byte report, without another browser run."""
+    for name, _, output in results:
+        if name == "slow-3g-splash":
+            for line in output.splitlines():
+                if line.startswith("slow-3g-splash ") and "{" in line:
+                    try:
+                        return json.loads(line[line.index("{"):]).get("first_contentful_paint_ms")
+                    except ValueError:
+                        pass
+    return None
+
+
 def cmd_run(opts) -> int:
     refuse_hosted()
     pack = Path(opts.pack)
     index = pack / "index.html"
     if not index.is_file() or index.stat().st_size == 0:
         raise Refused("%s has no index.html: pass the directory `keel pack --profile web` wrote" % opts.pack)
+    if getattr(opts, "first_load_baseline", ""):
+        if not opts.report:
+            raise Refused("first-load requires a boot --report")
+        Path(opts.report).unlink(missing_ok=True)
     if opts.slow_3g_splash and not supports(opts.keel, "--slow-3g-splash"):
         raise Refused("the Keel scripts used here (%s) have no --slow-3g-splash: they predate the web boot standard. "
                       "Repin the title, or pass a newer keel-ref." % opts.ref)
@@ -445,6 +475,21 @@ def cmd_run(opts) -> int:
             host.wait(timeout=10)
         except subprocess.TimeoutExpired:
             host.kill()
+    if getattr(opts, "first_load_baseline", ""):
+        import runpy
+        first_load = runpy.run_path(str(Path(__file__).with_name("first_load.py")))
+        try:
+            brotli = brotli_module()
+            ok, out = first_load["check"](
+                pack, Path(opts.report), Path(opts.first_load_baseline), opts.first_load_base,
+                Path(opts.first_load_report), lambda data: q11_size(brotli, data), first_paint(results))
+        except (ValueError, OSError, subprocess.CalledProcessError) as error:
+            ok, out = False, "FAIL: first-load measurement unavailable: %s" % error
+        results.append(("first-load", ok, out))
+        print(out)
+        if not ok:
+            print("::error title=web-smoke first-load::%s" % next(
+                (line for line in out.splitlines() if line.startswith("FAIL")), "failed"))
     text = summary_text(results, url, opts.ref, deps)
     target = os.environ.get("GITHUB_STEP_SUMMARY")
     if target:
@@ -479,8 +524,12 @@ def main(argv=None) -> int:
     u.add_argument("--splash-budget-ms", type=float, default=1000.0)
     u.add_argument("--slow-3g-splash", type=lambda v: v.lower() != "false", default=True)
     u.add_argument("--ignore-console", action="append", default=[])
+    u.add_argument("--allow-host", action="append", default=[])
     u.add_argument("--offline-dependency", action="append", default=None)
     u.add_argument("--report", default="")
+    u.add_argument("--first-load-baseline", default="")
+    u.add_argument("--first-load-base", default="")
+    u.add_argument("--first-load-report", default="web-first-load-report.json")
     u.add_argument("--max-served-ratio", type=float, default=1.03)
     u.add_argument("--require-precompressed", type=lambda v: v.lower() == "true", default=False)
     u.add_argument("--timeout-s", type=int, default=300)
