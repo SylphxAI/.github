@@ -22,6 +22,7 @@ RELEASES = (
 )
 TENANT_RULE = "architecture/C2/tenant-read-functions"
 DEAL_RULE = "architecture/C1/deal-randomness"
+PORTABLE_RULE = "architecture/C1/project-portability"
 TENANT_RELEASE = "b7bc8bacfa4852175676a41f0b51068998bafd5a"
 
 
@@ -178,11 +179,12 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
             base = fixture.commit({WORKFLOW: workflow(TENANT_RELEASE), SOURCE: POLL,
                                    sc.BASELINE: baseline})
             plan = fixture.plan(base)
-            self.assertEqual(plan["introduced_rules"], [DEAL_RULE, "force-push", "model-selector"])
+            self.assertEqual(plan["introduced_rules"], [DEAL_RULE, PORTABLE_RULE, "force-push", "model-selector"])
             self.assertEqual(plan["evidence"]["added_records"], [])
             self.assertEqual(plan["baseline_text"], baseline + sc.model_pins.BASELINE_MARKER + "\n"
                              + sc.no_force_push.BASELINE_MARKER + "\n"
                              + sc.adoption.RULE_MARKER + DEAL_RULE + "\n"
+                             + sc.adoption.RULE_MARKER + PORTABLE_RULE + "\n"
                              + sc.adoption.RULE_MARKER + "force-push\n"
                              + sc.adoption.RULE_MARKER + "model-selector\n")
             self.assertEqual(len(plan["evidence"]["old_checkers"][0]["rules"]), 18)
@@ -209,12 +211,13 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
                 base = fixture.commit({WORKFLOW: workflow(pin), SOURCE: POLL,
                                        sc.BASELINE: baseline})
                 plan = fixture.plan(base)
-                self.assertEqual(plan["introduced_rules"], [DEAL_RULE, TENANT_RULE, "force-push", "model-selector"])
+                self.assertEqual(plan["introduced_rules"], [DEAL_RULE, PORTABLE_RULE, TENANT_RULE, "force-push", "model-selector"])
                 self.assertEqual(plan["evidence"]["added_records"], [])
                 self.assertEqual(plan["baseline_text"], baseline
                                  + sc.model_pins.BASELINE_MARKER + "\n"
                                  + sc.no_force_push.BASELINE_MARKER + "\n"
                                  + sc.adoption.RULE_MARKER + DEAL_RULE + "\n"
+                                 + sc.adoption.RULE_MARKER + PORTABLE_RULE + "\n"
                                  + sc.adoption.RULE_MARKER + TENANT_RULE + "\n"
                                  + sc.adoption.RULE_MARKER + "force-push\n"
                                  + sc.adoption.RULE_MARKER + "model-selector\n")

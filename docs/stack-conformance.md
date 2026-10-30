@@ -595,6 +595,37 @@ required CLI validates this initial adoption through the same rule permissions.
 When the base has no baseline file, the helper also seeds exact inherited stack
 departures; a new departure in the candidate is refused.
 
+### Project portability
+
+`architecture/C1/project-portability` refuses new cluster-dependent destinations
+in application and runtime source: literal or template `.svc`,
+`.svc.cluster.local`, `.cluster.local` and `.sylphx.internal` hosts, single-label
+HTTP service URLs, Kubernetes service-account mount paths, Kubernetes endpoint
+environment reads and explicit in-cluster client constructors. A configurable
+public URL passes; an optional private default is still recorded source debt.
+Comments, ordinary fixture paths, inline Rust tests, bare refusal suffixes and
+diagnostic examples are excluded. Native client languages and runtime shell
+entrypoints use the same rule.
+
+Deployment manifests may name infrastructure. The allowlist applies to YAML,
+TOML, JSON and XML under deployment/infra/Helm/GitOps/CI directories, plus
+`sylphx.toml` and `*.deployment.profile.toml`. Source code in those directories
+is still checked. There is no blanket platform-repository exemption.
+
+Use the existing rule-scoped `adoption.py adopt` pin-bump route above to record
+only base-existing, head-surviving findings in `.github/stack-departures.txt`.
+Every inherited portability occurrence needs its exact baseline record, even
+on an unrelated PR. After adoption the records can only shrink; copying,
+editing or resurrecting a removed occurrence fails. Architecture decisions
+cannot exempt this rule. The capability profile binds the executable detector
+module, preserving historical profile identities when that module is absent.
+
+The existing required stack verdict carries this rule. A caller qualification
+must include one actual failing private-destination change and a clean passing
+change, and demonstrate that failure reaches its required aggregate. This
+lexical check does not certify computed hosts, API publicness, key permissions,
+or all Kubernetes aliases; these remain census and owning-writer review work.
+
 ### Recorded decisions
 
 `.github/architecture-decisions.json` has `version: 1` and a `decisions` array.
