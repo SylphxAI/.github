@@ -69,6 +69,35 @@ Bot-created PRs dispatch both producers: list `pr-metadata.yml` before the code
 workflow in the bot's `ci-workflows`, and add `pr-metadata` to its required
 check list. Both metadata and code starters accept `workflow_dispatch`.
 
+### Existing PR heads without the metadata workflow
+
+An existing PR can retain a merge definition from before the companion was
+installed. Editing that PR can start its old code workflow and still produce no
+metadata check. Do not use an edit or a code rerun to fill that missing producer.
+
+The source repository's `pr-metadata-backfill.yml` runs trusted default-branch
+code and publishes only `pr-metadata` on an explicit, current PR head:
+
+```sh
+gh workflow run pr-metadata-backfill.yml --ref main \
+  -f pull-request=360 -f expected-head=FULL_PR_HEAD_SHA
+```
+
+Both inputs are required together. The publisher refuses a changed head,
+checks current PR text and original commit attribution without executing PR
+code, and writes a GitHub Actions check on that exact head. It never writes
+`ci-ok` or starts code CI. Correcting text can recover through a new metadata
+dispatch while the existing code result remains unchanged.
+
+Omit both inputs to backfill every open PR head with no `pr-metadata` producer.
+The workflow also does that once when its source is installed or updated on
+main. It paginates the open PR and check inventories and preserves existing
+producers, including queued, running and failed checks. A failed existing
+producer needs its normal metadata correction, or an explicit PR/head dispatch;
+the missing-only sweep does not replace it. Keep the separate required check
+bound to GitHub Actions (integration 15368). A backfill green is metadata
+evidence and cannot satisfy the separately required code verdict.
+
 Before requiring a new release, run the checker over all merged PRs from the
 last seven days across the complete active repository inventory. Keep the
 fixed time window, pagination receipts, exact findings, and classification of
