@@ -997,7 +997,9 @@ def cmd_check(args) -> int:
     for row in report["findings"]:
         old = previous.get(architecture.baseline_key(row))
         if changed is not None:
-            if old and not (old["decision"] and not row["decision"]):
+            if old and old["decision"] and not row["decision"]:
+                row["changed"] = True
+            elif old:
                 row["changed"] = False
             elif row["path"] in changed:
                 # An inserted identical span can shift the old occurrence onto
