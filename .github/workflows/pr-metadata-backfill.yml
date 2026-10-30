@@ -1,26 +1,15 @@
 # optimistic-merge: gate-external
-name: PR metadata backfill
+name: PR metadata origin comparison
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/pr-metadata-backfill.yml
-      - .github/actions/pr-metadata-backfill/**
   workflow_dispatch:
     inputs:
       pull-request:
-        description: PR number. Omit both inputs to backfill every open head missing metadata.
         type: string
+        required: true
       expected-head:
-        description: Exact PR head SHA; required when pull-request is supplied.
         type: string
-
-# A dispatch never joins any PR code concurrency group. Distinct dispatches
-# retain their accepted work, including while waiting for a runner.
-concurrency:
-  group: pr-metadata-backfill-${{ github.run_id }}
-  cancel-in-progress: false
+        required: true
 
 permissions:
   contents: read
@@ -28,21 +17,34 @@ permissions:
   checks: write
 
 jobs:
-  metadata-backfill:
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+  metadata-origin-comparison:
+    if: github.ref == 'refs/heads/test/pr-metadata-status-evidence'
     runs-on: sylphx-linux-control
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      # Never check out a PR head. Git objects are read without executing code.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.sha }}
+          ref: 2b59c28e9be1fa59f8b2415998dcfabd65682631
           persist-credentials: false
-      - name: Publish metadata for explicit or missing PR heads
+      - name: Compare the unchanged publisher on its workflow head
         env:
           PR_METADATA_TOKEN: ${{ github.token }}
           TARGET_PR: ${{ inputs.pull-request }}
           TARGET_HEAD: ${{ inputs.expected-head }}
         run: |
-          python3 .github/actions/pr-metadata-backfill/pr_metadata_backfill.py \
-            --pull-request "$TARGET_PR" --expected-head "$TARGET_HEAD"
+          python3 - <<'PYCODE'
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          assert os.environ['TARGET_HEAD'] == os.environ['GITHUB_SHA']
+          path = Path('.github/actions/pr-metadata-backfill/pr_metadata_backfill.py')
+          spec = importlib.util.spec_from_file_location('publisher', path)
+          publisher = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(publisher)
+          api = publisher.GitHub(os.environ['GITHUB_REPOSITORY'], os.environ['PR_METADATA_TOKEN'])
+          result = publisher.publish(api, int(os.environ['TARGET_PR']), os.environ['TARGET_HEAD'],
+              os.environ['GITHUB_RUN_ID'], json.loads(publisher.policy.POLICY.read_text()))
+          print(json.dumps(result, sort_keys=True))
+          raise SystemExit(result['status'] != 'success')
+          PYCODE
