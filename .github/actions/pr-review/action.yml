@@ -1,0 +1,48 @@
+name: PR review
+description: Review pinned PR source through Sylphx AI and publish an advisory App Check Run.
+inputs:
+  ci-name:
+    description: Exact Access CI declaration for this default-branch wrapper.
+    required: true
+  trust-policy:
+    description: Repository-scoped Broker policy permitting only checks:write.
+    required: true
+  model:
+    description: Approved Sylphx AI catalog model, supplied by repository configuration.
+    required: true
+  reasoning-effort:
+    description: Optional reasoning setting for the configured model.
+    required: false
+    default: ''
+  max-output-tokens:
+    description: Optional model output budget; omission uses the gateway default.
+    required: false
+    default: ''
+  github-token:
+    description: Read-only caller token for source and PR metadata.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Obtain scoped credentials
+      id: auth
+      shell: bash
+      env:
+        REVIEW_CI_NAME: ${{ inputs.ci-name }}
+        REVIEW_TRUST_POLICY: ${{ inputs.trust-policy }}
+      run: node "$GITHUB_ACTION_PATH/cli.mjs" auth
+    - name: Review exact heads
+      id: review
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        REVIEW_MODEL: ${{ inputs.model }}
+        REVIEW_REASONING_EFFORT: ${{ inputs.reasoning-effort }}
+        REVIEW_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
+      run: timeout --signal=INT 13m node "$GITHUB_ACTION_PATH/cli.mjs" review
+    - name: Settle an interrupted review
+      if: always() && steps.auth.outcome == 'success'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: timeout 2m node "$GITHUB_ACTION_PATH/cli.mjs" finalize

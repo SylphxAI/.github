@@ -1,0 +1,45 @@
+name: PR review
+
+on:
+  workflow_run:
+    workflows: [Project control]
+    types: [requested, in_progress]
+  workflow_dispatch:
+    inputs:
+      pull-request:
+        description: Open pull request to review at its current head.
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  id-token: write
+
+concurrency:
+  group: pr-review-${{ github.event.workflow_run.head_sha || inputs.pull-request }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'pull_request'
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/actions
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.14.0'
+      - uses: ./.github/actions/pr-review
+        with:
+          ci-name: pr-review-shared
+          trust-policy: ${{ vars.SYLPHX_REVIEW_TRUST_POLICY }}
+          model: ${{ vars.SYLPHX_REVIEW_MODEL }}
+          reasoning-effort: ${{ vars.SYLPHX_REVIEW_REASONING_EFFORT }}
+          max-output-tokens: ${{ vars.SYLPHX_REVIEW_MAX_OUTPUT_TOKENS }}
+          github-token: ${{ github.token }}
