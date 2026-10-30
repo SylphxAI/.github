@@ -61,7 +61,8 @@ FAMILY = (r"(?:(?:" + "|".join(FAMILIES) + r")[.-][a-z0-9][a-z0-9.:-]*"
           r"|o[134](?:[-.][a-z0-9][a-z0-9.:-]*)?)")
 TOKEN = re.compile(r"(?<![\w./-])(?:[a-z0-9][a-z0-9_.-]*/)*" + FAMILY + r"(?![\w/-])", re.I)
 IDENTIFIER = re.compile(r"(?<![\w./:-])[a-z0-9][a-z0-9_.:-]*(?:/[a-z0-9][a-z0-9_.:-]*)+(?![\w/:-])", re.I)
-BARE_FAMILY = re.compile(r"(?:" + "|".join(FAMILIES) + r"|o[134])(?:[.-][a-z0-9][a-z0-9.:-]*)?", re.I)
+BARE_FAMILY = re.compile(r"(?:" + "|".join(name for name in FAMILIES if name != "tts")
+                         + r"|o[134])(?:[.-][a-z0-9][a-z0-9.:-]*)?|tts[.-][a-z0-9][a-z0-9.:-]*", re.I)
 ALIAS = re.compile(r"[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*-latest")
 VENDOR_NAMESPACES = {"anthropic", "openai", "deepseek", "google", "mistralai", "meta-llama",
                      "qwen", "moonshotai", "x-ai", "z-ai", "cohere", "amazon", "microsoft", "soniox"}
@@ -93,7 +94,10 @@ def load_aliases(path=None):
 
 def excluded(path):
     p = pathlib.PurePosixPath(path)
-    return (bool({part.casefold() for part in p.parts} & SKIP) or p.name.startswith(("test_", "tests_")) or p.stem in {"test", "tests", "spec"}
+    return (bool({part.casefold() for part in p.parts} & SKIP)
+            or any(part.casefold().endswith(("-fixtures", "_fixtures")) for part in p.parts[:-1])
+            or p.name.startswith(("test_", "tests_", "test-", "tests-", "smoke_", "smoke-"))
+            or p.stem in {"test", "tests", "spec", "smoke", "smokes"}
             or bool(re.search(r"(?:[._-](?:tests?|spec))\.", p.name)))
 
 
@@ -140,6 +144,13 @@ def model_selector(clean, start, code=None):
     Inspect the adjacent expression rather than any earlier word containing
     'model': repository paths and provider dependencies are not selectors.
     """
+    opening = clean.rfind("{", 0, start)
+    if opening >= 0:
+        view = code if code is not None else clean
+        declaration_start = max(view.rfind(ch, 0, opening) for ch in ";{}\n") + 1
+        declaration = view[declaration_start:opening]
+        if re.search(r"\b\w*synonym\w*\s*=\s*$", declaration, re.I):
+            return False  # Search vocabulary labels do not select a model.
     boundary = max(clean.rfind(delimiter, 0, start) for delimiter in ";{},")
     prefix = clean[boundary + 1:start].rstrip("\"'` \t\r\n")
     # An array item, fallback, optional wrapper or typed assignment keeps the
@@ -148,7 +159,7 @@ def model_selector(clean, start, code=None):
     candidate = re.search(
         r"(?:^|[\s.,(\[{])[\"']?(?P<name>[A-Za-z_$][\w$]*)[\"']?\s*"
         r"(?:\s*:\s*(?:&(?:'static\s+)?str|[A-Za-z_][\w:<>?\[\] &.]*))?"
-        r"\s*(?::=|[:=]|\()\s*(?:[\w.]+\s*\(\s*)?"
+        r"\s*(?P<operator>:=|[:=]|\()\s*(?:[\w.]+\s*\(\s*)?"
         r"(?:\[\s*)?$", prefix)
     if candidate is None:
         # Null-coalescing / environment fallbacks are still hard-coded
@@ -177,7 +188,20 @@ def model_selector(clean, start, code=None):
                     and code[tail:tail + 1] == ":"):
                 return False
     name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", candidate["name"]).lower()
+    if name.endswith("models") and not prefix.endswith("["):
+        return False  # A family-name policy string is not a selected model.
+    if (candidate.groupdict().get("operator") == "(" and not re.fullmatch(
+                r"(?:(?:language|chat|text|image|embedding|ai|llm|select|set|get|with|resolve)_)?model", name)):
+        return False  # Classifier/parser vocabulary is not a selection call.
     return bool(re.search(r"(?:^|_)(?:models?|model_(?:id|name|slug))(?:_(?:default|fallback))?$", name))
+
+
+def sql_selection(clean, start):
+    """A comparison identifies existing rows; SET/VALUES/DEFAULT select values."""
+    statement = clean[clean.rfind(";", 0, start) + 1:start]
+    statement = re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"", " ", statement)
+    clauses = re.findall(r"\b(where|on|having|when|set|values|default|then|else)\b", statement, re.I)
+    return not clauses or clauses[-1].lower() not in {"where", "on", "having", "when"}
 
 
 def scan(tree, repository, aliases, source_views):
@@ -232,11 +256,13 @@ def scan(tree, repository, aliases, source_views):
         # and unversioned families. No provider allowlist determines coverage.
         for pattern in (IDENTIFIER, BARE_FAMILY):
             for m in pattern.finditer(clean):
-                if (m.group()[-1].isalnum() and model_selector(clean, m.start(), code)
-                        and scalar_model(clean, m.start(), m.end(), code is None)):
+                if (m.group()[-1].isalnum() and scalar_model(clean, m.start(), m.end(), code is None)
+                        and model_selector(clean, m.start(), code)):
                     matches[(m.start(), m.end())] = m.group()
         seen = collections.Counter()
         for (start, end), model in sorted(matches.items()):
+            if suffix == ".sql" and not sql_selection(clean, start):
+                continue
             if code is not None and code[start:start + len(model)].strip():
                 continue  # A variable, method, import or enum key is not a literal model id.
             if not scalar_model(clean, start, end, code is None):
@@ -246,7 +272,7 @@ def scan(tree, repository, aliases, source_views):
                         ".prefab", ".asset", ".unity", ".scene", ".fbx", ".gltf", ".glb", ".obj",
                         ".png", ".jpg", ".webp", ".svg"}):
                 continue
-            if (re.fullmatch(r"o[134]", model.rsplit("/", 1)[-1])
+            if (re.fullmatch(r"o[134]", model.rsplit("/", 1)[-1], re.I)
                     and not ("/" in model and model.split("/", 1)[0].lower() in vendors)
                     and not model_selector(clean, start, code)):
                 continue  # Short reasoning-model ids also occur as ordinary record ids.

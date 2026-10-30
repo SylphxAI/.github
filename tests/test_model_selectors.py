@@ -73,7 +73,7 @@ class ModelSelectorTests(unittest.TestCase):
     def test_unversioned_families_require_selection_context(self):
         for family in models.FAMILIES:
             with self.subTest(family=family):
-                self.assertEqual(len(self.scan(f'const model = "{family}";')), 1)
+                self.assertEqual(len(self.scan(f'const model = "{family}";')), 0 if family == "tts" else 1)
                 self.assertEqual(len(self.scan(f'const model = "{family}-custom";')), 1)
         for source in ('const command = "claude-code";',
                        'const repository = "new-vendor/future-line";',
@@ -82,6 +82,11 @@ class ModelSelectorTests(unittest.TestCase):
                        'const modelRepository = "openai/repository";',
                        'const model = "Assets/Resources/CreateModel.prefab";',
                        'const model = "backend/room/model/PlayerOperateModel.java";',
+                       'const DEFAULT_FIRST_TOKEN_IDLE_MODELS = "deepseek";',
+                       'classifyModel("kimi-code", modelId);',
+                       'const schema = {modelName: "tts"};',
+                       'const category = {value: "O1"};',
+                       'const SYNONYM_GROUPS = {model: ["gpt", "claude", "gemini"]};',
                        'const options = {model: runtime.default, repository: "new-vendor/repository"};',
                        'const description = "model"; const repository = "new-vendor/repository";'):
             with self.subTest(source=source):
@@ -89,6 +94,9 @@ class ModelSelectorTests(unittest.TestCase):
         self.assertEqual(self.scan('{"__type__":"cc.PrefabInfo","fileId":"asset-id/o4"}',
                                    "assets/prefab.json"), [])
         self.assertEqual(len(self.scan('const model = "new-vendor/o4";')), 1)
+        for path in ("scripts/test-models-canary.sh", "scripts/compliance/smokes.ts",
+                     "src/gallery-fixtures/web.ts"):
+            self.assertEqual(self.scan('model = "stub/compliance"', path), [])
 
     def test_widening_adopts_only_inherited_new_coverage(self):
         before = self.scan('const model = "new-vendor/future-line";')
@@ -106,6 +114,16 @@ class ModelSelectorTests(unittest.TestCase):
                                      seed_rules={"model-pin"}))
         self.assertEqual(models.decide(before, records, records, before, True, True), [])
         self.assertTrue(models.decide([], records, records, before, True, True))
+
+    def test_sql_predicates_do_not_select_the_replacement_model(self):
+        for source in ("UPDATE agents SET model_id = NULL WHERE model_id = 'sylphx/executor';",
+                       "DELETE FROM agents WHERE model = 'gpt-4o';",
+                       "UPDATE agents SET model = CASE WHEN model = 'gpt-4o' THEN NULL END;"):
+            self.assertEqual(self.scan(source, "migrations/repair.sql"), [])
+        for source in ("UPDATE agents SET model_id = 'new-provider/new-line' WHERE id = 1;",
+                       "UPDATE agents SET model = CASE WHEN model = 'gpt-4o' "
+                       "THEN 'gpt-5.1' ELSE 'gpt-5.2' END;"):
+            self.assertTrue(self.scan(source, "migrations/repair.sql"))
 
 
 if __name__ == "__main__":
