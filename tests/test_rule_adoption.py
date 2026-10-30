@@ -237,6 +237,19 @@ class AdoptionTests(unittest.TestCase):
         output, _ = f.check(base, 1)
         self.assertIn('invalid environment declaration: sylphx.toml', output)
 
+    def test_adoption_ignores_vendored_python_two_but_not_adjacent_production(self):
+        f = self.fixture()
+        base = f.commit({WORKFLOW: workflow(), SOURCE: POLL,
+                         'client/bot/thirdparty/scons/setup.py': 'print "Python 2 dependency"\n'})
+        result = f.plan(base)
+        f.commit({sc.BASELINE: result['baseline_text']})
+        f.check(base, 0)
+        f.commit({'client/bot/src/setup.py': 'print "invalid production Python"\n'})
+        with self.assertRaisesRegex(ValueError, 'source unreadable'):
+            f.plan(f.git('rev-parse', 'HEAD'))
+        output, _ = f.check(base, 1)
+        self.assertIn('client/bot/src/setup.py', output)
+
 
 if __name__ == "__main__":
     unittest.main()

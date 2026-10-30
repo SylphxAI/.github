@@ -22,7 +22,8 @@ CONTRACT = "https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/r
 BASELINE_MARKER = "# architecture-ratchet-v2"
 LEGACY_BASELINE_MARKER = "# architecture-ratchet-v1"
 SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "examples", "docs",
-        "node_modules", "vendor", "target", "dist", "build", ".next"}
+        "node_modules", "vendor", "thirdparty", "third_party", "third-party", "external",
+        "target", "dist", "build", ".next"}
 SOURCE = {".rs", ".py", ".go", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash"}
 CONFIG = {".yml", ".yaml", ".toml"}
 PLATFORM = {"SylphxAI/cloud", "SylphxAI/sylphx"}
