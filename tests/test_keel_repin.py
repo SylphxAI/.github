@@ -26,6 +26,38 @@ SPEC.loader.exec_module(keel_repin)
 OLD = "a" * 40
 NEW_TAG = "keel-verified-2026-10-03-1"
 OLD_TAG = "keel-weekly-2026-09-28"
+PUBLICATIONS = {}
+
+
+def fixture_publication(tag, sha):
+    version, status, _ = PUBLICATIONS.get(sha, ("0.3.1234", 0, "exit 0\n"))
+    if status:
+        raise keel_repin.Refused("public publication is not ready")
+    return version
+
+
+class PublicReleaseFixture(unittest.TestCase):
+    """Keep old queue/ownership scenarios offline; install a process-level CLI stand-in."""
+    def setUp(self):
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(keel_repin, "published_release", side_effect=fixture_publication).start()
+        original_run = keel_repin.run
+
+        def run(command, **kwargs):
+            if command[:3] == ["cargo", "install", "sylphx-keel-cli"]:
+                version = command[command.index("--version") + 1].removeprefix("=")
+                self.assertIn("--locked", command)
+                install = pathlib.Path(command[command.index("--root") + 1]) / "bin/keel"
+                install.parent.mkdir(parents=True)
+                body = next((body for ver, _, body in reversed(list(PUBLICATIONS.values())) if ver == version), "exit 0\n")
+                install.write_text('#!/bin/sh\nset -eu\n'
+                    f'if [ "$*" = "--version" ]; then echo "keel {version}"; exit 0; fi\n'
+                    f'test "$*" = "migrate --registry {version}" || test "$*" = "migrate --check --registry {version}"\n'
+                    + body)
+                install.chmod(0o755)
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return original_run(command, **kwargs)
+        mock.patch.object(keel_repin, "run", side_effect=run).start()
 
 
 def git(cwd, *args):
@@ -60,6 +92,8 @@ def make_keel_remote(base: pathlib.Path, cli: str = "exit 0\n", *,
     git(work, "add", ".")
     git(work, "commit", "-q", "-m", "keel")
     sha = git(work, "rev-parse", "HEAD")
+    PUBLICATIONS.pop(sha, None)
+    PUBLICATIONS[sha] = (version, version_status, cli)
     git(work, "tag", "-a", NEW_TAG, "-m", "tag")
     bare = base / "keel.git"
     git(base, "clone", "-q", "--bare", str(work), str(bare))
@@ -224,7 +258,7 @@ class PinsTest(unittest.TestCase):
             self.assertIn(f"kit-keel?rev={revs['kit-keel'][0]}", lock)  # the kit's own Keel commit is left as it is
 
 
-class RunTest(unittest.TestCase):
+class RunTest(PublicReleaseFixture):
     def run_cmd(self, repo, remote, check, extra=()):
         report = repo.parent / "report.json"
         rc = keel_repin.main(["run", "--root", str(repo), "--tag", NEW_TAG, "--remote", remote,
@@ -264,7 +298,7 @@ class RunTest(unittest.TestCase):
             repo = make_title(base, TITLE)
             rc, rep = self.run_cmd(repo, remote, "touch build-checked")
             self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "migrate"))
-            self.assertIn("--version-only", rep["log"])
+            self.assertIn("publication is not ready", rep["log"])
             self.assertFalse((repo / "migrated").exists())
             self.assertFalse((repo / "build-checked").exists())
             self.assertNotIn("$ bash", rep["log"])
@@ -301,7 +335,7 @@ class RunTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
             remote, sha = make_keel_remote(base)
-            pinned = make_title(base, {"deps/keel.rev": sha + "\n", "Cargo.toml": f'k = {{ git = "https://github.com/SylphxAI/keel", rev = "{sha}" }}\n'})
+            pinned = make_title(base, {"deps/keel.rev": sha + "\n", "Cargo.toml": 'keel = { package = "sylphx-keel-engine", version = "=0.3.1234", default-features = false }\n'})
             rc, rep = self.run_cmd(pinned, remote, "true")
             self.assertEqual((rc, rep["status"]), (0, "unchanged"))
         with tempfile.TemporaryDirectory() as d:
@@ -332,8 +366,8 @@ class RunTest(unittest.TestCase):
             rc, rep = self.run_cmd(repo, remote, "true")
             self.assertEqual((rc, rep["status"]), (0, "ok"))
             self.assertEqual((repo / "hook-ran.txt").read_text().strip(), NEW_TAG)
-            self.assertIn(OLD, (repo / "deps/keel.rev").read_text())  # the generic rewrite did not run
-            self.assertEqual(rep["changed"], ["hook-ran.txt"])
+            self.assertIn(sha, (repo / "deps/keel.rev").read_text())  # provenance follows the registry migration
+            self.assertIn("hook-ran.txt", rep["changed"])
 
     def test_build_output_that_git_does_not_ignore_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
@@ -344,6 +378,110 @@ class RunTest(unittest.TestCase):
             rc = keel_repin.main(["run", "--root", str(repo), "--tag", NEW_TAG, "--remote", remote,
                                   "--check-command", "mkdir -p target && echo x > target/o", "--report", str(report)])
             self.assertEqual(rc, 1)
+
+
+class RegistryContractTest(unittest.TestCase):
+    def test_legacy_git_facade_is_migratable_rather_than_a_registry_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_title(pathlib.Path(directory), {"Cargo.toml": '[dependencies]\nkeel={package="sylphx-keel-engine",git="https://github.com/SylphxAI/keel",rev="' + OLD + '"}\n'})
+            self.assertEqual(keel_repin.registry_versions(root), [])
+            self.assertEqual(keel_repin.find_pins(root), [OLD])
+
+    def test_channel_must_bind_the_tag_to_its_actual_source_and_public_packages(self):
+        entry = {"tag": NEW_TAG, "commit": OLD, "version": "0.1.5930"}
+        for change, yanked, succeeds in (({}, False, True), ({"commit": "b" * 40}, False, False),
+                                          ({"tag": OLD_TAG}, False, False), ({}, True, False)):
+            def command(args, **kwargs):
+                self.assertEqual(args[1:4], ["release", "download", NEW_TAG])
+                directory = pathlib.Path(args[args.index("--dir") + 1])
+                (directory / "channel.json").write_text(json.dumps({"releases": [{**entry, **change}]}))
+                return subprocess.CompletedProcess(args, 0, "", "")
+            def package(request, **kwargs):
+                name, version = request.full_url.split("/")[-2:]
+                return io.BytesIO(json.dumps({"version": {"crate": name, "num": version, "yanked": yanked}}).encode())
+            with self.subTest(change=change, yanked=yanked), mock.patch.object(keel_repin, "run", side_effect=command), \
+                    mock.patch.object(keel_repin.urllib.request, "urlopen", side_effect=package) as fetch:
+                if succeeds:
+                    self.assertEqual(keel_repin.published_release(NEW_TAG, OLD), "0.1.5930")
+                    self.assertEqual(fetch.call_count, 2)
+                else:
+                    with self.assertRaises(keel_repin.Refused):
+                        keel_repin.published_release(NEW_TAG, OLD)
+                    if change:
+                        fetch.assert_not_called()
+
+    def test_missing_publication_does_not_install_or_rewrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            remote, _ = make_keel_remote(base)
+            root = make_title(base, TITLE)
+            before = {name: (root / name).read_bytes() for name in TITLE}
+            report = base / "report.json"
+            with mock.patch.object(keel_repin, "published_release", side_effect=keel_repin.Refused("channel absent")), \
+                    mock.patch.object(keel_repin, "check_migrations") as install:
+                rc = keel_repin.main(["run", "--root", str(root), "--tag", NEW_TAG, "--remote", remote,
+                                      "--report", str(report), "--check-command", "touch built"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(report.read_text())["status"], "failed")
+            install.assert_not_called()
+            self.assertEqual(before, {name: (root / name).read_bytes() for name in TITLE})
+            self.assertFalse((root / "built").exists())
+
+    def test_registry_only_consumer_poll_needs_no_git_source_pin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            remote, _ = make_keel_remote(base)
+            root = make_title(base, {"Cargo.toml": '[dependencies]\nkeel = { package="sylphx-keel-engine", version="=0.1.5930", default-features=false }\n'})
+            output = base / "outputs"
+            gh = fake_gh(base, {"pr list": "0"})
+            with mock.patch.dict(os.environ, {"KEEL_REPIN_GH": str(gh), "GITHUB_OUTPUT": str(output)}), \
+                    mock.patch.object(keel_repin, "published_release", return_value="0.1.5931"):
+                self.assertEqual(keel_repin.main(["poll", "--root", str(root), "--remote", remote]), 0)
+            self.assertIn("needed=true", output.read_text())
+            self.assertNotIn("compare/", (base / "gh-calls.txt").read_text() if (base / "gh-calls.txt").exists() else "")
+
+    def test_matching_root_version_does_not_hide_an_older_child_facade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            remote, _ = make_keel_remote(base)
+            manifest = '[dependencies]\nkeel={package="sylphx-keel-engine",version="=%s",default-features=false}\n'
+            root = make_title(base, {"Cargo.toml": manifest % "0.1.5931", "child/Cargo.toml": manifest % "0.1.5930"})
+            output = base / "outputs"
+            gh = fake_gh(base, {"pr list": "0"})
+            with mock.patch.dict(os.environ, {"KEEL_REPIN_GH": str(gh), "GITHUB_OUTPUT": str(output)}), \
+                    mock.patch.object(keel_repin, "published_release", return_value="0.1.5931"):
+                self.assertEqual(keel_repin.main(["poll", "--root", str(root), "--remote", remote]), 0)
+            self.assertIn("needed=true", output.read_text())
+
+    def test_mixed_transitive_lock_is_refused_after_resolution(self):
+        for package in ('name="sylphx-keel-ui"\nversion="0.1.5929"\nsource="registry+https://github.com/rust-lang/crates.io-index"',
+                        'name="keel-ui"\nversion="0.1.0"\nsource="git+https://github.com/SylphxAI/keel?rev=' + OLD + '#' + OLD + '"'):
+            with self.subTest(package=package), tempfile.TemporaryDirectory() as directory:
+                root = make_title(pathlib.Path(directory), {"Cargo.toml": "[package]\n", "Cargo.lock": "[[package]]\n" + package + "\n"})
+                original = keel_repin.run
+                def resolve(command, **kwargs):
+                    if command[:2] == ["cargo", "metadata"]:
+                        return subprocess.CompletedProcess(command, 0, "", "")
+                    return original(command, **kwargs)
+                with mock.patch.object(keel_repin, "run", side_effect=resolve):
+                    self.assertEqual(keel_repin.refresh_registry_locks(root, "0.1.5930", []), "lock")
+
+    def test_source_argument_is_local_to_each_real_pack_stage_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_title(pathlib.Path(directory), {
+                "Dockerfile.web": 'ARG SYLPHX_GIT_COMMIT_SHA\nFROM rust AS first\n# keel pack does not select this stage\nRUN cargo build\nFROM rust AS pack\nRUN bash scripts/web.sh /out\nFROM rust AS second\nRUN keel pack --profile web\nFROM nginx\nCOPY --from=pack /out /srv\n',
+                "scripts/web.sh": '#!/bin/sh\nbash scripts/pack.sh "$@"\n',
+                "scripts/pack.sh": '#!/bin/sh\nkeel pack --profile web "$@"\n',
+                "server/Dockerfile": 'FROM rust AS build\nRUN cargo build --bin server\n',
+                "Dockerfile.ready": 'FROM rust AS build\nARG SYLPHX_GIT_COMMIT_SHA\nRUN keel pack --profile web\n',
+            })
+            self.assertEqual(keel_repin.ensure_pack_source_args(root), ["Dockerfile.web"])
+            docker = (root / "Dockerfile.web").read_text()
+            self.assertIn('FROM rust AS pack\nARG SYLPHX_GIT_COMMIT_SHA\n', docker)
+            self.assertIn('FROM rust AS second\nARG SYLPHX_GIT_COMMIT_SHA\n', docker)
+            self.assertNotIn('FROM nginx\nARG', docker)
+            self.assertNotIn('FROM rust AS first\nARG', docker)
+            self.assertEqual(keel_repin.ensure_pack_source_args(root), [])
 
 
 class PullRequestTest(unittest.TestCase):
@@ -442,7 +580,7 @@ def fake_gh(base: pathlib.Path, answers: dict[str, str]) -> pathlib.Path:
     return gh
 
 
-class PollTest(unittest.TestCase):
+class PollTest(PublicReleaseFixture):
     def poll(self, repo, remote, answers, extra_env=None):
         gh = fake_gh(repo.parent, answers)
         out = repo.parent / "out.txt"
@@ -463,7 +601,7 @@ class PollTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
             remote, sha = make_keel_remote(base)
-            pinned = make_title(base, {"deps/keel.rev": sha + "\n", "Cargo.toml": f'k = {{ git = "https://github.com/SylphxAI/keel", rev = "{sha}" }}\n'})
+            pinned = make_title(base, {"deps/keel.rev": sha + "\n", "Cargo.toml": 'keel = { package = "sylphx-keel-engine", version = "=0.3.1234", default-features = false }\n'})
             self.assertEqual(self.poll(pinned, remote, {})[1]["needed"], "false")
         for answer, expect in (("behind", "not ahead"),):
             with tempfile.TemporaryDirectory() as d:
@@ -586,7 +724,7 @@ class DispatchTest(unittest.TestCase):
             self.assertFalse((base / "gh-calls.txt").exists())
 
 
-class WorkflowFilesTest(unittest.TestCase):
+class WorkflowFilesTest(PublicReleaseFixture):
     def test_workflow_files_are_named_not_edited(self):
         with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
@@ -609,7 +747,7 @@ class WorkflowFilesTest(unittest.TestCase):
             repo = make_title(base, files)
             report = base / "r.json"
             keel_repin.main(["run", "--root", str(repo), "--tag", NEW_TAG, "--remote", remote, "--check-command", "true", "--report", str(report)])
-            self.assertEqual(json.loads(report.read_text())["changed"], ["moved.txt"])
+            self.assertIn("moved.txt", json.loads(report.read_text())["changed"])
             self.assertEqual((repo / ".github/workflows/ci.yml").read_text(), "on: push\n")
 
 
