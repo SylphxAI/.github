@@ -19,6 +19,20 @@ SPEC.loader.exec_module(guard)
 
 
 class SqlTests(unittest.TestCase):
+    def test_foreign_key_delete_actions_have_separate_contract_policy(self):
+        for dialect in ("postgres", "mysql"):
+            for action in ("RESTRICT", "NO ACTION"):
+                sql = f"ALTER TABLE accounts ADD CONSTRAINT account_owner FOREIGN KEY (owner_id) REFERENCES owners(id) ON DELETE {action};"
+                with self.subTest(dialect=dialect, action=action):
+                    self.assertEqual(guard.check_sql(sql, dialect), [])
+                    self.assertIn((1, "DELETE without WHERE"), guard.check_sql(sql + "DELETE FROM accounts;", dialect))
+            self.assertEqual(guard.check_sql("ALTER TABLE accounts ADD FOREIGN KEY (owner_id) REFERENCES owners(id);", dialect), [])
+            for action in ("CASCADE", "SET NULL"):
+                sql = f"ALTER TABLE accounts ADD FOREIGN KEY (owner_id) REFERENCES owners(id) ON DELETE {action};"
+                with self.subTest(dialect=dialect, action=action):
+                    self.assertIn(f"ON DELETE {action}", str(guard.check_sql(sql, dialect)))
+                    self.assertEqual(guard.check_sql("-- contract: released-expand-42\n" + sql, dialect), [])
+
     def test_destructive_matrix_and_released_expand_marker(self):
         common = [
             "DROP TABLE accounts;", "DROP TABLE IF EXISTS accounts;",
