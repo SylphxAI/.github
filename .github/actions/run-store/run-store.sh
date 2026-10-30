@@ -208,7 +208,16 @@ if [ "$MODE" = put ]; then
     [ "$attempt" -lt 3 ] && sleep "$delay"
   done
   [ -n "$stored" ] || fail "could not store the bundle ($reason)"
-  code="$(call HEAD /dev/null -I)"
+  # The PUT has already been accepted. Recheck its receipt with the same
+  # bounded read policy as GET; never send the accepted upload again.
+  for attempt in 1 2 3; do
+    code="$(call HEAD /dev/null -I)"
+    case "$code" in 200 | 401 | 403) break ;; esac
+    [ "$attempt" -lt 3 ] && sleep "$delay"
+  done
+  if [ "$code" = 503 ]; then
+    unavailable_report "HTTP $code while reading back the accepted bundle"
+  fi
   [ "$code" = 200 ] || fail "the stored bundle does not read back (HTTP $code)"
   echo "run-store put $NAME: $bytes bytes as $key"
   exit 0
