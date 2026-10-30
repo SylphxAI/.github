@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +29,7 @@ class FakeReceipt:
     def save(self):
         pass
 
-    def request(self, url, bearer=None, body=None, label=None):
+    def request(self, url, bearer=None, body=None, label=None, allow_propagation=False, timeout=60):
         self.calls.append((url,bearer,body,label))
         if label:
             return {"value":"test-oidc"}
@@ -96,6 +97,72 @@ class DeviceCaptureTests(unittest.TestCase):
     def test_cli_failure_is_not_reported_as_capture_success(self):
         with self.assertRaises(capture.CaptureError):
             self.exercise(exit_code=2)
+
+    def test_only_same_token_propagation_reads_are_retried_with_a_finite_bound(self):
+        receipt = FakeReceipt()
+        now = [0.0]
+        def sleep_for(seconds):
+            now[0] += seconds
+        with patch.object(receipt,"request",side_effect=[{"code":"key_not_yet_propagated"},IDENTITY]) as read, \
+             patch.object(capture.time,"sleep",side_effect=sleep_for) as sleep, \
+             patch.object(capture.time,"monotonic",side_effect=lambda:now[0]):
+            self.assertEqual(capture.propagated_identity(receipt,"same-issued-key"),IDENTITY)
+            self.assertEqual(read.call_count,2)
+            sleep.assert_called_once_with(2)
+            for args in read.call_args_list:
+                self.assertEqual(args.args,(capture.API+"/v1/whoami","same-issued-key"))
+                self.assertTrue(args.kwargs["allow_propagation"])
+                self.assertGreater(args.kwargs["timeout"],0)
+                self.assertLessEqual(args.kwargs["timeout"],30)
+        now[0] = 0.0
+        with patch.object(receipt,"request",return_value={"code":"key_not_yet_propagated"}) as read, \
+             patch.object(capture.time,"sleep",side_effect=sleep_for) as sleep, \
+             patch.object(capture.time,"monotonic",side_effect=lambda:now[0]), self.assertRaises(capture.CaptureError):
+            capture.propagated_identity(receipt,"same-issued-key")
+        self.assertEqual(now[0],30)
+        self.assertEqual(read.call_count,15)
+        self.assertEqual(sleep.call_count,15)
+        with patch.object(receipt,"request",side_effect=capture.CaptureError("other refusal")) as read, \
+             patch.object(capture.time,"sleep") as sleep, self.assertRaises(capture.CaptureError):
+            capture.propagated_identity(receipt,"same-issued-key")
+        self.assertEqual(read.call_count,1)
+        sleep.assert_not_called()
+
+    def test_request_allowlist_is_exact_http_status_code_and_read_endpoint(self):
+        cases = ((401,"key_not_yet_propagated",capture.API+"/v1/whoami",None,True),
+                 (401,"UNAUTHENTICATED",capture.API+"/v1/whoami",None,False),
+                 (403,"key_not_yet_propagated",capture.API+"/v1/whoami",None,False),
+                 (401,"key_not_yet_propagated",capture.API+"/v1/access/github/token",{"name":"test"},False))
+        for status,code,endpoint,body,allowed in cases:
+            with self.subTest(status=status,code=code,endpoint=endpoint), tempfile.TemporaryDirectory() as directory:
+                receipt = capture.Receipt(Path(directory)/"receipt.json")
+                payload = ('{"code":"'+code+'"}').encode()
+                error = urllib.error.HTTPError(endpoint,status,"refused",{},io.BytesIO(payload))
+                with patch.object(capture.urllib.request,"build_opener") as opener, contextlib.redirect_stdout(io.StringIO()):
+                    opener.return_value.open.side_effect = error
+                    if allowed:
+                        self.assertEqual(receipt.request(endpoint,"same-key",body,allow_propagation=True,timeout=7),{"code":code})
+                    else:
+                        with self.assertRaises(capture.CaptureError):
+                            receipt.request(endpoint,"same-key",body,allow_propagation=True,timeout=7)
+                    self.assertEqual(opener.return_value.open.call_count,1)
+                    self.assertEqual(opener.return_value.open.call_args.kwargs["timeout"],7)
+                self.assertEqual(receipt.data["requests"][0]["status"],status)
+                self.assertNotIn("same-key",receipt.path.read_text())
+
+    def test_elapsed_request_cost_consumes_the_propagation_deadline(self):
+        now = [0.0]
+        receipt = FakeReceipt()
+        def slow_read(*args,**kwargs):
+            self.assertEqual(kwargs["timeout"],30)
+            now[0] += 31
+            return IDENTITY
+        with patch.object(receipt,"request",side_effect=slow_read) as read, \
+             patch.object(capture.time,"monotonic",side_effect=lambda:now[0]), \
+             patch.object(capture.time,"sleep") as sleep, self.assertRaises(capture.CaptureError):
+            capture.propagated_identity(receipt,"same-key")
+        self.assertEqual(read.call_count,1)
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

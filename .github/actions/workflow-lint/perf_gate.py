@@ -11,7 +11,7 @@ A workflow is pre-merge when it triggers on pull_request,
 pull_request_target or merge_group, or is reusable (workflow_call), since a
 pre-merge workflow may call it. In such a workflow this refuses:
   - PERF_ENFORCE set to anything but 0 (an env key or inline PERF_ENFORCE=1);
-  - a line that runs a timing gate: Lighthouse (or lhci), hyperfine, k6 run,
+  - a line that runs a timing gate: Lighthouse (or lhci assert/autorun), hyperfine, k6 run,
     or the chat perf run (perf:web, --perf-only);
   - a package-manager vulnerability audit: its mutable advisory database can
     fail unchanged code. Launched products audit the default branch in a
@@ -20,6 +20,9 @@ pre-merge workflow may call it. In such a workflow this refuses:
 The action supplies a pinned YAML parser. Inspect composed BaseLoader nodes:
 scalar values have already been decoded, keys such as `on` stay strings, and
 source marks remain available without constructing tagged Python objects.
+LHCI collect only records reports. An assertion may run before merge when its
+literal repository-local JSON config proves every threshold is a non-timing
+accessibility, best-practices or SEO category. Unknown configs stay refused.
 
 A delivered customer repository (organization custom property
 sylphx_delivery = delivered) gets no new automated rule: the check is skipped
@@ -33,6 +36,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import sys
 import urllib.request
 from typing import Callable, NamedTuple
@@ -48,7 +52,6 @@ GATES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bperf:web\b"), "the chat timing gate (perf:web)"),
     (re.compile(r"--perf-only\b"), "the chat timing gate (--perf-only)"),
     (re.compile(r"\bPERF_ENFORCE=(?![\"']?0\b)"), "PERF_ENFORCE set inline"),
-    (re.compile(r"lighthouse|\blhci\b", re.IGNORECASE), "a Lighthouse budget"),
     (re.compile(r"\bhyperfine\b"), "a hyperfine timing run"),
     (re.compile(r"\bk6\s+run\b"), "a k6 load test"),
 )
@@ -109,7 +112,83 @@ def excludes_pre_merge(condition: str) -> bool:
     return set(PRE_MERGE) - {"workflow_call"} <= excluded
 
 
-def scan_workflow(file: str, text: str) -> list[Finding]:
+def static_assertions(config: object) -> bool:
+    """Prove a literal LHCI JSON config asserts only non-timing categories."""
+    if not isinstance(config, dict) or set(config) != {"ci"}:
+        return False
+    ci = config["ci"]
+    if not isinstance(ci, dict) or set(ci) != {"assert"}:
+        return False
+    assertion = ci["assert"]
+    if not isinstance(assertion, dict) or set(assertion) - {"assertions", "assertMatrix"}:
+        return False
+    if "assertions" in assertion and "assertMatrix" in assertion:
+        return False  # LHCI rejects the combination rather than merging it.
+    groups = [assertion.get("assertions", {})]
+    matrix = assertion.get("assertMatrix", [])
+    if not isinstance(matrix, list):
+        return False
+    for entry in matrix:
+        if (not isinstance(entry, dict) or set(entry) != {"matchingUrlPattern", "assertions"}
+                or not isinstance(entry["matchingUrlPattern"], str)):
+            return False
+        groups.append(entry["assertions"])
+    count = 0
+    for group in groups:
+        if not isinstance(group, dict):
+            return False
+        for category, value in group.items():
+            if category not in {"categories:accessibility", "categories:best-practices", "categories:seo"}:
+                return False
+            if (not isinstance(value, list) or len(value) != 2 or not isinstance(value[0], str)
+                    or value[0] not in {"error", "warn"}):
+                return False
+            limit = value[1]
+            if not isinstance(limit, dict) or set(limit) != {"minScore"}:
+                return False
+            score = limit["minScore"]
+            if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 1:
+                return False
+            count += 1
+    return count > 0
+
+
+def lighthouse_budget(command: str, read_config: Callable[[str], str] | None) -> bool:
+    # Preserve paths, options and package names as whole shell words.
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return bool(re.search(r"lighthouse|\blhci\b", command, re.I))
+    for index, token in enumerate(tokens):
+        tool = pathlib.PurePosixPath(token).name
+        if tool not in {"lhci", "lighthouse"} and not token.startswith("@lhci/cli"):
+            continue
+        args = []
+        for argument in tokens[index + 1:]:
+            if argument and all(char in ";&|()" for char in argument):
+                break
+            args.append(argument)
+        if tool == "lhci" or token.startswith("@lhci/cli"):
+            if args and args[0] == "collect":
+                continue  # collect records reports; assert/autorun enforce budgets.
+            if args and args[0] == "assert" and read_config is not None:
+                options = args[1:]
+                path = (options[0][9:] if len(options) == 1 and options[0].startswith("--config=")
+                        else options[1] if len(options) == 2 and options[0] == "--config" else "")
+                if path and pathlib.PurePosixPath(path).suffix == ".json" and "$" not in path:
+                    try:
+                        if static_assertions(json.loads(read_config(path))):
+                            continue
+                    except (OSError, ValueError, UnicodeError):
+                        pass
+        return True
+    return False
+
+
+def scan_workflow(file: str, text: str, read_config: Callable[[str], str] | None = None) -> list[Finding]:
     root = yaml.compose(text, Loader=yaml.BaseLoader)
     pre = [t for t in event_names(root) if t in PRE_MERGE]
     if not pre:
@@ -117,7 +196,7 @@ def scan_workflow(file: str, text: str) -> list[Finding]:
     kind = "/".join(pre)
     out: list[Finding] = []
 
-    def inspect(fields: dict[str, Node], where: str) -> None:
+    def inspect(fields: dict[str, Node], where: str, postmerge_lighthouse: bool = False) -> None:
         enforce = mapping(fields.get("env")).get("PERF_ENFORCE")
         if enforce is not None and scalar(enforce).strip().lower() not in ("0", "false"):
             out.append(Finding(file, enforce.start_mark.line + 1, where,
@@ -130,6 +209,12 @@ def scan_workflow(file: str, text: str) -> list[Finding]:
             # YAML folding/escapes are resolved before matching. Shell comments
             # remain non-executable; YAML comments were removed by the parser.
             command = "\n".join(_strip_comment(line) for line in node.value.splitlines())
+            if not postmerge_lighthouse and (
+                    (key == "uses" and re.search(r"lighthouse|\blhci\b", command, re.I))
+                    or (key == "run" and lighthouse_budget(command, read_config))):
+                out.append(Finding(file, node.start_mark.line + 1, where,
+                                   f"runs a Lighthouse budget in a {kind} workflow"))
+                continue
             for pattern, what in GATES:
                 if pattern.search(command):
                     out.append(Finding(file, node.start_mark.line + 1, where,
@@ -141,7 +226,8 @@ def scan_workflow(file: str, text: str) -> list[Finding]:
     for job, node in mapping(workflow.get("jobs")).items():
         fields = mapping(node)
         # A job-level condition can appear anywhere in the mapping. Conditions
-        # on steps never exempt the job or its other commands.
+        # on steps never exempt the job or its other commands. A proven
+        # post-merge step may run its own Lighthouse assertion only.
         if excludes_pre_merge(scalar(fields.get("if"))):
             continue
         where = f"job {job}"
@@ -149,7 +235,8 @@ def scan_workflow(file: str, text: str) -> list[Finding]:
         steps = fields.get("steps")
         if isinstance(steps, SequenceNode):
             for step in steps.value:
-                inspect(mapping(step), where)
+                step_fields = mapping(step)
+                inspect(step_fields, where, excludes_pre_merge(scalar(step_fields.get("if"))))
     return out
 
 
@@ -158,9 +245,16 @@ def scan_dir(root: pathlib.Path) -> list[Finding]:
     if not folder.is_dir():
         return []
     out: list[Finding] = []
+
+    def read_config(relative: str) -> str:
+        path = (root / relative).resolve()
+        if pathlib.Path(relative).is_absolute() or not path.is_relative_to(root.resolve()):
+            raise ValueError("LHCI assertion config must be inside the repository")
+        return path.read_text(encoding="utf-8")
+
     for path in sorted(folder.iterdir()):
         if path.suffix in (".yml", ".yaml") and path.is_file():
-            out += scan_workflow(f".github/workflows/{path.name}", path.read_text(encoding="utf-8"))
+            out += scan_workflow(f".github/workflows/{path.name}", path.read_text(encoding="utf-8"), read_config)
     return out
 
 
