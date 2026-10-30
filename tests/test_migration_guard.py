@@ -31,6 +31,7 @@ class SqlTests(unittest.TestCase):
             "ALTER TABLE accounts ADD COLUMN region text NOT NULL;",
             "ALTER TABLE accounts ADD region varchar(24) NOT NULL;",
             "ALTER TABLE accounts ADD nickname text, ADD region text NOT NULL;",
+            "CREATE TABLE IF NOT EXISTS accounts (id int); ALTER TABLE accounts ADD region text NOT NULL;",
             "ALTER TABLE accounts ALTER COLUMN region SET NOT NULL;",
             "ALTER TABLE accounts ALTER COLUMN region TYPE varchar(2);",
             "ALTER TABLE accounts ALTER COLUMN region SET DATA TYPE integer;",

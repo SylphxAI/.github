@@ -199,9 +199,13 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
                 or (starts(stmt, "CREATE") and any(has(stmt[:8], kind) for kind in ("FUNCTION", "PROCEDURE", "TRIGGER")))):
             out.append((stmt[0].line, "procedural or dynamic SQL requires a contract reference"))
         if starts(stmt, "CREATE", "TABLE"):
-            at = 5 if starts(stmt[2:], "IF", "NOT", "EXISTS") else 2
+            conditional = starts(stmt[2:], "IF", "NOT", "EXISTS")
+            at = 5 if conditional else 2
             table, _ = name(stmt, at)
-            created.add(table)
+            # IF NOT EXISTS may leave a live table in place, so subsequent
+            # required-column additions still need a default.
+            if not conditional:
+                created.add(table)
         if not starts(stmt, "ALTER", "TABLE"):
             continue
         at = 4 if starts(stmt[2:], "IF", "EXISTS") else 2
