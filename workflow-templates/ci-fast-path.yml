@@ -2,18 +2,31 @@
 # supersedes the pull request's run, heavy jobs wait for the cheap gate, and
 # one `ci-ok` aggregate (skipped = pass) is the required check. See
 # docs/ci-template.md in SylphxAI/.github. Replace each `@main` with the
-# commit you adopt (callers pin by commit), then fill in the jobs.
+# commit you adopt (callers pin by commit), then fill in the jobs. Install
+# pr-metadata.yml alongside this workflow for title, body and ready events.
 name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   merge_group:
+  workflow_dispatch:
+    inputs:
+      code-merge:
+        type: string
+      code-head:
+        type: string
+      code-base:
+        type: string
+      code-pr:
+        type: string
+      code-base-ref:
+        type: string
   push:
     branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -32,21 +45,25 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
       - uses: SylphxAI/.github/.github/actions/cache-toolchain@main
         with:
           toolchain: npm
       - run: echo "format, lint, typecheck, unit tests"
 
   # Heavy jobs (release build, e2e, iOS/Android) wait for the gate, skip on a
-  # docs-only change, and run on a ready pull request, the trunk and nightly -
-  # not on a draft.
+  # docs-only change. Drafts run the same checks: marking ready is metadata
+  # only and must never restart or cancel the head's code evidence.
   heavy:
     needs: [changes, gate]
-    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-xlarge-merge' || 'sylphx-linux-xlarge' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
       - run: echo "full build, e2e, mobile"
 
   # The required check. Skipped jobs pass; a failed job fails; a cancelled job
@@ -61,5 +78,6 @@ jobs:
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
           required: changes

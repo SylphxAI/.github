@@ -9,6 +9,11 @@ description: >
   Requires contents and pull-requests read. See docs/ci-ok.md.
 
 inputs:
+  separate-pr-metadata:
+    description: >
+      Set true only with a separate required pr-metadata producer. This code
+      verdict retains commit attribution and checks mutable PR text separately.
+    default: "false"
   needs:
     description: The calling job's needs context as JSON (toJSON of needs).
     required: true
@@ -26,7 +31,8 @@ runs:
       shell: bash
       env:
         CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
-      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py"
+        CONTRIBUTION_POLICY_SCOPE: ${{ inputs.separate-pr-metadata == 'true' && 'commits' || 'all' }}
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE"
     - name: Scan added commits for secrets
       shell: bash
       env:

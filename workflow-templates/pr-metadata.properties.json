@@ -1,0 +1,6 @@
+{
+  "name": "PR metadata",
+  "description": "Validate PR text and contribution attribution without restarting or cancelling code CI.",
+  "iconName": "octicon checklist",
+  "categories": ["Continuous integration"]
+}

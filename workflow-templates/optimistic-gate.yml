@@ -1,29 +1,40 @@
 # The merge-queue gate for optimistic merge (docs/optimistic-merge.md in
-# SylphxAI/.github). Merge groups and draft pull requests run only the fast
+# SylphxAI/.github). Merge groups run only the fast
 # lanes: format, lint, typecheck, workflow parse, and the unit tests the change
-# affects - a draft is the compiler. A pull request marked ready also runs the
-# full suite its change affects (verify.yml, called below), so it is green
-# before it is armed. After merge, verify.yml runs again on the trunk. `ci-ok`
-# is the one required check.
+# affects. Every pull request push, including a draft, also runs the full suite
+# its change affects (verify.yml, called below). Marking ready runs metadata
+# only. After merge, verify.yml runs again on the trunk. `ci-ok`
+# is the required code check; the separate pr-metadata check validates PR text.
 #
 # Adopting: replace each `@main` below with the commit of SylphxAI/.github
-# main you adopt (callers pin by commit), then fill in the lanes.
+# main you adopt (callers pin by commit), then fill in the lanes. Install
+# pr-metadata.yml alongside this workflow for title, body and ready events.
 name: CI
 
 on:
   pull_request:
-    # ready_for_review: marking a draft ready runs the full suite.
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   merge_group:
   # A pull request opened with GITHUB_TOKEN triggers no CI: its opener
   # dispatches this workflow on the branch (`gh workflow run ci.yml --ref
   # <branch>`), and the run's ci-ok lands on the head commit. Gate lanes only.
   workflow_dispatch:
+    inputs:
+      code-merge:
+        type: string
+      code-head:
+        type: string
+      code-base:
+        type: string
+      code-pr:
+        type: string
+      code-base-ref:
+        type: string
 
 # A new push supersedes a pull request's run; a merge group's run is never
 # cancelled by another.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -67,6 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           filter: blob:none
       - id: range
         uses: SylphxAI/.github/.github/actions/ci-range@main
@@ -84,6 +96,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
       - uses: SylphxAI/.github/.github/actions/workflow-lint@main
       # Rust: install the toolchain first, then
       #   - uses: SylphxAI/.github/.github/actions/rust-sccache@main
@@ -97,6 +111,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
       # Affected-only where the build tool allows it, from the plan's base:
       #   turbo run test --affected (TURBO_SCM_BASE=${{ needs.plan.outputs.base }}),
       #   cargo nextest run -p <changed crates and their dependents>, ...
@@ -113,6 +129,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
       - run: echo "migration lint, integrity, and the database-backed migration tests"
 
   # No new departure from the default stack (docs/stack-conformance.md in
@@ -130,23 +148,23 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           filter: blob:none
       - uses: SylphxAI/.github/.github/actions/stack-conformance@main
         with:
           base: ${{ needs.plan.outputs.base }}
 
-  # The full suite on a pull request that is ready: the same lanes verify.yml
-  # runs after merge, selected by this change. Never in a merge group or a
-  # draft; it also runs on workflow_dispatch, where the aggregator requires it.
+  # The same affected suite on every PR push, including drafts. Metadata-only
+  # events never enter this workflow. Dispatch also requires the suite.
   suite:
-    if: github.event_name != 'merge_group' && !github.event.pull_request.draft
+    if: github.event_name != 'merge_group'
     uses: ./.github/workflows/verify.yml
     secrets: inherit
 
   # The required check. Skipped lanes pass; a failed lane fails; a cancelled lane
   # (a superseded push) is reported CANCELLED and does not fail; the
-  # PR-time suite must succeed everywhere but the merge group and a draft (which
-  # runs the gate lanes only), so a skipped suite on a dispatch run never turns
+  # PR-time suite must succeed everywhere but the merge group, so a skipped
+  # suite on a draft or dispatch run never turns
   # a red check green.
   ci-ok:
     if: always() && !cancelled()
@@ -158,6 +176,7 @@ jobs:
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
           required: plan,stack
-          required-unless-merge-group: ${{ github.event.pull_request.draft && ' ' || 'suite' }}
+          required-unless-merge-group: suite

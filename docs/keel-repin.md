@@ -53,6 +53,11 @@ by event, so `check` and `ci-ok` on that commit satisfy them. Every workflow nam
 `ci-workflows` must list `workflow_dispatch`; the action waits for each run to appear on the head
 before it starts the next, so an aggregate `ci-ok` workflow listed last sees the others.
 
+When adopting separate PR metadata validation, install its dispatchable
+`pr-metadata.yml`, list it before the code workflow in `ci-workflows`, and
+include `pr-metadata` in `required-checks`. A code-only dispatch cannot satisfy
+the separate required metadata check. The shared starter includes both.
+
 3. **settle** (every run, whether or not a repin was needed): merges a repin pull request once it has
    earned it, and tells its owner when it cannot.
 

@@ -82,9 +82,10 @@
       "ruleset_id": 20321046,
       "checks": [
         { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 }
+        { "context": "review-ok", "integration_id": 5155317 },
+        { "context": "pr-metadata", "integration_id": 15368 }
       ],
-      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
+      "reason": "Preserve CI and independent review. Require the separate metadata producer only after observing its PR-head and merge-group checks; title/body edits and ready events never replace ci-ok code evidence."
     },
     {
       "repo": "SylphxAI/owner",

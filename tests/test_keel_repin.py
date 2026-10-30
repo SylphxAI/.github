@@ -1190,7 +1190,7 @@ class ActionContractTest(unittest.TestCase):
         wf = yaml.safe_load((ROOT / "workflow-templates" / "keel-repin.yml").read_text())
         step = wf["jobs"]["settle"]["steps"][-1]
         self.assertEqual(step["with"]["mode"], "settle")
-        self.assertEqual(step["with"]["required-checks"].split(), ["ci-ok", "web-smoke"])
+        self.assertEqual(step["with"]["required-checks"].split(), ["ci-ok", "pr-metadata", "web-smoke"])
 
 
 if __name__ == "__main__":

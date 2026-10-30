@@ -1,0 +1,33 @@
+# optimistic-merge: gate-external
+name: PR metadata
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: pr-metadata-${{ github.event.changes.base && format('base-{0}', github.run_id) || github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-metadata:
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+    runs-on: sylphx-linux-control
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pr-base-ci
+        with:
+          workflow: project-control.yml
+      - uses: ./.github/actions/contribution-policy

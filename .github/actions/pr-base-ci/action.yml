@@ -1,0 +1,17 @@
+name: Validate a changed PR base
+description: Dispatch code CI only when a PR is retargeted; title and body edits never dispatch code.
+inputs:
+  workflow:
+    description: Dispatchable code workflow filename in the caller.
+    default: ci.yml
+  token:
+    description: Caller token with contents read, pull-requests read and actions write.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PR_BASE_CI_WORKFLOW: ${{ inputs.workflow }}
+        PR_BASE_CI_TOKEN: ${{ inputs.token }}
+      run: python3 "$GITHUB_ACTION_PATH/pr_base_ci.py"

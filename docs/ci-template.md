@@ -26,7 +26,7 @@ merge-group or trunk run is never cancelled.
 
 ```yaml
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
@@ -35,7 +35,22 @@ reports every pull-request workflow without it.
 
 ## Triggers
 
-`pull_request`, `merge_group` and `push: branches: [main]` only. A bare `push`
+Code CI uses `pull_request: types: [opened, synchronize, reopened]`,
+`merge_group`, explicit `workflow_dispatch`, and `push: branches: [main]`. Install the companion
+[`pr-metadata.yml`](../workflow-templates/pr-metadata.yml) and require its
+`pr-metadata` check separately. Its own concurrency group handles PR title/body
+edits and `ready_for_review` without starting or cancelling code CI. It never
+publishes `ci-ok`; the code workflow retains its exact-head dependencies.
+Base-branch edits dispatch code explicitly after a head/ref check. The dispatch
+carries the PR number, base branch, base and head SHAs, and immutable merge SHA.
+Its verdict refuses a changed target base. Each base-edit metadata run has a
+unique concurrency key so later text edits cannot discard that dispatch.
+PR numbers isolate fork branches and trunk pushes; an explicit retarget dispatch
+shares only its intended PR's code group. Bot PRs
+dispatch both metadata and code workflows. After the separate metadata check
+is required, set `separate-pr-metadata: 'true'` on all code verdict actions,
+including called Verify jobs, so correcting text cannot leave code CI red.
+Draft pushes run the same affected tests as ready PRs. A bare `push`
 on every branch plus `pull_request` runs each commit twice. For docs, rely on
 the `changes` job rather than trigger-level `paths-ignore`: a skipped required
 workflow never reports, which blocks the merge; a skipped job does report.
@@ -46,7 +61,8 @@ workflow never reports, which blocks the merge; a skipped job does report.
 2. Cheap gate - format, lint, typecheck, unit tests - `needs: changes`.
 3. Heavy jobs - release build, e2e, iOS, Android, matrices - `needs: [changes, gate]`, so a lint failure never pays for a build.
 4. `ci-ok`: `if: always() && !cancelled()`, `needs:` every job above, then
-   `needs-pass`. Make it the only required check. Dependency failures still
+   `needs-pass`. Require it for code alongside the separate `pr-metadata`
+   check. Dependency failures still
    produce a red verdict; cancellation of the workflow suppresses its stale
    verdict so the replacement run alone decides the current head. Skipped jobs
    (a docs-only change) count as success; failed/cancelled dependencies fail
@@ -56,9 +72,9 @@ workflow never reports, which blocks the merge; a skipped job does report.
 ## Which events run the heavy jobs
 
 Follow [optimistic-merge.md](optimistic-merge.md): the merge group runs the
-gate only; a ready pull request runs the heavy jobs its change affects; the
-trunk and the nightly schedule run everything. A heavy job that cannot run on
-every ready pull request (a device matrix, a store build) is gated on
+gate only; every pull request push, including a draft, runs the heavy jobs its
+change affects; the trunk and the nightly schedule run everything. A heavy
+job that cannot run on every pull request (a device matrix, a store build) is gated on
 `github.event_name == 'merge_group' || github.event_name == 'schedule'` or on
 `workflow_dispatch`, and the PR path keeps the light checks. Say so in the
 workflow: a skipped heavy job is only safe when something still runs it before

@@ -1,7 +1,8 @@
 # Rust CI on the organization's shared compile cache (docs/rust-ci.md in
 # SylphxAI/.github). Copy to .github/workflows/ci.yml (or merge the `rust`
 # job into an existing gate) and replace `@main` with the commit of
-# SylphxAI/.github main you adopt: callers pin by commit.
+# SylphxAI/.github main you adopt: callers pin by commit. Install
+# pr-metadata.yml alongside this workflow for title, body and ready events.
 #
 # The push to main is what keeps the cache warm: every pull request and merge
 # group reads the entries the last main run wrote. Keep it.
@@ -9,15 +10,27 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   merge_group:
+  workflow_dispatch:
+    inputs:
+      code-merge:
+        type: string
+      code-head:
+        type: string
+      code-base:
+        type: string
+      code-pr:
+        type: string
+      code-base-ref:
+        type: string
   push:
     branches: [main]
 
 # A new push supersedes a pull request's run; a main or merge-group run is
 # never cancelled, so it always finishes writing the cache.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -62,4 +75,5 @@ jobs:
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}

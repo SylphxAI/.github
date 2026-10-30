@@ -405,7 +405,8 @@ class RowFailureTest(unittest.TestCase):
 
     def test_r4_a_named_lane_input_must_be_declared(self) -> None:
         facts = conformant()
-        self.assertEqual(audit.dispatch_inputs(facts["files"]["verify.yml"]), {"lanes"})
+        self.assertEqual(audit.dispatch_inputs(facts["files"]["verify.yml"]),
+                         {"lanes", "code-merge", "code-head", "code-base", "code-pr", "code-base-ref"})
         facts["files"]["red-main.yml"] = with_input(red_main(), "lane-input", "suites # the verify input")
         self.only(facts, "R4", "sends lane-input `suites`")
         facts["files"]["red-main.yml"] = with_input(red_main(), "lane-input", "'lanes'")
@@ -716,7 +717,7 @@ class ParserTest(unittest.TestCase):
 
 
 class StarterDraftTest(unittest.TestCase):
-    """A draft pull request runs the gate lanes only; its ci-ok must not wait for the suite."""
+    """A draft's code evidence must survive the metadata-only ready transition."""
 
     def setUp(self) -> None:
         import yaml
@@ -727,14 +728,12 @@ class StarterDraftTest(unittest.TestCase):
         spec.loader.exec_module(self.needs_pass)
 
     def required(self, draft: bool) -> set:
-        # The starter's expression, evaluated the way Actions does.
-        self.assertEqual(self.step, "${{ github.event.pull_request.draft && ' ' || 'suite' }}")
-        return self.needs_pass.names(" " if draft else "suite")
+        return self.needs_pass.names(self.step)
 
-    def test_draft_pull_request_passes_with_the_suite_skipped(self) -> None:
+    def test_draft_pull_request_requires_the_suite(self) -> None:
         needs = {"plan": {"result": "success"}, "suite": {"result": "skipped"}}
         bad = self.needs_pass.verdict(needs, {"plan"}, set(), "pull_request", self.required(True))
-        self.assertEqual(bad, [])
+        self.assertEqual(bad, ["suite: skipped (must succeed)"])
 
     def test_ready_pull_request_and_dispatch_still_need_the_suite(self) -> None:
         needs = {"plan": {"result": "success"}, "suite": {"result": "skipped"}}

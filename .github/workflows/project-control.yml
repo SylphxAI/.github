@@ -6,16 +6,29 @@ on:
     branches:
       - main
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
+      code-merge:
+        description: Immutable merge commit for PR base validation.
+        type: string
+      code-head:
+        description: Exact PR head represented by code-merge.
+        type: string
+      code-base:
+        description: Exact PR base represented by code-merge.
+        type: string
+      code-pr:
+        type: string
+      code-base-ref:
+        type: string
       junit-producer-run:
         description: 'Completed Project control producer run to read from a different run.'
-        required: true
+        required: false
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
   # Only a superseded pull_request run is cancelled; merge_group and main pushes finish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -31,17 +44,19 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/stack-conformance
         with:
-          base: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          base: ${{ github.event.inputs.code-base || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
 
   project-control:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -63,6 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           # Full history: the starter-template test reads the commit the template pins.
           fetch-depth: 0
           persist-credentials: false
@@ -205,7 +221,7 @@ jobs:
           brand-directory: ${{ runner.temp }}/brand-consumer/brand data
 
   junit-producer:
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run
     name: JUnit fixture (${{ matrix.shard }})
     # Standard hosted runners are free only while this repository is public.
     runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
@@ -219,6 +235,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
       - name: Prepare nested passing and failing JUnit cases
         env:
@@ -234,7 +251,7 @@ jobs:
           path: ${{ runner.temp }}/junit
 
   junit-consumer:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.junit-producer-run != ''
     permissions:
       actions: read
       contents: read
@@ -259,6 +276,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
           filter: blob:none
       - id: range
@@ -281,6 +299,7 @@ jobs:
           cp workflow-templates/red-main.yml "$work/.github/workflows/red-main.yml"
           cp workflow-templates/rust-check.yml "$work/.github/workflows/sylphx-check.yml"
           cp workflow-templates/rust-ci.yml "$work/.github/workflows/rust-ci.yml"
+          cp workflow-templates/pr-metadata.yml "$work/.github/workflows/pr-metadata.yml"
           cp workflow-templates/keel-repin.yml "$work/.github/workflows/keel-repin.yml"
           cp workflow-templates/keel-pin-check.yml "$work/.github/workflows/keel-pin-check.yml"
           cp workflow-templates/pages-publish.yml "$work/.github/workflows/pages-publish.yml"
@@ -301,6 +320,7 @@ jobs:
             ${{ runner.temp }}/starter/.github/workflows/red-main.yml
             ${{ runner.temp }}/starter/.github/workflows/sylphx-check.yml
             ${{ runner.temp }}/starter/.github/workflows/rust-ci.yml
+            ${{ runner.temp }}/starter/.github/workflows/pr-metadata.yml
             ${{ runner.temp }}/starter/.github/workflows/keel-repin.yml
             ${{ runner.temp }}/starter/.github/workflows/keel-pin-check.yml
             ${{ runner.temp }}/starter/.github/workflows/pages-publish.yml
@@ -313,9 +333,11 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/needs-pass
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
           required: template-plan
 
@@ -328,8 +350,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/ci-ok
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
-          required: stack,project-control,tests,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ github.event_name != 'workflow_dispatch' && 'junit-producer' || 'junit-consumer' }}
+          required: stack,project-control,tests,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ (github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run) && 'junit-producer' || 'junit-consumer' }}
