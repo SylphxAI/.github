@@ -7,6 +7,14 @@ with every rustc call served from the organization's compile cache through
 decision and its reasons are
 [ADR 0004](adr/0004-fleet-rust-compile-cache.md).
 
+The test lane runs through [`ci-test`](ci-test.md): a successful Cargo command
+must produce complete libtest summaries with at least one executed test.
+An all-ignored, filtered-empty or discovery-only invocation fails. Native
+Cargo failures pass through unchanged. For an intentional empty invocation,
+set `test-exceptions` to an exact declaration file relative to `workspace`;
+the shard identifier is `rust:<workspace>` and the command begins with
+`["cargo", "test", ...]`, including the selected lock/features/test arguments.
+
 ## Adopt
 
 1. Copy [`workflow-templates/rust-ci.yml`](../workflow-templates/rust-ci.yml)
@@ -91,6 +99,7 @@ Every input is optional. The contract the rollout repositories adopt:
 | `fmt` | `true` | Lane: `cargo fmt --all -- --check` |
 | `clippy-args` | `--workspace --all-targets -- -D warnings` | Lane: arguments after `cargo clippy --locked`; empty skips the lane |
 | `test-args` | `--workspace` | Lane: arguments after `cargo test --locked`; empty skips the lane |
+| `test-exceptions` | empty | Exact intentional-empty invocation declarations relative to `workspace` |
 | `locked` | `true` | `--locked` on clippy and test (needs a committed `Cargo.lock`) |
 | `workspace` | `.` | Cargo workspace directory, relative to the checkout |
 | `runner-class` | `standard` | `standard` or `xlarge` (only after a measured need). A merge group runs on the class's `-merge` lane. No other label is reachable |
