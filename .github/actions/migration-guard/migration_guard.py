@@ -317,6 +317,11 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
             trigger_tables.clear()
             trigger_functions.clear()
         control_stmt = procedural_statement(stmt)
+        if starts(control_stmt, "ALTER") and has(control_stmt, "SET", "SCHEMA"):
+            # A relocated object can leave its old qualified name available
+            # for an existing table or an uninspected function to occupy.
+            trigger_tables.clear()
+            trigger_functions.clear()
         out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(stmt))
         if starts(control_stmt, "SET") and any(
                 (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
@@ -368,6 +373,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
                 # Executed bodies can remove defaults established outside,
                 # but their local facts never authorize enclosing statements.
                 defaults.clear()
+                trigger_tables.clear()
+                trigger_functions.clear()
         if (starts(stmt, "CALL") or starts(stmt, "EXECUTE")
                 or starts(stmt, "PREPARE") or starts(stmt, "DELIMITER")):
             out.append((stmt[0].line, "procedural or dynamic SQL requires a contract reference"))

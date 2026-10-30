@@ -52,6 +52,18 @@ class TriggerTests(unittest.TestCase):
         ]:
             self.assertIn("opaque procedural body", str(guard.check_sql(sql, "postgres")))
 
+    def test_schema_relocation_invalidates_table_and_function_identity(self):
+        for relocation in [
+            "ALTER TABLE app.records SET SCHEMA scratch; ALTER TABLE legacy.records SET SCHEMA app;",
+            "ALTER FUNCTION app.assign_id() SET SCHEMA scratch; ALTER FUNCTION legacy.assign_id() SET SCHEMA app;",
+            "DO $$BEGIN ALTER TABLE app.records SET SCHEMA scratch; ALTER TABLE legacy.records SET SCHEMA app; END;$$;",
+            "DO $$BEGIN ALTER FUNCTION app.assign_id() SET SCHEMA scratch; ALTER FUNCTION legacy.assign_id() SET SCHEMA app; END;$$;",
+        ]:
+            sql = FUNCTION + TABLE + relocation + TRIGGER
+            with self.subTest(relocation=relocation):
+                self.assertIn("opaque procedural body", str(guard.check_sql(sql, "postgres")))
+                self.assertEqual(guard.check_sql("-- contract: released-expand-42\n" + sql, "postgres"), [])
+
     def test_unsupported_trigger_forms_and_mysql_remain_opaque(self):
         for trigger in [TRIGGER.replace("INSERT ON", "UPDATE ON"),
                         TRIGGER.replace("app.assign_id()", "app.assign_id('arg')"),
