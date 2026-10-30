@@ -11,7 +11,9 @@ RELEASES = (
     "4dcc910606d7624150d2004f2dd970eb570de30e",
     "9d1931731b8442a83b61203883dfd1a965e8e349",
     "0a8e0782e55506e4c61062f55a77428d7186d799",
+    "b829fa2e3881ceadc0eaecdd39bf50e6611cff2b",
 )
+TENANT_RULE = "architecture/C2/tenant-read-functions"
 
 
 class ReleasedCheckerAdoptionTests(unittest.TestCase):
@@ -24,6 +26,7 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
                 self.assertIn("model-pin", profiles[0]["rules"])
                 self.assertIn("architecture/C1/cache-economy", profiles[0]["rules"])
                 self.assertIn("architecture/C5/polling-loop", profiles[0]["rules"])
+                self.assertNotIn(TENANT_RULE, profiles[0]["rules"])
 
     def test_released_pin_adoption_preserves_baseline_and_does_not_reopen_growth(self):
         row, = sc.architecture.scan_file(SOURCE, POLL, "example/app", set(), [])
@@ -36,10 +39,12 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
                 base = fixture.commit({WORKFLOW: workflow(pin), SOURCE: POLL,
                                        sc.BASELINE: baseline})
                 plan = fixture.plan(base)
-                self.assertEqual(plan["introduced_rules"], [])
+                self.assertEqual(plan["introduced_rules"], [TENANT_RULE])
                 self.assertEqual(plan["evidence"]["added_records"], [])
-                self.assertEqual(plan["baseline_text"], baseline)
-                fixture.commit({WORKFLOW: workflow(UNKNOWN)})
+                self.assertEqual(plan["baseline_text"], baseline
+                                 + sc.adoption.RULE_MARKER + TENANT_RULE + "\n")
+                fixture.commit({WORKFLOW: workflow(UNKNOWN),
+                                sc.BASELINE: plan["baseline_text"]})
                 fixture.check(base, 0)
 
                 fixture.commit({SOURCE: POLL + POLL})
