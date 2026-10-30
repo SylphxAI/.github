@@ -9,9 +9,18 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
+      code-merge:
+        description: Immutable merge commit for PR base validation.
+        type: string
+      code-head:
+        description: Exact PR head represented by code-merge.
+        type: string
+      code-base:
+        description: Exact PR base represented by code-merge.
+        type: string
       junit-producer-run:
         description: 'Completed Project control producer run to read from a different run.'
-        required: true
+        required: false
         type: string
 
 concurrency:
@@ -31,6 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/stack-conformance
@@ -42,6 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -63,6 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           # Full history: the starter-template test reads the commit the template pins.
           fetch-depth: 0
           persist-credentials: false
@@ -205,7 +217,7 @@ jobs:
           brand-directory: ${{ runner.temp }}/brand-consumer/brand data
 
   junit-producer:
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run
     name: JUnit fixture (${{ matrix.shard }})
     # Standard hosted runners are free only while this repository is public.
     runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
@@ -219,6 +231,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
       - name: Prepare nested passing and failing JUnit cases
         env:
@@ -234,7 +247,7 @@ jobs:
           path: ${{ runner.temp }}/junit
 
   junit-consumer:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.junit-producer-run != ''
     permissions:
       actions: read
       contents: read
@@ -259,6 +272,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
           filter: blob:none
       - id: range
@@ -315,9 +329,11 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/needs-pass
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
           required: template-plan
 
@@ -331,8 +347,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/needs-pass
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
           required: stack,project-control,tests

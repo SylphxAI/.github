@@ -17,6 +17,11 @@ description: >
   gating jobs share one workflow, use a plain `needs:` + `if: always() && !cancelled()` job instead.
 
 inputs:
+  separate-pr-metadata:
+    description: >
+      Set true only with a separate required pr-metadata producer. This code
+      verdict retains commit attribution and ignores that mutable text check.
+    default: "false"
   token:
     description: >
       Token that can read check runs and workflow runs (the job needs
@@ -56,7 +61,8 @@ runs:
       shell: bash
       env:
         CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
-      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py"
+        CONTRIBUTION_POLICY_SCOPE: ${{ inputs.separate-pr-metadata == 'true' && 'commits' || 'all' }}
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE"
     - name: Scan added commits for secrets
       shell: bash
       env:
@@ -69,7 +75,7 @@ runs:
         SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         TOKEN: ${{ inputs.token }}
         SELF_NAME: ${{ inputs.job-name }}
-        CI_OK_IGNORE: ${{ inputs.ignore }}
+        CI_OK_IGNORE: ${{ inputs.separate-pr-metadata == 'true' && format('{0},pr-metadata', inputs.ignore) || inputs.ignore }}
         CI_OK_REQUIRED: ${{ inputs.required }}
         CI_OK_ALLOW_NONE_ON_PR: ${{ inputs.allow-none-on-pull-request }}
         EVENT_NAME: ${{ github.event_name }}

@@ -405,7 +405,8 @@ class RowFailureTest(unittest.TestCase):
 
     def test_r4_a_named_lane_input_must_be_declared(self) -> None:
         facts = conformant()
-        self.assertEqual(audit.dispatch_inputs(facts["files"]["verify.yml"]), {"lanes"})
+        self.assertEqual(audit.dispatch_inputs(facts["files"]["verify.yml"]),
+                         {"lanes", "code-merge", "code-head", "code-base"})
         facts["files"]["red-main.yml"] = with_input(red_main(), "lane-input", "suites # the verify input")
         self.only(facts, "R4", "sends lane-input `suites`")
         facts["files"]["red-main.yml"] = with_input(red_main(), "lane-input", "'lanes'")

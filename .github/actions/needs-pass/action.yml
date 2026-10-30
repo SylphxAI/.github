@@ -23,6 +23,12 @@ description: >
   replacement. If the verdict job does run with cancelled dependencies, it fails.
 
 inputs:
+  separate-pr-metadata:
+    description: >
+      Set true only after installing a separate required pr-metadata producer.
+      Keep commit attribution in this code verdict; validate mutable PR text
+      in that producer so a text correction never requires rerunning code.
+    default: "false"
   needs:
     description: "The calling job's needs context as JSON (toJSON of needs)."
     required: true
@@ -53,7 +59,8 @@ runs:
       shell: bash
       env:
         CONTRIBUTION_POLICY_TOKEN: ${{ github.token }}
-      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py"
+        CONTRIBUTION_POLICY_SCOPE: ${{ inputs.separate-pr-metadata == 'true' && 'commits' || 'all' }}
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE"
     - shell: bash
       env:
         NEEDS: ${{ inputs.needs }}

@@ -127,7 +127,8 @@ proofs - is a suite lane.
    (`sylphx build check`, or until the CLI ships
    `gh workflow run sylphx-check.yml -R ORG/REPO -f ref=BRANCH -f packages="a b"`);
    see [rust-check.md](rust-check.md).
-8. **Ruleset**: `ci-ok` stays the only required check. `verified` is never a
+8. **Ruleset**: retain `ci-ok` for code and require `pr-metadata` separately
+   after observing its producer. `verified` is never a
    required check: it exists only after a merge, so requiring it deadlocks
    the queue. The queue's own parameters (HEADGREEN and the rest) come from
    [merge-queue-settings.md](merge-queue-settings.md), not from the ruleset by hand.

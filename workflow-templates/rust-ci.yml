@@ -12,13 +12,21 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   merge_group:
+  workflow_dispatch:
+    inputs:
+      code-merge:
+        type: string
+      code-head:
+        type: string
+      code-base:
+        type: string
   push:
     branches: [main]
 
 # A new push supersedes a pull request's run; a main or merge-group run is
 # never cancelled, so it always finishes writing the cache.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -63,4 +71,5 @@ jobs:
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}

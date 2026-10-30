@@ -75,7 +75,7 @@ jobs:
           reader-app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
           reader-app-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
           check-command: cargo check
-          ci-workflows: ci.yml
+          ci-workflows: pr-metadata.yml ci.yml
 
   settle:
     runs-on: sylphx-linux-standard
@@ -91,7 +91,7 @@ jobs:
           mode: settle
           dry-run: ${{ inputs.dry_run == true }}
           # Both must have succeeded on the pull request's head commit before the bot merges.
-          required-checks: ci-ok web-smoke
+          required-checks: ci-ok pr-metadata web-smoke
           owner: "@OWNER_TEAM"
           # Workflows to start on the default branch after the merge (it starts no push run).
           after-merge-workflows: ""

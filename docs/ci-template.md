@@ -36,11 +36,15 @@ reports every pull-request workflow without it.
 ## Triggers
 
 Code CI uses `pull_request: types: [opened, synchronize, reopened]`,
-`merge_group` and `push: branches: [main]` only. Install the companion
+`merge_group`, explicit `workflow_dispatch`, and `push: branches: [main]`. Install the companion
 [`pr-metadata.yml`](../workflow-templates/pr-metadata.yml) and require its
 `pr-metadata` check separately. Its own concurrency group handles PR title/body
 edits and `ready_for_review` without starting or cancelling code CI. It never
 publishes `ci-ok`; the code workflow retains its exact-head dependencies.
+Base-branch edits dispatch code explicitly after a head/ref check. Bot PRs
+dispatch both metadata and code workflows. After the separate metadata check
+is required, set `separate-pr-metadata: 'true'` on all code verdict actions,
+including called Verify jobs, so correcting text cannot leave code CI red.
 Draft pushes run the same affected tests as ready PRs. A bare `push`
 on every branch plus `pull_request` runs each commit twice. For docs, rely on
 the `changes` job rather than trigger-level `paths-ignore`: a skipped required
@@ -52,7 +56,8 @@ workflow never reports, which blocks the merge; a skipped job does report.
 2. Cheap gate - format, lint, typecheck, unit tests - `needs: changes`.
 3. Heavy jobs - release build, e2e, iOS, Android, matrices - `needs: [changes, gate]`, so a lint failure never pays for a build.
 4. `ci-ok`: `if: always() && !cancelled()`, `needs:` every job above, then
-   `needs-pass`. Make it the only required check. Dependency failures still
+   `needs-pass`. Require it for code alongside the separate `pr-metadata`
+   check. Dependency failures still
    produce a red verdict; cancellation of the workflow suppresses its stale
    verdict so the replacement run alone decides the current head. Skipped jobs
    (a docs-only change) count as success; failed/cancelled dependencies fail

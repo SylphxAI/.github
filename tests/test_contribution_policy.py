@@ -255,9 +255,56 @@ class ContributionPolicy(unittest.TestCase):
             step = doc['runs']['steps'][0]
             self.assertIn('contribution_policy.py', step['run'])
             self.assertNotIn('if', step)
+            self.assertEqual(doc['inputs']['separate-pr-metadata']['default'], 'false')
+            self.assertIn("&& 'commits' || 'all'", step['env']['CONTRIBUTION_POLICY_SCOPE'])
         document = yaml.safe_load((ROOT / 'workflow-templates/pr-metadata.yml').read_text())
         self.assertIn('edited', document[True]['pull_request']['types'])
         self.assertEqual(document['permissions']['pull-requests'], 'read')
+
+    def test_pr_text_correction_recovers_without_replacing_code_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / 'snapshot.json'
+            pr, item = pull(), commit()
+            pr['body'] = 'Agent: example'
+            def status(scope):
+                snapshot.write_text(json.dumps({'pull_request': pr, 'commits': [item]}))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    return checker.main(['--input', str(snapshot), '--scope', scope])
+            self.assertEqual(status('commits'), 0)
+            self.assertEqual(status('all'), 1)
+            pr['body'] = 'Validated parser behavior.'
+            self.assertEqual(status('all'), 0)
+            self.assertEqual(status('commits'), 0)
+            # Mutable text ownership never exempts immutable commit attribution.
+            item['commit']['author'] = {'name': 'Example', 'email': 'example@example.com'}
+            self.assertEqual(status('commits'), 1)
+
+    def test_code_snapshot_ignores_text_changes_but_keeps_revision_checks(self):
+        api = mock.Mock(repository='example/repo', token='read-token')
+        before, after = pull(), pull()
+        after['body'] = 'Changed while checking code'
+        api.get.side_effect = [before, after]
+        with mock.patch.object(checker, 'range_commits', return_value=[commit()]):
+            self.assertEqual(checker.pull_snapshot(api, 1, HEAD, check_text=False), (after, [commit()]))
+        after['head']['sha'] = 'c' * 40
+        api.get.side_effect = [before, after]
+        with mock.patch.object(checker, 'range_commits', return_value=[commit()]):
+            with self.assertRaises(checker.PolicyError):
+                checker.pull_snapshot(api, 1, HEAD, check_text=False)
+
+    def test_base_dispatch_cannot_publish_evidence_for_a_different_head_or_merge(self):
+        api = mock.Mock(repository='example/repo', token='read-token')
+        event = {'inputs': {'code-head': HEAD, 'code-base': BASE, 'code-merge': 'c' * 40}}
+        with self.assertRaises(checker.PolicyError):
+            checker.check_event(api, 'workflow_dispatch', event, 'd' * 40, POLICY)
+        api.get.return_value = {'parents': [{'sha': 'd' * 40}, {'sha': HEAD}]}
+        with self.assertRaises(checker.PolicyError):
+            checker.check_event(api, 'workflow_dispatch', event, HEAD, POLICY)
+        api.get.return_value = {'parents': [{'sha': BASE}, {'sha': HEAD}]}
+        api.get.side_effect = [api.get.return_value, pull(), pull()]
+        api.pages.return_value = [pull()]
+        with mock.patch.object(checker, 'range_commits', return_value=[commit()]):
+            self.assertEqual(checker.check_event(api, 'workflow_dispatch', event, HEAD, POLICY), [])
 
 
 if __name__ == '__main__':

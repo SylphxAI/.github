@@ -184,14 +184,14 @@ def parse_commits(data):
     return result
 
 
-def pull_snapshot(api, number, expected_head=None):
+def pull_snapshot(api, number, expected_head=None, *, check_text=True):
     before = api.get(f'pulls/{number}')
     head = before['head']['sha']
     if expected_head and head != expected_head:
         raise PolicyError('pull request head changed; run the check on its current head')
     commits = range_commits(before['base']['sha'], head, api.repository, api.token)
     after = api.get(f'pulls/{number}')
-    for key in ('title', 'body'):
+    for key in ('title', 'body') if check_text else ():
         if before[key] != after[key]:
             raise PolicyError('pull request metadata changed during the check; rerun it')
     if before['head']['sha'] != after['head']['sha'] or before['base']['ref'] != after['base']['ref']:
@@ -199,10 +199,16 @@ def pull_snapshot(api, number, expected_head=None):
     return after, commits
 
 
-def check_event(api, event_name, event, sha, policy):
+def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
+    def snapshot(number, head):
+        if check_pull_text:
+            return pull_snapshot(api, number, head)
+        pr, commits = pull_snapshot(api, number, head, check_text=False)
+        return None, commits
+
     if event_name in {'pull_request', 'pull_request_target'}:
         pr = event.get('pull_request', {})
-        return evaluate(*pull_snapshot(api, event.get('number') or pr['number'], pr['head']['sha']), policy)
+        return evaluate(*snapshot(event.get('number') or pr['number'], pr['head']['sha']), policy)
     if event_name == 'merge_group':
         group = event['merge_group']
         commits = range_commits(group['base_sha'], group['head_sha'], api.repository, api.token)
@@ -217,7 +223,7 @@ def check_event(api, event_name, event, sha, policy):
                 pulls[pr['number']] = pr['headRefOid']
                 covered.add(synthetic)
         for number, expected_head in pulls.items():
-            pr, original = pull_snapshot(api, number, expected_head)
+            pr, original = snapshot(number, expected_head)
             covered.update(commit['sha'] for commit in original)
             findings.extend(evaluate(pr, original, policy))
         for commit in commits:
@@ -227,19 +233,27 @@ def check_event(api, event_name, event, sha, policy):
             for pr in api.pages(f"commits/{commit['sha']}/pulls"):
                 if pr['base']['ref'] == branch and pr.get('merged_at') and \
                         pr.get('merge_commit_sha') == commit['sha']:
-                    snapshot, original = pull_snapshot(api, pr['number'], pr['head']['sha'])
+                    current, original = snapshot(pr['number'], pr['head']['sha'])
                     covered.add(commit['sha'])
                     covered.update(item['sha'] for item in original)
-                    findings.extend(evaluate(snapshot, original, policy))
+                    findings.extend(evaluate(current, original, policy))
         if group_shas - covered:
             raise PolicyError('merge group membership is incomplete')
         return findings
     if event_name == 'workflow_dispatch':
+        inputs = event.get('inputs') or {}
+        if inputs.get('code-merge'):
+            merge, head, base = (inputs.get('code-' + part, '') for part in ('merge', 'head', 'base'))
+            if not all(SHA.fullmatch(value) for value in (merge, head, base)) or head != sha:
+                raise PolicyError('dispatched code evidence does not match this head')
+            parents = api.get('git/commits/' + merge).get('parents', [])
+            if [parent['sha'] for parent in parents] != [base, head]:
+                raise PolicyError('dispatched code merge does not match its base and head')
         # A dispatch on a PR head must not replace a failed PR verdict with green.
         pulls = [pr for pr in api.pages('pulls?state=open') if pr['head']['sha'] == sha]
         findings = []
         for pr in pulls:
-            findings.extend(evaluate(*pull_snapshot(api, pr['number'], sha), policy))
+            findings.extend(evaluate(*snapshot(pr['number'], sha), policy))
         return findings
     return []
 
@@ -248,12 +262,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', type=Path, help='Offline JSON with pull_request and commits fields')
     parser.add_argument('--report', type=Path)
+    parser.add_argument('--scope', choices=('all', 'commits'), default='all',
+                        help='commits is for code verdicts with a separately required PR metadata producer')
     args = parser.parse_args(argv)
     try:
         policy = json.loads(POLICY.read_text())
         if args.input:
             data = json.loads(args.input.read_text())
-            findings = evaluate(data['pull_request'], data['commits'], policy)
+            findings = evaluate(data['pull_request'] if args.scope == 'all' else None, data['commits'], policy)
         else:
             event_name = os.environ.get('GITHUB_EVENT_NAME', '')
             if event_name not in {'pull_request', 'pull_request_target', 'merge_group', 'workflow_dispatch'}:
@@ -264,7 +280,8 @@ def main(argv=None):
                 raise PolicyError('read-only contribution metadata token is unavailable')
             event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
             api = GitHub(os.environ['GITHUB_REPOSITORY'], token)
-            findings = check_event(api, event_name, event, os.environ.get('GITHUB_SHA', ''), policy)
+            findings = check_event(api, event_name, event, os.environ.get('GITHUB_SHA', ''), policy,
+                                   check_pull_text=args.scope == 'all')
         if args.report:
             args.report.write_text(json.dumps({'passed': not findings, 'findings': findings}, indent=2) + '\n')
         for finding in findings:

@@ -10,11 +10,19 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   merge_group:
+  workflow_dispatch:
+    inputs:
+      code-merge:
+        type: string
+      code-head:
+        type: string
+      code-base:
+        type: string
   push:
     branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -33,6 +41,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
       - uses: SylphxAI/.github/.github/actions/cache-toolchain@main
         with:
           toolchain: npm
@@ -48,6 +58,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
       - run: echo "full build, e2e, mobile"
 
   # The required check. Skipped jobs pass; a failed job fails; a cancelled job
@@ -62,5 +74,6 @@ jobs:
     steps:
       - uses: SylphxAI/.github/.github/actions/needs-pass@main
         with:
+          separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
           required: changes
