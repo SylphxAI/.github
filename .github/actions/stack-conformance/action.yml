@@ -26,6 +26,9 @@ description: >
   Keel game consumers also reject local *Sku structs, *_pixels functions
   returning Vec<u8>, and docs/BUILDING.md or scripts/measure-rust-debug.py
   boilerplate. These boundaries cannot be waived in the local baseline.
+  Vendor model version literals in product source must use the runtime
+  default or a Sylphx AI <provider>/<line>-latest alias. Existing literals
+  use a separate shrinking model-pin category in the repository baseline.
   See docs/stack-conformance.md.
   The same action reports C1–C7 structural regressions with exact commit,
   file, line and contract, keeping inherited findings and recorded decisions
@@ -41,6 +44,9 @@ inputs:
   baseline:
     description: Baseline file, relative to the repository root.
     default: .github/stack-departures.txt
+  model-aliases:
+    description: Optional offline catalog alias declaration to tighten the naming contract. Path in the checked checkout; empty permits <provider>/<line>-latest.
+    default: ""
   token:
     description: Token that reads the repository's custom properties (the delivered-customer exclusion).
     default: ${{ github.token }}
@@ -60,6 +66,7 @@ runs:
         BASE: ${{ inputs.base }}
         HEAD_REV: ${{ inputs.head }}
         BASELINE: ${{ inputs.baseline }}
+        MODEL_ALIASES: ${{ inputs.model-aliases }}
         GH_TOKEN: ${{ inputs.token }}
         STACK_CONFORMANCE_CHECKER_COMMIT: ${{ github.action_ref || github.sha }}
       run: |
@@ -73,4 +80,8 @@ runs:
         fi
         report="$RUNNER_TEMP/stack-conformance-report.json"
         echo "report=$report" >> "$GITHUB_OUTPUT"
-        python3 "$GITHUB_ACTION_PATH/stack_conformance.py" check --base "$BASE" --head "$HEAD_REV" --baseline "$BASELINE" --report "$report"
+        model_policy=()
+        if [ -n "$MODEL_ALIASES" ]; then
+          model_policy=(--model-aliases "$MODEL_ALIASES")
+        fi
+        python3 "$GITHUB_ACTION_PATH/stack_conformance.py" check --base "$BASE" --head "$HEAD_REV" --baseline "$BASELINE" --report "$report" "${model_policy[@]}"

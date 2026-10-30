@@ -121,6 +121,11 @@ def source_views(text, suffix):
                 end = brace_end("".join(code), match.end())
                 comment_free[match.start():end] = blank(text[match.start():end])
                 code[match.start():end] = blank(text[match.start():end])
+            for match in re.finditer(r"#\[(?:(?:tokio|async_std)::)?test(?:\([^\]]*\))?\]\s*"
+                                     r"(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+\w+[^;{]*\{", "".join(code)):
+                end = brace_end("".join(code), match.end())
+                comment_free[match.start():end] = blank(text[match.start():end])
+                code[match.start():end] = blank(text[match.start():end])
         if suffix in {".sh", ".bash"}:
             for match in re.finditer(r"(?m)^\s*#.*$", text):
                 comment_free[match.start():match.end()] = blank(match.group())
