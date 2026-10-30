@@ -35,7 +35,8 @@ def targets_from(raw, mode):
     if mode == "read" and not targets:
         raise ProbeError("read mode requires at least one exact source")
     seen = set()
-    for target in targets:
+    for index in range(len(targets)):
+        target = targets[index]
         if not isinstance(target, dict) or set(target) != {"repository", "commit", "trust_policy"}:
             raise ProbeError("each target requires only repository, commit and trust_policy")
         for name, pattern in (("repository", REPO), ("commit", SHA), ("trust_policy", POLICY)):
@@ -186,7 +187,8 @@ def run(receipts, ci_name, mode, targets, denied_policy):
                                     {"repositories": [targets[0]["repository"]]}, expected=403)
         if negative.get("code") != "PERMISSION_DENIED" or negative.get("token") or negative.get("token_exchange"):
             raise ProbeError("foreign-subject refusal returned a credential or exchange")
-    for target in targets:
+    for index in range(len(targets)):
+        target = targets[index]
         repository, commit, policy = (target[name] for name in ("repository", "commit", "trust_policy"))
         endpoint = API + "/v1/" + policy + ":exchangeToken"
         negative = receipts.request(endpoint, access, {"repositories": [repository], "permissions": {"contents": "write"}}, expected=400)

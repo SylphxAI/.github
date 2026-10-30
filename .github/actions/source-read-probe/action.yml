@@ -32,4 +32,6 @@ runs:
         PROBE_MODE: ${{ inputs.mode }}
         PROBE_TARGETS: ${{ inputs.targets }}
         PROBE_DENIED_POLICY: ${{ inputs.denied-policy }}
+        ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
       run: python3 "$GITHUB_ACTION_PATH/probe.py"
