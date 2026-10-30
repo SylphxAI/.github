@@ -28,6 +28,19 @@ class SqlError(ValueError):
     pass
 
 
+def quoted_end(sql: str, start: int, dialect: str, line: int) -> int:
+    quote, i = sql[start], start + 1
+    escaped = quote != "`" and (dialect == "mysql" or (quote == "'" and start > 0 and sql[start - 1].upper() == "E"))
+    while i < len(sql):
+        if sql[i] == quote:
+            if i + 1 < len(sql) and sql[i + 1] == quote:
+                i += 2
+                continue
+            return i + 1
+        i += 2 if escaped and sql[i] == "\\" else 1
+    raise SqlError(f"line {line}: unterminated quoted token")
+
+
 def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
     """Keep identifiers/literals distinct from keywords; comments cannot hide SQL.
 
@@ -73,12 +86,17 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
                 tokens.extend(Token(t.value, t.kind, line + t.line - 1) for t in inner)
             line += sql[start:i].count("\n")
         elif dialect == "mysql" and ch == "@":
-            variable = re.match(r'''@@?(?:[\w.$]+|`(?:[^`]|``)*`|'(?:[^']|'')*'|"(?:[^"]|"")*")''', sql[i:])
-            if not variable:
-                raise SqlError(f"line {line}: cannot inspect MySQL variable")
+            start = i
+            i += 2 if sql.startswith("@@", i) else 1
+            if i < len(sql) and sql[i] in "'\"`":
+                i = quoted_end(sql, i, dialect, line)
+            else:
+                variable = re.match(r"[\w.$]+", sql[i:])
+                if not variable:
+                    raise SqlError(f"line {line}: cannot inspect MySQL variable")
+                i += len(variable[0])
             tokens.append(Token("<variable>", "literal", line))
-            line += variable[0].count("\n")
-            i += len(variable[0])
+            line += sql[start:i].count("\n")
         elif ch in "'\"`" or (dialect == "postgres" and ch == "$" and re.match(r"\$(?:[A-Za-z_][\w]*)?\$", sql[i:])):
             start, start_line = i, line
             dollar = re.match(r"\$(?:[A-Za-z_][\w]*)?\$", sql[i:]) if ch == "$" else None
@@ -90,20 +108,7 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
                 i = end + len(delim)
                 kind, value = "literal", "<literal>"
             else:
-                i += 1
-                while i < len(sql):
-                    if sql[i] == ch:
-                        if i + 1 < len(sql) and sql[i + 1] == ch:
-                            i += 2
-                            continue
-                        i += 1
-                        break
-                    if sql[i] == "\\" and (dialect == "mysql" or (start > 0 and sql[start - 1:start].upper() == "E")):
-                        i += 2
-                    else:
-                        i += 1
-                else:
-                    raise SqlError(f"line {line}: unterminated quoted token")
+                i = quoted_end(sql, start, dialect, line)
                 kind = "literal" if ch == "'" or (dialect == "mysql" and ch == '"') else "identifier"
                 value = sql[start + 1:i - 1].replace(ch + ch, ch) if kind == "identifier" else "<literal>"
             tokens.append(Token(value, kind, start_line))

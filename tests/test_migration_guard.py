@@ -57,6 +57,9 @@ class SqlTests(unittest.TestCase):
             ],
             "mysql": [
                 "UPDATE accounts SET nickname = @where;",
+                "SET @'a\\'b' = 1; DROP TABLE accounts; -- ';",
+                'SET @"a\\"b" = 1; DROP TABLE accounts; -- ";',
+                "SELECT `a\\`; DROP TABLE accounts; -- `;",
                 "UPDATE accounts SET nickname = @@global.where;",
                 "DELETE FROM accounts ORDER BY @where;",
                 "CREATE EVENT cleanup ON SCHEDULE EVERY 1 DAY DO CALL cleanup_accounts();",
@@ -138,6 +141,8 @@ class SqlTests(unittest.TestCase):
         self.assertIn((3, "DROP COLUMN"), guard.check_sql(sql, "postgres"))
         self.assertEqual(guard.check_sql('CREATE TABLE "drop" ("rename" text, "truncate" text);', "postgres"), [])
         self.assertEqual(guard.check_sql("SELECT 'a\\\'--b';", "mysql"), [])
+        self.assertEqual(guard.check_sql("SET @'a\\'b' = 1;", "mysql"), [])
+        self.assertEqual(guard.check_sql('SET @"a\\"b" = 1;', "mysql"), [])
 
 
 class HistoryTests(unittest.TestCase):
