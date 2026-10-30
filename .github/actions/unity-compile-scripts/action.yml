@@ -1,0 +1,42 @@
+name: unity-compile-scripts
+description: >
+  Compile the consumer's actual player C# assemblies for its target with its
+  already prepared Unity project, editor image and licensed HOME. Never builds
+  native code, signs, installs, or uploads an app. Dependency and license setup
+  remain the caller's existing steps.
+
+inputs:
+  project-path:
+    description: Unity project path relative to the checked-out workspace.
+    required: true
+  unity-image:
+    description: The caller's existing Unity editor container image.
+    required: true
+  license-home:
+    description: Existing licensed HOME directory from the caller's activation.
+    required: true
+  target:
+    description: Android or iOS player C# compilation target.
+    default: Android
+  output-path:
+    description: Output directory relative to the Unity project.
+    default: Builds/sylphx-player-scripts
+
+outputs:
+  receipt:
+    description: Local compilation receipt (target, Unity version, assembly hashes).
+    value: ${{ steps.compile.outputs.receipt }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compile unsigned player C# assemblies
+      id: compile
+      shell: bash
+      env:
+        PROJECT_PATH: ${{ inputs.project-path }}
+        UNITY_IMAGE: ${{ inputs.unity-image }}
+        LICENSE_HOME: ${{ inputs.license-home }}
+        COMPILE_TARGET: ${{ inputs.target }}
+        COMPILE_OUTPUT: ${{ inputs.output-path }}
+      run: bash "$GITHUB_ACTION_PATH/compile.sh"
