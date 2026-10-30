@@ -1,0 +1,21 @@
+name: MySQL migration refusal proof
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mysql-migration-negative-proof:
+    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: SylphxAI/.github/.github/actions/migration-guard@894bc0c0de77d694895bbd3a328548c7bb6e31da # main
+        with:
+          dialect: mysql
+          migration-directories: proof/mysql/migrations
