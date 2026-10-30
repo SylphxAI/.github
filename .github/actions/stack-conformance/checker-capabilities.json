@@ -150,6 +150,35 @@
         ".github/actions/stack-conformance/stack_conformance.py": "734c5e101babc24129e38cee5cbab453b8917e398fb29f04f1fdaa8e16754723"
       }
     },
+    "4c93de77aff895790326d7dbd7de72bb9894075564304e232f68aac9ca8fa54b": {
+      "sources": {
+        ".github/actions/stack-conformance/action.yml": "11b5a796cf1497a5ec3685cf0c1a4e5e3ebc63e837c1b51c47c62c9de2c4800b",
+        ".github/actions/stack-conformance/stack_conformance.py": "2e85dd5c249c792a2bf13c625194bbcc0ce8d370b3d96e64b1f5af6e020bcb17",
+        ".github/actions/stack-conformance/architecture.py": "0c924da36ff5256d3ab8c514916a90aac481d9178be4466a080dcfd5a18ce81b",
+        ".github/actions/stack-conformance/model_pins.py": "f3ff7c5676921ab2457d78c4610e69115f0a670ffe1c2ec98b10d857f076af15",
+        ".github/actions/stack-conformance/tenant_reads.py": "563c5d1598145d44526355e83d52f35d52c32ca4e3ec41a8283b56e36cdb2adf"
+      },
+      "rules": [
+        "architecture/C1/cache-economy",
+        "architecture/C1/privileged-branch",
+        "architecture/C2/provider-bypass",
+        "architecture/C2/tenant-read-functions",
+        "architecture/C3/bundled-method",
+        "architecture/C3/downstream-config",
+        "architecture/C3/downstream-import",
+        "architecture/C4/competing-default",
+        "architecture/C4/undeclared-setting",
+        "architecture/C5/cron-progress",
+        "architecture/C5/idle-floor",
+        "architecture/C5/polling-loop",
+        "architecture/C5/polling-timer",
+        "architecture/C6/retired-route",
+        "architecture/C6/unexplained-suppression",
+        "architecture/C7/failure-only-verdict",
+        "architecture/C7/merge-only-completion",
+        "model-pin"
+      ]
+    },
     "6490618776fdc8ab8fe1fed50e8e11ab4faeed594aaf42e7fee0ab7fc1debe22": {
       "rules": [
         "architecture/C1/privileged-branch",
