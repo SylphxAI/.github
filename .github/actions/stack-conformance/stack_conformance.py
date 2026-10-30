@@ -104,6 +104,11 @@ _model_spec = importlib.util.spec_from_file_location(
 model_pins = importlib.util.module_from_spec(_model_spec)
 _model_spec.loader.exec_module(model_pins)
 
+_force_spec = importlib.util.spec_from_file_location(
+    "no_force_push", pathlib.Path(__file__).with_name("no_force_push.py"))
+no_force_push = importlib.util.module_from_spec(_force_spec)
+_force_spec.loader.exec_module(no_force_push)
+
 _adoption_spec = importlib.util.spec_from_file_location(
     "adoption", pathlib.Path(__file__).with_name("adoption.py"))
 adoption = importlib.util.module_from_spec(_adoption_spec)
@@ -1030,7 +1035,9 @@ def cmd_check(args) -> int:
     head_architecture_baseline = {line for line in head_baseline or () if line.startswith("architecture ")}
     head_model_adopted = model_pins.BASELINE_MARKER in (head.read(args.baseline) or "").splitlines()
     head_model_baseline = {line for line in head_baseline or () if line.startswith("model-pin ")}
-    head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline - head_model_baseline
+    head_force_adopted = no_force_push.BASELINE_MARKER in (head_text or "").splitlines()
+    head_force_baseline = {line for line in head_baseline or () if line.startswith("force-push ")}
+    head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline - head_model_baseline - head_force_baseline
     errors = []
     pin_report = {"head": None, "mode": "unavailable", "offenders": []}
     try:
@@ -1049,6 +1056,8 @@ def cmd_check(args) -> int:
     base_architecture_adopted = False
     base_model_baseline = set()
     base_model_adopted = False
+    base_force_baseline = set()
+    base_force_adopted = False
     base_text = None
     if args.base:
         progress("reading the base Git tree")
@@ -1066,13 +1075,16 @@ def cmd_check(args) -> int:
             base_model_baseline = {line for line in base_baseline if line.startswith("model-pin ")}
             base_model_adopted = model_pins.BASELINE_MARKER in (Tree(args.repo, args.base).read(args.baseline) or "").splitlines()
             base_baseline -= base_model_baseline
+            base_force_baseline = {line for line in base_baseline if line.startswith("force-push ")}
+            base_force_adopted = no_force_push.BASELINE_MARKER in (base_text or "").splitlines()
+            base_baseline -= base_force_baseline
             base_baseline = {l for l in base_baseline if not l.startswith(AGENT_RUNTIME)}
     errors += adoption.baseline_validation(head_text, base_text if args.base else head_text, architecture)
     introduced = set()
     if args.base:
         try:
             introduced = adoption.seed_permissions(Tree(args.repo, args.base), head_text, base_text,
-                (head_architecture_baseline | head_model_baseline) - (base_architecture_baseline | base_model_baseline),
+                (head_architecture_baseline | head_model_baseline | head_force_baseline) - (base_architecture_baseline | base_model_baseline | base_force_baseline),
                 shared_repo=getattr(args, "shared_source", None), source_tree=adoption.PublishedCheckerTree,
                 head_tree=head)
         except (OSError, ValueError, TypeError, KeyError) as error:
@@ -1082,6 +1094,8 @@ def cmd_check(args) -> int:
         base_architecture_baseline = head_architecture_baseline
         base_model_baseline = head_model_baseline
         base_model_adopted = head_model_adopted
+        base_force_baseline = head_force_baseline
+        base_force_adopted = head_force_adopted
     errors += decide(found, head_baseline, base_baseline)
     try:
         aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
@@ -1098,6 +1112,15 @@ def cmd_check(args) -> int:
     except (OSError, ValueError, TypeError) as error:
         models = {"findings": [], "unreadable": [{"path": str(model_pins.POLICY), "reason": str(error)}]}
         errors.append("model-alias policy unavailable: " + str(error))
+    progress("scanning head branch-update commands")
+    force_pushes = no_force_push.scan(head)
+    progress("scanning base branch-update commands")
+    base_force_pushes = no_force_push.scan(Tree(args.repo, args.base, progress=reads)) if args.base else force_pushes
+    errors += no_force_push.decide(force_pushes["findings"], head_force_baseline, base_force_baseline,
+                                  base_force_pushes["findings"], head_force_adopted, base_force_adopted,
+                                  allow_seed="force-push" in introduced)
+    for row in force_pushes["unreadable"] + base_force_pushes["unreadable"]:
+        errors.append("branch-update input not reviewed: " + row["path"] + ": " + row["reason"])
     keel = keel_departures(head)
     errors += decide_keel(keel)
     runtime = agent_runtime(head)
@@ -1173,6 +1196,7 @@ def cmd_check(args) -> int:
                    "base_commit": git(args.repo, "rev-parse", f"{args.base}^{{commit}}").strip() if args.base else None,
                    "checker_commit": checker_commit,
                    "model_pins": models,
+                   "force_pushes": force_pushes,
                    "legacy_departures": found, "legacy_errors": errors.copy(),
                    "shared_pin_provenance": pin_report})
     for row in report["findings"]:
@@ -1200,6 +1224,7 @@ def cmd_check(args) -> int:
           f"{len(knowledge)} new knowledge or CRM table(s); "
           f"{len(keel)} Keel game boundary violation(s)")
     print(f"{len(models['findings'])} vendor model pin(s), {len(head_model_baseline)} recorded in {args.baseline}")
+    print(f"{len(force_pushes['findings'])} forced branch update(s), {len(head_force_baseline)} recorded in {args.baseline}")
     if errors:
         print(f"Move the change onto the default stack. A departure is recorded only through a "
               f"company decision, by the owner of {args.baseline}.")
@@ -1219,6 +1244,12 @@ def cmd_scan(args) -> int:
         print(model_pins.baseline_key(row))
     if models["unreadable"]:
         raise SystemExit("source unreadable; model baseline scan incomplete")
+    force_pushes = no_force_push.scan(tree)
+    print(no_force_push.BASELINE_MARKER)
+    for row in force_pushes["findings"]:
+        print(no_force_push.baseline_key(row))
+    if force_pushes["unreadable"]:
+        raise SystemExit("source unreadable; branch-update baseline scan incomplete")
     today = datetime.datetime.now(datetime.timezone.utc).date()
     report = architecture.evaluate(tree, getattr(args, "repository", ""), None, today)
     print(architecture.BASELINE_MARKER)

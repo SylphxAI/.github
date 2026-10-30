@@ -85,11 +85,11 @@ git_c() {
       "$@"
 }
 
-# push_branch <branch> [extra push args...]: push HEAD to the branch.
+# push_branch <branch>: push HEAD normally to a fresh branch.
 push_branch() {
   local branch="$1"
-  shift
-  git_c push "$@" origin "HEAD:refs/heads/$branch"
+  [ "$#" -eq 1 ] || return 2
+  git_c push origin "HEAD:refs/heads/$branch"
 }
 
 # bot_identity: the App's own git identity, from the step environment.

@@ -156,10 +156,10 @@ class DispatchRefLagTest(unittest.TestCase):
         self.assertIn("no run id", err)
 
 
-def run_candidate_loop(post: str, patch: str, token_mode: str) -> tuple[int, str, list[str]]:
-    """Run the trace step's candidate loop with stub `gh` answers for the ref POST and PATCH.
+def run_candidate_loop(post: str, token_mode: str, attempt: int = 2) -> tuple[int, str, list[str]]:
+    """Run the trace step's candidate loop with a stub answer for ref creation.
 
-    Returns (exit code, summary text, calls made: `gh POST`, `gh PATCH`, `dispatch <ref>`).
+    Returns (exit code, summary text, calls made: `gh POST`, `dispatch <ref>`).
     """
     trace = step("Trace the culprit among the unverified commits")
     start = trace.index("          # Every candidate at once")
@@ -171,16 +171,17 @@ calls="{tmp}/calls"; : >"$calls"
 answer() {{ case "$1" in ok) return 0 ;; *) printf '%s\\n' "$1" >&2; return 1 ;; esac; }}
 gh() {{
   echo "gh $3" >>"$calls"
-  case "$3" in POST) answer "$POST_ANSWER" ;; PATCH) answer "$PATCH_ANSWER" ;; esac
+  case "$3" in POST) answer "$POST_ANSWER" ;; *) return 99 ;; esac
 }}
 dispatch() {{ echo "dispatch $1" >>"$calls"; echo 7; }}
 say() {{ printf '%s\\n' "$*" >>"{tmp}/summary.md"; }}
 state_set() {{ :; }}
 REPO=o/r WORK_DIR={tmp} STATE_DIR={tmp} GITHUB_OUTPUT={tmp}/out total=1
+GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT={attempt}
 rows=$(printf 'abc123def\\tsubject\\n')
 """
         script = "set -euo pipefail\n" + stub + body + "\necho reached-poll\n"
-        env = {**os.environ, "POST_ANSWER": post, "PATCH_ANSWER": patch, "TOKEN_MODE": token_mode}
+        env = {**os.environ, "POST_ANSWER": post, "TOKEN_MODE": token_mode}
         done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
         summary = Path(tmp, "summary.md").read_text() if Path(tmp, "summary.md").exists() else ""
         calls = Path(tmp, "calls").read_text().split("\n")
@@ -197,31 +198,71 @@ class RefCreateTest(unittest.TestCase):
             self.assertIn(f"permission-{surface}: write", mint)
 
     def test_a_created_ref_is_dispatched(self) -> None:
-        code, out, calls = run_candidate_loop("ok", "ok", "no")
+        code, out, calls = run_candidate_loop("ok", "no")
         self.assertEqual(code, 0)
-        self.assertEqual(calls, ["gh POST", "dispatch refs/heads/sylphx-verify/abc123def"])
+        self.assertEqual(calls, ["gh POST", "dispatch refs/heads/sylphx-verify/abc123def-123-2"])
         self.assertIn("reached-poll", out)
 
-    def test_a_stale_ref_is_moved_then_dispatched(self) -> None:
-        code, _out, calls = run_candidate_loop("gh: Reference already exists (HTTP 422)", "ok", "no")
+    def test_new_attempt_uses_a_different_ref(self) -> None:
+        code, _out, calls = run_candidate_loop("ok", "no", attempt=3)
         self.assertEqual(code, 0)
-        self.assertEqual(calls, ["gh POST", "gh PATCH", "dispatch refs/heads/sylphx-verify/abc123def"])
+        self.assertEqual(calls, ["gh POST", "dispatch refs/heads/sylphx-verify/abc123def-123-3"])
+
+    def test_existing_ref_is_preserved_and_not_dispatched(self) -> None:
+        code, out, calls = run_candidate_loop("gh: Reference already exists (HTTP 422)", "no")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["gh POST"])
+        self.assertIn("could not be created", out)
+        self.assertIn("HTTP 422", out)
+        self.assertNotIn("reached-poll", out)
 
     def test_a_refused_create_on_the_app_path_stops_with_its_error(self) -> None:
-        code, out, calls = run_candidate_loop(REFUSED, "gh: Reference does not exist (HTTP 422)", "no")
+        code, out, calls = run_candidate_loop(REFUSED, "no")
         self.assertEqual(code, 0)
-        self.assertEqual(calls, ["gh POST", "gh PATCH"])
+        self.assertEqual(calls, ["gh POST"])
         self.assertIn("could not be created", out)
         self.assertIn("HTTP 403", out)
-        self.assertIn("Reference does not exist", out)
         self.assertNotIn("reached-poll", out)
 
     def test_a_refused_create_in_token_mode_skips_the_trace(self) -> None:
-        code, out, calls = run_candidate_loop(REFUSED, REFUSED, "yes")
+        code, out, calls = run_candidate_loop(REFUSED, "yes")
         self.assertEqual(code, 0)
-        self.assertEqual(calls, ["gh POST", "gh PATCH"])
+        self.assertEqual(calls, ["gh POST"])
         self.assertIn("Trace skipped", out)
         self.assertNotIn("reached-poll", out)
+
+
+class RevertPushTests(unittest.TestCase):
+    def test_rejected_push_stops_without_rewriting_or_opening_a_pr(self):
+        revert = step("Revert the culprit or report it")
+        start = revert.index("          # A new run attempt")
+        end = revert.index('          original=""', start)
+        body = "\n".join(line[10:] for line in revert[start:end].splitlines())
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = f"""
+WORK_DIR={tmp} branch=auto-revert/example-123-2
+push_branch() {{ echo "push $1" >>"$WORK_DIR/calls"; echo 'non-fast-forward' >&2; return 1; }}
+git_c() {{ echo "git $*" >>"$WORK_DIR/calls"; }}
+write_refused() {{ return 1; }}
+say() {{ echo "$*"; }}
+"""
+            done = subprocess.run(["bash", "-c", "set -euo pipefail\n" + stub + body],
+                                  capture_output=True, text=True)
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(Path(tmp, "calls").read_text().splitlines(), ["push auto-revert/example-123-2"])
+            self.assertIn("no pull request", done.stdout)
+
+    def test_branch_helper_accepts_only_a_normal_push(self):
+        library = embedded("LIB")
+        start = library.index("push_branch() {")
+        body = library[start:library.index("\n}", start) + 2]
+        done = subprocess.run(["bash", "-c", "set -eu\n" + body + """
+git_c() { printf '%s\n' "$*"; }
+push_branch fresh-123-2
+if push_branch fresh-123-2 --force; then exit 99; fi
+"""], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.stdout.splitlines(), ["push origin HEAD:refs/heads/fresh-123-2"])
 
 
 def run_poll(answers: dict[str, list[str]], timeout_minutes: int = 60, max_polls: int = 50) -> tuple[int, str, dict[str, str]]:

@@ -34,6 +34,9 @@ description: >
   Public source proof is acquired live with the job token and fails closed;
   the source exempts its comment and resolves @main to the captured anchor,
   still requiring valid ancestry and targets.
+  Repository automation also refuses forced branch updates, including force
+  options, + refspecs, mirror pushes and forced GitHub branch-ref PATCH calls.
+  Exact inherited occurrences use an independently shrinking force-push baseline.
   See docs/stack-conformance.md.
   The same action reports C1–C7 structural regressions with exact commit,
   file, line and contract, keeping inherited findings and recorded decisions
