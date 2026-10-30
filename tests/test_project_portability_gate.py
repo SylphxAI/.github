@@ -59,10 +59,11 @@ class ProjectPortabilityGateTests(unittest.TestCase):
     def test_capability_profile_binds_the_executable_module(self):
         self.assertIn(RULE, sc.adoption.current_rules())
         action = pathlib.Path(sc.__file__).parent
-        files = {sc.adoption.PREFIX + p.name: p.read_text() for p in action.glob('*.py')}
+        files = {sc.adoption.PREFIX + p.name: p.read_text() for p in action.iterdir() if p.suffix in {'.py', '.json'}}
         files[sc.adoption.PREFIX + 'action.yml'] = (action / 'action.yml').read_text()
         files['policy/deal-randomness-scope.json'] = (ROOT / 'policy/deal-randomness-scope.json').read_text()
         profile = sc.adoption.source_profile(sc.DictTree(files))
+        self.assertEqual(sc.adoption.load_registry()['profiles'][sc.adoption.profile_id(profile)], profile)
         self.assertIn(RULE, profile['rules'])
         self.assertIn(sc.adoption.PREFIX + 'project_portability.py', profile['sources'])
         del files[sc.adoption.PREFIX + 'project_portability.py']
