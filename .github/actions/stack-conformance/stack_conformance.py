@@ -987,10 +987,12 @@ def cmd_check(args) -> int:
     try:
         base_report = architecture.evaluate(Tree(args.repo, args.base), args.repository, None, today) if args.base else {"findings": [], "unreadable": []}
         base_findings = base_report["findings"]
-        report["unreadable"] += base_report["unreadable"]
+        if introduced:
+            report["unreadable"] += base_report["unreadable"]
     except (ValueError, TypeError, AttributeError) as error:
         base_findings = []
-        report["unreadable"].append({"path": "base architecture configuration", "reason": str(error)})
+        if introduced:
+            report["unreadable"].append({"path": "base architecture configuration", "reason": str(error)})
     previous = {architecture.baseline_key(row): row for row in base_findings}
     for row in report["findings"]:
         old = previous.get(architecture.baseline_key(row))
