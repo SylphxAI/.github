@@ -422,6 +422,35 @@ class DistributionTests(unittest.TestCase):
 class StandardFitRegressionTests(unittest.TestCase):
     evaluate = StructuralBoundaryTests.evaluate
 
+    def test_negative_fixture_declarations_are_excluded_but_real_invalid_configs_fail(self):
+        invalid = {'sylphx.toml': 'this is = = not toml\n', 'env.schema.json': '{invalid\n'}
+        for name, source in invalid.items():
+            with self.subTest(name=name):
+                fixture = 'tools/launch-gates/fixtures/b-invalid/' + name
+                report = self.evaluate({fixture: source})
+                self.assertEqual(report['unreadable'], [])
+                self.assertEqual(report['findings'], [])
+                self.assertIn(fixture, [row['path'] for row in report['excluded_paths']])
+                with self.assertRaisesRegex(ValueError, 'invalid environment declaration'):
+                    self.evaluate({'config/' + name: source})
+
+    def test_fixture_environment_keys_cannot_authorize_production_reads(self):
+        fixtures = {
+            'tools/fixtures/valid/sylphx.toml': '[env]\nFIXTURE_SETTING = "example"\n',
+            'tests/env.schema.json': '{"properties":{"FIXTURE_SETTING":{"type":"string"}}}\n',
+            'tools/__fixtures__/.env.example': 'FIXTURE_SETTING=\n',
+            '.github/actions/test/fixture.yml': 'env:\n  FIXTURE_SETTING: example\n',
+        }
+        source = 'import os\nvalue = os.getenv("FIXTURE_SETTING")\n'
+        for path, declaration in fixtures.items():
+            with self.subTest(path=path):
+                report = self.evaluate({path: declaration, 'src/settings.py': source})
+                self.assertEqual([row['rule'] for row in report['findings']], ['undeclared-setting'])
+                real = 'config/' + pathlib.PurePosixPath(path).name
+                if path.endswith('.yml'):
+                    real = '.github/workflows/ci.yml'
+                self.assertEqual(self.evaluate({real: declaration, 'src/settings.py': source})['findings'], [])
+
     def test_sylphx_environment_tables_and_inline_tables_declare_names(self):
         toml = '[env.CUBEAGE_ADMIN_CONNECT_URL]\nvalue = "https://example.invalid"\n[env]\nSECOND_SETTING = { value = "x" }\n'
         source = 'import os\na = os.getenv("CUBEAGE_ADMIN_CONNECT_URL")\nb = os.environ.get("SECOND_SETTING")\n'

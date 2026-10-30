@@ -224,6 +224,19 @@ class AdoptionTests(unittest.TestCase):
             self.assertTrue(a.main_marker_errors(tree, "private/app"))
             self.assertEqual(a.main_marker_errors(tree, "SylphxAI/.github"), [])
 
+    def test_adoption_ignores_negative_fixture_config_but_refuses_real_invalid_config(self):
+        f = self.fixture()
+        base = f.commit({WORKFLOW: workflow(), SOURCE: POLL,
+                         'tools/launch-gates/fixtures/b-invalid/sylphx.toml': 'this is = = not toml\n'})
+        result = f.plan(base)
+        f.commit({sc.BASELINE: result['baseline_text']})
+        f.check(base, 0)
+        f.commit({'sylphx.toml': 'this is = = not toml\n'})
+        with self.assertRaisesRegex(ValueError, 'invalid environment declaration'):
+            f.plan(f.git('rev-parse', 'HEAD'))
+        output, _ = f.check(base, 1)
+        self.assertIn('invalid environment declaration: sylphx.toml', output)
+
 
 if __name__ == "__main__":
     unittest.main()
