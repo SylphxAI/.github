@@ -36,7 +36,7 @@ class FakeReceipts:
         if label == "GitHub Actions OIDC":
             return {"value": "test-oidc"}
         if url.endswith("/access/github/token"):
-            return {"api_key": "test-access", "key": {"name": "orgs/org_test/api_keys/key1", "status": {"principal": "prn_test"}},
+            return {"api_key": "test-access", "key": {"name": "orgs/org_test/api_keys/key1", "status": {"principal": "orgs/org_test/principals/prn_test"}},
                     "active_after_ms": 3000, **self.overrides.get("access", {})}
         if expected == 403:
             return {"code": "PERMISSION_DENIED"}
@@ -72,7 +72,7 @@ class SourceReadProbeTests(unittest.TestCase):
     def test_bootstrap_returns_only_stable_principal_without_broker_or_fetch(self):
         receipts = FakeReceipts()
         output, sleep, fetch = self.run_probe(receipts, "bootstrap")
-        self.assertEqual(receipts.data["principal"], "prn_test")
+        self.assertEqual(receipts.data["principal"], "orgs/org_test/principals/prn_test")
         self.assertEqual(len(receipts.calls), 2)
         self.assertIn("audience=sylphx-access", receipts.calls[0][0])
         self.assertNotIn("audience=old", receipts.calls[0][0])
@@ -96,7 +96,10 @@ class SourceReadProbeTests(unittest.TestCase):
         self.assertNotIn("test-provider", "\n".join(line for line in output.splitlines() if not line.startswith("::add-mask::")))
 
     def test_missing_principal_propagation_write_refusal_or_exact_commit_fails(self):
-        for overrides in ({"access": {"key": {}}}, {"access": {"active_after_ms": -1}},
+        for overrides in ({"access": {"key": {}}},
+                          {"access": {"key": {"name": "orgs/org_test/api_keys/key1", "status": {"principal": "prn_test"}}}},
+                          {"access": {"key": {"name": "orgs/org_test/api_keys/key1", "status": {"principal": "orgs/other/principals/prn_test"}}}},
+                          {"access": {"active_after_ms": -1}},
                           {"negative": {"code": "WRONG"}}, {"negative": {"token": "unexpected"}},
                           {"broker": {"repositories": ["other/repo"]}},
                           {"broker": {"permissions": {"contents": "write"}}},

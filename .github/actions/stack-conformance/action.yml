@@ -29,6 +29,11 @@ description: >
   Vendor model version literals in product source must use the runtime
   default or a Sylphx AI <provider>/<line>-latest alias. Existing literals
   use a separate shrinking model-pin category in the repository baseline.
+  Shared SylphxAI/.github references require a full SHA and external # main
+  comment, main ancestry, and an action metadata or workflow file at that SHA.
+  Public source proof is acquired live with the job token and fails closed;
+  the source exempts its comment and resolves @main to the captured anchor,
+  still requiring valid ancestry and targets.
   See docs/stack-conformance.md.
   The same action reports C1–C7 structural regressions with exact commit,
   file, line and contract, keeping inherited findings and recorded decisions
@@ -48,7 +53,7 @@ inputs:
     description: Optional offline catalog alias declaration to tighten the naming contract. Path in the checked checkout; empty permits <provider>/<line>-latest.
     default: ""
   token:
-    description: Token that reads the repository's custom properties (the delivered-customer exclusion).
+    description: Token that reads caller custom properties and public shared-source provenance.
     default: ${{ github.token }}
 
 outputs:
@@ -70,6 +75,7 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         STACK_CONFORMANCE_CHECKER_COMMIT: ${{ github.action_ref || github.sha }}
       run: |
+        : "${GH_TOKEN:?read-only GitHub token is unavailable; shared pin provenance cannot run}"
         # Delivered customer repositories are hands-off; an unreadable property
         # leaves the check on.
         delivery="$(gh api "repos/$GITHUB_REPOSITORY/properties/values" \
