@@ -31,7 +31,10 @@ issued key. Bootstrap-only mode still reports the principal without waiting or
 requesting any Broker token. Read mode then verifies that requesting
 `contents: write` is refused with `400 INVALID_FIELD`, then requests only
 `contents: read` for one repository. It checks the exact commit through GitHub's
-API and `git init` + `fetch --depth=1` + `rev-parse FETCH_HEAD`. Git has no saved
+API and `git init` + `fetch --depth=1 --filter=blob:none` + `rev-parse FETCH_HEAD`.
+The commit/tree fetch verifies Git read authority without downloading every file
+blob in a large source repository. The receipt records the requested filter;
+this is not a file-content checkout or native-build receipt. Git has no saved
 remote, token URL, credential file, checkout, inherited tracing or global
 credential helper. Its temporary object directory is removed on exit.
 
