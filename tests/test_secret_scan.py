@@ -145,6 +145,36 @@ class SecretScanTest(unittest.TestCase):
         self.assertIn(head, output)
         self.assertIn(self.base + '..' + head, output)
 
+    def test_merge_group_single_parent_squash_preserves_reviewed_pr_allowlist(self):
+        self.git('checkout', '-qb', 'pr-branch')
+        leaked = self.add_token()
+        digest = hashlib.sha256(self.line.encode()).hexdigest()
+        self.write('.desk-secret-allowlist.json', json.dumps({'version': 1, 'findings': [{
+            'commit': leaked, 'path': 'settings.txt', 'line': 1,
+            'sha256': digest,
+            'reason': 'Reviewed synthetic fixture before squash.'}]}))
+        self.commit('record reviewed fixture')
+        self.write('settings.txt', 'header 1\nheader 2\nheader 3\n' + self.line + '\n')
+        self.commit('shift fixture line later in PR')
+        self.assertEqual(self.scan(event='pull_request')[0], 0)
+
+        self.git('checkout', '-q', 'main')
+        self.git('merge', '--squash', '-q', 'pr-branch')
+        squash_head = self.commit('squash merge group candidate')
+        code, output = self.scan(base=self.base, head=squash_head, event='merge_group', fetch=True)
+        self.assertEqual(code, 0, output)
+        self.assertIn('reviewed findings allowed=1', output)
+
+        # A second unreviewed copy of the same line in the squashed commit still fails.
+        self.git('reset', '--hard', '-q', self.base)
+        self.write('.desk-secret-allowlist.json', json.dumps({'version': 1, 'findings': [{
+            'commit': leaked, 'path': 'settings.txt', 'line': 1,
+            'sha256': digest,
+            'reason': 'Reviewed synthetic fixture before squash.'}]}))
+        self.write('settings.txt', self.line + '\n' + self.line + '\n')
+        duplicate_squash = self.commit('squash with unreviewed duplicate line')
+        self.assertEqual(self.scan(base=self.base, head=duplicate_squash, event='merge_group')[0], 1)
+
     def test_missing_merge_group_range_fails_closed(self):
         code, _ = self.scan(base='0' * 40, event='merge_group')
         self.assertEqual(code, 1)
