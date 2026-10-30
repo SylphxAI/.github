@@ -13,6 +13,14 @@ name suffix. The approved pairs were read from actual Renovate, application,
 and GitHub merge commits. This checks declared identity; it does not verify a
 signature or establish who operated an account.
 
+GitHub can use Kyle's account email (`shtse8@gmail.com`) when it creates a merge
+queue squash commit. The configured `merge_queue_identities` pairs permit that
+author only with `GitHub <noreply@github.com>` as committer and only for synthetic
+commits resolved through the queue or their merged introducing PR. Original PR
+commits are always checked against the ordinary identities; Kyle's pushed
+commits continue to use `Kyle Tse <hi@kylet.se>`. The exception does not waive
+commit-message or PR-text checks.
+
 The check rejects attribution trailers, tool coauthors, and the configured
 coordination identifiers in commit messages and PR titles and bodies. Ordinary
 discussion of a product, model, generator, or command is allowed. Findings name

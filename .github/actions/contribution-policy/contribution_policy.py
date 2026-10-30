@@ -22,10 +22,12 @@ class PolicyError(Exception):
     pass
 
 
-def evaluate(pull_request, commits, policy):
+def evaluate(pull_request, commits, policy, *, merge_queue_commits=()):
     """Return value-free findings for REST-shaped metadata; never mutate input."""
     identities = {role: {(item['name'], item['email']) for item in policy['identities'] if role in item['roles']}
                   for role in ('author', 'committer')}
+    queue_identities = {tuple((item[role]['name'], item[role]['email']) for role in ('author', 'committer'))
+                        for item in policy['merge_queue_identities']}
     names = '|'.join(re.escape(name) for name in policy['attribution_names'])
     harness_names = names + '|' + '|'.join(re.escape(name) for name in policy['harness_names'])
     attributed = re.compile(r'(?<![A-Za-z0-9])(?:' + names + r')(?![A-Za-z0-9])', re.I)
@@ -79,6 +81,10 @@ def evaluate(pull_request, commits, policy):
         for role in ('author', 'committer'):
             identity = commit.get(role) or {}
             if (identity.get('name'), identity.get('email')) not in identities[role]:
+                pair = tuple(((commit.get(key) or {}).get('name'), (commit.get(key) or {}).get('email'))
+                             for key in ('author', 'committer'))
+                if role == 'author' and sha in merge_queue_commits and pair in queue_identities:
+                    continue
                 findings.append({'rule': 'unapproved-' + role, 'location': sha, 'line': 0})
         text(commit.get('message'), sha)
     return findings
@@ -236,8 +242,8 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
     if event_name == 'merge_group':
         group = event['merge_group']
         commits = range_commits(group['base_sha'], group['head_sha'], api.repository, api.token)
-        findings = evaluate(None, commits, policy)
-        pulls, covered = {}, set()
+        findings = []
+        pulls, covered, synthetic_shas = {}, set(), set()
         group_shas = {commit['sha'] for commit in commits}
         branch = group['base_ref'].removeprefix('refs/heads/')
         for entry in api.queue_entries(branch):
@@ -246,6 +252,7 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
                 pr = entry['pullRequest']
                 pulls[pr['number']] = pr['headRefOid']
                 covered.add(synthetic)
+                synthetic_shas.add(synthetic)
         for number, expected_head in pulls.items():
             pr, original = snapshot(number, expected_head)
             covered.update(commit['sha'] for commit in original)
@@ -259,10 +266,12 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
                         pr.get('merge_commit_sha') == commit['sha']:
                     current, original = snapshot(pr['number'], pr['head']['sha'])
                     covered.add(commit['sha'])
+                    synthetic_shas.add(commit['sha'])
                     covered.update(item['sha'] for item in original)
                     findings.extend(evaluate(current, original, policy))
         if group_shas - covered:
             raise PolicyError('merge group membership is incomplete')
+        findings.extend(evaluate(None, commits, policy, merge_queue_commits=synthetic_shas))
         return findings
     if event_name == 'workflow_dispatch':
         inputs = event.get('inputs') or {}

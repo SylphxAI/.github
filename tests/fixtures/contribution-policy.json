@@ -45,6 +45,7 @@
   {"name":"private tool interface","body":"mcp__anyagents__send","rule":"private-interface"},
   {"name":"foreign author","author":{"name":"Example","email":"example@example.com"},"rule":"unapproved-author"},
   {"name":"wrong human email","author":{"name":"Kyle Tse","email":"other@example.com"},"rule":"unapproved-author"},
+  {"name":"account email outside queue","author":{"name":"Kyle Tse","email":"shtse8@gmail.com"},"committer":{"name":"GitHub","email":"noreply@github.com"},"rule":"unapproved-author"},
   {"name":"wrong human name","author":{"name":"Example","email":"hi@kylet.se"},"rule":"unapproved-author"},
   {"name":"foreign committer","committer":{"name":"Example","email":"example@example.com"},"rule":"unapproved-committer"},
   {"name":"unknown bot","author":{"name":"example[bot]","email":"example@users.noreply.github.com"},"rule":"unapproved-author"},
