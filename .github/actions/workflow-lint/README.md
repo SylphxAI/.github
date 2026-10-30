@@ -4,6 +4,15 @@ The action runs checksum-pinned actionlint 1.7.12, the pre-merge performance
 rule, and a workflow contract check. Actionlint resolves `needs` and `steps`
 references and rejects malformed workflows; contract mode never disables it.
 
+The performance rule permits `lhci collect`, which records reports without
+asserting budgets. Before merge, `lhci assert --config=path.json` is allowed
+only when the repository-local JSON declares score thresholds exclusively for
+accessibility, best-practices and SEO. JavaScript configs, timing categories,
+metrics, presets, budget files and extra CLI overrides remain refused. An
+explicit step condition excluding `pull_request`, `pull_request_target` and
+`merge_group` with `&&` permits that step's post-merge Lighthouse assertion;
+it exempts neither its job nor another step. Dependency audit policy is unchanged.
+
 ```yaml
 - uses: SylphxAI/.github/.github/actions/workflow-lint@<commit>
   with:

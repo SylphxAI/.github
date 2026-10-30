@@ -59,6 +59,62 @@ class TriggerTest(unittest.TestCase):
 
 
 class ScanTest(unittest.TestCase):
+    def test_collection_install_paths_and_report_references_are_not_timing_gates(self):
+        for run in ("timeout 600 bun x lhci collect --config=lighthouserc.js",
+                    "bun install --frozen-lockfile",
+                    "test -f node_modules/@lhci/cli/src/cli.js",
+                    "bun scripts/ci-quality-lhci-summary.ts",
+                    'printf "%s" "lhci:${{ steps.lhci.outcome }}"'):
+            with self.subTest(run=run):
+                text = f'on: workflow_call\njobs:\n  quality:\n    steps:\n      - run: {run}\n'
+                self.assertEqual(problems(text), [])
+        self.assertTrue(problems(LIGHTHOUSE_PR.replace('npx lhci autorun', 'bun x lhci collect && npx lhci autorun')))
+
+    def test_static_json_categories_pass_but_timing_or_unknown_configs_refuse(self):
+        config = {"ci": {"assert": {"assertMatrix": [{"matchingUrlPattern": "^https?://[^/]+/$", "assertions": {
+            "categories:accessibility": ["error", {"minScore": 0.9}],
+            "categories:best-practices": ["error", {"minScore": 0.8}],
+            "categories:seo": ["error", {"minScore": 0.8}],
+        }}]}}}
+        text = ('on: workflow_call\njobs:\n  quality:\n    steps:\n'
+                '      - run: bun x lhci assert --config=quality.json\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = repo(tmp, {"verify.yml": text})
+            path = root / 'quality.json'
+            path.write_text(json.dumps(config))
+            self.assertEqual(perf_gate.scan_dir(root), [])
+            for command in ('bun x lhci assert --config=quality.json --preset=lighthouse:recommended',
+                            'bun x lhci assert --config=${{ inputs.config }}',
+                            'bun x lhci assert --config=missing.json'):
+                self.assertTrue(perf_gate.scan_workflow('w.yml', text.replace(
+                    'bun x lhci assert --config=quality.json', command),
+                    lambda p: (root / p).read_text()))
+            categories = config['ci']['assert']['assertMatrix'][0]['assertions']
+            categories['categories:performance'] = ['error', {'minScore': 0.6}]
+            path.write_text(json.dumps(config))
+            self.assertEqual(len(perf_gate.scan_dir(root)), 1)
+            del categories['categories:performance']
+            for extra in ({'preset': 'lighthouse:recommended'}, {'budgetsFile': 'budget.json'},
+                          {'assertions': {'largest-contentful-paint': ['error', {'maxNumericValue': 2500}]}},
+                          {'assertions': {'categories:accessibility': [{}, {'minScore': 0.9}]}}):
+                candidate = json.loads(json.dumps(config))
+                candidate['ci']['assert'].update(extra)
+                path.write_text(json.dumps(candidate))
+                self.assertEqual(len(perf_gate.scan_dir(root)), 1, extra)
+            path.write_text('{bad json')
+            self.assertEqual(len(perf_gate.scan_dir(root)), 1)
+
+    def test_only_explicit_postmerge_step_skips_the_budget_rule(self):
+        safe = ("github.event_name != 'pull_request' && "
+                "github.event_name != 'pull_request_target' && github.event_name != 'merge_group'")
+        text = ('on: workflow_call\njobs:\n  quality:\n    steps:\n'
+                f'      - if: {safe}\n        run: bun x lhci assert --config=timing.json\n'
+                '      - run: bun x lhci collect --config=lighthouserc.js\n')
+        self.assertEqual(problems(text), [])
+        self.assertEqual(len(problems(text + '      - run: npx lhci autorun\n')), 1)
+        for condition in ("github.event_name != 'pull_request'", safe + ' || true'):
+            self.assertEqual(len(problems(text.replace(safe, condition))), 1)
+
     def test_lighthouse_in_a_pull_request_workflow_fails(self) -> None:
         self.assertEqual(problems(LIGHTHOUSE_PR),
                          [(12, "job web", "runs a Lighthouse budget in a pull_request workflow")])
