@@ -101,4 +101,17 @@ cache is keyed by `Packages/manifest.json`, `packages-lock.json` and
 ## Third-party actions
 
 Pin by full commit SHA with the version in a trailing comment. Callers pin this
-repository's workflows and actions by commit too.
+repository's workflows and actions by full commit SHA followed by `# main`:
+
+```yaml
+- uses: SylphxAI/.github/.github/actions/stack-conformance@FULL_40_CHARACTER_SHA # main
+```
+
+The existing Renovate grouped auto-merge configuration follows shared `main`
+and keeps these pins current. Stack conformance rejects missing `# main`
+comments offline, including in private callers. The shared source repository
+is exempt from this check to avoid updating its own pins on every commit.
+When a shared release introduces rules, update caller pins and adopt only
+base-existing findings for those new rules in the same pull request. Use the
+[offline adoption helper](stack-conformance.md#adopting-new-rules-with-a-pin-bump);
+existing rule ratchets may only shrink. There is no separate pin updater.
