@@ -2,6 +2,7 @@
 """Read readiness of one already-issued Access key; never mint or retry writes."""
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -10,6 +11,22 @@ from urllib.parse import urlsplit
 
 class ReadinessError(Exception):
     pass
+
+
+def issued_subject(issued):
+    """A key's scope parent may be an environment; its principal is org-scoped."""
+    key = issued.get("key", {})
+    if not isinstance(key, dict) or not isinstance(key.get("status"), dict):
+        raise ReadinessError("issued Access key lacks its stable subject")
+    name = key.get("name")
+    match = re.fullmatch(
+        r"(orgs/[A-Za-z0-9_-]+)(?:/projects/[A-Za-z0-9_-]+(?:/envs/[A-Za-z0-9_-]+)?)?/api_keys/[A-Za-z0-9_-]+",
+        name if isinstance(name, str) else "")
+    principal = key["status"].get("principal")
+    if (not match or not isinstance(principal, str)
+            or not re.fullmatch(re.escape(match[1]) + r"/principals/prn_[A-Za-z0-9]+", principal)):
+        raise ReadinessError("issued Access key has an invalid or foreign stable subject")
+    return match[1], principal
 
 
 def wait_for_identity(read, token, active_after_ms, api_url):
@@ -66,12 +83,9 @@ def main():
     token = issued.get("api_key")
     if not isinstance(token, str) or not token or any(c in token for c in "\r\n"):
         raise ReadinessError("issued Access key is absent or malformed")
+    org, principal = issued_subject(issued)
     identity = wait_for_identity(read_identity, token, issued.get("active_after_ms"), args.api_url)
-    key = issued.get("key", {})
-    name = key.get("name", "")
-    org = name.split("/api_keys/", 1)[0]
-    principal = key.get("status", {}).get("principal", "")
-    if (not org.startswith("orgs/") or identity.get("org") != org
+    if (identity.get("org") != org
             or principal != org + "/principals/" + identity.get("principal", "")):
         raise ReadinessError("ready identity differs from the issued key")
     print(json.dumps({"ready": True, "principal": identity.get("principal"), "org": identity.get("org")}))

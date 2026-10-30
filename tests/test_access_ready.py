@@ -15,6 +15,29 @@ API = "https://api.example"
 
 
 class AccessReadyTests(unittest.TestCase):
+    def test_issued_subject_accepts_org_project_and_environment_key_parents(self):
+        for parent in ("orgs/org_test", "orgs/org_test/projects/prj_test",
+                       "orgs/org_test/projects/prj_test/envs/env_test"):
+            with self.subTest(parent=parent):
+                issued = {"key": {"name": parent + "/api_keys/key_test",
+                                  "status": {"principal": "orgs/org_test/principals/prn_test"}}}
+                self.assertEqual(ready.issued_subject(issued), ("orgs/org_test", "orgs/org_test/principals/prn_test"))
+
+    def test_issued_subject_refuses_malformed_or_foreign_names_before_identity_read(self):
+        for name, principal in (("orgs/org_test/projects/prj_test/envs/env_test/api_keys/key_test", "orgs/other/principals/prn_test"),
+                                ("orgs/org_test/projects/prj_test/envs/env_test/api_keys/key_test", "prn_test"),
+                                ("orgs/org_test/extra/api_keys/key_test", "orgs/org_test/principals/prn_test"),
+                                ("orgs/org_test/projects/prj_test/envs/env_test/api_keys/key_test/trailing", "orgs/org_test/principals/prn_test"),
+                                ("orgs/org_test/projects/prj_test/envs/env_test", "orgs/org_test/principals/prn_test"),
+                                ("orgs/org_test/api_keys/key_test", None)):
+            issued = {"api_key": "same-issued-key", "active_after_ms": 0,
+                      "key": {"name": name, "status": {"principal": principal}}}
+            with self.subTest(name=name, principal=principal), patch("sys.argv", ["access_ready.py", "--api-url", API]), \
+                    patch("sys.stdin", io.StringIO(json.dumps(issued))), patch.object(ready, "wait_for_identity") as read:
+                with self.assertRaises(ready.ReadinessError):
+                    ready.main()
+                read.assert_not_called()
+
     def test_advertised_delay_then_same_key_propagation_reads_with_walltime_bound(self):
         now = [0.0]
         def sleep(seconds):
@@ -66,7 +89,7 @@ class AccessReadyTests(unittest.TestCase):
 
     def test_cli_wrapper_checks_issued_subject_and_never_outputs_the_key(self):
         issued = {"api_key":"same-issued-key","active_after_ms":0,
-                  "key":{"name":"orgs/org_test/api_keys/test", "status":{"principal":"orgs/org_test/principals/prn_test"}}}
+                  "key":{"name":"orgs/org_test/projects/prj_test/envs/env_test/api_keys/test", "status":{"principal":"orgs/org_test/principals/prn_test"}}}
         for identity, accepted in (({"org":"orgs/org_test","principal":"prn_test"},True),
                                    ({"org":"orgs/other","principal":"prn_test"},False),
                                    ({"org":"orgs/org_test","principal":"prn_other"},False)):

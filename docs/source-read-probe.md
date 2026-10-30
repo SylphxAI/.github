@@ -8,6 +8,10 @@ anything. Callers pin the action by its published commit SHA and grant
 1. Use `mode: bootstrap` once after the exact CI declaration is serving. Its
    receipt reports the stable `key.status.principal`; the policy owner can then
    add that principal to a read-only TrustPolicy. It returns no credential.
+   Keys can be scoped to an organization, project or environment; the stable
+   principal is always organization-scoped. The shared parser validates the full
+   key-name shape and compares only its owning organization with that principal,
+   never the key's project/environment scope parent.
 2. Use `mode: read` after the policy is ready, with at most four exact sources:
 
    ```yaml
