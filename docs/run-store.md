@@ -85,7 +85,15 @@ with `if: always()`, `required: "false"` and `continue-on-error: true`.
 
 The action's `get-junit.py <owner/repo> <run-id> <destination>` helper pages the
 authenticated run jobs API (`filter=latest`), validates the run identity and
-discovers exact keys from these step names, excluding skipped producers. It then
+discovers exact keys from these step names, excluding skipped producers. When
+GitHub omits a completed job's step metadata, it reads that exact authenticated
+job's log and accepts only a completed store receipt bound to the target
+repository/run/key, or the protected-entry-kept receipt. Commands, action titles
+and packed-byte messages do not prove publication. Every declared or attempted
+producer must have its completed receipt; a failed upload cannot disappear from
+the expected shard set. Reads use at most four
+concurrent requests, 16 MiB and 60 seconds per log. Unavailable, oversized or
+empty discovery fails explicitly; raw log contents are never echoed. It then
 uses the existing exact-name get contract, unpacking each entry into its own
 `<name>` directory. No static lane list or shard limit is assumed.
 The repository id comes from the target repository API, not the shared workflow
@@ -120,11 +128,18 @@ run URL and producer SHA for the consumer invocation evidence.
 To exercise a replacement PR head before merge, first let its normal Project
 control run finish publishing the fixtures. Dispatch the existing
 `project-control.yml` workflow at that PR branch with `junit-producer-run` set to
-that completed producer run ID. The dispatch calls the reusable consumer at the
+that completed producer run ID. Supply `code-pr`, `code-base-ref`, `code-base`,
+`code-head` and `code-merge` from that PR's fresh immutable snapshot as well, so
+the stack and metadata gates check its actual base/head range. A dispatch without
+that range scans all unbaselined historical findings and can fail unrelated to
+the consumer. The dispatch calls the reusable consumer at the
 selected branch, and `ci-ok` includes its verdict. The automatic completion
 consumer does not duplicate this dispatch. The pre-merge dispatch is necessary
 for a newly added workflow: completion triggers load the default-branch caller.
 These checks need no builder App secret or manually copied credential.
+Consumer qualification has a separate concurrency group so it cannot replace a
+pending native PR run. Its successful dispatch is consumer evidence; the native
+PR and merge-group checks still supply the required merge evidence.
 
 ## Behaviour
 

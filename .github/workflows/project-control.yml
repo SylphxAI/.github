@@ -28,7 +28,8 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
+  # A consumer qualification must not replace pending native PR validation.
+  group: ${{ github.workflow }}-${{ github.event.inputs.junit-producer-run && format('consumer-{0}', github.ref) || (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
   # Only a superseded pull_request run is cancelled; merge_group and main pushes finish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

@@ -329,9 +329,103 @@ def review_pins(files, repository="", shared_source=None, gh=None):
     if not any(find_pins(text or "") for text in files.values()):
         return {"head": None, "mode": "no shared pins", "offenders": []}
     head, date = source.main_head(SHARED_REPO)
-    return {"head": head, "mode": source.mode,
-            "offenders": judge(files, source, head, date, days=None,
-                               require_main_marker=repository.lower() != SHARED_REPO.lower())}
+    offenders = judge(files, source, head, date, days=None,
+                      require_main_marker=repository.lower() != SHARED_REPO.lower())
+    offenders.extend(metadata_permission_errors(files, source, head))
+    return {"head": head, "mode": source.mode, "offenders": offenders}
+
+
+def permission_level(lines, indent):
+    """Read a literal permission declaration; omitted scopes have no grant."""
+    lines = [re.sub(r"(?:^|\s+)#.*$", "", line) for line in lines]
+    for index, line in enumerate(lines):
+        match = re.fullmatch(r"\s*['\"]?permissions['\"]?\s*:\s*(.*?)\s*", line)
+        if not match or om._indent(line) != indent:
+            continue
+        value = match[1].strip().strip("'\"")
+        if value in ("read-all", "write-all"):
+            return 1 if value == "read-all" else 2
+        if not value:
+            for entry in om._sub_block(lines, index):
+                read = re.fullmatch(r"\s*['\"]?pull-requests['\"]?\s*:\s*['\"]?(read|write|none)['\"]?\s*", entry)
+                if read:
+                    return {"read": 1, "write": 2, "none": 0}[read[1]]
+            return 0
+        read = re.search(r"(?:^|,)\s*['\"]?pull-requests['\"]?\s*:\s*['\"]?(read|write|none)['\"]?\s*(?:,|$)",
+                         value[1:-1] if value.startswith('{') and value.endswith('}') else '')
+        return {"read": 1, "write": 2, "none": 0}[read[1]] if read else 0
+    return None
+
+
+def metadata_permission_errors(files, source, head_sha):
+    """Check effective metadata grants through existing local/shared source graphs.
+
+    These are admission errors, independent of every shrinking debt baseline.
+    """
+    errors, seen = [], set()
+
+    def resolve(value, origin):
+        shared = SHARED_USE.fullmatch(value)
+        if shared:
+            ref = shared['ref'] or ''
+            if not FULL_SHA.fullmatch(ref) and ref != 'main':
+                return None
+            commit, path = (head_sha if ref == 'main' else ref.lower()), (shared['path'] or '').lstrip('/')
+        elif value.startswith('$/') or value.startswith('./.github/workflows/'):
+            commit, path = origin, value[2:]
+        elif value.startswith('./'):
+            commit, path = None, value[2:]
+        else:
+            return None
+        if commit is None:
+            targets = target_paths(path).intersection(files)
+        else:
+            proof = source.evidence(commit, head_sha)
+            targets = target_paths(path).intersection(proof.get('files', ())) if proof.get('ancestor') else set()
+        if not targets:
+            return None  # Existing pin/source validation reports unavailable targets.
+        preferred = path + '/action.yml'
+        target = preferred if preferred in targets else sorted(targets)[0]
+        return commit, target, files[target] if commit is None else source.read_text(commit, target)
+
+    def follow(lines, origin, level, location, chain):
+        for line in lines:
+            match = USES.match(line)
+            if not match:
+                continue
+            resolved = resolve(match['value'].strip("'\""), origin)
+            if resolved:
+                walk(*resolved, level, location, chain)
+
+    def walk(origin, path, text, ceiling, location, chain):
+        key = origin, path, ceiling, location
+        if key in seen:
+            return
+        seen.add(key)
+        chain = chain + [f"{origin or 'caller'}:{path}"]
+        if '/workflows/' in path:
+            default = permission_level(text.splitlines(), 0)
+            for job, body in om.jobs(text).items():
+                indent = min((om._indent(line) for line in body if line.strip()), default=0)
+                grant = permission_level(body, indent)
+                grant = default if grant is None else grant
+                level = (grant or 0) if ceiling is None else ceiling if grant is None else min(ceiling, grant)
+                header = next((number for number, line in enumerate(text.splitlines(), 1)
+                               if re.fullmatch(r"\s*['\"]?" + re.escape(job) + r"['\"]?\s*:\s*", line)), 1)
+                caller = location or (path, header)
+                follow(body, origin, level, caller, chain + [job])
+        else:
+            if re.search(r'\bcontribution_policy\.py\b', text) and ceiling < 1:
+                name, line = location
+                errors.append({'file': name, 'line': line, 'path': path, 'sha': origin or head_sha,
+                               'why': 'caller workflow lacks pull-requests: read',
+                               'rule': 'contribution-permissions', 'dependency_chain': chain})
+            follow(text.splitlines(), origin, ceiling, location, chain)
+
+    for name, text in sorted(files.items()):
+        if name.startswith('.github/workflows/') and set(om.triggers(text)) != {'workflow_call'}:
+            walk(None, name, text, None, None, [])
+    return errors
 
 
 def read_dir(root: Path) -> dict[str, str]:
