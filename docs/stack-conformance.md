@@ -184,6 +184,53 @@ no such table.
 these tables. A delivered customer repository (`sylphx_delivery` = `delivered`)
 is not checked at all, as for the agent-runtime parts.
 
+## Cache reads in economy handlers
+
+The authority check (`C1/cache-economy`) flags a purchase, claim, grant, buy
+or redeem function that reads a cache. It also recognizes the Java recharge
+callback form. The contract is the [game economy
+rule](https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/games.md#hard-lines):
+display caches never decide grants, and settlement honors the saved paid order
+even when a display template expires.
+
+| Language | Recognized source forms |
+| --- | --- |
+| Java | Named methods such as `buyLimitedTimeDiscountGiftsReq` and `rechargeCallBackReq`; `*TemplateCache.getCache().getTemplate(...)`, cache receivers and variables whose declared type contains `Cache` |
+| TypeScript / JavaScript | Named functions, ordinary methods, assigned arrow functions and literal `post`/`put`/`patch` route callbacks; `offerCache.get(...)`, cache calls, cache fields and typed cache receivers |
+| Rust | Named `fn` / `async fn`, including generic handlers; `offer_cache.get(...)`, `Cache::get(...)`, cache fields and receivers declared with a cache type |
+
+Comments, strings, test bodies, invalidation-only calls, cache writes and
+`fetch({cache: 'no-store'})` are excluded. Recognition is structural: a function
+called `claim` may claim a cache lease rather than a reward. Such candidates
+need classification, not a claim that an exploit exists. Indirect helpers,
+renamed imports, computed routes and arbitrary data flow still need review.
+Java is supported by this cache rule; it does not gain the other C1–C7 rules.
+Legacy Java comment bytes are preserved when they are not UTF-8.
+
+An allowed display read carries a reason and a named test on the read's line:
+
+```text
+const label = offerCache.get(id); // cache-display-only: response label only; test=tests/shop.test.ts#stale_price_reloads_authority
+```
+
+The test reference is a repository-relative path and a named Java `@Test`,
+Rust `#[test]` / `#[tokio::test]`, or JS/TS `test` / `it` case with an executable
+assertion. Inline Rust tests can be referenced in their source file. Missing
+tests, comments posing as tests, empty reasons and deleted assertions do not
+authorize the read. A central architecture decision cannot replace this
+inline evidence. The test runner and review establish that the case changes
+the authoritative row behind a stale cache and proves the granting transaction
+re-reads it; the static check establishes the reference and assertion exist.
+Deleting that test invalidates the exception even if its handler is unchanged.
+
+Existing candidates use the same shrinking architecture baseline and offline
+adoption helper below, with rule marker
+`# stack-rule-adopted-v1 architecture/C1/cache-economy`. Seed only findings
+present at the caller's base while moving its shared-action SHA. Duplicating a
+read, including on the same line, creates another occurrence and fails; removing
+a read requires deleting its stale baseline record. No repository-wide cache
+allowance or separate baseline format is introduced.
+
 ## Keel game boundaries
 
 A Cargo workspace that depends on `keel`, a `keel-*` crate or `cubeage-kit`

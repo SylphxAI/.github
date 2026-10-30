@@ -153,7 +153,7 @@ class AdoptionTests(unittest.TestCase):
                          ".github/workflows/other.yml": workflow(),
                          "src/model.ts": 'call("gpt-5.1-2025-11-13");\n'})
         result = f.plan(base)
-        self.assertEqual(result["introduced_rules"], ["model-pin"])
+        self.assertEqual(result["introduced_rules"], ["architecture/C1/cache-economy", "model-pin"])
         self.assertTrue(all(row.startswith("model-pin ") for row in result["evidence"]["added_records"]))
         record = sc.architecture.baseline_key(sc.architecture.evaluate(sc.Tree(str(f.root), base), "example/app", None, TODAY)["findings"][0])
         f.commit({sc.BASELINE: result["baseline_text"] + sc.architecture.BASELINE_MARKER + "\n" + record + "\n"})

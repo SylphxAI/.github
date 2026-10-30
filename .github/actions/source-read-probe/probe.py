@@ -165,7 +165,10 @@ def run(receipts, ci_name, mode, targets, denied_policy):
     access = mask(exchange.get("api_key"))
     key = exchange.get("key", {})
     principal = key.get("status", {}).get("principal")
-    if not isinstance(principal, str) or not re.fullmatch(r"prn_[A-Za-z0-9]+", principal):
+    org = key.get("name", "").split("/api_keys/", 1)[0]
+    if (not isinstance(principal, str)
+            or not principal.startswith(org + "/principals/")
+            or not re.fullmatch(r"orgs/[A-Za-z0-9_-]+/principals/prn_[A-Za-z0-9]+", principal)):
         raise ProbeError("Access response lacks the stable workload principal")
     receipts.data.update(principal=principal, ci_name=ci_name, mode=mode,
                          access_key=key.get("name"), access_expires_at=exchange.get("expires_at"))
@@ -177,7 +180,6 @@ def run(receipts, ci_name, mode, targets, denied_policy):
     if not isinstance(delay, int) or not 0 <= delay <= 60000:
         raise ProbeError("invalid Access propagation interval")
     time.sleep(delay / 1000)
-    org = key.get("name", "").split("/api_keys/", 1)[0]
     if any(not target["trust_policy"].startswith(org + "/trust_policies/") for target in targets):
         raise ProbeError("target policies must be in the issued key's org")
     if denied_policy:
