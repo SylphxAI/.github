@@ -63,7 +63,8 @@ class GitFixture:
         report = self.root.parent / (self.root.name + '-report.json')
         result = subprocess.run(['python3', str(ACTION / 'stack_conformance.py'), 'check',
             '--repo', str(self.root), '--base', base or self.base, '--head', 'HEAD',
-            '--repository', repository, '--today', TODAY.isoformat(), '--report', str(report)],
+            '--repository', repository, '--today', TODAY.isoformat(), '--report', str(report),
+            '--shared-source', str(ROOT)],
             text=True, capture_output=True)
         return result, json.loads(report.read_text()) if report.exists() else None
 
