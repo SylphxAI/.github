@@ -62,6 +62,13 @@ def _offender(name, pin, why, days=None):
             "days": days, "why": why}
 
 
+def target_paths(path: str) -> set[str]:
+    """The exact regular files GitHub loads for an action or reusable workflow."""
+    if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
+        return {path}
+    return {f"{path}/action.yml", f"{path}/action.yaml"} if path else {"action.yml", "action.yaml"}
+
+
 def main_marker_errors(files: dict[str, str], require_main_marker: bool = True) -> list[dict]:
     """Pure format checks; only the source exempts its comment and may use @main."""
     errors = []
@@ -97,11 +104,7 @@ def validate_pin_provenance(files: dict[str, str], head_sha: str, facts: dict,
             if not isinstance(proof.get("files"), (set, frozenset, list, tuple)):
                 errors.append(_offender(name, pin, "pin target evidence is unavailable"))
                 continue
-            path = pin["path"]
-            if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
-                targets = {path}
-            else:
-                targets = {f"{path}/action.yml", f"{path}/action.yaml"} if path else {"action.yml", "action.yaml"}
+            targets = target_paths(pin["path"])
             if not targets.intersection(proof["files"]):
                 errors.append(_offender(name, pin, f"target is absent at {sha[:9]}: " +
                                         " or ".join(sorted(targets))))
@@ -116,12 +119,13 @@ class Commits:
     """Public source proof, cached by immutable commit and main anchor."""
     mode = "live"
 
-    def __init__(self, gh):
+    def __init__(self, gh, repository=SHARED_REPO):
         self.gh, self.dates, self.commits, self.proofs = gh, {}, {}, {}
+        self.repository = repository
 
     def commit(self, ref):
         if ref not in self.commits:
-            value = self.gh.rest(f"repos/{SHARED_REPO}/commits/{ref}")
+            value = self.gh.rest(f"repos/{self.repository}/commits/{ref}")
             if not FULL_SHA.fullmatch(value["sha"]):
                 raise ValueError("shared main did not resolve to an immutable commit")
             if FULL_SHA.fullmatch(ref) and value["sha"].lower() != ref.lower():
@@ -134,8 +138,8 @@ class Commits:
         self.commit(sha)
         return self.dates[sha]
 
-    def main_head(self, repo):
-        value = self.commit("main")
+    def main_head(self, repo, branch="main"):
+        value = self.commit(branch)
         return value["sha"], self.dates[value["sha"]]
 
     def evidence(self, sha, head):
@@ -143,13 +147,13 @@ class Commits:
         if key not in self.proofs:
             try:
                 status = "identical" if sha == head else self.gh.rest(
-                    f"repos/{SHARED_REPO}/compare/{head}...{sha}")["status"]
+                    f"repos/{self.repository}/compare/{head}...{sha}")["status"]
                 if status not in ("identical", "behind", "ahead", "diverged"):
                     raise ValueError("unrecognized compare status: " + str(status))
                 proof = {"ancestor": status in ("identical", "behind")}
                 if proof["ancestor"]:
                     commit = self.commit(sha)
-                    tree = self.gh.rest(f"repos/{SHARED_REPO}/git/trees/{commit['commit']['tree']['sha']}?recursive=1")
+                    tree = self.gh.rest(f"repos/{self.repository}/git/trees/{commit['commit']['tree']['sha']}?recursive=1")
                     if tree.get("truncated"):
                         raise ValueError("source Git tree was truncated")
                     proof["files"] = {item["path"] for item in tree["tree"]
