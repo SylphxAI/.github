@@ -1,0 +1,48 @@
+name: device-capture
+description: >-
+  Run the published Sylphx CLI's native scenario on one ordinary Android lease
+  using this job's declared, exact-environment Access identity. Returns no key.
+  Install the exact CLI version and retrieve the APK before calling this action.
+inputs:
+  ci-name:
+    description: Published Access CI declaration for this exact caller authority.
+    required: true
+  environment:
+    description: Canonical orgs/{org}/projects/{project}/envs/{env} parent.
+    required: true
+  app:
+    description: Local APK path from the verified producer handover.
+    required: true
+  scenario:
+    description: Local scenario JSON; package must match the installed APK.
+    required: true
+  size:
+    description: Exactly one size label from the scenario, on a fresh lease.
+    required: true
+  cli-version:
+    description: Exact installed CLI version which supplies scenario and size flags.
+    required: true
+  output:
+    description: New local output directory, including safe identity and CLI receipts.
+    required: true
+outputs:
+  receipt:
+    description: Safe local identity/request receipt, containing no credentials.
+    value: ${{ steps.capture.outputs.receipt }}
+runs:
+  using: composite
+  steps:
+    - name: Run native capture with the declared environment identity
+      id: capture
+      shell: bash
+      env:
+        CAPTURE_CI_NAME: ${{ inputs.ci-name }}
+        CAPTURE_ENVIRONMENT: ${{ inputs.environment }}
+        CAPTURE_APP: ${{ inputs.app }}
+        CAPTURE_SCENARIO: ${{ inputs.scenario }}
+        CAPTURE_SIZE: ${{ inputs.size }}
+        CAPTURE_CLI_VERSION: ${{ inputs.cli-version }}
+        CAPTURE_OUTPUT: ${{ inputs.output }}
+        ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+      run: python3 "$GITHUB_ACTION_PATH/capture.py"
