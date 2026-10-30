@@ -170,7 +170,8 @@ class PublicGuardTests(unittest.TestCase):
         f = self.fixture()
         base = f.commit({WORKFLOW: workflow(), "sylphx.toml": MANIFEST})
         plan = f.plan(base)
-        self.assertEqual(plan["introduced_rules"], ["architecture/C1/deal-randomness", RULE, "force-push", "model-selector"])
+        self.assertEqual(plan["introduced_rules"], ["architecture/C1/deal-randomness",
+                         "architecture/C1/project-portability", RULE, "force-push", "model-selector"])
         self.assertEqual(len(plan["evidence"]["added_records"]), 1)
         adopted = f.commit({sc.BASELINE: plan["baseline_text"]})
         f.check(base, 0)
@@ -227,7 +228,8 @@ class PublicGuardTests(unittest.TestCase):
         self.assertNotIn(RULE, profile["rules"])
         self.assertIn(RULE, sc.adoption.current_rules())
         files = {sc.adoption.PREFIX + name: (ACTION / name).read_text() for name in (
-            "action.yml", "stack_conformance.py", "architecture.py", "model_pins.py", "tenant_reads.py", "deal_randomness.py", "no_force_push.py")}
+            "action.yml", "stack_conformance.py", "architecture.py", "model_pins.py", "tenant_reads.py",
+            "deal_randomness.py", "no_force_push.py", "project_portability.py")}
         files["policy/deal-randomness-scope.json"] = (ACTION.parents[2] / "policy/deal-randomness-scope.json").read_text()
         current = sc.adoption.source_profile(sc.DictTree(files))
         self.assertIn(sc.adoption.PREFIX + "tenant_reads.py", current["sources"])
