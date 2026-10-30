@@ -15,7 +15,7 @@ CONFIG = {'.yaml', '.yml', '.toml', '.json', '.xml'}
 MANIFEST_DIRS = {'deploy', 'deployment', 'deployments', 'infra', 'infrastructure',
                  'k8s', 'kubernetes', 'helm', 'charts', 'gitops', '.github'}
 SUFFIX = re.compile(r'\.(?:svc(?:\.cluster\.local)?|cluster\.local|sylphx\.internal)(?![\w.-])', re.I)
-PRIVATE_URL = re.compile(r'https?://([a-z][a-z0-9_-]*)(?=[:/\s\"\x27`]|$)', re.I)
+PRIVATE_URL = re.compile(r'https?://([^/\s\"\x27`]+)', re.I)
 LITERAL = re.compile(r'\br(\#*)"[\s\S]*?"\1|"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27|`(?:\\.|[^`\\])*`')
 IN_CLUSTER = re.compile(r'\b(?:load_incluster_config|loadInClusterConfig|InClusterConfig|'
                         r'inClusterConfig|loadFromCluster)\s*\(|'
@@ -35,6 +35,16 @@ def manifest(path):
 
 def supported(path):
     return pathlib.PurePosixPath(path).suffix in SOURCE | CONFIG
+
+
+def short_service_url(value):
+    for match in PRIVATE_URL.finditer(value):
+        # Authentication userinfo is not the destination hostname. This also
+        # handles Git's configured credential URL without exposing its value.
+        host = match.group(1).rsplit('@', 1)[-1].split(':', 1)[0]
+        if re.fullmatch(r'[a-z][a-z0-9_-]*', host, re.I) and host.lower() != 'localhost':
+            return True
+    return False
 
 
 def views(text, suffix, source_views):
@@ -81,8 +91,7 @@ def scan(path, text, source_views):
             out.append((literal.start(), literal.end(), 'Runtime source embeds cluster-private DNS; configure a reachable public API origin'))
             break
         else:
-            short = next((m for m in PRIVATE_URL.finditer(value) if m.group(1).lower() != 'localhost'), None)
-            if short or re.search(r'\bkubernetes\.default\b', value):
+            if short_service_url(value) or re.search(r'\bkubernetes\.default\b', value):
                 out.append((literal.start(), literal.end(), 'Runtime source embeds a single-label service or Kubernetes API hostname'))
             elif MOUNT.search(value):
                 out.append((literal.start(), literal.end(), 'Runtime source assumes the Kubernetes service-account secret mount'))
@@ -95,6 +104,6 @@ def scan(path, text, source_views):
     if suffix in {'.sh', '.bash'}:
         # Shell destinations need not be quoted. Quoted ones are already masked.
         for match in re.finditer(r'https?://[^\s;|&]+', code):
-            if SUFFIX.search(match.group()) or any(m.group(1).lower() != 'localhost' for m in PRIVATE_URL.finditer(match.group())):
+            if SUFFIX.search(match.group()) or short_service_url(match.group()):
                 out.append((match.start(), match.end(), 'Runtime shell command embeds a cluster-private service destination'))
     return sorted(set(out))

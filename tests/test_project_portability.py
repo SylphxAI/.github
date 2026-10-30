@@ -19,6 +19,7 @@ class ProjectPortabilityTests(unittest.TestCase):
             'const origin = "https://" + service + ".svc.cluster.local";',
             'const origin = "http://api.tenant.sylphx.internal";',
             'client.post("http://gate:24001/touch");',
+            'client.post("http://user:placeholder@gate:24001/touch");',
             'client.get("https://kubernetes.default/api");',
         ]
         for source in sources:
@@ -52,6 +53,8 @@ class ProjectPortabilityTests(unittest.TestCase):
             ('src/client.rs', 'let value = input.ok_or("example: http://api.tenant.svc.cluster.local")?;'),
             ('src/client.ts', 'client.get("http://localhost:8080/health");'),
             ('src/client.ts', 'client.get("https://api.svc.example.invalid");'),
+            ('src/client.py', 'url = "https://x-access-token:%s@github.com/example/repo"'),
+            ('src/client.ts', 'client.get("https://user:placeholder@api.example.invalid");'),
         ]
         for path, source in cases:
             with self.subTest(source=source):
