@@ -544,6 +544,7 @@ class ModelPinTest(unittest.TestCase):
             "scripts/submit.sh": 'repository="microsoft/winget-pkgs"\n',
             "scripts/benchmark.yml": 'command: "$RUNNER_TEMP/llama-b11177/llama-server"\n',
             "ground-truth.json": '{"text": "The GPT-2 example explains the format."}',
+            "openapi.json": '{"description": "Call `gpt-5.1` for this example."}',
             "scripts/eval.py": 'archive = "tts.tar.bz2"\n',
             "src/tests.rs": 'const MODEL = "gpt-5.1-2025-11-13";',
             "thirdparty/legacy.py": 'print "Python 2"\n',
@@ -556,6 +557,7 @@ class ModelPinTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.scan({path: pinned}), [])
         self.assertEqual(self.scan({"src/client.rs": '#[cfg(test)]\nmod tests { ' + pinned + " }"}), [])
+        self.assertEqual(self.scan({"src/client.rs": '#[cfg(test)]\npub(super) mod tests { ' + pinned + " }"}), [])
         self.assertEqual(self.scan({"src/client.rs": '#[tokio::test]\nasync fn check() { ' + pinned + " }"}), [])
         self.assertEqual(self.scan({"src/client.ts": "// " + pinned}), [])
         self.assertEqual(self.scan({"config.yml": '# model: "gpt-5.1-2025-11-13"\n'}), [])

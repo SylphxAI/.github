@@ -110,7 +110,9 @@ def config_view(text, suffix):
 def scalar_model(clean, start, end, config):
     """Require a complete scalar, not a model-shaped word in prose or a path."""
     before, after = clean[start - 1:start], clean[end:end + 1]
-    if before in {"\"", "'", "`"}:
+    if before in {"\"", "'"} or before == "`" and not config:
+        if config and clean[start - 2:start - 1] == "\\":
+            return False  # Quotes inside a description are not JSON scalar delimiters.
         return after == before or clean[end:end + 2] == "\\" + before
     if not config:
         return False
