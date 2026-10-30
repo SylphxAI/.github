@@ -1175,6 +1175,8 @@ def cmd_check(args) -> int:
                    "shared_pin_provenance": pin_report})
     for row in report["findings"]:
         row.update({"repository": report["repository"], "commit": report["commit"]})
+        if row["rule"] == "tenant-read-functions":
+            row["changed"] = architecture.baseline_key(row) not in head_architecture_baseline
         row["disposition"] = "justified-exception" if row["decision"] else "regression" if row["changed"] else "inherited"
         if row["changed"] and not row["decision"]:
             message = f"{row['class']} {row['rule']}: {row['reason']} ({row['contract']})"

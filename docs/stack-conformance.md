@@ -86,6 +86,51 @@ vendor-name list is used to authorize aliases. Until such an export is
 published, the default naming-contract check is sufficient and has no catalog
 availability dependency.
 
+## Production database aggregate declarations
+
+A production database declared by `sylphx.toml` needs a companion
+`ops/tenant-read-functions.json`, relative to that manifest. The check recognizes
+`[resources.database]`, resource-shaped `[database]`, and their
+`[environments.production]` overlays. A preview-only resource or a
+`[database.migrations]` table alone does not declare a production database.
+
+The file is the existing database resource PATCH body:
+
+```json
+{
+  "kind": "database",
+  "deskReportFunctions": [
+    {"name": "activity_summary", "args": "timestamp with time zone"}
+  ]
+}
+```
+
+The platform's [tenant reader declaration
+contract](https://github.com/SylphxAI/cloud/blob/main/docs/runbooks/shared-tenant-read-only.md#declaration)
+requires one to 64 distinct exact signatures, lowercase names and plain argument
+types. `args` defaults to an empty string. Unknown fields, duplicate JSON keys,
+duplicate signatures and unreadable or malformed declarations fail explicitly.
+The source contract was read on 2026-10-30 from
+`crates/sylphx-apps-controller/src/managed_resource/shared_read_only.rs`.
+
+Missing files produce `C2/tenant-read-functions` findings naming the exact path
+and the supported `PATCH /v1/resources/{id}` declaration. They fail even on an
+unrelated change unless explicitly adopted through the existing helper under
+`architecture/C2/tenant-read-functions`. The baseline identifies each
+manifest's production database, so unrelated manifest edits preserve its debt.
+Missing or unsupported well-formed declarations, including old `functions`
+signature lists, are coverage gaps. Existing gaps can be seeded only from the immutable base during adoption; the
+set then only shrinks. Adding the file requires removing its stale record;
+removing the declaration after that fails and cannot re-add the old debt.
+An architecture decision cannot waive this declaration requirement.
+
+This offline check establishes source declaration shape only. It neither
+applies the resource PATCH nor proves deployed functions, credentials or grants.
+The scheduled owner catalog observation supplies that separate live verdict.
+It does not infer databases provisioned outside the manifest or dynamically
+generated manifests. Delivered customer repositories retain the action's
+existing exclusion.
+
 ## Agent-runtime parts
 
 Sylphx Agents is the one owner of agent definitions, session logs, turn loops,
