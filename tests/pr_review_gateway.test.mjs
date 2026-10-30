@@ -133,18 +133,28 @@ test('trusted event resolves fork-safe API associations and ignores unrelated ru
   assert.deepEqual(await eventTargets(github, 'workflow_run', { ...event, workflow_run: { ...event.workflow_run, event: 'push' } }, '13'), []);
 });
 
-test('source provenance reads the exact Git tree and refuses followed links and mismatched blobs', async () => {
-  const bytes = Buffer.from('source\n');
+test('source provenance preserves BOM and refuses followed links and mismatched blobs', async () => {
+  const bytes = Buffer.from('\uFEFFsource\n');
   const sha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
   const github = new GitHub({ repository: 'example/repo', readToken: 'read' });
   let mode = '100644', corrupted = false;
   github.request = async path => path.includes('/git/trees/') ? { tree: [{ path: 'file.js', mode, type: 'blob', sha }] } : {
     sha, encoding: 'base64', size: bytes.length, content: (corrupted ? Buffer.from('forged\n') : bytes).toString('base64'),
   };
-  assert.equal(await github.source('file.js', 'a'.repeat(40)), 'source\n');
+  assert.equal(await github.source('file.js', 'a'.repeat(40)), '\uFEFFsource\n');
   assert.equal(await github.source('absent', 'a'.repeat(40), true), null);
   mode = '120000'; github.sourceTrees.clear();
   await assert.rejects(() => github.source('file.js', 'a'.repeat(40)), /ordinary file/);
   mode = '100644'; corrupted = true; github.sourceTrees.clear();
   await assert.rejects(() => github.source('file.js', 'a'.repeat(40)), /incomplete/);
+});
+
+test('CRLF source uses absolute lines with canonical evidence line endings', () => {
+  const input = inputFor('return value\r\n', 'return undefined\r\n');
+  assert.equal(parseReviewResult(JSON.stringify(wire(input, [finding])), input).status, 'complete');
+  const before = Array.from({ length: 5000 }, (_, i) => `row ${i}`).join('\r\n');
+  const windows = inputFor(before, before.replace('row 4000', 'changed 4000'));
+  const changed = { ...finding, start_line: 4001, end_line: 4001,
+    evidence: [{ ...finding.evidence[0], start_line: 4001, end_line: 4001, quote: 'changed 4000' }] };
+  assert.equal(parseReviewResult(JSON.stringify(wire(windows, [changed])), windows).status, 'complete');
 });

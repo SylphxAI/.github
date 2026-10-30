@@ -107,7 +107,7 @@ export function validateResult(result, input) {
         !['base', 'head'].includes(finding.side) ||
         !ranges.some(r => r[finding.side].count > 0 && finding.start_line >= r[finding.side].start &&
           finding.end_line < r[finding.side].start + r[finding.side].count) ||
-        !['critical', 'high', 'medium', 'low', 'info'].includes(finding.severity) ||
+        !['critical', 'high', 'medium', 'low'].includes(finding.severity) ||
         !['title', 'explanation', 'trigger', 'consequence'].every(k => typeof finding[k] === 'string' && finding[k].trim()) ||
         !Array.isArray(finding.evidence) || finding.evidence.length === 0) {
       throw new Unavailable('Review finding is not anchored to the pinned diff with concrete evidence.');

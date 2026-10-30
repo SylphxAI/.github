@@ -16,7 +16,7 @@ export { resultSchema }
 function requireValue(ok, message) { if (!ok) throw new Error(message) }
 const nonempty = (s) => typeof s === 'string' && s.trim().length > 0
 const validPath = (p) => nonempty(p) && !p.startsWith('/') && !p.split('/').some((s) => s === '..' || s === '.' || !s) && !/[\0\r\n\\]/.test(p)
-const lines = (content) => content === '' ? [] : content.replace(/\n$/, '').split('\n')
+const lines = (content) => content === '' ? [] : content.replace(/\r?\n$/, '').split(/\r?\n/)
 
 export function sourceWindows(file, side) {
 	if (file.source_mode === 'windows') return file[`${side}_windows`]

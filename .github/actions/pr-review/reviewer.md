@@ -23,8 +23,8 @@ unaffected by this change. A clean change returns an empty findings array.
 Anchor each finding on a changed line, using absolute line numbers and side=head.
 For deleted code with no suitable head anchor, use side=base and the old line.
 Evidence may cite the supplied base, head or context, with a verbatim
-quote covering exactly the indicated inclusive line range. Quotes omit the final
-line-ending newline. Explain trigger and consequence in separate fields as well as
+quote covering exactly the indicated inclusive line range. Quotes join lines with
+LF and omit the final line ending (LF or CRLF). Explain trigger and consequence in separate fields as well as
 the concise explanation. Severity is critical for immediate widespread data loss
 or total outage, high for a major reachable failure, medium for a narrower concrete
 functional failure, and low for a minor concrete defect. Severity is not a guess

@@ -89,7 +89,7 @@ export class GitHub {
     const actualSha = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
     if (bytes.length !== object.size || actualSha !== blobSha) throw new Unavailable(`Source ${path} is incomplete.`);
     try {
-      const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
       if (content.includes('\0')) throw new Error('binary');
       return content;
     } catch { throw new Unavailable(`Source ${path} is not UTF-8 text.`); }
@@ -168,7 +168,7 @@ export function hunkRanges(patch) {
 
 export function sourceWindows(content, ranges, side, radius = 40) {
   if (content === null) return [];
-  const lines = content === '' ? [] : content.replace(/\n$/, '').split('\n');
+  const lines = content === '' ? [] : content.replace(/\r?\n$/, '').split(/\r?\n/);
   const merged = [];
   for (const range of ranges.map(h => h[side]).filter(r => r.count > 0)) {
     const start = Math.max(1, range.start - radius);
