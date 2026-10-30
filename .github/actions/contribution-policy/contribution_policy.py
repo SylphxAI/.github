@@ -27,11 +27,12 @@ def evaluate(pull_request, commits, policy):
     identities = {role: {(item['name'], item['email']) for item in policy['identities'] if role in item['roles']}
                   for role in ('author', 'committer')}
     names = '|'.join(re.escape(name) for name in policy['attribution_names'])
+    harness_names = names + '|' + '|'.join(re.escape(name) for name in policy['harness_names'])
     attributed = re.compile(r'(?<![A-Za-z0-9])(?:' + names + r')(?![A-Za-z0-9])', re.I)
     coauthor = re.compile(r'co-authored-by\s*:\s*(.*)', re.I)
     generated = re.compile(r'^[\s>*_\-\[🤖]*generated\s+(?:with|by)\s*:?\s*\S', re.I)
     trailer = re.compile(r'^[\s>*_\-]*agent(?:-id)?\s*:\s*\S', re.I)
-    harness = re.compile(r'^[\s>*_\-]*harness\s*:\s*\[?(?:' + names + r')(?![A-Za-z0-9])', re.I)
+    harness = re.compile(r'^[\s>*_\-]*harness\s*:\s*\[?(?:' + harness_names + r')(?![A-Za-z0-9])', re.I)
     auxiliary = r'(?:was|is|were|are|has\s+been|have\s+been)\s+'
     contribution = (r'\b(?:(?:changes?|patch(?:es)?|commits?|pull\s+requests?|PRs?|implementations?|'
                     r'code|fix(?:es)?|updates?|work)\s+(?:' + auxiliary + r')?|'

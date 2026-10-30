@@ -11,6 +11,7 @@
     "ChatGPT", "Gemini", "GPT", "OpenAI", "Anthropic", "Aider", "Devin", "CodeRabbit",
     "Windsurf", "Codeium", "DeepSeek", "Qwen", "OpenCode", "AnyAgents"
   ],
+  "harness_names": ["codex", "opencode", "claude-code", "agy", "muse", "omp", "dsh", "grok"],
   "internal_patterns": {
     "coordination-id": "(?<![A-Za-z0-9_])(?:msg|agt|sch)_[a-z0-9]{26,32}(?![A-Za-z0-9_])",
     "work-id": "(?<![A-Za-z0-9_])W-[0-9]{3,}(?![A-Za-z0-9_])",
