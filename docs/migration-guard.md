@@ -83,6 +83,15 @@ destructive bodies report the underlying operation. Unquoted inline bodies,
 including MySQL routine definitions, other procedural languages, escape-string
 bodies, and opaque dynamic execution require a contract reference. A marker inside a body string
 does not authorize the surrounding migration.
+One PostgreSQL dynamic ACL form is inspected: `EXECUTE format(...)` (also
+`pg_catalog.format`) with a constant template for `GRANT`/`REVOKE USAGE ON SCHEMA`
+or `GRANT`/`REVOKE EXECUTE ON FUNCTION schema.name(types)`. The only placeholder
+is one final `%I` role name, supplied by a simple variable or record field.
+Identifier quoting prevents role names from adding SQL syntax. Other privilege
+scopes, grant options, SQL interpolation (`%s`/`%L`), concatenated templates,
+extra commands and assembled queries remain opaque. This does not authorize
+`RETURN QUERY EXECUTE query_text` or prove that a granted role should have access;
+the repository still owns that access policy.
 Simple PostgreSQL `BEFORE INSERT` and `AFTER INSERT` row triggers pass when the
 target table was created unconditionally earlier in the same migration and the
 zero-argument trigger function was defined and inspected there too. Both table

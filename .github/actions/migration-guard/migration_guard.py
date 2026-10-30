@@ -297,6 +297,58 @@ def additive_trigger(stmt: list[Token], created: set[tuple[str, str]], functions
             and stmt[at].value == "(" and stmt[at + 1].value == ")")
 
 
+def constant_acl_execute(stmt: list[Token], dialect: str) -> bool:
+    """Inspect fixed ACL commands whose only substitution is a quoted role."""
+    at = 4 if (starts(stmt, "EXECUTE", "PG_CATALOG") and len(stmt) > 3
+               and stmt[2].value == "." and kw(stmt[3], "FORMAT")) else 2
+    if (dialect != "postgres" or at == 2 and not starts(stmt, "EXECUTE", "FORMAT")
+            or len(stmt) < at + 5 or stmt[at].value != "(" or stmt[-1].value != ")"):
+        return False
+    args = split(stmt[at + 1:-1], ",")
+    if len(args) != 2 or len(args[0]) != 1 or args[0][0].kind != "literal":
+        return False
+    role, end = name(args[1], 0)
+    if not role or end != len(args[1]):
+        return False
+    raw = args[0][0].raw
+    dollar = DOLLAR.match(raw)
+    if dollar:
+        template = raw[len(dollar[0]):-len(dollar[0])]
+    elif raw.startswith("'"):
+        template = raw[1:-1].replace("''", "'")
+    else:
+        return False
+    if template.count("%I") != 1 or "%" in template.replace("%I", ""):
+        return False
+    # format %I always emits one quoted identifier. It cannot add SQL syntax,
+    # even when the runtime role name contains quotes or semicolons.
+    command, _ = lex(template.replace("%I", '"__guard_acl_role__"'), dialect)
+    if command and command[-1].value == ";":
+        command = command[:-1]
+    if (len(command) < 7 or command[-1].kind != "identifier"
+            or command[-1].value != "__guard_acl_role__"):
+        return False
+    grant, revoke = starts(command, "GRANT"), starts(command, "REVOKE")
+    if not (grant or revoke) or not kw(command[-2], "TO" if grant else "FROM"):
+        return False
+    if starts(command[1:], "USAGE", "ON", "SCHEMA"):
+        return len(command) == 7 and command[4].kind in {"word", "identifier"}
+    if not starts(command[1:], "EXECUTE", "ON", "FUNCTION"):
+        return False
+    function, at = qualified_name(command, 4)
+    signature = command[at:-2]
+    depth = 0
+    for i, token in enumerate(signature):
+        if token.kind == "symbol":
+            depth += (token.value == "(") - (token.value == ")")
+        if depth <= 0 and i != len(signature) - 1:
+            return False
+    return bool(function and len(signature) >= 2 and signature[0].value == "("
+                and signature[-1].value == ")" and depth == 0 and all(
+                    t.kind in {"word", "identifier"} or t.value in {"(", ")", ",", ".", "[", "]"}
+                    for t in signature))
+
+
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> list[tuple[int, str]]:
     if nesting > 64:
         raise SqlError("procedural body nesting is too deep to inspect")
@@ -375,7 +427,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
                 defaults.clear()
                 trigger_tables.clear()
                 trigger_functions.clear()
-        if (starts(stmt, "CALL") or starts(stmt, "EXECUTE")
+        if (starts(stmt, "CALL") or starts(stmt, "EXECUTE") and not constant_acl_execute(stmt, dialect)
                 or starts(stmt, "PREPARE") or starts(stmt, "DELIMITER")):
             out.append((stmt[0].line, "procedural or dynamic SQL requires a contract reference"))
         if starts(stmt, "CREATE", "TABLE"):
