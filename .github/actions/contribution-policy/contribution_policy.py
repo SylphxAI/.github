@@ -52,7 +52,8 @@ def evaluate(pull_request, commits, policy):
         for number, line in enumerate(value.splitlines(), 1):
             match = coauthor.search(line)
             rules = []
-            if match and attributed.search(match[1]):
+            credit = re.sub(r'([^\s<>@]+)@[^\s<>@]+', r'\1', match[1]) if match else ''
+            if match and attributed.search(credit):
                 rules.append('tool-coauthor')
             if generated.search(line):
                 rules.append('generated-trailer')
