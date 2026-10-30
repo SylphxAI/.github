@@ -254,16 +254,158 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
             return opaque
         inner, _ = lex(source, dialect)
         inner = [Token(t.value, t.kind, body.line + t.line - 1, t.raw) for t in inner]
-        return token_violations(inner, dialect, nesting + 1)
+        # Bare format can resolve to a user overload even with the default
+        # search path. A routine-local catalog-only path removes that ambiguity.
+        catalog_format = kind != "DO" and catalog_only_search_path(flat)
+        if any(t.kind in {"word", "identifier"} and t.value.lower() in {
+                "search_path", "set_config", "reset", "discard", "do"} for t in inner):
+            catalog_format = False
+        for i in range(len(inner)):
+            function, end = qualified_name(inner, i)
+            if function and function[0] != "pg_catalog" and end < len(inner) and inner[end].value == "(":
+                # A user function can alter the caller's path. Do not infer
+                # its effects from a secured caller's routine header.
+                catalog_format = False
+        return token_violations(inner, dialect, nesting + 1, catalog_format)
     return opaque
 
 
-def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> list[tuple[int, str]]:
+def catalog_only_search_path(header: list[Token]) -> bool:
+    settings = [i for i, t in enumerate(header[:-1]) if kw(t, "SET")
+                and header[i + 1].value.lower() == "search_path"]
+    if len(settings) != 1:
+        return False
+    tail = header[settings[0] + 2:]
+    if not tail or not (tail[0].value == "=" or kw(tail[0], "TO")):
+        return False
+    at, schemas = 1, []
+    while at < len(tail):
+        token = tail[at]
+        if token.kind not in {"word", "identifier"}:
+            return False
+        schemas.append(token.value if token.kind == "identifier" else token.value.lower())
+        at += 1
+        if at >= len(tail) or tail[at].value != ",":
+            break
+        at += 1
+    options = {"AS", "LANGUAGE", "SET", "TRANSFORM", "WINDOW", "IMMUTABLE", "STABLE",
+               "VOLATILE", "LEAKPROOF", "NOT", "CALLED", "RETURNS", "STRICT", "SECURITY",
+               "PARALLEL", "COST", "ROWS", "SUPPORT"}
+    return (schemas in [["pg_catalog"], ["pg_catalog", "pg_temp"]]
+            and (at == len(tail) or tail[at].kind == "word" and tail[at].value in options))
+
+
+def qualified_name(tokens: list[Token], at: int) -> tuple[tuple[str, str] | None, int]:
+    """Keep schema/name boundaries distinct from dots in quoted identifiers."""
+    if (at + 2 >= len(tokens) or tokens[at].kind not in {"word", "identifier"}
+            or tokens[at + 1].value != "." or tokens[at + 2].kind not in {"word", "identifier"}
+            or at + 3 < len(tokens) and tokens[at + 3].value == "."):
+        return None, at
+    parts = tuple(t.value if t.kind == "identifier" else t.value.lower() for t in (tokens[at], tokens[at + 2]))
+    return parts, at + 3
+
+
+def trigger_function_name(stmt: list[Token]) -> tuple[str, str] | None:
+    """Identify an inspected zero-argument PostgreSQL trigger function."""
+    at = 4 if starts(stmt, "CREATE", "OR", "REPLACE", "FUNCTION") else 2
+    if not (starts(stmt, "CREATE", "FUNCTION") or starts(stmt, "CREATE", "OR", "REPLACE", "FUNCTION")):
+        return None
+    function, at = qualified_name(stmt, at)
+    if (at + 3 < len(stmt) and stmt[at].value == "(" and stmt[at + 1].value == ")"
+            and starts(stmt[at + 2:], "RETURNS", "TRIGGER")):
+        return function
+    return None
+
+
+def additive_trigger(stmt: list[Token], created: set[tuple[str, str]], functions: set[tuple[str, str]]) -> bool:
+    """Allow a simple INSERT trigger only on a definitely new local table."""
+    if not starts(stmt, "CREATE", "TRIGGER"):
+        return False
+    _, at = name(stmt, 2)
+    if at >= len(stmt) or not any(kw(stmt[at], word) for word in ("BEFORE", "AFTER")):
+        return False
+    if not starts(stmt[at + 1:], "INSERT", "ON"):
+        return False
+    table, at = qualified_name(stmt, at + 3)
+    if table not in created or not starts(stmt[at:], "FOR", "EACH", "ROW", "EXECUTE", "FUNCTION"):
+        return False
+    function, at = qualified_name(stmt, at + 5)
+    return (function in functions and len(stmt) == at + 2
+            and stmt[at].value == "(" and stmt[at + 1].value == ")")
+
+
+def constant_acl_execute(stmt: list[Token], dialect: str, catalog_format: bool = False) -> bool:
+    """Inspect fixed ACL commands whose only substitution is a quoted role."""
+    at = 4 if (starts(stmt, "EXECUTE", "PG_CATALOG") and len(stmt) > 3
+               and stmt[2].value == "." and kw(stmt[3], "FORMAT")) else 2
+    if (dialect != "postgres" or at == 2 and not (catalog_format and starts(stmt, "EXECUTE", "FORMAT"))
+            or len(stmt) < at + 5 or stmt[at].value != "(" or stmt[-1].value != ")"):
+        return False
+    args = split(stmt[at + 1:-1], ",")
+    if len(args) != 2 or len(args[0]) != 1 or args[0][0].kind != "literal":
+        return False
+    role, end = name(args[1], 0)
+    if not role or end != len(args[1]):
+        return False
+    raw = args[0][0].raw
+    dollar = DOLLAR.match(raw)
+    if dollar:
+        template = raw[len(dollar[0]):-len(dollar[0])]
+    elif raw.startswith("'"):
+        template = raw[1:-1].replace("''", "'")
+    else:
+        return False
+    if template.count("%I") != 1 or "%" in template.replace("%I", ""):
+        return False
+    prefix, suffix = template.split("%I")
+    if not re.fullmatch(r"\s*;?\s*", suffix):
+        return False
+    # Parse the prefix separately: a literal identifier can never impersonate
+    # the placeholder, and %I cannot choose a schema or function target.
+    try:
+        command, _ = lex(prefix, dialect)
+        quoted, _ = lex(prefix + '""', dialect)
+    except SqlError:
+        return False
+    # Quoting the substituted role must add exactly one complete identifier.
+    # An open line comment could otherwise swallow its opening quote and let
+    # a newline inside the role change how the resulting command is parsed.
+    if (len(quoted) != len(command) + 1 or quoted[:-1] != command
+            or quoted[-1].kind != "identifier" or quoted[-1].raw != '""'):
+        return False
+    command.append(Token("%I", "role_placeholder", stmt[0].line))
+    if len(command) < 7:
+        return False
+    grant, revoke = starts(command, "GRANT"), starts(command, "REVOKE")
+    if not (grant or revoke) or not kw(command[-2], "TO" if grant else "FROM"):
+        return False
+    if starts(command[1:], "USAGE", "ON", "SCHEMA"):
+        return len(command) == 7 and command[4].kind in {"word", "identifier"}
+    if not starts(command[1:], "EXECUTE", "ON", "FUNCTION"):
+        return False
+    function, at = qualified_name(command, 4)
+    signature = command[at:-2]
+    depth = 0
+    for i, token in enumerate(signature):
+        if token.kind == "symbol":
+            depth += (token.value == "(") - (token.value == ")")
+        if depth <= 0 and i != len(signature) - 1:
+            return False
+    return bool(function and len(signature) >= 2 and signature[0].value == "("
+                and signature[-1].value == ")" and depth == 0 and all(
+                    t.kind in {"word", "identifier"} or t.value in {"(", ")", ",", ".", "[", "]"}
+                    for t in signature))
+
+
+def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
+                     catalog_format: bool = False) -> list[tuple[int, str]]:
     if nesting > 64:
         raise SqlError("procedural body nesting is too deep to inspect")
     out: list[tuple[int, str]] = []
     defaults: set[tuple[str, str]] = set()
     created: set[str] = set()
+    trigger_functions: set[tuple[str, str]] = set()
+    trigger_tables: set[tuple[str, str]] = set()
     statements = split(tokens, ";")
     uncertain_flow = nesting and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
     for stmt in statements:
@@ -273,7 +415,14 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
             # statement, where its clauses execute together.
             defaults.clear()
             created.clear()
+            trigger_tables.clear()
+            trigger_functions.clear()
         control_stmt = procedural_statement(stmt)
+        if starts(control_stmt, "ALTER") and has(control_stmt, "SET", "SCHEMA"):
+            # A relocated object can leave its old qualified name available
+            # for an existing table or an uninspected function to occupy.
+            trigger_tables.clear()
+            trigger_functions.clear()
         out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(stmt))
         if starts(control_stmt, "SET") and any(
                 (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
@@ -313,14 +462,33 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
                 if not lock_or_upsert and not has(suffix, "WHERE"):
                     out.append((token.line, token.value + " without WHERE"))
         stmt = control_stmt
+        if dialect == "postgres" and any(starts(stmt, "ALTER", kind) for kind in ("FUNCTION", "PROCEDURE", "ROUTINE")):
+            function_name, _ = name(stmt, 2)
+            if function_name.split(".")[-1] == "format":
+                out.append((stmt[0].line, "formatter redefinition requires a contract reference"))
+            if (any(t.kind in {"word", "identifier"} and t.value.lower() == "search_path" for t in stmt)
+                    or has(stmt, "RESET", "ALL")):
+                out.append((stmt[0].line, "routine search path change requires a contract reference"))
         routine = routine_kind(stmt)
         if routine:
-            out.extend(routine_violations(stmt, dialect, routine, nesting))
+            if routine == "FUNCTION":
+                at = 4 if starts(stmt, "CREATE", "OR", "REPLACE", "FUNCTION") else 2
+                function_name, _ = name(stmt, at)
+                if function_name.split(".")[-1] == "format":
+                    out.append((stmt[0].line, "formatter redefinition requires a contract reference"))
+            inspected_trigger = dialect == "postgres" and routine == "TRIGGER" and additive_trigger(stmt, trigger_tables, trigger_functions)
+            routine_errors = [] if inspected_trigger else routine_violations(stmt, dialect, routine, nesting)
+            out.extend(routine_errors)
+            function = trigger_function_name(stmt) if dialect == "postgres" and routine == "FUNCTION" else None
+            if function and not routine_errors:
+                trigger_functions.add(function)
             if routine == "DO":
                 # Executed bodies can remove defaults established outside,
                 # but their local facts never authorize enclosing statements.
                 defaults.clear()
-        if (starts(stmt, "CALL") or starts(stmt, "EXECUTE")
+                trigger_tables.clear()
+                trigger_functions.clear()
+        if (starts(stmt, "CALL") or starts(stmt, "EXECUTE") and not constant_acl_execute(stmt, dialect, catalog_format)
                 or starts(stmt, "PREPARE") or starts(stmt, "DELIMITER")):
             out.append((stmt[0].line, "procedural or dynamic SQL requires a contract reference"))
         if starts(stmt, "CREATE", "TABLE"):
@@ -331,6 +499,9 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
             # required-column additions still need a default.
             if not conditional:
                 created.add(table)
+                qualified, _ = qualified_name(stmt, at)
+                if qualified:
+                    trigger_tables.add(qualified)
         table_at = 2 if starts(stmt, "ALTER", "TABLE") else 3 if starts(stmt, "ALTER", "FOREIGN", "TABLE") else None
         if table_at is None:
             continue

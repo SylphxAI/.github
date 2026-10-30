@@ -83,6 +83,29 @@ destructive bodies report the underlying operation. Unquoted inline bodies,
 including MySQL routine definitions, other procedural languages, escape-string
 bodies, and opaque dynamic execution require a contract reference. A marker inside a body string
 does not authorize the surrounding migration.
+One PostgreSQL dynamic ACL form is inspected: `EXECUTE pg_catalog.format(...)`
+with a constant template for `GRANT`/`REVOKE USAGE ON SCHEMA`
+or `GRANT`/`REVOKE EXECUTE ON FUNCTION schema.name(types)`. The only placeholder
+is one final `%I` role name, supplied by a simple variable or record field.
+Bare `format` is accepted only inside a routine with a fixed local
+`SET search_path = pg_catalog` (optionally followed by `pg_temp`). An absent or
+user-schema path, a body that changes or resets that path, calls a function
+outside `pg_catalog` by a qualified name, or executes nested `DO` does not
+establish builtin formatter identity. Formatter redefinitions and later
+routine search-path changes require a contract reference. The template prefix is parsed separately from
+the final placeholder, so a literal grantee cannot impersonate it.
+Identifier quoting prevents role names from adding SQL syntax. Other privilege
+scopes, grant options, SQL interpolation (`%s`/`%L`), concatenated templates,
+extra commands and assembled queries remain opaque. This does not authorize
+`RETURN QUERY EXECUTE query_text` or prove that a granted role should have access;
+the repository still owns that access policy.
+Simple PostgreSQL `BEFORE INSERT` and `AFTER INSERT` row triggers pass when the
+target table was created unconditionally earlier in the same migration and the
+zero-argument trigger function was defined and inspected there too. Both table
+and function names must include an explicit schema. This supports additive ID
+assignment triggers without trusting search-path resolution or an external
+function. Triggers on existing tables, other events, trigger arguments, and
+unresolved or opaque functions still require a contract reference.
 In bodies with conditional, loop, exception, nested `DO`, or rollback paths,
 earlier statements do not establish that a table was created or a default was
 set. Required-column changes must carry their default in the same SQL statement
