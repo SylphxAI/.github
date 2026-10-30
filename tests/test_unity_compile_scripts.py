@@ -91,6 +91,31 @@ class UnityCompileScripts(unittest.TestCase):
             self.assertEqual(result.returncode, 42)
             self.assertFalse(receipt.exists())
 
+    def test_success_uses_absolute_project_output_and_validates_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = self.fixture(root)
+            license_home = root / "license"
+            license_home.mkdir()
+            fake = root / "bin"
+            fake.mkdir()
+            (fake / "docker").write_text("""#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+output = next(x.split('=',1)[1] for x in args if x.startswith('SYLPHX_COMPILE_OUTPUT='))
+expected = '/workspace/' + os.environ['PROJECT_PATH'] + '/' + os.environ['COMPILE_OUTPUT']
+assert output == expected, (output, expected)
+target = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / os.environ['PROJECT_PATH'] / os.environ['COMPILE_OUTPUT']
+target.mkdir(parents=True, exist_ok=True)
+(target / 'compile-receipt.json').write_text(json.dumps({'target':'Android','unityVersion':'2020.3.49f1','assemblies':[{'file':'Assembly-CSharp.dll','sha256':'a'*64}]}))
+""")
+            (fake / "docker").chmod(0o755)
+            env = os.environ | {"PATH": str(fake) + os.pathsep + os.environ["PATH"], "GITHUB_WORKSPACE": str(root), "GITHUB_ACTION_PATH": str(ACTION), "PROJECT_PATH": project.name, "COMPILE_OUTPUT": "Temp/compile", "COMPILE_TARGET": "Android", "LICENSE_HOME": str(license_home), "UNITY_IMAGE": "consumer/unity:pin", "GITHUB_OUTPUT": str(root / "out")}
+            result = subprocess.run(["bash", str(ACTION / "compile.sh")], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Verified player C# receipt: Android", result.stdout)
+            self.assertIn(str(project / "Temp/compile/compile-receipt.json"), (root / "out").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,7 @@ rm -f "$receipt"
 docker run --rm --workdir /workspace \
   --volume "$root:/workspace" --volume "$LICENSE_HOME:/root" \
   --env SYLPHX_COMPILE_TARGET="$COMPILE_TARGET" \
-  --env SYLPHX_COMPILE_OUTPUT="$output" \
+  --env SYLPHX_COMPILE_OUTPUT="/workspace/$project/$output" \
   --env PROJECT_PATH="/workspace/$project" \
   --ulimit nofile=8192:8192 --entrypoint /bin/bash "$UNITY_IMAGE" -lc '
     exec unity-editor -batchmode -nographics -quit -logFile /dev/stdout \
