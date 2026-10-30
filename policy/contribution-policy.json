@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "identities": [
+    {"name": "Kyle Tse", "email": "hi@kylet.se", "roles": ["author", "committer"]},
+    {"name": "renovate[bot]", "email": "29139614+renovate[bot]@users.noreply.github.com", "roles": ["author", "committer"]},
+    {"name": "sylphx-ai[bot]", "email": "212550965+sylphx-ai[bot]@users.noreply.github.com", "roles": ["author", "committer"]},
+    {"name": "GitHub", "email": "noreply@github.com", "roles": ["committer"]}
+  ],
+  "attribution_names": [
+    "AI", "LLM", "assistant", "agent", "bot", "Claude", "Codex", "Copilot", "Cursor",
+    "ChatGPT", "Gemini", "GPT", "OpenAI", "Anthropic", "Aider", "Devin", "CodeRabbit",
+    "Windsurf", "Codeium", "DeepSeek", "Qwen", "OpenCode", "AnyAgents", "Spiron", "Sylphx Desk"
+  ],
+  "harness_names": ["codex", "opencode", "claude-code", "agy", "muse", "omp", "dsh", "grok"],
+  "internal_patterns": {
+    "coordination-id": "(?<![A-Za-z0-9_])(?:msg|agt|sch)_[a-z0-9]{26,32}(?![A-Za-z0-9_])",
+    "work-id": "(?<![A-Za-z0-9_])W-[0-9]{3,}(?![A-Za-z0-9_])",
+    "private-interface": "(?:anyagents:reply:|mcp__anyagents__)"
+  }
+}

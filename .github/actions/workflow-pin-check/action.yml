@@ -1,7 +1,8 @@
 name: workflow-pin-check
 description: >
   Fails a pull request whose workflows or actions pin another of our repositories (uses: owner/repo@<40-hex>)
-  to a commit that is not on that repository's default branch, naming the file and line. Such a pin works
+  to a commit that is not on that repository's default branch or lacks the referenced action metadata
+  or reusable workflow, naming the file and line. An unmerged pin works
   until the dependency's pull request is squash-merged and its branch deleted; then the commit is
   unreachable and merge_group fails at startup with no job and no annotation. Needs a checkout and a
   read token for the pinned repositories; run it on our own runners only. See docs/workflow-pin-check.md.
@@ -13,6 +14,9 @@ inputs:
   owners:
     description: Space-separated owners whose pins are judged. Empty means the organizations in policy/optimistic-merge.json.
     default: ''
+  shared-only:
+    description: Check only SylphxAI/.github refs, including full SHA, main comment, ancestry, target and nested dependencies. Ignores owners.
+    default: 'false'
 
 runs:
   using: composite
@@ -34,8 +38,11 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         ACTION_PATH: ${{ github.action_path }}
         OWNERS: ${{ inputs.owners }}
+        SHARED_ONLY: ${{ inputs.shared-only }}
       run: |
         set -euo pipefail
         args=()
         for owner in $OWNERS; do args+=(--owner "$owner"); done
-        python3 "$ACTION_PATH/../../../scripts/workflow_pin_check.py" ${args[@]+"${args[@]}"} check --dir "$GITHUB_WORKSPACE"
+        scope=()
+        if [ "${SHARED_ONLY:-false}" = true ]; then scope=(--shared-only); fi
+        python3 "$ACTION_PATH/../../../scripts/workflow_pin_check.py" ${args[@]+"${args[@]}"} check --dir "$GITHUB_WORKSPACE" ${scope[@]+"${scope[@]}"}

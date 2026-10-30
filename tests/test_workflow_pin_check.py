@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Tests for the cross-repository workflow pin check (scripts/workflow_pin_check.py).
 
-GitHub is a fake that answers the repository and compare reads.
+GitHub is a fake that answers repository, immutable commit, compare and tree reads.
 """
 from __future__ import annotations
 
 import importlib.util
+import base64
 import pathlib
 import sys
 import tempfile
@@ -28,15 +29,31 @@ class FakeGh:
     def __init__(self, branch="main"):
         self.branch, self.calls = branch, []
         self.status = {ON_MAIN: "identical", ANCESTOR: "behind", OFF_MAIN: "ahead"}
+        self.targets = {"action.yml", "other/action.yaml", "sub/action.yml", ".github/workflows/x.yml"}
+        self.truncated = False
 
     def rest(self, path):
         self.calls.append(path)
         if path.count("/") == 2:  # repos/owner/name
             return {"default_branch": self.branch}
-        sha = path.rsplit("...", 1)[1]
-        if sha not in self.status:
-            raise RuntimeError("Not Found (HTTP 404)")
-        return {"status": self.status[sha]}
+        if "/compare/" in path:
+            sha = path.rsplit("...", 1)[1]
+            if sha not in self.status:
+                raise RuntimeError("Not Found (HTTP 404)")
+            return {"status": self.status[sha]}
+        if "/git/trees/" in path:
+            return {"truncated": self.truncated, "tree": [
+                {"path": target, "type": "blob", "mode": "100644", "sha": "fixture-blob"} for target in self.targets]}
+        if "/git/blobs/" in path:
+            return {"encoding": "base64", "content": base64.b64encode(b"name: Example\n").decode()}
+        if "/commits/" in path:
+            sha = path.rsplit("/", 1)[1]
+            sha = ON_MAIN if sha == self.branch else sha
+            if sha not in self.status:
+                raise RuntimeError("Not Found (HTTP 404)")
+            return {"sha": sha, "commit": {"committer": {"date": "2026-10-30T00:00:00Z"},
+                                           "tree": {"sha": sha}}}
+        raise AssertionError(path)
 
 
 def workflow(*uses: str) -> str:
@@ -81,12 +98,43 @@ class Judge(unittest.TestCase):
 
     def test_default_branch_name_is_read_not_assumed(self):
         _, gh = self.judge({"a.yml": workflow(f"SylphxAI/x@{ON_MAIN}")}, FakeGh(branch="trunk"))
-        self.assertTrue(any(c.endswith("compare/trunk..." + ON_MAIN) for c in gh.calls))
+        self.assertIn("repos/SylphxAI/x/commits/trunk", gh.calls)
+
+    def test_missing_action_on_main_fails_with_exact_file_and_line(self):
+        found, _ = self.judge({".github/actions/composite/action.yml":
+                              workflow(f"SylphxAI/.github/.github/actions/missing@{ON_MAIN}")})
+        self.assertEqual(len(found), 1)
+        self.assertEqual((found[0]["file"], found[0]["line"]), (".github/actions/composite/action.yml", 7))
+        self.assertIn("target is absent", found[0]["why"])
+        self.assertIn(".github/actions/missing/action.yml", found[0]["why"])
+
+    def test_off_main_pin_fails_even_with_existing_target(self):
+        found, _ = self.judge({"ci.yml": workflow(f"SylphxAI/.github/sub@{OFF_MAIN}")})
+        self.assertEqual(len(found), 1)
+        self.assertIn("not on", found[0]["why"])
+
+    def test_valid_yaml_action_and_reusable_workflow_pass(self):
+        found, _ = self.judge({"ci.yml": workflow(f"SylphxAI/.github/other@{ON_MAIN}",
+                              f"SylphxAI/.github/.github/workflows/x.yml@{ANCESTOR}")})
+        self.assertEqual(found, [])
+
+    def test_missing_workflow_is_not_replaced_by_another_workflow(self):
+        found, _ = self.judge({"ci.yml": workflow(f"SylphxAI/.github/.github/workflows/missing.yml@{ON_MAIN}")})
+        self.assertEqual(len(found), 1)
+        self.assertIn(".github/workflows/missing.yml", found[0]["why"])
+
+    def test_truncated_tree_fails_closed(self):
+        gh = FakeGh()
+        gh.truncated = True
+        found, _ = self.judge({"ci.yml": workflow(f"SylphxAI/.github/sub@{ON_MAIN}")}, gh)
+        self.assertEqual(len(found), 1)
+        self.assertIn("truncated", found[0]["why"])
 
     def test_one_read_per_distinct_pin(self):
         text = workflow(f"SylphxAI/x@{ON_MAIN}", f"SylphxAI/x/other@{ON_MAIN}")
         _, gh = self.judge({"a.yml": text, "b.yml": text})
-        self.assertEqual(len(gh.calls), 2)
+        self.assertEqual(len(gh.calls), 3)
+        self.assertEqual(sum("/git/trees/" in path for path in gh.calls), 1)
 
 
 class Command(unittest.TestCase):
@@ -100,6 +148,7 @@ class Command(unittest.TestCase):
     def test_exit_codes(self):
         self.assertEqual(self.run_check(workflow(f"SylphxAI/x@{OFF_MAIN}")), 1)
         self.assertEqual(self.run_check(workflow(f"SylphxAI/x@{ON_MAIN}")), 0)
+        self.assertEqual(self.run_check(workflow(f"SylphxAI/x/missing@{ON_MAIN}")), 1)
         self.assertEqual(self.run_check(workflow("actions/checkout@v4")), 0)
 
 
