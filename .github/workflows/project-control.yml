@@ -73,7 +73,7 @@ jobs:
         run: node --check .github/actions/setup-changesets-publisher/changesets-publish.mjs
 
   tests:
-    runs-on: sylphx-linux-standard
+    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
