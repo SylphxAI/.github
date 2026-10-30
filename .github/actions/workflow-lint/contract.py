@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bound workflow jobs and forbid swallowed failures on the required needs graph.
+"""Bound jobs, forbid manual gates and keep required failures visible.
 
 Actionlint owns syntax and reference resolution. PyYAML's base nodes preserve
 source locations and accept both block and flow YAML without implicit booleans.
@@ -24,6 +24,7 @@ class Finding(NamedTuple):
     file: str
     line: int
     problem: str
+    blocking: bool = False
 
 
 def fields(node):
@@ -85,17 +86,26 @@ def scan_workflow(file, text):
     required = required_jobs(jobs)
     findings = []
 
-    def add(node, problem):
-        findings.append(Finding(file, node.start_mark.line + 1, problem))
+    def add(node, problem, *, blocking=False):
+        findings.append(Finding(file, node.start_mark.line + 1, problem, blocking))
 
     for name, node in jobs.items():
         job = fields(node)
         if "uses" not in job and "timeout-minutes" not in job:
             add(node, f"job {name}: missing timeout-minutes")
-        if name not in required:
-            continue
+        # Manual gates are forbidden even outside the required needs graph.
         for part in [node, *sequence(job.get("steps"))]:
             properties = fields(part)
+            action = properties.get("uses")
+            if "manual-approval" in scalar(action).lower():
+                add(action, f"job {name}: manual approval gate is forbidden; deployments and checks must run automatically", blocking=True)
+            for key in ("if", "run"):
+                gate = properties.get(key)
+                value = scalar(gate).lower()
+                if "window:booked" in value or "maintenance-window" in value:
+                    add(gate, f"job {name}: manual maintenance-window booking (window:booked) is forbidden; use rolling updates or workload-scheduled automatic windows", blocking=True)
+            if name not in required:
+                continue
             ignore = properties.get("continue-on-error")
             if ignore is not None and scalar(ignore).lower() != "false":
                 add(ignore, f"job {name}: continue-on-error can hide a required failure")
@@ -118,7 +128,7 @@ def scan_dir(root):
 def exit_code(findings, mode):
     if mode not in ("enforce", "report-only"):
         raise ValueError(f"unknown contract mode: {mode}")
-    return int(bool(findings) and mode == "enforce")
+    return int(any(f.blocking for f in findings) or (bool(findings) and mode == "enforce"))
 
 
 def main():
@@ -129,8 +139,8 @@ def main():
         print("workflow-contract: delivered property is delivered or unreadable; skipped")
         return 0
     findings = scan_dir(pathlib.Path.cwd())
-    level = "error" if mode == "enforce" else "warning"
     for finding in findings:
+        level = "error" if finding.blocking or mode == "enforce" else "warning"
         print(f"::{level} file={finding.file},line={finding.line}::{finding.problem}")
     print(f"workflow-contract: {len(findings)} violation(s), mode={mode}")
     return exit_code(findings, mode)
