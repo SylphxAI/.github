@@ -253,8 +253,13 @@ def cache_adoption_requested(base_tree, head_tree, base_text, head_text):
     return bool(after) and before != after
 
 
-def introduced_rules(base_tree, baseline_text, *, shared_repo=None, source_tree=None):
-    profiles = old_checkers(base_tree, shared_repo=shared_repo, source_tree=source_tree)
+def introduced_rules(base_tree, baseline_text, *, shared_repo=None, source_tree=None, head_tree=None):
+    if head_tree is not None and not checker_pins(base_tree, required=False):
+        # Initial onboarding still requires an immutable candidate caller.
+        checker_pins(head_tree)
+        profiles = []
+    else:
+        profiles = old_checkers(base_tree, shared_repo=shared_repo, source_tree=source_tree)
     enforced = {rule for profile in profiles for rule in profile["rules"]}
     adopted = adopted_rules(baseline_text)
     if "# model-alias-ratchet-v1" in (baseline_text or "").splitlines():
@@ -285,11 +290,13 @@ def baseline_validation(head_text, base_text, architecture):
     return errors
 
 
-def seed_permissions(base_tree, head_text, base_text, grown_records, *, shared_repo=None, source_tree=None):
+def seed_permissions(base_tree, head_text, base_text, grown_records, *, shared_repo=None, source_tree=None,
+                     head_tree=None):
     requested = adopted_rules(head_text) - adopted_rules(base_text)
     if not grown_records and not requested:
         return set()
-    introduced, _ = introduced_rules(base_tree, base_text, shared_repo=shared_repo, source_tree=source_tree)
+    introduced, _ = introduced_rules(base_tree, base_text, shared_repo=shared_repo, source_tree=source_tree,
+                                     head_tree=head_tree)
     if requested - introduced:
         raise ValueError("cannot adopt rules already enforced by an old checker: " + ", ".join(sorted(requested - introduced)))
     return introduced
@@ -311,7 +318,7 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     errors = baseline_validation(original, original, sc.architecture)
     if errors:
         raise ValueError("; ".join(errors))
-    introduced, profiles = introduced_rules(base_tree, original, shared_repo=shared_repo)
+    introduced, profiles = introduced_rules(base_tree, original, shared_repo=shared_repo, head_tree=head_tree)
     base_arch = sc.architecture.evaluate(base_tree, repository, None, today)
     head_arch = sc.architecture.evaluate(head_tree, repository, None, today)
     base_models = sc.model_pins.scan(base_tree, repository, None, sc.architecture.source_views)
@@ -323,6 +330,13 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
         if errors:
             raise ValueError("; ".join(errors))
     additions = set()
+    if not profiles and original is None:
+        inherited_departures = set(sc.departures(base_tree))
+        candidate_departures = set(sc.departures(head_tree))
+        if candidate_departures - inherited_departures:
+            raise ValueError("new head stack departure cannot be adopted: "
+                             + ", ".join(sorted(candidate_departures - inherited_departures)))
+        additions |= candidate_departures
     for before, after, key, rule_id in (
             (base_arch, head_arch, sc.architecture.baseline_key,
              lambda row: "architecture/" + row["class"] + "/" + row["rule"]),

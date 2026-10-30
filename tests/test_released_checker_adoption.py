@@ -25,6 +25,67 @@ TENANT_RELEASE = "b7bc8bacfa4852175676a41f0b51068998bafd5a"
 
 
 class ReleasedCheckerAdoptionTests(unittest.TestCase):
+    def test_initial_caller_seeds_only_inherited_stack_departures_when_no_baseline_exists(self):
+        manifest = '[database.migrations]\nengine = "prisma"\n'
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            base = fixture.commit({"sylphx.toml": manifest})
+            fixture.commit({WORKFLOW: workflow(UNKNOWN)})
+            plan = fixture.plan(base)
+            self.assertIn("migrations sylphx.toml prisma", plan["evidence"]["added_records"])
+            adopted = fixture.commit({sc.BASELINE: plan["baseline_text"]})
+            fixture.check(base, 0)
+            fixture.commit({"sylphx.toml": manifest.replace("prisma", "other")})
+            fixture.check(adopted, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            base = fixture.commit({"README.md": "existing repository\n"})
+            fixture.commit({WORKFLOW: workflow(UNKNOWN), "sylphx.toml": manifest})
+            with self.assertRaisesRegex(ValueError, "new head stack departure"):
+                fixture.plan(base)
+
+    def test_initial_caller_adopts_inherited_rules_and_then_refuses_growth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            baseline = "# preserve original bytes\n"
+            base = fixture.commit({SOURCE: POLL, sc.BASELINE: baseline,
+                                   "sylphx.toml": '[resources.database]\ntier = "starter"\n'})
+            with self.assertRaisesRegex(ValueError, "no immutable old"):
+                fixture.plan(base)
+            fixture.commit({WORKFLOW: workflow(UNKNOWN)})
+            plan = fixture.plan(base)
+            self.assertEqual(plan["evidence"]["old_checkers"], [])
+            self.assertEqual(set(plan["introduced_rules"]), sc.adoption.current_rules())
+            self.assertEqual(len(plan["evidence"]["added_records"]), 2)
+            self.assertTrue(plan["baseline_text"].startswith(baseline))
+            adopted = fixture.commit({sc.BASELINE: plan["baseline_text"]})
+            fixture.check(base, 0)
+            fixture.commit({SOURCE: POLL + POLL})
+            output, _ = fixture.check(adopted, 1)
+            self.assertIn("polling-loop", output)
+
+    def test_initial_caller_refuses_new_debt_and_unapproved_cache_seeds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            base = fixture.commit({SOURCE: POLL})
+            fixture.commit({WORKFLOW: workflow(UNKNOWN), SOURCE: POLL + POLL})
+            with self.assertRaisesRegex(ValueError, "new head debt"):
+                fixture.plan(base)
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            path = "src/shop.ts"
+            cached = "export function purchase() { return offerCache.get(1); }\n"
+            base = fixture.commit({path: cached})
+            fixture.commit({WORKFLOW: workflow(UNKNOWN)})
+            with self.assertRaisesRegex(ValueError, "unapproved inherited cache read"):
+                fixture.plan(base)
+            row, = sc.architecture.scan_file(path, cached, "example/app", set(), [])
+            fixture.commit({sc.BASELINE: sc.architecture.BASELINE_MARKER + "\n"
+                + sc.adoption.RULE_MARKER + sc.adoption.CACHE_RULE + "\n"
+                + sc.architecture.baseline_key(row) + "\n"})
+            output, _ = fixture.check(base, 1)
+            self.assertIn("unapproved inherited cache read", output)
+
     def test_required_cli_resolves_alias_without_offline_argument_and_refuses_unavailable_source(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)

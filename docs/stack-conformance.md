@@ -509,6 +509,14 @@ adoption request. Unknown profiles fail only an adoption request. Keep
 rule identities stable; an intentional new rule gets a new identity and its
 own adoption marker. No custom updater or broker is involved.
 
+For an initial caller, the base has no checker pin and the staged candidate must
+add an immutable checker caller. The same helper adopts only findings already
+present in that exact base, with one marker per rule; it refuses new findings
+and unapproved cache reads. Existing markers still prevent reseeding. The
+required CLI validates this initial adoption through the same rule permissions.
+When the base has no baseline file, the helper also seeds exact inherited stack
+departures; a new departure in the candidate is refused.
+
 ### Recorded decisions
 
 `.github/architecture-decisions.json` has `version: 1` and a `decisions` array.

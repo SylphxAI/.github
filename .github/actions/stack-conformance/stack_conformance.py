@@ -1073,7 +1073,8 @@ def cmd_check(args) -> int:
         try:
             introduced = adoption.seed_permissions(Tree(args.repo, args.base), head_text, base_text,
                 (head_architecture_baseline | head_model_baseline) - (base_architecture_baseline | base_model_baseline),
-                shared_repo=getattr(args, "shared_source", None), source_tree=adoption.PublishedCheckerTree)
+                shared_repo=getattr(args, "shared_source", None), source_tree=adoption.PublishedCheckerTree,
+                head_tree=head)
         except (OSError, ValueError, TypeError, KeyError) as error:
             errors.append("rule adoption refused: " + str(error))
     else:
