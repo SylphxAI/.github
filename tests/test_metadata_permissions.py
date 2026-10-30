@@ -37,6 +37,11 @@ class MetadataPermissions(unittest.TestCase):
         for permissions, accepted in [
                 ('', False), ('permissions:\n  contents: read\n', False),
                 ('permissions:\n  pull-requests: none\n', False),
+                ('permissions:\n  contents: read # pull-requests: read\n', False),
+                ('permissions:\n  contents: read\n  # pull-requests: read\n', False),
+                ('permissions: {contents: read} # pull-requests: read\n', False),
+                ('permissions:\n  "pull-requests": "read" # actual scope\n', True),
+                ("permissions: {'contents': 'read', 'pull-requests': 'write'} # actual map\n", True),
                 ('permissions: # required metadata read\n  contents: read\n  pull-requests: read\n', True),
                 ('permissions: {contents: read, pull-requests: write}\n', True),
                 ('permissions: read-all\n', True), ('permissions: write-all\n', True)]:

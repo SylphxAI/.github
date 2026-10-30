@@ -337,16 +337,22 @@ def review_pins(files, repository="", shared_source=None, gh=None):
 
 def permission_level(lines, indent):
     """Read a literal permission declaration; omitted scopes have no grant."""
+    lines = [re.sub(r"(?:^|\s+)#.*$", "", line) for line in lines]
     for index, line in enumerate(lines):
         match = re.fullmatch(r"\s*['\"]?permissions['\"]?\s*:\s*(.*?)\s*", line)
         if not match or om._indent(line) != indent:
             continue
-        value = re.sub(r"(?:^|\s+)#.*$", "", match[1]).strip().strip("'\"")
+        value = match[1].strip().strip("'\"")
         if value in ("read-all", "write-all"):
             return 1 if value == "read-all" else 2
         if not value:
-            value = "\n".join(om._sub_block(lines, index))
-        read = re.search(r"(?:^|[\s,{])['\"]?pull-requests['\"]?\s*:\s*['\"]?(read|write|none)\b", value)
+            for entry in om._sub_block(lines, index):
+                read = re.fullmatch(r"\s*['\"]?pull-requests['\"]?\s*:\s*['\"]?(read|write|none)['\"]?\s*", entry)
+                if read:
+                    return {"read": 1, "write": 2, "none": 0}[read[1]]
+            return 0
+        read = re.search(r"(?:^|,)\s*['\"]?pull-requests['\"]?\s*:\s*['\"]?(read|write|none)['\"]?\s*(?:,|$)",
+                         value[1:-1] if value.startswith('{') and value.endswith('}') else '')
         return {"read": 1, "write": 2, "none": 0}[read[1]] if read else 0
     return None
 
