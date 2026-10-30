@@ -44,8 +44,19 @@ def run_script(replies: dict[str, str], env: dict[str, str]) -> tuple[int, str, 
         curl.write_text("#!/usr/bin/env python3\n" + CURL_STUB)
         os.chmod(curl, 0o755)
         env = {**os.environ, **env, "RUNNER_TEMP": tmp, "PATH": f"{stubs}:{os.environ['PATH']}",
+               "GITHUB_ACTION_PATH": str(ACTION.parent),
                "GITHUB_OUTPUT": str(Path(tmp, "out")), "REPLIES": str(Path(tmp, "replies.json"))}
         Path(tmp, "replies.json").write_text(__import__("json").dumps(replies))
+        # The real Access response contains the same key/subject metadata as
+        # whoami; never let a bare fake key hide a wire-shape regression.
+        data = __import__("json").loads(Path(tmp,"replies.json").read_text())
+        raw = data.get("/v1/access/github/token")
+        if isinstance(raw,str):
+            issued = __import__("json").loads(raw)
+            if issued.get("api_key"):
+                issued["key"] = {"name":"orgs/example/api_keys/test","status":{"principal":"orgs/example/principals/prn_test"}}
+                data["/v1/access/github/token"] = __import__("json").dumps(issued)
+                Path(tmp,"replies.json").write_text(__import__("json").dumps(data))
         proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
         token_file = Path(tmp, "broker-token")
         token = token_file.read_text() if token_file.exists() else ""
@@ -60,7 +71,14 @@ replies = json.loads(open(os.environ["REPLIES"]).read())
 argv = " ".join(sys.argv[1:])
 for frag, body in replies.items():
     if frag in argv:
-        print(body)
+        if isinstance(body, dict):
+            print(json.dumps(body["body"]))
+            if "--write-out" in sys.argv:
+                print(body["status"], end="")
+        else:
+            print(body)
+            if "--write-out" in sys.argv:
+                print("200", end="")
         sys.exit(0)
 sys.stderr.write("no stub for curl: " + argv[:200] + "\n")
 sys.exit(22)
@@ -83,7 +101,8 @@ class ExchangeTest(unittest.TestCase):
     def test_two_hops_narrow_to_one_repository(self) -> None:
         replies = {
             "actions.example": '{"value":"oidc-jwt"}',
-            "/v1/access/github/token": '{"api_key":"syl_ci_key"}',
+            "/v1/access/github/token": '{"api_key":"syl_ci_key","active_after_ms":0}',
+            "/v1/whoami": '{"org":"orgs/example","principal":"prn_test"}',
             ":exchangeToken": '{"token":"ghs_install"}',
         }
         code, out, err, token = run_script(replies, self.env())
@@ -123,7 +142,8 @@ class ExchangeTest(unittest.TestCase):
     def test_broker_refusal_names_the_policy(self) -> None:
         replies = {
             "actions.example": '{"value":"oidc-jwt"}',
-            "/v1/access/github/token": '{"api_key":"syl_ci_key"}',
+            "/v1/access/github/token": '{"api_key":"syl_ci_key","active_after_ms":0}',
+            "/v1/whoami": '{"org":"orgs/example","principal":"prn_test"}',
             ":exchangeToken": '{"title":"PERMISSION_DENIED","detail":"not permitted"}',
         }
         code, out, err, token = run_script(replies, self.env())
@@ -134,12 +154,27 @@ class ExchangeTest(unittest.TestCase):
     def test_soft_fail_reports_instead_of_failing(self) -> None:
         replies = {
             "actions.example": '{"value":"oidc-jwt"}',
-            "/v1/access/github/token": '{"api_key":"syl_ci_key"}',
+            "/v1/access/github/token": '{"api_key":"syl_ci_key","active_after_ms":0}',
+            "/v1/whoami": '{"org":"orgs/example","principal":"prn_test"}',
             ":exchangeToken": '{"title":"PERMISSION_DENIED","detail":"nope"}',
         }
         code, out, err, token = run_script(replies, self.env(SOFT_FAIL="true"))
         self.assertEqual(code, 0, err)
         self.assertEqual(token, "")
+
+    def test_readiness_refusal_sends_no_broker_exchange(self):
+        replies = {
+            "actions.example": '{"value":"oidc-jwt"}',
+            "/v1/access/github/token": '{"api_key":"syl_ci_key","active_after_ms":0}',
+            "/v1/whoami": {"status":403,"body":{"code":"PERMISSION_DENIED"}},
+            # There deliberately is no Broker reply. A wrongly sent POST
+            # would fail at the stub instead of the readiness boundary.
+        }
+        code,out,err,token = run_script(replies,self.env())
+        self.assertEqual(code,1)
+        self.assertIn("no Broker exchange was sent",out)
+        self.assertNotIn("no stub for curl",err)
+        self.assertEqual(token,"")
 
 
 if __name__ == "__main__":

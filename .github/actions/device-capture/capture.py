@@ -6,10 +6,14 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
+from access_ready import ReadinessError, wait_for_identity
 
 API = "https://api.sylphx.com"
 SCOPES = {"sandboxes:read", "sandboxes:write", "sandboxes:exec"}
@@ -97,24 +101,6 @@ def mask(token):
     return token
 
 
-def propagated_identity(receipt, token):
-    # The advertised active_after_ms was exceeded by one real issued token.
-    # Re-read only that same token for at most 30 seconds, and only for the
-    # explicit propagation refusal. Never mint again or retry another denial.
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        identity = receipt.request(API + "/v1/whoami", token, allow_propagation=True, timeout=remaining)
-        if time.monotonic() >= deadline:
-            break
-        if identity.get("code") != "key_not_yet_propagated":
-            return identity
-        time.sleep(min(2, max(0, deadline - time.monotonic())))
-    raise CaptureError("issued identity did not propagate within 30 seconds; no lease requested")
-
-
 def execute(receipt, options):
     ci_name, parent, app, scenario, size, version, output = options
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,62}", ci_name) or not PARENT.fullmatch(parent):
@@ -139,11 +125,10 @@ def execute(receipt, options):
                                os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"], label="GitHub Actions OIDC").get("value"))
     issued = receipt.request(API + "/v1/access/github/token", body={"name": ci_name, "token": oidc})
     token = mask(issued.get("api_key"))
-    delay = issued.get("active_after_ms")
-    if not isinstance(delay, int) or not 0 <= delay <= 60000:
-        raise CaptureError("invalid identity propagation interval")
-    time.sleep(delay / 1000)
-    identity = propagated_identity(receipt, token)
+    try:
+        identity = wait_for_identity(receipt.request, token, issued.get("active_after_ms"), API)
+    except ReadinessError as error:
+        raise CaptureError(str(error)) from None
     check_identity(identity, parent)
     receipt.data.update(ci_name=ci_name, environment=parent, identity=identity, cli_version=version)
     receipt.save()

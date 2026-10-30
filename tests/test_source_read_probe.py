@@ -30,7 +30,7 @@ class FakeReceipts:
     def save(self):
         pass
 
-    def request(self, url, token=None, body=None, label=None, expected=200):
+    def request(self, url, token=None, body=None, label=None, expected=200, allow_propagation=False, timeout=90):
         self.calls.append((url, token, body, expected))
         self.data["requests"].append({"endpoint": url, "status": expected})
         if label == "GitHub Actions OIDC":
@@ -38,6 +38,8 @@ class FakeReceipts:
         if url.endswith("/access/github/token"):
             return {"api_key": "test-access", "key": {"name": "orgs/org_test/api_keys/key1", "status": {"principal": "orgs/org_test/principals/prn_test"}},
                     "active_after_ms": 3000, **self.overrides.get("access", {})}
+        if url.endswith("/v1/whoami"):
+            return {"org": "orgs/org_test", "principal": "prn_test", **self.overrides.get("identity", {})}
         if expected == 403:
             return {"code": "PERMISSION_DENIED"}
         if expected == 400:
@@ -87,9 +89,10 @@ class SourceReadProbeTests(unittest.TestCase):
         receipts = FakeReceipts()
         output, sleep, fetch = self.run_probe(receipts, denied="orgs/org_test/trust_policies/foreign-subject")
         sleep.assert_called_once_with(3)
-        self.assertEqual([call[3] for call in receipts.calls], [200, 200, 403, 400, 200, 200])
-        self.assertEqual(receipts.calls[3][2]["permissions"], {"contents": "write"})
-        self.assertEqual(receipts.calls[4][2], {"repositories": ["example/source"], "permissions": {"contents": "read"}})
+        self.assertEqual([call[3] for call in receipts.calls], [200, 200, 200, 403, 400, 200, 200])
+        self.assertTrue(receipts.calls[2][0].endswith("/v1/whoami"))
+        self.assertEqual(receipts.calls[4][2]["permissions"], {"contents": "write"})
+        self.assertEqual(receipts.calls[5][2], {"repositories": ["example/source"], "permissions": {"contents": "read"}})
         fetch.assert_called_once_with("example/source", PIN, "test-provider")
         self.assertEqual(receipts.data["sources"][0]["fetch_head"], PIN)
         self.assertFalse(receipts.data["sources"][0]["checked_out"])
@@ -100,6 +103,7 @@ class SourceReadProbeTests(unittest.TestCase):
                           {"access": {"key": {"name": "orgs/org_test/api_keys/key1", "status": {"principal": "prn_test"}}}},
                           {"access": {"key": {"name": "orgs/org_test/api_keys/key1", "status": {"principal": "orgs/other/principals/prn_test"}}}},
                           {"access": {"active_after_ms": -1}},
+                          {"identity": {"org": "orgs/other"}}, {"identity": {"principal": "prn_other"}},
                           {"negative": {"code": "WRONG"}}, {"negative": {"token": "unexpected"}},
                           {"broker": {"repositories": ["other/repo"]}},
                           {"broker": {"permissions": {"contents": "write"}}},
@@ -111,7 +115,7 @@ class SourceReadProbeTests(unittest.TestCase):
         receipts = FakeReceipts()
         with self.assertRaises(probe.ProbeError):
             self.run_probe(receipts, denied="orgs/org_other/trust_policies/source-read")
-        self.assertEqual(len(receipts.calls), 2)
+        self.assertEqual(len(receipts.calls), 3)
 
     def test_real_git_fetch_is_depth_one_with_no_checkout_or_saved_credential(self):
         real_run = subprocess.run

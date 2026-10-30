@@ -19,7 +19,12 @@ anything. Callers pin the action by its published commit SHA and grant
          "trust_policy":"orgs/org_example/trust_policies/source-read"}]
    ```
 
-The probe honors Access's `active_after_ms`, first verifies that requesting
+The probe honors Access's `active_after_ms` and then reads `whoami` for the same
+issued identity before any Broker POST. Only `401 key_not_yet_propagated`
+permits bounded same-key reads within an elapsed 30-second deadline; other
+refusals fail immediately. The ready organization/principal must match the
+issued key. Bootstrap-only mode still reports the principal without waiting or
+requesting any Broker token. Read mode then verifies that requesting
 `contents: write` is refused with `400 INVALID_FIELD`, then requests only
 `contents: read` for one repository. It checks the exact commit through GitHub's
 API and `git init` + `fetch --depth=1` + `rev-parse FETCH_HEAD`. Git has no saved
