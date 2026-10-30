@@ -66,9 +66,12 @@ class TriggerTests(unittest.TestCase):
 
     def test_unsupported_trigger_forms_and_mysql_remain_opaque(self):
         for trigger in [TRIGGER.replace("INSERT ON", "UPDATE ON"),
+                        TRIGGER.replace("INSERT ON", "INSERT OR UPDATE ON"),
+                        TRIGGER.replace("INSERT ON", "INSERT OR DELETE ON"),
                         TRIGGER.replace("app.assign_id()", "app.assign_id('arg')"),
                         TRIGGER.replace("FOR EACH ROW", "FOR EACH STATEMENT")]:
-            self.assertTrue(guard.check_sql(FUNCTION + TABLE + trigger, "postgres"))
+            self.assertEqual(guard.check_sql(FUNCTION + TABLE + trigger, "postgres"),
+                             [(3, "opaque procedural body requires a contract reference")])
         self.assertTrue(guard.check_sql(FUNCTION + TABLE + TRIGGER, "mysql"))
 
 

@@ -683,6 +683,9 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             # Changing quote semantics would invalidate subsequent lexical
             # inspection; these statements need an explicit contract review.
             out.append((stmt[0].line, "SQL lexical mode change requires a contract reference"))
+        non_dml_on = (starts(control_stmt, "GRANT") or starts(control_stmt, "REVOKE")
+                      or routine_kind(control_stmt) == "TRIGGER")
+        on_index = next((j for j, t in enumerate(stmt) if kw(t, "ON")), 0) if non_dml_on else 0
         for i, token in enumerate(stmt):
             tail = stmt[i:]
             if any(starts(tail, "DROP", obj) for obj in ("TABLE", "COLUMN", "SCHEMA", "DATABASE")):
@@ -697,7 +700,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 out.append((token.line, "RENAME"))
             # Each mutation needs its own top-level WHERE. A WHERE in a nested
             # SELECT, quoted string, or a second statement does not qualify.
-            if (kw(token, "DELETE") or kw(token, "UPDATE")) and not (i and kw(stmt[i - 1], "ON")):
+            if (kw(token, "DELETE") or kw(token, "UPDATE")) and i >= on_index and not (i and kw(stmt[i - 1], "ON")):
                 # Stop at the enclosing CTE/subquery boundary as well as the
                 # statement end. A later CTE's WHERE cannot qualify this one.
                 suffix, depth = [], 0
