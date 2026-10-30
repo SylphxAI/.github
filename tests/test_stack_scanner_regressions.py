@@ -62,6 +62,49 @@ class PollingSyntaxTests(unittest.TestCase):
 }'''
         self.assertEqual(self.polling('.mjs', source), [])
 
+    def test_finite_cleanup_collections_do_not_poll(self):
+        source = '''const clients = [admin, application, ddl];
+const databases = [emptyName, partialName, occupiedName];
+try {
+  await verifyRelease();
+} finally {
+  for (const client of clients.filter((client) => client !== admin)) await client.end();
+  if (admin) {
+    for (const name of databases) await admin.query(`DROP DATABASE ${name}`);
+    await admin.end();
+  }
+}'''
+        self.assertEqual(self.polling('.mjs', source), [])
+
+    def test_literal_sql_negative_controls_do_not_poll(self):
+        source = '''for (const query of [
+  "SELECT id FROM example.mail",
+  "INSERT INTO example.mail (id, uid, payload) VALUES (4,48,'blocked')",
+  "UPDATE example.mail SET payload = 'blocked' WHERE id = 2",
+]) {
+  await assert.rejects(application.query(query), (error) => error.code === "57014");
+}'''
+        self.assertEqual(self.polling('.mjs', source), [])
+
+    def test_const_finite_array_iteration_does_not_poll(self):
+        source = '''const queries = ["SELECT 1", "SELECT 2", "SELECT 3"];
+for (const query of queries) { await application.query(query); }'''
+        for suffix in ('.js', '.mjs', '.ts'):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.polling(suffix, source), [])
+
+    def test_finite_outer_loop_does_not_hide_unbounded_transport_poll(self):
+        source = '''const clients = [application, ddl];
+for (const client of clients) {
+  while (true) { await client.query("SELECT 1"); }
+}'''
+        for suffix in ('.js', '.mjs', '.ts'):
+            with self.subTest(suffix=suffix):
+                findings = self.polling(suffix, source)
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0]['rule'], 'polling-loop')
+                self.assertEqual(findings[0]['line'], 3)
+
     def test_exit_and_event_conditions_are_not_proven_unbounded(self):
         for suffix, source in (
                 ('.rs', 'fn run() { loop { query(); if done { break; } } }'),
