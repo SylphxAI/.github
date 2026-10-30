@@ -241,7 +241,10 @@ def scan(tree, repository, aliases, source_views):
                 continue  # A variable, method, import or enum key is not a literal model id.
             if not scalar_model(clean, start, end, code is None):
                 continue
-            if model.endswith((".tar.bz2", ".tar.gz", ".zip", ".json", ".rs", ".py")):
+            if (model.endswith((".tar.bz2", ".tar.gz", ".zip"))
+                    or pathlib.PurePosixPath(model).suffix.lower() in SOURCE | {
+                        ".prefab", ".asset", ".unity", ".scene", ".fbx", ".gltf", ".glb", ".obj",
+                        ".png", ".jpg", ".webp", ".svg"}):
                 continue
             if (re.fullmatch(r"o[134]", model.rsplit("/", 1)[-1])
                     and not ("/" in model and model.split("/", 1)[0].lower() in vendors)

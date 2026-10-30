@@ -80,6 +80,8 @@ class ModelSelectorTests(unittest.TestCase):
                        'const modelRepository = "new-vendor/repository";',
                        'const modelPrefix = "new-vendor/future-";',
                        'const modelRepository = "openai/repository";',
+                       'const model = "Assets/Resources/CreateModel.prefab";',
+                       'const model = "backend/room/model/PlayerOperateModel.java";',
                        'const options = {model: runtime.default, repository: "new-vendor/repository"};',
                        'const description = "model"; const repository = "new-vendor/repository";'):
             with self.subTest(source=source):
