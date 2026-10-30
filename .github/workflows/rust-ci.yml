@@ -284,7 +284,7 @@ jobs:
           cargo clippy "${locked[@]}" "${feat[@]}" "${args[@]}"
       - name: Require test execution
         if: inputs.test-args != ''
-        uses: SylphxAI/.github/.github/actions/setup-ci-test@c73ef37e84b294afcca191cf1b0e47e282830777 # guard implementation in this change
+        uses: SylphxAI/.github/.github/actions/setup-ci-test@90d88da2d60dcd6a3884899c273dd3a7f975be17 # main
       - name: Test
         if: inputs.test-args != ''
         working-directory: ${{ inputs.workspace }}
