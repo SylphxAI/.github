@@ -1,27 +1,31 @@
 # Shared-action pin drift check
 
 Every repository pins the shared actions in `SylphxAI/.github` by commit
-(`uses: SylphxAI/.github/.github/actions/needs-pass@<40-hex>`). A pin that stays
+(`uses: SylphxAI/.github/.github/actions/needs-pass@<40-hex> # main`). A pin that stays
 put keeps running the old logic, so a fix in `.github` reaches nobody until each
 pin moves. On 2026-10-15 the fleet held six different `needs-pass` SHAs from
 2026-09-29 to 2026-10-04: a cancelled-lane verifier fix (`.github#258`) had
 landed, and no repository was running it. Nothing turned red, because a stale
 commit still resolves.
 
-`action_pin_drift_check.py` turns that silence into a failure. It fails a pin
-that is more than `DRIFT_DAYS` (7) days behind `SylphxAI/.github` main.
+`action_pin_drift_check.py` fails a SHA pin without the trailing `# main`
+version comment, or one more than `DRIFT_DAYS` (7) days behind
+`SylphxAI/.github` main. Renovate uses the comment to follow the branch; a bare
+SHA can resolve successfully while receiving no updates.
 
 ## What it decides
 
 For every `uses: SylphxAI/.github/.github/{actions,workflows}/<name>@<40-hex>` in
-a repository's `.github/workflows/` and `.github/actions/`, it reads the pinned
-commit's committer date and `.github` main's, and fails when the pin is more than
+a repository's `.github/workflows/` and nested `.github/actions/`, it first
+requires `# main` after the SHA (outside quotes, if the value is quoted).
+Repinning must preserve that comment. It then reads the pinned commit's
+committer date and `.github` main's, and fails when the pin is more than
 `DRIFT_DAYS` days older. `DRIFT_DAYS` is a named constant in the script with its
 reasoning: a week is long enough for Renovate to open and land its grouped pull
 request after a `.github` commit, and short enough that a broken gate is caught
 within a working week rather than found by an unrelated incident.
 
-A pin equal to `.github` main's head is current and never read. An unreadable
+A pin equal to `.github` main's head still needs `# main`; its date is never read. An unreadable
 commit fails (a 404 is a drift we cannot measure, not a pass). A pin to a branch
 or a tag is not judged here.
 
@@ -33,9 +37,41 @@ action_pin_drift_check.py audit --org ORG    judge every non-archived repository
 action_pin_drift_check.py watcher --org ORG  the watch-the-watcher audit below (read-only)
 ```
 
-`audit` reads the organizations in `policy/optimistic-merge.json`, skips
-hands-off repositories (the same policy `workflow_pin_check.py` uses), and exits
-1 on any drifted pin. It is read-only: REST reads through the `gh` CLI.
+Pass each organization with `--org`; the scheduled workflow names the four
+organizations in `policy/optimistic-merge.json`. The audit skips hands-off
+repositories and the shared source repository `SylphxAI/.github` itself.
+Tracking its own `main` would create an endless update chain: each self-pin
+update advances the branch it is trying to follow. This exception applies to
+the fleet pin audit, not the red-main watcher. Caller admission checks should
+apply the same source exception.
+
+`audit` exits 1 on an unmarked, drifted or unreadable pin/repository. A failed
+organization listing is unreadable, never a zero-repository pass. Partial
+GraphQL errors and truncated action trees fail closed. It is read-only:
+GitHub reads through the `gh` CLI. The pure `main_marker_errors(files)` function
+shares the parser and marker rule with offline caller admission checks, without
+requiring a token or reading commit dates.
+
+## Scheduled coverage and credentials
+
+`.github/workflows/action-pin-drift.yml` runs every Monday at 04:27 UTC and on
+`workflow_dispatch`, using `sylphx-linux-standard`. Both audits pass
+`--public-only` and use the job's read-only `github.token`. The report and job
+summary explicitly cover public, non-archived repositories only. Private
+repositories require a separately authorized cross-repository identity; this
+workflow does not claim coverage of them. An authorized local audit can omit
+`--public-only` to check all repositories visible to that identity.
+
+The obsolete `CUBEAGE_CI_READER_APP_ID` / `CUBEAGE_CI_READER_APP_KEY` mint path
+is removed. The scheduled run
+[40270369197](https://github.com/SylphxAI/.github/actions/runs/40270369197)
+on 2026-10-26 failed at `Mint read-only token`: the action reported that its
+`client-id` (or deprecated `app-id`) input was empty, and the pin audit was
+skipped. Those inputs are no longer used. The company identity policy allows
+the existing `sylphx-ai` App with Broker-held signing, not a new Reader App or
+a private key added here. Public reads need neither. If the job token is
+missing, either audit fails before acquisition with
+`read-only GitHub token is unavailable; public audit cannot run`.
 
 ## Watch the watcher
 
@@ -72,9 +108,13 @@ waits excluded), so a merely queued or slow run does not read as unhandled. One
 
 ## Tests
 
-`tests/test_action_pin_drift_check.py` runs on a fake GitHub: a pin past the
-limit fails with file, line and days; a pin at or inside the limit passes; the
-head commit is never behind; an unknown commit fails; each distinct pin is read
-once; a red trunk with only a skipped `Red main` fails; a green `Red main` that
+`tests/test_action_pin_drift_check.py` runs on a fake GitHub: a bare SHA fails
+even at the current head; quoted pins accept an external `# main`; a marked pin
+past the limit fails with file, line and days; a marked pin at or inside the
+limit passes; an unknown commit fails; each distinct pin is read once; nested
+composite actions are read; public scope excludes private repositories and the
+source repository; unreadable inputs fail. It also executes both audit shell
+steps with an empty token to prove a clear failure before acquisition.
+A red trunk with only a skipped `Red main` fails; a green `Red main` that
 stopped at classification is not a repair and fails; a run that reached the
 repair step inside the window passes; a late repair outside the window fails.

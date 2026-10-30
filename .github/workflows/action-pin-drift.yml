@@ -1,7 +1,7 @@
 name: Shared-action pin drift
 
-# Weekly, and on demand: every repository's pins of the shared SylphxAI/.github actions must be within
-# DRIFT_DAYS of .github main, and every red trunk must have drawn a Red main run that reached its repair
+# Weekly, and on demand: public repositories' shared SylphxAI/.github SHA pins must carry # main and be
+# within DRIFT_DAYS of .github main; every red trunk must have drawn a Red main run that reached its repair
 # step within 30 minutes. Both failures are silent otherwise - a stale commit still resolves, and a
 # red-main run that ends green at classification (or is skipped) looks like a handled trunk - so they are
 # checked here rather than found by an unrelated incident (docs/action-pin-drift-check.md).
@@ -20,36 +20,28 @@ concurrency:
 
 jobs:
   drift:
-    # GitHub-hosted standard runners are free only on a public repository.
-    if: github.event.repository.private == false
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-standard
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The reads span every repository of the policy organizations, private ones included, so the job's
-      # own token is not enough: mint the read App token the other fleet sweeps use.
-      - name: Mint read-only token
-        id: reader
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.CUBEAGE_CI_READER_APP_ID }}
-          private-key: ${{ secrets.CUBEAGE_CI_READER_APP_KEY }}
-          owner: SylphxAI
-          permission-contents: read
-          permission-actions: read
-      - name: Shared-action pins are within the drift window
+      # Public source and run metadata need no App key. Private fleet coverage requires an existing
+      # authorized cross-repository identity; github.token does not grant it (see the runbook).
+      - name: Public shared-action pins track main within the drift window
         env:
-          GH_TOKEN: ${{ steps.reader.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          : "${GH_TOKEN:?read-only GitHub token is unavailable; public audit cannot run}"
           set -o pipefail
           rc=0
-          python3 scripts/action_pin_drift_check.py audit \
+          python3 scripts/action_pin_drift_check.py audit --public-only \
             --org SylphxAI --org Cubeage --org EpiowAI --org OzyrixLtd \
             --json "$RUNNER_TEMP/drift.json" | tee "$RUNNER_TEMP/drift.txt" || rc=$?
           {
             echo "## Shared-action pin drift"
+            echo
+            echo 'Scope: public, non-archived repositories only. Private repositories are not covered by this token.'
             echo
             echo '```'
             cat "$RUNNER_TEMP/drift.txt"
@@ -57,21 +49,24 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           case "$rc" in
             0) ;;
-            1) echo "::error::a shared-action pin is behind SylphxAI/.github main; repin it (docs/action-pin-drift-check.md)"; exit 1 ;;
+            1) echo "::error::a shared-action pin lacks # main, is stale, or could not be read (docs/action-pin-drift-check.md)"; exit 1 ;;
             *) echo "::error::could not read a repository's workflows or .github main"; exit "$rc" ;;
           esac
       - name: Every red trunk drew a red-main run
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         env:
-          GH_TOKEN: ${{ steps.reader.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          : "${GH_TOKEN:?read-only GitHub token is unavailable; public audit cannot run}"
           set -o pipefail
           rc=0
-          python3 scripts/action_pin_drift_check.py watcher \
+          python3 scripts/action_pin_drift_check.py watcher --public-only \
             --org SylphxAI --org Cubeage --org EpiowAI --org OzyrixLtd \
             --json "$RUNNER_TEMP/watcher.json" | tee "$RUNNER_TEMP/watcher.txt" || rc=$?
           {
             echo "## Watch the watcher"
+            echo
+            echo 'Scope: public, non-archived repositories only. Private repositories are not covered by this token.'
             echo
             echo '```'
             cat "$RUNNER_TEMP/watcher.txt"
