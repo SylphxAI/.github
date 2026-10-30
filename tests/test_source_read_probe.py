@@ -126,6 +126,7 @@ class SourceReadProbeTests(unittest.TestCase):
             def local_git(*args):
                 return real_run(["git", "-C", str(source), *args], env=env, capture_output=True, check=True, text=True).stdout.strip()
             local_git("init", "-q", "--template=")
+            local_git("config", "uploadpack.allowFilter", "true")
             (source / "source.txt").write_text("first")
             local_git("add", ".")
             local_git("-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "first")
@@ -138,13 +139,23 @@ class SourceReadProbeTests(unittest.TestCase):
                 self.assertEqual(kwargs["env"]["SYLPHX_GIT_TOKEN"], "fake-token")
                 self.assertNotIn("GIT_TRACE", kwargs["env"])
                 if "fetch" in command:
+                    self.assertIn("--filter=blob:none", command)
+                    self.assertIn("--depth=1", command)
                     command = ["file://" + str(source) if arg == "https://github.com/example/source.git" else arg for arg in command]
                     command[3:3] = ["-c", "protocol.file.allow=always"]
+                elif "--remove-section" in command:
+                    command = ["remote.file://" + str(source) if arg == "remote.https://github.com/example/source.git" else arg for arg in command]
                 result = real_run(command, **kwargs)
                 if "fetch" in command:
                     target = Path(command[2])
                     self.assertTrue((target / ".git/shallow").is_file())
                     self.assertFalse((target / "source.txt").exists())
+                    objects = real_run(["git", "-C", str(target), "cat-file", "--batch-all-objects",
+                                        "--batch-check=%(objecttype)"], env=env, capture_output=True,
+                                       check=True, text=True).stdout.splitlines()
+                    self.assertIn("commit", objects)
+                    self.assertIn("tree", objects)
+                    self.assertNotIn("blob", objects)
                 return result
             with patch.object(probe.subprocess, "run", side_effect=invoke), patch.dict(os.environ, {"GIT_TRACE": "1"}):
                 self.assertEqual(probe.fetch_exact("example/source", pin, "fake-token"), pin)

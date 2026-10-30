@@ -142,9 +142,14 @@ def fetch_exact(repository, commit, token):
                 raise ProbeError("git source-read command failed, exit " + str(result.returncode))
             return result.stdout.strip()
         git("init", "-q", "--template=")
+        url = "https://github.com/" + repository + ".git"
         git("-c", "credential.helper=", "-c", "credential.helper=" + helper,
-            "-c", "http.followRedirects=false", "fetch", "--depth=1", "--no-tags",
-            "https://github.com/" + repository + ".git", commit)
+             "-c", "http.followRedirects=false", "fetch", "--depth=1", "--no-tags",
+             "--filter=blob:none", url, commit)
+        # Filtered URL fetches create a local promisor section even without a
+        # named remote. This probe never lazily reads blobs: remove that section
+        # before accepting the receipt, preserving the no-saved-remote contract.
+        git("config", "--remove-section", "remote." + url)
         actual = git("rev-parse", "FETCH_HEAD")
         if actual != commit:
             raise ProbeError("FETCH_HEAD differs from exact requested commit")
@@ -216,6 +221,7 @@ def run(receipts, ci_name, mode, targets, denied_policy):
             raise ProbeError("commit GET did not return the exact requested pin")
         actual = fetch_exact(repository, commit, token)
         receipt = {**target, "utc": utc(), "fetch_head": actual, "depth": 1,
+                    "requested_filter": "blob:none",
                    "token_exchange": token_reply["token_exchange"], "issuer": token_reply.get("issuer"),
                    "connection": token_reply.get("connection"), "checked_out": False}
         receipts.data["sources"].append(receipt)
