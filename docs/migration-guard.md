@@ -83,10 +83,17 @@ destructive bodies report the underlying operation. Unquoted inline bodies,
 including MySQL routine definitions, other procedural languages, escape-string
 bodies, and opaque dynamic execution require a contract reference. A marker inside a body string
 does not authorize the surrounding migration.
-One PostgreSQL dynamic ACL form is inspected: `EXECUTE format(...)` (also
-`pg_catalog.format`) with a constant template for `GRANT`/`REVOKE USAGE ON SCHEMA`
+One PostgreSQL dynamic ACL form is inspected: `EXECUTE pg_catalog.format(...)`
+with a constant template for `GRANT`/`REVOKE USAGE ON SCHEMA`
 or `GRANT`/`REVOKE EXECUTE ON FUNCTION schema.name(types)`. The only placeholder
 is one final `%I` role name, supplied by a simple variable or record field.
+Bare `format` is accepted only inside a routine with a fixed local
+`SET search_path = pg_catalog` (optionally followed by `pg_temp`). An absent or
+user-schema path, a body that changes or resets that path, calls a function
+outside `pg_catalog` by a qualified name, or executes nested `DO` does not
+establish builtin formatter identity. Formatter redefinitions
+require a contract reference. The template prefix is parsed separately from
+the final placeholder, so a literal grantee cannot impersonate it.
 Identifier quoting prevents role names from adding SQL syntax. Other privilege
 scopes, grant options, SQL interpolation (`%s`/`%L`), concatenated templates,
 extra commands and assembled queries remain opaque. This does not authorize
