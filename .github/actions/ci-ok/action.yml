@@ -1,5 +1,8 @@
 name: ci-ok
 description: >
+  Automatically scans added commits for secrets on pull_request and
+  merge_group, with the same policy and exact exceptions as needs-pass
+  (docs/secret-scan.md). Requires contents: read as well as check/run access.
   Aggregate gate for repositories whose checks live in several workflows or in
   path-filtered workflows, where one ci-ok job cannot `needs:` them all. Waits
   until every other GitHub Actions check run on the commit has completed, then fails if any
@@ -48,6 +51,11 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Scan added commits for secrets
+      shell: bash
+      env:
+        SECRET_SCAN_TOKEN: ${{ inputs.token }}
+      run: python3 "$GITHUB_ACTION_PATH/../secret-scan/secret_scan.py" --fetch --pre-merge-only
     - name: Wait for every other check on this commit
       shell: bash
       env:
