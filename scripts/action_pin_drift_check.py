@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a repository's pin of a shared SylphxAI/.github action is more than N days behind .github main.
+"""Fail shared SylphxAI/.github SHA pins without # main or more than N days behind main.
 
 SylphxAI/.github holds the shared actions every repository pins by commit (needs-pass, ci-ok,
 main-red-gate, secret-scan, ...). A repo that pins a stale commit keeps running the old logic, so a
@@ -11,9 +11,10 @@ the old commit still resolves, so nothing turns red. This check turns that silen
   action_pin_drift_check.py audit --org ORG    judge every non-archived repository of ORG (read-only)
 
 A pin is `uses: SylphxAI/.github/.github/actions/<name>@<40-hex>` (or a pinned reusable workflow). The
-check reads .github main's head commit and each pinned commit's committer date and fails a pin whose
-date is more than DRIFT_DAYS behind main's. It is read-only (REST reads through the `gh` CLI) and exits
-1 on any drifted pin.
+check requires the trailing `# main` version comment that lets Renovate follow the branch, even for
+the current head. It also reads each pinned commit's committer date and fails a pin whose date is more
+than DRIFT_DAYS behind main's. It is read-only (GitHub reads through the `gh` CLI) and exits 1 on any
+untracked or drifted pin.
 
 DRIFT_DAYS exists so drift alerts while it is still cheap: the org bump of six stale needs-pass SHAs
 (2026-10-15) had gone 11 to 16 days without a signal. A week is long enough for Renovate to
@@ -23,6 +24,7 @@ caught within one working week rather than found by an unrelated incident.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime
 import fnmatch
 import json
@@ -31,13 +33,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import audit_optimistic_merge as om  # noqa: E402  (same reader, same conventions)
+import audit_optimistic_merge as om  # noqa: E402 - reason: the shared reader lives beside this standalone script
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARED_REPO = "SylphxAI/.github"
 # Days a shared-action pin may lag .github main before the check fails. See the module docstring.
 DRIFT_DAYS = 7
-USES = re.compile(r"^\s*-?\s*uses\s*:\s*['\"]?(SylphxAI/\.github)((?:/[^@\s'\"]+)?)@([0-9a-fA-F]{40})['\"]?\s*(?:#.*)?$")
+USES = re.compile(r"^\s*-?\s*uses\s*:\s*(['\"]?)(SylphxAI/\.github)((?:/[^@\s'\"]+)?)@([0-9a-fA-F]{40})\1\s*(?:#(?P<version>.*))?$")
 
 
 def find_pins(text: str) -> list[dict]:
@@ -48,8 +50,17 @@ def find_pins(text: str) -> list[dict]:
             continue
         match = USES.match(line)
         if match:
-            pins.append({"line": number, "path": match.group(2).lstrip("/"), "sha": match.group(3).lower()})
+            pins.append({"line": number, "path": match.group(3).lstrip("/"), "sha": match.group(4).lower(),
+                         "tracks_main": (match.group("version") or "").strip() == "main"})
     return pins
+
+
+def main_marker_errors(files: dict[str, str]) -> list[dict]:
+    """Missing Renovate branch markers, without network or commit-date reads."""
+    return [{"file": name, "line": pin["line"], "path": pin["path"], "sha": pin["sha"], "days": None,
+             "why": "missing # main version comment; append # main after the SHA "
+                    "so Renovate can follow the shared-action branch"}
+            for name in sorted(files) for pin in find_pins(files[name] or "") if not pin["tracks_main"]]
 
 
 def _date(value: str) -> datetime.datetime:
@@ -76,14 +87,14 @@ class Commits:
 def judge(files: dict[str, str], commits: Commits, head_sha: str, head_date: datetime.datetime,
           days: int = DRIFT_DAYS) -> list[dict]:
     """Drifted pins in `files` ({path: text}): [{file, line, path, sha, days, why}]."""
-    offenders = []
+    offenders = main_marker_errors(files)
     for name in sorted(files):
         for pin in find_pins(files[name] or ""):
             if pin["sha"] == head_sha:
                 continue
             try:
                 pinned = commits.date(SHARED_REPO, pin["sha"])
-            except Exception as err:  # noqa: BLE001 - unreadable is a failure, whatever the reason
+            except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
                 offenders.append({"file": name, "line": pin["line"], "path": pin["path"], "sha": pin["sha"],
                                   "days": None,
                                   "why": f"{pin['sha'][:9]} could not be read on {SHARED_REPO} ({str(err)[:80]})"})
@@ -109,33 +120,65 @@ def read_dir(root: Path) -> dict[str, str]:
 
 
 def read_repo(gh, org: str, name: str) -> tuple[dict[str, str] | None, str]:
-    """Workflow texts of one repository's default branch (None when unreadable)."""
-    query = ('query{repository(owner:%s,name:%s){wf: object(expression:"HEAD:.github/workflows"){'
-             '... on Tree{entries{name object{... on Blob{text}}}}}}}' % (json.dumps(org), json.dumps(name)))
+    """Workflows and nested composite actions on the default branch (None when unreadable)."""
+    selection = " ".join(
+        '%s: object(expression:%s){... on Tree{entries{name oid type object{... on Blob{text}}}}}'
+        % (alias, json.dumps("HEAD:" + path))
+        for alias, path in (("wf", ".github/workflows"), ("actions", ".github/actions")))
+    query = 'query{repository(owner:%s,name:%s){%s}}' % (json.dumps(org), json.dumps(name), selection)
     try:
         reply = gh.graphql(query)
-    except Exception as err:  # noqa: BLE001
+        if reply.get("errors"):
+            raise RuntimeError(json.dumps(reply["errors"]))
+        node = (reply.get("data") or {}).get("repository")
+        if node is None:
+            raise RuntimeError("repository could not be read")
+        files = {}
+        for alias, root in (("wf", ".github/workflows"), ("actions", ".github/actions")):
+            for entry in (node.get(alias) or {}).get("entries") or []:
+                path = f"{root}/{entry['name']}"
+                if entry["type"] == "tree":
+                    tree = gh.rest(f"repos/{org}/{name}/git/trees/{entry['oid']}?recursive=1")
+                    if tree.get("truncated"):
+                        raise RuntimeError(f"{path}: Git tree was truncated")
+                    for item in tree["tree"]:
+                        if item["type"] == "blob" and item["path"].endswith((".yml", ".yaml")):
+                            blob = gh.rest(f"repos/{org}/{name}/git/blobs/{item['sha']}")
+                            if blob.get("encoding") != "base64":
+                                raise RuntimeError(f"{path}/{item['path']}: unsupported blob encoding")
+                            files[f"{path}/{item['path']}"] = base64.b64decode(blob["content"]).decode("utf-8")
+                elif entry["type"] == "blob" and path.endswith((".yml", ".yaml")):
+                    content = (entry.get("object") or {}).get("text")
+                    if content is None:
+                        raise RuntimeError(f"{path}: workflow text could not be read")
+                    files[path] = content
+        return files, ""
+    except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
         return None, str(err)[:120]
-    node = (reply.get("data") or {}).get("repository")
-    if node is None:
-        return None, json.dumps(reply.get("errors"))[:120]
-    entries = ((node.get("wf") or {}).get("entries")) or []
-    return {f".github/workflows/{e['name']}": (e.get("object") or {}).get("text") or ""
-            for e in entries if e["name"].endswith((".yml", ".yaml"))}, ""
 
 
-def audit(gh, orgs: list[str], hands_off: list[str], days: int = DRIFT_DAYS) -> dict:
+def audit(gh, orgs: list[str], hands_off: list[str], days: int = DRIFT_DAYS, public_only: bool = False) -> dict:
     commits = Commits(gh)
     try:
         head_sha, head_date = commits.main_head(SHARED_REPO)
-    except Exception as err:  # noqa: BLE001 - an unreadable head fails the run rather than passing every repo
+    except Exception as err:  # noqa: BLE001 - reason: an unreadable head must fail the entire audit
         return {"head": None, "repos": [],
                 "summary": {"repos": 0, "PASS": 0, "FAIL": 0, "UNREADABLE": 0, "head_error": str(err)[:120]}}
     repos = []
     for org in orgs:
-        for base in om.list_org(gh, org):
+        if org.lower() in om.NEVER_READ_OWNERS:
+            continue
+        try:
+            bases = om.list_org(gh, org)
+        except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
+            repos.append({"repo": f"{org}/*", "status": "UNREADABLE", "offenders": [], "error": str(err)[:120]})
+            continue
+        for base in bases:
             repo = f"{org}/{base['name']}"
-            if org.lower() in om.NEVER_READ_OWNERS or any(fnmatch.fnmatchcase(repo, pattern) for pattern in hands_off):
+            # Updating the source repository's own immutable pins would advance main again forever.
+            if repo.lower() == SHARED_REPO.lower():
+                continue
+            if (public_only and base["isPrivate"]) or any(fnmatch.fnmatchcase(repo, pattern) for pattern in hands_off):
                 continue
             files, error = read_repo(gh, org, base["name"])
             if files is None:
@@ -145,7 +188,8 @@ def audit(gh, orgs: list[str], hands_off: list[str], days: int = DRIFT_DAYS) -> 
             repos.append({"repo": repo, "status": "FAIL" if offenders else "PASS", "offenders": offenders,
                           "pins": sum(len(find_pins(t)) for t in files.values())})
     counts = {s: sum(1 for r in repos if r["status"] == s) for s in ("PASS", "FAIL", "UNREADABLE")}
-    return {"head": head_sha, "repos": repos, "summary": {"repos": len(repos), **counts}}
+    return {"head": head_sha, "scope": "public" if public_only else "visible", "repos": repos,
+            "summary": {"repos": len(repos), **counts}}
 
 
 def render_offenders(offenders: list[dict]) -> str:
@@ -210,7 +254,7 @@ def watcher_offenders(gh, repo: str, trunk: str, window_minutes: int = RED_MAIN_
     try:
         verify = _runs(gh, repo, VERIFY_WORKFLOW)
         red = _runs(gh, repo, RED_MAIN_WORKFLOW)
-    except Exception as err:  # noqa: BLE001 - unreadable is a failure, whatever the reason
+    except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
         return [{"verify_run": None, "verify_at": None, "why": f"runs could not be read ({str(err)[:80]})"}]
     if not verify:
         return []
@@ -235,22 +279,31 @@ def watch_main(gh, args, hands_off: list[str]) -> int:
     """The `watcher` command: a red trunk with no red-main run that reached its repair step is a broken net."""
     repos = []
     for org in args.org:
-        for base in om.list_org(gh, org):
+        if org.lower() in om.NEVER_READ_OWNERS:
+            continue
+        try:
+            bases = om.list_org(gh, org)
+        except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
+            repos.append({"repo": f"{org}/*", "status": "FAIL",
+                          "offenders": [{"why": f"repository list could not be read ({str(err)[:120]})"}]})
+            continue
+        for base in bases:
             repo = f"{org}/{base['name']}"
-            if org.lower() in om.NEVER_READ_OWNERS or any(fnmatch.fnmatchcase(repo, pattern) for pattern in hands_off):
+            if (args.public_only and base["isPrivate"]) or any(fnmatch.fnmatchcase(repo, pattern) for pattern in hands_off):
                 continue
             offenders = watcher_offenders(gh, repo, (base.get("defaultBranchRef") or {}).get("name") or "main",
                                           args.window_minutes)
             repos.append({"repo": repo, "status": "FAIL" if offenders else "PASS", "offenders": offenders})
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps({"repos": repos}, indent=1))
+        Path(args.json_out).write_text(json.dumps({"scope": "public" if args.public_only else "visible", "repos": repos}, indent=1))
     for repo in repos:
         if repo["status"] == "FAIL":
             print(f"FAIL   {repo['repo']}")
             for o in repo["offenders"]:
                 print(f"         {o['why']}")
     failed = sum(1 for r in repos if r["status"] == "FAIL")
-    print(f"{len(repos)} repositories: {len(repos) - failed} PASS, {failed} FAIL "
+    print(f"{len(repos)} {'public' if args.public_only else 'visible'} repositories: "
+          f"{len(repos) - failed} PASS, {failed} FAIL "
           f"(a red trunk with no {RED_MAIN_WORKFLOW} run that reached its repair step within "
           f"{args.window_minutes} minutes)")
     return 1 if failed else 0
@@ -265,17 +318,19 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     scan = sub.add_parser("audit", help="judge every repository of the organizations")
     scan.add_argument("--org", action="append", required=True)
     scan.add_argument("--json", dest="json_out")
+    scan.add_argument("--public-only", action="store_true", help="audit public repositories only; excludes private coverage")
     watch = sub.add_parser("watcher", help="every repository: a red trunk must draw a non-skipped red-main run")
     watch.add_argument("--org", action="append", required=True)
     watch.add_argument("--window-minutes", type=int, default=RED_MAIN_WINDOW_MINUTES)
     watch.add_argument("--json", dest="json_out")
+    watch.add_argument("--public-only", action="store_true", help="audit public repositories only; excludes private coverage")
     args = parser.parse_args(argv)
     gh = gh or om.Gh()
     if args.mode == "check":
         commits = Commits(gh)
         try:
             head_sha, head_date = commits.main_head(SHARED_REPO)
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001 - reason: every acquisition failure must produce an audit finding
             print(f"could not read {SHARED_REPO} main: {err}", file=sys.stderr)
             return 2
         offenders = judge(read_dir(Path(args.dir)), commits, head_sha, head_date, args.days)
@@ -284,13 +339,14 @@ def main(argv: list[str] | None = None, gh=None) -> int:
             for o in offenders:
                 print(f"::error file={o['file']},line={o['line']}::{o['why']}")
             return 1
-        print(f"shared-action pins are at most {args.days} days behind {SHARED_REPO} main ({head_sha[:9]})")
+        print(f"shared-action pins have # main and are at most {args.days} days behind "
+              f"{SHARED_REPO} main ({head_sha[:9]})")
         return 0
     policy = json.loads((ROOT / "policy" / "optimistic-merge.json").read_text())
     hands_off = [r for e in policy.get("exemptions", []) if e["class"] == "hands-off" for r in e["repos"]]
     if args.mode == "watcher":
         return watch_main(gh, args, hands_off)
-    report = audit(gh, args.org, hands_off, args.days)
+    report = audit(gh, args.org, hands_off, args.days, args.public_only)
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(report, indent=1))
     for repo in report["repos"]:
@@ -301,7 +357,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     if "head_error" in s:
         print(f"could not read {SHARED_REPO} main: {s['head_error']}")
         return 2
-    print(f"{s['repos']} repositories: {s['PASS']} PASS, {s['FAIL']} FAIL, {s['UNREADABLE']} unreadable "
+    print(f"{s['repos']} {report['scope']} repositories: {s['PASS']} PASS, {s['FAIL']} FAIL, {s['UNREADABLE']} unreadable "
           f"(at most {args.days} days behind {SHARED_REPO} main {report['head'][:9]})")
     return 1 if s["FAIL"] or s["UNREADABLE"] else 0
 
