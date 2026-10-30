@@ -1,0 +1,192 @@
+{
+  "read_at_utc": "2026-10-30T09:52:11.070209+00:00",
+  "version": 1,
+  "warnings": [
+    {
+      "caller_pattern": "\\brollDice\\b",
+      "callers": {
+        "app/src/hooks/transactions/usePlaceBet.ts": "cef8ba697cc0fd1aa20700a0f48c3f4d894cfc722babaa5fda0f22f668be2578",
+        "app/src/lib/finance.ts": "690bfcb6d2a73794ddd2867280d468bfe940879095db7e99fdf0f900d652b391",
+        "app/src/lib/utils.ts": "200a66b076c5d00121fb122091d65da89d4480673702754032416958c678e900"
+      },
+      "evidence": {
+        "Cargo.toml": "64c51a119a242b6ca105f9871988b120f03cf2434a2a41bef01f3ab5e3f369b1",
+        "app/package.json": "d4d1cb7443399b6a339e35781dfae66f5520cbeead4d5d5dba0ce1fe2863c5b9",
+        "package.json": "0f7942d16478f52e1339a3931890c5a2cddfe28393de49911133a637176caed8",
+        "patches/atty/Cargo.toml": "d318d04ae643213145cee39eca0aa081f3d05e6e55f69abe365d04254bffcde8",
+        "patches/borsh/Cargo.toml": "2141ada6acc74ebf6264c1d7775e35cc04e13b5a546378b552a0d4f776d36ced",
+        "patches/curve25519-dalek/Cargo.toml": "fb4cdc3907cfe5561bb6cfd52a59d6dcb909381c900dff90a6279ec393560021",
+        "patches/ed25519-dalek/Cargo.toml": "da4a846807716897ad300c5fe435dabc7289088d2cf89b5578767a9ea11665c5",
+        "patches/h2/Cargo.toml": "5416e534f1b077d11868badf2a6e4f1dc2c34afacb1576e2853e290eb6079a18",
+        "patches/ouroboros/Cargo.toml": "ea701eefefbe8fb5a50774291746ad09ecbce764c9aa5ddbf75250c69e0bcac8",
+        "patches/ouroboros_macro/Cargo.toml": "b1da47b46c58d5af09823b3001431d7a4bb597a85c8c47f9e1f37e6b854ef95d",
+        "patches/quinn-proto/Cargo.toml": "91bb5a2a24e3224139a9832f1bdcc6990138aee00530dd6023a23087d51de86a",
+        "patches/rand/Cargo.toml": "894de822eb503292a1628f321e26a8cee7cb6de150d05f018b87eeb630ba2f79",
+        "patches/rcgen/Cargo.toml": "dfb289340f4d25bde545186aa00a2de57f2f2514af5a30d61d1b9cb2a1ccda41",
+        "patches/rcgen/src/main.rs": "0866f074ba3bb5de35253b106a601bf5dd98a726bf393c30b3ef18df260e1bc3",
+        "patches/rustls-webpki/Cargo.toml": "0843d23a6ccd342a7f84b5400388ebbd7ff5def53388af14e839cb5802b2dd2a",
+        "patches/serde_with/Cargo.toml": "507212ffd2ab59094899b8ae815da8a74f80c237585298bf3d50751792e5f460",
+        "programs/kernel/Cargo.toml": "11c416e6de3e13987390faca3573d11bfdac04627f99cec663bd2f98c65af3b7",
+        "sylphx.toml": "c2106c3a0cef41045d63d700883ae96c1767927d28cece738097ef50dc713754",
+        "worker/docker-context/package.json": "7adc312f5a4f04d23d2088fef396aba7ac2bf93c0e64cc934fbeefbd94474dc2"
+      },
+      "path": "app/src/lib/finance.ts",
+      "reason": "The only gameplay caller uses this roll in demoMode; real outcomes use the separate kernel/on-chain path.",
+      "repository": "SylphxAI/korvana",
+      "source_sha256": "690bfcb6d2a73794ddd2867280d468bfe940879095db7e99fdf0f900d652b391"
+    },
+    {
+      "caller_pattern": "\\bcreateShuffled\\b",
+      "callers": {
+        "src/games/sliding-puzzle/game.tsx": "566135fa83aff208920c94628ae6b1ce04b9f0317e8e39f8c1b1de892f63e49c"
+      },
+      "evidence": {
+        "Cargo.toml": "03d0ca407a76a29dec7940d9ce3e336297d0baa57effe03518577406d5a0cd11",
+        "crates/tryit-server/Cargo.toml": "f2a15463836e0b06cad5e1cfcfadc5ab2a9efc204f402e2a99e2ad8f9f41ffc0",
+        "crates/tryit-server/src/main.rs": "2b5e9b5416ac1e833074636ce053f3a09b528fa78e6587b17f0d0fb6f26203ef",
+        "crates/tryit-web/Cargo.toml": "47c8e6bf5c15f788f599d2881f571875e9c0dd72126448224a396a8ba52d0a91",
+        "crates/tryit-web/src/main.rs": "95de72e2dc5f6784a3ff4013408b661d7593d8e23ffb6902d89f029b4deeb7ef",
+        "package.json": "14c4d0ab4201096c73a9d0e3b7fc664badd7319e339470afd105239ba2d20d06",
+        "sylphx.toml": "fce9feb64a33d13ff53cff3d480f642bff948bb0349dd2ff3e2928341654a6ab"
+      },
+      "path": "src/games/sliding-puzzle/game.tsx",
+      "reason": "Visible sliding-puzzle tile arrangement creates a solvable board; it does not deal hidden tiles or score a chance outcome.",
+      "repository": "SylphxAI/tryit",
+      "source_sha256": "566135fa83aff208920c94628ae6b1ce04b9f0317e8e39f8c1b1de892f63e49c"
+    },
+    {
+      "caller_pattern": "\\b(?:FunRoom|MahjongTw16|tycoon_rules_mahjong_tw16)\\b",
+      "callers": {
+        "crates/fmj-rules/src/lib.rs": "99d9d12747e8fbbe6556e5f3dcbe90d5229a37e1cf423cc286ec0c938d6fabe8",
+        "crates/fmj-rules/src/profile.rs": "a574376373379df674566aaed644f7f9dd985a0cfa7fbb1a464ecdd8d243f18c",
+        "crates/fmj-rules/src/tests.rs": "76c1e82a57759df6be8f64097e122f597453835657a324430e9ffdc2111c456b",
+        "crates/fun-mahjong/src/draw_assist.rs": "e079badf23873cb0efec5389f43a6da2fd73cd52eb94e06f7c55771bd962f4b3",
+        "crates/fun-mahjong/src/lib.rs": "aaf5606d3dbd4d1160e10d640e84cc6ecf8e60c411a51d5c374242148b5da032",
+        "crates/fun-mahjong/src/table.rs": "b23769a24a0df10ab17382dee9e38e718baf226a6afb1eeba3e5f63cb155fee6",
+        "crates/fun-mahjong/src/table_scene.rs": "85e4f29fd06ccb5d1ce7b2adb370c42392137572f1c06df0bddd69f6470be328",
+        "server/src/main.rs": "abafa0ffae330f9b5caa15ee8f3c435419230b80b376d88cbd3f14e20813ae0e",
+        "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/fun/room.rs": "e288010aec43e7b3bfb806580ee45f266a13806658dead34df23b2c9371947b3",
+        "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/fun/skill.rs": "d51c2c07a0c5203c55d21fcd6ab953391900620d6f5c008e7600a7968688de04",
+        "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/lib.rs": "742a60263b6b8e38e11d1616be1ca7f886631aab28dda3baa96a7c9176e58ad1",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/lib.rs": "8dba6a3bdeea667127ac6b01006e3ac8929586de7f1bd0bf27c52ba10ed4f602",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/matching.rs": "528e96b3434fbe60dab8484ef362d33d6ad15a23328a5f07bc66cfb31e67c605",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/socket.rs": "6cc849430383354997e7be8fcacb0feb05d40c9cdcc5f404f45478676776f2b5",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/tournaments.rs": "fc5703885fa4807c76f1d5535808371a1667e7330582c1fa9a0d26906156b2b3"
+      },
+      "evidence": {
+        "Cargo.toml": "54a475c054517272c60e5ad0bbb07ac8c72fe5d9c72873e0ef7a0336b5a54f18",
+        "crates/fmj-cast-rig/Cargo.toml": "ab655933e0839f2d6a7a47d99317310190b82526cd5278cb689016756c780fc1",
+        "crates/fmj-rules/Cargo.toml": "db2f8935958e4fcaf654bc3e7383baa41c405fa0aad860be35ab8250473b7704",
+        "crates/fun-economy/Cargo.toml": "c76ab909554c8c16b7803f32e1ac10e261f935256d09f38313d7904076690b52",
+        "crates/fun-mahjong/Cargo.toml": "304fd1b2962d84bf06a211d59ccdeca952dddab4757d1cb6e69cd193a449e31d",
+        "crates/fun-mahjong/src/main.rs": "82a352582ba4667d8c6341ca3c60b11350d35caec9138f52ca93cec885051434",
+        "crates/fun-net/Cargo.toml": "588594957919a45b527a5402e5a96c30a9d7a496be2b8f39ac61d3dcb4ec89e8",
+        "crates/fun-rooms/Cargo.toml": "f41baf4e7cf0a3fa25f0ef08f3006f85617d3cf8c1159d5da2185c9d961bb14f",
+        "crates/fun-shell/Cargo.toml": "3fd127073e2677fcc2d6f2049f064c3272279032c8267d33fbd9dfc170511586",
+        "crates/fun-table3d/Cargo.toml": "4fbc3d818cc0c32f5d9024a1f3fd8eb33ccf5444e08cdae264d4087d6ec61b13",
+        "crates/fun-ui/Cargo.toml": "aae4b451badc929e48a740030ddfc62e5078c145839d528fa1827ea484ef08e7",
+        "server/Cargo.toml": "d063c0360ccc5f9a7024382258cd0d2c2816ccdf138d27417569f6901b688dc3",
+        "server/src/main.rs": "abafa0ffae330f9b5caa15ee8f3c435419230b80b376d88cbd3f14e20813ae0e",
+        "server/vendor/tycoon-engine/Cargo.toml": "cb94b95a549be7cb3d920ab86087051c0e07d8df98fe2dede2f0589291ab35f7",
+        "server/vendor/tycoon-engine/crates/tycoon-core/Cargo.toml": "76ae2f2571c660ef5ff0091485f84fa6ccccbe138cbc7eae93334a0fe39e2457",
+        "server/vendor/tycoon-engine/crates/tycoon-identity/Cargo.toml": "336298eae88fc38bdbe3c4f5503e34085f4b8102c85ee4dc56d099c1dcd53d0d",
+        "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/Cargo.toml": "1e1501f8685ef1448f29b2a75946d32bfa58fd0d878877bdedeef609da3131c9",
+        "server/vendor/tycoon-engine/crates/tycoon-server/Cargo.toml": "a082a7f447a51ed3b79f463da3e004246a692bbfb41df58ea107896e19480f20",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/main.rs": "c5e4d0857f77e9a434b18347ed809981dd2b901eca47ec90e292f1f5dcc57c78",
+        "server/vendor/tycoon-engine/crates/tycoon-store/Cargo.toml": "91ebf24be7ce3ed2b3bacea68aca2a38debef0d321ef6508546e0b84c6e93e5d",
+        "sylphx.toml": "62c5cda9588f82397f3da5dc3343cebde930ea3b07c679020c53986396becbe6"
+      },
+      "path": "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/fun/skill.rs",
+      "reason": "The selected server registers MahjongTw16/HK13; this copied FunRoom API is not selected. The client uses its separately pinned engine.",
+      "repository": "Cubeage-limited/fun-mahjong-keel",
+      "source_sha256": "d51c2c07a0c5203c55d21fcd6ab953391900620d6f5c008e7600a7968688de04"
+    },
+    {
+      "caller_pattern": "\\b(?:FunRoom|MahjongTw16|tycoon_rules_mahjong_tw16)\\b",
+      "callers": {
+        "crates/fmj-rules/src/lib.rs": "99d9d12747e8fbbe6556e5f3dcbe90d5229a37e1cf423cc286ec0c938d6fabe8",
+        "crates/fmj-rules/src/profile.rs": "a574376373379df674566aaed644f7f9dd985a0cfa7fbb1a464ecdd8d243f18c",
+        "crates/fmj-rules/src/tests.rs": "76c1e82a57759df6be8f64097e122f597453835657a324430e9ffdc2111c456b",
+        "crates/fun-mahjong/src/draw_assist.rs": "e079badf23873cb0efec5389f43a6da2fd73cd52eb94e06f7c55771bd962f4b3",
+        "crates/fun-mahjong/src/lib.rs": "aaf5606d3dbd4d1160e10d640e84cc6ecf8e60c411a51d5c374242148b5da032",
+        "crates/fun-mahjong/src/table.rs": "b23769a24a0df10ab17382dee9e38e718baf226a6afb1eeba3e5f63cb155fee6",
+        "crates/fun-mahjong/src/table_scene.rs": "85e4f29fd06ccb5d1ce7b2adb370c42392137572f1c06df0bddd69f6470be328",
+        "server/src/main.rs": "abafa0ffae330f9b5caa15ee8f3c435419230b80b376d88cbd3f14e20813ae0e",
+        "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/fun/room.rs": "e288010aec43e7b3bfb806580ee45f266a13806658dead34df23b2c9371947b3",
+        "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/fun/skill.rs": "d51c2c07a0c5203c55d21fcd6ab953391900620d6f5c008e7600a7968688de04",
+        "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/lib.rs": "742a60263b6b8e38e11d1616be1ca7f886631aab28dda3baa96a7c9176e58ad1",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/lib.rs": "8dba6a3bdeea667127ac6b01006e3ac8929586de7f1bd0bf27c52ba10ed4f602",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/matching.rs": "528e96b3434fbe60dab8484ef362d33d6ad15a23328a5f07bc66cfb31e67c605",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/socket.rs": "6cc849430383354997e7be8fcacb0feb05d40c9cdcc5f404f45478676776f2b5",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/tournaments.rs": "fc5703885fa4807c76f1d5535808371a1667e7330582c1fa9a0d26906156b2b3"
+      },
+      "evidence": {
+        "Cargo.toml": "54a475c054517272c60e5ad0bbb07ac8c72fe5d9c72873e0ef7a0336b5a54f18",
+        "crates/fmj-cast-rig/Cargo.toml": "ab655933e0839f2d6a7a47d99317310190b82526cd5278cb689016756c780fc1",
+        "crates/fmj-rules/Cargo.toml": "db2f8935958e4fcaf654bc3e7383baa41c405fa0aad860be35ab8250473b7704",
+        "crates/fun-economy/Cargo.toml": "c76ab909554c8c16b7803f32e1ac10e261f935256d09f38313d7904076690b52",
+        "crates/fun-mahjong/Cargo.toml": "304fd1b2962d84bf06a211d59ccdeca952dddab4757d1cb6e69cd193a449e31d",
+        "crates/fun-mahjong/src/main.rs": "82a352582ba4667d8c6341ca3c60b11350d35caec9138f52ca93cec885051434",
+        "crates/fun-net/Cargo.toml": "588594957919a45b527a5402e5a96c30a9d7a496be2b8f39ac61d3dcb4ec89e8",
+        "crates/fun-rooms/Cargo.toml": "f41baf4e7cf0a3fa25f0ef08f3006f85617d3cf8c1159d5da2185c9d961bb14f",
+        "crates/fun-shell/Cargo.toml": "3fd127073e2677fcc2d6f2049f064c3272279032c8267d33fbd9dfc170511586",
+        "crates/fun-table3d/Cargo.toml": "4fbc3d818cc0c32f5d9024a1f3fd8eb33ccf5444e08cdae264d4087d6ec61b13",
+        "crates/fun-ui/Cargo.toml": "aae4b451badc929e48a740030ddfc62e5078c145839d528fa1827ea484ef08e7",
+        "server/Cargo.toml": "d063c0360ccc5f9a7024382258cd0d2c2816ccdf138d27417569f6901b688dc3",
+        "server/src/main.rs": "abafa0ffae330f9b5caa15ee8f3c435419230b80b376d88cbd3f14e20813ae0e",
+        "server/vendor/tycoon-engine/Cargo.toml": "cb94b95a549be7cb3d920ab86087051c0e07d8df98fe2dede2f0589291ab35f7",
+        "server/vendor/tycoon-engine/crates/tycoon-core/Cargo.toml": "76ae2f2571c660ef5ff0091485f84fa6ccccbe138cbc7eae93334a0fe39e2457",
+        "server/vendor/tycoon-engine/crates/tycoon-identity/Cargo.toml": "336298eae88fc38bdbe3c4f5503e34085f4b8102c85ee4dc56d099c1dcd53d0d",
+        "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/Cargo.toml": "1e1501f8685ef1448f29b2a75946d32bfa58fd0d878877bdedeef609da3131c9",
+        "server/vendor/tycoon-engine/crates/tycoon-server/Cargo.toml": "a082a7f447a51ed3b79f463da3e004246a692bbfb41df58ea107896e19480f20",
+        "server/vendor/tycoon-engine/crates/tycoon-server/src/main.rs": "c5e4d0857f77e9a434b18347ed809981dd2b901eca47ec90e292f1f5dcc57c78",
+        "server/vendor/tycoon-engine/crates/tycoon-store/Cargo.toml": "91ebf24be7ce3ed2b3bacea68aca2a38debef0d321ef6508546e0b84c6e93e5d",
+        "sylphx.toml": "62c5cda9588f82397f3da5dc3343cebde930ea3b07c679020c53986396becbe6"
+      },
+      "path": "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/fun/wall.rs",
+      "reason": "The selected server registers MahjongTw16/HK13; this copied FunRoom API is not selected. The client uses its separately pinned engine.",
+      "repository": "Cubeage-limited/fun-mahjong-keel",
+      "source_sha256": "cabc9300d7274b27e05b885301a1b4992f181edd6e4117414496a96841dd0f0f"
+    },
+    {
+      "caller_pattern": "\\bDeterministicRandomizer\\b",
+      "callers": {},
+      "evidence": {},
+      "path": "mappings/src/verify/mahjong-verifier.js",
+      "reason": "This analytics/verifier replays recorded seeds to check historical results; it does not author a live deal.",
+      "repository": "Cubeage/hkmj-analytics-sx",
+      "source_sha256": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
+    },
+    {
+      "caller_pattern": "\\bDeterministicRandomizer\\b",
+      "callers": {
+        "mappings/src/mahjong-verifier.js": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
+      },
+      "evidence": {},
+      "path": "mappings/src/mahjong-verifier.js",
+      "reason": "This analytics/verifier replays recorded seeds to check historical results; it does not author a live deal.",
+      "repository": "Cubeage/mahjong-verifier-sx",
+      "source_sha256": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
+    },
+    {
+      "caller_pattern": "\\bDeterministicRandomizer\\b",
+      "callers": {},
+      "evidence": {},
+      "path": "mappings/src/verify/mahjong-verifier.js",
+      "reason": "This analytics/verifier replays recorded seeds to check historical results; it does not author a live deal.",
+      "repository": "Cubeage-limited/hkmj-analytics",
+      "source_sha256": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
+    },
+    {
+      "caller_pattern": "\\bDeterministicRandomizer\\b",
+      "callers": {
+        "mappings/src/mahjong-verifier.js": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
+      },
+      "evidence": {},
+      "path": "mappings/src/mahjong-verifier.js",
+      "reason": "This analytics/verifier replays recorded seeds to check historical results; it does not author a live deal.",
+      "repository": "Cubeage-limited/mahjong-verifier",
+      "source_sha256": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
+    }
+  ]
+}
