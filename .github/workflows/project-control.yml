@@ -319,16 +319,9 @@ jobs:
           needs: ${{ toJSON(needs) }}
           required: template-plan
 
-  required-job-fixture:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: sylphx-linux-control
-    timeout-minutes: 1
-    steps:
-      - run: echo 'Required dependency fixture'
-
   # Every required job must run and succeed before the merge gate can pass.
   ci-ok:
-    needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer, required-job-fixture]
+    needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer]
     if: always()
     runs-on: sylphx-linux-control
     timeout-minutes: 5
@@ -339,4 +332,4 @@ jobs:
       - uses: ./.github/actions/ci-ok
         with:
           needs: ${{ toJSON(needs) }}
-          required: required-job-fixture,stack,project-control,tests,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ github.event_name != 'workflow_dispatch' && 'junit-producer' || 'junit-consumer' }}
+          required: stack,project-control,tests,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ github.event_name != 'workflow_dispatch' && 'junit-producer' || 'junit-consumer' }}
