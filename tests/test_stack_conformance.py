@@ -666,7 +666,8 @@ class GitTest(unittest.TestCase):
     def check(self, base, head):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = sc.main(["check", "--repo", self.repo, "--base", base, "--head", head])
+            rc = sc.main(["check", "--repo", self.repo, "--base", base, "--head", head,
+                          "--shared-source", str(ROOT)])
         return rc, out.getvalue()
 
     def test_ratchet_over_commits(self):
