@@ -155,8 +155,7 @@ def source_profile(tree):
     if ("model_pins", "decide") in calls:
         if texts["model_pins.py"] is None:
             raise ValueError("model checker source missing")
-        ast.parse(texts["model_pins.py"])
-        rules.add("model-pin")
+        rules |= model_rules(texts["model_pins.py"])
     if ("no_force_push", "decide") in calls:
         if force_path not in sources:
             raise ValueError("force-push checker source missing")
@@ -164,8 +163,21 @@ def source_profile(tree):
     return {"sources": sources, "rules": sorted(rules)}
 
 
+def model_rules(source):
+    """Read declared coverage without importing a historical recognizer."""
+    rules = {"model-pin"}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "SELECTOR_RULE" for target in node.targets):
+            if not isinstance(node.value, ast.Constant) or node.value.value != "model-selector":
+                raise ValueError("unrecognized model selector capability")
+            rules.add(node.value.value)
+    return rules
+
+
 def current_rules():
-    return architecture_rules((HERE / "architecture.py").read_text()) | {"model-pin", "force-push"}
+    return (architecture_rules((HERE / "architecture.py").read_text())
+            | model_rules((HERE / "model_pins.py").read_text()) | {"force-push"})
 
 
 def profile_id(profile):
@@ -378,7 +390,7 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     for before, after, key, rule_id in (
             (base_arch, head_arch, sc.architecture.baseline_key,
              lambda row: "architecture/" + row["class"] + "/" + row["rule"]),
-            (base_models, head_models, sc.model_pins.baseline_key, lambda row: "model-pin"),
+            (base_models, head_models, sc.model_pins.baseline_key, sc.model_pins.rule_id),
             (base_force, head_force, sc.no_force_push.baseline_key, lambda row: "force-push")):
         inherited = {key(row) for row in before["findings"] if not row.get("scope_warning")}
         for row in after["findings"]:
@@ -394,7 +406,7 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     lines = []
     if any(rule.startswith("architecture/") for rule in introduced) and sc.architecture.BASELINE_MARKER not in (original or "").splitlines():
         lines.append(sc.architecture.BASELINE_MARKER)
-    if "model-pin" in introduced and sc.model_pins.BASELINE_MARKER not in (original or "").splitlines():
+    if introduced & {"model-pin", "model-selector"} and sc.model_pins.BASELINE_MARKER not in (original or "").splitlines():
         lines.append(sc.model_pins.BASELINE_MARKER)
     if "force-push" in introduced and sc.no_force_push.BASELINE_MARKER not in (original or "").splitlines():
         lines.append(sc.no_force_push.BASELINE_MARKER)

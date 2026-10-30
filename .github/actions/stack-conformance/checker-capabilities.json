@@ -57,6 +57,7 @@
     "92349fd2affb7707b097147b54555b83f62afc5f": "2c4da75821fe6685d540bb8800db9156b765fa8c2acc2a4c5b63547bd9e5e3df",
     "93c9f5fe1b70a43c0848dd603f41a4ff8d24c6b0": "2c4da75821fe6685d540bb8800db9156b765fa8c2acc2a4c5b63547bd9e5e3df",
     "9535b1bd4a996694194c78d769b2a747e6f08f9b": "2c4da75821fe6685d540bb8800db9156b765fa8c2acc2a4c5b63547bd9e5e3df",
+    "96195d86b550ab1205159acb1ae0d75b1fbed47f": "1b74b8047e9c95f701e867f097553d20e704d309d021fdc73412274a9ebb74a8",
     "973149b34fd03070b4a0c8f625c1da0b3b5462ac": "2c4da75821fe6685d540bb8800db9156b765fa8c2acc2a4c5b63547bd9e5e3df",
     "988f27f18c7702cf98c2f4bd880333e494ccf813": "a6c7b50423cb2caf6728b13d302d59283264a22cd1e52cd1359d80465dc607db",
     "9d1931731b8442a83b61203883dfd1a965e8e349": "875bb4ab09bb6befe4e6dd2b19d7329c442dcc1f31ca84c055bb351e82eceecb",
@@ -131,6 +132,41 @@
         ".github/actions/stack-conformance/architecture.py": "b0b154f8d1898c798efb92f55a3d84381d80f2bd6009a8dfc9745fc66754e835",
         ".github/actions/stack-conformance/model_pins.py": null,
         ".github/actions/stack-conformance/stack_conformance.py": "6a45d1314cb71db3fef5f30f46fc61b4ea6bb6b391f98a6057b709f2697b9f52"
+      }
+    },
+    "1b74b8047e9c95f701e867f097553d20e704d309d021fdc73412274a9ebb74a8": {
+      "rules": [
+        "architecture/C1/cache-economy",
+        "architecture/C1/deal-randomness",
+        "architecture/C1/privileged-branch",
+        "architecture/C2/provider-bypass",
+        "architecture/C2/tenant-read-functions",
+        "architecture/C3/bundled-method",
+        "architecture/C3/downstream-config",
+        "architecture/C3/downstream-import",
+        "architecture/C4/competing-default",
+        "architecture/C4/undeclared-setting",
+        "architecture/C5/cron-progress",
+        "architecture/C5/idle-floor",
+        "architecture/C5/polling-loop",
+        "architecture/C5/polling-timer",
+        "architecture/C6/retired-route",
+        "architecture/C6/unexplained-suppression",
+        "architecture/C7/failure-only-verdict",
+        "architecture/C7/merge-only-completion",
+        "force-push",
+        "model-pin"
+      ],
+      "sources": {
+        ".github/actions/stack-conformance/action.yml": "1d44d2ed36b9468f7366a6a4bda602470d67c9ae673c66a52b8656261588e7ba",
+        ".github/actions/stack-conformance/architecture.py": "3e1f05b063ad58c508744a6a192260f28b76b5abe78d6b0c1c248ac5bc77c0b5",
+        ".github/actions/stack-conformance/cache-economy-profiles.json": "4ba6b2037e88da964adc9cb85a71577ee82072d1cc220e7c0d2f5447184ccee7",
+        ".github/actions/stack-conformance/deal_randomness.py": "217ae9616e7d0db3600eaca497d21c3bf190f1cd2c4140256d83f422b7388c97",
+        ".github/actions/stack-conformance/model_pins.py": "f3ff7c5676921ab2457d78c4610e69115f0a670ffe1c2ec98b10d857f076af15",
+        ".github/actions/stack-conformance/no_force_push.py": "00e8a1f2de8b1eebc12ab7856d2dd37d7bdd6ea7c4f99953fca44f56b282cec9",
+        ".github/actions/stack-conformance/stack_conformance.py": "89d07f3aa731ea9209f976d709fdba0d61e7f9b0ee166bc54919f0ce02a019ea",
+        ".github/actions/stack-conformance/tenant_reads.py": "9d7773fbae89ba37fb2510686aae0fb11b0b117105a40edc671b0d9a52c9e412",
+        "policy/deal-randomness-scope.json": "0cd4a11053555576b7603564ef17dd9ebf8b6647af03811e581c9bba514b84ab"
       }
     },
     "2c2dabcf75de7644982b8bbaae1bd9d40f7fe51bbfedd7d0dcb7f3fa14777898": {

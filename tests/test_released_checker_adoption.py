@@ -178,11 +178,13 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
             base = fixture.commit({WORKFLOW: workflow(TENANT_RELEASE), SOURCE: POLL,
                                    sc.BASELINE: baseline})
             plan = fixture.plan(base)
-            self.assertEqual(plan["introduced_rules"], [DEAL_RULE, "force-push"])
+            self.assertEqual(plan["introduced_rules"], [DEAL_RULE, "force-push", "model-selector"])
             self.assertEqual(plan["evidence"]["added_records"], [])
-            self.assertEqual(plan["baseline_text"], baseline + sc.no_force_push.BASELINE_MARKER + "\n"
+            self.assertEqual(plan["baseline_text"], baseline + sc.model_pins.BASELINE_MARKER + "\n"
+                             + sc.no_force_push.BASELINE_MARKER + "\n"
                              + sc.adoption.RULE_MARKER + DEAL_RULE + "\n"
-                             + sc.adoption.RULE_MARKER + "force-push\n")
+                             + sc.adoption.RULE_MARKER + "force-push\n"
+                             + sc.adoption.RULE_MARKER + "model-selector\n")
             self.assertEqual(len(plan["evidence"]["old_checkers"][0]["rules"]), 18)
 
     def test_released_profiles_match_immutable_source_and_enforce_existing_rules(self):
@@ -207,13 +209,15 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
                 base = fixture.commit({WORKFLOW: workflow(pin), SOURCE: POLL,
                                        sc.BASELINE: baseline})
                 plan = fixture.plan(base)
-                self.assertEqual(plan["introduced_rules"], [DEAL_RULE, TENANT_RULE, "force-push"])
+                self.assertEqual(plan["introduced_rules"], [DEAL_RULE, TENANT_RULE, "force-push", "model-selector"])
                 self.assertEqual(plan["evidence"]["added_records"], [])
                 self.assertEqual(plan["baseline_text"], baseline
+                                 + sc.model_pins.BASELINE_MARKER + "\n"
                                  + sc.no_force_push.BASELINE_MARKER + "\n"
                                  + sc.adoption.RULE_MARKER + DEAL_RULE + "\n"
                                  + sc.adoption.RULE_MARKER + TENANT_RULE + "\n"
-                                 + sc.adoption.RULE_MARKER + "force-push\n")
+                                 + sc.adoption.RULE_MARKER + "force-push\n"
+                                 + sc.adoption.RULE_MARKER + "model-selector\n")
                 fixture.commit({WORKFLOW: workflow(UNKNOWN),
                                 sc.BASELINE: plan["baseline_text"]})
                 fixture.check(base, 0)

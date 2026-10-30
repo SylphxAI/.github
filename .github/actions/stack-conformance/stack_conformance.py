@@ -1116,7 +1116,7 @@ def cmd_check(args) -> int:
                                      architecture.source_views) if args.base else models
         errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
                                    base_models["findings"], head_model_adopted, base_model_adopted,
-                                   allow_seed="model-pin" in introduced)
+                                   allow_seed="model-pin" in introduced, seed_rules=introduced)
         for row in models["unreadable"] + base_models["unreadable"]:
             errors.append("model policy input not reviewed: " + row["path"] + ": " + row["reason"])
     except (OSError, ValueError, TypeError) as error:
