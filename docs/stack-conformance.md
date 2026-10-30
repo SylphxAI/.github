@@ -283,14 +283,18 @@ checkout.
 line per repository (count and departures) and the share with no departure at
 all: the stack part of "Products fully on our own stack" in SylphxAI/owner
 `company/standards-map.md`. It runs on demand over fresh clones; there is no
-schedule. A sparse clone is enough:
+schedule. Fetch the Git objects in bulk without materializing a working tree:
 
 ```sh
-git clone --depth 1 --filter=blob:none --no-checkout <url> <dir>
-git -C <dir> sparse-checkout set --no-cone '**/sylphx.toml' 'sylphx.toml' \
-  '**/package.json' 'package.json' '**/Dockerfile*' 'Dockerfile*'
-git -C <dir> checkout
+git clone --depth 1 --no-checkout <url> <dir>
 ```
+
+The checker never lazily fetches individual source blobs. A `blob:none` clone
+with sparse checkout must already contain every blob the check reads; otherwise
+it fails promptly and names the missing path and checkout setting. Unsupported
+assets may remain absent. In Actions, omit `sparse-checkout` so checkout fetches
+the required objects together. The check prints each scanning phase and reports
+Git-read progress at least every five seconds while it walks blobs.
 
 ## Limits
 
@@ -343,7 +347,10 @@ constructs are reported limits, not a claim of zero violations.
 The action requires Python 3.11 or newer. It supports Rust, Python,
 JavaScript/TypeScript, Go, shell, TOML and ordinary YAML blocks. It excludes documentation, dependency/build output, test/fixture
 paths and inline Rust `#[cfg(test)] mod` bodies. Generated production source is
-checked, including `bundled_skills_generated.rs`. It does not resolve arbitrary
+checked, including `bundled_skills_generated.rs`. Protocol/FlatBuffers compiler
+output with its exact generated header is
+listed as excluded; authored schemas remain checked, and a generated filename
+alone grants no exemption. It does not resolve arbitrary
 macros, YAML templates/aliases, cross-module setting precedence or general
 program behavior. C2 does not prove database ownership from arbitrary SQL, and
 C6 does not establish that arbitrary code has no callers. Source review retains
@@ -448,6 +455,11 @@ A CronJob that is the work itself names its contract in
 safety-resync contract). A cron frequency alone is not a calendar obligation.
 Finite transport retry is recognized from finite ranges or an attempts bound
 with progress; a bare `allow` comment does not suppress polling.
+Polling-loop recognition uses explicit infinite loop forms or a retry counter
+that never advances. Trait implementations, collection iteration, finite
+counted loops and conditional event loops are not inferred to be unbounded.
+Self-rearming state-read timers without an exit are polling too; guarded timers
+and animation callbacks are separate paired negatives.
 
 A completed migration can declare `{"completed": true, "retired_routes":
 ["/old"]}` in `.github/architecture-migrations.json`. This is an explicit
