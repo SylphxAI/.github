@@ -326,23 +326,32 @@ class AdversarialContextTests(unittest.TestCase):
             script = ROOT / f'.github/actions/{action}/{action.replace("-", "_")}.py'
             required = step['with']['required']
             self.assertIn('stack', required.split(','))
-            for event in ('pull_request', 'merge_group', 'push', 'workflow_dispatch'):
+            for event, producer_run in [('pull_request', ''), ('merge_group', ''), ('push', ''),
+                                        ('workflow_dispatch', ''), ('workflow_dispatch', '123')]:
                 # Resolve the two event selections used by Project control;
                 # GitHub evaluates these before setting the action's inputs.
                 selected_required = required.replace(
                     "${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }}",
                     'template-plan,template-verdict' if event != 'push' else '')
                 selected_required = selected_required.replace(
-                    "${{ github.event_name != 'workflow_dispatch' && 'junit-producer' || 'junit-consumer' }}",
-                    'junit-producer' if event != 'workflow_dispatch' else 'junit-consumer')
+                    "${{ (github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run) && 'junit-producer' || 'junit-consumer' }}",
+                    'junit-producer' if event != 'workflow_dispatch' or not producer_run else 'junit-consumer')
                 self.assertNotIn('${{', selected_required)
-                for result in ('success', 'failure', 'cancelled', 'skipped'):
-                    needs = {k: {'result': 'success'} for k in jobs['ci-ok']['needs']}
-                    needs['stack']['result'] = result
-                    run = subprocess.run(['python3', str(script)],
-                        env=os.environ | {'NEEDS': json.dumps(needs), 'REQUIRED': selected_required, 'ADVISORY': '', 'EVENT_NAME': event,
-                            'REQUIRED_UNLESS_MERGE_GROUP': ''}, capture_output=True, text=True)
-                    self.assertEqual(run.returncode, int(result != 'success'), (workflow, event, result, run.stdout))
+                selected_junit = ({'junit-producer', 'junit-consumer'} & set(selected_required.split(',')))
+                if 'junit-producer' in jobs['ci-ok']['needs']:
+                    self.assertEqual(selected_junit, {'junit-consumer'} if producer_run else {'junit-producer'})
+                for target in ['stack', *sorted(selected_junit)]:
+                    for result in ('success', 'failure', 'cancelled', 'skipped'):
+                        needs = {k: {'result': 'success'} for k in jobs['ci-ok']['needs']}
+                        for optional in {'junit-producer', 'junit-consumer'} - selected_junit:
+                            if optional in needs:
+                                needs[optional]['result'] = 'skipped'
+                        needs[target]['result'] = result
+                        run = subprocess.run(['python3', str(script)],
+                            env=os.environ | {'NEEDS': json.dumps(needs), 'REQUIRED': selected_required, 'ADVISORY': '', 'EVENT_NAME': event,
+                                'REQUIRED_UNLESS_MERGE_GROUP': ''}, capture_output=True, text=True)
+                        self.assertEqual(run.returncode, int(result != 'success'),
+                                         (workflow, event, producer_run, target, result, run.stdout))
 
 class BaselineEntryPointTests(unittest.TestCase):
     def test_baseline_adopts_only_existing_debt_and_never_mutes_changed_source(self):
