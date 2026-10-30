@@ -1,0 +1,6 @@
+{
+  "name": "Shared workflow pin check",
+  "description": "Checks shared action and workflow references for a reviewed main commit, an existing target, and valid shared dependencies, on Sylphx runners.",
+  "iconName": "octicon pin",
+  "categories": ["Automation"]
+}

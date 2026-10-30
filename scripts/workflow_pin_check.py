@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -140,14 +141,25 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     sub = parser.add_subparsers(dest="mode", required=True)
     check = sub.add_parser("check", help="judge one checked-out repository")
     check.add_argument("--dir", default=".")
+    check.add_argument("--shared-only", action="store_true",
+                       help="check only SylphxAI/.github refs with its full format and dependency contract")
     scan = sub.add_parser("audit", help="judge every repository of the organizations")
     scan.add_argument("--org", action="append", required=True)
     scan.add_argument("--json", dest="json_out")
     args = parser.parse_args(argv)
-    owners = args.owner or default_owners()
     gh = gh or om.Gh()
     if args.mode == "check":
-        offenders = judge(read_dir(Path(args.dir)), owners, Reachability(gh))
+        files = read_dir(Path(args.dir))
+        if args.shared_only:
+            try:
+                report = provenance.review_pins(files, os.environ.get("GITHUB_REPOSITORY", ""), gh=gh)
+            except Exception as error:  # noqa: BLE001 - reason: unavailable shared-source proof must fail closed
+                print(f"::error::shared pin proof unavailable: {str(error)[:200]}")
+                return 1
+            print(f"shared pin proof: {report['mode']}, main anchor {report['head']}")
+            offenders = [{**finding, "repo": provenance.SHARED_REPO} for finding in report["offenders"]]
+        else:
+            offenders = judge(files, args.owner or default_owners(), Reachability(gh))
         if offenders:
             print(render_offenders(offenders))
             for o in offenders:
@@ -157,7 +169,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
         return 0
     policy = json.loads((ROOT / "policy" / "optimistic-merge.json").read_text())
     hands_off = [r for e in policy.get("exemptions", []) if e["class"] == "hands-off" for r in e["repos"]]
-    report = audit(gh, args.org, owners, hands_off)
+    report = audit(gh, args.org, args.owner or default_owners(), hands_off)
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(report, indent=1))
     for repo in report["repos"]:
