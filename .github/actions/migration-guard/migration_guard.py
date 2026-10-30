@@ -95,7 +95,7 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
                 if not variable:
                     raise SqlError(f"line {line}: cannot inspect MySQL variable")
                 i += len(variable[0])
-            tokens.append(Token("<variable>", "literal", line))
+            tokens.append(Token(sql[start:i], "literal", line))
             line += sql[start:i].count("\n")
         elif ch in "'\"`" or (dialect == "postgres" and ch == "$" and re.match(r"\$(?:[A-Za-z_][\w]*)?\$", sql[i:])):
             start, start_line = i, line
@@ -178,6 +178,13 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
     defaults: set[tuple[str, str]] = set()
     created: set[str] = set()
     for stmt in split(tokens, ";"):
+        if starts(stmt, "SET") and any(
+                (t.kind == "word" and t.value in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
+                or (t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I))
+                for t in stmt):
+            # Changing quote semantics would invalidate subsequent lexical
+            # inspection; these statements need an explicit contract review.
+            out.append((stmt[0].line, "SQL lexical mode change requires a contract reference"))
         for i, token in enumerate(stmt):
             tail = stmt[i:]
             if any(starts(tail, "DROP", obj) for obj in ("TABLE", "COLUMN", "SCHEMA", "DATABASE")):
