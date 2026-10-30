@@ -65,8 +65,6 @@ runs:
         REPO: ${{ inputs.repository }}
         API_URL: ${{ inputs.api-url }}
         SOFT_FAIL: ${{ inputs.soft-fail }}
-        OIDC_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
-        OIDC_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
       run: |
         set -uo pipefail
         fail() {
@@ -75,15 +73,17 @@ runs:
           [ "$SOFT_FAIL" = true ] || exit 1
         }
         [ -n "${BROKER_POLICY:-}" ] || { fail "broker-write-token: trust-policy is empty"; exit 0; }
-        if [ -z "${OIDC_URL:-}" ]; then
-          fail "no Actions OIDC request URL: the caller must grant id-token: write for the Broker path to $BROKER_POLICY"
+        # The runner injects these at step execution, not into the expression
+        # env context. Renaming them through an env expression loses authority.
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+          fail "no Actions OIDC request URL/token: the caller must grant id-token: write for the Broker path to $BROKER_POLICY"
           exit 0
         fi
         ci_name="${BROKER_CI_NAME:-${BROKER_POLICY##*/}}"
         # 1. GitHub OIDC token -> short-lived Access key.
-        oidc=$(curl -sS -H "Authorization: bearer ${OIDC_TOKEN}" \
-          "${OIDC_URL}&audience=sylphx-access" | jq -r '.value // empty') || {
-          fail "the GitHub OIDC token request to $OIDC_URL failed at the network"; exit 0; }
+        oidc=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sylphx-access" | jq -r '.value // empty') || {
+          fail "the GitHub OIDC token request to $ACTIONS_ID_TOKEN_REQUEST_URL failed at the network"; exit 0; }
         if [ -z "$oidc" ]; then
           fail "the GitHub OIDC token request returned no token: the caller must grant id-token: write"
           exit 0
