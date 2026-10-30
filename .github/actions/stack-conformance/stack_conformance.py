@@ -638,10 +638,19 @@ def keel_departures(tree) -> list[str]:
     if not keel_game(tree):
         return []
     found = []
+    pack_path = pathlib.Path(__file__).parent.parent / "keel-repin" / "pack_source.py"
+    pack_spec = importlib.util.spec_from_file_location("keel_pack_source", pack_path)
+    pack_source = importlib.util.module_from_spec(pack_spec)
+    pack_spec.loader.exec_module(pack_source)
+    paths = set(tree.paths())
+    for path in sorted(paths):
+        if pack_source.dockerfile(path):
+            for _, line, stage in pack_source.missing_stages(tree.read(path) or "", path, paths, tree.read):
+                found.append(f"keel-pack-source {path}:{line} {stage}")
     sku = re.compile(r"\bstruct\s+(\w*Sku)\b")
     pixels = re.compile(r"\bfn\s+(\w+_pixels)\s*(?:<[^{};]*>)?\s*\([^{};]*?\)\s*->\s*"
                         r"(?:(?:std|alloc)\s*::\s*vec\s*::\s*)?Vec\s*<\s*u8\s*>")
-    for path in tree.paths():
+    for path in sorted(paths):
         if skipped(path):
             continue
         if path in ("docs/BUILDING.md", "scripts/measure-rust-debug.py"):
@@ -657,6 +666,7 @@ def keel_departures(tree) -> list[str]:
 
 def decide_keel(found: list[str]) -> list[str]:
     remedies = {
+        "keel-pack-source": "add ARG SYLPHX_GIT_COMMIT_SHA after FROM in the stage running keel pack, before its packing RUN, so VERSION.json names the exact source commit",
         "keel-local-sku": "use keel_commerce, keel::commerce::iap or cubeage_kit commerce types, not a local SKU/catalog struct",
         "keel-cpu-pixels": "use Keel shaders or shared primitives, not game-local CPU pixel texture generation",
         "keel-boilerplate": "use the shared Rust CI profile and build documentation; remove per-game boilerplate",

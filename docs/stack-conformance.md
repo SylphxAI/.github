@@ -363,6 +363,15 @@ The same stack check rejects:
 | `keel-local-sku <path>:<line> <struct>` | game source declares `struct *Sku` rather than using `keel_commerce`, `keel::commerce::iap` or `cubeage_kit` commerce types |
 | `keel-cpu-pixels <path>:<line> <function>` | game source declares `fn *_pixels(...) -> Vec<u8>` rather than using Keel shaders or shared primitives |
 | `keel-boilerplate <path>` | the game contains `docs/BUILDING.md` or `scripts/measure-rust-debug.py`; the build/debug defaults belong in shared CI |
+| `keel-pack-source <path>:<line> <stage>` | a Docker stage runs a web pack without importing `ARG SYLPHX_GIT_COMMIT_SHA` before its packing `RUN`; add that declaration after the stage's `FROM` |
+
+The platform supplies the exact source commit as a Docker build argument. A
+global declaration before `FROM` does not expose it inside a stage. A stage
+may declare the argument itself or inherit it from a prior stage. The check
+follows tracked wrapper scripts and literal pack argument arrays, and the
+repin repair uses the same detector. Unrelated build/runtime stages, native
+profiles and pack inspection commands need no web source argument. Script
+generation and arbitrary computed commands remain outside static detection.
 
 Comments and string literals are not source declarations. Importing an engine
 commerce type does not excuse a second local SKU struct. These rules cannot
