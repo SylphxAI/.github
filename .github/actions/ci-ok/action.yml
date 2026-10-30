@@ -1,58 +1,28 @@
 name: ci-ok
 description: >
-  Enforces shared contribution metadata policy (contents and pull-requests:
-  read), then automatically scans added commits for secrets on pull_request and
-  merge_group, with the same policy and exact exceptions as needs-pass
-  (docs/secret-scan.md). Requires contents: read as well as check/run access.
-  Aggregate gate for repositories whose checks live in several workflows or in
-  path-filtered workflows, where one ci-ok job cannot `needs:` them all. Waits
-  until every other GitHub Actions check run on the commit has completed, then fails if any
-  failed, was cancelled or timed out (skipped and neutral pass). It fails closed
-  when a check never ran: a workflow that failed to start (a GitHub Actions
-  check suite with a bad conclusion and no jobs), no other check run at all, or
-  a `required` check that is missing or did not succeed. Make the job
-  that runs it the required status check. Each check is judged by its latest
-  run (a run cancelled by a newer run of its workflow does not count), and an
-  API rate limit spent past the deadline fails the gate at once. Where all
-  gating jobs share one workflow, use a plain `needs:` + `if: always() && !cancelled()` job instead.
+  Enforces shared contribution metadata policy and scans added commits for
+  secrets, then requires explicitly named job dependencies to have succeeded.
+  Run the calling job with needs for every required job and if always(), and
+  pass toJSON(needs) plus the required YAML job IDs. An absent, skipped,
+  cancelled, failed or unfinished required job fails. Optional dependencies
+  may skip but may not fail or be cancelled. No check-inventory polling.
+  Requires contents and pull-requests read. See docs/ci-ok.md.
 
 inputs:
   separate-pr-metadata:
     description: >
       Set true only with a separate required pr-metadata producer. This code
-      verdict retains commit attribution and ignores that mutable text check.
+      verdict retains commit attribution and checks mutable PR text separately.
     default: "false"
-  token:
-    description: >
-      Token that can read check runs and workflow runs (the job needs
-      `checks: read` and `actions: read`; without `actions: read` a workflow that
-      failed to start on the commit also fails the gate). A pull request also
-      fails when GitHub rejected one of its workflows at push time. A merge
-      group does not, so a broken recovery workflow cannot block its own repair.
-    default: ${{ github.token }}
-  job-name:
-    description: Name of the calling job's check run, ignored while waiting.
-    default: ci-ok
-  ignore:
-    description: Comma-separated check names to ignore (advisory checks).
-    default: ""
+  needs:
+    description: The calling job's needs context as JSON (toJSON of needs).
+    required: true
   required:
-    description: >
-      Comma-separated check names that must be present and have succeeded
-      (skipped, neutral or missing fails), for the jobs every change must run.
-    default: ""
-  allow-none-on-pull-request:
-    description: >
-      "true" lets a pull_request run pass when no other check ran, for a
-      repository whose every workflow is path-filtered on pull_request but
-      runs in full on merge_group. The merge group still fails when none ran.
-    default: "false"
-  timeout-minutes:
-    description: Give up after this many minutes.
-    default: "110"
-  all-apps:
-    description: "Also wait for check runs from other apps (deploy and preview statuses). Default: GitHub Actions only."
-    default: "false"
+    description: Comma-separated YAML job IDs that must be present and have succeeded.
+    required: true
+  token:
+    description: Token for contribution metadata and added-commit secret scanning.
+    default: ${{ github.token }}
 
 runs:
   using: composite
@@ -68,17 +38,10 @@ runs:
       env:
         SECRET_SCAN_TOKEN: ${{ inputs.token }}
       run: python3 "$GITHUB_ACTION_PATH/../secret-scan/secret_scan.py" --fetch --pre-merge-only
-    - name: Wait for every other check on this commit
+    - name: Require successful job dependencies
       shell: bash
       env:
-        REPO: ${{ github.repository }}
-        SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
-        TOKEN: ${{ inputs.token }}
-        SELF_NAME: ${{ inputs.job-name }}
-        CI_OK_IGNORE: ${{ inputs.separate-pr-metadata == 'true' && format('{0},pr-metadata', inputs.ignore) || inputs.ignore }}
-        CI_OK_REQUIRED: ${{ inputs.required }}
-        CI_OK_ALLOW_NONE_ON_PR: ${{ inputs.allow-none-on-pull-request }}
+        NEEDS: ${{ inputs.needs }}
+        REQUIRED: ${{ inputs.required }}
         EVENT_NAME: ${{ github.event_name }}
-        CI_OK_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
-        CI_OK_ALL_APPS: ${{ inputs.all-apps }}
       run: python3 "$GITHUB_ACTION_PATH/ci_ok.py"

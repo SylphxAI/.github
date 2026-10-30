@@ -337,11 +337,10 @@ jobs:
           needs: ${{ toJSON(needs) }}
           required: template-plan
 
-  # Aggregate verdict required by the main merge queue ruleset. Skipped jobs
-  # pass; failed or cancelled jobs fail.
+  # Every required job must run and succeed before the merge gate can pass.
   ci-ok:
     needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer]
-    if: always() && !cancelled()
+    if: always()
     runs-on: sylphx-linux-control
     timeout-minutes: 5
     steps:
@@ -349,8 +348,8 @@ jobs:
         with:
           ref: ${{ github.event.inputs.code-merge || github.sha }}
           persist-credentials: false
-      - uses: ./.github/actions/needs-pass
+      - uses: ./.github/actions/ci-ok
         with:
           separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
-          required: stack,project-control,tests
+          required: stack,project-control,tests,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ (github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run) && 'junit-producer' || 'junit-consumer' }}
