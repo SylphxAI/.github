@@ -45,6 +45,7 @@ class SqlTests(unittest.TestCase):
         extra = {
             "postgres": [
                 "SET standard_conforming_strings = off; SELECT 1;",
+                'SET "standard_conforming_strings"=off; SELECT \'a\\\'b\'; DROP TABLE accounts; -- \';',
                 "ALTER TABLE accounts DROP identity;",
                 "ALTER TABLE accounts DROP index;",
                 "ALTER FOREIGN TABLE accounts DROP nickname;",
@@ -59,6 +60,7 @@ class SqlTests(unittest.TestCase):
             "mysql": [
                 "SET sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE accounts; -- ';",
                 "SET @@session.sql_mode='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE accounts; -- ';",
+                "SET @@session.`sql_mode`='NO_BACKSLASH_ESCAPES'; SELECT 'a\\'; DROP TABLE accounts; -- ';",
                 "UPDATE accounts SET nickname = @where;",
                 "SET @'a\\'b' = 1; DROP TABLE accounts; -- ';",
                 'SET @"a\\"b" = 1; DROP TABLE accounts; -- ";',

@@ -179,7 +179,7 @@ def violations(sql: str, dialect: str) -> list[tuple[int, str]]:
     created: set[str] = set()
     for stmt in split(tokens, ";"):
         if starts(stmt, "SET") and any(
-                (t.kind == "word" and t.value in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
+                (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
                 or (t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I))
                 for t in stmt):
             # Changing quote semantics would invalidate subsequent lexical
