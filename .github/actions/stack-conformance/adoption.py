@@ -99,6 +99,14 @@ def source_profile(tree):
             raise ValueError("unreadable checker source: " + path)
         sources[path] = hashlib.sha256(value.encode()).hexdigest() if value is not None else None
         texts[name] = value
+    # Keep historical profile identities exact when the new module is absent.
+    tenant_path = PREFIX + "tenant_reads.py"
+    if tenant_path in tree.paths():
+        value = tree.read(tenant_path)
+        if value is None:
+            raise ValueError("unreadable checker source: " + tenant_path)
+        ast.parse(value)
+        sources[tenant_path] = hashlib.sha256(value.encode()).hexdigest()
     if texts["stack_conformance.py"] is None or "stack_conformance.py" not in (texts["action.yml"] or ""):
         raise ValueError("unrecognized stack checker entrypoint")
     module = ast.parse(texts["stack_conformance.py"])
@@ -111,6 +119,8 @@ def source_profile(tree):
         if texts["architecture.py"] is None:
             raise ValueError("architecture checker source missing")
         rules |= architecture_rules(texts["architecture.py"])
+        if "architecture/C2/tenant-read-functions" in rules and tenant_path not in sources:
+            raise ValueError("tenant declaration checker source missing")
     if ("model_pins", "decide") in calls:
         if texts["model_pins.py"] is None:
             raise ValueError("model checker source missing")
