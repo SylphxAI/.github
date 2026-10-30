@@ -201,6 +201,10 @@ def finding(path, text, at, cls, rule, reason, end=None):
 def env_declarations(tree):
     names = set()
     for path in tree.paths():
+        # Fixture declarations are not configuration authority for production
+        # source, and may intentionally be malformed negative test inputs.
+        if excluded(path):
+            continue
         if pathlib.PurePosixPath(path).suffix in {".yaml", ".yml"} and path.startswith(".github/"):
             text = tree.read(path)
             if text is None:
