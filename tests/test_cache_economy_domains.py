@@ -60,10 +60,11 @@ class CacheEconomyDomainTests(unittest.TestCase):
 
     def test_domain_policy_is_in_new_profile_but_absent_from_historical_profile(self):
         policy_path = sc.adoption.PREFIX + "cache-economy-profiles.json"
-        tree = sc.Tree(str(pathlib.Path(a.__file__).resolve().parents[3]), "430d892c8b2e8e3e33fdede3e17148f4cade8458")
-        old = sc.adoption.source_profile(tree)
+        tree = sc.Tree(str(pathlib.Path(a.__file__).resolve().parents[3]), "HEAD")
+        files = {path: tree.read(path) for path in tree.paths()
+                 if path.startswith(sc.adoption.PREFIX) and path != policy_path}
+        old = sc.adoption.source_profile(sc.DictTree(files))
         self.assertNotIn(policy_path, old["sources"])
-        files = {path: tree.read(path) for path in tree.paths() if path.startswith(sc.adoption.PREFIX)}
         policy = pathlib.Path(a.__file__).with_name("cache-economy-profiles.json").read_text()
         files[policy_path] = policy
         current = sc.adoption.source_profile(sc.DictTree(files))
