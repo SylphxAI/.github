@@ -98,7 +98,12 @@ jobs:
         with:
           node-version: "22.14.0"
       - name: Install native Vitest reporter
-        run: npm install --prefix "$RUNNER_TEMP/ci-test-runners" --ignore-scripts --no-audit --no-fund vitest@4.0.18
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ci-test-runners" --include=optional --ignore-scripts --no-audit --no-fund vitest@4.0.18
+          # npm can silently omit Rollup's optional native dependency.
+          rollup_version=$(node -p 'require(process.env.RUNNER_TEMP + "/ci-test-runners/node_modules/rollup/package.json").version')
+          rollup_arch=$(node -p 'process.arch')
+          npm install --prefix "$RUNNER_TEMP/ci-test-runners" --ignore-scripts --no-audit --no-fund "@rollup/rollup-linux-${rollup_arch}-gnu@${rollup_version}"
       - name: Unit tests
         env:
           CI_TEST_SCRIPT: ${{ steps.ci-test.outputs.script }}
