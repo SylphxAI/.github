@@ -83,6 +83,13 @@ destructive bodies report the underlying operation. Unquoted inline bodies,
 including MySQL routine definitions, other procedural languages, escape-string
 bodies, and opaque dynamic execution require a contract reference. A marker inside a body string
 does not authorize the surrounding migration.
+Simple PostgreSQL `BEFORE INSERT` and `AFTER INSERT` row triggers pass when the
+target table was created unconditionally earlier in the same migration and the
+zero-argument trigger function was defined and inspected there too. Both table
+and function names must include an explicit schema. This supports additive ID
+assignment triggers without trusting search-path resolution or an external
+function. Triggers on existing tables, other events, trigger arguments, and
+unresolved or opaque functions still require a contract reference.
 In bodies with conditional, loop, exception, nested `DO`, or rollback paths,
 earlier statements do not establish that a table was created or a default was
 set. Required-column changes must carry their default in the same SQL statement

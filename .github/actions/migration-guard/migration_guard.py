@@ -258,12 +258,53 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
     return opaque
 
 
+def qualified_name(tokens: list[Token], at: int) -> tuple[tuple[str, str] | None, int]:
+    """Keep schema/name boundaries distinct from dots in quoted identifiers."""
+    if (at + 2 >= len(tokens) or tokens[at].kind not in {"word", "identifier"}
+            or tokens[at + 1].value != "." or tokens[at + 2].kind not in {"word", "identifier"}
+            or at + 3 < len(tokens) and tokens[at + 3].value == "."):
+        return None, at
+    parts = tuple(t.value if t.kind == "identifier" else t.value.lower() for t in (tokens[at], tokens[at + 2]))
+    return parts, at + 3
+
+
+def trigger_function_name(stmt: list[Token]) -> tuple[str, str] | None:
+    """Identify an inspected zero-argument PostgreSQL trigger function."""
+    at = 4 if starts(stmt, "CREATE", "OR", "REPLACE", "FUNCTION") else 2
+    if not (starts(stmt, "CREATE", "FUNCTION") or starts(stmt, "CREATE", "OR", "REPLACE", "FUNCTION")):
+        return None
+    function, at = qualified_name(stmt, at)
+    if (at + 3 < len(stmt) and stmt[at].value == "(" and stmt[at + 1].value == ")"
+            and starts(stmt[at + 2:], "RETURNS", "TRIGGER")):
+        return function
+    return None
+
+
+def additive_trigger(stmt: list[Token], created: set[tuple[str, str]], functions: set[tuple[str, str]]) -> bool:
+    """Allow a simple INSERT trigger only on a definitely new local table."""
+    if not starts(stmt, "CREATE", "TRIGGER"):
+        return False
+    _, at = name(stmt, 2)
+    if at >= len(stmt) or not any(kw(stmt[at], word) for word in ("BEFORE", "AFTER")):
+        return False
+    if not starts(stmt[at + 1:], "INSERT", "ON"):
+        return False
+    table, at = qualified_name(stmt, at + 3)
+    if table not in created or not starts(stmt[at:], "FOR", "EACH", "ROW", "EXECUTE", "FUNCTION"):
+        return False
+    function, at = qualified_name(stmt, at + 5)
+    return (function in functions and len(stmt) == at + 2
+            and stmt[at].value == "(" and stmt[at + 1].value == ")")
+
+
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> list[tuple[int, str]]:
     if nesting > 64:
         raise SqlError("procedural body nesting is too deep to inspect")
     out: list[tuple[int, str]] = []
     defaults: set[tuple[str, str]] = set()
     created: set[str] = set()
+    trigger_functions: set[tuple[str, str]] = set()
+    trigger_tables: set[tuple[str, str]] = set()
     statements = split(tokens, ";")
     uncertain_flow = nesting and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
     for stmt in statements:
@@ -273,6 +314,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
             # statement, where its clauses execute together.
             defaults.clear()
             created.clear()
+            trigger_tables.clear()
+            trigger_functions.clear()
         control_stmt = procedural_statement(stmt)
         out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(stmt))
         if starts(control_stmt, "SET") and any(
@@ -315,7 +358,12 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
         stmt = control_stmt
         routine = routine_kind(stmt)
         if routine:
-            out.extend(routine_violations(stmt, dialect, routine, nesting))
+            inspected_trigger = dialect == "postgres" and routine == "TRIGGER" and additive_trigger(stmt, trigger_tables, trigger_functions)
+            routine_errors = [] if inspected_trigger else routine_violations(stmt, dialect, routine, nesting)
+            out.extend(routine_errors)
+            function = trigger_function_name(stmt) if dialect == "postgres" and routine == "FUNCTION" else None
+            if function and not routine_errors:
+                trigger_functions.add(function)
             if routine == "DO":
                 # Executed bodies can remove defaults established outside,
                 # but their local facts never authorize enclosing statements.
@@ -331,6 +379,9 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0) -> lis
             # required-column additions still need a default.
             if not conditional:
                 created.add(table)
+                qualified, _ = qualified_name(stmt, at)
+                if qualified:
+                    trigger_tables.add(qualified)
         table_at = 2 if starts(stmt, "ALTER", "TABLE") else 3 if starts(stmt, "ALTER", "FOREIGN", "TABLE") else None
         if table_at is None:
             continue
