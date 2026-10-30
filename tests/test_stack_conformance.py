@@ -615,7 +615,8 @@ class ModelPinTest(unittest.TestCase):
     def test_adoption_seeds_only_base_findings_and_marker_cannot_disappear(self):
         first = self.scan({"src/client.ts": 'call("gpt-5.1-2025-11-13");'})
         recorded = {sc.model_pins.baseline_key(row) for row in first}
-        self.assertEqual(sc.model_pins.decide(first, recorded, set(), first, True, False), [])
+        self.assertEqual(sc.model_pins.decide(first, recorded, set(), first, True, False, allow_seed=True), [])
+        self.assertTrue(sc.model_pins.decide(first, recorded, set(), first, True, False))
         self.assertTrue(sc.model_pins.decide(first, recorded, set(), [], True, False))
         self.assertTrue(sc.model_pins.decide([], set(), set(), [], False, True))
 
@@ -679,7 +680,8 @@ class GitTest(unittest.TestCase):
     def test_model_pin_adoption_preserves_existing_stack_ratchet(self):
         with mock.patch.object(sc.model_pins, "load_aliases", return_value=ModelPinTest.ALIASES):
             base = self.commit({"src/client.ts": 'call("gpt-5.1-2025-11-13");\n',
-                                sc.BASELINE: "# existing stack baseline\n"})
+                                sc.BASELINE: "# existing stack baseline\n",
+                                '.github/workflows/stack.yml': 'uses: SylphxAI/.github/.github/actions/stack-conformance@bc664ac7410c00d233fe4f729b6747969a4a9bed # main\n'})
             rows = sc.model_pins.scan(sc.Tree(self.repo, base), "", ModelPinTest.ALIASES,
                                       sc.architecture.source_views)["findings"]
             baseline = sc.model_pins.BASELINE_MARKER + "\n" + "\n".join(sc.model_pins.baseline_key(r) for r in rows) + "\n"

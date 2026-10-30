@@ -336,12 +336,14 @@ class BaselineEntryPointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             f = GitFixture(d)
             path, source = VIOLATIONS['C5']
-            f.write({path: source})
+            f.write({path: source, '.github/workflows/stack.yml':
+                     'uses: SylphxAI/.github/.github/actions/stack-conformance@bc664ac7410c00d233fe4f729b6747969a4a9bed # main\n'})
             f.commit()
             existing = f.git('rev-parse', 'HEAD').strip()
             row = a.evaluate(sc.DictTree({path: source}), 'SylphxAI/spiron', None, TODAY)['findings'][0]
             record = a.baseline_key(row)
-            f.write({'.github/stack-departures.txt': a.BASELINE_MARKER + '\n' + record + '\n'})
+            f.write({'.github/stack-departures.txt': a.BASELINE_MARKER + '\n' +
+                     sc.adoption.RULE_MARKER + 'architecture/C5/polling-loop\n' + record + '\n'})
             f.commit()
             result, report = f.check(base=existing)
             self.assertEqual(result.returncode, 0, result.stdout)
@@ -400,6 +402,9 @@ class DistributionTests(unittest.TestCase):
             source = root / 'downloaded'
             action = source / '.github/actions/stack-conformance'
             shutil.copytree(ACTION, action)
+            (source / 'scripts').mkdir()
+            for name in ('action_pin_drift_check.py', 'audit_optimistic_merge.py'):
+                shutil.copy(ROOT / 'scripts' / name, source / 'scripts' / name)
             (source / 'policy').mkdir()
             shutil.copy(ROOT / 'policy/architecture-repositories.json', source / 'policy/architecture-repositories.json')
             (root / 'consumer').mkdir()

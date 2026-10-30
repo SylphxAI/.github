@@ -183,7 +183,8 @@ def baseline_key(row):
     return f"model-pin {quote(row['path'], safe='/._-')} {row['model']} {row['occurrence']}"
 
 
-def decide(findings, head_records, base_records, base_findings, head_adopted, base_adopted):
+def decide(findings, head_records, base_records, base_findings, head_adopted, base_adopted,
+           *, allow_seed=False):
     actual = {baseline_key(row) for row in findings}
     inherited = {baseline_key(row) for row in base_findings}
     errors = []
@@ -191,7 +192,7 @@ def decide(findings, head_records, base_records, base_findings, head_adopted, ba
         errors.append("model-alias ratchet marker cannot be removed")
     if head_records and not head_adopted:
         errors.append("model-pin baseline records require " + BASELINE_MARKER)
-    allowed = base_records if base_adopted else inherited
+    allowed = base_records | (inherited if allow_seed and not base_adopted else set())
     for key in sorted(head_records - allowed):
         errors.append("model-pin baseline cannot grow or seed new debt: " + key)
     for key in sorted(head_records - actual):
