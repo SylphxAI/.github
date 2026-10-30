@@ -24,7 +24,7 @@ LEGACY_BASELINE_MARKER = "# architecture-ratchet-v1"
 SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "examples", "docs",
         "node_modules", "vendor", "thirdparty", "third_party", "third-party", "external",
         "target", "dist", "build", ".next"}
-SOURCE = {".rs", ".py", ".go", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash"}
+SOURCE = {".rs", ".py", ".go", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash", ".java"}
 CONFIG = {".yml", ".yaml", ".toml"}
 PLATFORM = {"SylphxAI/cloud", "SylphxAI/sylphx"}
 CATALOG = pathlib.Path(__file__).resolve().parents[3] / "policy/architecture-repositories.json"
@@ -44,6 +44,8 @@ LIMITS = [
     "C6 recognizes unexplained lint suppressions and routes declared retired in a migration contract; arbitrary dead code needs caller analysis.",
     "C7 recognizes failure-only CI verdicts and merge-only completion branches; it cannot infer every product's acceptance contract.",
     "Only findings on changed lines fail the change gate. Unchanged or unread scope is not certified clean.",
+    "Economy cache reads recognize named Java/TypeScript/Rust functions and literal JS/TS route callbacks, cache-named calls/types/receivers and typed aliases. Indirect helpers, renamed imports, computed routes and arbitrary data flow need semantic review. Java supports this rule only.",
+    "A cache-display-only exception requires a reason and an existing named assertion-bearing test. The static check verifies that evidence exists; the test runner and review establish that it proves an authoritative re-read in the granting transaction.",
 ]
 
 
@@ -82,7 +84,7 @@ def blank(text):
     return "".join("\n" if c == "\n" else " " for c in text)
 
 
-def source_views(text, suffix):
+def source_views(text, suffix, *, test_bodies=False):
     """Return comment-free text and code with literal contents masked; same offsets."""
     comment_free, code, comments = list(text), list(text), []
     if suffix == ".py":
@@ -118,7 +120,7 @@ def source_views(text, suffix):
             if value.startswith(("//", "/*")):
                 comment_free[match.start():match.end()] = blank(value)
                 comments.append((match.start(), match.end()))
-        if suffix == ".rs":
+        if suffix == ".rs" and not test_bodies:
             # Inline test modules are fixtures too; do not hide adjacent production.
             for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*"
                                      r"(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{", "".join(code)):
@@ -194,8 +196,8 @@ def finding(path, text, at, cls, rule, reason, end=None):
     return {"path": path, "line": line, "column": at - text.rfind("\n", 0, at),
             "end_line": text.count("\n", 0, end or at) + 1,
             "class": cls, "rule": rule, "reason": reason,
-            "span_sha256": hashlib.sha256(text[start:finish].encode()).hexdigest(),
-            "source_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "span_sha256": hashlib.sha256(text[start:finish].encode(errors="surrogateescape")).hexdigest(),
+            "source_sha256": hashlib.sha256(text.encode(errors="surrogateescape")).hexdigest(),
             "contract": CONTRACT + ("#scale" if cls == "C5" else "#hard-lines")}
 
 
@@ -267,6 +269,116 @@ def with_occurrences(rows):
     return rows
 
 
+def economy_name(name):
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
+    return bool(re.search(r"(?:^|[^a-z])(?:purchase|claim|grant|buy|redeem)(?:s|ed|ing)?(?:$|[^a-z])", words)
+                or re.search(r"recharge.*call_?back", words))
+
+
+def named_bodies(clean, code, suffix):
+    """Ordinary declarations only; balanced bodies never bleed into a neighbour."""
+    ident = r"[A-Za-z_$][\w$]*"
+    if suffix == ".rs":
+        pattern = r"\bfn\s+(?P<name>" + ident + r")(?:\s*<[^{};]*?>)?\s*\("
+    elif suffix == ".java":
+        pattern = (r"(?m)^[^\S\n]*(?:(?:public|private|protected|static|final|synchronized|default)\s+)*"
+                   r"[\w$.<>?,\[\]]+\s+(?P<name>" + ident + r")\s*\(")
+    else:
+        pattern = (r"\bfunction\s+(?P<name>" + ident + r")(?:\s*<[^{};]*?>)?\s*\("
+                   r"|\b(?P<arrow>" + ident + r")\s*(?::[^=;{}\n]+)?[=:]\s*(?:async\s*)?\("
+                   r"|(?m:^[^\S\n]*(?:(?:export|public|private|protected|static|async)\s+)*"
+                   r"(?P<method>" + ident + r")(?:\s*<[^{};]*?>)?\s*\()")
+    for match in re.finditer(pattern, code):
+        name = next((v for v in match.groupdict().values() if v), "")
+        if name in {"if", "for", "while", "switch", "catch", "with"}:
+            continue
+        params_end = matching_end(code, match.end(), "(", ")")
+        # A declaration ends at a semicolon; a call is not a function body.
+        tail = re.match(r"[^;{}=]*?(?:=>\s*)?\{", code[params_end:])
+        if tail is None:
+            continue
+        start = params_end + tail.end()
+        end = brace_end(code, start)
+        yield name, match.start(), start, end
+    if suffix in {".ts", ".tsx", ".js", ".mjs", ".cjs"}:
+        route = r"\.(?:post|put|patch)\s*\(\s*(['\"])(?P<name>[^'\"]+)\1\s*,\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{"
+        for match in re.finditer(route, clean):
+            if code[match.start()] == ".":
+                yield match["name"], match.start(), match.end(), brace_end(code, match.end())
+
+
+def economy_cache_reads(clean, code, suffix):
+    if suffix not in {".java", ".rs", ".ts", ".tsx", ".js", ".mjs", ".cjs"}:
+        return
+    cache_type = r"\w*(?:Cache|cache)\w*"
+    # A field/parameter's cache type also identifies a receiver called `offers`.
+    aliases = set(re.findall(r"\b" + cache_type + r"(?:\s*<[^;={}()]*>)?\s+(\w+)\b", code))
+    aliases.update(re.findall(r"\b(\w+)\s*:\s*&?(?:mut\s+)?(?:[\w:]+::)?" + cache_type + r"\b", code))
+    for name, header, start, end in named_bodies(clean, code, suffix):
+        if not economy_name(name):
+            continue
+        body = code[start:end]
+        candidates = []
+        # Java TemplateCache.getCache(), cached_price(), Cache::get(), etc.
+        calls = r"\b([A-Za-z_$][\w$]*)\s*(?:(?:::|\.)\s*([A-Za-z_$][\w$]*))?\s*\("
+        for match in re.finditer(calls, body):
+            receiver, method = match.groups()
+            token = method or receiver
+            if re.match(r"(?:invalidate|evict|clear|remove|delete|put|set|insert|refresh|save|write)", token, re.I):
+                continue
+            if (re.search("cache", token, re.I)
+                    or method and (re.search("cache|redis|valkey", receiver, re.I) or receiver in aliases)):
+                candidates.append((start + match.start(), start + match.end()))
+        # Plain value/field reads (self.cached_price) count; a property name in
+        # fetch({cache: 'no-store'}) or a CacheKey type is not a cache read.
+        for match in re.finditer(r"\b\w*cache\w*\b", body, re.I):
+            tail = body[match.end():]
+            if match.group()[0].isupper() or re.match(r"\s*(?:[=:]|\.(?:invalidate|evict|clear|remove|delete|put|set|insert|refresh|save|write)\s*\()", tail):
+                continue
+            if not re.match(r"(?:invalidate|evict|clear|remove|delete|put|set|insert|refresh|save|write)", match.group(), re.I):
+                candidates.append((start + match.start(), start + match.end()))
+        # Collapse the receiver/token already covered by a call, while keeping
+        # two reads on one line as two ratcheted occurrences.
+        seen = []
+        for at, finish in sorted(candidates):
+            if not any(left <= at < right for left, right in seen):
+                seen.append((at, finish))
+                yield at, finish
+
+
+def cache_display_proof(tree, path, text, line):
+    """A reason and test reference are evidence, never a proof of program semantics."""
+    source_line = text.splitlines()[line - 1]
+    _, _, comments = source_views(source_line, pathlib.PurePosixPath(path).suffix)
+    for start, end in comments:
+        marker = re.search(r"cache-display-only:\s*(.+?);\s*test=([^\s#;]+)#([\w-]+)\s*(?:\*/)?$", source_line[start:end])
+        if not marker or not marker[1].strip():
+            continue
+        reason, test_path, name = marker.groups()
+        p = pathlib.PurePosixPath(test_path)
+        if (p.is_absolute() or ".." in p.parts or p.suffix not in SOURCE
+                or not (excluded(test_path) or p.suffix == ".rs")):
+            continue
+        test = tree.read(test_path)
+        if test is None:
+            continue
+        clean, code, _ = source_views(test, p.suffix, test_bodies=True)
+        bodies = ([(n, a, b, e) for n, a, b, e in named_bodies(clean, code, p.suffix) if n == name]
+                  if p.suffix in {".java", ".rs"} else [])
+        if p.suffix in {".ts", ".tsx", ".js", ".mjs", ".cjs"}:
+            pattern = r"\b(?:test|it)\s*\(\s*(['\"])" + re.escape(name) + r"\1\s*,\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{"
+            bodies += [(name, m.start(), m.end(), brace_end(code, m.end())) for m in re.finditer(pattern, clean)
+                       if code[m.start():m.start()+2].strip()]
+        for _, header, start, end in bodies:
+            prefix = clean[max(0, header - 150):header]
+            is_test = (p.suffix in {".ts", ".tsx", ".js", ".mjs", ".cjs"}
+                       or p.suffix == ".java" and bool(re.search(r"@Test\b[^{};]*$", prefix))
+                       or p.suffix == ".rs" and bool(re.search(r"#\[(?:(?:tokio|async_std)::)?test\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?$", prefix)))
+            if is_test and re.search(r"\b(?:assert\w*|expect)\s*(?:!\s*)?\(", code[start:end]):
+                return {"reason": reason.strip(), "test": test_path + "#" + name}
+    return None
+
+
 def scan_file(path, text, repository, declared, retired_routes):
     suffix = pathlib.PurePosixPath(path).suffix
     if excluded(path) or suffix not in SOURCE | CONFIG:
@@ -310,6 +422,11 @@ def scan_file(path, text, repository, declared, retired_routes):
                     add(offset + m.start(), "C7", "failure-only-verdict", "A failure-only aggregate accepts canceled dependencies")
         return with_occurrences(out)
     clean, code, comments = source_views(text, suffix)
+    for at, end in economy_cache_reads(clean, code, suffix):
+        add(at, "C1", "cache-economy", "Economy handler reads cached data; re-read authority in the granting transaction, or mark this line cache-display-only with a reason and test=path#name", end)
+        out[-1]["contract"] = "https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/games.md#hard-lines"
+    if suffix == ".java":
+        return with_occurrences(out)
     # Require a control-flow token in real code; quoted examples never count.
     branch = re.compile(r"\bif\b[^\n{}:]*?(?:first_party|is_internal|is_loopback|is_private|cluster_local|tenant\w*\s*===?\s*[\"'](?:sylphx|cubeage)[^\"']*[\"'])[^\n{}:]*[{:]", re.I)
     for m in branch.finditer(clean):
@@ -461,7 +578,9 @@ def evaluate(tree, repository, changed, today):
         if excluded(path) or pathlib.PurePosixPath(path).suffix not in SOURCE | CONFIG:
             skipped.append({"path": path, "reason": "fixture/documentation/dependency" if excluded(path) else "unsupported format"})
             continue
-        text = tree.read(path)
+        # Legacy Java plugins contain non-UTF-8 comments. Preserve every byte
+        # while recognizing ASCII syntax; other languages still fail unreadable.
+        text = tree.read_model_source(path) if path.endswith(".java") else tree.read(path)
         if text is None:
             # Deleted paths are outside the head, not unreadable inputs.
             if path in tree.paths():
@@ -476,7 +595,8 @@ def evaluate(tree, repository, changed, today):
         for row in rows:
             lines = None if rescan else changed.get(path, set())
             row["changed"] = lines is None or any(row["line"] <= n <= row["end_line"] for n in lines)
-            row["decision"] = next((d for d in allowed if all(d[k] == row[k] for k in ("path", "line", "class", "rule", "source_sha256"))), None)
+            row["decision"] = (cache_display_proof(tree, path, text, row["line"]) if row["rule"] == "cache-economy" else
+                               next((d for d in allowed if all(d[k] == row[k] for k in ("path", "line", "class", "rule", "source_sha256"))), None))
             findings.append(row)
     matched = {tuple(f[k] for k in ("path", "line", "class", "rule", "source_sha256")) for f in findings}
     for row in allowed:

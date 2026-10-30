@@ -66,6 +66,11 @@ on:
         required: false
         type: string
         default: ""
+      source-fetch-depth:
+        description: "Number of source commits to fetch for the publish job. 0 fetches all history."
+        required: false
+        type: number
+        default: 1
       lane-ref:
         description: >-
           Optional ref of this lane repository to check out for the lane's own tooling. Leave empty to use
@@ -262,6 +267,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source-sha || github.sha }}
+          fetch-depth: ${{ inputs['source-fetch-depth'] }}
           persist-credentials: false
 
       - name: Check out this lane

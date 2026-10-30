@@ -20,6 +20,8 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 LANE_IMAGE = "registry.sylphx.com/library/sylphx-hands"
 
@@ -45,13 +47,57 @@ def jwt(claims: dict) -> str:
     return f"{segment({'alg': 'ES256'})}.{segment(claims)}.signature"
 
 class ImageLaneSourceContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
+        self.doc = yaml.safe_load(self.workflow)
+
     def test_dispatched_source_binds_checkout_and_evidence(self) -> None:
-        workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
+        workflow = self.workflow
         source = "${{ inputs.source-sha || github.sha }}"
         self.assertIn("      source-sha:\n", workflow)
         self.assertIn(f"          ref: {source}\n", workflow)
         self.assertIn(f"          LANE_SOURCE_SHA: {source}\n", workflow)
         self.assertNotIn("          LANE_SOURCE_SHA: ${{ github.sha }}", workflow)
+
+    def test_source_fetch_depth_defaults_to_one_commit(self) -> None:
+        # PyYAML reads the key `on` as True.
+        call = (self.doc.get("on") or self.doc[True])["workflow_call"]
+        depth = call["inputs"]["source-fetch-depth"]
+        self.assertEqual(depth["type"], "number")
+        self.assertIs(depth["required"], False)
+        self.assertEqual(depth["default"], 1)
+
+    def test_source_fetch_depth_preserves_zero_for_full_history(self) -> None:
+        source = self.doc["jobs"]["publish"]["steps"][0]
+        self.assertEqual(source["uses"], "actions/checkout@v4")
+        # A direct input reference preserves 0; an `|| 1` fallback would not.
+        self.assertEqual(source["with"]["fetch-depth"], "${{ inputs['source-fetch-depth'] }}")
+        self.assertEqual(source["with"]["ref"], "${{ inputs.source-sha || github.sha }}")
+        self.assertIs(source["with"]["persist-credentials"], False)
+
+    def test_source_fetch_depth_does_not_change_lane_checkouts(self) -> None:
+        checkouts = [
+            (job_name, step)
+            for job_name, job in self.doc["jobs"].items()
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
+        ]
+        self.assertEqual(len(checkouts), 3)
+        lane_checkouts = [
+            (job_name, step["with"])
+            for job_name, step in checkouts
+            if step["with"].get("repository") == "SylphxAI/.github"
+        ]
+        self.assertEqual([job_name for job_name, _ in lane_checkouts], ["preflight", "publish"])
+        for job_name, settings in lane_checkouts:
+            with self.subTest(job=job_name):
+                self.assertEqual(settings, {
+                    "repository": "SylphxAI/.github",
+                    "ref": "${{ inputs['lane-ref'] || job.workflow_sha || 'main' }}",
+                    "path": ".image-lane",
+                    "persist-credentials": False,
+                })
+        self.assertEqual(self.workflow.count("${{ inputs['source-fetch-depth'] }}"), 1)
 
 
 
