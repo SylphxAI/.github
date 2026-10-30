@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "identities": [
+    {"name": "Kyle Tse", "email": "hi@kylet.se"},
+    {"name": "renovate[bot]", "email": "29139614+renovate[bot]@users.noreply.github.com"},
+    {"name": "sylphx-ai[bot]", "email": "212550965+sylphx-ai[bot]@users.noreply.github.com"},
+    {"name": "GitHub", "email": "noreply@github.com"}
+  ],
+  "attribution_names": [
+    "AI", "LLM", "assistant", "agent", "bot", "Claude", "Codex", "Copilot", "Cursor",
+    "ChatGPT", "Gemini", "GPT", "OpenAI", "Anthropic", "Aider", "Devin", "CodeRabbit",
+    "Windsurf", "Codeium", "DeepSeek", "Qwen", "OpenCode", "AnyAgents"
+  ],
+  "internal_patterns": {
+    "coordination-id": "(?<![A-Za-z0-9_])(?:msg|agt|sch)_[a-z0-9]{26,32}(?![A-Za-z0-9_])",
+    "work-id": "(?<![A-Za-z0-9_])W-[0-9]{3,}(?![A-Za-z0-9_])",
+    "private-interface": "(?:anyagents:reply:|mcp__anyagents__)"
+  }
+}

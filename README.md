@@ -15,6 +15,7 @@ Use one from another repository with
 | [metadata-sync](.github/actions/metadata-sync/README.md) | Offline required-region/field patching with whole-plan validation and deterministic check/write; caller owns rendering ([anymd/repomap adoption](.github/actions/metadata-sync/README.md#adoption-in-anymd-and-repomap)) |
 | [brand](.github/actions/brand/README.md) | Builds brand assets or checks provenance hashes and surface copies, with caller-owned masters and data |
 | [ci-ok](.github/actions/ci-ok/action.yml) | Scans added commits for secrets, then waits for every other GitHub Actions check on the commit and fails if any failed, a workflow failed to start, or no check ran |
+| [contribution-policy](docs/contribution-policy.md) | Checks commit identities and public pull request metadata; included in both shared verdict actions |
 | [migration-guard](docs/migration-guard.md) | Refuses destructive PostgreSQL/MySQL migrations, edits to merged SQL migrations, and unsafe changes to schema snapshots |
 | [setup-ci-test](docs/ci-test.md) | Installs `ci-test`, which requires fresh evidence of executed libtest, JUnit or Vitest tests and preserves runner failures |
 | [main-red-gate](.github/actions/main-red-gate/action.yml) | Stop the line: while the trunk's newest conclusive Verify run is red and its way back is in motion, a merge group is admitted only for a revert, a live-outage fix or a pull request labelled `main-red-fix`; a red trunk with nothing in motion admits with a warning |

@@ -1,0 +1,14 @@
+name: Contribution policy
+description: Check commit identities and public pull request metadata against the shared contribution policy.
+inputs:
+  token:
+    description: Read-only token with contents and pull-requests access to the caller.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Check contribution metadata
+      shell: bash
+      env:
+        CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
+      run: python3 "$GITHUB_ACTION_PATH/contribution_policy.py"
