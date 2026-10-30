@@ -17,6 +17,7 @@ RULE = "architecture/C2/tenant-read-functions"
 RELEASE = "0a8e0782e55506e4c61062f55a77428d7186d799"
 TODAY = datetime.date(2026, 10, 30)
 MANIFEST = '[project]\nname = "Example"\n[resources.database]\ntier = "starter"\n'
+V2_MANIFEST = 'version = "2"\n[[resources]]\nname = "primary"\nkind = "postgres"\ntier = "starter"\n'
 DECLARATION = json.dumps({"kind": "database", "deskReportFunctions": [
     {"name": "activity_summary", "args": "timestamp with time zone"}]})
 WORKFLOW = ".github/workflows/ci.yml"
@@ -84,6 +85,27 @@ class DeclarationTests(unittest.TestCase):
             with self.subTest(manifest=manifest):
                 self.assertEqual(self.report({"sylphx.toml": manifest})["findings"], [])
 
+    def test_v2_postgres_resource_kinds_require_the_same_declaration(self):
+        for kind in ("postgres", "POSTGRES", "MANAGED_RESOURCE_KIND_POSTGRES"):
+            for prefix in ("", "environments.production."):
+                manifest = V2_MANIFEST.replace('"postgres"', json.dumps(kind)).replace(
+                    "[[resources]]", "[[" + prefix + "resources]]")
+                with self.subTest(kind=kind, prefix=prefix):
+                    report = self.report({"sylphx.toml": manifest})
+                    self.assertEqual(report["unreadable"], [])
+                    self.assertEqual([r["rule"] for r in report["findings"]],
+                                     ["tenant-read-functions"])
+                    self.assertEqual(self.report({"sylphx.toml": manifest,
+                        reads.DECLARATION: DECLARATION})["findings"], [])
+
+    def test_v2_other_resources_and_preview_only_database_pass(self):
+        for kind in ("cache", "CACHE", "MANAGED_RESOURCE_KIND_CACHE", "queue", "volume"):
+            with self.subTest(kind=kind):
+                manifest = V2_MANIFEST.replace('"postgres"', json.dumps(kind))
+                self.assertEqual(self.report({"sylphx.toml": manifest})["findings"], [])
+        preview = V2_MANIFEST.replace("[[resources]]", "[[environments.preview.resources]]")
+        self.assertEqual(self.report({"sylphx.toml": preview})["findings"], [])
+
     def test_real_patch_format_and_default_empty_arguments_pass(self):
         for declaration in (DECLARATION, '{"deskReportFunctions":[{"name":"counts"}]}'):
             report = self.report({"sylphx.toml": MANIFEST, reads.DECLARATION: declaration})
@@ -125,6 +147,9 @@ class PublicGuardTests(unittest.TestCase):
     def test_cli_must_fail_missing_and_pass_declaration_or_no_database(self):
         for files, expected in [({"sylphx.toml": MANIFEST}, 1),
                 ({"sylphx.toml": MANIFEST, reads.DECLARATION: DECLARATION}, 0),
+                ({"sylphx.toml": V2_MANIFEST}, 1),
+                ({"sylphx.toml": V2_MANIFEST, reads.DECLARATION: DECLARATION}, 0),
+                ({"sylphx.toml": V2_MANIFEST.replace('"postgres"', '"cache"')}, 0),
                 ({"sylphx.toml": '[project]\nname = "Example"\n'}, 0)]:
             with self.subTest(expected=expected):
                 f = self.fixture()

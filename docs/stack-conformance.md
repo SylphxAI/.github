@@ -451,9 +451,12 @@ Use an immutable checkout of the newly published shared release. Its
 never executes an old checker, and never accesses the network. It discovers
 actual `stack-conformance` pins from the fresh caller base, including multiple
 different old pins. Unrelated shared actions' pins do not determine checker
-capabilities. Its bundled `checker-capabilities.json` binds published commit
-SHAs to source hashes and enforced rule identities. A rule already enforced
-by any old checker cannot receive new baseline records.
+capabilities. Its bundled `checker-capabilities.json` stores reviewed source
+hashes and enforced rule identities, with commit mappings for offline lookup.
+An unlisted commit is recognized only when its immutable local source exactly
+matches a reviewed profile. Missing source or an unreviewed profile refuses
+adoption. A rule already enforced by any old checker cannot receive new
+baseline records.
 
 Stage the caller's full-SHA pin updates, each with `# main`, and any required
 workflow fixes. Keep its baseline unchanged. Then use a staged tree OID so the
@@ -493,12 +496,26 @@ as its ratchet, including architecture records.
 
 Ordinary Renovate pin-only updates and shrinking baselines do not consult the
 capability registry, so a later merged checker SHA need not be registered for
-routine updates. Before shipping a new rule, refresh the registry for the
-old pins that need adoption. `adoption.py register --shared-repo PATH --rev SHA`
-emits a profile for review; include its commit/profile mapping and content in
-the bundled registry. Unknown profiles fail only an adoption request. Keep
+routine updates. Before shipping a new rule, refresh the reviewed profiles for
+old checker sources that need adoption. Commits with identical reviewed source
+do not need separate mappings when their local Git objects are available.
+`adoption.py register --shared-repo PATH --rev SHA` emits a profile for review;
+include its content and an optional commit mapping in the bundled registry.
+The required CLI uses the same immutable fingerprint resolution: its explicit
+`--shared-source` checkout when supplied, otherwise the public GitHub source
+reader already used for pin provenance. It verifies complete trees and Git blob
+identities and never executes historical code. Unavailable source refuses the
+adoption request. Unknown profiles fail only an adoption request. Keep
 rule identities stable; an intentional new rule gets a new identity and its
 own adoption marker. No custom updater or broker is involved.
+
+For an initial caller, the base has no checker pin and the staged candidate must
+add an immutable checker caller. The same helper adopts only findings already
+present in that exact base, with one marker per rule; it refuses new findings
+and unapproved cache reads. Existing markers still prevent reseeding. The
+required CLI validates this initial adoption through the same rule permissions.
+When the base has no baseline file, the helper also seeds exact inherited stack
+departures; a new departure in the candidate is refused.
 
 ### Recorded decisions
 

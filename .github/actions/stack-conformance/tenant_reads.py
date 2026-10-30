@@ -13,6 +13,11 @@ def has_database(scope):
     resources = scope.get("resources", {})
     if isinstance(resources, dict) and isinstance(resources.get("database"), dict):
         return True
+    if isinstance(resources, list) and any(
+            isinstance(resource, dict) and resource.get("kind") in (
+                "postgres", "POSTGRES", "MANAGED_RESOURCE_KIND_POSTGRES")
+            for resource in resources):
+        return True
     database = scope.get("database")
     # The existing migrations table configures a migration, not a resource.
     return isinstance(database, dict) and (not database or bool(set(database) - {"migrations"}))
