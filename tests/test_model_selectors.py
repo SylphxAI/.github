@@ -117,6 +117,8 @@ class ModelSelectorTests(unittest.TestCase):
 
     def test_sql_predicates_do_not_select_the_replacement_model(self):
         for source in ("UPDATE agents SET model_id = NULL WHERE model_id = 'sylphx/executor';",
+                       "UPDATE agents SET reason = 'retired; replace old model' "
+                       "WHERE model_id = 'sylphx/executor';",
                        "DELETE FROM agents WHERE model = 'gpt-4o';",
                        "UPDATE agents SET model = CASE WHEN model = 'gpt-4o' THEN NULL END;"):
             self.assertEqual(self.scan(source, "migrations/repair.sql"), [])
@@ -124,6 +126,40 @@ class ModelSelectorTests(unittest.TestCase):
                        "UPDATE agents SET model = CASE WHEN model = 'gpt-4o' "
                        "THEN 'gpt-5.1' ELSE 'gpt-5.2' END;"):
             self.assertTrue(self.scan(source, "migrations/repair.sql"))
+
+    def test_classifier_membership_and_weight_provenance_are_not_defaults(self):
+        source = '{"taxonomy":{"classes":[{"overrides":[{"model":"deepseek-flash"}]}]},' \
+                 '"behavior":{"modelLimits":[{"model":"kimi-for-coding"}]},' \
+                 '"cascade":{"catalog":{"imageModel":"grok-imagine-image"}},' \
+                 '"providers":{"future":{"defaultModel":"new-vendor/line"}}}'
+        rows = self.scan(source, "catalog.json")
+        self.assertEqual({row["model"] for row in rows}, {"grok-imagine-image", "new-vendor/line"})
+        source = 'weights = {"repo":"owner/weights", "revision":"digest", "licence":"example", ' \
+                 '"sha256":{}, "base_model":"owner/provenance"}\n' \
+                 'model = "owner/request-model"\n'
+        self.assertEqual([row["model"] for row in self.scan(source, "src/weights.py")],
+                         ["owner/request-model"])
+
+    def test_diagnostic_fixture_list_cannot_hide_an_inference_request(self):
+        source = '''pub fn provider_portable_tool_surface_proof(packs: &[ToolPackId]) -> Value {
+            let models = ["sylphx/lumen", "openai/gpt-4.1-mini"];
+            for model in models {
+                let names = projection(packs);
+                rows.push(json!({"modelId": model, "names": names}));
+            }
+            json!({"schema":"spi_tool_surface_model_independent_projection/v1",
+                   "kind":"local_model_independent_projection_check"})
+        }
+        '''
+        path = "crates/spiron-tools/src/tool_packs.rs"
+        def scan(text, repository="SylphxAI/spiron"):
+            return models.scan(sc.DictTree({path:text}), repository, None,
+                               sc.architecture.source_views)["findings"]
+        self.assertEqual(scan(source), [])
+        self.assertTrue(scan(source, "example/product"))
+        self.assertTrue(scan(source.replace('let names = projection(packs);',
+                                            'let names = infer(model);')))
+        self.assertEqual(len(scan(source + 'const MODEL: &str = "new-vendor/line";')), 1)
 
 
 if __name__ == "__main__":

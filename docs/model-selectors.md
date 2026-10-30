@@ -36,6 +36,14 @@ exceptions remain restricted to the repository/path pairs in `model_pins.py`.
 Ordinary repository identifiers and dependency paths do not become model IDs
 because an earlier field on the same line mentions a model.
 
+Classification tables, digest-bound weight provenance, SQL comparisons and
+search synonyms identify existing models without selecting a request model.
+The check distinguishes those records from fallback/default assignments.
+Catalog image-model links that drive inference remain checked. A narrowly
+declared diagnostic fixture list is excluded only while its model tags are
+used solely in proof JSON; adding an inference call using a tag removes that
+exclusion. Adjacent production selectors remain checked.
+
 This is an offline structural check. Computed, encoded or indirectly selected
 model IDs still need review; CI does not prove arbitrary runtime data flow or
 the existence of a catalog SKU. A pinned alias declaration can tighten the

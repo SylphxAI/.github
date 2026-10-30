@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import collections
+import ast
 import json
 import importlib.util
 import pathlib
@@ -49,6 +50,13 @@ EXEMPTIONS = [
      "reason": "Generated upstream OpenResponses conformance fixtures retain the provider contract's examples."},
     {"repository": "SylphxAI/cloud", "path": "scripts/ci/verify-fresh-database-bootstrap.sh",
      "reason": "The database-bootstrap integration test asserts the catalog's seeded records."},
+]
+DIAGNOSTIC_LISTS = [
+    {"repository": "SylphxAI/spiron", "path": "crates/spiron-tools/src/tool_packs.rs",
+     "function": "provider_portable_tool_surface_proof",
+     "schema": "spi_tool_surface_model_independent_projection/v1",
+     "kind": "local_model_independent_projection_check",
+     "reason": "Diagnostic fixture tags only; the projection receives no model id."},
 ]
 
 # Recognition is deliberately separate from authorization. Versioned and
@@ -198,10 +206,120 @@ def model_selector(clean, start, code=None):
 
 def sql_selection(clean, start):
     """A comparison identifies existing rows; SET/VALUES/DEFAULT select values."""
-    statement = clean[clean.rfind(";", 0, start) + 1:start]
-    statement = re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"", " ", statement)
+    view = re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"",
+                  lambda match: "".join("\n" if ch == "\n" else " " for ch in match.group()), clean)
+    statement = view[view.rfind(";", 0, start) + 1:start]
     clauses = re.findall(r"\b(where|on|having|when|set|values|default|then|else)\b", statement, re.I)
     return not clauses or clauses[-1].lower() not in {"where", "on", "having", "when"}
+
+
+def metadata_ranges(clean, suffix):
+    """Locate classifier membership and weight provenance, leaving defaults visible."""
+    ranges = []
+    if suffix == ".json":
+        decoder = json.JSONDecoder()
+        space = re.compile(r"\s*")
+
+        def visit(at, path):
+            at = space.match(clean, at).end()
+            if clean[at] == "{":
+                at = space.match(clean, at + 1).end()
+                while clean[at] != "}":
+                    key, at = decoder.raw_decode(clean, at)
+                    at = space.match(clean, at).end()
+                    if not isinstance(key, str) or clean[at] != ":":
+                        raise ValueError("invalid JSON object")
+                    at = space.match(clean, visit(at + 1, path + (key,))).end()
+                    if clean[at] != ",":
+                        break
+                    at = space.match(clean, at + 1).end()
+                if clean[at] != "}":
+                    raise ValueError("invalid JSON object")
+                return at + 1
+            if clean[at] == "[":
+                at, index = space.match(clean, at + 1).end(), 0
+                while clean[at] != "]":
+                    at = space.match(clean, visit(at, path + (index,))).end()
+                    index += 1
+                    if clean[at] != ",":
+                        break
+                    at = space.match(clean, at + 1).end()
+                if clean[at] != "]":
+                    raise ValueError("invalid JSON array")
+                return at + 1
+            value, end = decoder.raw_decode(clean, at)
+            keys = [re.sub(r"[_-]", "", key).lower() for key in path if isinstance(key, str)]
+            if (isinstance(value, str) and keys and keys[-1] in {"model", "models"}
+                    and {"taxonomy", "quotatiers", "modellimits", "match"} & set(keys[:-1])):
+                ranges.append((at, end, "Classifier membership identifies existing models; it selects no request/default."))
+            return end
+
+        try:
+            if space.match(clean, visit(0, ())).end() != len(clean):
+                return []
+        except (ValueError, IndexError, RecursionError):
+            return []  # No metadata exemption without a complete parsed declaration.
+    elif suffix == ".py":
+        lines = clean.splitlines(keepends=True)
+        offsets, total = [], 0
+        for line in lines:
+            offsets.append(total)
+            total += len(line)
+        for node in ast.walk(ast.parse(clean)):
+            if not isinstance(node, ast.Dict):
+                continue
+            fields = {key.value: value for key, value in zip(node.keys, node.values)
+                      if isinstance(key, ast.Constant) and isinstance(key.value, str)}
+            if not {"repo", "revision", "sha256", "base_model"} <= fields.keys() or not {"license", "licence"} & fields.keys():
+                continue
+            value = fields["base_model"]
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                start = offsets[value.lineno - 1] + len(lines[value.lineno - 1].encode()[:value.col_offset].decode())
+                end = offsets[value.end_lineno - 1] + len(lines[value.end_lineno - 1].encode()[:value.end_col_offset].decode())
+                ranges.append((start, end, "Digest-bound weight provenance records an upstream identity; inference uses its supplied model directory."))
+    return ranges
+
+
+def balanced_end(code, start, opening, closing):
+    depth, end = 1, start
+    while depth and end < len(code):
+        depth += (code[end] == opening) - (code[end] == closing)
+        end += 1
+    return end if not depth else None
+
+
+def diagnostic_ranges(repository, path, clean, code):
+    ranges = []
+    for entry in DIAGNOSTIC_LISTS:
+        if entry["repository"] != repository or entry["path"] != path or code is None:
+            continue
+        function = re.search(r"\bfn\s+" + re.escape(entry["function"]) + r"\([^;{}]*\)[^{;]*\{", code)
+        if function is None:
+            continue
+        end = balanced_end(code, function.end(), "{", "}")
+        if end is None:
+            continue
+        body = code[function.end():end]
+        if len(re.findall(r"\bmodels\b", body)) != 2:
+            continue
+        declaration = re.search(r"\blet\s+models\s*=\s*\[", body)
+        loop = re.search(r"\bfor\s+model\s+in\s+models\s*\{", body)
+        if declaration is None or loop is None:
+            continue
+        loop_end = balanced_end(body, loop.end(), "{", "}")
+        if loop_end is None or len(re.findall(r"\bmodel\b", body[loop.end():loop_end])) != 1:
+            continue
+        original = clean[function.end():end]
+        if not re.search(r'"modelId"\s*:\s*model\b', original[loop.end():loop_end]):
+            continue
+        if not all(re.search('"' + key + r'"\s*:\s*"' + re.escape(entry[key]) + '"', original)
+                   for key in ("schema", "kind")):
+            continue
+        start = function.end() + declaration.end()
+        finish = balanced_end(code, start, "[", "]")
+        if finish is not None:
+            ranges.append((start, finish, entry["reason"]))
+    return ranges
 
 
 def scan(tree, repository, aliases, source_views):
@@ -260,7 +378,14 @@ def scan(tree, repository, aliases, source_views):
                         and model_selector(clean, m.start(), code)):
                     matches[(m.start(), m.end())] = m.group()
         seen = collections.Counter()
+        nonselectors = metadata_ranges(clean, suffix) if matches else []
+        nonselectors += diagnostic_ranges(repository, path, clean, code) if matches else []
         for (start, end), model in sorted(matches.items()):
+            metadata = next((reason for begin, finish, reason in nonselectors
+                             if begin <= start and end <= finish), None)
+            if metadata:
+                exemptions.append({"path": path, "line": clean.count("\n", 0, start) + 1, "reason": metadata})
+                continue
             if suffix == ".sql" and not sql_selection(clean, start):
                 continue
             if code is not None and code[start:start + len(model)].strip():
