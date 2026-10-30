@@ -1,0 +1,28 @@
+name: migration-guard
+description: Refuse destructive SQL and changes to already merged migrations.
+
+inputs:
+  dialect:
+    description: SQL dialect (postgres or mysql).
+    required: true
+  migration-directories:
+    description: Repository-relative migration directories, one per line; SQL files are read recursively.
+    required: true
+  base-ref:
+    description: Base Git commit; defaults to the pull request, merge group, or push base.
+    default: ''
+  head-ref:
+    description: Head Git commit; defaults to the event head.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Check migration safety
+      shell: bash
+      env:
+        MIGRATION_DIALECT: ${{ inputs.dialect }}
+        MIGRATION_DIRECTORIES: ${{ inputs.migration-directories }}
+        MIGRATION_BASE: ${{ inputs.base-ref }}
+        MIGRATION_HEAD: ${{ inputs.head-ref }}
+      run: python3 "$GITHUB_ACTION_PATH/migration_guard.py"
