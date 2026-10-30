@@ -10,8 +10,8 @@ Steps, run from the repository root (the action calls them in this order):
       its branch exists: close it to stop the repin, close it and delete the branch to rebuild it.
 
   keel_repin.py run --tag keel-verified-2026-10-03-1|latest [--check-command CMD] [--report FILE]
-      Resolve the tag to its commit, rewrite every Keel pin, refresh Cargo.lock for the
-      Keel crates, run the target release's migrate --check and the build check, and write
+      Resolve the published tag/source/version, migrate to its exact public facade,
+      resolve Cargo.lock, run the migration check and build check, and write
       a report. A failed migration or build goes in the report so the pull request shows it.
 
   keel_repin.py pr --report FILE [--dry-run]
@@ -40,12 +40,16 @@ Steps, run from the repository root (the action calls them in this order):
       or different field fails the run (after --live-grace-minutes from the merge, the deploy's
       time), with one comment on that pull request per wrong live value.
 
-What counts as a pin: a `rev = "<40 hex>"` or `tag = "keel-..."` on a Cargo.toml line that
-names the Keel git repository, every `deps/keel.rev`, and the old full or short commit
-anywhere else in tracked text files (Dockerfiles, cargo config, CI, docs). A repository
-that needs more (vendored sources, a patch block) keeps `tools/repin_keel.sh <tag>`; when
-it exists it replaces the rewrite and the lock refresh. Files under .github/workflows/ are never
-edited (the workflow token cannot push them); the pull request lists those that name the old pin.
+Keel-tag targets must have a published channel.json binding tag, source commit and public
+version, with non-yanked facade and CLI packages on crates.io. The exact public CLI applies
+`migrate --registry VERSION` before lock resolution and the build. Registry-only consumers
+need no source pin. The bot retains its metadata reader for private Keel tag/release
+lineage; CLI installation and compilation use crates.io. Revision files remain provenance.
+
+The public migration also inserts ARG SYLPHX_GIT_COMMIT_SHA into every Docker stage that
+packs the title, including script wrappers. Existing declarations and runtime stages stay
+unchanged. Workflows are never edited by the workflow token. Private kit/engine layers
+retain their existing hooks and read credentials.
 """
 
 import argparse
@@ -57,6 +61,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 TAG_RE = re.compile(r"keel-(verified|weekly)-(\d{4}-\d{2}-\d{2})(?:-(\d+))?")
@@ -139,7 +146,7 @@ def tracked_files(root):
 
 def pin_files(files):
     cargo = [f for f in files if f.endswith("Cargo.toml") and not f.startswith(SKIP_DIRS) and "/vendor/" not in f]
-    revs = [f for f in files if (f == "deps/keel.rev" or f.endswith("/deps/keel.rev")) and "/vendor/" not in f]
+    revs = [f for f in files if (f == "deps/keel.rev" or f.endswith("/deps/keel.rev") or Path(f).name == "KEEL_PIN") and "/vendor/" not in f]
     return cargo, revs
 
 
@@ -157,6 +164,11 @@ def find_pins(root):
         if SHA_RE.fullmatch(text):
             found.append(text)
     return sorted(set(found))
+
+
+def has_git_pins(root):
+    return any(KEEL_URL.search((Path(root) / name).read_text())
+               for name in pin_files(tracked_files(root))[0])
 
 
 def has_tag_pins(root):
@@ -392,7 +404,30 @@ def cmd_layer_run(args):
             if len(pins) != 1:
                 raise Refused("cubeage-kit must pin exactly one Keel commit")
             report["keel_sha"] = pins[0]
-            if (root / HOOK).exists():
+            versions = registry_versions(d)
+            if versions:
+                if len(versions) != 1 or has_git_pins(d):
+                    raise Refused("cubeage-kit must use one public facade version without Git Keel dependencies")
+                report["version"] = versions[0]
+                if (root / HOOK).exists():
+                    cmd = ["bash", HOOK, pins[0], sha]
+                    proc = run(cmd, cwd=root, check=False)
+                    log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
+                    stage = "hook" if proc.returncode else None
+                if stage is None:
+                    stage = check_migrations(root, versions[0], log)
+                if stage is None:
+                    rewrite(root, old, sha, None)
+                    rewrite(root, keel_old, pins[0], None)
+                    ensure_pack_source_args(root)
+                    stage = refresh_layer_locks(root, args.layer, log)
+                if stage is None:
+                    stage = refresh_registry_locks(root, versions[0], log)
+                if stage is None and not (root / HOOK).exists() and (root / "scripts/vendor-private.sh").exists():
+                    proc = run(["bash", "scripts/vendor-private.sh"], cwd=root, check=False)
+                    log.append(f"$ bash scripts/vendor-private.sh\n{proc.stdout}{proc.stderr}")
+                    stage = "hook" if proc.returncode else None
+            elif (root / HOOK).exists():
                 cmd = ["bash", HOOK, pins[0], sha]
                 proc = run(cmd, cwd=root, check=False)
                 log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
@@ -451,33 +486,161 @@ def cmd_layer_run(args):
     return 0
 
 
-def check_migrations(root, remote, tag, sha, log):
-    """Run the target release's migration check, not a CLI already on PATH."""
-    with tempfile.TemporaryDirectory() as d:
-        source = str(Path(d) / "source")
+VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
+
+
+def registry_versions(root):
+    """Exact public facade versions, including renamed and workspace dependencies."""
+    found = set()
+
+    def visit(table):
+        if not isinstance(table, dict):
+            return
+        for alias, spec in table.items():
+            if isinstance(spec, dict):
+                if spec.get("package", alias) == "sylphx-keel-engine":
+                    if "git" in spec or "path" in spec:
+                        continue
+                    version = str(spec.get("version", "")).removeprefix("=")
+                    if not VERSION_RE.fullmatch(version):
+                        raise Refused("the public facade must use an exact crates.io version")
+                    found.add(version)
+                visit(spec)
+            elif alias == "sylphx-keel-engine" and isinstance(spec, str):
+                version = spec.removeprefix("=")
+                if not VERSION_RE.fullmatch(version):
+                    raise Refused("the public facade must use an exact crates.io version")
+                found.add(version)
+
+    for name in pin_files(tracked_files(root))[0]:
+        visit(tomllib.loads((Path(root) / name).read_text()))
+    return sorted(found)
+
+
+def published_release(tag, sha):
+    """A tag is usable only after its channel asset and both public packages exist."""
+    with tempfile.TemporaryDirectory() as directory:
+        env = {**os.environ, "GH_TOKEN": os.environ.get("KEEL_API_TOKEN") or os.environ.get("GH_TOKEN", "")}
+        run([*gh_bin(), "release", "download", tag, "--repo", "SylphxAI/keel",
+             "--pattern", "channel.json", "--dir", directory], env=env)
         try:
-            checkout_layer(remote, sha, source)
-        except Refused as error:
-            log.append(str(error))
-            return "migrate"
-        env = {**os.environ, "GH_TOKEN": os.environ.get("KEEL_API_TOKEN", "")}
-        version_command = [sys.executable, str(Path(source) / "tools/release.py"), "--version-only"]
-        proc = run(version_command, cwd=source, check=False, env=env)
-        log.append(f"$ {' '.join(version_command)}\n{proc.stdout}{proc.stderr}")
-        version = proc.stdout.strip()
-        if proc.returncode or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
-            log.append("The target release did not report a published CLI version; installation was not attempted.")
-            return "migrate"
-        install_root = Path(d) / "cli"
-        installer = Path(source) / "scripts/install_cli.sh"
-        commands = (["bash", str(installer), version, str(install_root)],
-                    [str(install_root / "bin/keel"), "migrate", "--check"])
+            channel = json.loads((Path(directory) / "channel.json").read_text())
+            entries = [entry for entry in channel["releases"] if entry.get("tag") == tag]
+            if len(entries) != 1 or entries[0].get("commit") != sha:
+                raise ValueError("tag/source mismatch")
+            version = entries[0]["version"]
+            if not isinstance(version, str) or not VERSION_RE.fullmatch(version):
+                raise ValueError("invalid public version")
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            raise Refused(f"{tag}: published channel.json does not map the exact tag/source: {error}") from error
+    for package in ("sylphx-keel-engine", "sylphx-keel-cli"):
+        url = f"https://crates.io/api/v1/crates/{package}/{version}"
+        request = urllib.request.Request(url, headers={"User-Agent": "keel-repin"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                item = json.load(response)["version"]
+            if item.get("crate") != package or item.get("num") != version or item.get("yanked") is not False:
+                raise ValueError("package/version is absent or yanked")
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            raise Refused(f"{package} {version}: actual public publication is not ready: {error}") from error
+    return version
+
+
+def check_migrations(root, version, log):
+    """Install the accepted public CLI and apply its complete registry migration."""
+    with tempfile.TemporaryDirectory() as directory:
+        executable = str(Path(directory) / "bin/keel")
+        commands = (["cargo", "install", "sylphx-keel-cli", "--version", "=" + version,
+                     "--locked", "--root", directory],
+                    [executable, "--version"],
+                    [executable, "migrate", "--registry", version],
+                    [executable, "migrate", "--check", "--registry", version])
         for cmd in commands:
-            proc = run(cmd, cwd=root, check=False, env=env)
+            proc = run(cmd, cwd=root, check=False)
             log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
-            if proc.returncode:
+            if proc.returncode or (cmd[-1] == "--version" and proc.stdout.strip() != "keel " + version):
                 return "migrate"
     return None
+
+
+def refresh_registry_locks(root, version, log):
+    """Resolve changed manifests without compiling, then reject mixed Keel identities."""
+    for name in tracked_files(root):
+        if Path(name).name != "Cargo.lock" or name.startswith(SKIP_DIRS) or "/vendor/" in name:
+            continue
+        manifest = (Path(root) / name).with_name("Cargo.toml")
+        if not manifest.exists():
+            continue
+        cmd = ["cargo", "metadata", "--manifest-path", str(manifest), "--format-version", "1"]
+        proc = run(cmd, cwd=root, check=False)
+        log.append(f"$ {' '.join(cmd)}\n{proc.stderr}")
+        if proc.returncode:
+            return "lock"
+        lock = tomllib.loads((Path(root) / name).read_text())
+        for package in lock.get("package", []):
+            source = package.get("source", "")
+            if KEEL_URL.search(source) or (package["name"].startswith("sylphx-keel-") and
+                    (package["version"] != version or source != "registry+https://github.com/rust-lang/crates.io-index")):
+                log.append(f"{name}: mixed Keel identity: {package['name']} {package['version']} {source}")
+                return "lock"
+    return None
+
+
+SCRIPT_RE = re.compile(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|py|mjs|js)\b")
+PACK_RE = re.compile(r"(?:\bkeel|\$\{?KEEL[A-Z_]*(?::-[^}]+)?\}?)[\"']?\s+pack\b")
+
+
+def ensure_pack_source_args(root):
+    """Import the platform source argument into each stage that invokes the packer."""
+    root = Path(root)
+    files = set(tracked_files(root))
+
+    def packs(text, seen):
+        text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        if PACK_RE.search(text.replace("\\\n", " ")):
+            return True
+        for name in SCRIPT_RE.findall(text):
+            if name in files and name not in seen:
+                path = root / name
+                if path.is_file() and not path.is_symlink() and is_text(path) and packs(path.read_text(), seen | {name}):
+                    return True
+        return False
+
+    changed = []
+    for name in sorted(files):
+        base = Path(name).name
+        if not (base == "Dockerfile" or base.startswith("Dockerfile.") or base.endswith(".Dockerfile")) or base.endswith(".dockerignore") or name.startswith(SKIP_DIRS):
+            continue
+        path = root / name
+        if not path.is_file() or path.is_symlink() or not is_text(path):
+            continue
+        lines = path.read_text().splitlines(keepends=True)
+        starts = [i for i, line in enumerate(lines) if re.match(r"^\s*FROM\s", line, re.I)]
+        inserts = []
+        for begin, end in zip(starts, starts[1:] + [len(lines)]):
+            # Commands span continuation lines. Comments never select a stage.
+            command, packing_line = "", None
+            for i in range(begin + 1, end):
+                line = lines[i]
+                if line.lstrip().startswith("#"):
+                    continue
+                command += line
+                if line.rstrip().endswith("\\"):
+                    continue
+                if re.match(r"^\s*RUN\s", command, re.I) and packs(command, set()):
+                    packing_line = i
+                    break
+                command = ""
+            if packing_line is not None and not any(
+                    re.match(r"^\s*ARG\s+SYLPHX_GIT_COMMIT_SHA(?:\s|=|$)", line, re.I)
+                    for line in lines[begin + 1:packing_line + 1]):
+                inserts.append(begin + 1)
+        for index in reversed(inserts):
+            lines.insert(index, "ARG SYLPHX_GIT_COMMIT_SHA\n")
+        if inserts:
+            path.write_text("".join(lines))
+            changed.append(name)
+    return changed
 
 
 def cmd_run(args):
@@ -494,14 +657,11 @@ def cmd_run(args):
         Path(args.report).write_text(json.dumps(report, indent=2))
 
     old = find_pins(root)
+    versions = registry_versions(root)
     report["old"] = old
     hook = (root / HOOK).exists()
-    if not old and not hook and not has_tag_pins(root):
+    if not old and not versions and not hook and not has_tag_pins(root):
         raise Refused("no Keel pin found in any tracked Cargo.toml or deps/keel.rev; nothing to repin")
-    if old == [sha]:
-        print(f"::notice::already pinned to {args.tag} ({sha[:9]}); nothing to do")
-        save()
-        return 0
     if not args.ignore_branch and remote_branch_exists(root, branch):
         report["status"] = "branch-exists"
         print(f"::notice::{branch} already exists; leaving it as is. Close the pull request and delete the branch to rebuild it")
@@ -510,16 +670,29 @@ def cmd_run(args):
 
     log = []
     stage = None
+    try:
+        version = published_release(args.tag, sha)
+        report["version"] = version
+    except Refused as error:
+        report.update(status="failed", stage="migrate", log=str(error))
+        save()
+        return 0
+    if versions and any(tuple(map(int, value.split("."))) > tuple(map(int, version.split("."))) for value in versions):
+        raise Refused("the published target would downgrade the public facade")
+    if versions == [version] and not has_git_pins(root) and (not old or old == [sha]):
+        save()
+        return 0
     if hook:
         proc = run(["bash", HOOK, args.tag], cwd=root, check=False)
         log.append(f"$ bash {HOOK} {args.tag}\n{proc.stdout}{proc.stderr}")
         if proc.returncode != 0:
             stage = "hook"
-    else:
-        rewrite(root, old, sha, args.tag)
-        stage = refresh_locks(root, log, old)
     if stage is None:
-        stage = check_migrations(root, args.remote, args.tag, sha, log)
+        stage = check_migrations(root, version, log)
+    if stage is None:
+        rewrite(root, old, sha, args.tag)
+        ensure_pack_source_args(root)
+        stage = refresh_registry_locks(root, version, log)
     if stage is None and args.check_command:
         proc = run(["bash", "-c", args.check_command], cwd=Path(root, args.check_dir), check=False)
         log.append(f"$ {args.check_command}\n{proc.stdout}{proc.stderr}")
@@ -535,7 +708,7 @@ def cmd_run(args):
     report["stage"] = stage or ""
     report["log"] = "\n".join(log)
     save()
-    if not report["changed"]:
+    if not report["changed"] and stage is None:
         report["status"] = "unchanged"
         save()
     print(f"repin {args.tag} -> {sha[:9]}: {report['status']} ({len(report['changed'])} files changed)")
@@ -562,13 +735,15 @@ def pr_text(report):
     name = LAYER_REPOS[layer].split("/")[1] if layer != "keel" else "Keel"
     title = f"chore({layer}): repin {name} to {tag} ({sha[:9]})"
     lines = [f"Moves the {name} pin to `{tag}`, commit `{sha}`."]
+    if report.get("version"):
+        lines.append(f"Uses the exact public facade and CLI version `{report['version']}`.")
     if report.get("keel_sha"):
         lines.append(f"Moves the Keel pin to `kit-{sha}`, commit `{report['keel_sha']}`.")
     if old:
         lines.append("")
         lines.append("Old pin: " + ", ".join(f"`{o}`" for o in old))
         repo = LAYER_REPOS[layer] if layer != "keel" else "SylphxAI/keel"
-        lines.append(f"{name} changes: https://github.com/{repo}/compare/{old[0]}...{sha} (private repository)")
+        lines.append(f"{name} changes: https://github.com/{repo}/compare/{old[0]}...{sha}")
     if report["changed"]:
         lines += ["", "Files changed:", *[f"- `{f}`" for f in report["changed"][:60]]]
     if report.get("manual"):
@@ -624,6 +799,8 @@ def resolve_label(gh, explicit):
 def cmd_pr(args):
     root = Path(args.root).resolve()
     report = json.loads(Path(args.report).read_text())
+    if report["status"] == "failed" and not report["changed"]:
+        raise Refused("repin preflight failed before any source change: " + report.get("log", "")[-1000:])
     if report["status"] not in ("ok", "failed"):
         print(f"::notice::nothing to open ({report['status']})")
         return 0
@@ -727,13 +904,26 @@ def cmd_poll(args):
     branch = BRANCH_PREFIX + tag
     out = {"tag": tag, "sha": sha, "needed": "false", "reason": ""}
     old = find_pins(root)
-    if not old and not (root / HOOK).exists() and not has_tag_pins(root):
+    versions = registry_versions(root)
+    if not old and not versions and not (root / HOOK).exists() and not has_tag_pins(root):
         raise Refused("no Keel pin found in any tracked Cargo.toml or deps/keel.rev; nothing to repin")
-    if old == [sha]:
-        out["reason"] = "already pinned"
-    elif pr_exists(branch) or remote_branch_exists(root, branch):
+    if pr_exists(branch) or remote_branch_exists(root, branch):
         out["reason"] = "a pull request or branch for this tag exists"
     else:
+        try:
+            version = published_release(tag, sha)
+        except Refused as error:
+            out["reason"] = "publication is not ready: " + str(error)
+            write_outputs(out)
+            return 0
+        if versions and any(tuple(map(int, value.split("."))) > tuple(map(int, version.split("."))) for value in versions):
+            out["reason"] = "public facade is already at or beyond this version"
+            write_outputs(out)
+            return 0
+        if versions == [version] and not has_git_pins(root) and (not old or old == [sha]):
+            out["reason"] = "already pinned"
+            write_outputs(out)
+            return 0
         token = os.environ.get("KEEL_API_TOKEN", "")
         behind = [(o, compare_status(o, sha, token)) for o in old if o != sha]
         bad = []

@@ -50,6 +50,37 @@ class LayerTest(unittest.TestCase):
         self.assertEqual(repin.main(["pr", "--root", str(title), "--report", str(report)]), 0)
         return json.loads(report.read_text())
 
+    def test_public_kit_moves_facade_and_source_provenance_together(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            manifest = '[dependencies]\nkeel={package="sylphx-keel-engine", version="=0.1.5930", default-features=false}\n'
+            kit, old = source(base, "kit", {"Cargo.toml": manifest, "deps/keel.rev": fixtures.OLD + "\n"})
+            (kit / "deps/keel.rev").write_text("b" * 40 + "\n")
+            new = advance(kit, "Cargo.toml", manifest.replace("5930", "5931"))
+            title = fixtures.make_title(base, {
+                "Cargo.toml": manifest + f'kit={{git="https://github.com/Cubeage/cubeage-kit",rev="{old}"}}\n',
+                "deps/kit.rev": old + "\n", "deps/keel.rev": fixtures.OLD + "\n",
+                "Dockerfile.web": "FROM rust AS pack\nRUN keel pack --profile web\n",
+                "tools/repin_keel.sh": 'printf "%s %s\\n" "$1" "$2" > hook-args\n',
+            })
+            def migrate(root, version, log):
+                self.assertEqual(version, "0.1.5931")
+                path = root / "Cargo.toml"
+                path.write_text(path.read_text().replace("5930", "5931"))
+            report = base / "report.json"
+            with mock.patch.object(repin, "check_migrations", side_effect=migrate) as migrate_cli:
+                self.assertEqual(repin.main(["run", "--layer", "kit", "--root", str(title), "--remote", str(kit),
+                                            "--check-command", "true", "--report", str(report)]), 0)
+            data = json.loads(report.read_text())
+            self.assertEqual((data["status"], data["version"]), ("ok", "0.1.5931"))
+            self.assertEqual((title / "deps/kit.rev").read_text().strip(), new)
+            self.assertEqual((title / "deps/keel.rev").read_text().strip(), "b" * 40)
+            self.assertIn("=0.1.5931", (title / "Cargo.toml").read_text())
+            self.assertIn(new, (title / "Cargo.toml").read_text())
+            self.assertIn("ARG SYLPHX_GIT_COMMIT_SHA", (title / "Dockerfile.web").read_text())
+            self.assertEqual((title / "hook-args").read_text().strip(), "b" * 40 + " " + new)
+            migrate_cli.assert_called_once()
+
     @unittest.skipUnless(shutil.which("cargo"), "needs cargo")
     def test_kit_main_moves_kit_and_keel_as_one_tuple_with_one_lock_source(self):
         self.check_kit_tuple()

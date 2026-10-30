@@ -10,25 +10,38 @@ Each title carries one small workflow, `keel-repin.yml` (from `workflow-template
 that runs every 10 minutes on our own runners (so a repin pull request exists within 15 minutes of a
 tag) and calls the `keel-repin` action in three modes:
 
-1. **poll** (a cheap job: checkout, read Keel's tags with the read-only reader App). A repin is
-   needed when the newest `keel-verified-*` tag is not already the pin, Keel reports the tag
-   **ahead** of the pin (never a downgrade), the branch `chore/keel-repin-<tag>` does not exist, and
-   no open or merged pull request from it exists. A closed pull request stops its tag only while its
-   branch exists: close it to stop the repin; close it and delete the branch to have the next poll
-   rebuild it.
-2. **repin** (only when needed): moves every pin, refreshes `Cargo.lock` for the Keel crates,
-   and, for Keel-tag repins, reads the target commit's published version with
-   `python3 tools/release.py --version-only`, installs that exact crates.io CLI through
-   `bash scripts/install_cli.sh <published-version> <cargo-install-root>`, and runs
-   `<cargo-install-root>/bin/keel migrate --check`
-   from the title repository root before the title's build check. The release checkout has
-   full history so its version calculation matches publication. A version lookup or install
-   failure stops the migration preflight; there is no CLI from PATH or source-build fallback.
-   A migration failure, including `[mobile.android]` without `[mobile.android.signing]`
-   (Keel #5144), opens a failed draft with the migration diagnostic instead of passing
-   the build preflight. The action then pushes `chore/keel-repin-<tag>`, opens the pull request with the
-   workflow token and the repository's single `owner:*` label, then starts the title's CI on that
-   branch with `workflow_dispatch`.
+1. **poll** reads the newest `keel-verified-*` tag. It waits until that release's
+   `channel.json` maps the exact tag and peeled source commit to a version and both
+   `sylphx-keel-engine` and `sylphx-keel-cli` exist, non-yanked, on crates.io. A tag alone
+   does not start migration. A repository with public facade dependencies needs no Git
+   Keel pin. The bot retains its read-only App for the private tag/release metadata;
+   installing and compiling public packages needs no Keel reader. Provenance pins provide ancestry
+   checks; registry-only consumers compare exact versions to avoid a downgrade.
+   An existing branch or open/merged pull request for the tag stops another submission.
+2. **repin** reads the same publication mapping before changing source. It installs
+   `cargo install sylphx-keel-cli --version =VERSION --locked` into an isolated root,
+   checks that executable's version, then runs `keel migrate --registry VERSION` and
+   `keel migrate --check --registry VERSION` from the repository root. There is no
+   version calculation from a source checkout, CLI from PATH, or private engine source checkout.
+   The published migrator owns manifest and Rust API migration, including the single
+   facade contract and target/feature activation; the action does not synthesize imports.
+   Existing repository hooks run first for additional title assets, then the public
+   migration applies to their output too.
+
+   The action resolves each tracked Cargo lock without compiling, refusing any remaining
+   Git Keel source, non-public Keel package, or different Keel version. It updates source
+   provenance and inserts `ARG SYLPHX_GIT_COMMIT_SHA` immediately after `FROM` in each
+   Docker stage that invokes `keel pack`, directly or through tracked scripts. A global
+   ARG does not enter a stage, so it does not replace the stage declaration. Existing
+   stage declarations remain unchanged, and server/runtime stages are not selected by
+   comments about a pack. This travels with the dependency bump before the source-aware
+   packer is used.
+
+   Migration, lock and build failures remain visible and never qualify for merging.
+   A failure before any source change fails without trying to create an empty pull
+   request. Changed source with a failed preflight opens a draft naming the diagnostic.
+   The action pushes `chore/keel-repin-<tag>`, opens the pull request, then starts its CI
+   with `workflow_dispatch`.
 
 Why the dispatch: a pull request opened with the workflow token gets only a `pull_request` run
 that GitHub holds for a maintainer (conclusion `action_required`, a check suite with no check
@@ -155,16 +168,17 @@ a repository may turn it off again if it does not use the bot.
 
 ## What counts as a pin
 
-- A `rev = "<40 hex>"` or `tag = "keel-..."` on a `Cargo.toml` line that names the Keel git
-  repository, and every `deps/keel.rev`.
-- The old full commit, and its 12, 8 and 7 character prefixes, in any other tracked text file
-  (Dockerfiles, cargo config, CI scripts, docs). `vendor/`, `target/`, `Cargo.lock`,
-  `CHANGELOG.md` and `.github/workflows/` are skipped.
-- A `# Keel tag: <tag>` comment in a `Cargo.toml` moves with the pin.
+- The exact crates.io `sylphx-keel-engine` version in a dependency, renamed dependency,
+  or workspace dependency. The matching public migrator upgrades it.
+- Legacy Git Keel revisions/tags, `deps/keel.rev`, and `KEEL_PIN`. Revision files record
+  the source commit after migration; they are not a second implementation dependency.
+- Tracked references to the old full commit and its 12, 8 and 7 character prefixes.
+  `vendor/`, `target/`, `Cargo.lock`, `CHANGELOG.md` and workflow files are skipped by
+  the provenance rewrite. Cargo resolves lockfiles separately.
 
-A title that needs more (re-vendored sources, a patch block) keeps `tools/repin_keel.sh <tag>`.
-When that file exists the action runs it instead of the rewrite and the lock refresh, then runs the
-check; edits it makes under `.github/workflows/` are discarded.
+The token never edits workflow files and lists any that still name an old revision.
+A `tools/repin_keel.sh <tag>` hook may prepare title assets; it does not replace the
+public facade migration. Shared-layer tuple hooks keep their existing arguments.
 
 ## Shared kit and engine layers
 
@@ -172,7 +186,7 @@ The same action follows shared-layer main commits with `layer: kit` (Cubeage/cub
 or `layer: engine` (Cubeage/tycoon-engine). Keep `layer` identical in the poll and
 repin calls, and pass the poll's `tag` output into repin: it is the full main SHA,
 so the build uses the commit that was polled even if main moves meanwhile.
-The default `layer: keel` keeps the existing verified-tag flow unchanged.
+The default `layer: keel` uses the public verified-tag migration above.
 
 Poll fetches the source commits and requires main to be ahead of every consumer pin.
 Each target has one branch, `chore/keel-repin-kit-<sha>` or
@@ -188,7 +202,10 @@ build dependencies still belong in `extra-read-repos`.
   tuple contract, `tools/repin_keel.sh <keel-sha> <kit-sha>`. Otherwise rewrites the
   tracked Cargo rev rows, `deps/kit.rev`, Keel pins and their tracked references,
   and refreshes the layer and Keel packages in each non-vendored `Cargo.lock`.
-  When present, `scripts/vendor-private.sh` runs after that default tuple rewrite
+  A registry-based kit supplies its exact public facade version and source provenance;
+  the matching public CLI migrates the title before the tuple lock resolution. Legacy
+  Git kit sources retain their tuple hook behavior. When present,
+  `scripts/vendor-private.sh` runs after that default tuple rewrite
   and lock refresh. A lock containing a different or second Keel source makes
   the PR a failed draft.
 - **Engine:** rewrites Cargo rev rows and `ENGINE_REV`, then invokes
@@ -214,9 +231,9 @@ hook paths, one PR on repeat and an owned draft on a failed build.
 | `layer` | `keel` (default), `kit` or `engine`; use the same source for poll and repin. |
 | `tag` | A Keel tag, or `latest` (the newest `keel-verified-*`); for shared layers, `latest` follows main and a full SHA freezes the target. |
 | `dry-run` | Print the pull request it would open and the workflows it would start; push nothing. Rebuilds even if the branch exists. |
-| `reader-app-id`, `reader-app-key` | A read-only App that can read the private Keel repository. |
+| `reader-app-id`, `reader-app-key` | A read-only App for private Keel tag/release metadata, kit/engine sources, or extra build dependencies. Public CLI installation and facade compilation need none. |
 | `extra-read-owner`, `extra-read-repos` | Private repositories of one owner that the lock refresh or the build fetches, such as a title kit; list every private git dependency of every tracked `Cargo.lock`. |
-| `check-command`, `check-dir` | The build check and its directory. Default `cargo check`. Keel-tag repins always run `keel migrate --check` from the repository root first, even with a custom or empty build check. |
+| `check-command`, `check-dir` | The build check and its directory. Default `cargo check`. Keel-tag repins always apply and check `keel migrate --registry VERSION` from the repository root first, even with a custom or empty build check. |
 | `ci-workflows` | Workflow files started on the branch, in order. Default `ci.yml`. The web smoke must be among the checks they produce. |
 | `required-checks` | settle: checks that must have succeeded on the head. Default `ci-ok web-smoke`. |
 | `owner` | Who a failed-build draft or red settle comment mentions, such as `@Cubeage/studio`. |

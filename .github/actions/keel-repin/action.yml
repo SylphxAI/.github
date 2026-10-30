@@ -5,7 +5,7 @@ description: >
   pull-requests:write on this repository only) and starts the repository's CI on that branch by
   workflow_dispatch (actions:write), so the checks land on the pull request head. Three modes of
   one action: `poll` (cheap; says whether a repin is needed), `repin` (moves the pins,
-  refreshes Cargo.lock, runs a build check, opens the pull request, dispatches CI) and `settle`
+  migrates to the published public facade, resolves Cargo.lock, runs a build check, opens the pull request, dispatches CI) and `settle`
   (merges a repin pull request whose required checks, CI and the web smoke, all succeeded on its
   exact head commit; a red one gets one comment naming the failed check and the owner). A broken
   build opens a draft with the error summary and is never merged.
@@ -26,7 +26,7 @@ inputs:
     description: Print the pull request that would be opened and the workflows it would start; push and open nothing.
     default: "false"
   reader-app-id:
-    description: Read-only GitHub App id that can read the Keel repository (the CUBEAGE_CI_READER_APP_ID secret for Cubeage titles). Not used by settle.
+    description: Read-only GitHub App id for private Keel release metadata and private shared layers. The installed CLI and facade use public crates.io. Not used by settle.
     default: ""
   reader-app-key:
     description: Private key of the read-only App. Not used by settle.
