@@ -102,6 +102,29 @@ class ContributionPolicy(unittest.TestCase):
                 api.get('pulls/1')
         self.assertNotIn('read-token', str(caught.exception))
 
+    def test_pull_permission_error_is_actionable_and_distinct_from_rate_or_content_failures(self):
+        api = checker.GitHub('example/repo', 'read-token')
+        for status, path, message, headers, expected in [
+                (403, 'pulls/1', 'Resource not accessible by integration', {},
+                 'caller workflow lacks pull-requests: read'),
+                (403, 'pulls/1', 'Resource not accessible by integration', {'X-RateLimit-Remaining': '0'},
+                 'HTTP 403: rate limit exceeded'),
+                (403, 'pulls/1', 'API rate limit exceeded', {}, 'HTTP 403: rate limit exceeded'),
+                (403, 'commits/' + HEAD, 'Resource not accessible by integration', {}, 'HTTP 403'),
+                (403, 'pulls/1', 'Forbidden by organization policy', {}, 'HTTP 403'),
+                (404, 'pulls/1', 'Not Found', {}, 'HTTP 404')]:
+            with self.subTest(status=status, path=path, message=message):
+                error = urllib.error.HTTPError('https://api.github.com/', status, 'forbidden', headers,
+                                               io.BytesIO(json.dumps({'message': message}).encode()))
+                self.addCleanup(error.close)
+                with mock.patch.object(checker.urllib.request, 'urlopen', side_effect=error):
+                    with self.assertRaises(checker.PolicyError) as caught:
+                        api.get(path)
+                self.assertIn(expected, str(caught.exception))
+                self.assertNotIn('read-token', str(caught.exception))
+                if 'rate limit' in expected or path.startswith('commits/'):
+                    self.assertNotIn('caller workflow lacks', str(caught.exception))
+
     def test_current_metadata_read_and_immutable_head_are_required(self):
         api = mock.Mock(repository='example/repo', token='read-token')
         for field in ('title', 'body'):
@@ -381,6 +404,18 @@ class ContributionPolicy(unittest.TestCase):
         with mock.patch.object(api, 'read', return_value={'errors': [{'message': 'denied'}]}):
             with self.assertRaises(checker.PolicyError):
                 api.queue_entries('main')
+
+    def test_queue_permission_errors_remain_distinct_from_rate_and_other_errors(self):
+        api = checker.GitHub('example/repo', 'read-token')
+        for error, expected in [
+                ({'type': 'FORBIDDEN', 'message': 'Resource not accessible by integration'},
+                 'caller workflow lacks pull-requests: read'),
+                ({'type': 'RATE_LIMITED', 'message': 'Too many requests'}, 'rate limit exceeded'),
+                ({'type': 'FORBIDDEN', 'message': 'Organization policy'}, 'metadata is unreadable')]:
+            with self.subTest(error=error), mock.patch.object(api, 'read', return_value={'errors': [error]}):
+                with self.assertRaises(checker.PolicyError) as caught:
+                    api.queue_entries('main')
+                self.assertIn(expected, str(caught.exception))
 
     def test_missing_token_fails_pre_merge_but_push_needs_none(self):
         with mock.patch.dict(os.environ, {'GITHUB_EVENT_NAME': 'pull_request', 'CONTRIBUTION_POLICY_TOKEN': ''}), \

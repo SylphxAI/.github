@@ -113,6 +113,20 @@ class GitHub:
             with urllib.request.urlopen(request, timeout=30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
+            try:
+                body = json.loads(error.read(8192))
+                message = body.get('message', '') if isinstance(body, dict) else ''
+            except (OSError, ValueError, TypeError):
+                message = ''
+            headers = error.headers or {}
+            if error.code == 429 or error.code == 403 and (
+                    headers.get('X-RateLimit-Remaining') == '0' or 'rate limit' in str(message).lower()):
+                raise PolicyError(f'GitHub metadata read failed (HTTP {error.code}: rate limit exceeded)') from None
+            pulls = re.search(r'/repos/[^/]+/[^/]+/(?:pulls(?:/|\?|$)|commits/[0-9a-f]{40}/pulls(?:\?|$))', url)
+            queue = isinstance(data, dict) and 'mergeQueue' in data.get('query', '')
+            if error.code == 403 and (pulls or queue) and message in {
+                    'Resource not accessible by integration', 'Resource not accessible by personal access token'}:
+                raise PolicyError('caller workflow lacks pull-requests: read') from None
             raise PolicyError(f'GitHub metadata read failed (HTTP {error.code})') from None
         except (OSError, ValueError):
             raise PolicyError('GitHub metadata read failed') from None
@@ -149,6 +163,11 @@ class GitHub:
                                  {'query': query, 'variables': {'owner': owner, 'name': name,
                                   'branch': branch, 'cursor': cursor}})
             if response.get('errors'):
+                if any(error.get('type') == 'RATE_LIMITED' for error in response['errors']):
+                    raise PolicyError('GitHub merge queue metadata read failed: rate limit exceeded')
+                if any(error.get('type') == 'FORBIDDEN' and error.get('message') ==
+                       'Resource not accessible by integration' for error in response['errors']):
+                    raise PolicyError('caller workflow lacks pull-requests: read')
                 raise PolicyError('GitHub merge queue metadata is unreadable')
             queue = response['data']['repository']['mergeQueue']
             if queue is None:

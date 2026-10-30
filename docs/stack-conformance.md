@@ -31,6 +31,21 @@ Web apps, tools and scripts on TypeScript and Bun are the default stack, so a
 Next.js server or a static site is not a departure. Paths under
 `node_modules`, `vendor`, `target`, `dist`, `build` and `.next` are skipped.
 
+## Contribution metadata permissions
+
+The existing shared-pin check follows caller jobs through local/shared reusable
+workflows and composite actions to the contribution metadata step. Each effective
+token permission map must supply `pull-requests: read` (or `write`). A job map
+overrides its workflow default, and a reusable workflow cannot increase its
+caller's grant. Existing contents, OIDC and producer-write scopes stay intact.
+
+A missing grant fails with `caller workflow lacks pull-requests: read`, including
+when inherited from the base. This is an admission error outside the shrinking
+debt baseline: the adoption helper cannot seed or waive it. Fix the actual caller
+and reusable job maps in the install PR. Literal block/inline maps and
+`read-all`/`write-all` are recognized; dynamically generated YAML and aliases
+remain source-review responsibilities.
+
 ## Model versions in product source
 
 Product code uses the organization's runtime default (omit the model id), or a

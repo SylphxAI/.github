@@ -85,7 +85,13 @@ with `if: always()`, `required: "false"` and `continue-on-error: true`.
 
 The action's `get-junit.py <owner/repo> <run-id> <destination>` helper pages the
 authenticated run jobs API (`filter=latest`), validates the run identity and
-discovers exact keys from these step names, excluding skipped producers. It then
+discovers exact keys from these step names, excluding skipped producers. When
+GitHub omits a completed job's step metadata, it reads that exact authenticated
+job's log and accepts only a completed store receipt bound to the target
+repository/run/key, or the protected-entry-kept receipt. Commands, action titles
+and packed-byte messages do not prove publication. Reads use at most four
+concurrent requests, 16 MiB and 60 seconds per log. Unavailable, oversized or
+empty discovery fails explicitly; raw log contents are never echoed. It then
 uses the existing exact-name get contract, unpacking each entry into its own
 `<name>` directory. No static lane list or shard limit is assumed.
 The repository id comes from the target repository API, not the shared workflow

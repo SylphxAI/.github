@@ -41,7 +41,14 @@ history. Missing permissions, missing PR metadata, unreadable Git objects, and
 metadata changing during a read fail the check.
 
 Callers grant `contents: read` and `pull-requests: read` to the verdict job
-and every reusable workflow through which it runs. Install
+and every reusable workflow through which it runs. `pull-requests: write`
+also supplies the read. Stack conformance follows the actual local and shared
+workflow/action chain and checks workflow defaults, job overrides and reusable
+caller ceilings. Missing read fails with `caller workflow lacks pull-requests: read`;
+baseline adoption cannot seed or waive this admission error. Preserve other
+required scopes, including producer writes and OIDC. The metadata reader uses
+the same actionable message for a PR-access permission refusal, while rate limits
+and other acquisition failures retain separate diagnostics. Install
 [`pr-metadata.yml`](../workflow-templates/pr-metadata.yml) beside the code CI
 workflow, pin its action to the adopted release, and require its `pr-metadata`
 check separately after observing it on PR heads and merge groups. It handles

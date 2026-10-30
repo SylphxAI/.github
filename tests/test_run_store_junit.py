@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import runpy
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -35,7 +36,7 @@ class JunitDiscoveryTest(unittest.TestCase):
 
     def exercise_fetch(self, miss=False, cli=False):
         calls, gets = [], []
-        first = [{'run_id': 44, 'name': 'rust-test (1)', 'steps': []} for _ in range(100)]
+        first = [{'run_id': 44, 'name': 'rust-test (1)', 'conclusion': 'skipped', 'steps': []} for _ in range(100)]
         first[0]['steps'] = [{'name': 'run-store put junit-a'}]
         second = [{'run_id': 44, 'name': 'rust-test (701)', 'steps': [{'name': 'run-store put junit-b'}]}]
         def api(path):
@@ -79,6 +80,70 @@ class JunitDiscoveryTest(unittest.TestCase):
 
     def test_partial_shard_fetch_is_not_passing_evidence(self):
         self.exercise_fetch(miss=True)
+
+    def test_empty_api_steps_use_exact_completed_job_log_receipts_and_keep_matrix_lanes(self):
+        rows = [{'id': shard, 'run_id': 44, 'status': 'completed', 'name': f'JUnit fixture ({shard})',
+                 'steps': []} for shard in (1, 701)]
+        def log(repo, job_id):
+            self.assertEqual(repo, 'tenant/project')
+            return (f'2026-10-30T18:48:28.0842415Z run-store put junit-consumer-{job_id}: '
+                    f'291 bytes as run-store.v1.991.44.junit-consumer-{job_id}\n')
+        calls = []
+        def api(path):
+            return {'id': 991} if path == 'repos/tenant/project' else {'jobs': rows}
+        def get(args, env, **kwargs):
+            calls.append(env['NAME'])
+            Path(env['STORE_PATH']).mkdir(parents=True)
+            (Path(env['STORE_PATH']) / 'junit.xml').write_text('<testsuite/>')
+            Path(env['GITHUB_OUTPUT']).write_text('found=true\n')
+        with tempfile.TemporaryDirectory() as tmp, patch.object(store, 'api', api), \
+                patch.object(store, 'job_log', log), patch.object(store.subprocess, 'run', get), \
+                patch.dict(os.environ, {'GITHUB_OUTPUT': str(Path(tmp) / 'out')}):
+            destination = Path(tmp) / 'reports'
+            self.assertTrue(store.fetch('tenant/project', 44, destination))
+            self.assertEqual(json.loads((destination / '.run-store-lanes.json').read_text()),
+                             {f'junit-consumer-{shard}': f'JUnit fixture ({shard})' for shard in (1, 701)})
+        self.assertEqual(calls, ['junit-consumer-1', 'junit-consumer-701'])
+
+    def test_log_discovery_refuses_commands_packed_bytes_and_wrong_store_identity(self):
+        lines = [
+            '##[start-action display=run-store put junit-a;id=__self.run]',
+            'run-store put junit-a: packed_bytes=291',
+            'run-store put junit-a: 291 bytes as run-store.v1.992.44.junit-a',
+            'run-store put junit-a: 291 bytes as run-store.v1.991.45.junit-a',
+            'run-store put junit-a: 291 bytes as run-store.v1.991.44.junit-b',
+            'echo run-store put junit-a: 291 bytes as run-store.v1.991.44.junit-a',
+        ]
+        text = '\n'.join('2026-10-30T18:48:28.0842415Z ' + line for line in lines)
+        self.assertEqual(store.log_entries(text, 991, 44), [])
+        retained = '2026-10-30T18:48:28.0842415Z run-store put junit-kept: an entry already exists; it is kept\n'
+        self.assertEqual(store.log_entries(retained, 991, 44), ['junit-kept'])
+
+    def test_unavailable_or_empty_discovery_never_exposes_a_partial_shard_set(self):
+        rows = [{'id': shard, 'run_id': 44, 'status': 'completed', 'name': str(shard), 'steps': []}
+                for shard in (1, 701)]
+        for log, error in [(lambda *args: '', 'no JUnit producer keys'),
+                           (lambda *args: (_ for _ in ()).throw(ValueError('log unavailable')), 'log unavailable')]:
+            with self.subTest(error=error), patch.object(store, 'job_log', log):
+                with self.assertRaisesRegex(ValueError, error):
+                    store.discover(rows, 'tenant/project', 991, 44)
+        with patch.object(store, 'job_log') as log:
+            rows[-1]['run_id'] = 45
+            with self.assertRaisesRegex(ValueError, 'another run'):
+                store.discover(rows, 'tenant/project', 991, 44)
+            log.assert_not_called()
+
+    def test_authenticated_log_read_bounds_bytes_and_does_not_echo_transport_output(self):
+        popen = subprocess.Popen
+        for program, limit, expected in [
+                ('print("x" * 64)', 32, 'byte limit'),
+                ('import sys; sys.stderr.write("private transport detail"); sys.exit(1)', 1024, 'unavailable')]:
+            with self.subTest(expected=expected), patch.object(store, 'LOG_LIMIT', limit), \
+                    patch.object(store.subprocess, 'Popen',
+                                 side_effect=lambda *args, **kwargs: popen([sys.executable, '-c', program], **kwargs)):
+                with self.assertRaisesRegex(ValueError, expected) as caught:
+                    store.job_log('tenant/project', 1)
+                self.assertNotIn('private transport detail', str(caught.exception))
 
     def test_sharded_nested_reports_keep_exact_test_and_job_identity(self):
         junit_py = (ROOT / '.github/red_main/junit.py').read_text()
