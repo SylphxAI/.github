@@ -115,6 +115,13 @@ def source_profile(tree):
             raise ValueError("unreadable checker source: " + force_path)
         ast.parse(value)
         sources[force_path] = hashlib.sha256(value.encode()).hexdigest()
+    domain_path = PREFIX + "cache-economy-profiles.json"
+    if domain_path in tree.paths():
+        value = tree.read(domain_path)
+        if value is None:
+            raise ValueError("unreadable checker source: " + domain_path)
+        json.loads(value)
+        sources[domain_path] = hashlib.sha256(value.encode()).hexdigest()
     if texts["stack_conformance.py"] is None or "stack_conformance.py" not in (texts["action.yml"] or ""):
         raise ValueError("unrecognized stack checker entrypoint")
     module = ast.parse(texts["stack_conformance.py"])

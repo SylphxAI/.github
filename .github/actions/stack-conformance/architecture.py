@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import datetime
 import functools
+import fnmatch
 import hashlib
 import io
 import importlib.util
@@ -311,6 +312,25 @@ def non_economy_cache_context(name, signature, body):
     return bool(authorization or lease)
 
 
+def cache_economy_applicability(repository, path):
+    """Reviewed domain profiles constrain this rule, never unrelated admission."""
+    policy = json.loads(pathlib.Path(__file__).with_name("cache-economy-profiles.json").read_text())
+    if policy.get("version") != 1 or not isinstance(policy.get("repositories"), dict):
+        raise ValueError("invalid cache economy domain profiles")
+    profile = policy["repositories"].get(repository)
+    if profile is None:
+        return True
+    if not isinstance(profile.get("reason"), str) or not profile["reason"].strip():
+        raise ValueError("cache economy domain profile requires a reason")
+    if profile.get("applicability") == "not-applicable":
+        return False
+    if profile.get("applicability") != "paths" or not isinstance(profile.get("include"), list) or not profile["include"]:
+        raise ValueError("invalid cache economy domain profile scope")
+    if any(not isinstance(pattern, str) or not pattern or pattern.startswith("/") or ".." in pathlib.PurePosixPath(pattern).parts for pattern in profile["include"]):
+        raise ValueError("invalid cache economy domain profile paths")
+    return any(fnmatch.fnmatchcase(path, pattern) for pattern in profile["include"])
+
+
 def cache_key_name(name):
     return bool(re.search(r"(?:^|_)cache_key$", identifier_words(name)))
 
@@ -481,9 +501,10 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
                     add(offset + m.start(), "C7", "failure-only-verdict", "A failure-only aggregate accepts canceled dependencies")
         return with_occurrences(out)
     clean, code, comments = source_views(text, suffix)
-    for at, end in economy_cache_reads(clean, code, suffix):
-        add(at, "C1", "cache-economy", "Economy handler reads cached data; re-read authority in the granting transaction, or mark this line cache-display-only with a reason and test=path#name", end)
-        out[-1]["contract"] = "https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/games.md#hard-lines"
+    if cache_economy_applicability(repository, path):
+        for at, end in economy_cache_reads(clean, code, suffix):
+            add(at, "C1", "cache-economy", "Player economy handler reads cached authority; validate balance, grant, reward, purchase or entitlement against authority in the granting transaction", end)
+            out[-1]["contract"] = "https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/games.md#hard-lines"
     if suffix == ".java":
         return with_occurrences(out)
     # Require a control-flow token in real code; quoted examples never count.

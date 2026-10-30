@@ -1,5 +1,14 @@
 # Stack conformance
 
+The economy cache rule concerns player balances, grants, rewards, purchases and
+entitlements. Infrastructure caches, credential permissions and queue leases do
+not become player economy authority because a function contains `claim` or
+`grant`. Reviewed repository domains live in the checker's immutable
+`cache-economy-profiles.json`: Spiron has no player economy; Cloud is checked in
+Money and entitlement paths. Other rules still scan those repositories. The
+domain policy is included in the checker source fingerprint, and existing cache
+approval and shrinking-baseline checks still apply inside the economy domain.
+
 `.github/actions/stack-conformance` fails a change that adds a departure from
 the default stack in SylphxAI/skills `skills/self-challenge/references/stack.md`: backend services in
 Rust, first-party schema under Atlas. Departures a repository already has are
