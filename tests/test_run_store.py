@@ -158,6 +158,9 @@ class RunStoreTest(unittest.TestCase):
         output.write_text("")
         env = {
             "PATH": os.environ["PATH"],
+            # setup-python's shared-library build needs its loader path on
+            # self-hosted runners too; keep the fixture's credentials isolated.
+            "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
             "MODE": mode,
             "NAME": name,
             "STORE_PATH": str(path),
