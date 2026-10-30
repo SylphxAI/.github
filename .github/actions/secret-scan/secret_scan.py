@@ -80,7 +80,7 @@ def revisions(event_name, event, sha):
     return base, head
 
 
-def fetch(repo, remote, base, head, token):
+def fetch(repo, remote, base, head, token, *, filter_spec='blob:none'):
     git(repo, 'init', '--bare', '-q')
     git(repo, 'remote', 'add', 'origin', remote)
     env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
@@ -91,7 +91,7 @@ def fetch(repo, remote, base, head, token):
         env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0=f'http.{server}/.extraheader', GIT_CONFIG_VALUE_0=header)
     # Fetch complete commit ancestry but defer unrelated blobs. The same
     # environment authenticates lazy blob reads during detection and allowlisting.
-    command(['git', '-C', str(repo), 'fetch', '--quiet', '--no-tags', '--filter=blob:none',
+    command(['git', '-C', str(repo), 'fetch', '--quiet', '--no-tags', '--filter=' + filter_spec,
              'origin', *([base] if base else []), head], env=env)
     return env
 

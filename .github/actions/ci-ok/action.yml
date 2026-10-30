@@ -1,6 +1,7 @@
 name: ci-ok
 description: >
-  Automatically scans added commits for secrets on pull_request and
+  Enforces shared contribution metadata policy (contents and pull-requests:
+  read), then automatically scans added commits for secrets on pull_request and
   merge_group, with the same policy and exact exceptions as needs-pass
   (docs/secret-scan.md). Requires contents: read as well as check/run access.
   Aggregate gate for repositories whose checks live in several workflows or in
@@ -51,6 +52,11 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Check contribution metadata
+      shell: bash
+      env:
+        CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py"
     - name: Scan added commits for secrets
       shell: bash
       env:

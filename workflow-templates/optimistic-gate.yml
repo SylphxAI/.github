@@ -13,7 +13,7 @@ name: CI
 on:
   pull_request:
     # ready_for_review: marking a draft ready runs the full suite.
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   merge_group:
   # A pull request opened with GITHUB_TOKEN triggers no CI: its opener
   # dispatches this workflow on the branch (`gh workflow run ci.yml --ref

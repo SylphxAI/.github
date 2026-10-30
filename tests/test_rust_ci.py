@@ -182,7 +182,8 @@ class Template(unittest.TestCase):
         # A called workflow can only narrow its caller's token.
         rust = yaml.safe_load(TEMPLATE.read_text())["jobs"]["rust"]
         self.assertEqual(rust["permissions"], {"contents": "read", "id-token": "write"})
-        self.assertEqual(yaml.safe_load(TEMPLATE.read_text())["permissions"], {"contents": "read"})
+        self.assertEqual(yaml.safe_load(TEMPLATE.read_text())["permissions"],
+                         {"contents": "read", "pull-requests": "read"})
 
     def test_reaches_only_sylphx_runner_labels(self) -> None:
         jobs = yaml.safe_load(TEMPLATE.read_text())["jobs"]
