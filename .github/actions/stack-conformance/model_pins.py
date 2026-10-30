@@ -213,7 +213,7 @@ def sql_selection(clean, start):
     return not clauses or clauses[-1].lower() not in {"where", "on", "having", "when"}
 
 
-def metadata_ranges(clean, suffix):
+def metadata_ranges(clean, suffix, original=None):
     """Locate classifier membership and weight provenance, leaving defaults visible."""
     ranges = []
     if suffix == ".json":
@@ -260,12 +260,15 @@ def metadata_ranges(clean, suffix):
         except (ValueError, IndexError, RecursionError):
             return []  # No metadata exemption without a complete parsed declaration.
     elif suffix == ".py":
-        lines = clean.splitlines(keepends=True)
+        # source_views masks docstrings for recognition. A docstring-only
+        # class is valid source, but its masked view has an empty suite.
+        source = original if original is not None else clean
+        lines = source.splitlines(keepends=True)
         offsets, total = [], 0
         for line in lines:
             offsets.append(total)
             total += len(line)
-        for node in ast.walk(ast.parse(clean)):
+        for node in ast.walk(ast.parse(source)):
             if not isinstance(node, ast.Dict):
                 continue
             fields = {key.value: value for key, value in zip(node.keys, node.values)
@@ -378,7 +381,7 @@ def scan(tree, repository, aliases, source_views):
                         and model_selector(clean, m.start(), code)):
                     matches[(m.start(), m.end())] = m.group()
         seen = collections.Counter()
-        nonselectors = metadata_ranges(clean, suffix) if matches else []
+        nonselectors = metadata_ranges(clean, suffix, text) if matches else []
         nonselectors += diagnostic_ranges(repository, path, clean, code) if matches else []
         for (start, end), model in sorted(matches.items()):
             metadata = next((reason for begin, finish, reason in nonselectors

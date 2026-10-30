@@ -139,6 +139,9 @@ class ModelSelectorTests(unittest.TestCase):
                  'model = "owner/request-model"\n'
         self.assertEqual([row["model"] for row in self.scan(source, "src/weights.py")],
                          ["owner/request-model"])
+        source = 'class Example:\n    """Documentation only."""\n' + source
+        self.assertEqual([row["model"] for row in self.scan(source, "src/weights.py")],
+                         ["owner/request-model"])
 
     def test_diagnostic_fixture_list_cannot_hide_an_inference_request(self):
         source = '''pub fn provider_portable_tool_surface_proof(packs: &[ToolPackId]) -> Value {
