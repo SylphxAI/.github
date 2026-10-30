@@ -361,12 +361,19 @@ elif path.startswith(base + "compare/"):
         for c in commits:
             print(c + "\tsubject " + c[-4:])
 elif path == base + "git/refs" or path.startswith(base + "git/refs/"):
-    pass
+    assert method == "POST" and path == base + "git/refs", "existing refs must not be rewritten"
+    fields = dict(value.split("=", 1) for flag, value in zip(args, args[1:]) if flag == "--field")
+    refs_path = temp / "refs.json"
+    refs = json.loads(refs_path.read_text()) if refs_path.exists() else {}
+    assert fields["ref"] not in refs, "candidate refs must be fresh"
+    refs[fields["ref"]] = fields["sha"]
+    refs_path.write_text(json.dumps(refs))
 elif path.endswith("/dispatches"):
     payload = json.load(sys.stdin)
     with open(temp / "dispatch.log", "a") as fh:
         fh.write(json.dumps(payload) + "\n")
-    print(fx["candidate_run"][payload["ref"].rsplit("/", 1)[1]])
+    refs = json.loads((temp / "refs.json").read_text())
+    print(fx["candidate_run"][refs[payload["ref"]]])
 else:
     print("unexpected provider command: " + repr(args), file=sys.stderr)
     sys.exit(1)
@@ -416,6 +423,7 @@ class TraceStepTest(unittest.TestCase):
 
     def run_trace(self, scenario, confirmed, candidates, candidate_junit=None, verified_base=0, failed_lanes="",
                   mode="revert", annotations=None):
+        self.trace_attempt = getattr(self, "trace_attempt", 0) + 1
         chain = [sha(n) for n in range(0, scenario.last + 1)]
         candidate_run = {sha(n): str(9_000 + n) for n in range(1, scenario.last + 1)}
         jobs, junit = dict(scenario.jobs), dict(scenario.junit)
@@ -442,6 +450,7 @@ class TraceStepTest(unittest.TestCase):
                    CANDIDATE_TIMEOUT_MINUTES="20", REVERT_WINDOW="true", HEAD_SHA=sha(scenario.last),
                    RUN_ID=str(run_id(scenario.last)), RUN_URL="u", FAILED_LANES=failed_lanes,
                    TOKEN_MODE="no", MODE=mode, ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
+                   GITHUB_RUN_ID="123456", GITHUB_RUN_ATTEMPT=str(self.trace_attempt),
                    VERIFIED_BASE=sha(verified_base))
         env["RUN_STORE_JUNIT"] = str(self.junit)
         done = subprocess.run(["bash", "-c", TRACE], env=env, cwd=self.root, capture_output=True,
