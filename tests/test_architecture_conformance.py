@@ -451,6 +451,23 @@ class StandardFitRegressionTests(unittest.TestCase):
                     real = '.github/workflows/ci.yml'
                 self.assertEqual(self.evaluate({real: declaration, 'src/settings.py': source})['findings'], [])
 
+    def test_vendor_scope_excludes_dependency_sources_and_configuration_only(self):
+        for scope in ('thirdparty', 'third_party', 'third-party', 'external'):
+            with self.subTest(scope=scope):
+                vendor = 'client/robot_socket/bot/' + scope + '/linux/scons/'
+                files = {vendor + 'setup.py': 'print "Python 2 dependency"\n',
+                         vendor + 'sylphx.toml': 'this is = = not toml\n',
+                         vendor + '.env.example': 'VENDOR_SETTING=\n',
+                         'src/thirdparty_adapter.py': 'import os\nvalue = os.getenv("VENDOR_SETTING")\n'}
+                report = self.evaluate(files)
+                self.assertEqual(report['unreadable'], [])
+                self.assertEqual([row['path'] for row in report['findings']], ['src/thirdparty_adapter.py'])
+                self.assertEqual(report['findings'][0]['rule'], 'undeclared-setting')
+                self.assertEqual(len(report['excluded_paths']), 3)
+                files['client/robot_socket/bot/src/setup.py'] = 'print "invalid production Python"\n'
+                self.assertEqual([row['path'] for row in self.evaluate(files)['unreadable']],
+                                 ['client/robot_socket/bot/src/setup.py'])
+
     def test_sylphx_environment_tables_and_inline_tables_declare_names(self):
         toml = '[env.CUBEAGE_ADMIN_CONNECT_URL]\nvalue = "https://example.invalid"\n[env]\nSECOND_SETTING = { value = "x" }\n'
         source = 'import os\na = os.getenv("CUBEAGE_ADMIN_CONNECT_URL")\nb = os.environ.get("SECOND_SETTING")\n'
