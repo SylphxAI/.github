@@ -1,0 +1,8 @@
+{
+  "name": "rust-node-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "devDependencies": {
+    "ci-fixture": "file:node-dependency"
+  }
+}
