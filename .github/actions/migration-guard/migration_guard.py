@@ -1326,8 +1326,9 @@ def recorded_unapplied_withdrawal(root: Path, new_tree: dict[str, tuple[str, str
         database = evidence.get("database")
         reason = evidence.get("reason")
         sha256 = entry.get("sha256")
-        if (type(evidence.get("atlas_revision_rows")) is not int
-                or evidence["atlas_revision_rows"] != 0
+        revision_rows = evidence.get("atlas_revision_rows")
+        if (type(revision_rows) is not int
+                or revision_rows not in (0, 1)
                 or type(evidence.get("file_digest_rows")) is not int
                 or evidence["file_digest_rows"] != 0
                 or not isinstance(pos_ctrl, str)
@@ -1341,6 +1342,36 @@ def recorded_unapplied_withdrawal(root: Path, new_tree: dict[str, tuple[str, str
                 or not isinstance(sha256, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", sha256)):
             return False
+        if revision_rows == 1:
+            archive = entry.get("archive")
+            receipt = evidence.get("receipt")
+            receipt_sha256 = evidence.get("receipt_sha256")
+            absent_objs = evidence.get("schema_objects_absent")
+            if (type(evidence.get("atlas_applied_statements")) is not int
+                    or evidence["atlas_applied_statements"] != 0
+                    or type(evidence.get("atlas_total_statements")) is not int
+                    or evidence["atlas_total_statements"] <= 0
+                    or "atlas_partial_hashes" not in evidence
+                    or evidence["atlas_partial_hashes"] is not None
+                    or not isinstance(evidence.get("atlas_error"), str)
+                    or not evidence["atlas_error"].strip()
+                    or not isinstance(absent_objs, list)
+                    or not absent_objs
+                    or not all(isinstance(o, str) and o.strip() for o in absent_objs)
+                    or not isinstance(archive, str)
+                    or archive == path
+                    or PurePosixPath(archive).name != PurePosixPath(path).name
+                    or new_tree.get(archive) != old_blob
+                    or not isinstance(receipt, str)
+                    or not isinstance(receipt_sha256, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", receipt_sha256)):
+                return False
+            receipt_blob = new_tree.get(receipt)
+            if receipt_blob is None or receipt_blob[0] not in {"100644", "100755"}:
+                return False
+            receipt_raw = subprocess.run(["git", "-C", str(root), "cat-file", "blob", receipt_blob[1]], capture_output=True, check=True).stdout
+            if hashlib.sha256(receipt_raw).hexdigest() != receipt_sha256:
+                return False
         datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
         raw = subprocess.run(["git", "-C", str(root), "cat-file", "blob", old_blob[1]], capture_output=True, check=True).stdout
         return hashlib.sha256(raw).hexdigest() == sha256
