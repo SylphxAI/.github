@@ -76,6 +76,13 @@ becomes success. A superseded head is cancelled. A new head has a distinct
 check identity and cannot inherit an old result. One workflow serializes duplicate
 deliveries; creation looks up the stable external ID before its single POST.
 
+A complete result requires `completion="complete"`, `omitted_paths=[]` and
+`reason=""`. Explanations and non-blocking scope notes belong in `context_notes`.
+Completion refusals identify the declared incomplete/unavailable state, omitted
+path count and nonempty-reason flag independently. Model reason prose and omitted
+path values are not published in these diagnostics. A diagnostic identifies the
+failed contract conditions; it does not establish why the model returned them.
+
 The model deadline is ten minutes from review-step start; the process is stopped
 at thirteen minutes and the always-run finalizer settles unfinished checks as
 neutral. The job reserves twenty minutes for authentication, source collection
