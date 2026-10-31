@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTION = ROOT / ".github/actions/migration-guard"
@@ -252,6 +253,88 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("DROP TABLE", output.getvalue())
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(guard.main([], {**env, "MIGRATION_BASE": "missing-ref"}), 1)
+
+    def test_recorded_unapplied_withdrawal_and_refusals(self):
+        import hashlib
+        unapplied = "db/20261217091104_unapplied_kind.sql"
+        sql = "ALTER TABLE accounts ADD COLUMN nickname text;\n"
+        self.write(unapplied, sql)
+        base = self.commit()
+        digest = hashlib.sha256(sql.encode("utf-8")).hexdigest()
+        valid_entry = {
+            "path": unapplied,
+            "sha256": digest,
+            "evidence": {
+                "observed_at": "2026-10-31T03:33:58Z",
+                "database": "platform/sylphx_prod",
+                "atlas_revision_rows": 0,
+                "file_digest_rows": 0,
+                "positive_control_version": "20261217010724",
+                "reason": "Never applied in production; replaced by 20261218033442.",
+            },
+        }
+        self.git("rm", unapplied)
+        self.write("scripts/migrations/unapplied-withdrawals.json", json.dumps([valid_entry]))
+        self.write("db/20261218033442_replacement.sql", "ALTER TABLE accounts ADD COLUMN nickname text;\n")
+        self.commit()
+        self.assertEqual(guard.check_range(self.root, base, "HEAD", ["db"], "postgres"), ([], 1))
+        with unittest.mock.patch.dict(os.environ, {"ATLAS_APPLIED_VERSIONS": "20261217091104"}):
+            self.assertIn("merged migration", "\n".join(guard.check_range(self.root, base, "HEAD", ["db"], "postgres")[0]))
+        for bad_evidence in [
+            {**valid_entry["evidence"], "atlas_revision_rows": 1},
+            {**valid_entry["evidence"], "atlas_revision_rows": False},
+            {**valid_entry["evidence"], "file_digest_rows": 1},
+            {**valid_entry["evidence"], "positive_control_version": "20261217091104"},
+            {**valid_entry["evidence"], "positive_control_version": "123"},
+            {**valid_entry["evidence"], "observed_at": "not-a-timestamp"},
+            {**valid_entry["evidence"], "database": "   "},
+            {**valid_entry["evidence"], "reason": ""},
+        ]:
+            self.write("scripts/migrations/unapplied-withdrawals.json", json.dumps([{**valid_entry, "evidence": bad_evidence}]))
+            self.commit()
+            self.assertIn("merged migration", "\n".join(guard.check_range(self.root, base, "HEAD", ["db"], "postgres")[0]))
+        self.write("scripts/migrations/unapplied-withdrawals.json", json.dumps([{**valid_entry, "sha256": "0" * 64}]))
+        self.commit()
+        self.assertIn("merged migration", "\n".join(guard.check_range(self.root, base, "HEAD", ["db"], "postgres")[0]))
+        self.write("scripts/migrations/unapplied-withdrawals.json", json.dumps([valid_entry, valid_entry]))
+        self.commit()
+        self.assertIn("merged migration", "\n".join(guard.check_range(self.root, base, "HEAD", ["db"], "postgres")[0]))
+
+    def test_catalog_backed_check_constraint_widening_and_refusals(self):
+        widening = """
+        DO $widen$
+        DECLARE
+          current_def text;
+          kinds text[];
+          kind_list text;
+        BEGIN
+          PERFORM set_config('lock_timeout', '2s', true);
+          SELECT pg_get_constraintdef(oid) INTO current_def
+            FROM pg_constraint
+           WHERE conname = 'child_resources_kind_check'
+             AND conrelid = 'public.child_resources'::regclass;
+          SELECT array_agg(DISTINCT m[1] ORDER BY m[1]) INTO kinds
+            FROM regexp_matches(current_def, '''([A-Za-z.]+)''::text', 'g') AS m;
+          SELECT string_agg(quote_literal(k), ', ' ORDER BY k) INTO kind_list
+            FROM unnest(kinds || ARRAY['VMPodScrape']) AS k;
+          EXECUTE format(
+            'ALTER TABLE public.child_resources DROP CONSTRAINT child_resources_kind_check, '
+            'ADD CONSTRAINT child_resources_kind_check CHECK (kind = ANY (ARRAY[%s])) NOT VALID',
+            kind_list
+          );
+        END
+        $widen$;
+        """
+        self.assertEqual(guard.check_sql(widening, "postgres"), [])
+        for bad in [
+            widening.replace("NOT VALID", ""),
+            widening.replace("DROP CONSTRAINT child_resources_kind_check", "DROP CONSTRAINT other_check"),
+            widening.replace("'lock_timeout'", "'search_path'"),
+            widening.replace("EXECUTE format(", "kind_list := '''x'''; EXECUTE format("),
+            widening.replace(", '\n            'ADD", ", ' 'ADD"),
+        ]:
+            with self.subTest(bad=bad):
+                self.assertIn("dynamic SQL", str(guard.check_sql(bad, "postgres")))
 
 
 class EventAndManifestTests(unittest.TestCase):
