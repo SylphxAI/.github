@@ -102,7 +102,14 @@ export function parseReviewResult(text, input) {
 	try {
 		const result = validateSchema(JSON.parse(text), resultSchema)
 		for (const key of ['repository_id', 'base_sha', 'head_sha', 'input_digest', 'reviewer_version', 'policy_version']) requireValue(result[key] === input[key], `mismatched ${key}`)
-		requireValue(result.completion === 'complete' && result.omitted_paths.length === 0 && result.reason === '', 'review incomplete')
+		// Only schema-validated enums, counts and a presence flag cross the
+		// diagnostic boundary. Model prose and omitted path values may echo source.
+		const incomplete = [
+			result.completion !== 'complete' && `completion=${result.completion}`,
+			result.omitted_paths.length > 0 && `omitted_paths=${result.omitted_paths.length}`,
+			result.reason !== '' && 'reason=nonempty',
+		].filter(Boolean)
+		requireValue(incomplete.length === 0, `review incomplete (${incomplete.join(', ')})`)
 		for (const finding of result.findings) {
 			requireValue(finding.end_line >= finding.start_line && sourceQuote(input, finding.path, finding.side, finding.start_line, finding.end_line) !== null, 'finding outside supplied source')
 			for (const evidence of finding.evidence) requireValue(sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line) === evidence.quote, 'evidence differs from supplied source')

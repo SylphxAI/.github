@@ -33,5 +33,9 @@ about how alarming the source looks.
 Return exactly one JSON object matching the supplied result schema. Copy the input
 identity fields unchanged. completion is complete only after every changed path
 was reviewed within the supplied scope, with no omissions, refusal or interrupted
-work. Never represent an incomplete review as a clean review. No Markdown fences,
+work. For completion="complete", set omitted_paths=[] and reason="" exactly.
+Put explanations and non-blocking context notes in context_notes, not reason.
+For incomplete or unavailable work, use the corresponding completion value,
+name unreviewed changed paths in omitted_paths and explain the limit in reason.
+Never represent an incomplete review as a clean review. No Markdown fences,
 preface, prose after the JSON, or additional fields.

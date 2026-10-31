@@ -114,6 +114,33 @@ test('schema rejects source/version drift, fabricated quotes, omissions and extr
   assert.equal(parseReviewResult(JSON.stringify(wire(input)), input).status, 'complete');
 });
 
+test('completion diagnostics distinguish every refusal without echoing model prose or paths', () => {
+  const input = inputFor();
+  const privateText = 'private-value\n::warning::untrusted output';
+  const cases = [
+    [{ completion: 'incomplete' }, 'completion=incomplete'],
+    [{ completion: 'unavailable' }, 'completion=unavailable'],
+    [{ omitted_paths: [privateText] }, 'omitted_paths=1'],
+    [{ reason: privateText }, 'reason=nonempty'],
+    [{ reason: ' ' }, 'reason=nonempty'],
+    [{ completion: 'incomplete', omitted_paths: [privateText, 'another/path'], reason: privateText },
+      'completion=incomplete, omitted_paths=2, reason=nonempty'],
+  ];
+  for (const [changes, diagnostic] of cases) {
+    const result = parseReviewResult(JSON.stringify({ ...wire(input, [finding]), context_notes: [privateText], ...changes }), input);
+    assert.equal(result.status, 'unavailable');
+    assert.equal(result.reason, `review incomplete (${diagnostic})`);
+    assert.deepEqual(result.findings, []);
+    assert.deepEqual(result.omitted_paths, input.files.map(file => file.path));
+    assert.ok(!JSON.stringify(result).includes(privateText));
+  }
+  for (const findings of [[], [finding]]) {
+    const result = parseReviewResult(JSON.stringify(wire(input, findings)), input);
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(result.findings, findings);
+  }
+});
+
 test('deleted code and absolute windows are reviewable without invented head lines', () => {
   const deleted = inputFor('return value\n', null);
   const baseFinding = { ...finding, side: 'base', evidence: [{ ...finding.evidence[0], side: 'base', quote: 'return value' }] };
