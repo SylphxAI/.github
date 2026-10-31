@@ -102,6 +102,7 @@ class UnityCompileScripts(unittest.TestCase):
             (fake / "docker").write_text("""#!/usr/bin/env python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
+assert args[args.index('--ulimit') + 1] == 'nofile=65536:65536'
 output = next(x.split('=',1)[1] for x in args if x.startswith('SYLPHX_COMPILE_OUTPUT='))
 expected = '/workspace/' + os.environ['PROJECT_PATH'] + '/' + os.environ['COMPILE_OUTPUT']
 assert output == expected, (output, expected)

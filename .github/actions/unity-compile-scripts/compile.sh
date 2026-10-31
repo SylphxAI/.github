@@ -18,7 +18,8 @@ docker run --rm --workdir /workspace \
   --env SYLPHX_COMPILE_TARGET="$COMPILE_TARGET" \
   --env SYLPHX_COMPILE_OUTPUT="/workspace/$project/$output" \
   --env PROJECT_PATH="/workspace/$project" \
-  --ulimit nofile=8192:8192 --entrypoint /bin/bash "$UNITY_IMAGE" -lc '
+  --ulimit nofile=65536:65536 --entrypoint /bin/bash "$UNITY_IMAGE" -lc '
+    printf "Unity container open-file limits: soft=%s hard=%s\n" "$(ulimit -Sn)" "$(ulimit -Hn)"
     exec unity-editor -batchmode -nographics -quit -logFile /dev/stdout \
       -projectPath "$PROJECT_PATH" -buildTarget "$SYLPHX_COMPILE_TARGET" \
       -executeMethod SylphxCompilePlayerScripts.Run
