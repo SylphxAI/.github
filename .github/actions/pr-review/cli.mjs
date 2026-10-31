@@ -35,15 +35,16 @@ async function main() {
   const started = Date.now();
   const deadlineMs = started + 10 * 60_000;
   const targets = await eventTargets(github, env.GITHUB_EVENT_NAME, read(env.GITHUB_EVENT_PATH), `${env.GITHUB_RUN_ID}/${env.GITHUB_RUN_ATTEMPT}`);
-  const states = [], receipts = [];
+  const states = [], receipts = [], results = [];
   for (const { target, trigger } of targets) {
     // Configure inside produceReview's fault boundary so configuration failure
     // still publishes an honest neutral result on the exact head.
     const engine = input => gatewayReviewer({ token: read(authPath).inferenceToken,
       model: env.REVIEW_MODEL, maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
-      reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs })(input);
+      reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs, current: () => github.current(target) })(input);
     const receipt = await produceReview({ github, target, trigger, engine, createReviewInput, engineVersion: reviewerVersion,
       detailsUrl: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
+      onResult: result => { results.push({ pull_request: target.number, ...result }); save(`${env.RUNNER_TEMP}/pr-review-results.json`, results); },
       onBegin: run => { states.push({ id: run.id, head_sha: run.head_sha }); save(statePath, states); } });
     receipts.push({ ...receipt, pull_request: target.number, event_to_check_ms: eventLatency(read(env.GITHUB_EVENT_PATH), Date.parse(receipt.observed_at)) });
   }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { APP_ID, CHECK_NAME, GitHub, bundleFile, digest, hunkRanges } from '../.github/actions/pr-review/github.mjs';
+import { APP_ID, CHECK_NAME, GitHub, bundleFile, digest } from '../.github/actions/pr-review/github.mjs';
+import { fileSegments } from '../.github/actions/pr-review/source.mjs';
 import { collectPullRequest, needsReview, parsePolicy, produceReview, validateResult } from '../.github/actions/pr-review/producer.mjs';
 
 const base = 'a'.repeat(40), head = 'b'.repeat(40);
@@ -52,26 +53,23 @@ test('base policy precedence keeps instruction/fixture changes reviewed and defa
   assert.throws(() => parsePolicy('version = "wrong"'));
 });
 
-test('large sources preserve every hunk with absolute windows and full source digests', () => {
+test('large sources preserve changed physical lines with literal fragments and full source digests', () => {
   const original = Array.from({ length: 10_000 }, (_, n) => `const row${n} = ${n};`).join('\n') + '\n';
   const updated = original.replace('const row8000 = 8000;', 'const row8000 = 0;');
-  const file = bundleFile(changed, original, updated, 2000);
-  assert.equal(file.source_mode, 'windows');
-  assert.equal(file.after_sha256, digest(updated));
-  assert.equal(file.after_line_count, 10_000);
-  assert.equal(file.after, null);
-  for (const range of hunkRanges(file.patch)) {
-    for (const [side, windows] of [['head', file.after_windows], ['base', file.before_windows]]) {
-      assert.ok(windows.some(w => w.start_line <= range[side].start &&
-        w.start_line + w.content.split('\n').length >= range[side].start + range[side].count));
-    }
+  const file = bundleFile(changed, original, updated);
+  assert.equal(file.source_mode, 'segments');
+  assert.equal(file.after.sha256, digest(updated));
+  assert.equal(file.after.line_count, 10_000);
+  assert.ok(fileSegments(file, 'after').some(s => s.start_line === 8001 && s.content === 'const row8000 = 0;\n'));
+  for (const [side, source] of [['before', original], ['after', updated]]) {
+    for (const s of fileSegments(file, side)) assert.equal(Buffer.from(source).subarray(s.start_byte, s.end_byte).toString(), s.content);
   }
-  assert.ok(JSON.stringify(file).length < 20_000);
+  assert.ok(JSON.stringify(file).length < 40_000);
 });
 
 test('empty created files and pure renames have honest empty content diffs', () => {
-  assert.equal(bundleFile({ ...changed, status: 'added' }, null, '').patch, '');
-  assert.equal(bundleFile({ ...changed, status: 'renamed', previous_filename: 'old.js' }, before, before).patch, '');
+  assert.deepEqual(bundleFile({ ...changed, status: 'added' }, null, '').hunks[0].rows, []);
+  assert.ok(bundleFile({ ...changed, status: 'renamed', previous_filename: 'old.js' }, before, before).hunks[0].rows.every(r => r.kind === 'context'));
 });
 
 test('real-defect result fails while clean result passes', async () => {
@@ -80,6 +78,21 @@ test('real-defect result fails while clean result passes', async () => {
   assert.equal(bad.runs[0].output.annotations[0].path, changed.filename);
   const clean = new Provider();
   assert.equal((await produceReview({ ...options(clean), engine: async input => complete(input) })).conclusion, 'success');
+});
+
+test('incomplete aggregate preserves findings and publishes their real annotation coordinates', async () => {
+  const github = new Provider(); let saved;
+  const receipt = await produceReview({ ...options(github), onResult: result => { saved = result; },
+    engine: async input => ({ ...complete(input, [finding]), status: 'incomplete', omitted_paths: [changed.filename],
+      reason: 'A later source part was unavailable.', parts: { planned: 3, completed: 1 } }) });
+  assert.equal(receipt.conclusion, 'failure'); assert.equal(receipt.unavailable, true);
+  assert.equal(saved.findings.length, 1); assert.equal(receipt.findings, 1);
+  assert.match(github.runs[0].output.summary, /1\/3 complete/);
+  assert.match(github.runs[0].output.title, /incomplete/);
+  assert.equal(github.runs[0].output.annotations[0].start_line, 1);
+  const low = new Provider();
+  assert.equal((await produceReview({ ...options(low), engine: async input => ({ ...complete(input, [{ ...finding, severity: 'low' }]),
+    status: 'incomplete', omitted_paths: [changed.filename], reason: 'Unreviewed source remains.' }) })).conclusion, 'neutral');
 });
 
 test('new head creates a new check and a late old-head result is cancelled', async () => {

@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { segmentBundleFile } from './source.mjs';
 
 export const CHECK_NAME = 'Sylphx PR Review';
 export const APP_ID = 1299545;
@@ -138,14 +139,14 @@ export class GitHub {
 
 // Diff only two data files. External diff/text converters and caller Git
 // configuration are disabled; repository programs are never checked out/run.
-export function sourcePatch(before, after) {
+export function sourcePatch(before, after, context = 3) {
   const dir = mkdtempSync(join(tmpdir(), 'pr-review-'));
   try {
     const a = join(dir, 'base'), b = join(dir, 'head');
     writeFileSync(a, before ?? '', { mode: 0o600 });
     writeFileSync(b, after ?? '', { mode: 0o600 });
     try {
-      return execFileSync('git', ['diff', '--no-index', '--no-ext-diff', '--no-textconv', '--unified=3', '--', a, b], {
+      return execFileSync('git', ['diff', '--no-index', '--no-ext-diff', '--no-textconv', `--unified=${context}`, '--', a, b], {
         encoding: 'utf8', maxBuffer: 100 * 1024 * 1024,
         env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', LC_ALL: 'C' },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -166,32 +167,4 @@ export function hunkRanges(patch) {
   }));
 }
 
-export function sourceWindows(content, ranges, side, radius = 40) {
-  if (content === null) return [];
-  const lines = content === '' ? [] : content.replace(/\r?\n$/, '').split(/\r?\n/);
-  const merged = [];
-  for (const range of ranges.map(h => h[side]).filter(r => r.count > 0)) {
-    const start = Math.max(1, range.start - radius);
-    const end = Math.min(lines.length, range.start + range.count - 1 + radius);
-    const previous = merged.at(-1);
-    if (previous && start <= previous.end + 1) previous.end = Math.max(previous.end, end);
-    else merged.push({ start, end });
-  }
-  return merged.map(r => ({ start_line: r.start, content: lines.slice(r.start - 1, r.end).join('\n') }));
-}
-
-export function bundleFile(file, before, after, fullFileBytes = 80_000) {
-  const patch = sourcePatch(before, after);
-  const ranges = hunkRanges(patch);
-  if ((before ?? '') !== (after ?? '') && !ranges.length) throw new Unavailable(`No text diff for ${file.filename}.`);
-  const result = { path: file.filename, previous_path: file.previous_filename ?? null,
-    status: file.status, before, after, patch, source_mode: 'full' };
-  if (Buffer.byteLength(before ?? '') + Buffer.byteLength(after ?? '') > fullFileBytes) {
-    Object.assign(result, { source_mode: 'windows', before: null, after: null,
-      before_windows: sourceWindows(before, ranges, 'base'), after_windows: sourceWindows(after, ranges, 'head'),
-      before_sha256: before === null ? null : digest(before), after_sha256: after === null ? null : digest(after),
-      before_line_count: before === null || before === '' ? 0 : before.replace(/\n$/, '').split('\n').length,
-      after_line_count: after === null || after === '' ? 0 : after.replace(/\n$/, '').split('\n').length });
-  }
-  return result;
-}
+export const bundleFile = segmentBundleFile;
