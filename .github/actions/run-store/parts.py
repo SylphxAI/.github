@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
-"""The existing ci-run-store-parts-v1 wire format over ordinary Turbo entries."""
+"""Read v1 cache manifests and v2 retained manifests with isolated generations."""
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import sys
 
 MAGIC = b'ci-run-store-parts-v1\n'
+MAGIC_V2 = b'ci-run-store-parts-v2\n'
 PART_BYTES = 64 * 1024 * 1024
 
 
 def manifest(path, maximum, part_bytes):
     with path.open('rb') as source:
         prefix = source.read(len(MAGIC))
-        if prefix != MAGIC:
+        if prefix not in (MAGIC, MAGIC_V2):
             return None
         tail = source.read(4097)
     if len(tail) > 4096:
         raise ValueError('oversized parts manifest')
     value = json.loads(tail)
-    if not isinstance(value, dict) or set(value) != {'parts', 'size', 'sha256'}:
+    fields = {'parts', 'size', 'sha256'} | ({'generation'} if prefix == MAGIC_V2 else set())
+    if not isinstance(value, dict) or set(value) != fields:
         raise ValueError('invalid parts manifest fields')
+    if prefix == MAGIC_V2 and not re.fullmatch(r'[0-9a-f]{32}', str(value['generation'])):
+        raise ValueError('invalid part generation')
     if type(value['parts']) is not int or not 1 <= value['parts'] <= min(10000, math.ceil(maximum / part_bytes)):
         raise ValueError('invalid part count')
     if type(value['size']) is not int or not 1 <= value['size'] <= maximum:
@@ -32,7 +37,10 @@ def manifest(path, maximum, part_bytes):
 
 
 def main():
-    mode, source_name, directory_name, max_text, part_text = sys.argv[1:]
+    mode, source_name, directory_name, max_text, part_text = sys.argv[1:6]
+    generation = sys.argv[6] if len(sys.argv) == 7 else ''
+    if generation and not re.fullmatch(r'[0-9a-f]{32}', generation):
+        raise ValueError('invalid part generation')
     maximum, part_bytes = int(max_text), int(part_text)
     if maximum < 1 or not 1 <= part_bytes <= PART_BYTES:
         raise ValueError('invalid upload size limit')
@@ -53,10 +61,17 @@ def main():
                 (directory / ('part-' + str(parts))).write_bytes(data)
                 parts += 1
         value = {'parts': parts, 'size': size, 'sha256': digest.hexdigest()}
-        (directory / 'manifest').write_bytes(MAGIC + json.dumps(value, separators=(',', ':')).encode() + b'\n')
+        if generation:
+            value['generation'] = generation
+        magic = MAGIC_V2 if generation else MAGIC
+        (directory / 'manifest').write_bytes(magic + json.dumps(value, separators=(',', ':')).encode() + b'\n')
+        (directory / 'part-suffix').write_text('.parts-' + generation + '.part-' if generation else '.part-')
         print(parts)
     elif mode == 'inspect':
         value = manifest(source, maximum, part_bytes)
+        if value:
+            generation = value.get('generation', '')
+            (directory / 'part-suffix').write_text('.parts-' + generation + '.part-' if generation else '.part-')
         print(0 if value is None else value['parts'])
     elif mode == 'join':
         value = manifest(source, maximum, part_bytes)
