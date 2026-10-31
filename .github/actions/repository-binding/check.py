@@ -17,6 +17,8 @@ REFERENCE_GLOBS = (".gitmodules", ".github/workflows/*.y*ml", ".github/actions/*
 REGISTRIES = r"(?:registry\.sylphx\.com|ghcr\.io)/"
 LITERAL_NAME_TEST = re.compile(
     r"""github\.repository(?:_owner)?\s*[!=]=\s*['"]|['"]\s*[!=]=\s*github\.repository(?:_owner)?\b""")
+# The caller naming a retired owner to this check is not a reference to it.
+OWN_INPUT = re.compile(r"\s*legacy-owners:")
 EMBEDDED_JSON = re.compile(r"^(\s*)[\w.-]+\.json:\s*\|[-+]?\s*$")
 
 
@@ -24,6 +26,8 @@ def legacy_owner_findings(path, text, owners):
     pattern = re.compile(r"(?<![\w-])(" + "|".join(map(re.escape, owners)) + r")(?![\w-])", re.IGNORECASE)
     storage = re.compile(REGISTRIES + r"$", re.IGNORECASE)
     for number, line in enumerate(text.splitlines(), 1):
+        if OWN_INPUT.match(line):
+            continue
         for match in pattern.finditer(line):
             if not storage.search(line[:match.start()]):
                 yield f"{path}:{number}: retired GitHub owner {match.group(1)}; bind the repository ID"
