@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from datetime import datetime
 from difflib import SequenceMatcher
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -266,9 +268,195 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
                 # A user function can alter the caller's path. Do not infer
                 # its effects from a secured caller's routine header.
                 catalog_format = False
-        finite_executes = finite_query_executes(inner, dialect, catalog_format, nesting + 1)
+        finite_executes = (
+            finite_query_executes(inner, dialect, catalog_format, nesting + 1)
+            | check_widening_executes(inner, dialect)
+        )
         return token_violations(inner, dialect, nesting + 1, catalog_format, finite_executes)
     return opaque
+
+
+def unquote_postgres_literal(token: Token) -> str | None:
+    if token.kind != "literal":
+        return None
+    raw = token.raw
+    dollar = DOLLAR.match(raw)
+    if dollar:
+        return raw[len(dollar[0]):-len(dollar[0])]
+    if raw.startswith("'"):
+        return raw[1:-1].replace("''", "'")
+    return None
+
+
+def strip_control_prefix(stmt: list[Token]) -> list[Token]:
+    at = 0
+    while at < len(stmt) and stmt[at].kind == "word" and stmt[at].value in {"BEGIN", "LOOP", "THEN", "ELSE"}:
+        at += 1
+    return stmt[at:]
+
+
+def check_widening_executes(inner: list[Token], dialect: str) -> set[int]:
+    """Recognize catalog-backed CHECK (col = ANY (ARRAY[%s])) NOT VALID widenings."""
+    if dialect != "postgres":
+        return set()
+    if any(t.kind in {"word", "identifier"} and t.value.lower() in {"search_path", "reset", "discard", "do"} for t in inner):
+        return set()
+    for i, token in enumerate(inner):
+        if token.kind in {"word", "identifier"} and token.value.lower() == "set_config":
+            if i + 2 >= len(inner) or inner[i + 1].value != "(" or unquote_postgres_literal(inner[i + 2]) != "lock_timeout":
+                return set()
+        function, end = qualified_name(inner, i)
+        if function and function[0] != "pg_catalog" and end < len(inner) and inner[end].value == "(":
+            return set()
+    statements = split(inner, ";")
+    declared_text: set[str] = set()
+    declared_text_array: set[str] = set()
+    in_declare = False
+    for stmt in statements:
+        decl = stmt
+        if starts(decl, "DECLARE"):
+            in_declare = True
+            decl = decl[1:]
+        if not in_declare:
+            break
+        if any(kw(t, "BEGIN") for t in decl):
+            break
+        if len(decl) == 2 and decl[0].kind == "word" and kw(decl[1], "TEXT"):
+            declared_text.add(decl[0].value)
+        elif len(decl) == 4 and decl[0].kind == "word" and kw(decl[1], "TEXT") and [t.value for t in decl[2:]] == ["[", "]"]:
+            declared_text_array.add(decl[0].value)
+    colon_assigned = {
+        inner[i].value
+        for i in range(len(inner) - 2)
+        if inner[i].kind == "word" and [t.value for t in inner[i + 1:i + 3]] == [":", "="]
+    }
+    for_vars = {
+        inner[i + 1].value
+        for i in range(len(inner) - 1)
+        if kw(inner[i], "FOR") and inner[i + 1].kind == "word"
+    }
+    into_counts = Counter(
+        inner[i + 1].value
+        for i in range(len(inner) - 1)
+        if kw(inner[i], "INTO") and inner[i + 1].kind == "word"
+    )
+    single_text = {v for v in declared_text - colon_assigned - for_vars if into_counts[v] == 1}
+    single_array = {v for v in declared_text_array - colon_assigned - for_vars if into_counts[v] == 1}
+    catalog_defs: dict[str, tuple[str, str]] = {}
+    kind_arrays: dict[str, tuple[str, str]] = {}
+    kind_lists: dict[str, tuple[str, str]] = {}
+    for stmt in statements:
+        cs = strip_control_prefix(stmt)
+        if (len(cs) == 20 and starts(cs, "SELECT", "PG_GET_CONSTRAINTDEF")
+                and [t.value for t in cs[2:6]] == ["(", "OID", ")", "INTO"]
+                and cs[6].value in single_text
+                and [t.value for t in cs[7:12]] == ["FROM", "PG_CONSTRAINT", "WHERE", "CONNAME", "="]
+                and [t.value for t in cs[13:16]] == ["AND", "CONRELID", "="]
+                and [t.value for t in cs[17:20]] == [":", ":", "REGCLASS"]):
+            conname = unquote_postgres_literal(cs[12])
+            conrel = unquote_postgres_literal(cs[16])
+            if conname and conrel:
+                try:
+                    rel_tokens, _ = lex(conrel, dialect)
+                    rel_name, rel_end = name(rel_tokens, 0)
+                except SqlError:
+                    continue
+                if rel_name and rel_end == len(rel_tokens):
+                    catalog_defs[cs[6].value] = (rel_name, conname.lower())
+        elif (len(cs) == 28 and starts(cs, "SELECT", "ARRAY_AGG")
+              and [t.value for t in cs[2:16]] == ["(", "DISTINCT", "M", "[", "1", "]", "ORDER", "BY", "M", "[", "1", "]", ")", "INTO"]
+              and cs[16].value in single_array
+              and [t.value for t in cs[17:20]] == ["FROM", "REGEXP_MATCHES", "("]
+              and cs[20].value in catalog_defs
+              and cs[21].value == "," and cs[22].kind == "literal"
+              and cs[23].value == "," and cs[24].kind == "literal"
+              and [t.value for t in cs[25:28]] == [")", "AS", "M"]):
+            kind_arrays[cs[16].value] = catalog_defs[cs[20].value]
+        elif starts(cs, "SELECT", "STRING_AGG") and len(cs) >= 25:
+            if [t.value for t in cs[2:5]] != ["(", "QUOTE_LITERAL", "("] or cs[5].kind != "word":
+                continue
+            alias = cs[5].value
+            if [t.value for t in cs[6:8]] != [")", ","]:
+                continue
+            sep = unquote_postgres_literal(cs[8])
+            if sep is None or sep.strip() != ",":
+                continue
+            at = 9
+            if [t.value for t in cs[at:at + 3]] == ["ORDER", "BY", alias]:
+                at += 3
+            if [t.value for t in cs[at:at + 2]] != [")", "INTO"] or at + 2 >= len(cs):
+                continue
+            list_var = cs[at + 2].value
+            if list_var not in single_text:
+                continue
+            tail = cs[at + 3:]
+            if (len(tail) < 11 or [t.value for t in tail[:3]] != ["FROM", "UNNEST", "("]
+                    or tail[3].value not in kind_arrays
+                    or [t.value for t in tail[4:8]] != ["|", "|", "ARRAY", "["]
+                    or [t.value for t in tail[-4:]] != ["]", ")", "AS", alias]
+                    or len({alias, list_var, tail[3].value}) != 3):
+                continue
+            items = split(tail[8:-4], ",")
+            if items and all(len(p) == 1 and bool(unquote_postgres_literal(p[0])) for p in items):
+                kind_lists[list_var] = kind_arrays[tail[3].value]
+    accepted: set[int] = set()
+    preceding_drop: tuple[str, str] | None = None
+    for stmt in statements:
+        cs = procedural_statement(stmt)
+        if starts(cs, "ALTER", "TABLE"):
+            tbl, at = name(cs, 2)
+            if tbl and len(cs) == at + 3 and starts(cs[at:], "DROP", "CONSTRAINT"):
+                cname, cend = name(cs, at + 2)
+                if cname and cend == len(cs):
+                    preceding_drop = (tbl, cname)
+                    continue
+        at = 4 if (starts(cs, "EXECUTE", "PG_CATALOG") and len(cs) > 3 and cs[2].value == "." and kw(cs[3], "FORMAT")) else 2
+        if (starts(cs, "EXECUTE", "FORMAT") or at == 4) and len(cs) >= at + 5 and cs[at].value == "(" and cs[-1].value == ")":
+            args = split(cs[at + 1:-1], ",")
+            if (len(args) == 2 and len(args[1]) == 1 and args[1][0].kind == "word"
+                    and args[1][0].value in kind_lists and args[0]):
+                expected_table, expected_constraint = kind_lists[args[1][0].value]
+                parts: list[str] = []
+                valid_literals = True
+                for idx, tok in enumerate(args[0]):
+                    val = unquote_postgres_literal(tok)
+                    if val is None or (len(args[0]) > 1 and not tok.raw.startswith("'")):
+                        valid_literals = False
+                        break
+                    if idx > 0 and tok.line <= args[0][idx - 1].line:
+                        valid_literals = False
+                        break
+                    parts.append(val)
+                if valid_literals:
+                    template = "".join(parts)
+                    if template.count("%s") == 1 and "%" not in template.replace("%s", ""):
+                        try:
+                            cmd, _ = lex(template.replace("%s", "'__guard_check_element__'"), dialect)
+                            cmd_stmts = split(cmd, ";")
+                        except SqlError:
+                            cmd_stmts = []
+                        if len(cmd_stmts) == 1 and starts(cmd_stmts[0], "ALTER", "TABLE"):
+                            tbl, pos = name(cmd_stmts[0], 2)
+                            clauses = split(cmd_stmts[0][pos:], ",")
+                            add_clause = None
+                            if len(clauses) == 2 and len(clauses[0]) == 3 and starts(clauses[0], "DROP", "CONSTRAINT"):
+                                drop_name, _ = name(clauses[0], 2)
+                                if drop_name == expected_constraint:
+                                    add_clause = clauses[1]
+                            elif len(clauses) == 1 and preceding_drop == (expected_table, expected_constraint):
+                                add_clause = clauses[0]
+                            if tbl == expected_table and add_clause and len(add_clause) >= 15 and starts(add_clause, "ADD", "CONSTRAINT"):
+                                cname, cpos = name(add_clause, 2)
+                                rest = add_clause[cpos:]
+                                if (cname == expected_constraint and len(rest) == 14
+                                        and kw(rest[0], "CHECK") and rest[1].value == "("
+                                        and rest[2].kind in {"word", "identifier"}
+                                        and [t.value for t in rest[3:8]] == ["=", "ANY", "(", "ARRAY", "["]
+                                        and rest[8].kind == "literal"
+                                        and [t.value for t in rest[9:14]] == ["]", ")", ")", "NOT", "VALID"]):
+                                    accepted.add(id(cs[0]))
+        preceding_drop = None
+    return accepted
 
 
 def catalog_only_search_path(header: list[Token]) -> bool:
@@ -1108,6 +1296,58 @@ def version(path: str) -> int | None:
     return int(match[1]) if match else None
 
 
+def recorded_unapplied_withdrawal(root: Path, new_tree: dict[str, tuple[str, str]],
+                                  path: str, old_blob: tuple[str, str],
+                                  env: dict[str, str] | None = None) -> bool:
+    if old_blob[0] not in {"100644", "100755"}:
+        return False
+    version_prefix = PurePosixPath(path).name.split("_", 1)[0]
+    if not re.fullmatch(r"\d{14}", version_prefix):
+        return False
+    applied = {v for v in re.split(r"[\s,]+", (os.environ if env is None else env).get("ATLAS_APPLIED_VERSIONS", "")) if v}
+    if version_prefix in applied:
+        return False
+    registry = new_tree.get("scripts/migrations/unapplied-withdrawals.json")
+    if registry is None or registry[0] not in {"100644", "100755"}:
+        return False
+    try:
+        entries = json.loads(git(root, "cat-file", "blob", registry[1]))
+        if not isinstance(entries, list):
+            return False
+        matches = [e for e in entries if isinstance(e, dict) and e.get("path") == path]
+        if len(matches) != 1:
+            return False
+        entry = matches[0]
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, dict):
+            return False
+        pos_ctrl = evidence.get("positive_control_version")
+        observed_at = evidence.get("observed_at")
+        database = evidence.get("database")
+        reason = evidence.get("reason")
+        sha256 = entry.get("sha256")
+        if (type(evidence.get("atlas_revision_rows")) is not int
+                or evidence["atlas_revision_rows"] != 0
+                or type(evidence.get("file_digest_rows")) is not int
+                or evidence["file_digest_rows"] != 0
+                or not isinstance(pos_ctrl, str)
+                or not re.fullmatch(r"\d{14}", pos_ctrl)
+                or pos_ctrl == version_prefix
+                or not isinstance(observed_at, str)
+                or not isinstance(database, str)
+                or not database.strip()
+                or not isinstance(reason, str)
+                or not reason.strip()
+                or not isinstance(sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", sha256)):
+            return False
+        datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        raw = subprocess.run(["git", "-C", str(root), "cat-file", "blob", old_blob[1]], capture_output=True, check=True).stdout
+        return hashlib.sha256(raw).hexdigest() == sha256
+    except (ValueError, UnicodeError, json.JSONDecodeError, subprocess.CalledProcessError):
+        return False
+
+
 def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
                 schemas: list[str] | None = None) -> tuple[list[str], int]:
     # PRs can be behind main. Only their changes since the common ancestor
@@ -1120,6 +1360,8 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
     errors = []
     for path, blob in old.items():
         if new.get(path) != blob:
+            if path not in new and recorded_unapplied_withdrawal(root, new_tree, path, blob):
+                continue
             errors.append(f"{path}: merged migration was modified, deleted or renamed; append a new migration instead")
     added = sorted(new.keys() - old.keys())
     tops: dict[str, int] = {}
