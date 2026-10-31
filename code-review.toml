@@ -1,0 +1,65 @@
+# SylphxAI code-review policy: the org-level default of Sylphx PR Review,
+# read from `code-review.toml` in the SylphxAI/.github repository by every
+# SylphxAI repository without its own `.github/code-review.toml`. Its presence
+# is the opt-in: it enables review for every SylphxAI repository.
+#
+# Tier 3 (independent review required) only for real-user product repositories
+# and their deployments or data stores; money, charge and credential paths are
+# tier 2 until there are paying customers; tier 1 when every changed path is
+# docs, tests, config, generated output or tooling; everything else is tier 2.
+# Patterns are case-insensitive regexes matched against the repository slug
+# (`scope = "repo"`) or each changed path, both sides of a rename
+# (`scope = "path"`). A tier 3 match ignores files whose diff changes only
+# comments. The review check plus the repository's required CI is the merge
+# verdict.
+# Repositories opted out of review: hands-off customer repositories and every
+# repository with the custom property sylphx_delivery=delivered (read
+# 2026-10-18 21:56Z: SylphxAI/bgca is the only one). No check is posted there
+# and nothing of them is read or sent to the review engine.
+skip_repositories = ['^SylphxAI/bgca$']
+
+default_tier = 2
+default_reason = "ordinary pre-launch/internal product or platform code"
+
+[[rules]]
+scope = "repo"
+tier = 3
+reason = "real-user product (player accounts, continuity, real-user data and migrations)"
+pattern = '(^|/)(fun-.*|hk-mahjong-tycoon.*|big2.*|mahjong-tycoon-tw.*|blackjack-showdown|rank-system|cubeage-platform|cubeage-kit|cubeage-native-sdk|cubeage-cs-agent|tycoon-engine)$'
+
+[[rules]]
+scope = "path"
+tier = 3
+reason = "real-user product deployment or data store in infra (HKMT, Cubeage, the Fun titles and Big2 HK database pg-shared-core-staging, the B2HK TCP 20000 edge listeners)"
+pattern = '(^|/)infra/addons/(hkmt|cubeage[^/]*|edge-node-listeners)/|(^|/)infra/databases/pg-shared-core-staging/'
+
+[[rules]]
+scope = "repo"
+tier = 2
+reason = "money repository (pre-launch, no paying customers: merge on green, post-merge review)"
+pattern = '(^|/)(money|ledger|billing|wallet)$'
+
+[[rules]]
+scope = "path"
+tier = 2
+reason = "money/charges path (pre-launch, no paying customers: merge on green, post-merge review)"
+pattern = '(^|[/_.-])(money|billing|wallet|prices?|pricing|price[-_]?sheets?|invoices?|payments?|checkout)([/_.-]|$)|(^|/)ledger(/|\.|_)|(^|[/_.-])(money|financial|wallet|credit)[-_]?ledger|services/ai/.*(settle|settlement|meter|metering)[^/]*$'
+
+[[rules]]
+scope = "path"
+tier = 2
+reason = "credential/secret path (pre-launch, no paying customers: merge on green, post-merge review)"
+# Access issues credentials and verifies grants even without secret-named files.
+pattern = '(^|/)kernel/access/(src|verify/src)/|(^|[/_.-])(credentials?|openbao|sops)([/_.-]|$)|secret'
+
+[[rules]]
+scope = "path"
+tier = 1
+reason = "docs/tests/config/generated/tooling only"
+pattern = '(^|/)(docs?|changes|tests?|testdata|fixtures|__tests__|generated|gen|\.github|\.agents|\.claude|\.omp|coordinator|desk-tools)(/|$)|(^|/)(readme|changelog|license|copying)(\.|$)|\.(md|mdx|rst|txt)$|(^|/)(test_[^/]+|[^/]+_test|[^/]+\.(test|spec))\.[^/]+$'
+
+[[rules]]
+scope = "repo"
+tier = 1
+reason = "local tooling repository"
+pattern = '(^|/)desk-tools$'
