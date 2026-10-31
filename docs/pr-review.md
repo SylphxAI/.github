@@ -62,6 +62,14 @@ must reference a supplied diff hunk. Deleted-code findings cite the base side in
 the check summary; head-side findings become line annotations. Medium or higher
 concrete defects fail; clean reviewed code passes. Low findings remain advisory.
 
+Every result-schema node declares its type, including enum and const leaves.
+These leaves can be valid ordinary JSON Schema without a type while still
+being refused by strict structured-output inference. The outbound-request
+contract test checks the recursive typed schema before a live invocation.
+An `invalid_json_schema` refusal remains unavailable; fix and publish the
+shared action, adopt its immutable pin, and inspect the new consumer result
+before claiming review acceptance. Do not retry an unchanged request.
+
 An inference refusal, timeout, incomplete result, invalid evidence, unsupported
 source or malformed output receives neutral with a bounded reason. It never
 becomes success. A superseded head is cancelled. A new head has a distinct
@@ -100,3 +108,8 @@ Primary sources read 2026-10-30 UTC:
   12:44: default-branch execution, requested/in-progress events, and trusted-code boundary.
 - [GitHub Check Runs API, version 2022-11-28](https://docs.github.com/en/rest/checks/runs?apiVersion=2022-11-28),
   12:39–12:44: immutable head association, App publication and annotation batches.
+
+Schema source read 2026-10-31 13:34 UTC:
+
+- [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs),
+  supported typed schema subset, required fields and strict-schema refusals.

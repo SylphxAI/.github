@@ -5,20 +5,20 @@ const object = (properties) => ({
 })
 
 export const resultSchema = object({
-	schema_version: { const: 1 },
+	schema_version: { type: 'integer', const: 1 },
 	repository_id: text,
 	base_sha: text,
 	head_sha: text,
 	input_digest: text,
 	reviewer_version: text,
 	policy_version: text,
-	completion: { enum: ['complete', 'incomplete', 'unavailable'] },
+	completion: { type: 'string', enum: ['complete', 'incomplete', 'unavailable'] },
 	findings: { type: 'array', items: object({
-		path: text, side: { enum: ['base', 'head'] }, start_line: line, end_line: line,
-		severity: { enum: ['critical', 'high', 'medium', 'low'] },
+		path: text, side: { type: 'string', enum: ['base', 'head'] }, start_line: line, end_line: line,
+		severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
 		title: text, explanation: text, trigger: text, consequence: text,
 		evidence: { type: 'array', minItems: 1, items: object({
-			path: text, side: { enum: ['base', 'head', 'context'] },
+			path: text, side: { type: 'string', enum: ['base', 'head', 'context'] },
 			start_line: line, end_line: line, quote: text,
 		}) },
 	}) },
