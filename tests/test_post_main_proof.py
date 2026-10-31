@@ -376,7 +376,7 @@ class ProofTest(unittest.TestCase):
         # The no-action guard and the helper ship in the checked-in programs.
         self.assertIn('if [ -f "$STATE_DIR/quiet" ]; then exit 0; fi',
                       (ROOT / ".github/red_main/lib.sh").read_text())
-        for body in (text, *[p.read_text() for p in (ROOT / ".github/red_main").iterdir()]):
+        for body in (text, *[p.read_text() for p in (ROOT / ".github/red_main").iterdir() if p.is_file()]):
             self.assertNotIn("status=success&per_page=1", body)
             self.assertNotIn("check_name=$name&filter=latest", body)
 

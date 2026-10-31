@@ -1,7 +1,20 @@
 """Classify a failed run as infrastructure or code, per failing step's terminal error.
 
+Two readers share this one file. The red-main handler ships it to its runner as
+`.github/red_main/infra.py`; the watchdog gate action carries the identical copy
+beside itself as `.github/actions/main-red-gate/infra.py`, because a composite
+action can only rely on files inside its own directory and the watchdog job runs
+with no repository checkout. tests/test_red_main_infra.py asserts the two stay
+byte-identical, so the handler and the watchdog cannot drift.
+
 Reads {"jobs": [{name, conclusion, steps: [{name, conclusion}], annotations: [text]}]}
 on stdin and prints `infra <signature>` or `none`.
+
+`{"mode": "watchdog", ...}` reads the same jobs for the other caller: the
+red-main WATCHDOG has no verdict of its own, so it asks here which owner a red
+past its watch limit should reach (the platform owner for an infrastructure
+red, the repository owner for one a person must forward-fix). One rule, two
+readers, so the two escalation paths cannot drift.
 
 A run is infrastructure only when EVERY failing step's TERMINAL ERROR is itself
 an infrastructure signature: the installation-token mint, an artifact upload, a
@@ -62,6 +75,41 @@ RUNNER_LOST = re.compile(
 RUNNER_EXIT = re.compile(r"^Process completed with exit code \d+\.$", re.I)
 
 
+def annotation_text(note):
+    """One annotation's terminal error line.
+
+    The payload's annotations are plain strings (lib.sh builds them with jq),
+    but the raw jobs API serves each as `{"message": ...}`, and a shape that
+    silently became "no signature" would classify a platform-caused red as a
+    person's red - the failure this routing exists to prevent. Both shapes are
+    read; anything else is its own text.
+    """
+    if isinstance(note, dict):
+        return str(note.get("message") or note.get("title") or "")
+    return str(note)
+
+
+def watchdog_classify(payload):
+    """The escalation routing for the red-main WATCHDOG: `infra <signature>` or `none`.
+
+    The watchdog has no verdict of its own: it fires when the trunk is still red
+    past its watch limit whatever the handler concluded. Its alert should reach
+    the infrastructure owner for the platform-caused reds (a lost runner, a
+    runner or checkout that never ran the code) and the repository owner for the
+    reds a person must forward-fix (a real failure, a run that never started, a
+    state that could not be read). This answers which of the two, with the SAME
+    signatures the repair handler uses, so the two paths cannot drift; a watchdog
+    red normally reaches here with no failed step at all (the lost job carries
+    only the runner-lost annotation), the job-level shape this module already
+    classifies.
+    """
+    jobs = [j for j in payload.get("jobs", []) if j.get("conclusion") in ("failure", "timed_out")]
+    signatures = [job_signature(j) for j in jobs]
+    if jobs and all(signatures):
+        return "infra " + ",".join(sorted(set(signatures)))
+    return "none"
+
+
 def step_signature(step, notes):
     """The infra signature of ONE failing step, or None when it is project code.
 
@@ -89,7 +137,7 @@ def step_signature(step, notes):
 
 
 def job_signature(job):
-    notes = [str(n) for n in job.get("annotations") or []]
+    notes = [annotation_text(n) for n in job.get("annotations") or []]
     failed = [s for s in job.get("steps") or [] if s.get("conclusion") == "failure"]
     sigs = [step_signature(s, notes) for s in failed]
     # Any failed step whose terminal error is not infrastructure (a test,
@@ -106,8 +154,12 @@ def job_signature(job):
 
 
 def main():
+    payload = json.load(sys.stdin)
+    if payload.get("mode") == "watchdog":
+        print(watchdog_classify(payload))
+        return
     jobs = [
-        j for j in json.load(sys.stdin).get("jobs", [])
+        j for j in payload.get("jobs", [])
         if j.get("conclusion") in ("failure", "timed_out")
     ]
     signatures = [job_signature(j) for j in jobs]
