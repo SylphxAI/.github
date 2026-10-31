@@ -156,9 +156,15 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
         started_at: run.started_at, observed_at: observedAt, elapsed_ms: Date.now() - started };
     }
     const input = createReviewInput(bundle);
-    const result = validateResult(await engine(input, externalId), input);
+    let result = validateResult(await engine(input, externalId), input);
     await onResult?.(result);
-    if (!await github.current(target)) {
+    let current;
+    try { current = await github.current(target); }
+    catch {
+      result = { ...result, status: 'incomplete', reason: 'Current head could not be verified after source review.' };
+      await onResult?.(result);
+    }
+    if (current === false) {
       const receipt = await github.finish(run, 'cancelled', { title: 'Head superseded', summary: `Old head \`${target.head_sha}\` was superseded. The new head needs its own review.` });
       return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion: 'cancelled', elapsed_ms: Date.now() - started };
     }

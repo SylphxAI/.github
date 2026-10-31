@@ -82,17 +82,20 @@ export function unionFindings(results) {
 }
 
 export async function reviewPartitions(input, { execute, requestBytes, byteBudget, current = async () => true }) {
+  const isCurrent = async () => { try { return await current(); } catch { return null; } };
   let parts;
   try { parts = planReview(input, requestBytes, byteBudget); }
   catch (error) { return unavailable(input, error.message); }
   if (parts.length === 1) {
-    if (!await current()) return unavailable(input, 'Head superseded before review inference.');
+    const head = await isCurrent();
+    if (head !== true) return unavailable(input, head === false ? 'Head superseded before review inference.' : 'Current head could not be verified before review inference.');
     try { const result = await execute(parts[0]); return { ...result, parts: { planned: 1, completed: result.status === 'complete' ? 1 : 0 } }; }
     catch { return unavailable(input, 'Review could not complete.'); }
   }
   const completed = [], failures = [], completedIndexes = new Set();
   for (let i = 0; i < parts.length; i++) {
-    if (!await current()) { failures.push('Head superseded before the next review part.'); break; }
+    const head = await isCurrent();
+    if (head !== true) { failures.push(head === false ? 'Head superseded before the next review part.' : 'Current head could not be verified before the next review part.'); break; }
     let result;
     try { result = await execute(parts[i]); }
     catch { result = unavailable(parts[i], 'Review part could not complete.'); }
@@ -112,7 +115,11 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     source_digest: input.input_digest, scope: { kind: 'synthesis' }, reviewed_parts: summaries,
     references: completed.flatMap(r => [...r.related_evidence, ...r.findings.flatMap(f => f.evidence)]) });
   if (requestBytes(synthesis) > byteBudget) return { ...base, reason: 'All source parts completed, but cross-file synthesis exceeds the configured model context.' };
-  const result = await execute(synthesis);
+  const head = await isCurrent();
+  if (head !== true) return { ...base, reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
+  let result;
+  try { result = await execute(synthesis); }
+  catch { result = unavailable(synthesis, 'Cross-file synthesis could not complete.'); }
   if (result.status !== 'complete') return { ...base, reason: `Cross-file synthesis: ${result.reason}` };
   const findings = unionFindings([...completed, result]);
   // Every synthesized anchor must still be a real changed source coordinate.

@@ -95,6 +95,16 @@ test('incomplete aggregate preserves findings and publishes their real annotatio
     status: 'incomplete', omitted_paths: [changed.filename], reason: 'Unreviewed source remains.' }) })).conclusion, 'neutral');
 });
 
+test('a final head-read failure retains defects while publishing explicit incompleteness', async () => {
+  const github = new Provider(); let reviewed = false, saved;
+  github.current = async () => { if (reviewed) throw new Error('source API unavailable'); return true; };
+  const receipt = await produceReview({ ...options(github), onResult: result => { saved = result; },
+    engine: async input => { reviewed = true; return complete(input, [finding]); } });
+  assert.equal(receipt.conclusion, 'failure'); assert.equal(receipt.findings, 1);
+  assert.equal(saved.status, 'incomplete'); assert.match(receipt.reason, /Current head could not be verified/);
+  assert.equal(github.runs[0].output.annotations.length, 1);
+});
+
 test('new head creates a new check and a late old-head result is cancelled', async () => {
   const github = new Provider();
   await produceReview({ ...options(github), engine: async input => { github.currentHead = 'c'.repeat(40); return complete(input); } });

@@ -5,6 +5,7 @@ import { literalSegments, fileSegments, changedRanges } from '../.github/actions
 import { createReviewInput, canonical, parseReviewResult, reviewerVersion } from '../.github/actions/pr-review/contract.mjs';
 import { gatewayReviewer, reviewRequest, contextBudget } from '../.github/actions/pr-review/gateway.mjs';
 import { planReview } from '../.github/actions/pr-review/partition.mjs';
+import { reviewPartitions } from '../.github/actions/pr-review/partition.mjs';
 
 const model = 'openai/gpt-6.1-sol';
 const configuration = { model, maxOutputTokens: 8192, reasoningEffort: 'high' };
@@ -130,6 +131,24 @@ test('late refusal retains validated findings, marks partially covered paths inc
   assert.equal(result.status, 'incomplete'); assert.equal(posts, 2);
   assert.equal(result.findings.length, 1); assert.deepEqual(result.omitted_paths, ['long-line.rs']);
   assert.ok(result.parts.completed < result.parts.planned); assert.match(result.reason, /HTTP 429/);
+});
+
+test('head-read and synthesis exceptions retain findings and cannot turn incomplete coverage green', async () => {
+  const input = largeInput();
+  for (const failure of ['head', 'synthesis', 'synthesis-size']) {
+    let reads = 0;
+    const result = await reviewPartitions(input, { requestBytes: measure, byteBudget: budget,
+      current: async () => { reads++; if (failure === 'head' && reads === 2) throw new Error('private provider text'); return true; },
+      execute: async part => {
+        if (part.scope?.kind === 'synthesis') throw new Error('private provider text');
+        const { file, row } = changed(part);
+        return { ...wire(part, [findingFor(file, row, part.scope.index)],
+          failure === 'synthesis-size' ? { review_summary: 'x'.repeat(budget) } : {}), status: 'complete' };
+      } });
+    assert.equal(result.status, 'incomplete'); assert.ok(result.findings.length > 0);
+    assert.ok(!JSON.stringify(result).includes('private provider text'));
+    if (failure !== 'head') assert.equal(result.parts.completed, result.parts.planned);
+  }
 });
 
 test('metadata and final wire bounds fail before inference rather than inventing a context cap', async () => {

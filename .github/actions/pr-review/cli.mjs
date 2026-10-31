@@ -44,7 +44,12 @@ async function main() {
       reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs, current: () => github.current(target) })(input);
     const receipt = await produceReview({ github, target, trigger, engine, createReviewInput, engineVersion: reviewerVersion,
       detailsUrl: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
-      onResult: result => { results.push({ pull_request: target.number, ...result }); save(`${env.RUNNER_TEMP}/pr-review-results.json`, results); },
+      onResult: result => {
+        const index = results.findIndex(r => r.pull_request === target.number && r.head_sha === result.head_sha);
+        const record = { pull_request: target.number, ...result };
+        if (index < 0) results.push(record); else results[index] = record;
+        save(`${env.RUNNER_TEMP}/pr-review-results.json`, results);
+      },
       onBegin: run => { states.push({ id: run.id, head_sha: run.head_sha }); save(statePath, states); } });
     receipts.push({ ...receipt, pull_request: target.number, event_to_check_ms: eventLatency(read(env.GITHUB_EVENT_PATH), Date.parse(receipt.observed_at)) });
   }
