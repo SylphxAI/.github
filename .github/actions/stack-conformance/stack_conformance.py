@@ -5,7 +5,7 @@ The default stack (SylphxAI/skills skills/self-challenge/references/stack.md) pu
 service in Rust and every first-party schema under Atlas. A repository lists
 the departures it already has in a baseline file (default
 `.github/stack-departures.txt`); the baseline may only shrink. This script
-finds three kinds of departure in a git tree:
+finds four kinds of departure in a git tree:
 
   migrations <sylphx.toml> <engine>   [database.migrations] engine is not atlas
   ts-server <package.json> <package>  a TypeScript server framework is a
@@ -13,6 +13,8 @@ finds three kinds of departure in a git tree:
   bun-node-service <Dockerfile>       a service built from sylphx.toml runs on
                                       a Bun or Node image and its package is
                                       not a web app
+  solar2d <build.settings>            a retired Solar2D / Corona game project
+                                      (build.settings with a sibling main.lua)
 
 and two kinds of agent-runtime part, which only Sylphx Agents owns (SylphxAI/cloud
 ADR-01M495TCCBZGSQ68A4P4G428H2, D5):
@@ -231,7 +233,7 @@ def blob_candidate(path):
     if not architecture.excluded(path) and (p.suffix in architecture.SOURCE | architecture.CONFIG
             or p.name in {".env.example", ".env.sample", "env.schema.json"}):
         return True
-    return not skipped(path) and (p.name in {"package.json", "Cargo.toml", "sylphx.toml"}
+    return not skipped(path) and (p.name in {"package.json", "Cargo.toml", "sylphx.toml", "build.settings"}
         or p.suffix in {".rs", ".sql"} or p.name.startswith("Dockerfile") or not p.suffix)
 
 
@@ -576,6 +578,12 @@ def departures(tree) -> list[str]:
     for pkg_path in named(tree, "package.json"):
         for name in sorted(deps(package(tree, pkg_path), "dependencies") & SERVER_FRAMEWORKS):
             found.add(f"ts-server {pkg_path} {name}")
+    all_paths = set(tree.paths())
+    for bs_path in named(tree, "build.settings"):
+        parent = posixpath.dirname(bs_path)
+        main_lua = posixpath.join(parent, "main.lua") if parent else "main.lua"
+        if main_lua in all_paths and re.search(r"\bsettings\s*=\s*\{", tree.read(bs_path) or ""):
+            found.add(f"solar2d {bs_path}")
     return sorted(found)
 
 
