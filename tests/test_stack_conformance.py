@@ -126,6 +126,17 @@ class DeparturesTest(unittest.TestCase):
         self.assertEqual(data["database"]["migrations"]["engine"], "drizzle")
         self.assertEqual(sc.dockerfiles(data), ["a/Dockerfile"])
 
+    def test_solar2d_project_is_a_departure(self):
+        t = sc.DictTree({
+            "build.settings": "settings = { orientation = { default = 'portrait' } }\n",
+            "main.lua": "display.setStatusBar(display.HiddenStatusBar)\n",
+        })
+        self.assertEqual(sc.departures(t), ["solar2d build.settings"])
+        t_without_main = sc.DictTree({
+            "build.settings": "settings = { orientation = { default = 'portrait' } }\n",
+        })
+        self.assertEqual(sc.departures(t_without_main), [])
+
 
 class DecideTest(unittest.TestCase):
     FOUND = ["migrations sylphx.toml drizzle", "ts-server api/package.json hono"]
