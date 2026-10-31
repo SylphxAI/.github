@@ -16,6 +16,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -24,7 +25,8 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / ".github" / "actions" / "
 OIDC_JWT = "fake-oidc-jwt.aaa.bbb"
 OIDC_REQUEST_TOKEN = "fake-oidc-request-token"
 MINTED = "fake-minted.run.token"
-SECRETS = (OIDC_JWT, OIDC_REQUEST_TOKEN, MINTED)
+ACCESS_KEY = "fake-caller-access-key"
+SECRETS = (OIDC_JWT, OIDC_REQUEST_TOKEN, MINTED, ACCESS_KEY)
 
 
 def bundle(members: list[tuple[tarfile.TarInfo, bytes | None]]) -> bytes:
@@ -64,6 +66,11 @@ class Fake:
         self.failed_part: str | None = None
         self.protected = False
         self.put_sizes: list[int] = []
+        self.retention: dict[str, tuple[int, int]] = {}
+        self.omit_retention = False
+        self.checksum_override: str | None = None
+        self.part_retention_seconds: int | None = None
+        self.token_requests: list[dict] = []
         self.read_misses = 0  # answer this many GETs 404 before serving
         self.head_statuses: list[int] = []
         self.minted = MINTED  # the run token the exchange answers with
@@ -83,6 +90,8 @@ class Fake:
                     self.wfile.write(body)
 
             def _key(self) -> str:
+                if self.path.startswith("/v1/retained/"):
+                    return "retained:" + self.path.split("/v1/retained/", 1)[1].split("?", 1)[0]
                 return self.path.split("/v8/artifacts/", 1)[1].split("?", 1)[0]
 
             def do_GET(self) -> None:
@@ -99,19 +108,33 @@ class Fake:
                     owner.read_misses -= 1
                     self._reply(404)
                 elif key in owner.store:
-                    self._reply(200, owner.store[key])
+                    digest = owner.checksum_override or hashlib.sha256(owner.store[key]).hexdigest()
+                    headers = {"x-build-cache-sha256": digest}
+                    if key in owner.retention and not owner.omit_retention:
+                        days, until = owner.retention[key]
+                        headers.update({"x-build-cache-retention-days": str(days), "x-build-cache-retain-until": str(until)})
+                    self._reply(200, owner.store[key], headers)
                 else:
                     self._reply(404)
 
             def do_HEAD(self) -> None:
                 owner.requests.append(("HEAD", self.path, self.headers.get("Authorization")))
-                self._reply(owner.head_statuses.pop(0) if owner.head_statuses else 200 if self._key() in owner.store else 404, headers={"x-build-cache-scope": "protected" if owner.protected else "dev"})
+                headers = {"x-build-cache-scope": "protected" if owner.protected else "dev"}
+                if self._key() in owner.retention and not owner.omit_retention:
+                    days, until = owner.retention[self._key()]
+                    headers.update({"x-build-cache-retention-days": str(days), "x-build-cache-retain-until": str(until)})
+                self._reply(owner.head_statuses.pop(0) if owner.head_statuses else 200 if self._key() in owner.store else 404, headers=headers)
 
             def do_POST(self) -> None:
                 n = int(self.headers.get("Content-Length") or 0)
-                self.rfile.read(n)
+                body = json.loads(self.rfile.read(n))
+                owner.token_requests.append(body)
                 owner.requests.append(("POST", self.path, self.headers.get("Authorization")))
-                assert self.headers.get("Authorization") == f"Bearer {OIDC_JWT}"
+                if self.path == "/v1/tokens":
+                    assert self.headers.get("Authorization") == f"Bearer {ACCESS_KEY}"
+                    assert body["cache"] == "ci" and body["access"] == "read"
+                else:
+                    assert self.headers.get("Authorization") == f"Bearer {OIDC_JWT}"
                 base = f"http://127.0.0.1:{owner.port}"
                 self._reply(
                     200,
@@ -132,7 +155,7 @@ class Fake:
                 if owner.failed_part and key.endswith(owner.failed_part):
                     self._reply(413, b"body rejected", owner.failure_headers)
                     return
-                if owner.protected and key in owner.store:
+                if (owner.protected or key.startswith("retained:")) and key in owner.store:
                     self._reply(409)
                     return
                 if owner.put_mode == "dropped":
@@ -145,7 +168,17 @@ class Fake:
                 elif owner.put_mode == "too_large":
                     self._reply(413, b"private response body: " + MINTED.encode(), owner.failure_headers)
                 else:
+                    ceiling = self.headers.get("x-build-cache-retention-not-after")
+                    days = int(self.headers.get("x-build-cache-retention-days") or 0)
+                    if ceiling and int(time.time()) + days * 86400 > int(ceiling):
+                        self._reply(400)
+                        return
                     owner.store[key] = body
+                    if self.headers.get("x-build-cache-retention-days"):
+                        days = int(self.headers["x-build-cache-retention-days"])
+                        seconds = (owner.part_retention_seconds if ".parts-" in key
+                                   and owner.part_retention_seconds is not None else days * 86400)
+                        owner.retention[key] = (days, int(time.time()) + seconds)
                     self._reply(202, b'{"urls":[]}')
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -213,6 +246,172 @@ class RunStoreTest(unittest.TestCase):
         self.assertIn("response_id=cf-ray:a5275677b84d2bcd-FRA", log)
         self.assertNotIn("private response body", log)
         self.assertEqual(sum(method == "PUT" for method, _, _ in self.fake.requests), 1)
+
+    def test_retained_parts_and_root_read_back_the_complete_lifetime(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        rc, log, out = self.run_store("put", "retained", src, RETENTION_DAYS="30", RUN_STORE_PART_BYTES="1024")
+        self.assertEqual(rc, 0, log)
+        root = "retained:run-store.v1.77.4242.retained"
+        self.assertEqual(self.fake.retention[root][0], 30)
+        self.assertEqual(int(out["retained_until"]), self.fake.retention[root][1])
+        parts = [k for k in self.fake.retention if k.startswith(root + ".parts-")]
+        self.assertGreater(len(parts), 1)
+        for part in parts:
+            self.assertEqual(self.fake.retention[part][0], 31)
+            self.assertGreaterEqual(self.fake.retention[part][1], self.fake.retention[root][1])
+        dest = self.dir / "retained-out"
+        rc, log, out = self.run_store("get", "retained", dest, RUN_STORE_PART_BYTES="1024")
+        self.assertEqual(rc, 0, log)
+        self.assertEqual((dest / src.name).read_bytes(), src.read_bytes())
+
+    def test_retained_retry_checks_all_pieces_and_rejects_a_short_component(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        args = {"RETENTION_DAYS": "30", "RUN_STORE_PART_BYTES": "1024"}
+        rc, log, _ = self.run_store("put", "retry", src, **args)
+        self.assertEqual(rc, 0, log)
+        root = "retained:run-store.v1.77.4242.retry"
+        part = next(k for k in self.fake.retention if k.startswith(root + ".parts-"))
+        self.fake.retention[part] = (31, int(time.time()) + 120)
+        self.fake.requests.clear()
+        for _ in range(2):
+            rc, log, _ = self.run_store("put", "retry", src, **args)
+            self.assertNotEqual(rc, 0, log)
+            self.assertIn("outlives a part", log)
+        self.assertTrue(any(method == "GET" and ".parts-" in path for method, path, _ in self.fake.requests))
+
+    def test_interrupted_retained_upload_uses_a_fresh_piece_generation(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        args = {"RETENTION_DAYS": "30", "RUN_STORE_PART_BYTES": "1024"}
+        self.fake.failed_part = ".part-1"
+        rc, log, _ = self.run_store("put", "interrupted", src, **args)
+        self.assertNotEqual(rc, 0, log)
+        root = "retained:run-store.v1.77.4242.interrupted"
+        self.assertNotIn(root, self.fake.store)
+        old_parts = list(self.fake.retention)
+        for part in old_parts:
+            self.fake.retention[part] = (31, int(time.time()) + 120)
+        self.fake.failed_part = None
+        rc, log, _ = self.run_store("put", "interrupted", src, **args)
+        self.assertEqual(rc, 0, log)
+        generation = json.loads(self.fake.store[root].split(b"\n", 1)[1])["generation"]
+        self.assertTrue(all(generation not in part for part in old_parts))
+
+    def test_retained_retry_and_root_race_keep_original_bytes_and_deadline(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        args = {"RETENTION_DAYS": "08", "RUN_STORE_PART_BYTES": "1024"}
+        rc, log, initial = self.run_store("put", "repeat", src, **args)
+        self.assertEqual(rc, 0, log)
+        original = dict(self.fake.store)
+        src.write_bytes(os.urandom(4096))
+        for raced in (False, True):
+            self.fake.requests.clear()
+            self.fake.head_statuses = [404] if raced else []
+            rc, log, out = self.run_store("put", "repeat", src, **args)
+            self.assertEqual(rc, 0, log)
+            self.assertEqual(out["retained_until"], initial["retained_until"])
+            root = "retained:run-store.v1.77.4242.repeat"
+            self.assertEqual(self.fake.store[root], original[root])
+            self.assertEqual(self.fake.retention[root][0], 8)
+            self.assertTrue(any(method == "GET" and ".parts-" in path
+                                for method, path, _ in self.fake.requests))
+            if not raced:
+                self.assertEqual(self.fake.store, original)
+                self.assertFalse(any(method == "PUT" for method, _, _ in self.fake.requests))
+
+    def test_retained_retry_refuses_missing_or_corrupt_pieces(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        args = {"RETENTION_DAYS": "1", "RUN_STORE_PART_BYTES": "1024"}
+        rc, log, _ = self.run_store("put", "retry-corrupt", src, **args)
+        self.assertEqual(rc, 0, log)
+        part = next(k for k in self.fake.store if ".parts-" in k)
+        original = self.fake.store.pop(part)
+        rc, log, _ = self.run_store("put", "retry-corrupt", src, **args)
+        self.assertNotEqual(rc, 0, log)
+        self.assertIn("missing or unreadable", log)
+        self.fake.store[part] = b"x" * len(original)
+        rc, log, _ = self.run_store("put", "retry-corrupt", src, **args)
+        self.assertNotEqual(rc, 0, log)
+        self.assertIn("incomplete or corrupt existing bundle", log)
+
+    def test_short_piece_lifetime_refuses_root_publication(self) -> None:
+        src = self.dir / "parts.bin"
+        src.write_bytes(os.urandom(4096))
+        self.fake.part_retention_seconds = 120
+        rc, log, _ = self.run_store("put", "short", src, RETENTION_DAYS="30", RUN_STORE_PART_BYTES="1024")
+        self.assertNotEqual(rc, 0, log)
+        self.assertIn("HTTP 400", log)
+        self.assertNotIn("retained:run-store.v1.77.4242.short", self.fake.store)
+
+    def test_transient_retained_miss_retries_the_retained_namespace(self) -> None:
+        self.fake.store["retained:run-store.v1.77.4242.transient"] = bundle([regular("inner.txt", b"fixture")])
+        self.fake.read_misses = 2  # retained miss, then compatibility-door miss
+        dest = self.dir / "transient-retained"
+        rc, log, _ = self.run_store("get", "transient", dest)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual((dest / "inner.txt").read_bytes(), b"fixture")
+
+    def test_retention_requires_a_server_receipt_and_rejects_invalid_inputs(self) -> None:
+        src = self.dir / "archive.zip"
+        src.write_bytes(b"fixture")
+        for days in ["0", "31", "-1", "7days"]:
+            rc, log, _ = self.run_store("put", "invalid", src, RETENTION_DAYS=days)
+            self.assertNotEqual(rc, 0)
+            self.assertFalse(self.fake.requests)
+        self.fake.omit_retention = True
+        rc, log, _ = self.run_store("put", "unsupported", src, RETENTION_DAYS="30")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("did not confirm retention-days=30", log)
+
+    def test_manual_retrieval_uses_only_the_callers_read_grant(self) -> None:
+        src = self.dir / "archive.zip"
+        src.write_bytes(b"fixture")
+        rc, log, _ = self.run_store("put", "manual", src, RETENTION_DAYS="30")
+        self.assertEqual(rc, 0, log)
+        self.fake.requests.clear()
+        dest = self.dir / "manual-out"
+        rc, log, _ = self.run_store("get", "manual", dest, RUN_STORE_MANUAL="true", SYLPHX_API_KEY=ACCESS_KEY)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual((dest / src.name).read_bytes(), b"fixture")
+        self.assertEqual(self.fake.token_requests[-1]["access"], "read")
+        self.assertFalse(any("oidc" in path for _, path, _ in self.fake.requests))
+        self.assertNotIn("::add-mask::", log)
+        for secret in SECRETS:
+            self.assertNotIn(secret, log)
+
+    def test_integrity_failure_and_existing_links_leave_destination_untouched(self) -> None:
+        src = self.dir / "archive.zip"
+        src.write_bytes(b"fixture")
+        rc, log, _ = self.run_store("put", "safe", src, RETENTION_DAYS="30")
+        self.assertEqual(rc, 0, log)
+        self.fake.checksum_override = "0" * 64
+        dest = self.dir / "not-adopted"
+        rc, log, _ = self.run_store("get", "safe", dest)
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(dest.exists())
+        self.fake.checksum_override = None
+        dest.mkdir()
+        outside = self.dir / "outside"
+        outside.write_bytes(b"keep")
+        (dest / src.name).symlink_to(outside)
+        rc, log, _ = self.run_store("get", "safe", dest)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(outside.read_bytes(), b"keep")
+
+    def test_destination_ancestor_symlink_is_refused_before_creating_files(self) -> None:
+        self.stage_bundle("ancestor", bundle([regular("inner.txt", b"fixture")]))
+        outside = self.dir / "outside-directory"
+        outside.mkdir()
+        link = self.dir / "link"
+        link.symlink_to(outside, target_is_directory=True)
+        rc, log, out = self.run_store("get", "ancestor", link / "nested")
+        self.assertNotEqual(rc, 0, log)
+        self.assertEqual(out["found"], "false")
+        self.assertFalse((outside / "nested").exists())
 
     def test_response_diagnostics_refuse_arbitrary_header_content(self) -> None:
         src = self.dir / "upload.bin"

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sys
 import tarfile
+from pathlib import Path
 
 
 def unsafe_reason(member: tarfile.TarInfo) -> str | None:
@@ -33,16 +34,29 @@ def unsafe_reason(member: tarfile.TarInfo) -> str | None:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: validate_archive.py <bundle.tgz>", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print("usage: validate_archive.py <bundle.tgz> [destination]", file=sys.stderr)
         return 2
     try:
+        destination = Path(sys.argv[2]).absolute() if len(sys.argv) == 3 else None
+        if destination is not None and any(p.is_symlink() for p in [destination, *destination.parents]):
+            print("unsafe destination: existing symlink", file=sys.stderr)
+            return 1
         with tarfile.open(sys.argv[1], "r:gz") as archive:
             for member in archive:
                 reason = unsafe_reason(member)
                 if reason is not None:
                     print(f"unsafe archive member: {reason}", file=sys.stderr)
                     return 1
+                if destination is not None:
+                    target = destination / member.name
+                    # A pre-existing link is as unsafe as one in the archive.
+                    for ancestor in [target, *target.parents]:
+                        if ancestor.is_symlink():
+                            print("unsafe destination: existing symlink", file=sys.stderr)
+                            return 1
+                        if ancestor == destination:
+                            break
     except tarfile.TarError as exc:
         print(f"invalid archive: {exc}", file=sys.stderr)
         return 1

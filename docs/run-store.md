@@ -7,9 +7,10 @@ quota is spent, every `actions/upload-artifact` in the organization fails
 ("Artifact storage quota has been hit") and deleting artifacts does not give
 the accrued hours back. CI therefore never depends on it.
 
-The bytes go to the platform's BuildCache gateway through its Turbo door
-(`{TURBO_API}/v8/artifacts/<key>`, SylphxAI/cloud `services/build/README.md`),
-the store our CI caches already use. The job's GitHub OIDC token is exchanged
+The bytes go to the platform's BuildCache gateway, the store our CI caches
+already use. The default uses its Turbo door (`{TURBO_API}/v8/artifacts/<key>`);
+an explicit `retention-days` uses `/v1/retained/<key>` (SylphxAI/cloud
+`services/build/README.md`). The job's GitHub OIDC token is exchanged
 for a run token scoped by the event: main, the merge queue and schedules write
 the `protected` scope; a pull request or dispatch run writes `dev` and reads
 `protected` then `dev`. A pull request can never write what a main run reads.
@@ -40,7 +41,7 @@ venue:
     id-token: write
   steps:
     # ... build into build/venue
-    - uses: SylphxAI/.github/.github/actions/run-store@<sha>
+    - uses: SylphxAI/.github/.github/actions/run-store@<full-commit-sha> # main
       with:
         mode: put
         name: venue-assets
@@ -52,7 +53,7 @@ build:
     contents: read
     id-token: write
   steps:
-    - uses: SylphxAI/.github/.github/actions/run-store@<sha>
+    - uses: SylphxAI/.github/.github/actions/run-store@<full-commit-sha> # main
       with:
         mode: get
         name: venue-assets
@@ -66,13 +67,96 @@ build:
 | `path` | (required) | put: the file or directory to store. get: the directory to unpack into |
 | `run-id` | this run | get: read another run's entry (a `workflow_run` or dispatch consumer) |
 | `required` | `true` | get: fail on a miss, or with `false` set `found=false` and continue. put: with `false` a store failure only warns |
+| `retention-days` | empty | put only: an integer from 1 to 30 retains an immutable bundle for that many days from publication. Empty keeps the existing seven-day cache policy |
 | `build-cache-url` | `https://build-cache.sylphx.net` | Gateway URL |
 | `build-cache-network` | `public` | `cluster` for jobs on the platform's network |
 
-Outputs: `key`, `found` (get), `bytes`.
+Outputs: `key`, `found` (get), `bytes`, `unavailable`, and `retained_until`
+(retained put only, Unix seconds for the root's expiry).
 
 Like `actions/upload-artifact`, a directory's contents are stored (not the
 directory itself), and a single file is unpacked as `<path>/<file name>`.
+
+## Retained handovers
+
+Set `retention-days` on the producer when a bundle must remain available
+beyond the default cache lifetime:
+
+```yaml
+- uses: SylphxAI/.github/.github/actions/run-store@<full-commit-sha> # main
+  id: retained
+  with:
+    mode: put
+    name: release-bundle
+    path: dist/release.zip
+    retention-days: "30"
+```
+
+Consumers use the same pin and ordinary `mode: get`; no retention input is
+needed. Reads try the retained namespace first, then the Turbo namespace on
+404, so existing seven-day handovers remain readable. A retained response
+requires a matching SHA256 header before its bytes can be adopted.
+
+The gateway confirms the requested duration and expiry for every entry.
+Multipart pieces receive one extra day. The root commits last, with a deadline
+ceiling equal to the earliest piece expiry; the gateway rejects publication
+atomically if the requested lifetime would exceed that ceiling. Interrupted
+uploads leave no root. A retry uses a fresh random piece generation, so stale
+pieces cannot shorten the next completed bundle's lifetime. Unreferenced
+pieces expire under the same retention policy.
+
+A completed retained key keeps its first bytes and original expiry, in both
+event scopes. A retry validates the existing root, every piece, assembled
+digest and piece lifetimes before succeeding, including when another producer
+wins a publication race. It returns the original `retained_until` and does
+not renew the lifetime. A request for a longer duration than the original
+receipt fails; choose a new name or run for a new publication. Empty
+`retention-days` continues to use the existing cache policy and write behavior.
+
+Retained aliases and their referenced blobs are exempt from cache eviction
+until their deadline and count toward the existing organization byte cap.
+A full store or a missing retention receipt fails the put. As with other
+puts, `required: "false"` turns a failure into a warning; it does not establish
+retention. Publication requires the gateway's retained API and its storage
+lifecycle configuration, so an older gateway cannot silently accept a
+retention request as an ordinary cache write.
+
+## Retrieve an exact entry outside a workflow
+
+Use `.github/actions/run-store/get.py` from the same full commit SHA as the
+producer. It takes exactly four positional arguments: `owner/repository`,
+producer run ID, stored name and destination directory. It uses the active
+`gh` identity to read the target repository and Actions run, verifies that
+their numeric repository/run identities agree, and derives the exact key.
+It performs no wildcard search or latest-run selection.
+
+The caller supplies their own ordinary Access secret key with organization-wide
+`build:read`. Project-, environment- or resource-restricted keys cannot read
+the shared CI cache. The helper exchanges that key at `POST /v1/tokens` using
+`{"cache":"ci","access":"read","ttl_seconds":3600,"network":"public"}`;
+the resulting token is read only. This uses the caller's existing identities
+and grants and needs no workflow OIDC session.
+
+For example, with the caller's key already in their credential manager:
+
+```sh
+op read 'op://Vault/Caller Access key/credential' |
+  python3 shared-actions/.github/actions/run-store/get.py \
+    owner/repository 123456789 release-bundle ./retrieved --api-key-stdin
+```
+
+Alternatively, supply the key through `SYLPHX_API_KEY`. Keys never belong in
+arguments or source files. The helper passes authorization to curl over stdin
+and suppresses GitHub mask directives in a terminal, where those directives
+would expose the credential. `BUILD_CACHE_URL` and `BUILD_CACHE_NETWORK` use
+the action's defaults unless the caller sets them explicitly.
+
+The command needs `gh`, Bash, curl, tar, gzip and Python 3. It checks payload
+SHA256, multipart size/digest, gzip integrity, all tar members and existing
+destination symlinks before extraction. Missing, corrupt, mismatched or unsafe
+entries exit nonzero without creating a destination or unpacking files. A
+stored `release.zip` lands at `retrieved/release.zip`; the helper does not
+extract that inner archive.
 
 ## JUnit discovery across runs
 
@@ -146,14 +230,17 @@ PR and merge-group checks still supply the required merge evidence.
 - The key is `run-store.v1.<repository id>.<run id>.<name>`. Re-running only
   the failed jobs of a run reads the entries the successful jobs stored in the
   first attempt.
-- A `protected` entry is written once. When a re-run producer writes a key the
-  first attempt already wrote, the first entry (built from the same commit) is
+- With the default policy, a `protected` entry is written once. When a re-run
+  producer writes a key the first attempt already wrote, the first entry (built from the same commit) is
   kept and a notice says so; a `dev` entry is replaced.
 - A put packs with `tar | gzip -1`, refuses a bundle over 1 GiB before
   uploading, and sends bodies of at most 64 MiB through ordinary authenticated
-  Turbo entries. Larger bundles use the existing `ci-run-store-parts-v1`
+  entries. Default-policy bundles use the existing `ci-run-store-parts-v1`
   manifest wire format: `<key>.part-0`, `<key>.part-1`, then a small root
-  manifest committed last. Producers and consumers use the same action pin.
+  manifest committed last. Retained bundles use `ci-run-store-parts-v2` with
+  `<key>.parts-<32 hex generation>.part-<index>` pieces and a `generation`
+  manifest field; the other fields remain `parts`, `size` and `sha256`.
+  Readers accept both versions. Producers and consumers use the same action pin.
   The consumer also accepts existing unsplit bundles, verifies the assembled
   size and SHA256 before validating/unpacking, and leaves the destination
   untouched for missing or corrupt parts. Partial immutable part collisions
@@ -170,12 +257,14 @@ PR and merge-group checks still supply the required merge evidence.
   escapes `path` (`..` or absolute), a symlink or hardlink, and a special file
   (fifo, device, socket) are refused, so an untrusted bundle (a pull request's
   cache, or another run's entry) can never overwrite a trusted file or reach
-  outside the destination. A bundle of regular files and directories unpacks as
-  before.
-- Entries expire with the gateway's bucket after 7 days and count toward the
-  organization's BuildCache byte cap (50 GiB by default).
+  outside the destination. Existing symlinks at the destination, its ancestors,
+  or a member's target path are refused before extraction. A bundle of regular
+  files and directories unpacks as before.
+- Default-policy entries expire after 7 days. Explicitly retained entries
+  use their confirmed deadline. Both count toward the organization's
+  BuildCache byte cap (50 GiB by default).
 - Linux and macOS runners; `python3` is required (`jq` is used when present).
-  Both tokens are masked first and passed to curl on stdin only.
+  Workflow tokens are masked first and passed to curl on stdin only.
 
 Upload diagnostics log packed byte count before transmission. A refused upload
 records its HTTP status, transmitted request bytes and only a validated

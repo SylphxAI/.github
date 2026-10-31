@@ -10,7 +10,8 @@ description: >
   merge queue and schedules write the protected scope, every other event the
   dev scope), so a pull request run can never write what a main run reads.
   Bundles are at most 1 GiB, sent in requests of at most 64 MiB; a manifest
-  commits large bundles after their parts. Entries use the gateway retention.
+  commits large bundles after their parts. Optional retention-days preserves
+  an immutable handover for 1-30 days; empty keeps the existing cache policy.
   See docs/run-store.md.
 
 inputs:
@@ -39,6 +40,12 @@ inputs:
       lets the job decide (rebuild, skip). put: "true" fails the step when the
       entry could not be stored and read back; "false" only warns.
     default: "true"
+  retention-days:
+    description: >
+      put only: retain every entry and multipart piece for 1-30 days after
+      publication. A retained key is immutable. Empty uses the cache policy.
+      The step fails unless the gateway reads back the requested retention.
+    default: ""
   build-cache-url:
     description: BuildCache gateway URL.
     default: https://build-cache.sylphx.net
@@ -58,6 +65,11 @@ outputs:
   bytes:
     description: Size of the stored or fetched bundle in bytes.
     value: ${{ steps.run.outputs.bytes }}
+  retained_until:
+    description: >
+      put with retention-days only: the immutable root's expiry, as Unix seconds.
+      A retry returns the original deadline; it does not extend retention.
+    value: ${{ steps.run.outputs.retained_until }}
   unavailable:
     description: >
       "true" when the cache's object store did not answer: the entry was not
@@ -78,6 +90,7 @@ runs:
         STORE_RUN_ID: ${{ inputs.run-id || github.run_id }}
         REPO_ID: ${{ github.repository_id }}
         REQUIRED: ${{ inputs.required }}
+        RETENTION_DAYS: ${{ inputs.retention-days }}
         BUILD_CACHE_URL: ${{ inputs.build-cache-url }}
         BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
       run: bash "$GITHUB_ACTION_PATH/run-store.sh"
