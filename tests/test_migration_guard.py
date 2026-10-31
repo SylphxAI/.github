@@ -300,6 +300,50 @@ class HistoryTests(unittest.TestCase):
         self.commit()
         self.assertIn("merged migration", "\n".join(guard.check_range(self.root, base, "HEAD", ["db"], "postgres")[0]))
 
+        archive = "db-withdrawn/20261217091104_unapplied_kind.sql"
+        receipt = "docs/audit/2026-10-31-zero-step.json"
+        receipt_body = '{"applied": 0, "total": 2}\n'
+        receipt_digest = hashlib.sha256(receipt_body.encode("utf-8")).hexdigest()
+        self.write(archive, sql)
+        self.write(receipt, receipt_body)
+        zero_step_entry = {
+            "path": unapplied,
+            "sha256": digest,
+            "archive": archive,
+            "evidence": {
+                "observed_at": "2026-10-31T16:14:55.854572+00:00",
+                "database": "platform/sylphx_prod",
+                "atlas_revision_rows": 1,
+                "atlas_applied_statements": 0,
+                "atlas_total_statements": 2,
+                "atlas_error": "pq: lock retry budget exhausted (55P03)",
+                "atlas_partial_hashes": None,
+                "file_digest_rows": 0,
+                "positive_control_version": "20261217010724",
+                "schema_objects_absent": ["accounts.nickname"],
+                "reason": "Zero-step failed revision archived before replacement.",
+                "receipt": receipt,
+                "receipt_sha256": receipt_digest,
+            },
+        }
+        self.write("scripts/migrations/unapplied-withdrawals.json", json.dumps([zero_step_entry]))
+        self.commit()
+        self.assertEqual(guard.check_range(self.root, base, "HEAD", ["db"], "postgres"), ([], 1))
+        for bad_zero_step in [
+            {**zero_step_entry, "archive": "db-withdrawn/wrong_name.sql"},
+            {**zero_step_entry, "evidence": {**zero_step_entry["evidence"], "atlas_applied_statements": 1}},
+            {**zero_step_entry, "evidence": {**zero_step_entry["evidence"], "atlas_partial_hashes": ["h1"]}},
+            {**zero_step_entry, "evidence": {**zero_step_entry["evidence"], "schema_objects_absent": []}},
+            {**zero_step_entry, "evidence": {**zero_step_entry["evidence"], "receipt_sha256": "0" * 64}},
+        ]:
+            self.write("scripts/migrations/unapplied-withdrawals.json", json.dumps([bad_zero_step]))
+            self.commit()
+            self.assertIn("merged migration", "\n".join(guard.check_range(self.root, base, "HEAD", ["db"], "postgres")[0]))
+        self.write(archive, "ALTER TABLE accounts ADD COLUMN nickname text; -- altered\n")
+        self.write("scripts/migrations/unapplied-withdrawals.json", json.dumps([zero_step_entry]))
+        self.commit()
+        self.assertIn("merged migration", "\n".join(guard.check_range(self.root, base, "HEAD", ["db"], "postgres")[0]))
+
     def test_catalog_backed_check_constraint_widening_and_refusals(self):
         widening = """
         DO $widen$
