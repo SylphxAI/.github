@@ -1,0 +1,22 @@
+name: Repository binding check
+description: >-
+  Refuse GitHub references to retired owners, and access or deployment bindings
+  keyed on a repository name instead of its immutable ID.
+inputs:
+  legacy-owners:
+    description: Space-separated retired GitHub owners
+    required: true
+  declarations:
+    description: Space-separated globs of OIDC or deployment declarations
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        LEGACY_OWNERS: ${{ inputs.legacy-owners }}
+        DECLARATIONS: ${{ inputs.declarations }}
+      run: |
+        # shellcheck disable=SC2086
+        python3 -B "$GITHUB_ACTION_PATH/check.py" --root . --legacy-owners $LEGACY_OWNERS --declarations $DECLARATIONS
