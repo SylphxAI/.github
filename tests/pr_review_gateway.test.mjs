@@ -25,6 +25,42 @@ const reply = (input, changes = {}) => ({ object: 'chat.completion', model: 'ven
   finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(wire(input, [finding])) },
 }], ...changes });
 
+// Strict structured output requires a type at every schema node, including
+// enum/const leaves. Ordinary JSON Schema validators allow those leaves to
+// omit a type, so validating a returned review alone misses this refusal.
+function assertTypedSchema(schema, path = '$') {
+  assert.ok(['object', 'array', 'string', 'integer'].includes(schema.type), `explicit type at ${path}`);
+  if (schema.type === 'object') {
+    assert.equal(schema.additionalProperties, false, path);
+    assert.deepEqual(schema.required, Object.keys(schema.properties), path);
+    for (const [name, child] of Object.entries(schema.properties)) assertTypedSchema(child, `${path}.${name}`);
+  }
+  if (schema.type === 'array') assertTypedSchema(schema.items, `${path}[]`);
+}
+
+test('outbound strict review schema includes explicit scalar types at every depth', async () => {
+  const input = inputFor(); let format;
+  const review = gatewayReviewer({ token: 'private-value', model: 'vendor/reviewer', deadlineMs: Date.now() + 5000,
+    fetcher: async (_url, request) => {
+      format = JSON.parse(request.body).response_format;
+      return { ok: true, status: 200, json: async () => reply(input) };
+    } });
+  assert.equal((await review(input)).status, 'complete');
+  assert.equal(format.type, 'json_schema');
+  assert.equal(format.json_schema.strict, true);
+  assertTypedSchema(format.json_schema.schema);
+});
+
+test('typed discriminators retain exact version, completion, side and severity refusals', () => {
+  const input = inputFor();
+  for (const value of [{ ...wire(input), schema_version: 2 }, { ...wire(input), completion: 'other' },
+    wire(input, [{ ...finding, side: 'context' }]), wire(input, [{ ...finding, severity: 'other' }]),
+    wire(input, [{ ...finding, evidence: [{ ...finding.evidence[0], side: 'other' }] }])]) {
+    assert.equal(parseReviewResult(JSON.stringify(value), input).status, 'unavailable');
+  }
+  assert.equal(parseReviewResult(JSON.stringify(wire(input, [finding])), input).status, 'complete');
+});
+
 test('direct gateway sends the strict bound schema without tools and validates concrete results', async () => {
   const input = inputFor(); let requests = 0;
   const review = gatewayReviewer({ token: 'private-value', model: 'vendor/reviewer', deadlineMs: Date.now() + 5000,
