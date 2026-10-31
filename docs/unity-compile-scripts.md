@@ -30,6 +30,12 @@ Compiler errors, empty output, target mismatch and a stale receipt fail closed.
 Output defaults to `Builds/sylphx-player-scripts`, outside Unity's transient
 `Temp` directory; `Temp` is refused because editor shutdown removes it.
 
+The editor container receives a soft and hard open-file limit of 65,536 and
+prints both values before starting Unity. An 8,192 limit has produced a Mono
+`ToFileDescriptor` assertion during Bee named-pipe startup, ending the compiler
+with signal 6/exit 134. The larger limit follows the existing Unity container
+mitigation; a failed editor still fails the action, without an automatic retry.
+
 No title names or source pins belong in the shared action. The consumer owns
 its project path, editor version, dependency pins, store-target selection and
 PR/merge-group trigger. Keep the native APK/IPA lane separate from this compile
