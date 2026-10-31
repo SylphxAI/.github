@@ -1,4 +1,5 @@
-import { APP_ID, CHECK_NAME, Unavailable, digest, validSha, validPath, hunkRanges, bundleFile } from './github.mjs';
+import { APP_ID, CHECK_NAME, Unavailable, digest, validSha, validPath, bundleFile } from './github.mjs';
+import { changedRanges } from './source.mjs';
 import { spawnSync } from 'node:child_process';
 import { posix } from 'node:path';
 
@@ -88,25 +89,25 @@ export async function collectBundle(github, target, trigger) {
     if (content !== null) context.push({ path, content });
   }
   if (!await github.current(target)) throw new Unavailable('Head changed during source collection.');
-  return { needs_review, bundle: { schema_version: 1,
+  return { needs_review, bundle: { schema_version: 2,
     repository: github.repository, repository_id: target.repository_id,
     base_sha: target.base_sha, head_sha: target.head_sha, policy_version: String(policy.version), trigger, files, context } };
 }
 
 export function validateResult(result, input) {
-  if (result.status !== 'complete' || result.head_sha !== input.head_sha || result.base_sha !== input.base_sha ||
+  if (!['complete', 'incomplete', 'unavailable'].includes(result.status) || result.head_sha !== input.head_sha || result.base_sha !== input.base_sha ||
       result.input_digest !== input.input_digest || result.reviewer_version !== input.reviewer_version ||
-      !Array.isArray(result.findings) || !Array.isArray(result.omitted_paths) || result.omitted_paths.length) {
+      !Array.isArray(result.findings) || !Array.isArray(result.omitted_paths) ||
+      (result.status === 'complete' && (result.omitted_paths.length || result.reason !== ''))) {
     throw new Unavailable(result.reason || 'Review result is incomplete or does not match the pinned input.');
   }
   for (const finding of result.findings) {
     const file = input.files.find(f => f.path === finding.path);
-    const ranges = file && hunkRanges(file.patch);
+    const ranges = file && changedRanges(file);
     if (!file || !Number.isInteger(finding.start_line) || !Number.isInteger(finding.end_line) ||
         finding.start_line < 1 || finding.end_line < finding.start_line ||
         !['base', 'head'].includes(finding.side) ||
-        !ranges.some(r => r[finding.side].count > 0 && finding.start_line >= r[finding.side].start &&
-          finding.end_line < r[finding.side].start + r[finding.side].count) ||
+        !ranges.some(r => r.side === finding.side && finding.start_line >= r.start && finding.end_line <= r.end) ||
         !['critical', 'high', 'medium', 'low'].includes(finding.severity) ||
         !['title', 'explanation', 'trigger', 'consequence'].every(k => typeof finding[k] === 'string' && finding[k].trim()) ||
         !Array.isArray(finding.evidence) || finding.evidence.length === 0) {
@@ -120,6 +121,8 @@ function outputFor(result, input) {
   const blocking = result.findings.filter(f => ['critical', 'high', 'medium'].includes(f.severity));
   const summary = [`Head: \`${input.head_sha}\``, `Reviewer: \`${input.reviewer_version}\``,
     `Source digest: \`${input.input_digest}\``, `${result.findings.length} findings; ${blocking.length} blocking.`];
+  if (result.parts) summary.push(`Source parts: ${result.parts.completed}/${result.parts.planned} complete.`);
+  if (result.status !== 'complete') summary.push(`Review incomplete: ${result.reason}\nUnreviewed changed paths: ${result.omitted_paths.length}.`);
   for (const note of result.context_notes ?? []) summary.push(`Context: ${note}`);
   for (const finding of result.findings.filter(f => f.side === 'base')) {
     summary.push(`${finding.severity}: ${finding.title} (${finding.path}, base lines ${finding.start_line}–${finding.end_line})\n${finding.explanation}\nTrigger: ${finding.trigger}\nConsequence: ${finding.consequence}`);
@@ -127,13 +130,13 @@ function outputFor(result, input) {
   const annotations = result.findings.filter(f => f.side === 'head').map(f => ({ path: f.path, start_line: f.start_line, end_line: f.end_line,
     annotation_level: ['critical', 'high', 'medium'].includes(f.severity) ? 'failure' : 'notice',
     title: f.title.slice(0, 255), message: `${f.explanation}\nTrigger: ${f.trigger}\nConsequence: ${f.consequence}`.slice(0, 65535) }));
-  return { conclusion: blocking.length ? 'failure' : 'success', output: {
-    title: blocking.length ? `${blocking.length} defects require a change` : 'Review complete',
+  return { conclusion: blocking.length ? 'failure' : result.status === 'complete' ? 'success' : 'neutral', output: {
+    title: blocking.length ? `${blocking.length} defects require a change${result.status === 'complete' ? '' : '; review incomplete'}` : result.status === 'complete' ? 'Review complete' : 'Review unavailable',
     summary: summary.join('\n\n'), annotations,
   } };
 }
 
-export async function produceReview({ github, target, trigger, detailsUrl, engine, createReviewInput, engineVersion, onBegin }) {
+export async function produceReview({ github, target, trigger, detailsUrl, engine, createReviewInput, engineVersion, onBegin, onResult }) {
   const started = Date.now();
   const externalId = `pr-review/v1/${digest(JSON.stringify([github.repository, target.kind, target.number ?? target.ref,
     target.base_sha, target.policy_sha, target.head_sha, target.review_requested, trigger, engineVersion]))}`;
@@ -153,8 +156,15 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
         started_at: run.started_at, observed_at: observedAt, elapsed_ms: Date.now() - started };
     }
     const input = createReviewInput(bundle);
-    const result = validateResult(await engine(input, externalId), input);
-    if (!await github.current(target)) {
+    let result = validateResult(await engine(input, externalId), input);
+    await onResult?.(result);
+    let current;
+    try { current = await github.current(target); }
+    catch {
+      result = { ...result, status: 'incomplete', reason: 'Current head could not be verified after source review.' };
+      await onResult?.(result);
+    }
+    if (current === false) {
       const receipt = await github.finish(run, 'cancelled', { title: 'Head superseded', summary: `Old head \`${target.head_sha}\` was superseded. The new head needs its own review.` });
       return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion: 'cancelled', elapsed_ms: Date.now() - started };
     }
@@ -168,6 +178,8 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     }
     const receipt = await github.finish(run, conclusion, output);
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, findings: result.findings.length,
+      ...(result.status === 'complete' ? {} : { unavailable: true, reason: result.reason }),
+      parts: result.parts, budget: result.budget, request_bytes: result.request_bytes,
       started_at: run.started_at, observed_at: observedAt,
       session_name: result.session_name, input_digest: input.input_digest, reviewer_version: input.reviewer_version,
       elapsed_ms: Date.now() - started };

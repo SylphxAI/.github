@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { resultSchema, validateSchema } from './schema.mjs'
+import { segmentQuote, changedRanges } from './source.mjs'
 
 export function canonical(value) {
 	if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -18,58 +19,48 @@ const nonempty = (s) => typeof s === 'string' && s.trim().length > 0
 const validPath = (p) => nonempty(p) && !p.startsWith('/') && !p.split('/').some((s) => s === '..' || s === '.' || !s) && !/[\0\r\n\\]/.test(p)
 const lines = (content) => content === '' ? [] : content.replace(/\r?\n$/, '').split(/\r?\n/)
 
-export function sourceWindows(file, side) {
-	if (file.source_mode === 'windows') return file[`${side}_windows`]
-	const content = side === 'before' ? file.before : file.after
-	return content === null ? [] : [{ start_line: 1, content }]
-}
-export function sourceQuote(input, path, side, start, end) {
-	let windows
+export function sourceQuote(input, path, side, start, end, startByte = null, endByte = null) {
+	for (const e of input.references ?? []) if (e.path === path && e.side === side && e.start_line === start && e.end_line === end && e.start_byte === startByte && e.end_byte === endByte) return e.quote
 	if (side === 'context') {
-		const context = input.context.find((f) => f.path === path)
-		windows = context ? [{ start_line: 1, content: context.content }] : []
-	} else {
-		const file = input.files.find((f) => f.path === path || (side === 'base' && f.previous_path === path))
-		windows = file ? sourceWindows(file, side === 'base' ? 'before' : 'after') : []
-	}
-	for (const window of windows) {
-		const source = lines(window.content)
-		if (start >= window.start_line && end >= start && end < window.start_line + source.length) {
-			return source.slice(start - window.start_line, end - window.start_line + 1).join('\n')
+		for (const context of input.context.filter(f => f.path === path)) {
+			if (context.segments) {
+				const quote = segmentQuote({ after: { bytes: context.bytes },
+					hunks: [{ rows: context.segments.map(after => ({ after })) }] }, 'after', start, end, startByte, endByte)
+				if (quote !== null) return quote
+				continue
+			}
+			if (startByte !== null || endByte !== null) return null
+			const source = lines(context.content)
+			if (start >= 1 && end >= start && end <= source.length) return source.slice(start - 1, end).join('\n')
 		}
+		return null
 	}
-	return null
+	const file = input.files.find(f => f.path === path || (side === 'base' && f.previous_path === path))
+	return file ? segmentQuote(file, side === 'base' ? 'before' : 'after', start, end, startByte, endByte) : null
 }
 
 function validateFile(file) {
 	requireValue(validPath(file.path) && (file.previous_path === null || validPath(file.previous_path)), 'invalid source path')
 	requireValue(['added', 'modified', 'removed', 'renamed', 'copied'].includes(file.status), 'invalid file status')
-	requireValue(typeof file.patch === 'string', 'complete patch required')
-	const mode = file.source_mode ?? 'full'
-	requireValue(['full', 'windows'].includes(mode), 'invalid source_mode')
-	file.source_mode = mode
+	requireValue(file.source_mode === 'segments' && ['literal-json-segments-v1', 'literal-line-segments-v1'].includes(file.representation), 'invalid source representation')
 	for (const side of ['before', 'after']) {
-		if (mode === 'full') {
-			requireValue(file[side] === null || typeof file[side] === 'string', 'full source required')
-			continue
-		}
-		requireValue(file[side] === null && Array.isArray(file[`${side}_windows`]), 'windowed source required')
-		requireValue(Number.isSafeInteger(file[`${side}_line_count`]) && file[`${side}_line_count`] >= 0, 'source line count required')
-		const hash = file[`${side}_sha256`]
-		requireValue(hash === null || /^[a-f0-9]{64}$/.test(hash), 'full source digest required')
-		let previousEnd = 0
-		for (const window of file[`${side}_windows`]) {
-			requireValue(Number.isSafeInteger(window.start_line) && window.start_line > previousEnd && typeof window.content === 'string', 'invalid source window')
-			previousEnd = window.start_line + lines(window.content).length - 1
-			requireValue(previousEnd <= file[`${side}_line_count`], 'source window exceeds file')
-		}
+		const metadata = file[side]
+		requireValue(metadata === null || (/^[a-f0-9]{64}$/.test(metadata.sha256) && ['bytes', 'line_count', 'segments'].every(k => Number.isSafeInteger(metadata[k]) && metadata[k] >= 0)), 'full source identity required')
 	}
-	requireValue(mode === 'windows' || (file.status === 'added' ? file.before === null && file.after !== null : file.status === 'removed' ? file.before !== null && file.after === null : file.before !== null && file.after !== null), 'missing source side')
-	// Each patch hunk, including its unchanged context, must be supplied verbatim.
-	const probe = { files: [file], context: [] }
-	for (const hunk of file.patch.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
-		for (const [side, start, count] of [['base', Number(hunk[1]), Number(hunk[2] ?? 1)], ['head', Number(hunk[3]), Number(hunk[4] ?? 1)]]) {
-			if (count > 0) requireValue(sourceQuote(probe, file.path, side, start, start + count - 1) !== null, 'patch hunk missing source coverage')
+	requireValue(file.status === 'added' ? file.before === null && file.after !== null : file.status === 'removed' ? file.before !== null && file.after === null : file.before !== null && file.after !== null, 'missing source side')
+	requireValue(Array.isArray(file.hunks) && file.hunks.length > 0, 'complete hunks required')
+	for (const hunk of file.hunks) {
+		requireValue(nonempty(hunk.id) && Array.isArray(hunk.rows), 'invalid hunk')
+		for (const row of hunk.rows) {
+			requireValue(['add', 'delete', 'context'].includes(row.kind), 'invalid hunk operation')
+			for (const side of ['before', 'after']) {
+				const required = side === 'before' ? row.kind !== 'add' : row.kind !== 'delete'
+				const s = row[side]
+				requireValue(required === Boolean(s), 'hunk source missing')
+				if (s) requireValue(file[side] !== null && typeof s.content === 'string' && s.content.length > 0 &&
+					['start_byte', 'end_byte', 'start_line', 'end_line', 'start_column', 'end_column'].every(k => Number.isSafeInteger(s[k]) && s[k] >= (k.endsWith('byte') ? 0 : 1)) &&
+					s.end_byte - s.start_byte === Buffer.byteLength(s.content) && s.end_byte <= file[side].bytes, 'invalid literal source segment')
+			}
 		}
 	}
 }
@@ -78,7 +69,7 @@ export function createReviewInput(bundle) {
 	const input = structuredClone(bundle)
 	delete input.input_digest
 	delete input.reviewer_version
-	requireValue(input.schema_version === 1 && nonempty(input.repository) && nonempty(input.repository_id), 'invalid repository identity')
+	requireValue(input.schema_version === 2 && nonempty(input.repository) && nonempty(input.repository_id), 'invalid repository identity')
 	for (const field of ['base_sha', 'head_sha']) requireValue(/^[a-f0-9]{40}$/.test(input[field]), 'full commit SHA required')
 	requireValue(nonempty(input.policy_version) && input.trigger && ['kind', 'id', 'generation'].every((k) => nonempty(input.trigger[k])), 'policy and trigger identity required')
 	requireValue(Array.isArray(input.files) && input.files.length > 0 && Array.isArray(input.context), 'source bundle required')
@@ -88,7 +79,7 @@ export function createReviewInput(bundle) {
 		requireValue(!paths.has(file.path), 'duplicate changed path')
 		paths.add(file.path)
 	}
-	for (const context of input.context) requireValue(validPath(context.path) && typeof context.content === 'string', 'invalid context')
+	for (const context of input.context) requireValue(validPath(context.path) && (typeof context.content === 'string' || Array.isArray(context.segments)), 'invalid context')
 	return { ...input, input_digest: digest(input), reviewer_version: reviewerVersion }
 }
 
@@ -111,9 +102,11 @@ export function parseReviewResult(text, input) {
 		].filter(Boolean)
 		requireValue(incomplete.length === 0, `review incomplete (${incomplete.join(', ')})`)
 		for (const finding of result.findings) {
-			requireValue(finding.end_line >= finding.start_line && sourceQuote(input, finding.path, finding.side, finding.start_line, finding.end_line) !== null, 'finding outside supplied source')
-			for (const evidence of finding.evidence) requireValue(sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line) === evidence.quote, 'evidence differs from supplied source')
+			requireValue(finding.end_line >= finding.start_line && (input.scope?.kind === 'synthesis' ? input.manifest : input.files).some(f => f.path === finding.path), 'finding outside supplied source')
+			if (input.scope?.kind !== 'synthesis') requireValue(input.files.some(f => f.path === finding.path && changedRanges(f).some(r => r.side === finding.side && finding.start_line >= r.start && finding.end_line <= r.end)), 'finding outside changed source')
+			for (const evidence of finding.evidence) requireValue(sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte) === evidence.quote, 'evidence differs from supplied source')
 		}
+		for (const evidence of result.related_evidence) requireValue(sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte) === evidence.quote, 'related evidence differs from supplied source')
 		return { ...result, status: 'complete' }
 	} catch (error) {
 		return unavailable(input, error instanceof SyntaxError ? 'invalid JSON review result' : error.message)

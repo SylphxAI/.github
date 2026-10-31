@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gatewayReviewer } from '../.github/actions/pr-review/gateway.mjs';
+import { gatewayReviewer as actualGatewayReviewer } from '../.github/actions/pr-review/gateway.mjs';
 import { createReviewInput, parseReviewResult, reviewerVersion } from '../.github/actions/pr-review/contract.mjs';
 import { bundleFile, GitHub } from '../.github/actions/pr-review/github.mjs';
 import { credentials } from '../.github/actions/pr-review/auth.mjs';
@@ -8,7 +8,7 @@ import { eventTargets } from '../.github/actions/pr-review/events.mjs';
 import { createHash } from 'node:crypto';
 
 function inputFor(before = 'return value\n', after = 'return undefined\n') {
-  return createReviewInput({ schema_version: 1, repository: 'example/repo', repository_id: '1',
+  return createReviewInput({ schema_version: 2, repository: 'example/repo', repository_id: '1',
     base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), policy_version: '1',
     trigger: { kind: 'workflow_run', id: '42', generation: '1' },
     files: [bundleFile({ filename: 'src/value.js', status: after === null ? 'removed' : 'modified' }, before, after)], context: [] });
@@ -16,20 +16,26 @@ function inputFor(before = 'return value\n', after = 'return undefined\n') {
 function wire(input, findings = []) {
   return { schema_version: 1, repository_id: input.repository_id, base_sha: input.base_sha,
     head_sha: input.head_sha, input_digest: input.input_digest, reviewer_version: reviewerVersion,
-    policy_version: input.policy_version, completion: 'complete', findings, omitted_paths: [], context_notes: [], reason: '' };
+    policy_version: input.policy_version, completion: 'complete', findings, omitted_paths: [], context_notes: [], reason: '',
+    review_summary: 'The return value behavior was reviewed.', related_evidence: [] };
 }
 const finding = { path: 'src/value.js', side: 'head', start_line: 1, end_line: 1, severity: 'medium',
   title: 'The value is discarded', explanation: 'The return value is always undefined.', trigger: 'A caller supplies a value.',
-  consequence: 'The caller loses that value.', evidence: [{ path: 'src/value.js', side: 'head', start_line: 1, end_line: 1, quote: 'return undefined' }] };
+  consequence: 'The caller loses that value.', evidence: [{ path: 'src/value.js', side: 'head', start_line: 1, end_line: 1,
+    start_byte: null, end_byte: null, quote: 'return undefined' }] };
 const reply = (input, changes = {}) => ({ object: 'chat.completion', model: 'vendor/reviewer', choices: [{
   finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(wire(input, [finding])) },
 }], ...changes });
+const gatewayReviewer = options => actualGatewayReviewer({ ...options, fetcher: async (url, request) => request.method === 'GET' ? {
+  ok: true, status: 200, json: async () => ({ id: options.model, context_window: 1_050_000, max_output_tokens: 128_000 }),
+} : options.fetcher(url, request) });
 
 // Strict structured output requires a type at every schema node, including
 // enum/const leaves. Ordinary JSON Schema validators allow those leaves to
 // omit a type, so validating a returned review alone misses this refusal.
 function assertTypedSchema(schema, path = '$') {
-  assert.ok(['object', 'array', 'string', 'integer'].includes(schema.type), `explicit type at ${path}`);
+  assert.ok(['object', 'array', 'string', 'integer'].includes(schema.type) ||
+    JSON.stringify(schema.type) === JSON.stringify(['integer', 'null']), `explicit type at ${path}`);
   if (schema.type === 'object') {
     assert.equal(schema.additionalProperties, false, path);
     assert.deepEqual(schema.required, Object.keys(schema.properties), path);
@@ -149,7 +155,7 @@ test('deleted code and absolute windows are reviewable without invented head lin
   const input = inputFor(before, before.replace('row 4000', 'changed 4000'));
   const at4001 = { ...finding, start_line: 4001, end_line: 4001,
     evidence: [{ ...finding.evidence[0], start_line: 4001, end_line: 4001, quote: 'changed 4000' }] };
-  assert.equal(input.files[0].source_mode, 'windows');
+  assert.equal(input.files[0].source_mode, 'segments');
   assert.equal(parseReviewResult(JSON.stringify(wire(input, [at4001])), input).status, 'complete');
 });
 
