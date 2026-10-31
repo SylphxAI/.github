@@ -47,6 +47,11 @@ def test_storage_paths_and_other_owners_pass(tmp_path, line):
     assert findings(tmp_path) == []
 
 
+def test_the_callers_own_input_passes(tmp_path):
+    write(tmp_path, ".github/workflows/a.yml", "        with:\n          legacy-owners: Old-Org\n")
+    assert findings(tmp_path) == []
+
+
 def test_submodules_and_composite_actions_are_read(tmp_path):
     write(tmp_path, ".gitmodules", "url = https://github.com/Old-Org/game.git\n")
     write(tmp_path, ".github/actions/x/action.yml", "owner: Old-Org\n")
