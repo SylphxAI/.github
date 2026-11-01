@@ -9,14 +9,13 @@ import argparse
 import json
 import pathlib
 
-ORGANIZATIONS = {'SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd'}
+ORGANIZATIONS = {'SylphxAI', 'Cubeage', 'EpiowAI', 'OzyrixLtd'}
 
 # Architectural layers are decisions; consumer names come only from the census.
 LAYERS = {
     **{name: sorted(ORGANIZATIONS)
        for name in ['SylphxAI/spiron', 'SylphxAI/cloud', 'SylphxAI/sylphx', 'SylphxAI/keel', 'SylphxAI/keel-engine']},
-    **{org + '/' + name: ['Cubeage', 'Cubeage-limited']
-       for org in ['Cubeage', 'Cubeage-limited']
+    **{'Cubeage/' + name: ['Cubeage']
        for name in ['cubeage-platform', 'cubeage-kit', 'tycoon-engine']},
 }
 
