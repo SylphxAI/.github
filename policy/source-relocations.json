@@ -17,6 +17,24 @@
       "source_commit": "ecc29e41a5e6e58b239c5195f307467bae805ae0",
       "source_tree": "be18951235ec13d94209f64eea1c763b67a5e972",
       "evidence": "https://github.com/Cubeage/fun-big2-tw/tree/ecc29e41a5e6e58b239c5195f307467bae805ae0"
+    },
+    {
+      "repository": "Cubeage/fun-mahjong",
+      "prefix": "keel",
+      "source_repository": "Cubeage/fun-mahjong-keel",
+      "source_commit": "2547c8dd53fa79512e92ced1bcf0729071ee992b",
+      "source_tree": "75bbdbf7453e9b94b6c2bdd258360c7f64492e82",
+      "evidence": "https://github.com/Cubeage/fun-mahjong-keel/tree/2547c8dd53fa79512e92ced1bcf0729071ee992b",
+      "generated_omissions": [
+        {
+          "path": "server/vendor/tycoon-engine",
+          "tree": "85b8e009eaeeb85f159f827e033631cd2fae5b6a",
+          "dependency_repository": "Cubeage/tycoon-engine",
+          "dependency_commit": "b73cd985b7dd06c39d57ea0e697878212f2b639d",
+          "dependency_manifest": "history/fun-mahjong-keel/engine-dependency.json",
+          "dependency_manifest_sha256": "59fe6fde25625a2b02683982b803c386105113b80fb66b9f9a6ca27eda353968"
+        }
+      ]
     }
   ]
 }
