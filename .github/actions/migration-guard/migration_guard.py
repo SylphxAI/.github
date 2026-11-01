@@ -1172,6 +1172,8 @@ def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
 
     if runtime != CONCURRENT_INDEX_RUNTIME:
         return fail("requires explicit adoption of the atlas-qualified-v1 runtime contract")
+    if not sql.startswith("-- atlas:txmode none\n\n"):
+        return fail("atlas:txmode none must be the first line, separated from content by a blank line")
     if (len(declarations) != 1 or header.count("-- atlas:txmode none") != 1
             or any(line.startswith("-- atlas:") and line != "-- atlas:txmode none" for line in header)):
         return fail("requires one versioned declaration and -- atlas:txmode none")

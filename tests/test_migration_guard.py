@@ -174,7 +174,7 @@ class ConcurrentIndexTests(unittest.TestCase):
     statement = 'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" USING btree ("owner_id") WHERE "deleted_at" IS NULL;'
 
     def source(self, declaration=None, statement=None):
-        return ("-- atlas:txmode none\n-- migration:concurrent-index-v1 "
+        return ("-- atlas:txmode none\n\n-- migration:concurrent-index-v1 "
                 + json.dumps(self.declaration if declaration is None else declaration)
                 + "\n" + (self.statement if statement is None else statement) + "\n")
 
@@ -191,6 +191,13 @@ class ConcurrentIndexTests(unittest.TestCase):
     def test_supported_contract_requires_explicit_runtime_adoption(self):
         self.assertTrue(guard.check_sql(self.source(), "postgres"))
         self.assertEqual(guard.check_sql(self.source(), "postgres", "atlas-qualified-v1"), [])
+
+    def test_file_directive_requires_atlas_blank_line_separator(self):
+        malformed = self.source().replace("-- atlas:txmode none\n\n", "-- atlas:txmode none\n")
+        self.assertIn("separated from content by a blank line", str(
+            guard.check_sql(malformed, "postgres", "atlas-qualified-v1")))
+        self.assertIn("first line", str(guard.check_sql(
+            "-- another comment\n" + self.source(), "postgres", "atlas-qualified-v1")))
 
     def test_finite_bounds_and_exact_supported_statement(self):
         for key, value in [("lock_timeout_ms", 0), ("statement_timeout_ms", 0),
