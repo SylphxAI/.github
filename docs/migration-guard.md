@@ -147,6 +147,46 @@ the existing expand/contract marker convention; reviewers verify that the named
 expand step was actually released. It never exempts edits to merged migrations
 or invalid ordering. Existing historical SQL is not retroactively linted.
 
+## Concurrent PostgreSQL indexes
+
+New `CREATE INDEX CONCURRENTLY` statements require an explicitly adopted
+runtime contract. The default refuses them. A preceding `SET`, a preceding
+`DROP`, `IF NOT EXISTS`, or a released-expand marker does not establish safe
+Atlas partial resume. Unchanged historical files are preserved without
+retroactive linting.
+
+A caller with a qualified Atlas runner sets
+`concurrent-index-runtime: atlas-qualified-v1`. That runner must validate the
+immutable directory and exact revision/hash/failed statement, bound every fresh
+Atlas and cleanup connection, and remove only the matching interrupted invalid,
+nonunique, unconstrained index with no active operation. Atlas alone writes its
+revision history. Attempts, backoff, total duration and child lifetime are
+bounded. A valid index with a pending revision is refused and preserved.
+The input declares adoption; runtime regressions in the caller prove it.
+
+Each newly supported file contains one declaration and exactly its generated
+SQL statement:
+
+```sql
+-- atlas:txmode none
+-- migration:concurrent-index-v1 {"schema":"public","table":"events","index":"events_owner_idx","columns":["owner_id"],"where_null":"deleted_at","lock_timeout_ms":3000,"statement_timeout_ms":240000}
+CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" USING btree ("owner_id") WHERE "deleted_at" IS NULL;
+```
+
+The declaration supports explicit schema/table/index identifiers, a nonempty
+list of plain columns, and an optional `where_null` column. Identifiers are
+double-quoted with embedded quotes doubled. Limits are positive integer
+milliseconds: lock at most 3000, statement at most 240000, and lock below
+statement. Tighter existing connection caps remain effective. The runtime
+applies these through connection startup options, because Atlas skips earlier
+successful statements on resume.
+
+The rule refuses extra SQL, UNIQUE, IF NOT EXISTS, expressions, unsupported
+predicates, additional declaration fields and missing/invalid bounds. More SQL
+forms need a reviewed runtime and guard contract; a comment cannot authorize
+them. The guard reads only newly added SQL from the actual configured Git range;
+it does not inspect production state or repair an index.
+
 ## Schema snapshots
 
 For a repository without a migration chain, configure complete `CREATE TABLE`

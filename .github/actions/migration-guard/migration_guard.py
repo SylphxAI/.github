@@ -1004,11 +1004,89 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
     return sorted(set(out))
 
 
-def check_sql(sql: str, dialect: str) -> list[tuple[int, str]]:
+CONCURRENT_INDEX_MARKER = "-- migration:concurrent-index-v1 "
+CONCURRENT_INDEX_RUNTIME = "atlas-qualified-v1"
+
+
+def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
+                                runtime: str) -> list[tuple[int, str]]:
+    """A declaration generates the entire supported statement, not an exemption.
+
+    Earlier SET/DROP statements do not survive Atlas partial resume. A caller
+    adopts this contract only with a runner that bounds every new connection,
+    qualifies the exact interrupted CREATE, and validates the resulting index.
+    """
+    if dialect != "postgres":
+        return []
+    creates = [t.line for i, t in enumerate(tokens) if starts(tokens[i:], "CREATE", "INDEX", "CONCURRENTLY")
+               or starts(tokens[i:], "CREATE", "UNIQUE", "INDEX", "CONCURRENTLY")]
+    header, body = [], []
+    for line in sql.splitlines():
+        if not body and (not line.strip() or line.lstrip().startswith("--")):
+            header.append(line.strip())
+        else:
+            body.append(line)
+    declarations = [line[len(CONCURRENT_INDEX_MARKER):] for line in header
+                    if line.startswith(CONCURRENT_INDEX_MARKER)]
+    if not creates and not declarations:
+        return []
+    line = creates[0] if creates else 1
+
+    def fail(reason):
+        return [(line, "concurrent index: " + reason)]
+
+    if runtime != CONCURRENT_INDEX_RUNTIME:
+        return fail("requires explicit adoption of the atlas-qualified-v1 runtime contract")
+    if (len(declarations) != 1 or header.count("-- atlas:txmode none") != 1
+            or any(line.startswith("-- atlas:") and line != "-- atlas:txmode none" for line in header)):
+        return fail("requires one versioned declaration and -- atlas:txmode none")
+    try:
+        def unique_fields(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate declaration field")
+                result[key] = value
+            return result
+
+        declaration = json.loads(declarations[0], object_pairs_hook=unique_fields)
+        required = {"schema", "table", "index", "columns", "lock_timeout_ms", "statement_timeout_ms"}
+        if not isinstance(declaration, dict) or not required <= declaration.keys() or declaration.keys() - required - {"where_null"}:
+            raise ValueError("unsupported declaration fields")
+
+        def quote(value):
+            if (not isinstance(value, str) or not value or len(value.encode("utf-8")) > 63
+                    or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
+                raise ValueError("identifiers must contain 1–63 UTF-8 bytes and no control characters")
+            return '"' + value.replace('"', '""') + '"'
+
+        lock, statement = declaration["lock_timeout_ms"], declaration["statement_timeout_ms"]
+        if not (type(lock) is int and type(statement) is int and 0 < lock <= 3000
+                and lock < statement <= 240000):
+            raise ValueError("integer bounds require 0 < lock_timeout_ms <= 3000 and lock_timeout_ms < statement_timeout_ms <= 240000")
+        columns = declaration["columns"]
+        if not isinstance(columns, list) or not columns:
+            raise ValueError("one or more plain index columns are required")
+        expected = (f'CREATE INDEX CONCURRENTLY {quote(declaration["index"])} '
+                    f'ON {quote(declaration["schema"])}.{quote(declaration["table"])} '
+                    f'USING btree ({", ".join(quote(column) for column in columns)})')
+        if declaration.get("where_null") is not None:
+            expected += f' WHERE {quote(declaration["where_null"])} IS NULL'
+        expected += ";"
+        if "\n".join(body).strip() != expected:
+            raise ValueError("SQL must be the exact declared single nonunique concurrent CREATE; no IF NOT EXISTS, SET, DROP, expression or extra statement")
+    except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+        return fail(str(exc))
+    return []
+
+
+def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "") -> list[tuple[int, str]]:
     tokens, markers = lex(sql, dialect)
     # Lexical failures remain errors even when a marker is present.
     errors = token_violations(tokens, dialect)
-    return [] if markers else errors
+    # A released-expand reference does not prove resumability or effective
+    # connection bounds. Operational findings are never marker exemptions.
+    return concurrent_index_violations(sql, tokens, dialect, concurrent_index_runtime) + ([] if markers else errors)
 
 
 class Column(NamedTuple):
@@ -1380,7 +1458,7 @@ def recorded_unapplied_withdrawal(root: Path, new_tree: dict[str, tuple[str, str
 
 
 def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
-                schemas: list[str] | None = None) -> tuple[list[str], int]:
+                schemas: list[str] | None = None, concurrent_index_runtime: str = "") -> tuple[list[str], int]:
     # PRs can be behind main. Only their changes since the common ancestor
     # count; merge groups and pushes already have an ancestral base.
     ancestor = git(root, "merge-base", base, head).strip()
@@ -1412,7 +1490,7 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
             errors.append(f"{path}: migration version must be unique and above {tops.get(parent, -1)} already on the base")
         try:
             sql = git(root, "cat-file", "blob", oid)
-            errors.extend(f"{path}:{line}: {reason}" for line, reason in check_sql(sql, dialect))
+            errors.extend(f"{path}:{line}: {reason}" for line, reason in check_sql(sql, dialect, concurrent_index_runtime))
         except (SqlError, UnicodeError) as exc:
             errors.append(f"{path}: cannot inspect SQL: {exc}")
     for path in schemas or []:
@@ -1450,6 +1528,8 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
     parser.add_argument("--head", default=env.get("MIGRATION_HEAD", ""))
     parser.add_argument("--directory", action="append")
     parser.add_argument("--schema-file", action="append")
+    parser.add_argument("--concurrent-index-runtime", choices=("", CONCURRENT_INDEX_RUNTIME),
+                        default=env.get("MIGRATION_CONCURRENT_INDEX_RUNTIME", ""))
     args = parser.parse_args(argv)
     try:
         if args.dialect not in {"postgres", "mysql"}:
@@ -1460,7 +1540,7 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
             raise ValueError("at least one migration directory or schema file is required")
         base, head = event_range({**env, "MIGRATION_BASE": args.base, "MIGRATION_HEAD": args.head})
         root = Path(env.get("GITHUB_WORKSPACE", "."))
-        errors, count = check_range(root, base, head, dirs, args.dialect, schemas)
+        errors, count = check_range(root, base, head, dirs, args.dialect, schemas, args.concurrent_index_runtime)
         if errors:
             print("\n".join(errors))
             print("::error::Migration safety check failed. Merged migrations are immutable. Ship an expand step before contracting; add `-- contract: <reference>` naming that released step in the new migration or changed schema snapshot.")
