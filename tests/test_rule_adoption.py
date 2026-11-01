@@ -235,11 +235,13 @@ class AdoptionTests(unittest.TestCase):
                 with mock.patch.object(a, "current_rules", return_value=enforced | {cache_rule}):
                     introduced, _ = a.introduced_rules(tree, "", shared_repo=str(ROOT))
                     self.assertEqual(introduced, {cache_rule})
-                    self.assertEqual(a.seed_permissions(tree, a.RULE_MARKER + cache_rule + "\n", "", set()),
+                    self.assertEqual(a.seed_permissions(tree, a.RULE_MARKER + cache_rule + "\n", "", set(),
+                                                        shared_repo=str(ROOT)),
                                      {cache_rule})
                     for rule in enforced:
                         with self.assertRaisesRegex(ValueError, "already enforced"):
-                            a.seed_permissions(tree, a.RULE_MARKER + rule + "\n", "", set())
+                            a.seed_permissions(tree, a.RULE_MARKER + rule + "\n", "", set(),
+                                               shared_repo=str(ROOT))
 
     def test_forged_capability_profile_and_wrong_source_are_rejected(self):
         data = a.load_registry()
