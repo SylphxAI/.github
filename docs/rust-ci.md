@@ -104,6 +104,8 @@ Every input is optional. The contract the rollout repositories adopt:
 | `workspace` | `.` | Cargo workspace directory, relative to the checkout |
 | `runner-class` | `standard` | `standard` or `xlarge` (only after a measured need). A merge group runs on the class's `-merge` lane. No other label is reachable |
 | `apt-packages` | empty | Debian packages the build needs |
+| `node-version` | empty | Optional Node major/minor/patch (for example `22` or `22.14.0`). Empty leaves Node setup out of the job |
+| `npm-ci` | `false` | Install locked npm dependencies in `workspace` before clippy/tests; requires `node-version`. Runs `npm ci --ignore-scripts --include=dev --no-audit --no-fund` |
 | `git-deps` | empty | Private git dependencies, one `OWNER/REPO` per line, read through your own reader App; see [rust-check.md](rust-check.md) |
 | `timeout-minutes` | `45` | Job timeout |
 
@@ -124,6 +126,15 @@ read 2026-10-26). Callers never set `SCCACHE_*`,
 
 Arguments and features are checked against a strict character set before
 use and never reach a shell as text; anything else fails the first step.
+
+For a Rust test that invokes JavaScript, declare `node-version` and `npm-ci: true`
+on the same Rust job. Keep `package.json` and `package-lock.json` in `workspace`;
+missing or inconsistent files fail the job. Installation includes development
+dependencies and disables dependency lifecycle scripts. It does not execute an
+npm test script. Node package caching and registry authentication are not enabled
+by this option. Pure Rust callers retain the defaults and install neither Node
+nor npm dependencies. The [consumer fixture](../tests/fixtures/rust-node-consumer)
+exercises a Rust test importing an installed npm package through Node.
 
 ## Reading the cache
 

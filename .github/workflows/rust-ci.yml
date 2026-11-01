@@ -93,6 +93,16 @@ on:
         required: false
         type: string
         default: ''
+      node-version:
+        description: Optional Node major, major.minor or major.minor.patch for tests that invoke Node.
+        required: false
+        type: string
+        default: ''
+      npm-ci:
+        description: Install package-lock.json dependencies in workspace without lifecycle scripts; requires node-version.
+        required: false
+        type: boolean
+        default: false
       git-deps:
         description: >
           Private git dependencies Cargo fetches, one OWNER/REPO per line,
@@ -152,6 +162,8 @@ jobs:
       IN_TEST_EXCEPTIONS: ${{ inputs.test-exceptions }}
       IN_LOCKED: ${{ inputs.locked }}
       IN_APT: ${{ inputs.apt-packages }}
+      IN_NODE: ${{ inputs.node-version }}
+      IN_NPM_CI: ${{ inputs.npm-ci }}
     steps:
       - name: Validate inputs
         run: |
@@ -165,6 +177,8 @@ jobs:
           [[ "$IN_TEST" =~ ^[A-Za-z0-9_.,:=/\ -]*$ ]] || { echo "bad test-args"; exit 2; }
           [[ "$IN_TEST_EXCEPTIONS" =~ ^[A-Za-z0-9_./-]{0,200}$ && "$IN_TEST_EXCEPTIONS" != /* && "$IN_TEST_EXCEPTIONS" != *..* ]] || { echo "bad test-exceptions"; exit 2; }
           [[ "$IN_APT" =~ ^[a-z0-9.+\ -]*$ ]] || { echo "bad apt-packages"; exit 2; }
+          [[ -z "$IN_NODE" || "$IN_NODE" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "bad node-version"; exit 2; }
+          [[ "$IN_NPM_CI" != true || -n "$IN_NODE" ]] || { echo "npm-ci requires node-version"; exit 2; }
           if [ ! -w "${HOME:-/}" ] || [ "${HOME:-/root}" = /root ]; then
             mkdir -p "$RUNNER_TEMP/home" && echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
           fi
@@ -217,6 +231,20 @@ jobs:
           read -ra pkgs <<<"$IN_APT"
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends "${pkgs[@]}"
+      - name: Node for tests
+        if: inputs.node-version != ''
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ inputs.node-version }}
+          package-manager-cache: false
+      - name: JavaScript test dependencies
+        if: inputs.npm-ci
+        working-directory: ${{ inputs.workspace }}
+        run: |
+          set -euo pipefail
+          test -f package.json
+          test -f package-lock.json
+          npm ci --ignore-scripts --include=dev --no-audit --no-fund
       - name: Private git dependencies
         if: inputs.git-deps != ''
         env:

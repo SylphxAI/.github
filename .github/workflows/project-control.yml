@@ -347,9 +347,19 @@ jobs:
           needs: ${{ toJSON(needs) }}
           required: template-plan
 
+  rust-node-consumer:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      workspace: tests/fixtures/rust-node-consumer
+      node-version: '22'
+      npm-ci: true
+
   # Every required job must run and succeed before the merge gate can pass.
   ci-ok:
-    needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer]
+    needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer, rust-node-consumer]
     if: always()
     runs-on: sylphx-linux-control
     timeout-minutes: 5
@@ -362,4 +372,4 @@ jobs:
         with:
           separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
-          required: stack,project-control,tests,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ (github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run) && 'junit-producer' || 'junit-consumer' }}
+          required: stack,project-control,tests,rust-node-consumer,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ (github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run) && 'junit-producer' || 'junit-consumer' }}
