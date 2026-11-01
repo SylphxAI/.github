@@ -157,9 +157,69 @@ def active_path(name):
         {"vendor", "target", "node_modules", "dist", "build", ".git"})
 
 
+def confined_path(root, name):
+    """Resolve a relative source path without following a symlink, even in a parent."""
+    relative = Path(name)
+    if not str(name) or relative.is_absolute() or ".." in relative.parts or ".git" in relative.parts:
+        raise Refused(f"source path must stay within its root: {name!r}")
+    path = Path(root)
+    for part in relative.parts:
+        path /= part
+        if path.is_symlink():
+            raise Refused(f"source path must not traverse a symlink: {name!r}")
+    return path
+
+
+def source_scope(args):
+    """--root remains the repository; --source-root bounds source operations only."""
+    repo = Path(args.root).resolve()
+    root = confined_path(repo, args.source_root)
+    if not root.is_dir():
+        raise Refused(f"source-root is not an existing directory: {args.source_root!r}")
+    return repo, root
+
+
+def source_check_dir(root, name):
+    directory = confined_path(root, name)
+    if not directory.is_dir():
+        raise Refused(f"check-dir is not an existing directory within source-root: {name!r}")
+    return directory
+
+
+def source_pathspec(repo, root):
+    name = root.relative_to(repo).as_posix()
+    return "." if name == "." else ":(top,literal)" + name
+
+
+def source_changes(repo, root):
+    """Repository-relative paths, including individual untracked files; no rename pairs."""
+    out = run(["git", "status", "--porcelain", "-z", "--untracked-files=all", "--no-renames",
+               "--", source_pathspec(repo, root)], cwd=repo).stdout
+    return sorted(entry[3:] for entry in out.split("\0") if len(entry) > 3)
+
+
+def check_staged_scope(repo, root):
+    """git commit includes the entire index, even after a path-limited git add."""
+    if root == repo:
+        return
+    out = run(["git", "diff", "--cached", "--name-only", "--no-renames", "-z"], cwd=repo).stdout
+    prefix = root.relative_to(repo).as_posix() + "/"
+    if any(name and not name.startswith(prefix) for name in out.split("\0")):
+        raise Refused("the index already contains changes outside source-root; leave them to their owner")
+
+
 def tracked_files(root):
     out = run(["git", "ls-files", "-z"], cwd=root).stdout
-    return [p for p in out.split("\0") if p and not historical_path(p)]
+    files = []
+    for name in out.split("\0"):
+        if not name or historical_path(name):
+            continue
+        try:
+            confined_path(root, name)
+        except Refused:
+            continue  # source links are never dependency or rewrite inputs
+        files.append(name)
+    return files
 
 
 def pin_files(files):
@@ -317,7 +377,7 @@ def refresh_locks(root, log, old_shas=()):
     for f in tracked_files(root):
         if Path(f).name != "Cargo.lock" or not active_path(f):
             continue
-        manifest = (root / f).with_name("Cargo.toml")
+        manifest = confined_path(root, Path(f).with_name("Cargo.toml"))
         specs = lock_update_specs((root / f).read_text(errors="replace"), old_shas)
         if not specs or not manifest.exists():
             continue
@@ -379,7 +439,7 @@ def layer_ahead(remote, sha, old):
 
 
 def cmd_layer_poll(args):
-    root = Path(args.root).resolve()
+    repo, root = source_scope(args)
     sha = layer_target(args)
     branch = BRANCH_PREFIX + args.layer + "-" + sha
     old = layer_pins(root, args.layer)
@@ -388,7 +448,7 @@ def cmd_layer_poll(args):
     out = {"tag": sha, "sha": sha, "needed": "false", "reason": ""}
     if old == [sha]:
         out["reason"] = "already pinned"
-    elif pr_exists(branch) or remote_branch_exists(root, branch):
+    elif pr_exists(branch) or remote_branch_exists(repo, branch):
         out["reason"] = "a pull request or branch for this commit exists"
     else:
         ahead = layer_ahead(args.remote, sha, old)
@@ -406,7 +466,7 @@ def refresh_layer_locks(root, layer, log):
             continue
         lock = (Path(root) / f).read_text()
         names = sorted(set(re.findall(r'\[\[package\]\]\s+name = "([^"]+)"\s+version = "[^"]+"\s+source = "git\+https://github.com/' + re.escape(repo) + r'(?:\.git)?[?\"]', lock)))
-        manifest = (Path(root) / f).with_name("Cargo.toml")
+        manifest = confined_path(root, Path(f).with_name("Cargo.toml"))
         if not names or not manifest.exists():
             continue
         cmd = ["cargo", "update", "--manifest-path", str(manifest)]
@@ -420,15 +480,16 @@ def refresh_layer_locks(root, layer, log):
 
 
 def cmd_layer_run(args):
-    root = Path(args.root).resolve()
+    repo, root = source_scope(args)
+    check_dir = source_check_dir(root, args.check_dir)
     sha = layer_target(args)
     old = layer_pins(root, args.layer)
     if not old:
         raise Refused(f"no {args.layer} pin found")
     branch = BRANCH_PREFIX + args.layer + "-" + sha
     report = {"layer": args.layer, "remote": args.remote, "tag": sha, "sha": sha, "branch": branch, "status": "unchanged",
-              "stage": "", "changed": [], "old": old, "manual": [], "log": "", "owner": args.owner}
-    if old == [sha] or (not args.ignore_branch and remote_branch_exists(root, branch)):
+              "stage": "", "changed": [], "old": old, "manual": [], "log": "", "owner": args.owner, "source_root": root.relative_to(repo).as_posix()}
+    if old == [sha] or (not args.ignore_branch and remote_branch_exists(repo, branch)):
         if old != [sha]:
             report["status"] = "branch-exists"
         Path(args.report).write_text(json.dumps(report, indent=2))
@@ -447,7 +508,7 @@ def cmd_layer_run(args):
                 if len(versions) != 1 or has_git_pins(d):
                     raise Refused("cubeage-kit must use one public facade version without Git Keel dependencies")
                 report["version"] = versions[0]
-                if (root / HOOK).exists():
+                if confined_path(root, HOOK).is_file():
                     cmd = ["bash", HOOK, pins[0], sha]
                     proc = run(cmd, cwd=root, check=False)
                     log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
@@ -461,11 +522,11 @@ def cmd_layer_run(args):
                     stage = refresh_layer_locks(root, args.layer, log)
                 if stage is None:
                     stage = refresh_registry_locks(root, versions[0], log)
-                if stage is None and not (root / HOOK).exists() and (root / "scripts/vendor-private.sh").exists():
+                if stage is None and not confined_path(root, HOOK).is_file() and confined_path(root, "scripts/vendor-private.sh").is_file():
                     proc = run(["bash", "scripts/vendor-private.sh"], cwd=root, check=False)
                     log.append(f"$ bash scripts/vendor-private.sh\n{proc.stdout}{proc.stderr}")
                     stage = "hook" if proc.returncode else None
-            elif (root / HOOK).exists():
+            elif confined_path(root, HOOK).is_file():
                 cmd = ["bash", HOOK, pins[0], sha]
                 proc = run(cmd, cwd=root, check=False)
                 log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
@@ -486,7 +547,7 @@ def cmd_layer_run(args):
                 stage = refresh_layer_locks(root, args.layer, log)
                 if stage is None:
                     stage = refresh_locks(root, log)
-                if stage is None and (root / "scripts/vendor-private.sh").exists():
+                if stage is None and confined_path(root, "scripts/vendor-private.sh").is_file():
                     proc = run(["bash", "scripts/vendor-private.sh"], cwd=root, check=False)
                     log.append(f"$ bash scripts/vendor-private.sh\n{proc.stdout}{proc.stderr}")
                     stage = "hook" if proc.returncode else None
@@ -495,7 +556,7 @@ def cmd_layer_run(args):
             for f in tracked_files(root):
                 if Path(f).name == "ENGINE_REV":
                     (root / f).write_text(sha + "\n")
-            hook = next((h for h in ("tools/vendor_engine.sh", "scripts/vendor-private.sh") if (root / h).exists()), None)
+            hook = next((h for h in ("tools/vendor_engine.sh", "scripts/vendor-private.sh") if confined_path(root, h).is_file()), None)
             if hook:
                 proc = run(["bash", hook], cwd=root, check=False, env={**os.environ, "ENGINE_REPO": d})
                 log.append(f"$ bash {hook}\n{proc.stdout}{proc.stderr}")
@@ -511,12 +572,12 @@ def cmd_layer_run(args):
                     stage = "lock"
                     log.append(f"{f}: expected one Keel commit {report['keel_sha']} from one source, found {', '.join(sorted(sources))}")
     if stage is None and args.check_command:
-        proc = run(["bash", "-c", args.check_command], cwd=root / args.check_dir, check=False)
+        proc = run(["bash", "-c", args.check_command], cwd=check_dir, check=False)
         log.append(f"$ {args.check_command}\n{proc.stdout}{proc.stderr}")
         stage = "check" if proc.returncode else None
-    report["manual"] = workflow_mentions(root, old + keel_old)
-    run(["git", "checkout", "--", WORKFLOWS.rstrip("/")], cwd=root, check=False)
-    report["changed"] = sorted(e[3:] for e in run(["git", "status", "--porcelain", "-z"], cwd=root).stdout.split("\0") if len(e) > 3)
+    report["manual"] = workflow_mentions(repo, old + keel_old)
+    run(["git", "checkout", "--", ":(top,literal)" + (root / WORKFLOWS).relative_to(repo).as_posix()], cwd=repo, check=False)
+    report["changed"] = source_changes(repo, root)
     if any(f.startswith("target/") or "/target/" in f for f in report["changed"]):
         raise Refused("build output (target/) is not ignored by git in this repository; add it to .gitignore")
     report.update(status=("failed" if stage else "ok") if report["changed"] else "unchanged", stage=stage or "", log="\n".join(log))
@@ -621,7 +682,7 @@ def check_migrations(root, version, log):
             if proc.returncode or (cmd[-1] == "--version" and proc.stdout.strip() != "keel " + version):
                 return "migrate"
         for name in migration_sources(sources):
-            target = root / name
+            target = confined_path(root, name)
             if not target.exists() or target.read_bytes() != (sources / name).read_bytes():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(sources / name, target)
@@ -633,7 +694,7 @@ def refresh_registry_locks(root, version, log):
     for name in tracked_files(root):
         if Path(name).name != "Cargo.lock" or not active_path(name):
             continue
-        manifest = (Path(root) / name).with_name("Cargo.toml")
+        manifest = confined_path(root, Path(name).with_name("Cargo.toml"))
         if not manifest.exists():
             continue
         cmd = ["cargo", "metadata", "--manifest-path", str(manifest), "--format-version", "1"]
@@ -680,12 +741,13 @@ def ensure_pack_source_args(root):
 def cmd_run(args):
     if args.layer != "keel":
         return cmd_layer_run(args)
-    root = Path(args.root).resolve()
+    repo, root = source_scope(args)
+    check_dir = source_check_dir(root, args.check_dir)
     if args.tag in ("", "latest"):
         args.tag = newest_verified_tag(args.remote)
     sha = resolve_tag(args.tag, args.remote)
     branch = BRANCH_PREFIX + args.tag
-    report = {"tag": args.tag, "sha": sha, "branch": branch, "status": "unchanged", "stage": "", "changed": [], "old": [], "manual": [], "log": "", "owner": args.owner}
+    report = {"tag": args.tag, "sha": sha, "branch": branch, "status": "unchanged", "stage": "", "changed": [], "old": [], "manual": [], "log": "", "owner": args.owner, "source_root": root.relative_to(repo).as_posix()}
 
     def save():
         Path(args.report).write_text(json.dumps(report, indent=2))
@@ -693,10 +755,10 @@ def cmd_run(args):
     old = find_pins(root)
     versions = registry_versions(root)
     report["old"] = old
-    hook = (root / HOOK).exists()
+    hook = confined_path(root, HOOK).is_file()
     if not old and not versions and not hook and not has_tag_pins(root):
         raise Refused("no Keel pin found in any tracked Cargo.toml or deps/keel.rev; nothing to repin")
-    if not args.ignore_branch and remote_branch_exists(root, branch):
+    if not args.ignore_branch and remote_branch_exists(repo, branch):
         report["status"] = "branch-exists"
         print(f"::notice::{branch} already exists; leaving it as is. Close the pull request and delete the branch to rebuild it")
         save()
@@ -730,14 +792,13 @@ def cmd_run(args):
         ensure_pack_source_args(root)
         stage = refresh_registry_locks(root, version, log)
     if stage is None and args.check_command:
-        proc = run(["bash", "-c", args.check_command], cwd=Path(root, args.check_dir), check=False)
+        proc = run(["bash", "-c", args.check_command], cwd=check_dir, check=False)
         log.append(f"$ {args.check_command}\n{proc.stdout}{proc.stderr}")
         if proc.returncode != 0:
             stage = "check"
-    report["manual"] = workflow_mentions(root, old)
-    run(["git", "checkout", "--", WORKFLOWS.rstrip("/")], cwd=root, check=False)  # a hook may have edited them
-    changed = run(["git", "status", "--porcelain", "-z"], cwd=root).stdout.split("\0")
-    report["changed"] = sorted(e[3:] for e in changed if len(e) > 3)
+    report["manual"] = workflow_mentions(repo, old)
+    run(["git", "checkout", "--", ":(top,literal)" + (root / WORKFLOWS).relative_to(repo).as_posix()], cwd=repo, check=False)  # a hook may have edited them
+    report["changed"] = source_changes(repo, root)
     if any(f.startswith("target/") or "/target/" in f for f in report["changed"]):
         raise Refused("build output (target/) is not ignored by git in this repository; add it to .gitignore")
     report["status"] = "ok" if stage is None else "failed"
@@ -833,8 +894,11 @@ def resolve_label(gh, explicit):
 
 
 def cmd_pr(args):
-    root = Path(args.root).resolve()
+    root, source = source_scope(args)
     report = json.loads(Path(args.report).read_text())
+    if report.get("source_root", ".") != source.relative_to(root).as_posix():
+        raise Refused("pull request source-root does not match the repin report")
+    check_staged_scope(root, source)
     if report["status"] == "failed" and not report["changed"]:
         raise Refused("repin preflight failed before any source change: " + report.get("log", "")[-1000:])
     if report["status"] not in ("ok", "failed"):
@@ -857,7 +921,8 @@ def cmd_pr(args):
     auth = "AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{token}".encode()).decode()
     git = ["git", "-c", "user.name=keel-repin[bot]", "-c", "user.email=keel-repin@users.noreply.github.com"]
     run([*git, "checkout", "-B", branch], cwd=root)
-    run([*git, "add", "-A"], cwd=root)
+    run([*git, "add", "-A", "--", source_pathspec(root, source)], cwd=root)
+    check_staged_scope(root, source)
     run([*git, "commit", "-q", "-m", title], cwd=root)
     report["head_sha"] = run(["git", "rev-parse", "HEAD"], cwd=root).stdout.strip()
     run([*git, "-c", f"http.extraheader={auth}", "push", "origin", f"HEAD:refs/heads/{branch}"], cwd=root)
@@ -934,16 +999,16 @@ def write_outputs(pairs):
 def cmd_poll(args):
     if args.layer != "keel":
         return cmd_layer_poll(args)
-    root = Path(args.root).resolve()
+    repo, root = source_scope(args)
     tag = newest_verified_tag(args.remote) if args.tag in ("", "latest") else args.tag
     sha = resolve_tag(tag, args.remote)
     branch = BRANCH_PREFIX + tag
     out = {"tag": tag, "sha": sha, "needed": "false", "reason": ""}
     old = find_pins(root)
     versions = registry_versions(root)
-    if not old and not versions and not (root / HOOK).exists() and not has_tag_pins(root):
+    if not old and not versions and not confined_path(root, HOOK).is_file() and not has_tag_pins(root):
         raise Refused("no Keel pin found in any tracked Cargo.toml or deps/keel.rev; nothing to repin")
-    if pr_exists(branch) or remote_branch_exists(root, branch):
+    if pr_exists(branch) or remote_branch_exists(repo, branch):
         out["reason"] = "a pull request or branch for this tag exists"
     else:
         try:
@@ -1369,7 +1434,8 @@ def main(argv=None):
     r.add_argument("--tag", default="latest")
     r.add_argument("--layer", choices=("keel", "kit", "engine"), default="keel")
     r.add_argument("--owner", default="")
-    r.add_argument("--root", default=".")
+    r.add_argument("--root", default=".", help="repository root")
+    r.add_argument("--source-root", default=".", help="source directory relative to the repository root")
     r.add_argument("--remote", default=None)
     r.add_argument("--check-command", default="cargo check")
     r.add_argument("--check-dir", default=".")
@@ -1378,7 +1444,8 @@ def main(argv=None):
     q = sub.add_parser("poll")
     q.add_argument("--tag", default="latest")
     q.add_argument("--layer", choices=("keel", "kit", "engine"), default="keel")
-    q.add_argument("--root", default=".")
+    q.add_argument("--root", default=".", help="repository root")
+    q.add_argument("--source-root", default=".", help="source directory relative to the repository root")
     q.add_argument("--remote", default=None)
     d = sub.add_parser("dispatch")
     d.add_argument("--report", required=True)
@@ -1398,7 +1465,8 @@ def main(argv=None):
     t.add_argument("--now", type=float, default=None, help=argparse.SUPPRESS)
     t.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("pr")
-    p.add_argument("--root", default=".")
+    p.add_argument("--root", default=".", help="repository root")
+    p.add_argument("--source-root", default=".", help="must match the source-root in the repin report")
     p.add_argument("--report", required=True)
     p.add_argument("--base", default="main")
     p.add_argument("--label", default="")
