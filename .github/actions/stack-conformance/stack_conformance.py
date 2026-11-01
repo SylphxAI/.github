@@ -1141,6 +1141,11 @@ def cmd_check(args) -> int:
     outer_base = source_provenance.outer(source_base, source_roots) if source_base else None
     errors += staged_retirement.check(outer_head, outer_base, head_baseline, base_baseline,
         departures, decide, baseline=args.baseline, allow_seed=staged_retirement.RULE in introduced)
+    try:
+        found = staged_retirement.findings(head, head_baseline, departures, args.baseline,
+                                           previous_lines=base_baseline)
+    except ValueError:
+        pass  # Invalid records are already refused by the retirement check.
     errors += source_provenance.legacy_errors(head, source_base, source_roots, args.baseline,
                                              departures, parse_baseline, decide, staged_retirement)
     try:

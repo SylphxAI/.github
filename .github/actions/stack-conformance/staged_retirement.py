@@ -53,6 +53,15 @@ def subset(before, after):
     return all(before.get(path) == identity for path, identity in after.items())
 
 
+def findings(tree, lines, departures, baseline, previous_lines=()):
+    """An anchor deletion does not retire the independently bound subtree."""
+    found = set(departures(tree))
+    for settings in records(lines).keys() | records(previous_lines).keys():
+        if inputs(tree, settings, baseline):
+            found.add(CATEGORY + " " + settings)
+    return sorted(found)
+
+
 def plan(base, head, original, introduced, departures, parse_baseline, baseline):
     """Generate bindings only from independently observed old, exact inputs."""
     existing = parse_baseline(original) or set()
@@ -62,13 +71,14 @@ def plan(base, head, original, introduced, departures, parse_baseline, baseline)
     text = original or ""
     additions = set()
     for settings, (expected, line) in bound.items():
-        if digest(inputs(base, settings, baseline)) != expected or CATEGORY + " " + settings not in before:
+        prior, retained = inputs(base, settings, baseline), inputs(head, settings, baseline)
+        if digest(prior) != expected or not prior:
             raise ValueError("base retirement binding does not match source: " + settings)
-        if CATEGORY + " " + settings not in after:
+        if not subset(prior, retained):
+            raise ValueError("retired project inputs changed or expanded: " + settings)
+        if not retained:
             text = "".join(raw for raw in text.splitlines(keepends=True) if raw.strip() != line)
             continue
-        if not subset(inputs(base, settings, baseline), inputs(head, settings, baseline)):
-            raise ValueError("retired project inputs changed or expanded: " + settings)
         text = text.replace(line, binding(head, settings, baseline))
     if RULE in introduced:
         for departure in sorted(after):
@@ -94,22 +104,29 @@ def check(head, base, head_lines, base_lines, departures, decide, *, baseline, a
         before_bound, after_bound = records(old), records(current)
     except ValueError as error:
         return [str(error)]
-    found, previous = departures(head), set(departures(base))
+    found = findings(head, current, departures, baseline, previous_lines=old)
+    previous = set(departures(base))
     for settings, (expected, _) in before_bound.items():
-        if digest(inputs(base, settings, baseline)) != expected or CATEGORY + " " + settings not in previous:
+        prior, retained = inputs(base, settings, baseline), inputs(head, settings, baseline)
+        if digest(prior) != expected or not prior:
             errors.append("base retirement binding does not match source: " + settings)
+        if settings not in after_bound and retained:
+            errors.append("retained retired project inputs require their source binding: " + settings)
+        if not subset(prior, retained):
+            errors.append("retired project inputs changed or expanded: " + settings)
     for settings, (expected, line) in after_bound.items():
         plain = CATEGORY + " " + settings
         if plain in current:
             errors.append("retirement project has both bound and path-only records: " + settings)
         valid = True
-        if expected != digest(inputs(head, settings, baseline)) or plain not in found:
+        if expected != digest(inputs(head, settings, baseline)) or not inputs(head, settings, baseline):
             errors.append("retirement binding does not match source: " + settings)
             valid = False
         if settings not in before_bound and not allow_seed:
             errors.append("retirement binding requires introduced-rule adoption: " + settings)
             valid = False
-        if plain not in previous or not subset(inputs(base, settings, baseline), inputs(head, settings, baseline)):
+        if ((settings not in before_bound and plain not in previous)
+                or not subset(inputs(base, settings, baseline), inputs(head, settings, baseline))):
             errors.append("retired project inputs changed or expanded: " + settings)
             valid = False
         current.discard(line)

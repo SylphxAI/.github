@@ -109,6 +109,58 @@ class StagedRetirementTests(unittest.TestCase):
                 f.commit({sc.BASELINE: text})
                 f.check(adopted, 1)
 
+    def test_anchor_deletion_keeps_binding_and_visible_finding_until_all_inputs_are_gone(self):
+        for anchor in ("legacy/build.settings", "legacy/main.lua"):
+            with self.subTest(anchor=anchor):
+                f, adopted, _ = self.adopted()
+                f.git("rm", anchor)
+                result = f.plan(adopted, f.git("write-tree"))
+                self.assertIn("solar2d legacy/build.settings ", result["baseline_text"])
+                previous = f.commit({sc.BASELINE: result["baseline_text"]})
+                _, report = f.check(adopted, 0)
+                self.assertIn("solar2d legacy/build.settings", report["legacy_departures"])
+                f.check("", 0)
+                f.git("rm", "legacy/icon.bin")
+                result = f.plan(previous, f.git("write-tree"))
+                previous_base = previous
+                previous = f.commit({sc.BASELINE: result["baseline_text"]})
+                f.check(previous_base, 0)
+                f.git("rm", "-r", "legacy")
+                result = f.plan(previous, f.git("write-tree"))
+                self.assertNotIn("solar2d legacy/", result["baseline_text"])
+                f.commit({sc.BASELINE: result["baseline_text"]})
+                f.check(previous, 0)
+
+    def test_anchor_deletion_with_change_or_addition_cannot_be_adopted_or_manually_unbound(self):
+        for changed in ({}, {"legacy/scene.lua": "return 'changed'"},
+                        {"legacy/new-render.lua": "return {}"}):
+            for anchor in ("legacy/build.settings", "legacy/main.lua"):
+                with self.subTest(changed=changed, anchor=anchor):
+                    f, adopted, original = self.adopted()
+                    f.git("rm", anchor)
+                    f.write(changed)
+                    f.git("add", ".")
+                    if changed:
+                        with self.assertRaisesRegex(ValueError, "retired project inputs changed or expanded"):
+                            f.plan(adopted, f.git("write-tree"))
+                    text = original["baseline_text"]
+                    line = next(line for line in text.splitlines() if line.startswith("solar2d "))
+                    f.commit({sc.BASELINE: text.replace(line + "\n", "")})
+                    output, report = f.check(adopted, 1)
+                    self.assertIn("retained retired project inputs require their source binding", output)
+                    self.assertIn("solar2d legacy/build.settings", report["legacy_departures"])
+
+    def test_complete_retirement_cannot_replace_entire_subtree_without_binding(self):
+        f, adopted, original = self.adopted()
+        f.git("rm", "-r", "legacy")
+        f.write({"legacy/modern.rs": "fn main() {}"})
+        f.git("add", ".")
+        with self.assertRaisesRegex(ValueError, "retired project inputs changed or expanded"):
+            f.plan(adopted, f.git("write-tree"))
+        line = next(line for line in original["baseline_text"].splitlines() if line.startswith("solar2d "))
+        f.commit({sc.BASELINE: original["baseline_text"].replace(line + "\n", "")})
+        f.check(adopted, 1)
+
     def test_first_baseline_cannot_manually_seed_plain_solar(self):
         f = self.fixture()
         base = f.commit({WORKFLOW: workflow(OLD), **PROJECT})

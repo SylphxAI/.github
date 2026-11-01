@@ -63,10 +63,12 @@ work elsewhere in the monorepo.
 At first staging and on later changes, candidate inputs must be an
 identical-value subset of base inputs. New projects, new files, changed bytes,
 renames and mode changes fail, even if a caller recomputes the digest. Deletions
-may update a binding; full retirement removes the record, but keeps the adoption
+may update a binding; deleting every bound input removes the record, but keeps the adoption
 marker so it cannot reopen staging. `adoption.py adopt` also refreshes existing
 bindings after deletion-only changes. Findings remain in `legacy_departures` in
-the report until their detector is gone. This is not proof that a live product
+the report while any bound input remains, even after deleting `build.settings`
+or `main.lua`. Removing only a detector anchor cannot drop the binding or permit
+changes to retained source. This is not proof that a live product
 has been safely retired; its owner still verifies users and callers.
 
 Historical path-only Solar2D records retain their existing shrinking ratchet;
