@@ -741,6 +741,47 @@
         "model-pin",
         "model-selector"
       ]
+    },
+    "573bafb4dfd0c4473fa3eab06eb6b99760397c848c4489a9e44ca4e8d665261b": {
+      "sources": {
+        ".github/actions/stack-conformance/action.yml": "1d44d2ed36b9468f7366a6a4bda602470d67c9ae673c66a52b8656261588e7ba",
+        ".github/actions/stack-conformance/stack_conformance.py": "2ba6d0e34229a2ef561dbc521e4bd21be3c283a58004c01b08bf74f8df74c487",
+        ".github/actions/stack-conformance/architecture.py": "9c876eee5dc1428b397e4d8d32417a1a8bf5e33320198ee6f0db86e68deb40be",
+        ".github/actions/stack-conformance/model_pins.py": "ddfacc88cdb5c1d465ed19a3a1653dad44906e1be9eab931601af2c11dc56111",
+        ".github/actions/stack-conformance/tenant_reads.py": "9d7773fbae89ba37fb2510686aae0fb11b0b117105a40edc671b0d9a52c9e412",
+        ".github/actions/stack-conformance/no_force_push.py": "00e8a1f2de8b1eebc12ab7856d2dd37d7bdd6ea7c4f99953fca44f56b282cec9",
+        ".github/actions/stack-conformance/cache-economy-profiles.json": "4ba6b2037e88da964adc9cb85a71577ee82072d1cc220e7c0d2f5447184ccee7",
+        ".github/actions/stack-conformance/deal_randomness.py": "217ae9616e7d0db3600eaca497d21c3bf190f1cd2c4140256d83f422b7388c97",
+        ".github/actions/stack-conformance/project_portability.py": "db21349c065cb1dee56d9b4aa4ce2c60de916d446efd30025f7be9752605f4cf",
+        "policy/deal-randomness-scope.json": "0cd4a11053555576b7603564ef17dd9ebf8b6647af03811e581c9bba514b84ab",
+        "scripts/source_provenance.py": "ff7c7a05ace9c57cbe300995a4c38fefca37a601f7216ab507dd302f0706bdcb",
+        "policy/source-relocations.json": "f69f1e1d07ffa3a1de389c798f891630e41c1c2544670d267676caddad2389f3",
+        ".github/actions/stack-conformance/staged_retirement.py": "c1e89dbe23352c6edbeda7b30e7a9a66d07a66decefda8d18bdf57640dc28b20"
+      },
+      "rules": [
+        "architecture/C1/cache-economy",
+        "architecture/C1/deal-randomness",
+        "architecture/C1/privileged-branch",
+        "architecture/C1/project-portability",
+        "architecture/C2/provider-bypass",
+        "architecture/C2/tenant-read-functions",
+        "architecture/C3/bundled-method",
+        "architecture/C3/downstream-config",
+        "architecture/C3/downstream-import",
+        "architecture/C4/competing-default",
+        "architecture/C4/undeclared-setting",
+        "architecture/C5/cron-progress",
+        "architecture/C5/idle-floor",
+        "architecture/C5/polling-loop",
+        "architecture/C5/polling-timer",
+        "architecture/C6/retired-route",
+        "architecture/C6/unexplained-suppression",
+        "architecture/C7/failure-only-verdict",
+        "architecture/C7/merge-only-completion",
+        "force-push",
+        "model-pin",
+        "model-selector"
+      ]
     }
   },
   "version": 1
