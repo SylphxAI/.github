@@ -1,0 +1,15 @@
+name: Observe Unity file descriptors
+description: Opt-in Linux Mono pipe diagnostics without changing limits or exit status
+inputs:
+  enabled:
+    description: Enable observation for this job's Docker launches of UNITY_IMAGE
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - if: inputs.enabled == 'true'
+      shell: bash
+      env:
+        OBSERVER_ACTION_PATH: ${{ github.action_path }}
+      run: python3 "$OBSERVER_ACTION_PATH/prepare.py"
