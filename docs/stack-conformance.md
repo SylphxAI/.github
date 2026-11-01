@@ -750,3 +750,34 @@ Model pins, forced branch updates, agent-runtime ownership, work-engine ownershi
 knowledge/CRM ownership and Keel boundaries continue scanning the full checkout;
 source relocation grants no exemption from those checks. The capability profile
 hashes both the shared primitive and its policy, preserving release provenance.
+
+### Exact generated-dependency projections
+
+A historical source tree may include generated dependency copies that must not
+become a second maintained source. A reviewed `generated_omissions` record in the
+**shared checker release** may name an omitted subtree's immutable Git tree OID,
+upstream repository/revision, and the path and SHA-256 of its generator/file
+manifest. There is no caller-supplied exclusion or baseline waiver.
+
+On the initial import, the checker reconstructs Git tree hashes in memory by
+reinserting just those recorded OIDs into the maintained subtree. The result must
+equal the independently observed **full original Git tree**; every other byte,
+path, executable bit and symlink is exact. The manifest blob must also equal the
+reviewed SHA-256. An omitted path already present, overlapping paths, an invalid
+ancestor, or any mismatch fails closed. The checker does not download dependencies,
+write Git objects, or run a generator. Caller CI separately materializes and tests
+the pinned dependency using its ordinary read-only grants. Reports distinguish
+`exact-origin-projection` from `exact-origin-tree` and `existing-base`.
+
+This is the same visible inherited-source treatment as an exact whole-tree move:
+new SQL/debt after import remains a regression, immutable SQL remains immutable,
+and the full-repository hard guards still run. It is not permission to vend a
+second engine or skip the imported product's executing build/deploy callers.
+
+The initial FMJ projection records origin `2547c8dd53fa79512e92ced1bcf0729071ee992b`,
+full tree `75bbdbf7453e9b94b6c2bdd258360c7f64492e82`, and only generated subtree
+`server/vendor/tycoon-engine` (`85b8e009eaeeb85f159f827e033631cd2fae5b6a`).
+The GitHub commit/tree API read on 2026-11-01 agrees with the retained full-history
+objects. Its dependency manifest describes all 207 generated files from the
+original `0010` layout at the *same* engine revision
+`b73cd985b7dd06c39d57ea0e697878212f2b639d`; this change does not advance that engine.

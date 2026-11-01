@@ -7,6 +7,7 @@ No fetch, source execution, live operation or caller-controlled exemption occurs
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import re
@@ -28,6 +29,86 @@ def subtree(repo, revision, prefix):
     return oid if git(repo, 'cat-file', '-t', oid) == 'tree' else None
 
 
+
+def _valid_prefix(prefix: str) -> str:
+    path = pathlib.PurePosixPath(prefix)
+    if (not prefix or path.is_absolute() or '..' in path.parts or '.' in prefix.split('/')
+            or path.as_posix() != prefix or not re.fullmatch(r'[A-Za-z0-9._/-]+', prefix)):
+        raise ValueError('invalid source-relocation prefix')
+    return prefix
+
+
+def _generated_omissions(row: dict) -> list[dict]:
+    """Only the checker release, never a caller declaration, may omit a tree."""
+    omissions = row.get('generated_omissions', [])
+    if not isinstance(omissions, list):
+        raise ValueError('invalid generated source omissions')
+    paths = []
+    required = {'path', 'tree', 'dependency_repository', 'dependency_commit',
+                'dependency_manifest', 'dependency_manifest_sha256'}
+    for omitted in omissions:
+        if not isinstance(omitted, dict) or set(omitted) != required or any(
+                not isinstance(omitted[key], str) or not omitted[key] for key in required):
+            raise ValueError('incomplete generated source omission')
+        _valid_prefix(omitted['path'])
+        _valid_prefix(omitted['dependency_manifest'])
+        if not re.fullmatch(r'[0-9a-f]{40}', omitted['tree']) or not re.fullmatch(
+                r'[0-9a-f]{40}', omitted['dependency_commit']) or not re.fullmatch(
+                r'[0-9a-f]{64}', omitted['dependency_manifest_sha256']):
+            raise ValueError('invalid generated source omission digest')
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', omitted['dependency_repository']):
+            raise ValueError('invalid generated dependency repository identity')
+        paths.append(omitted['path'])
+    for index, path in enumerate(sorted(paths)):
+        if any(other == path or other.startswith(path + '/') for other in sorted(paths)[index + 1:]):
+            raise ValueError('generated source omissions overlap')
+    return omissions
+
+
+def _restored_origin_tree(repo: pathlib.Path, tree: str, omissions: list[dict]) -> str:
+    """Hash the full origin by reinserting only trusted omitted subtree OIDs.
+
+    Git tree serialization is reconstructed in memory: no network, object store
+    writes or working-tree changes. Names and executable/symlink/gitlink modes
+    remain byte-exact. An omission cannot replace an existing file or tree.
+    """
+    overlay = {}
+    for omitted in omissions:
+        node = overlay
+        parts = omitted['path'].split('/')
+        for part in parts[:-1]:
+            node = node.setdefault(part.encode(), {})
+        node[parts[-1].encode()] = omitted['tree']
+
+    def restore(current, additions):
+        entries = {}
+        if current:
+            result = subprocess.run(['git', '-C', str(repo), 'ls-tree', '-z', current],
+                                    check=True, capture_output=True)
+            for raw in result.stdout.split(b'\0'):
+                if not raw:
+                    continue
+                metadata, name = raw.split(b'\t', 1)
+                mode, _kind, oid = metadata.split(b' ')
+                entries[name] = (format(int(mode, 8), 'o').encode(), oid.decode('ascii'))
+        for name, addition in additions.items():
+            existing = entries.get(name)
+            if isinstance(addition, str):
+                if existing:
+                    raise ValueError('generated omission is present in maintained tree')
+                entries[name] = (b'40000', addition)
+            else:
+                if existing and existing[0] != b'40000':
+                    raise ValueError('generated omission ancestor is not a tree')
+                entries[name] = (b'40000', restore(existing[1] if existing else None, addition))
+        ordered = sorted(entries, key=lambda name: name + (b'/' if entries[name][0] == b'40000' else b''))
+        payload = b''.join(entries[name][0] + b' ' + name + b'\0' + bytes.fromhex(entries[name][1])
+                           for name in ordered)
+        return hashlib.sha1(b'tree ' + str(len(payload)).encode() + b'\0' + payload).hexdigest()
+
+    return restore(tree, overlay)
+
+
 def roots(repo, base, head, repository, policy=POLICY):
     data = json.loads(pathlib.Path(policy).read_text())
     if data.get('version') != 1 or not isinstance(data.get('relocations'), list):
@@ -37,11 +118,8 @@ def roots(repo, base, head, repository, policy=POLICY):
         if not isinstance(row, dict) or not all(isinstance(row.get(k), str) for k in
                 ('repository', 'prefix', 'source_repository', 'source_commit', 'source_tree', 'evidence')):
             raise ValueError('incomplete shared source-relocation record')
-        prefix = row['prefix']
-        path = pathlib.PurePosixPath(prefix)
-        if (not prefix or path.is_absolute() or '..' in path.parts or '.' in prefix.split('/')
-                or path.as_posix() != prefix or not re.fullmatch(r'[A-Za-z0-9._/-]+', prefix)):
-            raise ValueError('invalid source-relocation prefix')
+        prefix = _valid_prefix(row['prefix'])
+        omissions = _generated_omissions(row)
         if not all(re.fullmatch(r'[0-9a-f]{40}', row[k]) for k in ('source_commit', 'source_tree')):
             raise ValueError('source-relocation provenance requires immutable Git objects')
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', row['source_repository']):
@@ -57,10 +135,18 @@ def roots(repo, base, head, repository, policy=POLICY):
         prior = subtree(repo, base, prefix) if base else None
         if current is None:
             continue  # Deletion is still visible to immutable SQL and other guards.
-        if prior is None and current != row['source_tree']:
-            raise ValueError('initial source relocation differs from recorded origin tree: ' + prefix)
-        selected.append({**row, 'head_tree': current, 'base_tree': prior,
-                         'proof': 'existing-base' if prior else 'exact-origin-tree'})
+        proof = 'existing-base'
+        if prior is None:
+            restored = _restored_origin_tree(repo, current, omissions) if omissions else current
+            if restored != row['source_tree']:
+                raise ValueError('initial source relocation differs from recorded origin tree: ' + prefix)
+            for omitted in omissions:
+                payload = subprocess.run(['git', '-C', str(repo), 'show',
+                    head + ':' + omitted['dependency_manifest']], check=True, capture_output=True).stdout
+                if hashlib.sha256(payload).hexdigest() != omitted['dependency_manifest_sha256']:
+                    raise ValueError(prefix + ': generated dependency manifest differs from trusted proof')
+            proof = 'exact-origin-projection' if omissions else 'exact-origin-tree'
+        selected.append({**row, 'head_tree': current, 'base_tree': prior, 'proof': proof})
     return selected
 
 
