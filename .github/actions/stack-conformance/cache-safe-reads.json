@@ -86,12 +86,12 @@
       "reason": "This cached template only chooses daily normalization while serializing shop counters. Purchase independently performs the same daily normalization. Lifetime maxNum is separate from buyNum, so this daily reset does not erase the lifetime cap. This getter is mutating, not pure display, but no separate grant rule is supplied by this occurrence.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.db.template.utils/src/com/game/server/database/model/player/DBPlayer.java ec3987abf87a25c36e952a44fbd872e341bc3914cc100f5a7064a9d29b303984 1",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.db.template.utils/src/com/game/server/database/model/player/DBPlayer.java ec3987abf87a25c36e952a44fbd872e341bc3914cc100f5a7064a9d29b303984 1",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -101,12 +101,12 @@
       "reason": "The immutable hash binds itemTemplate.getId(, not the surrounding map lookup or DAO read. It forwards the identity of an already selected item. No price, coupon lifetime, inventory quantity, or eligibility flag is read by this occurrence. The DAO reads inventory directly; coupon expiry policy is separately read at line 166 and is not pronounced safe.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java 448f104496de68a03f9f21901afe04b8ea154789ea7fb0fd807de762c29c6d9e 1",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java 448f104496de68a03f9f21901afe04b8ea154789ea7fb0fd807de762c29c6d9e 1",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -116,12 +116,12 @@
       "reason": "The immutable hash binds itemTemplate.getId(, not the surrounding map lookup or DAO read. It forwards the identity of an already selected item. No price, coupon lifetime, inventory quantity, or eligibility flag is read by this occurrence. The DAO reads inventory directly; coupon expiry policy is separately read at line 166 and is not pronounced safe.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java 448f104496de68a03f9f21901afe04b8ea154789ea7fb0fd807de762c29c6d9e 2",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/message/allbalance/MessageHandler.java 448f104496de68a03f9f21901afe04b8ea154789ea7fb0fd807de762c29c6d9e 2",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -131,12 +131,12 @@
       "reason": "This NoticeTemplate read supplies only the post-purchase announcement. The clothing grant and response occur before this read; it does not decide price, cap, eligibility or reward.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/PlayerMessageHandler.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/message/clientbalance/PlayerMessageHandler.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -146,12 +146,12 @@
       "reason": "The common template is read for notice ID arrays and the NoticeTemplate read supplies announcement content. Their values do not set cap rules or reward amounts. Later cap accounting uses the independent goodsTemplate argument. Exceptions from malformed notice data are not a stale-rule wrong-grant claim.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 2a56b08b9bb04c66a68a8b2d441fe87ac9f805fa20cd22e1634cc4af74570b0c 1",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 2a56b08b9bb04c66a68a8b2d441fe87ac9f805fa20cd22e1634cc4af74570b0c 1",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -161,12 +161,12 @@
       "reason": "The common template is read for notice ID arrays and the NoticeTemplate read supplies announcement content. Their values do not set cap rules or reward amounts. Later cap accounting uses the independent goodsTemplate argument. Exceptions from malformed notice data are not a stale-rule wrong-grant claim.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 7282dd48ec68d38fec8a9fd56df6747d5796248f45bd48caf9f6a3a908825a08 1",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -176,12 +176,12 @@
       "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 1",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 1",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -191,12 +191,12 @@
       "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 2",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 2",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -206,12 +206,12 @@
       "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 3",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 3",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -221,12 +221,12 @@
       "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 4",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 4",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }
@@ -236,12 +236,12 @@
       "reason": "The exact span is template.getId(. It forwards the identity of the already selected gift and reads no price, cap, payload or reward coefficient. The neighboring payload getters are separately REAL-STALE. Downstream accounting/policy reads are not declared safe by this classification.",
       "bindings": [
         {
-          "repository": "Cubeage-limited/hk-mahjong-tycoon",
+          "repository": "Cubeage/hk-mahjong-tycoon",
           "record": "architecture C1 cache-economy backend/cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 5",
           "reviewed_commit": "1011637424c211e1518d11b3137fe4d9dafb3bda"
         },
         {
-          "repository": "Cubeage-limited/mahjong-xgmj-java",
+          "repository": "Cubeage/mahjong-xgmj-java",
           "record": "architecture C1 cache-economy cft.game.hall.server.v1.0/src/com/game/hall/server/module/shop/ShopModule.java 3a79dbb6a02b30d0146c422386702f4da4218ac04c85ec36a7a3bef6682b237c 5",
           "reviewed_commit": "b35db66ff28d99f385bacf1fa86df4adb68dda01"
         }

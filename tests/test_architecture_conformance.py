@@ -539,7 +539,7 @@ class StandardFitRegressionTests(unittest.TestCase):
         snapshot = json.loads((ROOT / 'policy/architecture-repositories.json').read_text())
         generated = build(snapshot)
         self.assertEqual(len(generated['repositories']), sum(s['repository_count'] for s in generated['sources']))
-        self.assertEqual({s['organization'] for s in generated['sources']}, {'SylphxAI', 'Cubeage', 'Cubeage-limited', 'EpiowAI', 'OzyrixLtd'})
+        self.assertEqual({s['organization'] for s in generated['sources']}, {'SylphxAI', 'Cubeage', 'EpiowAI', 'OzyrixLtd'})
         snapshot['sources'].append({'organization': 'TseFamily'})
         snapshot['repositories'].append({'full_name': 'TseFamily/personal', 'id': -1, 'archived': False})
         snapshot['products'].append({'repository': 'TseFamily/personal', 'repository_id': -1, 'product': 'Personal'})

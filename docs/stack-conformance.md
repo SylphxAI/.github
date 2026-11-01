@@ -727,7 +727,7 @@ required workflow together. A merged action or template is not portfolio
 rollout: each included repository still needs a seeded red run and a clean
 green run at its actual required verdict. Delivered customer repositories stay
 excluded. Refresh the repository population across all declared organizations,
-including Cubeage-limited and the declared product organizations, before rollout.
+including the declared product organizations, before rollout.
 
 The former standalone proposal in PR #283 is consolidated here: its progress
 polling rules and paired negatives are part of stack-conformance. This delivery
@@ -739,8 +739,8 @@ C3 derives product identities from the dated architecture-map product rows,
 resolved by numeric repository ID in `policy/architecture-repositories.json`;
 the checker contains no hand-maintained product list. Engine, service and tool
 repositories do not become downstream products merely because of their org. The dated paginated census
-covers SylphxAI, Cubeage, Cubeage-limited, EpiowAI and OzyrixLtd
-(653 repository IDs, 214 unarchived at the 2026-10-29 read). TseFamily is a
+covers SylphxAI, Cubeage, EpiowAI and OzyrixLtd
+(653 repository IDs, 122 unarchived at the 2026-11-01 read). TseFamily is a
 personal organization and is excluded from company censuses, baselines and rollouts. Numeric IDs retain identity across canonical
 names. Archived rows remain visible as history and do not seed import rules.
 The policy declares which layers are shared, including Cubeage's platform,

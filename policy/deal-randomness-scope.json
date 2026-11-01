@@ -98,7 +98,7 @@
       },
       "path": "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/fun/skill.rs",
       "reason": "The selected server registers MahjongTw16/HK13; this copied FunRoom API is not selected. The client uses its separately pinned engine.",
-      "repository": "Cubeage-limited/fun-mahjong-keel",
+      "repository": "Cubeage/fun-mahjong-keel-legacy",
       "source_sha256": "d51c2c07a0c5203c55d21fcd6ab953391900620d6f5c008e7600a7968688de04"
     },
     {
@@ -145,7 +145,7 @@
       },
       "path": "server/vendor/tycoon-engine/crates/tycoon-rules-mahjong-tw16/src/fun/wall.rs",
       "reason": "The selected server registers MahjongTw16/HK13; this copied FunRoom API is not selected. The client uses its separately pinned engine.",
-      "repository": "Cubeage-limited/fun-mahjong-keel",
+      "repository": "Cubeage/fun-mahjong-keel-legacy",
       "source_sha256": "cabc9300d7274b27e05b885301a1b4992f181edd6e4117414496a96841dd0f0f"
     },
     {
@@ -165,7 +165,7 @@
       "evidence": {},
       "path": "mappings/src/mahjong-verifier.js",
       "reason": "This analytics/verifier replays recorded seeds to check historical results; it does not author a live deal.",
-      "repository": "Cubeage/mahjong-verifier-sx",
+      "repository": "Cubeage/mahjong-verifier",
       "source_sha256": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
     },
     {
@@ -174,7 +174,7 @@
       "evidence": {},
       "path": "mappings/src/verify/mahjong-verifier.js",
       "reason": "This analytics/verifier replays recorded seeds to check historical results; it does not author a live deal.",
-      "repository": "Cubeage-limited/hkmj-analytics",
+      "repository": "Cubeage/hkmj-analytics",
       "source_sha256": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
     },
     {
@@ -185,7 +185,7 @@
       "evidence": {},
       "path": "mappings/src/mahjong-verifier.js",
       "reason": "This analytics/verifier replays recorded seeds to check historical results; it does not author a live deal.",
-      "repository": "Cubeage-limited/mahjong-verifier",
+      "repository": "Cubeage/mahjong-verifier-legacy",
       "source_sha256": "e5a5d04dacf3fd1579c36b6dd1770ef0670f84cb147437cdc4edddcbb40de577"
     },
     {
@@ -271,7 +271,7 @@
       },
       "path": "backend/cft.game.code/cft.game.robot/src/main/java/com/game/robot/strategy/pressure/gStrategy/moduleImpl/InstanceModule.java",
       "reason": "A robot pressure-test client chooses protocol requests and known chapter indexes; the server defines reward grants and deals.",
-      "repository": "Cubeage-limited/mahjong-tycoon-tw",
+      "repository": "Cubeage/mahjong-tycoon-tw-legacy",
       "source_sha256": "e166b487467fd64f3daa55ec4f6e773768c686232c5946e55c804db7e59b2242"
     },
     {
