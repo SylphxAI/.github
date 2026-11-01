@@ -164,11 +164,15 @@ revision history. Attempts, backoff, total duration and child lifetime are
 bounded. A valid index with a pending revision is refused and preserved.
 The input declares adoption; runtime regressions in the caller prove it.
 
-Each newly supported file contains one declaration and exactly its generated
-SQL statement:
+Each newly supported file starts with `-- atlas:txmode none` followed by a
+blank line. Atlas v1.2.0 recognizes global file directives only when detached
+from statement comments by that separator; without it the CREATE runs in a
+transaction and fails with `25001`. The guard refuses that malformed header.
+The remaining content contains one declaration and exactly its generated SQL:
 
 ```sql
 -- atlas:txmode none
+
 -- migration:concurrent-index-v1 {"schema":"public","table":"events","index":"events_owner_idx","columns":["owner_id"],"where_null":"deleted_at","lock_timeout_ms":3000,"statement_timeout_ms":240000}
 CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" USING btree ("owner_id") WHERE "deleted_at" IS NULL;
 ```
