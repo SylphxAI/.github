@@ -1,0 +1,64 @@
+name: Tests
+
+# This repository's own test suite, so the shared workflows and actions it
+# publishes are held to the tests that describe them - including the contract
+# tests for the red-main handler in tests/test_red_main_contract.py.
+#
+# `pull_request` runs the suite on a change, `merge_group` runs it on the merge
+# queue's own commit (a required status must be reported there, or the queue
+# waits for a check that never comes), and `push` to `main` checks the tip that
+# carries the change.
+#
+# Every job runs on our own runners; a GitHub-hosted label is never used
+# (owner#750).
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: pytest
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install --quiet --disable-pip-version-check pyyaml pytest
+
+      - name: Unit tests
+        run: python -m pytest tests/ -q
+
+  # The aggregate the merge queue requires: one status that stands for the
+  # test jobs, so the queue names one check instead of each of them.
+  tests-ok:
+    name: tests-ok
+    needs:
+      - tests
+    if: always()
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result != "failure" and .result != "cancelled")' <<<"$NEEDS"
