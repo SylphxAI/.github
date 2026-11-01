@@ -12,6 +12,7 @@ from collections import Counter
 from datetime import datetime
 from difflib import SequenceMatcher
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -19,6 +20,12 @@ import re
 import subprocess
 import sys
 from typing import NamedTuple
+
+
+_source_spec = importlib.util.spec_from_file_location(
+    "source_provenance", Path(__file__).resolve().parents[3] / "scripts/source_provenance.py")
+source_provenance = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(source_provenance)
 
 
 class Token(NamedTuple):
@@ -1605,11 +1612,20 @@ def recorded_unapplied_withdrawal(root: Path, new_tree: dict[str, tuple[str, str
 
 
 def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
-                schemas: list[str] | None = None, concurrent_index_runtime: str = "") -> tuple[list[str], int]:
+                schemas: list[str] | None = None, concurrent_index_runtime: str = "", *,
+                repository: str = "", provenance_policy=source_provenance.POLICY) -> tuple[list[str], int]:
     # PRs can be behind main. Only their changes since the common ancestor
     # count; merge groups and pushes already have an ancestral base.
     ancestor = git(root, "merge-base", base, head).strip()
     old_tree, new_tree = tree_files(root, ancestor), tree_files(root, head)
+    relocated = source_provenance.roots(root, ancestor, head, repository, provenance_policy)
+    # A registered exact-origin tree is already historical source, not new SQL.
+    # Its original immutable blobs become the comparison baseline, without
+    # changing migration files or applying anything to a database.
+    for record in relocated:
+        if record["proof"] == "exact-origin-tree":
+            old_tree.update({p: blob for p, blob in new_tree.items()
+                             if p.startswith(record["prefix"] + "/")})
     def migrations(tree):
         return {p: blob for p, blob in tree.items() if p.lower().endswith(".sql") and any(d == "." or p.startswith(d + "/") for d in dirs)}
     old, new = migrations(old_tree), migrations(new_tree)
@@ -1687,7 +1703,8 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
             raise ValueError("at least one migration directory or schema file is required")
         base, head = event_range({**env, "MIGRATION_BASE": args.base, "MIGRATION_HEAD": args.head})
         root = Path(env.get("GITHUB_WORKSPACE", "."))
-        errors, count = check_range(root, base, head, dirs, args.dialect, schemas, args.concurrent_index_runtime)
+        errors, count = check_range(root, base, head, dirs, args.dialect, schemas, args.concurrent_index_runtime,
+                                    repository=env.get("GITHUB_REPOSITORY", ""))
         if errors:
             print("\n".join(errors))
             print("::error::Migration safety check failed. Merged migrations are immutable. Ship an expand step before contracting; add `-- contract: <reference>` naming that released step in the new migration or changed schema snapshot.")

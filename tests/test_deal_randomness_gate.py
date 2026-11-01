@@ -70,6 +70,8 @@ class DealRandomnessGateTests(unittest.TestCase):
         files = {sc.adoption.PREFIX + p.name: p.read_text() for p in action.glob("*.py")}
         files[sc.adoption.PREFIX + "action.yml"] = (action / "action.yml").read_text()
         files["policy/deal-randomness-scope.json"] = (action.parents[2] / "policy/deal-randomness-scope.json").read_text()
+        for dependency in ("scripts/source_provenance.py", "policy/source-relocations.json"):
+            files[dependency] = (ROOT / dependency).read_text()
         profile = sc.adoption.source_profile(sc.DictTree(files))
         self.assertIn(RULE, profile["rules"])
         self.assertIn(sc.adoption.PREFIX + "deal_randomness.py", profile["sources"])

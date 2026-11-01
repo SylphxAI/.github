@@ -719,3 +719,65 @@ path permits its own capability's adapter; placing a Stripe call in the Auth
 service does not turn it into a Money adapter. Provider literals in comments,
 documentation and fixtures pass. These are regression candidates for migration,
 not authorization to remove live-user continuity or the existing payment path.
+
+
+## Source relocation provenance
+
+A complete historical product checkout can move under a monorepo prefix without
+becoming new application code or a newly applied database migration. The pinned
+shared checker owns `policy/source-relocations.json`; a caller cannot declare its
+own inherited root. Each reviewed record names the destination repository and
+prefix, original repository, full commit and Git tree, and exact origin URL.
+Review the origin commit/tree through primary GitHub evidence before adding a
+record. This policy is not an archive approval or a declaration that the source
+is safe, supported, deployable, ad-free, or complete across every historical ref.
+
+On first introduction, the entire prefix must equal the registered origin tree,
+including file modes. A content or mode change fails closed. The stack checker
+then evaluates architecture decisions, environment declarations and the original
+shrink-only departure baseline relative to that source root. Findings stay in the
+combined report at their actual monorepo paths with provenance. Existing findings
+remain inherited; new findings, removed decisions, baseline growth, and removed
+ratchet markers still fail normally. Once landed, subsequent changes compare with
+the normal base revision, not a perpetually frozen origin. No nested environment
+settings or decisions leak into the maintained root or another imported root.
+
+The migration guard uses that same verified first-import tree as the immutable
+comparison baseline: byte-identical historical SQL is not a new migration.
+Subsequent SQL edits/deletions remain forbidden, and new destructive migrations
+still require the ordinary expand/contract proof. No SQL is changed or executed.
+Model pins, forced branch updates, agent-runtime ownership, work-engine ownership,
+knowledge/CRM ownership and Keel boundaries continue scanning the full checkout;
+source relocation grants no exemption from those checks. The capability profile
+hashes both the shared primitive and its policy, preserving release provenance.
+
+### Exact generated-dependency projections
+
+A historical source tree may include generated dependency copies that must not
+become a second maintained source. A reviewed `generated_omissions` record in the
+**shared checker release** may name an omitted subtree's immutable Git tree OID,
+upstream repository/revision, and the path and SHA-256 of its generator/file
+manifest. There is no caller-supplied exclusion or baseline waiver.
+
+On the initial import, the checker reconstructs Git tree hashes in memory by
+reinserting just those recorded OIDs into the maintained subtree. The result must
+equal the independently observed **full original Git tree**; every other byte,
+path, executable bit and symlink is exact. The manifest blob must also equal the
+reviewed SHA-256. An omitted path already present, overlapping paths, an invalid
+ancestor, or any mismatch fails closed. The checker does not download dependencies,
+write Git objects, or run a generator. Caller CI separately materializes and tests
+the pinned dependency using its ordinary read-only grants. Reports distinguish
+`exact-origin-projection` from `exact-origin-tree` and `existing-base`.
+
+This is the same visible inherited-source treatment as an exact whole-tree move:
+new SQL/debt after import remains a regression, immutable SQL remains immutable,
+and the full-repository hard guards still run. It is not permission to vend a
+second engine or skip the imported product's executing build/deploy callers.
+
+The initial FMJ projection records origin `2547c8dd53fa79512e92ced1bcf0729071ee992b`,
+full tree `75bbdbf7453e9b94b6c2bdd258360c7f64492e82`, and only generated subtree
+`server/vendor/tycoon-engine` (`85b8e009eaeeb85f159f827e033631cd2fae5b6a`).
+The GitHub commit/tree API read on 2026-11-01 agrees with the retained full-history
+objects. Its dependency manifest describes all 207 generated files from the
+original `0010` layout at the *same* engine revision
+`b73cd985b7dd06c39d57ea0e697878212f2b639d`; this change does not advance that engine.
