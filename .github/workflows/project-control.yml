@@ -112,6 +112,8 @@ jobs:
           CI_TEST_REQUIRE_RUNNERS: '1'
           CARGO_TARGET_DIR: ${{ runner.temp }}/consumer-target
         run: python -m unittest discover -s tests
+      - name: Public Artifact image publishing contract
+        run: python -m pytest -q tests/test_artifact_image_publish.py
       - name: Prepare Keel tools cache consumer
         run: |
           python3 - <<'PYTHON'

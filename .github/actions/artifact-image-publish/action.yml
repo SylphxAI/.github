@@ -1,0 +1,88 @@
+name: Publish managed Artifact image
+description: Build runtime and evidence OCI layouts, register managed Artifacts, and return the caller verification receipt.
+
+inputs:
+  project:
+    description: Canonical project resource name, orgs/{org-id}/projects/{project-id}.
+    required: true
+  ci-name:
+    description: Public Access CI declaration admitting this source workflow and project.
+    required: true
+  source-sha:
+    description: Full source commit already checked out by the caller; defaults to github.sha.
+    required: false
+    default: ''
+  platforms:
+    description: Single native Linux platform; foreign architectures are refused.
+    required: false
+    default: linux/amd64
+  build-command:
+    description: Caller shell command producing an OCI layout in OCI_DIR.
+    required: true
+  evidence-command:
+    description: Caller shell command producing BUILD_EVIDENCE_DIR and BUILD_EVIDENCE_OCI_DIR.
+    required: true
+  verify-command:
+    description: Caller promotion verifier; writes receipt files into LANE_ROOT/verify after credential cleanup.
+    required: true
+
+outputs:
+  image:
+    description: Server-selected managed image repository shared by runtime and evidence.
+    value: ${{ steps.publish.outputs.image }}
+  image_tag:
+    description: Server-issued runtime upload tag.
+    value: ${{ steps.publish.outputs.image_tag }}
+  digest:
+    description: Runtime manifest digest verified against the local layout and registry.
+    value: ${{ steps.publish.outputs.digest }}
+  image_reference:
+    description: Immutable managed runtime reference, repository@sha256:….
+    value: ${{ steps.publish.outputs.image_reference }}
+  artifact:
+    description: Registered runtime Artifact resource name.
+    value: ${{ steps.publish.outputs.artifact }}
+  evidence_tag:
+    description: Server-issued evidence upload tag.
+    value: ${{ steps.publish.outputs.evidence_tag }}
+  evidence_digest:
+    description: Evidence manifest digest verified against the local layout and registry.
+    value: ${{ steps.publish.outputs.evidence_digest }}
+  evidence_reference:
+    description: Immutable managed evidence reference.
+    value: ${{ steps.publish.outputs.evidence_reference }}
+  evidence_artifact:
+    description: Registered evidence Artifact resource name; its subject is the runtime Artifact.
+    value: ${{ steps.publish.outputs.evidence_artifact }}
+  verify_receipt:
+    description: Caller receipt as a base64 gzip tar, capped at 524288 encoded bytes.
+    value: ${{ steps.publish.outputs.verify_receipt }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build, publish and verify managed Artifacts
+      id: publish
+      shell: bash
+      env:
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_CI_NAME: ${{ inputs.ci-name }}
+        INPUT_SOURCE_SHA: ${{ inputs.source-sha }}
+        INPUT_PLATFORMS: ${{ inputs.platforms }}
+        INPUT_BUILD_COMMAND: ${{ inputs.build-command }}
+        INPUT_EVIDENCE_COMMAND: ${{ inputs.evidence-command }}
+        INPUT_VERIFY_COMMAND: ${{ inputs.verify-command }}
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+        GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+        ARTIFACT_ACTION_PATH: ${{ github.action_path }}
+        PYTHONDONTWRITEBYTECODE: '1'
+      run: python3 "$ARTIFACT_ACTION_PATH/publish.py"
+    - name: Remove publisher credentials on every terminal path
+      if: ${{ always() && steps.publish.outputs._root != '' }}
+      shell: bash
+      env:
+        ARTIFACT_ACTION_PATH: ${{ github.action_path }}
+        ARTIFACT_TEMP_ROOT: ${{ steps.publish.outputs._root }}
+        PYTHONDONTWRITEBYTECODE: '1'
+      run: python3 "$ARTIFACT_ACTION_PATH/publish.py" --cleanup "$ARTIFACT_TEMP_ROOT"
