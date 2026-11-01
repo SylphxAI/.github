@@ -8,9 +8,12 @@ description: >
   a full push of the approved workflow on the tracked branch). Schedule: everything.
   Outputs `base`, `run` (JSON lane -> bool; use
   `fromJSON(needs.<job>.outputs.run).<lane>`) and `changed`.
-  Proof history must have a valid, stable total_count and complete pages
-  within five pages of 100 rows. Missing, inconsistent or larger history
-  is unavailable, never an older proof or a confirmed absent predecessor.
+  The base is read one commit at a time, newest first, so its cost follows
+  the range and never the length of the history. Run history itself is read
+  unfiltered, because GitHub caps a filtered run list at 1,000 results, and
+  must have a valid, stable total_count and complete pages within 50 pages of
+  100 rows. Missing, inconsistent or larger history is unavailable, never an
+  older proof or a confirmed absent predecessor.
   Previous failing lanes also require complete jobs with valid names,
   run membership, completed statuses and recognized conclusions.
   The job needs `actions: read` and `checks: read`, and a checkout of HEAD

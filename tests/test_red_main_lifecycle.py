@@ -166,8 +166,10 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(len(self.api.issues), 1)
         self.apply(self.event(20, 'success', branch='master'))
         self.assertEqual(self.api.issues[0]['state'], 'closed')
+        # The list is unfiltered, so the 1,000-result cap cannot truncate it; the
+        # trunk is applied to its rows.
         listing = [path for path in self.api.reads if '/actions/workflows/' in path]
-        self.assertTrue(listing and all('branch=master&' in path for path in listing), listing)
+        self.assertTrue(listing and all('branch=' not in path for path in listing), listing)
 
     def test_a_run_on_main_is_not_the_trunk_of_a_master_repository(self):
         self.trunk('master')
