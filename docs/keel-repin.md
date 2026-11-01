@@ -21,7 +21,9 @@ tag) and calls the `keel-repin` action in three modes:
 2. **repin** reads the same publication mapping before changing source. It installs
    `cargo install sylphx-keel-cli --version =VERSION --locked` into an isolated root,
    checks that executable's version, then runs `keel migrate --registry VERSION` and
-   `keel migrate --check --registry VERSION` from the repository root. There is no
+   `keel migrate --check --registry VERSION` in a temporary tree of active Rust sources,
+   Cargo manifests and `keel.toml` files. Successful source changes and generated Rust
+   files are copied back; evidence and receipt paths are never supplied to the migrator. There is no
    version calculation from a source checkout, CLI from PATH, or private engine source checkout.
    The published migrator owns manifest and Rust API migration, including the single
    facade contract and target/feature activation; the action does not synthesize imports.
@@ -177,9 +179,15 @@ a repository may turn it off again if it does not use the bot.
   or workspace dependency. The matching public migrator upgrades it.
 - Legacy Git Keel revisions/tags, `deps/keel.rev`, and `KEEL_PIN`. Revision files record
   the source commit after migration; they are not a second implementation dependency.
-- Tracked references to the old full commit and its 12, 8 and 7 character prefixes.
-  `vendor/`, `target/`, `Cargo.lock`, `CHANGELOG.md` and workflow files are skipped by
-  the provenance rewrite. Cargo resolves lockfiles separately.
+- `deps/keel.version` records the same published version used by the facade and CLI.
+- SHA and version text rewrites select only dependency rows in Cargo manifests and
+  declared provenance files (`deps/keel.rev`, `deps/keel.version`, `KEEL_PIN`, or the
+  corresponding kit/engine revision files). Cargo resolves lockfiles separately.
+  Old full or abbreviated SHAs in other source, documentation or receipts stay unchanged.
+- Evidence and receipt path components, including dated receipts and `docs/parity`,
+  are excluded from pin discovery, rewriting, migration and lock refresh. Build output
+  and vendored sources are excluded too. Docker pack-stage ARG insertion remains a
+  separate adoption step and also excludes historical evidence.
 
 The token never edits workflow files and lists any that still name an old revision.
 A `tools/repin_keel.sh <tag>` hook may prepare title assets; it does not replace the

@@ -58,6 +58,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -81,7 +82,7 @@ DEFAULT_REMOTE = "https://github.com/SylphxAI/keel"
 HOOK = "tools/repin_keel.sh"
 BRANCH_PREFIX = "chore/keel-repin-"
 SKIP_DIRS = ("vendor/", "target/", "node_modules/")
-SKIP_NAMES = ("Cargo.lock", "CHANGELOG.md")
+EVIDENCE_PART = re.compile(r"(^|[-_.])(evidence|receipts?)([-_.]|$)", re.IGNORECASE)
 WORKFLOWS = ".github/workflows/"
 MAX_TEXT_BYTES = 2_000_000
 LOG_TAIL_LINES = 40
@@ -144,14 +145,27 @@ def resolve_tag(tag, remote):
     return sha
 
 
+def historical_path(name):
+    """Evidence is immutable input, including source-shaped snapshots."""
+    parts = Path(name).parts[:-1]
+    return any(EVIDENCE_PART.search(part) for part in parts) or any(
+        parts[index:index + 2] == ("docs", "parity") for index in range(len(parts) - 1))
+
+
+def active_path(name):
+    return not historical_path(name) and not set(Path(name).parts).intersection(
+        {"vendor", "target", "node_modules", "dist", "build", ".git"})
+
+
 def tracked_files(root):
     out = run(["git", "ls-files", "-z"], cwd=root).stdout
-    return [p for p in out.split("\0") if p]
+    return [p for p in out.split("\0") if p and not historical_path(p)]
 
 
 def pin_files(files):
-    cargo = [f for f in files if f.endswith("Cargo.toml") and not f.startswith(SKIP_DIRS) and "/vendor/" not in f]
-    revs = [f for f in files if (f == "deps/keel.rev" or f.endswith("/deps/keel.rev") or Path(f).name == "KEEL_PIN") and "/vendor/" not in f]
+    cargo = [f for f in files if Path(f).name == "Cargo.toml" and active_path(f)]
+    revs = [f for f in files if active_path(f) and
+            (Path(f).parts[-2:] == ("deps", "keel.rev") or Path(f).name == "KEEL_PIN")]
     return cargo, revs
 
 
@@ -194,31 +208,50 @@ def is_text(path):
         return False
 
 
-def rewrite(root, old_shas, new_sha, tag):
-    """Move matching commits; rewrite Keel tags only when tag is supplied."""
+def rewrite(root, old_shas, new_sha, tag, *, layer="keel", version=None):
+    """Move only declared dependency rows and provenance pins, never arbitrary text."""
     root = Path(root)
-    prefix = re.compile("|".join(f"(?<![0-9a-f]){re.escape(o[:n])}(?![0-9a-f])" for o in old_shas for n in (12, 8, 7)) or "(?!)")
+    files = tracked_files(root)
+    cargo, _ = pin_files(files)
+    repo = KEEL_URL if layer == "keel" else re.compile(re.escape(LAYER_REPOS[layer]) + r"(?:\.git)?(?![\w-])")
     changed = []
-    for f in tracked_files(root):
-        if f.startswith(SKIP_DIRS) or "/vendor/" in f or Path(f).name in SKIP_NAMES or f.startswith(WORKFLOWS):
+    for name in cargo:
+        path = root / name
+        if path.is_symlink():
             continue
-        p = root / f
-        if not p.is_file() or p.is_symlink() or not is_text(p):
-            continue
-        text = p.read_text(errors="surrogateescape")
-        new = text
-        for old in old_shas:
-            new = new.replace(old, new_sha)
-        new = prefix.sub(lambda m: new_sha[: len(m.group(0))], new)
-        if tag is not None and f.endswith("Cargo.toml"):
-            new = "\n".join(
-                TAG_PIN_RE.sub(lambda m: f"{m.group(1)}{tag}{m.group(2)}", line) if KEEL_URL.search(line) else line
-                for line in new.split("\n")
-            )
+        text = path.read_text()
+        lines = []
+        for line in text.split("\n"):
+            if repo.search(line):
+                line = REV_RE.sub(lambda match: 'rev = "' + new_sha + '"'
+                                  if match.group(1) in old_shas else match.group(0), line)
+                if tag is not None and layer == "keel":
+                    line = TAG_PIN_RE.sub(lambda m: f"{m.group(1)}{tag}{m.group(2)}", line)
+            lines.append(line)
+        new = "\n".join(lines)
+        if tag is not None and layer == "keel":
             new = TAG_COMMENT_RE.sub(lambda m: m.group(1) + tag, new)
         if new != text:
-            p.write_text(new, errors="surrogateescape")
-            changed.append(f)
+            path.write_text(new)
+            changed.append(name)
+    for name in files:
+        path = root / name
+        if not active_path(name) or path.is_symlink() or not path.is_file():
+            continue
+        parts = Path(name).parts
+        value = None
+        if layer == "keel":
+            if parts[-2:] == ("deps", "keel.rev") or path.name == "KEEL_PIN":
+                value = new_sha
+            elif parts[-2:] == ("deps", "keel.version"):
+                value = version
+        elif layer == "kit" and parts[-2:] == ("deps", "kit.rev"):
+            value = new_sha
+        elif layer == "engine" and path.name == "ENGINE_REV":
+            value = new_sha
+        if value is not None and path.read_text() != value + "\n":
+            path.write_text(value + "\n")
+            changed.append(name)
     return changed
 
 
@@ -282,7 +315,7 @@ def refresh_locks(root, log, old_shas=()):
     """cargo update for the Keel crates of every tracked Cargo.lock; a failure is returned, not raised."""
     root = Path(root)
     for f in tracked_files(root):
-        if Path(f).name != "Cargo.lock" or f.startswith(SKIP_DIRS) or "/vendor/" in f:
+        if Path(f).name != "Cargo.lock" or not active_path(f):
             continue
         manifest = (root / f).with_name("Cargo.toml")
         specs = lock_update_specs((root / f).read_text(errors="replace"), old_shas)
@@ -310,7 +343,7 @@ def layer_pins(root, layer):
     repo = re.compile(re.escape(LAYER_REPOS[layer]) + r"(?:\.git)?(?![\w-])")
     found = []
     for f in tracked_files(root):
-        if f.endswith("Cargo.toml") and not f.startswith(SKIP_DIRS) and "/vendor/" not in f:
+        if Path(f).name == "Cargo.toml" and active_path(f):
             for line in (Path(root) / f).read_text(errors="replace").splitlines():
                 if repo.search(line):
                     found += REV_RE.findall(line)
@@ -369,7 +402,7 @@ def refresh_layer_locks(root, layer, log):
     """Update the layer and its transitive pins in one Cargo resolution."""
     repo = LAYER_REPOS[layer]
     for f in tracked_files(root):
-        if Path(f).name != "Cargo.lock" or f.startswith(SKIP_DIRS) or "/vendor/" in f:
+        if Path(f).name != "Cargo.lock" or not active_path(f):
             continue
         lock = (Path(root) / f).read_text()
         names = sorted(set(re.findall(r'\[\[package\]\]\s+name = "([^"]+)"\s+version = "[^"]+"\s+source = "git\+https://github.com/' + re.escape(repo) + r'(?:\.git)?[?\"]', lock)))
@@ -422,8 +455,8 @@ def cmd_layer_run(args):
                 if stage is None:
                     stage = check_migrations(root, versions[0], log)
                 if stage is None:
-                    rewrite(root, old, sha, None)
-                    rewrite(root, keel_old, pins[0], None)
+                    rewrite(root, old, sha, None, layer=args.layer)
+                    rewrite(root, keel_old, pins[0], None, version=versions[0])
                     ensure_pack_source_args(root)
                     stage = refresh_layer_locks(root, args.layer, log)
                 if stage is None:
@@ -445,7 +478,7 @@ def cmd_layer_run(args):
                     p.write_text("\n".join(
                         TAG_PIN_RE.sub(lambda m: 'rev = "' + pins[0] + '"', line) if KEEL_URL.search(line) else line
                         for line in p.read_text().split("\n")))
-                rewrite(root, old, sha, None)
+                rewrite(root, old, sha, None, layer=args.layer)
                 rewrite(root, keel_old, pins[0], pins[0])
                 for f in tracked_files(root):
                     if Path(f).name == "KEEL_PIN":
@@ -458,7 +491,7 @@ def cmd_layer_run(args):
                     log.append(f"$ bash scripts/vendor-private.sh\n{proc.stdout}{proc.stderr}")
                     stage = "hook" if proc.returncode else None
         else:
-            rewrite(root, old, sha, None)
+            rewrite(root, old, sha, None, layer=args.layer)
             for f in tracked_files(root):
                 if Path(f).name == "ENGINE_REV":
                     (root / f).write_text(sha + "\n")
@@ -551,27 +584,54 @@ def published_release(tag, sha):
     return version
 
 
+def migration_sources(root):
+    """The published migrator's input types, without evidence, links or build output."""
+    root = Path(root)
+    for directory, dirs, files in os.walk(root):
+        dirs[:] = [name for name in dirs if not name.startswith(".")
+                   and not (Path(directory) / name).is_symlink()
+                   and active_path((Path(directory) / name / "_").relative_to(root))]
+        for name in files:
+            path = Path(directory) / name
+            relative = path.relative_to(root)
+            if (name.endswith(".rs") or name in ("Cargo.toml", "keel.toml")) and active_path(relative) and not path.is_symlink():
+                yield relative
+
+
 def check_migrations(root, version, log):
-    """Install the accepted public CLI and apply its complete registry migration."""
+    """Apply the published CLI to active sources; it never receives historical files."""
+    root = Path(root)
     with tempfile.TemporaryDirectory() as directory:
-        executable = str(Path(directory) / "bin/keel")
+        install = Path(directory) / "cli"
+        sources = Path(directory) / "source"
+        sources.mkdir()
+        for name in migration_sources(root):
+            target = sources / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / name, target)
+        executable = str(install / "bin/keel")
         commands = (["cargo", "install", "sylphx-keel-cli", "--version", "=" + version,
-                     "--locked", "--root", directory],
+                     "--locked", "--root", str(install)],
                     [executable, "--version"],
                     [executable, "migrate", "--registry", version],
                     [executable, "migrate", "--check", "--registry", version])
         for cmd in commands:
-            proc = run(cmd, cwd=root, check=False)
+            proc = run(cmd, cwd=sources, check=False)
             log.append(f"$ {' '.join(cmd)}\n{proc.stdout}{proc.stderr}")
             if proc.returncode or (cmd[-1] == "--version" and proc.stdout.strip() != "keel " + version):
                 return "migrate"
+        for name in migration_sources(sources):
+            target = root / name
+            if not target.exists() or target.read_bytes() != (sources / name).read_bytes():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(sources / name, target)
     return None
 
 
 def refresh_registry_locks(root, version, log):
     """Resolve changed manifests without compiling, then reject mixed Keel identities."""
     for name in tracked_files(root):
-        if Path(name).name != "Cargo.lock" or name.startswith(SKIP_DIRS) or "/vendor/" in name:
+        if Path(name).name != "Cargo.lock" or not active_path(name):
             continue
         manifest = (Path(root) / name).with_name("Cargo.toml")
         if not manifest.exists():
@@ -653,7 +713,9 @@ def cmd_run(args):
         return 0
     if versions and any(tuple(map(int, value.split("."))) > tuple(map(int, version.split("."))) for value in versions):
         raise Refused("the published target would downgrade the public facade")
-    if versions == [version] and not has_git_pins(root) and (not old or old == [sha]):
+    if versions == [version] and not has_git_pins(root) and (not old or old == [sha]) and all(
+            (root / name).read_text().strip() == version for name in tracked_files(root)
+            if Path(name).parts[-2:] == ("deps", "keel.version") and active_path(name)):
         save()
         return 0
     if hook:
@@ -664,7 +726,7 @@ def cmd_run(args):
     if stage is None:
         stage = check_migrations(root, version, log)
     if stage is None:
-        rewrite(root, old, sha, args.tag)
+        rewrite(root, old, sha, args.tag, version=version)
         ensure_pack_source_args(root)
         stage = refresh_registry_locks(root, version, log)
     if stage is None and args.check_command:
@@ -894,7 +956,9 @@ def cmd_poll(args):
             out["reason"] = "public facade is already at or beyond this version"
             write_outputs(out)
             return 0
-        if versions == [version] and not has_git_pins(root) and (not old or old == [sha]):
+        if versions == [version] and not has_git_pins(root) and (not old or old == [sha]) and all(
+            (root / name).read_text().strip() == version for name in tracked_files(root)
+            if Path(name).parts[-2:] == ("deps", "keel.version") and active_path(name)):
             out["reason"] = "already pinned"
             write_outputs(out)
             return 0
