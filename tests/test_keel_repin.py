@@ -168,16 +168,38 @@ class PinsTest(unittest.TestCase):
             self.assertEqual(keel_repin.find_pins(repo), [OLD])  # not the other repos, not vendor/
             new = "b" * 40
             changed = keel_repin.rewrite(repo, [OLD], new, NEW_TAG)
-            self.assertEqual(sorted(changed), [".cargo/config.toml", "Cargo.toml", "Dockerfile", "deps/keel.rev"])
+            self.assertEqual(sorted(changed), ["Cargo.toml", "deps/keel.rev"])
             cargo = (repo / "Cargo.toml").read_text()
             self.assertEqual(cargo.count(new), 2)
             self.assertIn(f"# Keel tag: {NEW_TAG}", cargo)
             self.assertIn("c" * 40, cargo)  # other dependencies untouched
             self.assertIn("d" * 40, cargo)  # keel-website is not Keel
             self.assertEqual((repo / "deps/keel.rev").read_text(), new + "\n")
-            self.assertEqual((repo / "Dockerfile").read_text(), f"# built at keel {new[:7]}\nRUN echo {new}\n")
+            self.assertEqual((repo / "Dockerfile").read_text(), TITLE["Dockerfile"])
+            self.assertEqual((repo / ".cargo/config.toml").read_text(), TITLE[".cargo/config.toml"])
             self.assertIn(OLD, (repo / "vendor/x/Cargo.toml").read_text())  # vendor/ is the hook's
             self.assertIn(OLD, (repo / "CHANGELOG.md").read_text())
+
+    def test_rewrite_preserves_full_and_short_shas_outside_declared_pins(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = f'{{"VERSION.keel":"{OLD}","short":"{OLD[:7]}"}}\r\n'
+            historical = {
+                "docs/parity/example/2026-10-31/receipt.json": receipt,
+                "docs/evidence/2026-10-31/Cargo.toml": TITLE["Cargo.toml"],
+                "receipts/2026-10-31/KEEL_PIN": OLD + "\n",
+                "docs/quality/2026-10-31-receipt.json": receipt,
+            }
+            files = {**TITLE, **historical, "KEEL_PIN": OLD + "\n", "deps/keel.version": "0.1.1\n",
+                     "src/provenance.rs": f'const RECORDED: &str = "{OLD}";\n'}
+            root = make_title(pathlib.Path(directory), files)
+            before = {name: (root / name).read_bytes() for name in files}
+            changed = keel_repin.rewrite(root, [OLD], "b" * 40, NEW_TAG, version="0.3.1234")
+            self.assertEqual(set(changed), {"Cargo.toml", "deps/keel.rev", "deps/keel.version", "KEEL_PIN"})
+            for name in set(files) - set(changed):
+                self.assertEqual((root / name).read_bytes(), before[name], name)
+            self.assertEqual((root / "deps/keel.version").read_text(), "0.3.1234\n")
+            self.assertEqual(keel_repin.find_pins(root), ["b" * 40])
+            self.assertEqual(keel_repin.rewrite(root, [OLD], "b" * 40, NEW_TAG, version="0.3.1234"), [])
 
     def test_tag_pin_moves(self):
         with tempfile.TemporaryDirectory() as d:
@@ -283,23 +305,86 @@ class RunTest(PublicReleaseFixture):
     def test_the_target_release_version_installs_into_the_cargo_root(self):
         with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
-            remote, _ = make_keel_remote(base, 'touch migrated\n', version="0.7.9876")
+            remote, _ = make_keel_remote(base, 'touch migrated.rs\n', version="0.7.9876")
             repo = make_title(base, TITLE)
             rc, rep = self.run_cmd(repo, remote, "touch build-checked")
             self.assertEqual((rc, rep["status"], rep["stage"]), (0, "ok", ""), rep["log"])
-            self.assertTrue((repo / "migrated").exists())
+            self.assertTrue((repo / "migrated.rs").exists())
             self.assertTrue((repo / "build-checked").exists())
             self.assertIn("0.7.9876", rep["log"])
+
+    def test_public_adoption_preserves_dated_receipts_and_migrates_active_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            version = "0.3.1234"
+            cli = ("test ! -e docs/parity\n"
+                   "test ! -e evidence\n"
+                   "test ! -e receipts\n"
+                   "test -f src/receipt-parser.rs\n"
+                   "python3 - <<'MIGRATE'\n"
+                   "from pathlib import Path\n"
+                   "p = Path('Cargo.toml')\n"
+                   "p.write_text(p.read_text().replace('=0.1.1', '=0.3.1234'))\n"
+                   "p = Path('src/lib.rs')\n"
+                   "p.write_text(p.read_text().replace('old_api', 'current_api'))\n"
+                   "Path('src/generated.rs').write_text('// generated intent\\n')\n"
+                   "MIGRATE\n")
+            remote, sha = make_keel_remote(base, cli, version=version)
+            manifest = '[dependencies]\nkeel={package="sylphx-keel-engine",version="=0.1.1",default-features=false}\n'
+            receipts = {
+                "docs/parity/example/2026-10-31/receipt.json": json.dumps({"VERSION.keel": OLD}) + "\r\n",
+                "evidence/2026-10-31/Cargo.toml": manifest,
+                "receipts/2026-10-31/source.rs": "use old_api;\n",
+                "evidence/2026-10-31/Dockerfile": "FROM rust\nRUN keel pack --profile web\n",
+            }
+            root = make_title(base, {**receipts, "Cargo.toml": manifest, "Cargo.lock": "version = 4\n",
+                                    "deps/keel.rev": OLD + "\n", "KEEL_PIN": OLD + "\n",
+                                    "deps/keel.version": "0.1.1\n", "src/lib.rs": "use old_api;\n",
+                                    "Dockerfile": "FROM rust AS pack\nRUN keel pack --profile web\n",
+                                    "src/receipt-parser.rs": "use old_api;\n"})
+            before = {name: (root / name).read_bytes() for name in receipts}
+            original = keel_repin.run
+            def resolve(command, **kwargs):
+                if command[:2] == ["cargo", "metadata"]:
+                    (root / "Cargo.lock").write_text('version=4\n[[package]]\nname="sylphx-keel-engine"\n'
+                        'version="0.3.1234"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n')
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                return original(command, **kwargs)
+            with mock.patch.object(keel_repin, "run", side_effect=resolve):
+                _, report = self.run_cmd(root, remote, "true")
+            self.assertEqual(report["status"], "ok", report["log"])
+            self.assertEqual(keel_repin.registry_versions(root), [version])
+            self.assertEqual((root / "deps/keel.version").read_text().strip(), version)
+            self.assertEqual((root / "deps/keel.rev").read_text().strip(), sha)
+            self.assertEqual((root / "KEEL_PIN").read_text().strip(), sha)
+            self.assertIn('version="0.3.1234"', (root / "Cargo.lock").read_text())
+            self.assertEqual((root / "src/lib.rs").read_text(), "use current_api;\n")
+            self.assertEqual((root / "src/receipt-parser.rs").read_text(), "use old_api;\n")
+            self.assertTrue((root / "src/generated.rs").exists())
+            self.assertIn("ARG SYLPHX_GIT_COMMIT_SHA", (root / "Dockerfile").read_text())
+            for name, content in before.items():
+                self.assertEqual((root / name).read_bytes(), content, name)
+            self.assertFalse(set(receipts).intersection(report["changed"]))
+
+    def test_failed_migration_does_not_copy_partial_source_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            remote, _ = make_keel_remote(base, 'echo partial > src/lib.rs\nexit 1\n')
+            root = make_title(base, TITLE)
+            before = (root / "src/lib.rs").read_bytes()
+            _, report = self.run_cmd(root, remote, "true")
+            self.assertEqual((report["status"], report["stage"]), ("failed", "migrate"))
+            self.assertEqual((root / "src/lib.rs").read_bytes(), before)
 
     def test_release_version_failure_stops_before_install_or_build(self):
         with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
-            remote, _ = make_keel_remote(base, 'touch migrated\n', version_status=41)
+            remote, _ = make_keel_remote(base, 'touch migrated.rs\n', version_status=41)
             repo = make_title(base, TITLE)
             rc, rep = self.run_cmd(repo, remote, "touch build-checked")
             self.assertEqual((rc, rep["status"], rep["stage"]), (0, "failed", "migrate"))
             self.assertIn("publication is not ready", rep["log"])
-            self.assertFalse((repo / "migrated").exists())
+            self.assertFalse((repo / "migrated.rs").exists())
             self.assertFalse((repo / "build-checked").exists())
             self.assertNotIn("$ bash", rep["log"])
 
@@ -355,6 +440,17 @@ class RunTest(PublicReleaseFixture):
             report = base / "r.json"
             self.assertEqual(keel_repin.main(["run", "--root", str(repo), "--tag", NEW_TAG, "--remote", remote,
                                               "--report", str(report)]), 1)
+
+    def test_stale_version_file_is_repaired_when_facade_and_source_already_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            remote, sha = make_keel_remote(base)
+            root = make_title(base, {"deps/keel.rev": sha + "\n", "deps/keel.version": "0.1.1\n",
+                "Cargo.toml": 'keel={package="sylphx-keel-engine",version="=0.3.1234",default-features=false}\n'})
+            _, report = self.run_cmd(root, remote, "true")
+            self.assertEqual(report["status"], "ok", report["log"])
+            self.assertEqual(report["changed"], ["deps/keel.version"])
+            self.assertEqual((root / "deps/keel.version").read_text(), "0.3.1234\n")
 
     def test_title_hook_replaces_the_rewrite(self):
         with tempfile.TemporaryDirectory() as d:
