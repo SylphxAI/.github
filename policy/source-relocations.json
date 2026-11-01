@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "doc": "docs/stack-conformance.md#source-relocation-provenance",
+  "relocations": [
+    {
+      "repository": "Cubeage/fun-big2-keel",
+      "prefix": "legacy/hk",
+      "source_repository": "Cubeage/fun-big2-hk",
+      "source_commit": "c2d35331a9f6b78e72ef4a84c3e0129733dcc5e2",
+      "source_tree": "ba15cccee751eb8e0eeecd8e13bb6d15153274e4",
+      "evidence": "https://github.com/Cubeage/fun-big2-hk/tree/c2d35331a9f6b78e72ef4a84c3e0129733dcc5e2"
+    },
+    {
+      "repository": "Cubeage/fun-big2-keel",
+      "prefix": "legacy/tw",
+      "source_repository": "Cubeage/fun-big2-tw",
+      "source_commit": "ecc29e41a5e6e58b239c5195f307467bae805ae0",
+      "source_tree": "be18951235ec13d94209f64eea1c763b67a5e972",
+      "evidence": "https://github.com/Cubeage/fun-big2-tw/tree/ecc29e41a5e6e58b239c5195f307467bae805ae0"
+    }
+  ]
+}

@@ -143,6 +143,14 @@ def source_profile(tree):
             raise ValueError("deal randomness scope policy missing")
         json.loads(value)
         sources[scope_path] = hashlib.sha256(value.encode()).hexdigest()
+    if "source_provenance" in (texts["stack_conformance.py"] or ""):
+        for path, parse in (("scripts/source_provenance.py", ast.parse),
+                            ("policy/source-relocations.json", json.loads)):
+            value = tree.read(path)
+            if value is None:
+                raise ValueError("source-relocation checker dependency missing: " + path)
+            parse(value)
+            sources[path] = hashlib.sha256(value.encode()).hexdigest()
     if texts["stack_conformance.py"] is None or "stack_conformance.py" not in (texts["action.yml"] or ""):
         raise ValueError("unrecognized stack checker entrypoint")
     module = ast.parse(texts["stack_conformance.py"])

@@ -116,6 +116,11 @@ _adoption_spec = importlib.util.spec_from_file_location(
 adoption = importlib.util.module_from_spec(_adoption_spec)
 _adoption_spec.loader.exec_module(adoption)
 
+_source_spec = importlib.util.spec_from_file_location(
+    "source_provenance", pathlib.Path(__file__).resolve().parents[3] / "scripts/source_provenance.py")
+source_provenance = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(source_provenance)
+
 # The company-level allowance for agent-runtime parts: this repository's
 # policy/agent-runtime.json, three levels above this action's directory.
 AGENT_RUNTIME_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy" / "agent-runtime.json"
@@ -1114,7 +1119,14 @@ def cmd_check(args) -> int:
         base_model_adopted = head_model_adopted
         base_force_baseline = head_force_baseline
         base_force_adopted = head_force_adopted
-    errors += decide(found, head_baseline, base_baseline)
+    source_base = Tree(args.repo, args.base, progress=reads) if args.base else None
+    source_roots = source_provenance.roots(args.repo, args.base, args.head, args.repository,
+        getattr(args, "source_provenance_policy", source_provenance.POLICY))
+    outer_head = source_provenance.outer(head, source_roots)
+    outer_base = source_provenance.outer(source_base, source_roots) if source_base else None
+    errors += decide(departures(outer_head), head_baseline, base_baseline)
+    errors += source_provenance.legacy_errors(head, source_base, source_roots, args.baseline,
+                                             departures, parse_baseline, decide)
     try:
         aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
         progress("scanning head vendor model references")
@@ -1165,13 +1177,13 @@ def cmd_check(args) -> int:
     try:
         checker_commit = checker_revision()
         progress("scanning head architecture rules")
-        report = architecture.evaluate(head, args.repository, changed, today)
+        report = architecture.evaluate(outer_head, args.repository, changed, today)
     except (ValueError, TypeError, AttributeError) as error:
         report = {"findings": [], "unreadable": [{"path": "architecture configuration", "reason": str(error)}],
                   "semantic_census_complete": False, "limits": architecture.LIMITS}
     try:
         progress("scanning base architecture rules")
-        base_report = architecture.evaluate(Tree(args.repo, args.base, progress=reads), args.repository, None, today) if args.base else {"findings": [], "unreadable": []}
+        base_report = architecture.evaluate(outer_base, args.repository, None, today) if args.base else {"findings": [], "unreadable": []}
         base_findings = base_report["findings"]
         if introduced:
             report["unreadable"] += base_report["unreadable"]
@@ -1210,6 +1222,12 @@ def cmd_check(args) -> int:
                     row["changed"] = False
         except (ValueError, TypeError, AttributeError) as error:
             report["unreadable"].append({"path": args.baseline, "reason": str(error)})
+    imported, imported_errors = source_provenance.architecture_report(
+        head, source_base, source_roots, args.baseline, changed, today, architecture, parse_baseline)
+    errors += imported_errors
+    for key in ("findings", "unreadable", "reviewed_paths", "excluded_paths"):
+        report.setdefault(key, []).extend(imported[key])
+    report["source_relocations"] = source_roots
     report.update({"repository": args.repository, "commit": git(args.repo, "rev-parse", f"{args.head}^{{commit}}").strip(),
                    "base_commit": git(args.repo, "rev-parse", f"{args.base}^{{commit}}").strip() if args.base else None,
                    "checker_commit": checker_commit,
@@ -1220,7 +1238,7 @@ def cmd_check(args) -> int:
     for row in report["findings"]:
         row.update({"repository": report["repository"], "commit": report["commit"]})
         if row["rule"] in {"tenant-read-functions", "deal-randomness", "project-portability"}:
-            row["changed"] = architecture.baseline_key(row) not in head_architecture_baseline
+            row["changed"] = not row.get("source_root_baseline_recorded", architecture.baseline_key(row) in head_architecture_baseline)
         if row.get("scope_warning"):
             row["changed"] = False
             row["disposition"] = "warning"
@@ -1314,6 +1332,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="owner/name of the checked repository (default $GITHUB_REPOSITORY)")
     c.add_argument("--agent-runtime-policy", default=str(AGENT_RUNTIME_POLICY))
     c.add_argument("--knowledge-policy", default=str(KNOWLEDGE_POLICY))
+    c.add_argument("--source-provenance-policy", default=str(source_provenance.POLICY), help="Shared-checker-owned source provenance registry; not an action input")
     c.add_argument("--shared-source", help="Explicit offline shared checkout; proves pins against its complete origin/main snapshot")
     c.add_argument("--model-aliases", help="Optional pinned catalog alias declaration; default permits the <provider>/<line>-latest contract")
     c.add_argument("--today", default="", help="YYYY-MM-DD; default today in UTC (tests)")
