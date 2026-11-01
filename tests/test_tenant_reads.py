@@ -231,6 +231,8 @@ class PublicGuardTests(unittest.TestCase):
             "action.yml", "stack_conformance.py", "architecture.py", "model_pins.py", "tenant_reads.py",
             "deal_randomness.py", "no_force_push.py", "project_portability.py")}
         files["policy/deal-randomness-scope.json"] = (ACTION.parents[2] / "policy/deal-randomness-scope.json").read_text()
+        for dependency in ("scripts/source_provenance.py", "policy/source-relocations.json"):
+            files[dependency] = (ROOT / dependency).read_text()
         current = sc.adoption.source_profile(sc.DictTree(files))
         self.assertIn(sc.adoption.PREFIX + "tenant_reads.py", current["sources"])
         self.assertIn(RULE, current["rules"])
