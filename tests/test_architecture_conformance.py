@@ -425,10 +425,11 @@ class DistributionTests(unittest.TestCase):
             action = source / '.github/actions/stack-conformance'
             shutil.copytree(ACTION, action)
             (source / 'scripts').mkdir()
-            for name in ('action_pin_drift_check.py', 'audit_optimistic_merge.py'):
+            for name in ('action_pin_drift_check.py', 'audit_optimistic_merge.py', 'source_provenance.py'):
                 shutil.copy(ROOT / 'scripts' / name, source / 'scripts' / name)
             (source / 'policy').mkdir()
-            shutil.copy(ROOT / 'policy/architecture-repositories.json', source / 'policy/architecture-repositories.json')
+            for name in ('architecture-repositories.json', 'source-relocations.json'):
+                shutil.copy(ROOT / 'policy' / name, source / 'policy' / name)
             (root / 'consumer').mkdir()
             f = GitFixture(root / 'consumer')
             report = root / 'report.json'

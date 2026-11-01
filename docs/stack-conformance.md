@@ -719,3 +719,34 @@ path permits its own capability's adapter; placing a Stripe call in the Auth
 service does not turn it into a Money adapter. Provider literals in comments,
 documentation and fixtures pass. These are regression candidates for migration,
 not authorization to remove live-user continuity or the existing payment path.
+
+
+## Source relocation provenance
+
+A complete historical product checkout can move under a monorepo prefix without
+becoming new application code or a newly applied database migration. The pinned
+shared checker owns `policy/source-relocations.json`; a caller cannot declare its
+own inherited root. Each reviewed record names the destination repository and
+prefix, original repository, full commit and Git tree, and exact origin URL.
+Review the origin commit/tree through primary GitHub evidence before adding a
+record. This policy is not an archive approval or a declaration that the source
+is safe, supported, deployable, ad-free, or complete across every historical ref.
+
+On first introduction, the entire prefix must equal the registered origin tree,
+including file modes. A content or mode change fails closed. The stack checker
+then evaluates architecture decisions, environment declarations and the original
+shrink-only departure baseline relative to that source root. Findings stay in the
+combined report at their actual monorepo paths with provenance. Existing findings
+remain inherited; new findings, removed decisions, baseline growth, and removed
+ratchet markers still fail normally. Once landed, subsequent changes compare with
+the normal base revision, not a perpetually frozen origin. No nested environment
+settings or decisions leak into the maintained root or another imported root.
+
+The migration guard uses that same verified first-import tree as the immutable
+comparison baseline: byte-identical historical SQL is not a new migration.
+Subsequent SQL edits/deletions remain forbidden, and new destructive migrations
+still require the ordinary expand/contract proof. No SQL is changed or executed.
+Model pins, forced branch updates, agent-runtime ownership, work-engine ownership,
+knowledge/CRM ownership and Keel boundaries continue scanning the full checkout;
+source relocation grants no exemption from those checks. The capability profile
+hashes both the shared primitive and its policy, preserving release provenance.
