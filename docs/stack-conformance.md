@@ -774,8 +774,8 @@ new SQL/debt after import remains a regression, immutable SQL remains immutable,
 and the full-repository hard guards still run. It is not permission to vend a
 second engine or skip the imported product's executing build/deploy callers.
 
-The initial FMJ projection records origin `2fa4b76ea1fa9b52a5dbd613b06e279e20057936`,
-full tree `abe7a7b5218cb5f819c97b536ca285d266d499ce`, and only generated subtree
+The initial FMJ projection records origin `2547c8dd53fa79512e92ced1bcf0729071ee992b`,
+full tree `75bbdbf7453e9b94b6c2bdd258360c7f64492e82`, and only generated subtree
 `server/vendor/tycoon-engine` (`85b8e009eaeeb85f159f827e033631cd2fae5b6a`).
 The GitHub commit/tree API read on 2026-11-01 agrees with the retained full-history
 objects. Its dependency manifest describes all 207 generated files from the
