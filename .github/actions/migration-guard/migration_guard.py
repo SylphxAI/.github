@@ -295,6 +295,91 @@ def strip_control_prefix(stmt: list[Token]) -> list[Token]:
     return stmt[at:]
 
 
+POSITIVE_TIMEOUT = re.compile(
+    r"\s*[1-9]\d*\s*(?:us|ms|s|sec|secs|second|seconds|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)?\s*$",
+    re.I,
+)
+
+
+def timeout_setting(stmt: list[Token]) -> tuple[str, bool] | None:
+    """Return (setting_name, is_positive_bound) for SET/RESET/DISCARD/set_config timeout statements."""
+    if starts(stmt, "DISCARD", "ALL") or starts(stmt, "RESET", "ALL"):
+        return ("*", False)
+    if starts(stmt, "RESET") and len(stmt) == 2 and stmt[1].kind in {"word", "identifier"}:
+        key = stmt[1].value.lower()
+        if key in {"lock_timeout", "statement_timeout"}:
+            return (key, False)
+        return None
+    if (starts(stmt, "SELECT") or starts(stmt, "PERFORM")) and len(stmt) == 9:
+        if (stmt[1].kind in {"word", "identifier"} and stmt[1].value.lower() == "set_config"
+                and stmt[2].value == "(" and stmt[4].value == "," and stmt[6].value == "," and stmt[8].value == ")"):
+            key = unquote_postgres_literal(stmt[3])
+            if key and key.lower() in {"lock_timeout", "statement_timeout"}:
+                text = unquote_postgres_literal(stmt[5])
+                return (key.lower(), bool(text and POSITIVE_TIMEOUT.match(text)))
+        return None
+    if not starts(stmt, "SET"):
+        return None
+    at = 2 if len(stmt) > 1 and stmt[1].kind == "word" and stmt[1].value in {"SESSION", "LOCAL"} else 1
+    if at >= len(stmt) or stmt[at].kind not in {"word", "identifier"}:
+        return None
+    key = stmt[at].value.lower()
+    if key not in {"lock_timeout", "statement_timeout"}:
+        return None
+    tail = stmt[at + 1:]
+    if len(tail) != 2 or not (tail[0].value == "=" or kw(tail[0], "TO")):
+        return (key, False)
+    val = tail[1]
+    if val.kind == "literal":
+        text = unquote_postgres_literal(val)
+        return (key, bool(text and POSITIVE_TIMEOUT.match(text)))
+    if val.kind == "word":
+        return (key, bool(re.fullmatch(r"[1-9]\d*", val.raw or val.value)))
+    return (key, False)
+
+
+def normalize_index_target(index_name: str, table_name: str = "") -> tuple[str, str] | None:
+    if not index_name or index_name.count(".") > 1 or table_name.count(".") > 1:
+        return None
+    if "." in index_name:
+        schema, short = index_name.split(".", 1)
+        if "." in table_name and table_name.split(".", 1)[0] != schema:
+            return None
+        return (schema, short)
+    if "." in table_name:
+        schema, _ = table_name.split(".", 1)
+        return (schema, index_name)
+    return ("public", index_name)
+
+
+def concurrent_index_target(stmt: list[Token]) -> tuple[str, tuple[str, str] | None, bool] | None:
+    """Return (kind, (schema, index_name), conditional) for concurrent index DDL."""
+    if starts(stmt, "DROP", "INDEX", "CONCURRENTLY"):
+        if not starts(stmt[3:], "IF", "EXISTS"):
+            return ("DROP", None, False)
+        idx, at = name(stmt, 5)
+        if not idx or (at < len(stmt) and not (at + 1 == len(stmt) and kw(stmt[at], "RESTRICT"))):
+            return ("DROP", None, True)
+        return ("DROP", normalize_index_target(idx), True)
+    at = 3 if starts(stmt, "CREATE", "UNIQUE", "INDEX", "CONCURRENTLY") else 2 if starts(stmt, "CREATE", "INDEX", "CONCURRENTLY") else None
+    if at is None:
+        return None
+    at += 1
+    conditional = starts(stmt[at:], "IF", "NOT", "EXISTS")
+    if conditional:
+        at += 3
+    idx, at = name(stmt, at)
+    if not idx or not starts(stmt[at:], "ON"):
+        return ("CREATE", None, conditional)
+    at += 1
+    if at < len(stmt) and kw(stmt[at], "ONLY"):
+        at += 1
+    tbl, _ = name(stmt, at)
+    if not tbl:
+        return ("CREATE", None, conditional)
+    return ("CREATE", normalize_index_target(idx, tbl), conditional)
+
+
 def check_widening_executes(inner: list[Token], dialect: str) -> set[int]:
     """Recognize catalog-backed CHECK (col = ANY (ARRAY[%s])) NOT VALID widenings."""
     if dialect != "postgres":
@@ -846,6 +931,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
     created: set[str] = set()
     trigger_functions: set[tuple[str, str]] = set()
     trigger_tables: set[tuple[str, str]] = set()
+    timeouts: set[str] = set()
+    dropped_concurrent_indexes: set[tuple[str, str]] = set()
     statements = split(tokens, ";")
     uncertain_flow = nesting and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
     for stmt in statements:
@@ -857,12 +944,58 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             created.clear()
             trigger_tables.clear()
             trigger_functions.clear()
+            timeouts.clear()
+            dropped_concurrent_indexes.clear()
         control_stmt = procedural_statement(stmt)
         if starts(control_stmt, "ALTER") and has(control_stmt, "SET", "SCHEMA"):
             # A relocated object can leave its old qualified name available
             # for an existing table or an uninspected function to occupy.
             trigger_tables.clear()
             trigger_functions.clear()
+            dropped_concurrent_indexes.clear()
+        if dialect == "postgres":
+            if (any(t.kind in {"word", "identifier"} and t.value.lower() == "search_path" for t in control_stmt)
+                    or has(control_stmt, "RESET", "ALL")):
+                dropped_concurrent_indexes.clear()
+            timeout = timeout_setting(control_stmt)
+            if timeout:
+                param, valid = timeout
+                if param == "*":
+                    timeouts.clear()
+                elif valid:
+                    timeouts.add(param)
+                else:
+                    timeouts.discard(param)
+            concurrent = concurrent_index_target(control_stmt)
+            if concurrent:
+                kind, target, conditional = concurrent
+                if not {"lock_timeout", "statement_timeout"} <= timeouts:
+                    out.append((control_stmt[0].line, f"{kind} INDEX CONCURRENTLY requires preceding non-zero lock_timeout and statement_timeout"))
+                if kind == "DROP":
+                    if target is not None:
+                        dropped_concurrent_indexes.add(target)
+                else:
+                    if conditional:
+                        out.append((
+                            control_stmt[0].line,
+                            "CREATE INDEX CONCURRENTLY IF NOT EXISTS skips an invalid index shell left by a timed-out build; "
+                            "use DROP INDEX CONCURRENTLY IF EXISTS before unconditional CREATE INDEX CONCURRENTLY",
+                        ))
+                    if target is None or target not in dropped_concurrent_indexes:
+                        out.append((
+                            control_stmt[0].line,
+                            "CREATE INDEX CONCURRENTLY requires a preceding DROP INDEX CONCURRENTLY IF EXISTS for the same index",
+                        ))
+                    elif target is not None:
+                        dropped_concurrent_indexes.discard(target)
+            elif has(control_stmt, "CONCURRENTLY"):
+                if not {"lock_timeout", "statement_timeout"} <= timeouts:
+                    out.append((control_stmt[0].line, "CONCURRENTLY DDL requires preceding non-zero lock_timeout and statement_timeout"))
+                if starts(control_stmt, "CREATE") and has(control_stmt, "INDEX"):
+                    out.append((
+                        control_stmt[0].line,
+                        "CREATE INDEX CONCURRENTLY requires a preceding DROP INDEX CONCURRENTLY IF EXISTS for the same index",
+                    ))
         out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(stmt))
         if starts(control_stmt, "SET") and any(
                 (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
@@ -931,6 +1064,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 defaults.clear()
                 trigger_tables.clear()
                 trigger_functions.clear()
+                timeouts.clear()
+                dropped_concurrent_indexes.clear()
         if (starts(stmt, "CALL") or starts(stmt, "EXECUTE") and id(stmt[0]) not in (finite_executes or set())
                 and not constant_acl_execute(stmt, dialect, catalog_format)
                 or starts(stmt, "PREPARE") or starts(stmt, "DELIMITER")):

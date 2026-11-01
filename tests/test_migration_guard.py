@@ -446,6 +446,79 @@ class HistoryTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertIn("dynamic SQL", str(guard.check_sql(bad, "postgres")))
 
+    def test_concurrent_index_requires_timeouts_and_preceding_drop_without_if_not_exists(self):
+        good = """
+        -- atlas:txmode none
+        SET lock_timeout = '5s';
+        SET statement_timeout = '30s';
+        DROP INDEX CONCURRENTLY IF EXISTS public.devices_holder_idx;
+        CREATE INDEX CONCURRENTLY devices_holder_idx
+          ON public.devices (org_id, project_id, env_id, holder_agent_id);
+        """
+        self.assertEqual(guard.check_sql(good, "postgres"), [])
+
+        good_set_config = """
+        -- atlas:txmode none
+        SELECT set_config('lock_timeout', '5000ms', false);
+        SELECT set_config('statement_timeout', '30000ms', false);
+        DROP INDEX CONCURRENTLY IF EXISTS devices_holder_idx;
+        CREATE UNIQUE INDEX CONCURRENTLY "devices_holder_idx" ON devices (id);
+        """
+        self.assertEqual(guard.check_sql(good_set_config, "postgres"), [])
+
+        # Spiron 20270101170000_devices_holder_index.sql failure shape: missing statement_timeout.
+        spiron_missing_stmt_timeout = """
+        -- atlas:txmode none
+        SET lock_timeout = '5s';
+        DROP INDEX CONCURRENTLY IF EXISTS public.devices_holder_idx;
+        CREATE INDEX CONCURRENTLY devices_holder_idx
+          ON public.devices (org_id, project_id, env_id, holder_agent_id);
+        """
+        errors = str(guard.check_sql(spiron_missing_stmt_timeout, "postgres"))
+        self.assertIn("DROP INDEX CONCURRENTLY requires preceding non-zero lock_timeout and statement_timeout", errors)
+        self.assertIn("CREATE INDEX CONCURRENTLY requires preceding non-zero lock_timeout and statement_timeout", errors)
+
+        for bad, expected in [
+            (
+                good.replace("SET lock_timeout = '5s';", ""),
+                "requires preceding non-zero lock_timeout and statement_timeout",
+            ),
+            (
+                good.replace("SET statement_timeout = '30s';", "SET statement_timeout = '0s';"),
+                "requires preceding non-zero lock_timeout and statement_timeout",
+            ),
+            (
+                good.replace("SET statement_timeout = '30s';", "SET statement_timeout = '30s'; RESET statement_timeout;"),
+                "requires preceding non-zero lock_timeout and statement_timeout",
+            ),
+            (
+                good.replace("DROP INDEX CONCURRENTLY IF EXISTS public.devices_holder_idx;", ""),
+                "requires a preceding DROP INDEX CONCURRENTLY IF EXISTS for the same index",
+            ),
+            (
+                good.replace("DROP INDEX CONCURRENTLY IF EXISTS public.devices_holder_idx;", "DROP INDEX IF EXISTS public.devices_holder_idx;"),
+                "requires a preceding DROP INDEX CONCURRENTLY IF EXISTS for the same index",
+            ),
+            (
+                good.replace("DROP INDEX CONCURRENTLY IF EXISTS public.devices_holder_idx;", "DROP INDEX CONCURRENTLY public.devices_holder_idx;"),
+                "requires a preceding DROP INDEX CONCURRENTLY IF EXISTS for the same index",
+            ),
+            (
+                good.replace("DROP INDEX CONCURRENTLY IF EXISTS public.devices_holder_idx;", "DROP INDEX CONCURRENTLY IF EXISTS other_schema.devices_holder_idx;"),
+                "requires a preceding DROP INDEX CONCURRENTLY IF EXISTS for the same index",
+            ),
+            (
+                good.replace("CREATE INDEX CONCURRENTLY devices_holder_idx", "CREATE INDEX CONCURRENTLY IF NOT EXISTS devices_holder_idx"),
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS skips an invalid index shell",
+            ),
+            (
+                good + "\nCREATE INDEX CONCURRENTLY devices_holder_idx ON public.devices (id);",
+                "requires a preceding DROP INDEX CONCURRENTLY IF EXISTS for the same index",
+            ),
+        ]:
+            with self.subTest(bad=bad):
+                self.assertIn(expected, str(guard.check_sql(bad, "postgres")))
+
 
 class EventAndManifestTests(unittest.TestCase):
     def test_pr_group_push_and_explicit_ranges(self):
