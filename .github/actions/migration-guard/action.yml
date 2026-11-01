@@ -17,6 +17,9 @@ inputs:
   head-ref:
     description: Head Git commit; defaults to the event head.
     default: ''
+  concurrent-index-runtime:
+    description: Explicit supported runtime contract for PostgreSQL concurrent indexes (atlas-qualified-v1). Empty refuses new concurrent CREATE intent.
+    default: ''
 
 runs:
   using: composite
@@ -29,4 +32,5 @@ runs:
         MIGRATION_SCHEMA_FILES: ${{ inputs.schema-files }}
         MIGRATION_BASE: ${{ inputs.base-ref }}
         MIGRATION_HEAD: ${{ inputs.head-ref }}
+        MIGRATION_CONCURRENT_INDEX_RUNTIME: ${{ inputs.concurrent-index-runtime }}
       run: python3 "$GITHUB_ACTION_PATH/migration_guard.py"

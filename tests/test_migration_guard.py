@@ -167,6 +167,57 @@ class SqlTests(unittest.TestCase):
         self.assertEqual(guard.check_sql('SET @"a\\"b" = 1;', "mysql"), [])
 
 
+class ConcurrentIndexTests(unittest.TestCase):
+    declaration = {"schema": "public", "table": "events", "index": "events_owner_idx",
+                   "columns": ["owner_id"], "where_null": "deleted_at",
+                   "lock_timeout_ms": 3000, "statement_timeout_ms": 240000}
+    statement = 'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" USING btree ("owner_id") WHERE "deleted_at" IS NULL;'
+
+    def source(self, declaration=None, statement=None):
+        return ("-- atlas:txmode none\n-- migration:concurrent-index-v1 "
+                + json.dumps(self.declaration if declaration is None else declaration)
+                + "\n" + (self.statement if statement is None else statement) + "\n")
+
+    def test_future_unsafe_concurrent_index_is_rejected(self):
+        for sql in [
+            "SET lock_timeout='5s'; DROP INDEX CONCURRENTLY IF EXISTS public.future_idx; CREATE INDEX CONCURRENTLY future_idx ON public.events(owner_id);",
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS future_idx ON public.events(owner_id);",
+            "CREATE /* comment */ UNIQUE INDEX CONCURRENTLY future_idx ON public.events(owner_id);",
+        ]:
+            for marker in ("", "-- contract: released-expand-42\n"):
+                with self.subTest(sql=sql, marker=marker):
+                    self.assertTrue(guard.check_sql(marker + sql, "postgres"))
+
+    def test_supported_contract_requires_explicit_runtime_adoption(self):
+        self.assertTrue(guard.check_sql(self.source(), "postgres"))
+        self.assertEqual(guard.check_sql(self.source(), "postgres", "atlas-qualified-v1"), [])
+
+    def test_finite_bounds_and_exact_supported_statement(self):
+        for key, value in [("lock_timeout_ms", 0), ("statement_timeout_ms", 0),
+                           ("lock_timeout_ms", 3001), ("statement_timeout_ms", 240001),
+                           ("lock_timeout_ms", True), ("statement_timeout_ms", "240000")]:
+            with self.subTest(key=key, value=value):
+                self.assertTrue(guard.check_sql(self.source(self.declaration | {key: value}), "postgres", "atlas-qualified-v1"))
+        for statement in [self.statement.replace("CREATE INDEX", "CREATE UNIQUE INDEX"),
+                          self.statement.replace("CONCURRENTLY", "CONCURRENTLY IF NOT EXISTS"),
+                          self.statement + "\nSELECT 1;", self.statement.replace('"owner_id"', 'lower("owner_id")'),
+                          "SET lock_timeout='3s';\n" + self.statement]:
+            with self.subTest(statement=statement):
+                self.assertTrue(guard.check_sql(self.source(statement=statement), "postgres", "atlas-qualified-v1"))
+        for declaration in [self.declaration | {"unknown": 1}, self.declaration | {"columns": []},
+                            self.declaration | {"table": "bad\nname"}, self.declaration | {"schema": "x" * 64}]:
+            self.assertTrue(guard.check_sql(self.source(declaration), "postgres", "atlas-qualified-v1"))
+        self.assertTrue(guard.check_sql(self.source().replace('-- atlas:txmode none', '-- atlas:txmode none\n-- atlas:txmode file'), "postgres", "atlas-qualified-v1"))
+        self.assertTrue(guard.check_sql(self.source().replace('{"schema":', '{"schema":"other","schema":'), "postgres", "atlas-qualified-v1"))
+
+    def test_quoted_identifiers_are_generated_without_interpolation(self):
+        declaration = self.declaration | {"schema": "Tenant", "table": 'Event"Log', "index": "Owner Index"}
+        statement = 'CREATE INDEX CONCURRENTLY "Owner Index" ON "Tenant"."Event""Log" USING btree ("owner_id") WHERE "deleted_at" IS NULL;'
+        self.assertEqual(guard.check_sql(self.source(declaration, statement), "postgres", "atlas-qualified-v1"), [])
+        with self.assertRaises(guard.SqlError):
+            guard.check_sql(self.source(declaration, statement.replace('"Event""Log"', '"Event"Log"')), "postgres", "atlas-qualified-v1")
+
+
 class HistoryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -200,6 +251,21 @@ class HistoryTests(unittest.TestCase):
         errors, count = self.check()
         self.assertEqual(count, 1)
         self.assertIn("DROP COLUMN", "\n".join(errors))
+
+    def test_actual_added_path_adopts_concurrent_contract_without_rechecking_history(self):
+        old = "CREATE INDEX CONCURRENTLY IF NOT EXISTS historical_idx ON public.accounts(id);"
+        self.write("db/0002_historical.sql", old)
+        self.base = self.commit()
+        fixture = ConcurrentIndexTests()
+        self.write("db/0003_future.sql", fixture.source())
+        self.commit()
+        self.assertTrue(self.check()[0])
+        self.assertEqual(guard.check_range(self.root, self.base, "HEAD", ["db"], "postgres",
+                                          concurrent_index_runtime="atlas-qualified-v1"), ([], 1))
+        self.write("db/0002_historical.sql", old + "\n-- changed")
+        self.commit()
+        self.assertIn("merged migration", "\n".join(guard.check_range(
+            self.root, self.base, "HEAD", ["db"], "postgres", concurrent_index_runtime="atlas-qualified-v1")[0]))
 
     def test_additive_migration_and_missing_future_directory_pass(self):
         self.write("db/0002_nickname.sql", "ALTER TABLE accounts ADD nickname text;")
@@ -389,7 +455,11 @@ class HistoryTests(unittest.TestCase):
         CREATE INDEX CONCURRENTLY devices_holder_idx
           ON public.devices (org_id, project_id, env_id, holder_agent_id);
         """
-        self.assertEqual(guard.check_sql(good, "postgres"), [])
+        self.assertEqual(guard.violations(good, "postgres"), [])
+        for runtime in ["", "atlas-qualified-v1"]:
+            self.assertIn("concurrent index:", str(guard.check_sql(good, "postgres", runtime)))
+            self.assertIn("concurrent index:", str(guard.check_sql(
+                "-- contract: released-expand\n" + good, "postgres", runtime)))
 
         good_set_config = """
         -- atlas:txmode none
@@ -398,7 +468,7 @@ class HistoryTests(unittest.TestCase):
         DROP INDEX CONCURRENTLY IF EXISTS devices_holder_idx;
         CREATE UNIQUE INDEX CONCURRENTLY "devices_holder_idx" ON devices (id);
         """
-        self.assertEqual(guard.check_sql(good_set_config, "postgres"), [])
+        self.assertEqual(guard.violations(good_set_config, "postgres"), [])
 
         # Spiron 20270101170000_devices_holder_index.sql failure shape: missing statement_timeout.
         spiron_missing_stmt_timeout = """
@@ -408,7 +478,7 @@ class HistoryTests(unittest.TestCase):
         CREATE INDEX CONCURRENTLY devices_holder_idx
           ON public.devices (org_id, project_id, env_id, holder_agent_id);
         """
-        errors = str(guard.check_sql(spiron_missing_stmt_timeout, "postgres"))
+        errors = str(guard.violations(spiron_missing_stmt_timeout, "postgres"))
         self.assertIn("DROP INDEX CONCURRENTLY requires preceding non-zero lock_timeout and statement_timeout", errors)
         self.assertIn("CREATE INDEX CONCURRENTLY requires preceding non-zero lock_timeout and statement_timeout", errors)
 
@@ -451,7 +521,7 @@ class HistoryTests(unittest.TestCase):
             ),
         ]:
             with self.subTest(bad=bad):
-                self.assertIn(expected, str(guard.check_sql(bad, "postgres")))
+                self.assertIn(expected, str(guard.violations(bad, "postgres")))
 
 
 class EventAndManifestTests(unittest.TestCase):
@@ -484,6 +554,7 @@ class EventAndManifestTests(unittest.TestCase):
         self.assertIn("$GITHUB_ACTION_PATH/migration_guard.py", step["run"])
         self.assertNotIn("${{", step["run"])
         self.assertEqual(step["env"]["MIGRATION_DIRECTORIES"], "${{ inputs.migration-directories }}")
+        self.assertEqual(step["env"]["MIGRATION_CONCURRENT_INDEX_RUNTIME"], "${{ inputs.concurrent-index-runtime }}")
 
 
 if __name__ == "__main__":
