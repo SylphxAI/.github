@@ -1221,7 +1221,17 @@ def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "") -> lis
     errors = token_violations(tokens, dialect)
     # A released-expand reference does not prove resumability or effective
     # connection bounds. Operational findings are never marker exemptions.
-    return concurrent_index_violations(sql, tokens, dialect, concurrent_index_runtime) + ([] if markers else errors)
+    operational = concurrent_index_violations(sql, tokens, dialect, concurrent_index_runtime)
+    if not operational and dialect == "postgres" and any(
+            starts(tokens[i:], "CREATE", "INDEX", "CONCURRENTLY")
+            or starts(tokens[i:], "CREATE", "UNIQUE", "INDEX", "CONCURRENTLY")
+            for i in range(len(tokens))):
+        # A valid declaration proves the entire file is exactly one supported
+        # CREATE with runtime-owned cleanup and startup bounds. The legacy
+        # SET/DROP heuristic contradicts that contract and must not re-admit
+        # unconditional cleanup or connection-local SET statements.
+        return []
+    return operational + ([] if markers else errors)
 
 
 class Column(NamedTuple):

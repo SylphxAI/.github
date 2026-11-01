@@ -455,7 +455,11 @@ class HistoryTests(unittest.TestCase):
         CREATE INDEX CONCURRENTLY devices_holder_idx
           ON public.devices (org_id, project_id, env_id, holder_agent_id);
         """
-        self.assertEqual(guard.check_sql(good, "postgres"), [])
+        self.assertEqual(guard.violations(good, "postgres"), [])
+        for runtime in ["", "atlas-qualified-v1"]:
+            self.assertIn("concurrent index:", str(guard.check_sql(good, "postgres", runtime)))
+            self.assertIn("concurrent index:", str(guard.check_sql(
+                "-- contract: released-expand\n" + good, "postgres", runtime)))
 
         good_set_config = """
         -- atlas:txmode none
@@ -464,7 +468,7 @@ class HistoryTests(unittest.TestCase):
         DROP INDEX CONCURRENTLY IF EXISTS devices_holder_idx;
         CREATE UNIQUE INDEX CONCURRENTLY "devices_holder_idx" ON devices (id);
         """
-        self.assertEqual(guard.check_sql(good_set_config, "postgres"), [])
+        self.assertEqual(guard.violations(good_set_config, "postgres"), [])
 
         # Spiron 20270101170000_devices_holder_index.sql failure shape: missing statement_timeout.
         spiron_missing_stmt_timeout = """
@@ -474,7 +478,7 @@ class HistoryTests(unittest.TestCase):
         CREATE INDEX CONCURRENTLY devices_holder_idx
           ON public.devices (org_id, project_id, env_id, holder_agent_id);
         """
-        errors = str(guard.check_sql(spiron_missing_stmt_timeout, "postgres"))
+        errors = str(guard.violations(spiron_missing_stmt_timeout, "postgres"))
         self.assertIn("DROP INDEX CONCURRENTLY requires preceding non-zero lock_timeout and statement_timeout", errors)
         self.assertIn("CREATE INDEX CONCURRENTLY requires preceding non-zero lock_timeout and statement_timeout", errors)
 
@@ -517,7 +521,7 @@ class HistoryTests(unittest.TestCase):
             ),
         ]:
             with self.subTest(bad=bad):
-                self.assertIn(expected, str(guard.check_sql(bad, "postgres")))
+                self.assertIn(expected, str(guard.violations(bad, "postgres")))
 
 
 class EventAndManifestTests(unittest.TestCase):
