@@ -121,6 +121,11 @@ _source_spec = importlib.util.spec_from_file_location(
 source_provenance = importlib.util.module_from_spec(_source_spec)
 _source_spec.loader.exec_module(source_provenance)
 
+_retirement_spec = importlib.util.spec_from_file_location(
+    "staged_retirement", pathlib.Path(__file__).with_name("staged_retirement.py"))
+staged_retirement = importlib.util.module_from_spec(_retirement_spec)
+_retirement_spec.loader.exec_module(staged_retirement)
+
 # The company-level allowance for agent-runtime parts: this repository's
 # policy/agent-runtime.json, three levels above this action's directory.
 AGENT_RUNTIME_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy" / "agent-runtime.json"
@@ -283,15 +288,20 @@ class Tree:
         out = git(repo, "ls-tree", "-r", "-z", rev)
         self._paths = []
         self._blobs = {}
+        self._entries = {}
         for entry in filter(None, out.split("\0")):
             metadata, path = entry.split("\t", 1)
-            _, kind, oid = metadata.split()
+            mode, kind, oid = metadata.split()
+            self._entries[path] = (mode, oid)
             self._paths.append(path)
             if kind == "blob":
                 self._blobs[path] = oid
         self._reader = None
         self._finish = None
         self._prefetch()
+
+    def entries(self):
+        return self._entries
 
     def _prefetch(self, requested=None):
         # Include every ordinary scan input in this tree in the same request.
@@ -397,6 +407,11 @@ class DictTree:
         return self.files.get(path)
 
     read_model_source = read
+
+    def entries(self):
+        import hashlib
+        return {path: ("100644", hashlib.sha1(b"blob " + str(len(value.encode())).encode()
+                     + b"\0" + value.encode()).hexdigest()) for path, value in self.files.items()}
 
 
 def git(repo: str, *args: str) -> str:
@@ -1124,9 +1139,10 @@ def cmd_check(args) -> int:
         getattr(args, "source_provenance_policy", source_provenance.POLICY))
     outer_head = source_provenance.outer(head, source_roots)
     outer_base = source_provenance.outer(source_base, source_roots) if source_base else None
-    errors += decide(departures(outer_head), head_baseline, base_baseline)
+    errors += staged_retirement.check(outer_head, outer_base, head_baseline, base_baseline,
+        departures, decide, baseline=args.baseline, allow_seed=staged_retirement.RULE in introduced)
     errors += source_provenance.legacy_errors(head, source_base, source_roots, args.baseline,
-                                             departures, parse_baseline, decide)
+                                             departures, parse_baseline, decide, staged_retirement)
     try:
         aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
         progress("scanning head vendor model references")

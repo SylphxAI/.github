@@ -47,7 +47,7 @@ class SelectorAdoptionTests(unittest.TestCase):
         base = f.commit({WORKFLOW: workflow(RELEASED), SELECTOR: SELECTED, LEGACY: PINNED,
                          sc.BASELINE: baseline})
         result = f.plan(base)
-        self.assertEqual(result["introduced_rules"], ["architecture/C1/project-portability", "model-selector"])
+        self.assertEqual(result["introduced_rules"], ["architecture/C1/project-portability", "legacy/solar2d", "model-selector"])
         self.assertTrue(result["baseline_text"].startswith(baseline))
         self.assertEqual(len(result["evidence"]["added_records"]), 1)
         self.assertIn("new-vendor/future-line", result["evidence"]["added_records"][0])
@@ -76,7 +76,7 @@ class SelectorAdoptionTests(unittest.TestCase):
         base = f.commit({WORKFLOW: workflow(RELEASED), SELECTOR: SELECTED, LEGACY: PINNED,
                          sc.BASELINE: sc.model_pins.BASELINE_MARKER + "\n"})
         result = f.plan(base)
-        self.assertEqual(result["introduced_rules"], ["architecture/C1/project-portability", "model-selector"])
+        self.assertEqual(result["introduced_rules"], ["architecture/C1/project-portability", "legacy/solar2d", "model-selector"])
         self.assertFalse(any("gpt-5.1" in row for row in result["evidence"]["added_records"]))
         f.commit({WORKFLOW: workflow(UNKNOWN), sc.BASELINE: result["baseline_text"]})
         output, _ = f.check(base, 1)

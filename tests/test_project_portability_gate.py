@@ -62,7 +62,7 @@ class ProjectPortabilityGateTests(unittest.TestCase):
         base = f.commit({WORKFLOW: workflow(old), SOURCE: BAD})
         f.commit({WORKFLOW: workflow(UNKNOWN)})
         result = f.plan(base)
-        self.assertEqual(result['introduced_rules'], [RULE])
+        self.assertEqual(result['introduced_rules'], [RULE, 'legacy/solar2d'])
         self.assertEqual(len(result['evidence']['added_records']), 1)
         f.commit({sc.BASELINE: result['baseline_text']})
         f.check(base, 0)

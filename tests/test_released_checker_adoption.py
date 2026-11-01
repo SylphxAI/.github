@@ -179,13 +179,14 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
             base = fixture.commit({WORKFLOW: workflow(TENANT_RELEASE), SOURCE: POLL,
                                    sc.BASELINE: baseline})
             plan = fixture.plan(base)
-            self.assertEqual(plan["introduced_rules"], [DEAL_RULE, PORTABLE_RULE, "force-push", "model-selector"])
+            self.assertEqual(plan["introduced_rules"], [DEAL_RULE, PORTABLE_RULE, "force-push", "legacy/solar2d", "model-selector"])
             self.assertEqual(plan["evidence"]["added_records"], [])
             self.assertEqual(plan["baseline_text"], baseline + sc.model_pins.BASELINE_MARKER + "\n"
                              + sc.no_force_push.BASELINE_MARKER + "\n"
                              + sc.adoption.RULE_MARKER + DEAL_RULE + "\n"
                              + sc.adoption.RULE_MARKER + PORTABLE_RULE + "\n"
                              + sc.adoption.RULE_MARKER + "force-push\n"
+                             + sc.adoption.RULE_MARKER + "legacy/solar2d\n"
                              + sc.adoption.RULE_MARKER + "model-selector\n")
             self.assertEqual(len(plan["evidence"]["old_checkers"][0]["rules"]), 18)
 
@@ -211,7 +212,7 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
                 base = fixture.commit({WORKFLOW: workflow(pin), SOURCE: POLL,
                                        sc.BASELINE: baseline})
                 plan = fixture.plan(base)
-                self.assertEqual(plan["introduced_rules"], [DEAL_RULE, PORTABLE_RULE, TENANT_RULE, "force-push", "model-selector"])
+                self.assertEqual(plan["introduced_rules"], [DEAL_RULE, PORTABLE_RULE, TENANT_RULE, "force-push", "legacy/solar2d", "model-selector"])
                 self.assertEqual(plan["evidence"]["added_records"], [])
                 self.assertEqual(plan["baseline_text"], baseline
                                  + sc.model_pins.BASELINE_MARKER + "\n"
@@ -220,6 +221,7 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
                                  + sc.adoption.RULE_MARKER + PORTABLE_RULE + "\n"
                                  + sc.adoption.RULE_MARKER + TENANT_RULE + "\n"
                                  + sc.adoption.RULE_MARKER + "force-push\n"
+                             + sc.adoption.RULE_MARKER + "legacy/solar2d\n"
                                  + sc.adoption.RULE_MARKER + "model-selector\n")
                 fixture.commit({WORKFLOW: workflow(UNKNOWN),
                                 sc.BASELINE: plan["baseline_text"]})
