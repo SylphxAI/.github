@@ -43,8 +43,11 @@ inputs:
   check-command:
     description: The build check, run after the pin moves and the target Keel CLI passes migrate --check. A failure opens the pull request as a draft.
     default: cargo check
+  source-root:
+    description: Source directory relative to the repository root, for poll, migration, pins, locks, checks and staging. Must exist without symlink traversal; branch, PR and workflow operations stay repository-level.
+    default: "."
   check-dir:
-    description: Directory the check command runs in, relative to the repository root.
+    description: Directory the check command runs in, relative to source-root. Must exist within it, without symlink traversal.
     default: "."
   ci-workflows:
     description: >
@@ -179,10 +182,11 @@ runs:
       env:
         TAG: ${{ inputs.tag }}
         LAYER: ${{ inputs.layer }}
+        SOURCE_ROOT: ${{ inputs.source-root }}
         ACTION_PATH: ${{ github.action_path }}
         GH_TOKEN: ${{ inputs.token }}
         KEEL_API_TOKEN: ${{ steps.keel-token.outputs.token }}
-      run: python3 "$ACTION_PATH/keel_repin.py" poll --layer "$LAYER" --tag "$TAG"
+      run: python3 "$ACTION_PATH/keel_repin.py" poll --layer "$LAYER" --tag "$TAG" --source-root "$SOURCE_ROOT"
 
     - name: Repin
       if: inputs.mode == 'repin'
@@ -192,6 +196,7 @@ runs:
         LAYER: ${{ inputs.layer }}
         CHECK_COMMAND: ${{ inputs.check-command }}
         CHECK_DIR: ${{ inputs.check-dir }}
+        SOURCE_ROOT: ${{ inputs.source-root }}
         KEEL_API_TOKEN: ${{ steps.keel-token.outputs.token }}
         OWNER_MENTION: ${{ inputs.owner }}
         ACTION_PATH: ${{ github.action_path }}
@@ -200,7 +205,7 @@ runs:
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
         set -euo pipefail
-        args=(run --layer "$LAYER" --tag "$TAG" --owner "$OWNER_MENTION" --check-command "$CHECK_COMMAND" --check-dir "$CHECK_DIR" --report "$REPORT")
+        args=(run --source-root "$SOURCE_ROOT" --layer "$LAYER" --tag "$TAG" --owner "$OWNER_MENTION" --check-command "$CHECK_COMMAND" --check-dir "$CHECK_DIR" --report "$REPORT")
         [ "$DRY_RUN" = true ] && args+=(--ignore-branch)
         python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"
 
@@ -212,11 +217,12 @@ runs:
         REPORT: ${{ runner.temp }}/keel-repin-report.json
         GH_TOKEN: ${{ inputs.token }}
         BASE: ${{ inputs.base }}
+        SOURCE_ROOT: ${{ inputs.source-root }}
         LABEL: ${{ inputs.label }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
         set -euo pipefail
-        args=(pr --report "$REPORT" --base "$BASE" --label "$LABEL")
+        args=(pr --source-root "$SOURCE_ROOT" --report "$REPORT" --base "$BASE" --label "$LABEL")
         [ "$DRY_RUN" = true ] && args+=(--dry-run)
         python3 "$ACTION_PATH/keel_repin.py" "${args[@]}"
 

@@ -73,6 +73,56 @@ private repository the draft names it, because every private git dependency of e
 pull-request approval API. A branch that exists is left alone, so a repeat run never overwrites a fix
 someone pushed to it.
 
+## Source subdirectories
+
+`source-root` defaults to `.`: existing repository-root consumers do not need a new input.
+For a repository containing more than one product, set the same `source-root` on its
+`poll` and `repin` calls. For example:
+
+```yaml
+with:
+  mode: repin
+  source-root: remaster
+  check-dir: server
+  check-command: cargo check --locked
+  ci-workflows: remaster-ci.yml remaster-web-smoke.yml
+```
+
+This polls and rewrites only `remaster/`, runs the check in `remaster/server/`, and
+starts workflows from the repository's root `.github/workflows/`, not a nested workflow
+directory. CLI `poll`, `run` and `pr` accept `--source-root`; `--root` continues to name
+the repository root. The report records its normalized `source_root`, and `pr` refuses
+a different root rather than silently widening staging to the whole repository.
+
+The source root and check directory must already exist. They must be relative paths,
+without `..`, `.git`, or symlink traversal. Source-file symlinks are not dependency or
+migration inputs; generated migration output cannot copy back through an existing link.
+Hooks and lock-adjacent manifests cannot be symlink shortcuts to another product.
+
+Pin/version discovery, tracked manifests and locks, temporary public-migration inputs,
+provenance rewrites, packer Docker changes, and hook/check working directories use the
+source root. `check-dir` is **relative to source-root**, not the repository root; its
+default `.` therefore checks that source directory itself. Git status and staging are
+path-limited to source-root, while changed paths in the report remain repository-relative.
+Individual untracked files are listed, and a rename crossing the boundary does not hide
+its outside half. A scoped PR refuses an already-staged outside path before branching
+or committing: path-limited `git add` alone would not exclude it from `git commit`.
+Outside unstaged work is neither reset nor staged. Workflow restoration is restricted
+to the source subtree; the manual report still names old pins in root workflow files.
+
+This is a source-selection boundary, **not a sandbox for Cargo or arbitrary shell**.
+Cargo can follow ancestor workspaces, configured target directories and path dependencies;
+a caller hook or check can explicitly read or write outside its working directory. The
+consumer owns compatible workspace/configuration and trusted commands. This action adds
+no `cargo clean` operation or repository-wide clean-tree requirement. Its own status,
+`target/` output check and staging are subtree-scoped; it does not prove commands left
+all outside files untouched.
+
+Branches, pull requests, supersession, CI dispatch, `ci-workflows`, and `settle` remain
+repository-level. A source root is not a separate branch/PR namespace or an independent
+settlement queue. Callers with multiple repin targets must coordinate that repository-wide
+custody; setting this input alone is not authority to enable an existing disabled caller.
+
 ## When the bot merges
 
 `settle` looks at every open pull request from a `chore/keel-repin-<tag>` branch (or a
