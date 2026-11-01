@@ -482,8 +482,9 @@ def run():
         if not shutil.which(tool):
             raise ValueError(f"required publisher tool is missing: {tool}")
     commands = [
-        os.environ.get("INPUT_" + name + "_COMMAND", "")
-        for name in ("BUILD", "EVIDENCE", "VERIFY")
+        os.environ.get("INPUT_BUILD_COMMAND", ""),
+        os.environ.get("INPUT_EVIDENCE_COMMAND", ""),
+        os.environ.get("INPUT_VERIFY_COMMAND", ""),
     ]
     if not all(command.strip() for command in commands):
         raise ValueError(
