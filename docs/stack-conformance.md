@@ -826,3 +826,10 @@ The GitHub commit/tree API read on 2026-11-01 agrees with the retained full-hist
 objects. Its dependency manifest describes all 207 generated files from the
 original `0010` layout at the *same* engine revision
 `b73cd985b7dd06c39d57ea0e697878212f2b639d`; this change does not advance that engine.
+
+## Disconnected Rust source
+
+The same action runs the no-build [Rust source reachability check](rust-source-reachability.md).
+It rejects under-crate files with no Cargo/module/include/trybuild consumer.
+This is independent of the stack baseline: only exact reasoned exceptions
+for real templates or preserved vendor inputs are accepted.

@@ -37,6 +37,9 @@ description: >
   Repository automation also refuses forced branch updates, including force
   options, + refspecs, mirror pushes and forced GitHub branch-ref PATCH calls.
   Exact inherited occurrences use an independently shrinking force-push baseline.
+  Rust source reachability also rejects disconnected .rs files beneath Cargo
+  packages without compiling; exact reasoned template/vendor exceptions live in
+  .rust-reachability.json. See docs/rust-source-reachability.md.
   See docs/stack-conformance.md.
   The same action reports C1–C7 structural regressions with exact commit,
   file, line and contract, keeping inherited findings and recorded decisions
@@ -94,3 +97,4 @@ runs:
           model_policy=(--model-aliases "$MODEL_ALIASES")
         fi
         python3 "$GITHUB_ACTION_PATH/stack_conformance.py" check --base "$BASE" --head "$HEAD_REV" --baseline "$BASELINE" --report "$report" "${model_policy[@]}"
+        python3 "$GITHUB_ACTION_PATH/rust_reachability.py"
