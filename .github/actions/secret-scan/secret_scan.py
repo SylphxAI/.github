@@ -6,6 +6,7 @@ import argparse
 import ast
 import base64
 import collections
+import contextlib
 import hashlib
 import io
 import importlib.util
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 VERSION = '8.30.1'
@@ -27,14 +29,32 @@ CHECKSUMS = {
 }
 SHA = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 ALLOWLIST = '.desk-secret-allowlist.json'
+METADATA_TIMEOUT = 180
+OBJECT_FETCH_TIMEOUT = 600
+DETECTOR_TIMEOUT = 600
 
 
 class ScanError(Exception):
     """Only constant, value-free messages may cross the output boundary."""
 
 
-def command(args, *, cwd=None, env=None):
-    result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, timeout=180)
+@contextlib.contextmanager
+def phase(name):
+    """Only code-owned labels and elapsed time cross the diagnostics boundary."""
+    print(f'Secret scan phase {name}: started.', flush=True)
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        print(f'Secret scan phase {name}: elapsed {time.monotonic() - started:.3f}s.', flush=True)
+
+
+def command(args, *, cwd=None, env=None, input=None, timeout=METADATA_TIMEOUT):
+    try:
+        result = subprocess.run(args, cwd=cwd, env=env, input=input,
+                                capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ScanError(f'secret scan Git command timed out after {timeout}s; raw diagnostics withheld') from None
     if result.returncode:
         # Git and detector diagnostics can contain blob contents or credentials.
         raise ScanError('secret scan command failed; raw diagnostics withheld')
@@ -114,6 +134,94 @@ def fetch(repo, remote, base, head, token, *, filter_spec='blob:none'):
     return env
 
 
+def changed_blobs(repo, base, head):
+    """Inventory every parent delta without reading bodies or parsing filenames.
+
+    Detection uses first-parent patches; merge-resolution classification also
+    needs the other parents. Raw NUL-delimited records include both old and new
+    object IDs, including intermediate commits and a deleted finding's old blob.
+    """
+    revisions = [f'{base}..{head}'] if base else ['-1', head]
+    raw = git(repo, 'log', '--format=', '--raw', '--root', '--no-abbrev',
+              '--no-renames', '--no-ext-diff', '--no-textconv',
+              '--diff-merges=separate', '-z', *revisions)
+    records = iter(raw.split(b'\0'))
+    blobs = set()
+    for record in records:
+        if not record.strip(b'\n'):
+            continue
+        fields = record.lstrip(b'\n').split()
+        if len(fields) != 5 or not re.fullmatch(rb':[0-7]{6}', fields[0]) or \
+                not re.fullmatch(rb'[0-7]{6}', fields[1]) or \
+                any(not SHA.fullmatch(value.decode('ascii', errors='replace')) for value in fields[2:4]) or \
+                fields[4] not in (b'A', b'C', b'D', b'M', b'R', b'T', b'U', b'X', b'B'):
+            raise ScanError('secret scan could not inventory changed Git blobs')
+        # With renames disabled every raw record has exactly one path. Never
+        # interpret a path as another record, even if it resembles a raw header.
+        if next(records, None) is None:
+            raise ScanError('secret scan changed Git blob record has no path')
+        for mode, oid in zip((fields[0][1:], fields[1]), fields[2:4]):
+            if mode != b'160000' and set(oid) != {ord('0')}:
+                blobs.add(oid.decode('ascii'))
+    # The exact reviewed policy is read at head even when unchanged in the range.
+    policy = git(repo, 'ls-tree', '-z', head, '--', ALLOWLIST)
+    if policy:
+        fields = policy.split(b'\t', 1)[0].split()
+        if len(fields) == 3 and fields[1] == b'blob':
+            blobs.add(fields[2].decode('ascii'))
+    return blobs
+
+
+def missing_blobs(repo, blobs, base, head):
+    if not blobs:
+        return set()
+    revisions = [f'{base}..{head}'] if base else ['-1', head]
+    # Git 2.39 cat-file --batch-check fails on an omitted promisor blob even
+    # with GIT_NO_LAZY_FETCH=1. rev-list --missing=print inventories tree links
+    # without requesting bodies. Include each parent tree for deleted/old blobs,
+    # but never traverse unrelated ancestor history.
+    roots = {head, *git(repo, 'rev-list', '--parents', *revisions).decode('ascii').split()}
+    output = command(['git', '-C', str(repo), 'rev-list', '--objects', '--no-object-names',
+                      '--missing=print', '--no-walk', '--stdin'],
+                     input=''.join(oid + '\n' for oid in sorted(roots)).encode())
+    missing = set()
+    inventoried = set()
+    for line in output.decode('ascii').splitlines():
+        oid = line.removeprefix('?')
+        if not SHA.fullmatch(oid):
+            raise ScanError('secret scan Git blob inventory is invalid')
+        inventoried.add(oid)
+        if line.startswith('?'):
+            missing.add(oid)
+    if not blobs <= inventoried:
+        raise ScanError('secret scan required Git blobs are absent from range inventory')
+    return missing & blobs
+
+
+def hydrate_changed_blobs(repo, base, head):
+    """Fetch required bodies once, rather than letting each patch lazy-fetch one."""
+    blobs = changed_blobs(repo, base, head)
+    missing = missing_blobs(repo, blobs, base, head)
+    print(f'Secret scan changed blobs: {len(blobs)} required, {len(missing)} missing.', flush=True)
+    if not missing:
+        return
+    # Only configured promisor remotes may supply deliberately omitted objects.
+    config = command(['git', '-C', str(repo), 'config', '--get-regexp', r'^remote\..*\.promisor$'])
+    remotes = [line.split()[0][7:-9].decode('utf-8') for line in config.splitlines()
+               if len(line.split()) == 2 and line.split()[1].lower() in (b'true', b'yes', b'on', b'1')]
+    if not remotes:
+        raise ScanError('secret scan missing blobs have no configured promisor remote')
+    with phase('changed-blob-fetch'):
+        command(['git', '-C', str(repo), '-c', 'fetch.negotiationAlgorithm=noop', 'fetch',
+                 '--no-tags', '--no-write-fetch-head', '--recurse-submodules=no',
+                 '--filter=blob:none', remotes[0], '--stdin'],
+                input=''.join(oid + '\n' for oid in sorted(missing)).encode(),
+                env={**os.environ, 'GIT_NO_LAZY_FETCH': '1', 'GIT_TERMINAL_PROMPT': '0'},
+                timeout=OBJECT_FETCH_TIMEOUT)
+    if missing_blobs(repo, blobs, base, head):
+        raise ScanError('secret scan required Git blobs remain missing after object fetch')
+
+
 def allowlist(repo, head):
     tree = git(repo, 'ls-tree', '-z', head, '--', ALLOWLIST)
     if not tree:
@@ -190,19 +298,26 @@ def scan(repo, base, head, binary, directory, config='', event_name=''):
     for rev in (base, head):
         if rev:
             git(repo, 'cat-file', '-e', rev + '^{commit}')
+    with phase('changed-blob-acquisition'):
+        hydrate_changed_blobs(repo, base, head)
     allowed = allowlist(repo, head)
     policy = directory / 'gitleaks.toml'
     policy.write_text('[extend]\nuseDefault = true\n')
     report = directory / 'findings.json'
     log_range = f'{base}..{head}' if base else f'-1 {head}'
-    print('Scanning added commits: ' + log_range)
-    result = subprocess.run([
-        binary, 'git', str(repo), '--log-opts=' +
-        '--full-history --no-ext-diff --no-textconv --unified=0 --no-renames --diff-merges=first-parent ' + log_range,
-        '--config', config or str(policy), '--ignore-gitleaks-allow',
-        '--gitleaks-ignore-path', str(directory / 'no-ignores'),
-        '--no-banner', '--no-color', '--log-level', 'error', '--report-format', 'json', '--report-path', str(report),
-    ], cwd=directory, capture_output=True, timeout=180)
+    print('Scanning added commits: ' + log_range, flush=True)
+    with phase('detector'):
+        try:
+            result = subprocess.run([
+                binary, 'git', str(repo), '--log-opts=' +
+                '--full-history --no-ext-diff --no-textconv --unified=0 --no-renames --diff-merges=first-parent ' + log_range,
+                '--config', config or str(policy), '--ignore-gitleaks-allow',
+                '--gitleaks-ignore-path', str(directory / 'no-ignores'),
+                '--no-banner', '--no-color', '--log-level', 'error', '--report-format', 'json', '--report-path', str(report),
+            ], cwd=directory, capture_output=True, timeout=DETECTOR_TIMEOUT,
+                env={**os.environ, 'GIT_NO_LAZY_FETCH': '1', 'GIT_TERMINAL_PROMPT': '0'})
+        except subprocess.TimeoutExpired:
+            raise ScanError(f'secret scan detector timed out after {DETECTOR_TIMEOUT}s; raw diagnostics withheld') from None
     # The raw report is private to this temporary directory and is never uploaded.
     if result.returncode not in (0, 1) or not report.is_file():
         raise ScanError('gitleaks did not complete; raw diagnostics withheld')
@@ -293,7 +408,8 @@ def main():
                 if not args.remote and not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
                     raise ScanError('secret scan has no valid target repository')
                 remote = args.remote or f'{server}/{repository}.git'
-                env = fetch(repo, remote, base, head, os.environ.get('SECRET_SCAN_TOKEN', ''))
+                with phase('commit-metadata-fetch'):
+                    env = fetch(repo, remote, base, head, os.environ.get('SECRET_SCAN_TOKEN', ''))
                 os.environ.update(env)
             binary = args.gitleaks or install(directory, args.version)
             return scan(repo, base, head, binary, directory, str(Path(args.config).resolve()) if args.config else '')

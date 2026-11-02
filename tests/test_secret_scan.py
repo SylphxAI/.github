@@ -258,6 +258,120 @@ class SecretScanTest(unittest.TestCase):
             self.assertNotIn(self.token, output.getvalue())
             self.assertNotIn('no pre-merge range', output.getvalue())
 
+    def test_partial_fetch_bulk_hydrates_all_parent_deltas_before_real_detection(self):
+        self.git('config', 'uploadpack.allowFilter', 'true')
+        self.write('.desk-secret-allowlist.json', json.dumps({'version': 1, 'findings': []}))
+        self.base = self.commit('unchanged reviewed policy in scan base')
+        for index in range(12):
+            self.write(f'objects/{index}.txt', f'changed object {index}\n')
+        self.write('objects/raw\nname\t.txt', 'path delimiters are not records\n')
+        header_name = ':100644 100644 ' + 'a' * 40 + ' ' + 'b' * 40 + ' M'
+        self.write(header_name, 'a filename is not a raw diff header\n')
+        (self.repo / 'objects/binary.part').write_bytes(b'\0fixture\xff' * 131072)
+        self.write('snapshots/archive.part-001', self.line + '\n')
+        leaked = self.commit('add bodies and intermediate fixture')
+        self.write('snapshots/archive.part-001', 'fixture removed\n')
+        head = self.commit('remove intermediate fixture')
+        module = load()
+        bare = self.root / 'filtered.git'
+        bare.mkdir()
+        env = module.fetch(bare, str(self.repo), self.base, head, '')
+        directory = self.root / 'scan'
+        directory.mkdir()
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(output):
+            blobs = module.changed_blobs(bare, self.base, head)
+            for path in ('.desk-secret-allowlist.json', 'objects/binary.part'):
+                self.assertIn(self.git('rev-parse', head + ':' + path), blobs)
+            self.assertGreater(len(module.missing_blobs(bare, blobs, self.base, head)), 10)
+            with mock.patch.object(module, 'command', wraps=module.command) as commands:
+                self.assertEqual(module.scan(bare, self.base, head, self.binary, directory), 1)
+            fetches = [call for call in commands.call_args_list
+                       if 'fetch' in call.args[0] and '--stdin' in call.args[0]]
+            self.assertEqual(len(fetches), 1, 'all required bodies must use one explicit fetch')
+            self.assertEqual(fetches[0].kwargs['timeout'], module.OBJECT_FETCH_TIMEOUT)
+            self.assertFalse(module.missing_blobs(bare, blobs, self.base, head))
+        self.assertIn(leaked, output.getvalue())
+        self.assertIn('phase changed-blob-fetch', output.getvalue())
+        self.assertIn('phase detector', output.getvalue())
+        self.assertNotIn(self.token, output.getvalue())
+
+    def test_changed_blob_inventory_includes_root_and_both_merge_parents(self):
+        module = load()
+        root_blob = self.git('rev-parse', self.base + ':settings.txt')
+        self.assertIn(root_blob, module.changed_blobs(self.repo, '', self.base))
+        self.git('checkout', '-qb', 'other')
+        self.write('settings.txt', 'other parent\n')
+        other = self.commit('other parent')
+        self.git('checkout', '-q', 'main')
+        self.write('settings.txt', 'first parent\n')
+        first = self.commit('first parent')
+        subprocess.run(['git', '-C', str(self.repo), 'merge', '--no-commit', 'other'], capture_output=True)
+        self.write('settings.txt', 'resolution\n')
+        merged = self.commit('merge resolution')
+        actual = module.changed_blobs(self.repo, first, merged)
+        for commit in (first, other, merged):
+            self.assertIn(self.git('rev-parse', commit + ':settings.txt'), actual)
+
+    def test_detector_timeout_reports_its_phase_without_raw_diagnostics(self):
+        self.write('settings.txt', 'ordinary change\n')
+        head = self.commit('clean change')
+        module = load()
+        run = subprocess.run
+        def timeout_detector(args, **kwargs):
+            if args[0] == self.binary:
+                self.assertEqual(kwargs['timeout'], module.DETECTOR_TIMEOUT)
+                self.assertEqual(kwargs['env']['GIT_NO_LAZY_FETCH'], '1')
+                raise subprocess.TimeoutExpired([self.token], kwargs['timeout'],
+                                                output=self.token, stderr=self.token)
+            return run(args, **kwargs)
+        output = io.StringIO()
+        with mock.patch.object(module.subprocess, 'run', side_effect=timeout_detector), \
+                contextlib.redirect_stdout(output), \
+                self.assertRaisesRegex(module.ScanError, 'detector timed out after 600s') as error:
+            module.scan(self.repo, self.base, head, self.binary, self.root)
+        self.assertIn('phase detector', output.getvalue())
+        self.assertNotIn(self.token, output.getvalue() + str(error.exception))
+
+    def test_bulk_object_timeout_fails_closed_without_diagnostics(self):
+        module = load()
+        oid = 'a' * 40
+        def timeout_fetch(args, **kwargs):
+            if 'config' in args:
+                return subprocess.CompletedProcess(args, 0, b'remote.origin.promisor true\n', b'')
+            self.assertIn('--stdin', args)
+            self.assertEqual(kwargs['timeout'], module.OBJECT_FETCH_TIMEOUT)
+            self.assertEqual(kwargs['env']['GIT_NO_LAZY_FETCH'], '1')
+            raise subprocess.TimeoutExpired([self.token], kwargs['timeout'],
+                                            output=self.token, stderr=self.token)
+        output = io.StringIO()
+        with mock.patch.object(module, 'changed_blobs', return_value={oid}), \
+                mock.patch.object(module, 'missing_blobs', return_value={oid}), \
+                mock.patch.object(module.subprocess, 'run', side_effect=timeout_fetch), \
+                contextlib.redirect_stdout(output), \
+                self.assertRaisesRegex(module.ScanError, 'Git command timed out after 600s') as error:
+            module.hydrate_changed_blobs(self.repo, self.base, self.base)
+        self.assertIn('phase changed-blob-fetch', output.getvalue())
+        self.assertNotIn(self.token, output.getvalue() + str(error.exception))
+
+    def test_incomplete_bulk_fetch_and_invalid_inventory_fail_closed(self):
+        module = load()
+        oid = 'a' * 40
+        with mock.patch.object(module, 'git', return_value=b''), \
+                mock.patch.object(module, 'command', return_value=b'invalid object\n'), \
+                self.assertRaisesRegex(module.ScanError, 'inventory is invalid'):
+            module.missing_blobs(self.repo, {oid}, self.base, self.base)
+        with mock.patch.object(module, 'git', return_value=b''), \
+                mock.patch.object(module, 'command', return_value=(self.base + '\n').encode()), \
+                self.assertRaisesRegex(module.ScanError, 'absent from range inventory'):
+            module.missing_blobs(self.repo, {oid}, self.base, self.base)
+        with mock.patch.object(module, 'changed_blobs', return_value={oid}), \
+                mock.patch.object(module, 'missing_blobs', return_value={oid}), \
+                mock.patch.object(module, 'command', return_value=b'remote.origin.promisor true\n'), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaisesRegex(module.ScanError, 'remain missing'):
+            module.hydrate_changed_blobs(self.repo, self.base, self.base)
+
 
 class ManifestTest(unittest.TestCase):
     def test_pr_code_dispatch_must_validate_its_target_before_scanning(self):
