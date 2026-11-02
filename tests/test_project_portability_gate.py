@@ -79,6 +79,7 @@ class ProjectPortabilityGateTests(unittest.TestCase):
         self.assertEqual(sc.adoption.load_registry()['profiles'][sc.adoption.profile_id(profile)], profile)
         self.assertIn(RULE, profile['rules'])
         self.assertIn(sc.adoption.PREFIX + 'project_portability.py', profile['sources'])
+        self.assertIn(sc.adoption.PREFIX + 'rust_reachability.py', profile['sources'])
         del files[sc.adoption.PREFIX + 'project_portability.py']
         with self.assertRaisesRegex(ValueError, 'project portability checker source missing'):
             sc.adoption.source_profile(sc.DictTree(files))

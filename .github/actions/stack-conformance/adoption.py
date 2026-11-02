@@ -136,6 +136,13 @@ def source_profile(tree):
             raise ValueError("unreadable checker source: " + portable_path)
         ast.parse(value)
         sources[portable_path] = hashlib.sha256(value.encode()).hexdigest()
+    rust_path = PREFIX + "rust_reachability.py"
+    if "rust_reachability.py" in (texts["action.yml"] or ""):
+        value = tree.read(rust_path)
+        if value is None:
+            raise ValueError("Rust reachability checker source missing")
+        ast.parse(value)
+        sources[rust_path] = hashlib.sha256(value.encode()).hexdigest()
     scope_path = "policy/deal-randomness-scope.json"
     if deal_path in sources:
         value = tree.read(scope_path)
