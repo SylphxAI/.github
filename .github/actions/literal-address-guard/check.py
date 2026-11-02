@@ -17,7 +17,7 @@ import sys
 # A token cannot be a substring of a dotted number, hostname or identifier.
 # Ports and brackets are delimiters. IPv6 zone identifiers are ignored for
 # matching, not for the reported span. IPv4-mapped IPv6 is also checked as IPv4.
-V4 = re.compile(r"(?<![\w.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?(?![\w./])")
+V4 = re.compile(r"(?<![\w.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![\w.])")
 V6 = re.compile(r"(?<![\w.:])(?=[0-9a-fA-F:.]*:)[0-9a-fA-F:.]+(?:%[\w.-]+)?(?:/[0-9]{1,3})?(?![\w.:%/])")
 
 
@@ -37,14 +37,23 @@ def literals(text):
             if any(match.start() < end and match.end() > start for start, end in occupied):
                 continue
             raw = match.group()
+            start, end = match.span()
+            if pattern is V4 and not text[:start].endswith("//"):
+                # A slash is also an ordinary URL delimiter. Only extend a
+                # standalone host token into a complete CIDR, never a URL path
+                # (including numeric paths such as https://host/24).
+                suffix = re.match(r"/[0-9]{1,2}(?![\w./])", text[end:])
+                if suffix:
+                    raw += suffix.group()
+                    end += len(suffix.group())
             try:
                 value = ipaddress.ip_network(re.sub(r"%[^/]+", "", raw), strict=False)
             except ValueError:
                 continue
-            occupied.append(match.span())
-            yield value, match.start(), match.end()
+            occupied.append((start, end))
+            yield value, start, end
             if value.version == 6 and value.prefixlen == 128 and value.network_address.ipv4_mapped:
-                yield ipaddress.ip_network(value.network_address.ipv4_mapped), match.start(), match.end()
+                yield ipaddress.ip_network(value.network_address.ipv4_mapped), start, end
 
 
 def load_policy(path, source_root):
