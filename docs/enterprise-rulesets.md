@@ -67,7 +67,9 @@ also include an explicit `organization_name` condition for `SylphxAI` and exclud
 `sylphx_delivery=delivered`. A property-only `sylphx_ci_gate=required` selector now
 also matches HK Mahjong Tycoon and the other organizations' repositories; a
 default value is not authorization to roll out CI or touch a delivered customer
-repository.
+repository. The [consumer audit](enterprise-property-consumers.md) names the
+runtime readers, cross-organization enumeration and changed metadata-display or
+manual-check behavior.
 
 The current REST API and promotion documentation provide no in-place demotion
 operation. Treat promotion as non-reversible through the documented API, not as a
