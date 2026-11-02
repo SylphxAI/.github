@@ -59,6 +59,28 @@ Unicode surrogate pairs or CRLF. View separators are not original line breaks;
 annotations always use physical source lines. Base-side `AGENTS.md` instructions
 provide context.
 
+An identity- and schema-valid incomplete review can request related files through
+`context_requests=[{path, side}]`, where side is `base` or `head`. The collector
+reads ordinary UTF-8 files only from the sealed merge-base/head commits, verifies
+the Git blob identity, and adds their side and commit SHA to the source bundle.
+It never accepts a model-supplied ref, URL, command or repository. Renamed base
+evidence uses the previous path; head evidence uses the current path.
+
+The recovery bounds live in `recovery.mjs` and the request schema: at most three
+augmentation rounds, sixteen added source identities, and one MiB of added text,
+further limited by the qualified request-byte budget. Duplicate requests are
+coalesced; source already supplied in full cannot trigger another inference.
+Each genuine augmentation reseals the entire input and re-runs whole-scope
+review, including partitioning and synthesis, using the same configured model,
+output settings and original absolute deadline. The final Check and receipt bind
+the final source digest. Earlier conclusions are replaced, not unioned across
+enriched rounds: newly supplied guards or callers can disprove them.
+
+Missing, binary, linked, oversized or unavailable files, repeated requests,
+exhausted bounds, deadline expiry and an unverified/changed head stop recovery
+honestly. There is no same-input inference retry, quota fallback, model change
+or manual verdict.
+
 Explicit review paths take precedence over tier0/generated paths; unknown paths
 default to review. A `[review]` title also requests a review. Known tier0-only
 changes without the marker receive neutral with their classification. The model
@@ -116,12 +138,22 @@ becomes success. A superseded head is cancelled. A new head has a distinct
 check identity and cannot inherit an old result. One workflow serializes duplicate
 deliveries; creation looks up the stable external ID before its single POST.
 
-A complete result requires `completion="complete"`, `omitted_paths=[]` and
-`reason=""`. Explanations and non-blocking scope notes belong in `context_notes`.
-Completion refusals identify the declared incomplete/unavailable state, omitted
-path count and nonempty-reason flag independently. Model reason prose and omitted
-path values are not published in these diagnostics. A diagnostic identifies the
-failed contract conditions; it does not establish why the model returned them.
+A complete result requires `completion="complete"`, `omitted_paths=[]`,
+`context_requests=[]` and `reason=""`. Explanations and non-blocking scope notes
+belong in `context_notes`. Public completion refusals identify the declared
+incomplete/unavailable state, omitted-path count and nonempty-reason flag
+independently. They never echo incomplete model prose or requested paths.
+
+After schema and pinned-identity validation, bounded private diagnostics retain
+the actual reason (4096 characters), up to 32 exact known omitted names (1024
+characters each), sixteen context notes (1024 each), and validated context
+requests. A stale identity retains no model diagnostics. Per-round digests and
+partition scope preserve provenance in `recovery_diagnostics` inside the
+mode-0600 runner-local `pr-review-results.json`; these diagnostics are not
+returned in public receipts, Checks, annotations, stdout or step summaries.
+The receipt includes only machine-authored recovery counts/stop codes and
+accumulated serialized request sizes. A diagnostic explains what the model
+reported, not whether its explanation is a proven root cause.
 
 The shared model deadline is ten minutes from review-step start; the process is stopped
 at thirteen minutes and the always-run finalizer settles unfinished checks as
@@ -142,7 +174,10 @@ fake network responses, not a live model quality claim.
 The bounded-input cases include a two-megabyte minified fixture, exact literal
 preservation, complete path/hunk partition coverage, byte-qualified evidence,
 real rename/deletion coordinates, cross-file synthesis and retained findings
-after a later capacity refusal.
+after a later capacity refusal within one review scope. Recovery cases also
+cover pinned related-source acquisition, stale-round rejection, replaced findings,
+partition/synthesis requests, no-progress and resource/head/deadline stops, and a
+full CLI fixture proving mode-0600 diagnostic persistence without public leaks.
 
 Activation acceptance records the real Check Run ID/App/head, event-to-check and
 review elapsed times, concrete findings, a new-push result, and a real defect/
