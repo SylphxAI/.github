@@ -1,0 +1,29 @@
+{
+  "properties": [
+    {
+      "property_name": "sylphx_ci_gate",
+      "value_type": "single_select",
+      "required": true,
+      "default_value": "required",
+      "description": "Whether this repository must publish the org ci-ok gate. 'required' is the default so a new repo is covered without anyone remembering; 'none' is an audited, visible exemption set only on repos with no code gate or on upstream mirrors/deployed forks.",
+      "allowed_values": [
+        "required",
+        "none"
+      ],
+      "values_editable_by": "org_actors",
+      "require_explicit_values": false
+    },
+    {
+      "property_name": "sylphx_delivery",
+      "value_type": "single_select",
+      "required": false,
+      "description": "Delivered customer project: finished and handed over. Every automation (Renovate, rulesets, rollouts, adoption scripts) skips repos with value delivered; changes only on a customer request.",
+      "allowed_values": [
+        "managed",
+        "delivered"
+      ],
+      "values_editable_by": "org_actors",
+      "require_explicit_values": false
+    }
+  ]
+}

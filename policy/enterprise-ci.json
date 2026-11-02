@@ -1,0 +1,44 @@
+{
+  "name": "enterprise-required-ci-gate",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {
+    "organization_name": {
+      "include": ["SylphxAI"],
+      "exclude": []
+    },
+    "repository_property": {
+      "include": [
+        {
+          "name": "sylphx_ci_gate",
+          "source": "custom",
+          "property_values": ["required"]
+        }
+      ],
+      "exclude": [
+        {
+          "name": "sylphx_delivery",
+          "source": "custom",
+          "property_values": ["delivered"]
+        }
+      ]
+    },
+    "ref_name": {
+      "include": ["~DEFAULT_BRANCH"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": true,
+        "required_status_checks": [
+          {"context": "ci-ok", "integration_id": 15368}
+        ]
+      }
+    }
+  ]
+}
