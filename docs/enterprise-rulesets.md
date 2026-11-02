@@ -56,7 +56,18 @@ Promotion used the supported endpoint, not deletion and recreation. The
 `required` default on `sylphx_ci_gate` is metadata; no new CI rule was applied in
 any organization. A complete read of the other four organizations found that all
 409 of their repositories now expose `sylphx_ci_gate=required` and
-`sylphx_delivery=null`. They do not inherit the SylphxAI organization CI gate.
+`sylphx_delivery=null`. Both definitions now span all five organizations and all
+657 repositories: **the property metadata expanded, even though the CI rules did
+not**. Only `sylphx_ci_gate` has the `required` default; `sylphx_delivery` remains
+unset by default. The other organizations do not inherit the SylphxAI organization
+CI gate.
+
+Any Enterprise ruleset using these properties for the SylphxAI CI policy must
+also include an explicit `organization_name` condition for `SylphxAI` and exclude
+`sylphx_delivery=delivered`. A property-only `sylphx_ci_gate=required` selector now
+also matches HK Mahjong Tycoon and the other organizations' repositories; a
+default value is not authorization to roll out CI or touch a delivered customer
+repository.
 
 The current REST API and promotion documentation provide no in-place demotion
 operation. Treat promotion as non-reversible through the documented API, not as a
