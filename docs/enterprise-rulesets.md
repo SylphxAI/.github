@@ -54,8 +54,17 @@ ruleset: the initial organization-only references also returned HTTP 422.
 Promotion resolved that validation error, but not the later check-rule refusal.
 Promotion used the supported endpoint, not deletion and recreation. The
 `required` default on `sylphx_ci_gate` is metadata; no new CI rule was applied in
-any organization. Do not delete or recreate these definitions to undo a failed
-ruleset request, because doing so can discard repository values.
+any organization. A complete read of the other four organizations found that all
+409 of their repositories now expose `sylphx_ci_gate=required` and
+`sylphx_delivery=null`. They do not inherit the SylphxAI organization CI gate.
+
+The current REST API and promotion documentation provide no in-place demotion
+operation. Treat promotion as non-reversible through the documented API, not as a
+reversible ruleset toggle. Deleting and recreating definitions is not a supported
+in-place reversal and can discard repository values or break the still-active
+property-scoped gate. No such deletion was attempted. Retain the definitions and
+saved values; any future scope reversal needs a separately verified recovery
+procedure or a provider-supported demotion.
 
 ## Reconsidering the migration
 
