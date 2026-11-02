@@ -33,6 +33,7 @@ class Token(NamedTuple):
     kind: str
     line: int
     raw: str = ""
+    offset: int = -1
 
 
 class SqlError(ValueError):
@@ -111,7 +112,7 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
                 if not variable:
                     raise SqlError(f"line {line}: cannot inspect MySQL variable")
                 i += len(variable[0])
-            tokens.append(Token(sql[start:i], "literal", line, sql[start:i]))
+            tokens.append(Token(sql[start:i], "literal", line, sql[start:i], start))
             line += sql[start:i].count("\n")
         elif ch in "'\"`" or (dialect == "postgres" and ch == "$" and DOLLAR.match(sql, i)):
             start, start_line = i, line
@@ -127,12 +128,12 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
                 i = quoted_end(sql, start, dialect, line)
                 kind = "literal" if ch == "'" or (dialect == "mysql" and ch == '"') else "identifier"
                 value = sql[start + 1:i - 1].replace(ch + ch, ch) if kind == "identifier" else "<literal>"
-            tokens.append(Token(value, kind, start_line, sql[start:i]))
+            tokens.append(Token(value, kind, start_line, sql[start:i], start))
             line += sql[start:i].count("\n")
         else:
             match = WORD.match(sql, i)
             value = match[0] if match else ch
-            tokens.append(Token(value.upper(), "word" if match else "symbol", line, value))
+            tokens.append(Token(value.upper(), "word" if match else "symbol", line, value, i))
             i += len(value)
     return tokens, markers
 
@@ -239,7 +240,7 @@ def routine_kind(stmt: list[Token]) -> str | None:
 def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int) -> list[tuple[int, str]]:
     opaque = [(stmt[0].line, "opaque procedural body requires a contract reference")]
     if kind == "TRIGGER" and dialect == "postgres":
-        return [] if postgres_trigger(stmt) else opaque
+        return [] if postgres_trigger(stmt) is not None else opaque
     if kind == "EVENT" or dialect != "postgres":
         return opaque
     flat = top_level(stmt)
@@ -264,7 +265,7 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
         else:
             return opaque
         inner, _ = lex(source, dialect)
-        inner = [Token(t.value, t.kind, body.line + t.line - 1, t.raw) for t in inner]
+        inner = [Token(t.value, t.kind, body.line + t.line - 1, t.raw, t.offset) for t in inner]
         # Bare format can resolve to a user overload even with the default
         # search path. A routine-local catalog-only path removes that ambiguity.
         catalog_format = kind != "DO" and catalog_only_search_path(flat)
@@ -588,8 +589,8 @@ def qualified_name(tokens: list[Token], at: int) -> tuple[tuple[str, str] | None
     return parts, at + 3
 
 
-def postgres_trigger(stmt: list[Token]) -> bool:
-    """Recognize callback-reference DDL, not an inline procedural body.
+def postgres_trigger(stmt: list[Token]) -> list[Token] | None:
+    """Return WHEN tokens for valid callback-reference DDL, not an inline procedural body.
 
     PostgreSQL 18 CREATE TRIGGER grammar (read 2026-11-02):
     https://www.postgresql.org/docs/18/sql-createtrigger.html
@@ -619,14 +620,14 @@ def postgres_trigger(stmt: list[Token]) -> bool:
             return True
         if not simple():
             return False
-        if qualified and at < len(stmt) and stmt[at].value == ".":
+        if qualified and at < len(stmt) and stmt[at].kind == "symbol" and stmt[at].value == ".":
             at += 1
             return simple()
         return True
 
     def group() -> list[Token] | None:
         nonlocal at
-        if at >= len(stmt) or stmt[at].value != "(":
+        if at >= len(stmt) or stmt[at].kind != "symbol" or stmt[at].value != "(":
             return None
         start, depth = at + 1, 1
         at += 1
@@ -640,45 +641,53 @@ def postgres_trigger(stmt: list[Token]) -> bool:
         return None
 
     if not take("CREATE"):
-        return False
+        return None
     replace = take("OR", "REPLACE")
     constraint = take("CONSTRAINT")
     if constraint and replace or not take("TRIGGER") or not identifier():
-        return False
+        return None
     timing = "BEFORE" if take("BEFORE") else "AFTER" if take("AFTER") else "INSTEAD" if take("INSTEAD", "OF") else None
     if timing is None or constraint and timing != "AFTER":
-        return False
+        return None
     events: set[str] = set()
     columns = False
     while True:
         event = next((word for word in ("INSERT", "UPDATE", "DELETE", "TRUNCATE") if take(word)), None)
         if event is None or event in events:
-            return False
+            return None
         events.add(event)
         if event == "UPDATE" and take("OF"):
             columns = True
             if not identifier():
-                return False
-            while at < len(stmt) and stmt[at].value == ",":
+                return None
+            while at < len(stmt) and stmt[at].kind == "symbol" and stmt[at].value == ",":
                 at += 1
                 if not identifier():
-                    return False
+                    return None
         if not take("OR"):
             break
     if not take("ON") or not identifier(qualified=True):
-        return False
+        return None
     if constraint:
         if take("FROM") and not identifier(qualified=True):
-            return False
-        not_deferrable = take("NOT", "DEFERRABLE")
-        if not not_deferrable:
-            take("DEFERRABLE")
-        if take("INITIALLY"):
-            if not (take("IMMEDIATE") or not not_deferrable and take("DEFERRED")):
-                return False
+            return None
+        # PostgreSQL permits either order and repeated identical attributes.
+        attributes: set[str] = set()
+        while True:
+            attribute = next((label for words, label in [
+                (("NOT", "DEFERRABLE"), "NOT DEFERRABLE"), (("DEFERRABLE",), "DEFERRABLE"),
+                (("INITIALLY", "IMMEDIATE"), "IMMEDIATE"), (("INITIALLY", "DEFERRED"), "DEFERRED")
+            ] if take(*words)), None)
+            if attribute is None:
+                break
+            attributes.add(attribute)
+        if (attributes >= {"NOT DEFERRABLE", "DEFERRABLE"}
+                or attributes >= {"IMMEDIATE", "DEFERRED"}
+                or attributes >= {"NOT DEFERRABLE", "DEFERRED"}):
+            return None
     if take("REFERENCING"):
         if constraint or timing != "AFTER" or columns or len(events) != 1:
-            return False
+            return None
         relations: set[str] = set()
         while True:
             relation = "OLD" if take("OLD") else "NEW" if take("NEW") else None
@@ -687,42 +696,70 @@ def postgres_trigger(stmt: list[Token]) -> bool:
             if (relation in relations or not take("TABLE")
                     or relation == "OLD" and not events & {"UPDATE", "DELETE"}
                     or relation == "NEW" and not events & {"UPDATE", "INSERT"}):
-                return False
+                return None
             relations.add(relation)
             take("AS")
             if not identifier():
-                return False
+                return None
         if not relations:
-            return False
+            return None
     row = False
     if take("FOR"):
         each = take("EACH")
         row = take("ROW")
         if not row and not take("STATEMENT") or constraint and not each:
-            return False
+            return None
     if (constraint or timing == "INSTEAD") and not row or "TRUNCATE" in events and row:
-        return False
+        return None
     if timing == "INSTEAD" and (columns or "TRUNCATE" in events):
-        return False
+        return None
+    condition: list[Token] = []
     if take("WHEN"):
         condition = group()
         if not condition or timing == "INSTEAD" or any(kw(t, "SELECT") for t in condition):
-            return False
+            return None
     if not take("EXECUTE") or not (take("FUNCTION") or take("PROCEDURE")) or not identifier(qualified=True):
-        return False
+        return None
     args = group()
     if args is None or at != len(stmt):
-        return False
+        return None
     # Trigger arguments are string/numeric constants or names, never expressions
     # or normal function parameters. Keep empty/trailing comma slots invalid.
     parts = split(args, ",")
-    if args and (args[0].value == "," or args[-1].value == ","
-                 or any(a.value == b.value == "," for a, b in zip(args, args[1:]))):
-        return False
-    return all(len(part) == 1 and part[0].kind in {"literal", "word", "identifier"}
-               or re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?",
-                               "".join(t.raw for t in part))
-               for part in parts)
+    comma = lambda t: t.kind == "symbol" and t.value == ","
+    if args and (comma(args[0]) or comma(args[-1])
+                 or any(comma(a) and comma(b) for a, b in zip(args, args[1:]))):
+        return None
+
+    def adjacent(left: Token, right: Token) -> bool:
+        return left.offset >= 0 and left.offset + len(left.raw) == right.offset
+
+    def constant(part: list[Token]) -> bool:
+        if len(part) == 1:
+            token = part[0]
+            if (token.kind == "identifier" and token.raw.startswith('"')
+                    or token.kind == "word" and re.fullmatch(r"[^\W\d][\w$]*", token.value)
+                    or token.kind == "literal"):
+                return True
+        # E/U& string prefixes and newline-concatenated string constants are
+        # still one Sconst. Prefixes and numeric pieces must be contiguous;
+        # reconstructing after whitespace removal would accept expressions.
+        strings = part
+        if len(part) >= 2 and kw(part[0], "E") and adjacent(part[0], part[1]):
+            strings = part[1:]
+        elif (len(part) >= 3 and kw(part[0], "U") and part[1].kind == "symbol"
+              and part[1].value == "&" and adjacent(part[0], part[1]) and adjacent(part[1], part[2])):
+            strings = part[2:]
+        if (strings and all(t.kind == "literal" and t.raw.startswith("'") for t in strings)
+                and all(b.line > a.line + a.raw.count("\n") for a, b in zip(strings, strings[1:]))):
+            return True
+        digits = r"[0-9](?:_?[0-9])*"
+        decimal = rf"(?:{digits}(?:\.(?:{digits})?)?|\.{digits})(?:[eE][+-]?{digits})?"
+        based = r"0(?:[xX](?:_?[0-9a-fA-F])+|[oO](?:_?[0-7])+|[bB](?:_?[01])+)"
+        return bool(all(adjacent(a, b) for a, b in zip(part, part[1:]))
+                    and re.fullmatch(rf"(?:{decimal}|{based})", "".join(t.raw for t in part)))
+
+    return condition if all(constant(part) for part in parts) else None
 
 
 def constant_acl_execute(stmt: list[Token], dialect: str, catalog_format: bool = False) -> bool:
@@ -1060,6 +1097,11 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             timeouts.clear()
             dropped_concurrent_indexes.clear()
         control_stmt = procedural_statement(stmt)
+        trigger_condition = (postgres_trigger(control_stmt)
+                             if dialect == "postgres" and routine_kind(control_stmt) == "TRIGGER" else None)
+        # Valid trigger DDL contains event names and constant callback arguments,
+        # not mutations. Only its WHEN expression needs the generic SQL scan.
+        scan_stmt = trigger_condition if trigger_condition is not None else stmt
         if starts(control_stmt, "ALTER") and has(control_stmt, "SET", "SCHEMA"):
             dropped_concurrent_indexes.clear()
         if dialect == "postgres":
@@ -1097,7 +1139,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                         ))
                     elif target is not None:
                         dropped_concurrent_indexes.discard(target)
-            elif has(control_stmt, "CONCURRENTLY"):
+            elif trigger_condition is None and has(control_stmt, "CONCURRENTLY"):
                 if not {"lock_timeout", "statement_timeout"} <= timeouts:
                     out.append((control_stmt[0].line, "CONCURRENTLY DDL requires preceding non-zero lock_timeout and statement_timeout"))
                 if starts(control_stmt, "CREATE") and has(control_stmt, "INDEX"):
@@ -1105,7 +1147,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                         control_stmt[0].line,
                         "CREATE INDEX CONCURRENTLY requires a preceding DROP INDEX CONCURRENTLY IF EXISTS for the same index",
                     ))
-        out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(stmt))
+        out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(scan_stmt))
         if starts(control_stmt, "SET") and any(
                 (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
                 or (t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I))
@@ -1113,25 +1155,23 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             # Changing quote semantics would invalidate subsequent lexical
             # inspection; these statements need an explicit contract review.
             out.append((stmt[0].line, "SQL lexical mode change requires a contract reference"))
-        trigger_ddl = routine_kind(control_stmt) == "TRIGGER"
-        non_dml_on = starts(control_stmt, "GRANT") or starts(control_stmt, "REVOKE") or trigger_ddl
-        on_index = next((j for j, t in enumerate(stmt) if kw(t, "ON")), 0) if non_dml_on else 0
-        for i, token in enumerate(stmt):
-            tail = stmt[i:]
+        non_dml_on = starts(control_stmt, "GRANT") or starts(control_stmt, "REVOKE")
+        on_index = next((j for j, t in enumerate(scan_stmt) if kw(t, "ON")), 0) if non_dml_on else 0
+        for i, token in enumerate(scan_stmt):
+            tail = scan_stmt[i:]
             if any(starts(tail, "DROP", obj) for obj in ("TABLE", "COLUMN", "SCHEMA", "DATABASE")):
                 out.append((token.line, "DROP " + tail[1].value))
             if starts(tail, "DROP", "TEMPORARY", "TABLE"):
                 out.append((token.line, "DROP TEMPORARY TABLE"))
             if any(starts(tail, "DROP", obj) for obj in ("OWNED", "TYPE", "DOMAIN")):
                 out.append((token.line, "DROP " + tail[1].value))
-            if (kw(token, "TRUNCATE") and not (trigger_ddl and i < on_index)
-                    and not (i + 1 < len(stmt) and stmt[i + 1].value == "(")):
+            if (kw(token, "TRUNCATE") and not (i + 1 < len(scan_stmt) and scan_stmt[i + 1].value == "(")):
                 out.append((token.line, "TRUNCATE"))
             if kw(token, "RENAME"):
                 out.append((token.line, "RENAME"))
             # Each mutation needs its own top-level WHERE. A WHERE in a nested
             # SELECT, quoted string, or a second statement does not qualify.
-            if (kw(token, "DELETE") or kw(token, "UPDATE")) and i >= on_index and not (i and kw(stmt[i - 1], "ON")):
+            if (kw(token, "DELETE") or kw(token, "UPDATE")) and i >= on_index and not (i and kw(scan_stmt[i - 1], "ON")):
                 # Stop at the enclosing CTE/subquery boundary as well as the
                 # statement end. A later CTE's WHERE cannot qualify this one.
                 suffix, depth = [], 0
@@ -1144,7 +1184,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                         suffix.append(following)
                     if following.kind == "symbol" and following.value == "(":
                         depth += 1
-                lock_or_upsert = kw(token, "UPDATE") and i and any(kw(stmt[i - 1], w) for w in ("FOR", "KEY", "ON", "DO"))
+                lock_or_upsert = kw(token, "UPDATE") and i and any(kw(scan_stmt[i - 1], w) for w in ("FOR", "KEY", "ON", "DO"))
                 if not lock_or_upsert and not has(suffix, "WHERE"):
                     out.append((token.line, token.value + " without WHERE"))
         stmt = control_stmt

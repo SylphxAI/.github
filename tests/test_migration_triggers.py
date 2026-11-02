@@ -67,6 +67,39 @@ class TriggerTests(unittest.TestCase):
             with self.subTest(sql=sql):
                 self.assertEqual(guard.check_sql(sql, "postgres"), [])
 
+    def test_callback_constant_forms_preserve_lexical_boundaries(self):
+        for arguments in ["E'arg'", "U&'arg'", "'one'\n 'two'", "E'one'\n 'two'",
+                          'UPDATE, TRUNCATE, DROP, RENAME, CONCURRENTLY, ","',
+                          '".", "(", ")"', "1_000.0_25, 1e+3, .5, 1., 0x_1F, 0o77, 0b_10"]:
+            sql = TRIGGER.replace("app.assign_id()", f"audit({arguments})")
+            with self.subTest(arguments=arguments):
+                self.assertEqual(guard.check_sql(sql, "postgres"), [])
+        for arguments in ["`arg`", "42abc", "1 . 2", "1e + 3", "1/*gap*/.2", "1_", "0xG",
+                          "E 'arg'", "U & 'arg'", "'one' 'two'", "E'one' 'two'"]:
+            sql = TRIGGER.replace("app.assign_id()", f"audit({arguments})")
+            with self.subTest(arguments=arguments):
+                self.assertIn("opaque procedural body", str(guard.check_sql(sql, "postgres")))
+
+    def test_constraint_attribute_order_repetition_and_conflicts(self):
+        for options in ["INITIALLY DEFERRED", "INITIALLY DEFERRED DEFERRABLE",
+                        "INITIALLY IMMEDIATE NOT DEFERRABLE", "DEFERRABLE DEFERRABLE INITIALLY DEFERRED"]:
+            sql = f"CREATE CONSTRAINT TRIGGER audit AFTER INSERT ON records {options} FOR EACH ROW EXECUTE FUNCTION audit();"
+            with self.subTest(options=options):
+                self.assertEqual(guard.check_sql(sql, "postgres"), [])
+        for options in ["NOT DEFERRABLE DEFERRABLE", "INITIALLY IMMEDIATE INITIALLY DEFERRED",
+                        "INITIALLY DEFERRED NOT DEFERRABLE", "NOT DEFERRABLE INITIALLY DEFERRED"]:
+            sql = f"CREATE CONSTRAINT TRIGGER audit AFTER INSERT ON records {options} FOR EACH ROW EXECUTE FUNCTION audit();"
+            with self.subTest(options=options):
+                self.assertIn("opaque procedural body", str(guard.check_sql(sql, "postgres")))
+
+    def test_quoted_identifiers_cannot_impersonate_symbol_delimiters(self):
+        for sql in [TRIGGER.replace("ON app.records", 'ON app "." records'),
+                    TRIGGER.replace("app.assign_id()", 'app "." assign_id()'),
+                    TRIGGER.replace("app.assign_id()", 'assign_id"(" ")"'),
+                    TRIGGER.replace("BEFORE INSERT", 'BEFORE UPDATE OF id "," nickname')]:
+            with self.subTest(sql=sql):
+                self.assertIn("opaque procedural body", str(guard.check_sql(sql, "postgres")))
+
     def test_function_bodies_still_report_destructive_dynamic_or_opaque_operations(self):
         for body, reason in [("DELETE FROM accounts;", "DELETE without WHERE"),
                              ("UPDATE accounts SET active=0;", "UPDATE without WHERE"),
