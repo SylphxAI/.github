@@ -1,3 +1,5 @@
+export const contextRequestLimit = 16
+
 const text = { type: 'string', minLength: 1 }
 const line = { type: 'integer', minimum: 1 }
 const object = (properties) => ({
@@ -28,6 +30,10 @@ export const resultSchema = object({
 	review_summary: text,
 	related_evidence: { type: 'array', items: evidence },
 	omitted_paths: { type: 'array', items: text },
+	context_requests: { type: 'array', maxItems: contextRequestLimit, items: object({
+		path: { type: 'string', minLength: 1, maxLength: 1024 },
+		side: { type: 'string', enum: ['base', 'head'] },
+	}) },
 	context_notes: { type: 'array', items: text },
 	reason: { type: 'string' },
 })
@@ -50,10 +56,10 @@ export function validateSchema(value, schema, at = 'result') {
 		}
 	}
 	if (schema.type === 'array') {
-		if (!Array.isArray(value) || value.length < (schema.minItems ?? 0)) fail()
+		if (!Array.isArray(value) || value.length < (schema.minItems ?? 0) || value.length > (schema.maxItems ?? Infinity)) fail()
 		for (const item of value) validateSchema(item, schema.items, `${at}[]`)
 	}
-	if (schema.type === 'string' && (typeof value !== 'string' || value.trim().length < (schema.minLength ?? 0))) fail()
+	if (schema.type === 'string' && (typeof value !== 'string' || value.trim().length < (schema.minLength ?? 0) || value.length > (schema.maxLength ?? Infinity))) fail()
 	if (schema.type === 'integer' && (!Number.isSafeInteger(value) || value < schema.minimum)) fail()
 	return value
 }

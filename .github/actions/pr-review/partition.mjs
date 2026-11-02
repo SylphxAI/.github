@@ -45,8 +45,11 @@ export function planReview(input, requestBytes, byteBudget) {
     return !largest || requestBytes(make([{ ...f, hunks: [{ ...largest.h, rows: [largest.row], first_row: 0, total_rows: largest.h.rows.length }] }], context)) <= byteBudget;
   }) ? context : [];
   const pending = input.files.map(file => ({ file }));
-  if (!repeated.length) for (const c of context) pending.push({ context: { path: c.path,
-    sha256: sourceDigest(c.content), bytes: Buffer.byteLength(c.content), segments: literalSegments(c.content) } });
+  if (!repeated.length) for (const c of context) {
+    const { content, ...identity } = c;
+    pending.push({ context: c.segments ? c : { ...identity,
+      sha256: sourceDigest(content), bytes: Buffer.byteLength(content), segments: literalSegments(content) } });
+  }
   const parts = [];
   let partFiles = [], partContext = [...repeated];
   const flush = () => { parts.push(make(partFiles, partContext)); partFiles = []; partContext = [...repeated]; };
@@ -93,13 +96,14 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     catch { return unavailable(input, 'Review could not complete.'); }
   }
   const completed = [], failures = [], completedIndexes = new Set();
+  let interrupted;
   for (let i = 0; i < parts.length; i++) {
     const head = await isCurrent();
     if (head !== true) { failures.push(head === false ? 'Head superseded before the next review part.' : 'Current head could not be verified before the next review part.'); break; }
     let result;
     try { result = await execute(parts[i]); }
     catch { result = unavailable(parts[i], 'Review part could not complete.'); }
-    if (result.status !== 'complete') { failures.push(`Part ${i + 1}/${parts.length}: ${result.reason}`); break; }
+    if (result.status !== 'complete') { interrupted = result; failures.push(`Part ${i + 1}/${parts.length}: ${result.reason}`); break; }
     completed.push(result);
     completedIndexes.add(i);
   }
@@ -107,7 +111,9 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     context_notes: completed.flatMap(r => r.context_notes ?? []),
     parts: { planned: parts.length, completed: completed.length },
     omitted_paths: input.files.filter(f => parts.some((p, i) => p.files.some(pf => pf.path === f.path) && !completedIndexes.has(i))).map(f => f.path) };
-  if (failures.length) return { ...base, reason: failures.join(' ').slice(0, 2000) };
+  if (failures.length) return { ...base, reason: failures.join(' ').slice(0, 2000),
+    context_requests: interrupted?.status === 'incomplete' ? interrupted.context_requests ?? [] : [],
+    ...(interrupted?.diagnostics ? { diagnostics: interrupted.diagnostics } : {}) };
   const summaries = completed.map((r, i) => ({ part: i + 1,
     paths: parts[i].files.map(f => f.path), summary: r.review_summary,
     related_evidence: r.related_evidence, findings: r.findings, context_notes: r.context_notes }));
@@ -120,7 +126,9 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   let result;
   try { result = await execute(synthesis); }
   catch { result = unavailable(synthesis, 'Cross-file synthesis could not complete.'); }
-  if (result.status !== 'complete') return { ...base, reason: `Cross-file synthesis: ${result.reason}` };
+  if (result.status !== 'complete') return { ...base, reason: `Cross-file synthesis: ${result.reason}`,
+    context_requests: result.status === 'incomplete' ? result.context_requests ?? [] : [],
+    ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
   const findings = unionFindings([...completed, result]);
   // Every synthesized anchor must still be a real changed source coordinate.
   if (findings.some(f => !input.files.some(file => file.path === f.path && changedRanges(file)

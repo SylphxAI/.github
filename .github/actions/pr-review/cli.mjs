@@ -42,7 +42,7 @@ async function main() {
     const engine = input => gatewayReviewer({ token: read(authPath).inferenceToken,
       model: env.REVIEW_MODEL, maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
       reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs, current: () => github.current(target) })(input);
-    const receipt = await produceReview({ github, target, trigger, engine, createReviewInput, engineVersion: reviewerVersion,
+    const receipt = await produceReview({ github, target, trigger, engine, createReviewInput, engineVersion: reviewerVersion, deadlineMs,
       detailsUrl: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
       onResult: result => {
         const index = results.findIndex(r => r.pull_request === target.number && r.head_sha === result.head_sha);

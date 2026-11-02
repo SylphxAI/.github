@@ -2,6 +2,7 @@ import { APP_ID, CHECK_NAME, Unavailable, digest, validSha, validPath, bundleFil
 import { changedRanges } from './source.mjs';
 import { spawnSync } from 'node:child_process';
 import { posix } from 'node:path';
+import { recoverContext } from './recovery.mjs';
 
 function glob(pattern) {
   let out = '^';
@@ -136,7 +137,7 @@ function outputFor(result, input) {
   } };
 }
 
-export async function produceReview({ github, target, trigger, detailsUrl, engine, createReviewInput, engineVersion, onBegin, onResult }) {
+export async function produceReview({ github, target, trigger, detailsUrl, engine, createReviewInput, engineVersion, onBegin, onResult, deadlineMs }) {
   const started = Date.now();
   const externalId = `pr-review/v1/${digest(JSON.stringify([github.repository, target.kind, target.number ?? target.ref,
     target.base_sha, target.policy_sha, target.head_sha, target.review_requested, trigger, engineVersion]))}`;
@@ -155,9 +156,10 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
       return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion: 'neutral', applicable: false,
         started_at: run.started_at, observed_at: observedAt, elapsed_ms: Date.now() - started };
     }
-    const input = createReviewInput(bundle);
-    let result = validateResult(await engine(input, externalId), input);
-    await onResult?.(result);
+    const reviewed = await recoverContext({ input: createReviewInput(bundle), github, target,
+      execute: input => engine(input, externalId), createReviewInput, validateResult, onResult, deadlineMs });
+    const input = reviewed.input;
+    let result = reviewed.result;
     let current;
     try { current = await github.current(target); }
     catch {
@@ -179,7 +181,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     const receipt = await github.finish(run, conclusion, output);
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, findings: result.findings.length,
       ...(result.status === 'complete' ? {} : { unavailable: true, reason: result.reason }),
-      parts: result.parts, budget: result.budget, request_bytes: result.request_bytes,
+      parts: result.parts, budget: result.budget, request_bytes: result.request_bytes, recovery: result.recovery,
       started_at: run.started_at, observed_at: observedAt,
       session_name: result.session_name, input_digest: input.input_digest, reviewer_version: input.reviewer_version,
       elapsed_ms: Date.now() - started };
