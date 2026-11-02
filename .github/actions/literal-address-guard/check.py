@@ -18,8 +18,8 @@ import sys
 # Ports and brackets are delimiters. IPv6 zone identifiers are ignored for
 # matching, not for the reported span. IPv4-mapped IPv6 is also checked as IPv4.
 URL_AUTHORITY = re.compile(r"//[^\s/?#]*$")
-V4 = re.compile(r"(?<![\w.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![\w.])")
-V6 = re.compile(r"(?<![\w.:])(?=[0-9a-fA-F:.]*:)[0-9a-fA-F:.]+(?:%[\w.-]+)?(?:/[0-9]{1,3})?(?![\w.:%/])")
+V4 = re.compile(r"(?<![\w.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?!\w|\.[\w.])")
+V6 = re.compile(r"(?<![\w.:])(?=[0-9a-fA-F:.]*:)[0-9a-fA-F:.]+(?:%[\w.-]+)?(?:/[0-9]{1,3})?(?![\w:%/]|\.[\w.])")
 
 
 def git(root, *args):
@@ -39,6 +39,10 @@ def literals(text):
                 continue
             raw = match.group()
             start, end = match.span()
+            if pattern is V6:
+                # A sentence-ending period is punctuation, not part of IPv6.
+                raw = raw.rstrip(".")
+                end = start + len(raw)
             if pattern is V4 and not URL_AUTHORITY.search(text[:start]):
                 # A slash is also an ordinary URL delimiter. Only extend a
                 # standalone host token into a complete CIDR, never a URL path
