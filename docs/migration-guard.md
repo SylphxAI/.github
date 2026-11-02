@@ -65,8 +65,8 @@ New migrations are refused for:
   migration. Generated, identity, serial and auto-increment columns count as
   defaults. New tables can declare required columns directly.
 - MySQL `DISCARD TABLESPACE` and character-set conversions.
-- Opaque dynamic SQL, such as `CALL`, `EXECUTE`, and `PREPARE`, and trigger or
-  scheduled-event definitions whose effects cannot be established locally.
+- Opaque dynamic SQL, such as `CALL`, `EXECUTE`, and `PREPARE`, and inline trigger or
+  scheduled-event bodies whose effects cannot be established locally.
 - `SET` changes to `sql_mode` or `standard_conforming_strings`, including quoted
   setting names. Changing quote rules can hide later SQL from inspection.
 
@@ -122,13 +122,26 @@ exceeding a limit keeps the execution opaque. Crediting one execution does not
 skip inspection of sibling statements or surrounding migrations. Relation
 implementations, column/operator types, existing ACL continuity, and application
 access policy still require review; this syntax check is not a database planner.
-Simple PostgreSQL `BEFORE INSERT` and `AFTER INSERT` row triggers pass when the
-target table was created unconditionally earlier in the same migration and the
-zero-argument trigger function was defined and inspected there too. Both table
-and function names must include an explicit schema. This supports additive ID
-assignment triggers without trusting search-path resolution or an external
-function. Triggers on existing tables, other events, trigger arguments, and
-unresolved or opaque functions still require a contract reference.
+PostgreSQL `CREATE TRIGGER` declares a callback reference, not an inline body.
+Ordinary `BEFORE`, `AFTER`, and `INSTEAD OF` triggers and `CONSTRAINT` triggers
+are recognized with their event lists, `UPDATE OF` columns, row/statement scope,
+constraint timing, transition relations, and `WHEN` conditions. The terminal
+`EXECUTE FUNCTION` (or legacy `EXECUTE PROCEDURE`) must name a function, optionally
+schema-qualified, followed by constant/name arguments. Expressions, dynamic or
+inline actions, malformed references, and unsupported clauses remain opaque.
+`UPDATE`, `DELETE`, and `TRUNCATE` in the event list are not data mutations.
+
+A trigger may target an existing table and reference an existing callback;
+neither a new table nor a local function definition proves its runtime effects.
+Every actual `CREATE FUNCTION` body in the migration is still independently
+inspected, whether it appears before or after a trigger. Destructive, dynamic,
+and opaque function bodies retain their existing contract-reference rules.
+Callback resolution, existing function implementations, trigger replacement,
+and application compatibility require review, as with other DDL expressions;
+this syntax check does not resolve a search path or inspect a live catalog.
+The supported syntax follows the [PostgreSQL 18 CREATE TRIGGER documentation](https://www.postgresql.org/docs/18/sql-createtrigger.html)
+(read 2026-11-02).
+
 In bodies with conditional, loop, exception, nested `DO`, or rollback paths,
 earlier statements do not establish that a table was created or a default was
 set. Required-column changes must carry their default in the same SQL statement
