@@ -103,7 +103,7 @@ class History(unittest.TestCase):
         self.assertEqual(len(self.check()), 3)
 
     def test_newline_and_unicode_paths_have_exact_line_positions(self):
-        self.write('folder/\n日本語.ts', 'first\nhttps://192.0.2.10:443\n')
+        self.write('folder/\n日本語.ts', 'first\nx\u0085https://192.0.2.10:443\n')
         self.commit()
         self.assertEqual(self.check()[0][:2], ('folder/\n日本語.ts', 2))
 

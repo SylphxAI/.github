@@ -87,7 +87,8 @@ def added_lines(root, base, head):
         content.decode("utf-8")  # Fail closed on unreadable text.
         diff = git(root, "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", "--unified=0", base, head, "--", path).decode("utf-8")
         line = None
-        for text in diff.splitlines():
+        for text in diff.split("\n"):
+            text = text.removesuffix("\r")
             if text.startswith("@@"):
                 line = int(re.search(r"\+(\d+)", text).group(1))
             elif line is not None and text.startswith("+"):
