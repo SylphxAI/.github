@@ -238,7 +238,9 @@ def routine_kind(stmt: list[Token]) -> str | None:
 
 def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int) -> list[tuple[int, str]]:
     opaque = [(stmt[0].line, "opaque procedural body requires a contract reference")]
-    if kind in {"TRIGGER", "EVENT"} or dialect != "postgres":
+    if kind == "TRIGGER" and dialect == "postgres":
+        return [] if postgres_trigger(stmt) else opaque
+    if kind == "EVENT" or dialect != "postgres":
         return opaque
     flat = top_level(stmt)
     language = "PLPGSQL" if kind == "DO" else None
@@ -586,33 +588,141 @@ def qualified_name(tokens: list[Token], at: int) -> tuple[tuple[str, str] | None
     return parts, at + 3
 
 
-def trigger_function_name(stmt: list[Token]) -> tuple[str, str] | None:
-    """Identify an inspected zero-argument PostgreSQL trigger function."""
-    at = 4 if starts(stmt, "CREATE", "OR", "REPLACE", "FUNCTION") else 2
-    if not (starts(stmt, "CREATE", "FUNCTION") or starts(stmt, "CREATE", "OR", "REPLACE", "FUNCTION")):
+def postgres_trigger(stmt: list[Token]) -> bool:
+    """Recognize callback-reference DDL, not an inline procedural body.
+
+    PostgreSQL 18 CREATE TRIGGER grammar (read 2026-11-02):
+    https://www.postgresql.org/docs/18/sql-createtrigger.html
+    This validates syntax, not catalog identity or the callback's runtime effects.
+    Actual CREATE FUNCTION bodies are inspected independently by the caller.
+    """
+    at = 0
+
+    def take(*words: str) -> bool:
+        nonlocal at
+        if starts(stmt[at:], *words):
+            at += len(words)
+            return True
+        return False
+
+    def identifier(qualified: bool = False) -> bool:
+        nonlocal at
+        def simple() -> bool:
+            nonlocal at
+            if at >= len(stmt):
+                return False
+            token = stmt[at]
+            if not (token.kind == "identifier" and token.value and token.raw.startswith('"')
+                    or token.kind == "word" and re.fullmatch(r"[^\W\d][\w$]*", token.value)):
+                return False
+            at += 1
+            return True
+        if not simple():
+            return False
+        if qualified and at < len(stmt) and stmt[at].value == ".":
+            at += 1
+            return simple()
+        return True
+
+    def group() -> list[Token] | None:
+        nonlocal at
+        if at >= len(stmt) or stmt[at].value != "(":
+            return None
+        start, depth = at + 1, 1
+        at += 1
+        while at < len(stmt):
+            token = stmt[at]
+            if token.kind == "symbol":
+                depth += (token.value == "(") - (token.value == ")")
+            at += 1
+            if depth == 0:
+                return stmt[start:at - 1]
         return None
-    function, at = qualified_name(stmt, at)
-    if (at + 3 < len(stmt) and stmt[at].value == "(" and stmt[at + 1].value == ")"
-            and starts(stmt[at + 2:], "RETURNS", "TRIGGER")):
-        return function
-    return None
 
-
-def additive_trigger(stmt: list[Token], created: set[tuple[str, str]], functions: set[tuple[str, str]]) -> bool:
-    """Allow a simple INSERT trigger only on a definitely new local table."""
-    if not starts(stmt, "CREATE", "TRIGGER"):
+    if not take("CREATE"):
         return False
-    _, at = name(stmt, 2)
-    if at >= len(stmt) or not any(kw(stmt[at], word) for word in ("BEFORE", "AFTER")):
+    replace = take("OR", "REPLACE")
+    constraint = take("CONSTRAINT")
+    if constraint and replace or not take("TRIGGER") or not identifier():
         return False
-    if not starts(stmt[at + 1:], "INSERT", "ON"):
+    timing = "BEFORE" if take("BEFORE") else "AFTER" if take("AFTER") else "INSTEAD" if take("INSTEAD", "OF") else None
+    if timing is None or constraint and timing != "AFTER":
         return False
-    table, at = qualified_name(stmt, at + 3)
-    if table not in created or not starts(stmt[at:], "FOR", "EACH", "ROW", "EXECUTE", "FUNCTION"):
+    events: set[str] = set()
+    columns = False
+    while True:
+        event = next((word for word in ("INSERT", "UPDATE", "DELETE", "TRUNCATE") if take(word)), None)
+        if event is None or event in events:
+            return False
+        events.add(event)
+        if event == "UPDATE" and take("OF"):
+            columns = True
+            if not identifier():
+                return False
+            while at < len(stmt) and stmt[at].value == ",":
+                at += 1
+                if not identifier():
+                    return False
+        if not take("OR"):
+            break
+    if not take("ON") or not identifier(qualified=True):
         return False
-    function, at = qualified_name(stmt, at + 5)
-    return (function in functions and len(stmt) == at + 2
-            and stmt[at].value == "(" and stmt[at + 1].value == ")")
+    if constraint:
+        if take("FROM") and not identifier(qualified=True):
+            return False
+        not_deferrable = take("NOT", "DEFERRABLE")
+        if not not_deferrable:
+            take("DEFERRABLE")
+        if take("INITIALLY"):
+            if not (take("IMMEDIATE") or not not_deferrable and take("DEFERRED")):
+                return False
+    if take("REFERENCING"):
+        if constraint or timing != "AFTER" or columns or len(events) != 1:
+            return False
+        relations: set[str] = set()
+        while True:
+            relation = "OLD" if take("OLD") else "NEW" if take("NEW") else None
+            if relation is None:
+                break
+            if (relation in relations or not take("TABLE")
+                    or relation == "OLD" and not events & {"UPDATE", "DELETE"}
+                    or relation == "NEW" and not events & {"UPDATE", "INSERT"}):
+                return False
+            relations.add(relation)
+            take("AS")
+            if not identifier():
+                return False
+        if not relations:
+            return False
+    row = False
+    if take("FOR"):
+        each = take("EACH")
+        row = take("ROW")
+        if not row and not take("STATEMENT") or constraint and not each:
+            return False
+    if (constraint or timing == "INSTEAD") and not row or "TRUNCATE" in events and row:
+        return False
+    if timing == "INSTEAD" and (columns or "TRUNCATE" in events):
+        return False
+    if take("WHEN"):
+        condition = group()
+        if not condition or timing == "INSTEAD" or any(kw(t, "SELECT") for t in condition):
+            return False
+    if not take("EXECUTE") or not (take("FUNCTION") or take("PROCEDURE")) or not identifier(qualified=True):
+        return False
+    args = group()
+    if args is None or at != len(stmt):
+        return False
+    # Trigger arguments are string/numeric constants or names, never expressions
+    # or normal function parameters. Keep empty/trailing comma slots invalid.
+    parts = split(args, ",")
+    if args and (args[0].value == "," or args[-1].value == ","
+                 or any(a.value == b.value == "," for a, b in zip(args, args[1:]))):
+        return False
+    return all(len(part) == 1 and part[0].kind in {"literal", "word", "identifier"}
+               or re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?",
+                               "".join(t.raw for t in part))
+               for part in parts)
 
 
 def constant_acl_execute(stmt: list[Token], dialect: str, catalog_format: bool = False) -> bool:
@@ -936,8 +1046,6 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
     out: list[tuple[int, str]] = []
     defaults: set[tuple[str, str]] = set()
     created: set[str] = set()
-    trigger_functions: set[tuple[str, str]] = set()
-    trigger_tables: set[tuple[str, str]] = set()
     timeouts: set[str] = set()
     dropped_concurrent_indexes: set[tuple[str, str]] = set()
     statements = split(tokens, ";")
@@ -949,16 +1057,10 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             # statement, where its clauses execute together.
             defaults.clear()
             created.clear()
-            trigger_tables.clear()
-            trigger_functions.clear()
             timeouts.clear()
             dropped_concurrent_indexes.clear()
         control_stmt = procedural_statement(stmt)
         if starts(control_stmt, "ALTER") and has(control_stmt, "SET", "SCHEMA"):
-            # A relocated object can leave its old qualified name available
-            # for an existing table or an uninspected function to occupy.
-            trigger_tables.clear()
-            trigger_functions.clear()
             dropped_concurrent_indexes.clear()
         if dialect == "postgres":
             if (any(t.kind in {"word", "identifier"} and t.value.lower() == "search_path" for t in control_stmt)
@@ -1011,8 +1113,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             # Changing quote semantics would invalidate subsequent lexical
             # inspection; these statements need an explicit contract review.
             out.append((stmt[0].line, "SQL lexical mode change requires a contract reference"))
-        non_dml_on = (starts(control_stmt, "GRANT") or starts(control_stmt, "REVOKE")
-                      or routine_kind(control_stmt) == "TRIGGER")
+        trigger_ddl = routine_kind(control_stmt) == "TRIGGER"
+        non_dml_on = starts(control_stmt, "GRANT") or starts(control_stmt, "REVOKE") or trigger_ddl
         on_index = next((j for j, t in enumerate(stmt) if kw(t, "ON")), 0) if non_dml_on else 0
         for i, token in enumerate(stmt):
             tail = stmt[i:]
@@ -1022,7 +1124,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 out.append((token.line, "DROP TEMPORARY TABLE"))
             if any(starts(tail, "DROP", obj) for obj in ("OWNED", "TYPE", "DOMAIN")):
                 out.append((token.line, "DROP " + tail[1].value))
-            if kw(token, "TRUNCATE") and not (i + 1 < len(stmt) and stmt[i + 1].value == "("):
+            if (kw(token, "TRUNCATE") and not (trigger_ddl and i < on_index)
+                    and not (i + 1 < len(stmt) and stmt[i + 1].value == "(")):
                 out.append((token.line, "TRUNCATE"))
             if kw(token, "RENAME"):
                 out.append((token.line, "RENAME"))
@@ -1059,18 +1162,11 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 function_name, _ = name(stmt, at)
                 if function_name.split(".")[-1] == "format":
                     out.append((stmt[0].line, "formatter redefinition requires a contract reference"))
-            inspected_trigger = dialect == "postgres" and routine == "TRIGGER" and additive_trigger(stmt, trigger_tables, trigger_functions)
-            routine_errors = [] if inspected_trigger else routine_violations(stmt, dialect, routine, nesting)
-            out.extend(routine_errors)
-            function = trigger_function_name(stmt) if dialect == "postgres" and routine == "FUNCTION" else None
-            if function and not routine_errors:
-                trigger_functions.add(function)
+            out.extend(routine_violations(stmt, dialect, routine, nesting))
             if routine == "DO":
                 # Executed bodies can remove defaults established outside,
                 # but their local facts never authorize enclosing statements.
                 defaults.clear()
-                trigger_tables.clear()
-                trigger_functions.clear()
                 timeouts.clear()
                 dropped_concurrent_indexes.clear()
         if (starts(stmt, "CALL") or starts(stmt, "EXECUTE") and id(stmt[0]) not in (finite_executes or set())
@@ -1085,9 +1181,6 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             # required-column additions still need a default.
             if not conditional:
                 created.add(table)
-                qualified, _ = qualified_name(stmt, at)
-                if qualified:
-                    trigger_tables.add(qualified)
         table_at = 2 if starts(stmt, "ALTER", "TABLE") else 3 if starts(stmt, "ALTER", "FOREIGN", "TABLE") else None
         if table_at is None:
             continue
