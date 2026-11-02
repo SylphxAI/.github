@@ -64,7 +64,17 @@ from pathlib import Path
 
 # Resolve beside this file even when imported by an action from another checkout.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from merge_lane import merge_lane_findings, merge_lane_misses
+def merge_lane_findings(*args, **kwargs):
+    # Other shared actions import Comparer without running R8. Keep their
+    # downloaded, stdlib-only distribution independent of the YAML rule.
+    from merge_lane import merge_lane_findings as evaluate
+    return evaluate(*args, **kwargs)
+
+
+def merge_lane_misses(*args, **kwargs):
+    from merge_lane import merge_lane_misses as evaluate
+    return evaluate(*args, **kwargs)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "policy" / "optimistic-merge.json"

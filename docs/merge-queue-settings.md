@@ -72,8 +72,9 @@ them blocked a merge the fast gate had already passed. A repository ruleset
 that has a `pull_request` rule but no queue (a tags or non-default-branch
 ruleset) is converged too, because the rule holds a review before every merge.
 The hands-off repositories of `policy/optimistic-merge.json` are excluded and
-keep their rule as it is: `SylphxAI/bgca`, `Cubeage/hk-mahjong-tycoon` and
-`SylphxAI/openclaw-sylphx`. Before planning, the tool also reads each selected,
+keep their rule as it is: `SylphxAI/bgca` and `SylphxAI/openclaw-sylphx`.
+HK Mahjong Tycoon is under active development and is not in that class. Before
+planning, the tool also reads each selected,
 non-excluded repository's custom properties. It excludes `sylphx_delivery=delivered`
 and unreadable properties, so neither can produce a ruleset write. A property
 read answering HTTP 403 stops the run before any write.

@@ -400,8 +400,10 @@ class ApplyTests(unittest.TestCase):
     def test_all_four_organizations_and_the_platform_repo_are_covered(self):
         self.assertEqual(POLICY["orgs"], ["SylphxAI", "Cubeage", "EpiowAI", "OzyrixLtd"])
         skip = amq.excluded(POLICY, amq.hands_off_repos())
-        for repo in ("Cubeage/cubeage-platform", "Cubeage/hk-mahjong-tycoon", "SylphxAI/bgca"):
+        for repo in ("Cubeage/cubeage-platform", "SylphxAI/bgca", "SylphxAI/openclaw-sylphx"):
             self.assertIn(repo, skip)
+
+        self.assertNotIn("Cubeage/hk-mahjong-tycoon", skip)
 
     def test_first_403_stops_the_run(self):
         # A 403 on the write stops the run: no ruleset after it is written.
