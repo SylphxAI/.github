@@ -18,11 +18,15 @@ After each exchange, the action uses the shared Access readiness helper to
 read `GET /v1/whoami` with that same key. It honors the issuer's delay, then
 waits at most 30 seconds for the exact issued key, organization and principal.
 Only an explicit `401 key_not_yet_propagated` repeats that read. Other denials
-and transport failures stop immediately. Artifact writes are never retried by
-this readiness check. Known API error codes are retained in diagnostics;
-provider messages and unknown codes remain private. Readiness on one API
-replica does not claim readiness on every replica: a later Artifact refusal
-still stops publication.
+and transport failures stop immediately. Because `whoami` readiness on one API
+replica does not guarantee every replica has finished compiling its active key
+shard, `Access.call` also retries `401 NOT_YET_PROPAGATED` (and
+`key_not_yet_propagated`) up to 5 times with a 1-second delay. At `stage=publish`,
+if the `stage=prepare-build` Access key still has more than 300 seconds before
+expiry, the action reuses that key and its prepared registry credentials
+directly; it mints a fresh key and upload credential only when 300 seconds or
+less remain. Known API error codes are retained in diagnostics; provider
+messages and unknown codes remain private.
 
 The action checks the returned credential's repository, exact pull/push grant,
 audience and bounded expiry before use. These checks do not verify a JWT
