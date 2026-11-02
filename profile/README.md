@@ -1,115 +1,70 @@
-<!--
-  Org profile: https://github.com/SylphxAI
-  Copy SSOT: https://github.com/SylphxAI/brand/docs/copy
-  Status: adopted 2026-09-13 (owner decision) — post-cut positioning story,
-  tagline C primary (short form B where space is tight), Sylphx AI family
-  pointer kept. Product links are declared destinations (locator map), not an
-  availability or launch-status claim.
--->
+<a href="https://sylphx.com"><img src="https://raw.githubusercontent.com/SylphxAI/brand/main/logo/svg/sylphx-lockup-colour.svg" width="240" alt="Sylphx"/></a>
 
-<img src="https://mark.sylphx.com/api/v1/mark/hero.svg?type=waving&color=0:0F172A,50:5B8CFF,100:FF8A3D&text=Sylphx&desc=Independent%20services.%20One%20company.%20Built%20to%20compose." width="100%" alt="Sylphx"/>
+## The backend your agents can run.
 
-<!-- Adopted tagline C (owner decision 2026-09-13); short form B — "Take what
-     you need. It all fits." — where space is tight. Home and retired
-     alternatives: SylphxAI/brand docs/copy/messaging.md. -->
+**Sylphx is one cloud platform:** hosting, data, auth, workflows, sandboxes,
+events, notify, observability, build, runners, network, AI and money.
+One API, one account, one key (`sylphx_sk_…`) and one bill, provisioned by a
+person or an agent.
 
-<p align="center">
-  <b>Cloud services, à la carte · OSS toolchain · London</b><br/>
-  Independent services. One company. Built to compose.
-</p>
+[Start with the docs](https://sylphx.com/docs) ·
+[API](https://api.sylphx.com) ·
+[Status](https://status.sylphx.com)
 
-<p align="center">
-  <a href="https://sylphx.com"><img src="https://mark.sylphx.com/badge/Website-sylphx.com-4A90E2?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://www.npmjs.com/~sylphx"><img src="https://mark.sylphx.com/badge/npm-%40sylphx-CB3837?style=for-the-badge&logo=npm&logoColor=white" alt="npm"/></a>
-  <a href="https://github.com/SylphxAI/brand"><img src="https://mark.sylphx.com/badge/Brand-SSOT-1A1A2E?style=for-the-badge" alt="Brand"/></a>
-  <!-- Adopted 2026-09-13: Sylphx AI family surfaced as a pointer only — this
-       badge plus the hub row below; no contract or credential claims. -->
-  <a href="https://sylphx.ai"><img src="https://mark.sylphx.com/badge/Sylphx%20AI-sylphx.ai-D87000?style=for-the-badge" alt="Sylphx AI"/></a>
-  <a href="https://mark.sylphx.com"><img src="https://mark.sylphx.com/badge/Mark-mark.sylphx.com-5B8CFF?style=for-the-badge" alt="Mark on Sylphx"/></a>
-  <a href="https://status.sylphx.com"><img src="https://mark.sylphx.com/badge/Status-status.sylphx.com-27AE60?style=for-the-badge" alt="Status"/></a>
-</p>
+## Platform services
 
----
+Explore the services below. The [catalog](https://sylphx.com/products) and
+[documentation](https://sylphx.com/docs) carry their current availability and
+API contracts.
 
-## What we build
+| Service | What it covers |
+| --- | --- |
+| [Sylphx Hosting](https://sylphx.com/products/hosting) | Web apps and services deployed from Git. |
+| [Sylphx Data](https://sylphx.com/products/database) | Postgres, key-value storage, objects and search. |
+| [Sylphx Auth](https://sylphx.com/products/auth) | Sign-in, sessions and access control. |
+| [Sylphx Workflows](https://sylphx.com/products/workflows) | Durable workflows and step retries. |
+| [Sylphx Sandboxes](https://sylphx.com/products/sandboxes) | Isolated machines for code execution and computer use. |
+| [Sylphx Events](https://sylphx.com/products#signal) | Webhooks and event delivery. |
+| [Sylphx Notify](https://sylphx.com/products/notifications) | Email, push, SMS and in-app notifications. |
+| [Sylphx Observability](https://sylphx.com/products/monitoring) | Logs, metrics, traces and errors. |
+| [Sylphx Build](https://sylphx.com/products/builds) | Container builds, shared caches and provenance. |
+| [Sylphx Runners](https://sylphx.com/products/runners) | CI runners for GitHub Actions. |
+| [Sylphx Network](https://sylphx.com/products/network) | Domains, routing and network controls. |
+| [Sylphx AI](https://sylphx.com/products/ai) | Model access through the platform API. |
+| [Sylphx Money](https://sylphx.com/products/payments) | Payments, subscriptions, usage and entitlements. |
 
-**Sylphx** is a cloud company of independent services: Cloud (hosting and
-composition), Identity, Data, Compute, Events, Observability, Commerce, and the
-Sylphx AI family. Buy one product or compose several — each is bought and used
-on its own terms, with its own site, API, credentials, and SDK.
+## Foundations and products
 
-| | |
-|--|--|
-| **À la carte** | Every product stands alone; nothing requires the rest |
-| **Composed by Cloud** | [Sylphx Cloud](https://sylphx.com) hosts and provisions the services you choose |
-| **Isolation** | Dedicated PostgreSQL + managed cache **per project** |
-| **Economics** | Idle projects **hibernate** — near-zero when unused |
-| **AI family** | Sylphx Models and Sylphx Agents under the [sylphx.ai](https://sylphx.ai/) hub |
+Our products use the same public platform contracts as other customers.
+They carry their own names.
 
----
-
-## Products
-
-| Product | Door |
-|---------|------|
-| **Sylphx Cloud** — hosting composer + marketplace provision | [sylphx.com](https://sylphx.com) |
-| **Sylphx Identity** — organization, principals, sessions, credentials | [identity.sylphx.com](https://identity.sylphx.com) |
-| **Sylphx Data** — database, KV, object, search | [data.sylphx.com](https://data.sylphx.com) |
-| **Sylphx Compute** — jobs, sessions, schedules | [compute.sylphx.com](https://compute.sylphx.com) |
-| **Sylphx Events** — webhook, realtime, email, push delivery | [events.sylphx.com](https://events.sylphx.com) |
-| **Sylphx Observability** — logs, metrics, traces, errors, audit | [observability.sylphx.com](https://observability.sylphx.com) |
-| **Sylphx Commerce** — usage, invoices, entitlements | [commerce.sylphx.com](https://commerce.sylphx.com) |
-| **Sylphx AI** — family hub for Models and Agents | [sylphx.ai](https://sylphx.ai/) |
-| **Sylphx Models** — model catalog + official Responses service | [models.sylphx.ai](https://models.sylphx.ai) |
-| **Sylphx Agents** — autonomous agent OS and graph | [agents.sylphx.ai](https://agents.sylphx.ai) |
-
-Each product owns its contract, credentials, docs, pricing, and trust surface.
-Cloud credentials admit Cloud APIs only; Cloud never proxies a peer's API.
-
----
-
-## Customer Zero
-
-We run our own product and agent systems on Sylphx — through the same public
-contracts and admission as any customer.
-
-<!-- Tagline: adopted C (owner decision 2026-09-13; SylphxAI/brand#9). -->
-
-**[Brand & copy SSOT](https://github.com/SylphxAI/brand)**
-
----
+| Project | What it does |
+| --- | --- |
+| [Spiron](https://spiron.ai) | Cloud agent platform for persistent agents, collaboration and work. |
+| [Keel Engine](https://keelengine.dev) | Our engine for games, apps and product interfaces. |
+| [AnyAgents](https://github.com/SylphxAI/anyagents) | Run long-lived coding agents across harnesses on your own machine, container or sandbox. |
+| [Mark](https://mark.sylphx.com) | README banners, badges and GitHub stats cards from one URL. |
 
 ## Open source
 
-Tools for developers and AI agents, all MIT licensed:
+Tools we build and use, with source and installation instructions in each
+repository.
 
-| Project | What it does | |
-|---------|--------------|--|
-| [anymd](https://github.com/SylphxAI/anymd) | Any file to clean Markdown for AI agents: PDF, Office, EPUB, HTML, images, audio and video. MCP server and CLI. | <img src="https://mark.sylphx.com/github/stars/SylphxAI/anymd.svg?style=flat-square&logo=github&labelColor=0f172a" alt="anymd stars"/> |
-| [repomap](https://github.com/SylphxAI/repomap) | A map of your codebase for AI agents: code graph, search, call paths, change impact and a graph UI. | <img src="https://mark.sylphx.com/github/stars/SylphxAI/repomap.svg?style=flat-square&logo=github&labelColor=0f172a" alt="repomap stars"/> |
-| [lockdocs](https://github.com/SylphxAI/lockdocs) | Library docs for the exact versions in your lockfile, read locally and offline. | <img src="https://mark.sylphx.com/github/stars/SylphxAI/lockdocs.svg?style=flat-square&logo=github&labelColor=0f172a" alt="lockdocs stars"/> |
-| [readme-mark](https://github.com/SylphxAI/readme-mark) | README banners, badges and GitHub stats cards from one URL, hosted at [mark.sylphx.com](https://mark.sylphx.com). | <img src="https://mark.sylphx.com/github/stars/SylphxAI/readme-mark.svg?style=flat-square&logo=github&labelColor=0f172a" alt="readme-mark stars"/> |
-| [firestore_odm](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore ODM for Flutter and Dart, the maintained successor to cloud_firestore_odm. | <img src="https://mark.sylphx.com/github/stars/SylphxAI/firestore_odm.svg?style=flat-square&logo=github&labelColor=0f172a" alt="firestore_odm stars"/> |
+| Project | What it does |
+| --- | --- |
+| [anymd](https://github.com/SylphxAI/anymd) | Files and URLs to Markdown for agents, through a CLI and MCP server. |
+| [repomap](https://github.com/SylphxAI/repomap) | Code graphs, search, call paths and change-impact analysis. |
+| [lockdocs](https://github.com/SylphxAI/lockdocs) | Offline library docs for the exact versions in your lockfile. |
+| [AnyAgents](https://github.com/SylphxAI/anyagents) | Persistent agent state, messaging, groups and cross-harness coordination. |
+| [Skills](https://github.com/SylphxAI/skills) | Reusable Agent Skills and reference standards across agent harnesses. |
+| [Mark (readme-mark)](https://github.com/SylphxAI/readme-mark) | The open-source service behind Mark's README visuals. |
+| [Firestore ODM (firestore_odm)](https://github.com/SylphxAI/firestore_odm) | Type-safe Firestore models and queries for Flutter and Dart. |
+| [Google Photos Delete Tool](https://github.com/SylphxAI/Google-Photos-Delete-Tool) | Browser extension and userscript for duplicate review and bulk deletion. |
+| [mcp-kit](https://github.com/SylphxAI/mcp-kit) | Shared Rust server, client setup, npm launcher and release tooling for MCP servers. |
 
-<p align="center">
-  <img height="160" src="https://mark.sylphx.com/api?username=SylphxAI&show_icons=true&theme=dark&hide_border=true" alt="org stats"/>
-</p>
-
----
-
-## Stack
-
-<p align="left">
-  <img src="https://mark.sylphx.com/icons?i=ts,rust,bun,docker,postgres,redis,react,nextjs,nodejs&theme=dark" alt="stack"/>
-</p>
+[Brand guidelines and assets](https://github.com/SylphxAI/brand)
 
 ---
 
-<div align="center">
-
-**[sylphx.com](https://sylphx.com)** · Sylphx Limited · Founded 2025 · London, UK
-
-*Built on our own platform. Proven in production.*
-
-</div>
-
+Sylphx Limited · Registered in England and Wales (No. 16438428) ·
+[hi@sylphx.com](mailto:hi@sylphx.com) · [sylphx.com](https://sylphx.com)
