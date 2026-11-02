@@ -26,18 +26,20 @@ export class GitHub {
     this.sourceTrees = new Map();
   }
 
-  async tree(sha) {
-    if (!this.sourceTrees.has(sha)) this.sourceTrees.set(sha, this.request(`/git/trees/${sha}`));
+  async tree(sha, deadlineMs) {
+    if (!this.sourceTrees.has(sha)) this.sourceTrees.set(sha, this.request(`/git/trees/${sha}`, { deadlineMs }));
     const tree = await this.sourceTrees.get(sha);
     if (tree.truncated || !Array.isArray(tree.tree)) throw new Unavailable('Pinned source tree is incomplete.');
     return tree.tree;
   }
 
-  async request(path, { method = 'GET', body, checks = false } = {}) {
+  async request(path, { method = 'GET', body, checks = false, deadlineMs = Infinity } = {}) {
     const token = checks ? this.checkToken : this.readToken;
     if (!token) throw new Unavailable(`Missing ${checks ? 'checks' : 'source'} credential.`);
+    const remaining = Math.min(30_000, deadlineMs - Date.now());
+    if (!(remaining > 0)) throw new Unavailable('Pinned source deadline expired.');
     const response = await this.fetcher(`${this.apiOrigin}/repos/${this.repository}${path}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(30_000),
+      method, redirect: 'error', signal: AbortSignal.timeout(remaining),
       headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json',
         'x-github-api-version': '2022-11-28', 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -61,12 +63,12 @@ export class GitHub {
     }
   }
 
-  async source(path, sha, optional = false) {
+  async source(path, sha, optional = false, { deadlineMs, maxBytes = Infinity } = {}) {
     if (!validSha(sha) || !validPath(path)) throw new Unavailable('Invalid pinned source reference.');
     let object, treeSha = sha;
     const segments = path.split('/');
     for (let i = 0; i < segments.length; i++) {
-      object = (await this.tree(treeSha)).find(entry => entry.path === segments[i]);
+      object = (await this.tree(treeSha, deadlineMs)).find(entry => entry.path === segments[i]);
       if (!object) {
         if (optional) return null;
         throw new Unavailable(`Pinned source ${path} is absent.`);
@@ -82,7 +84,9 @@ export class GitHub {
       throw new Unavailable(`Source ${path} is not an ordinary file.`);
     }
     const blobSha = object.sha;
-    object = await this.request(`/git/blobs/${blobSha}`);
+    if (object.size > maxBytes) throw new Unavailable('Pinned source exceeds the context recovery byte limit.');
+    object = await this.request(`/git/blobs/${blobSha}`, { deadlineMs });
+    if (object.size > maxBytes) throw new Unavailable('Pinned source exceeds the context recovery byte limit.');
     if (object.encoding !== 'base64' || typeof object.content !== 'string') {
       throw new Unavailable(`Source ${path} has no complete content.`);
     }
@@ -96,12 +100,12 @@ export class GitHub {
     } catch { throw new Unavailable(`Source ${path} is not UTF-8 text.`); }
   }
 
-  async current(target) {
+  async current(target, { deadlineMs } = {}) {
     if (target.kind === 'pull_request') {
-      const pr = await this.request(`/pulls/${target.number}`);
+      const pr = await this.request(`/pulls/${target.number}`, { deadlineMs });
       return pr.state === 'open' && pr.head.sha === target.head_sha && (!target.base_ref || pr.base.ref === target.base_ref);
     }
-    const ref = await this.request(`/git/ref/heads/${target.ref.split('/').map(encodeURIComponent).join('/')}`);
+    const ref = await this.request(`/git/ref/heads/${target.ref.split('/').map(encodeURIComponent).join('/')}`, { deadlineMs });
     return ref.object?.sha === target.head_sha;
   }
 

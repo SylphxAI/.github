@@ -16,7 +16,7 @@ function inputFor(before = 'return value\n', after = 'return undefined\n') {
 function wire(input, findings = []) {
   return { schema_version: 1, repository_id: input.repository_id, base_sha: input.base_sha,
     head_sha: input.head_sha, input_digest: input.input_digest, reviewer_version: reviewerVersion,
-    policy_version: input.policy_version, completion: 'complete', findings, omitted_paths: [], context_notes: [], reason: '',
+    policy_version: input.policy_version, completion: 'complete', findings, omitted_paths: [], context_notes: [], context_requests: [], reason: '',
     review_summary: 'The return value behavior was reviewed.', related_evidence: [] };
 }
 const finding = { path: 'src/value.js', side: 'head', start_line: 1, end_line: 1, severity: 'medium',
@@ -120,31 +120,39 @@ test('schema rejects source/version drift, fabricated quotes, omissions and extr
   assert.equal(parseReviewResult(JSON.stringify(wire(input)), input).status, 'complete');
 });
 
-test('completion diagnostics distinguish every refusal without echoing model prose or paths', () => {
-  const input = inputFor();
-  const privateText = 'private-value\n::warning::untrusted output';
-  const cases = [
-    [{ completion: 'incomplete' }, 'completion=incomplete'],
-    [{ completion: 'unavailable' }, 'completion=unavailable'],
-    [{ omitted_paths: [privateText] }, 'omitted_paths=1'],
-    [{ reason: privateText }, 'reason=nonempty'],
-    [{ reason: ' ' }, 'reason=nonempty'],
-    [{ completion: 'incomplete', omitted_paths: [privateText, 'another/path'], reason: privateText },
-      'completion=incomplete, omitted_paths=2, reason=nonempty'],
-  ];
-  for (const [changes, diagnostic] of cases) {
-    const result = parseReviewResult(JSON.stringify({ ...wire(input, [finding]), context_notes: [privateText], ...changes }), input);
-    assert.equal(result.status, 'unavailable');
-    assert.equal(result.reason, `review incomplete (${diagnostic})`);
-    assert.deepEqual(result.findings, []);
-    assert.deepEqual(result.omitted_paths, input.files.map(file => file.path));
-    assert.ok(!JSON.stringify(result).includes(privateText));
+test('incomplete diagnostics retain bounded model detail privately and whitelist omitted paths', () => {
+  const input = inputFor(), privateText = 'private-value\n::warning::untrusted output';
+  const changes = { completion: 'incomplete', omitted_paths: ['src/value.js'], reason: privateText,
+    context_notes: [privateText], context_requests: [{ path: 'src/caller.js', side: 'head' }] };
+  const result = parseReviewResult(JSON.stringify({ ...wire(input, [finding]), ...changes }), input);
+  assert.equal(result.status, 'incomplete');
+  assert.equal(result.reason, 'review incomplete (completion=incomplete, omitted_paths=1, reason=nonempty)');
+  assert.deepEqual(result.findings, []);
+  assert.deepEqual(result.omitted_paths, ['src/value.js']);
+  assert.deepEqual(result.context_requests, changes.context_requests);
+  assert.equal(result.context_notes, undefined);
+  assert.equal(result.diagnostics.reason, privateText);
+  assert.deepEqual(result.diagnostics.context_notes, [privateText]);
+  const { diagnostics, ...publicFields } = result;
+  assert.ok(!JSON.stringify(publicFields).includes(privateText));
+  const bounded = parseReviewResult(JSON.stringify({ ...wire(input), ...changes,
+    reason: 'x'.repeat(10_000), context_notes: Array(100).fill('y'.repeat(2000)) }), input);
+  assert.equal(bounded.diagnostics.reason.length, 4096);
+  assert.equal(bounded.diagnostics.context_notes.length, 16);
+  assert.equal(bounded.diagnostics.context_notes[0].length, 1024);
+  for (const change of [{ omitted_paths: [privateText] }, { context_requests: [{ path: '../outside', side: 'head' }] },
+    { context_requests: [{ path: 'https://example.com/file', side: 'other' }] }, { head_sha: input.base_sha }]) {
+    const rejected = parseReviewResult(JSON.stringify({ ...wire(input), ...changes, ...change }), input);
+    assert.equal(rejected.status, 'unavailable');
+    const { diagnostics, ...safe } = rejected;
+    assert.ok(!JSON.stringify(safe).includes(privateText));
   }
-  for (const findings of [[], [finding]]) {
-    const result = parseReviewResult(JSON.stringify(wire(input, findings)), input);
-    assert.equal(result.status, 'complete');
-    assert.deepEqual(result.findings, findings);
+  for (const change of [{ reason: privateText }, { omitted_paths: ['src/value.js'] },
+    { context_requests: [{ path: 'src/caller.js', side: 'head' }] }]) {
+    assert.equal(parseReviewResult(JSON.stringify({ ...wire(input), ...change }), input).status, 'unavailable');
   }
+  const stale = parseReviewResult(JSON.stringify({ ...wire(input), ...changes, input_digest: 'wrong' }), input);
+  assert.equal(stale.diagnostics, undefined);
 });
 
 test('deleted code and absolute windows are reviewable without invented head lines', () => {

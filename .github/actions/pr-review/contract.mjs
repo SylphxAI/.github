@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { resultSchema, validateSchema } from './schema.mjs'
+import { contextRequestLimit, resultSchema, validateSchema } from './schema.mjs'
 import { segmentQuote, changedRanges } from './source.mjs'
 
 export function canonical(value) {
@@ -21,8 +21,13 @@ const lines = (content) => content === '' ? [] : content.replace(/\r?\n$/, '').s
 
 export function sourceQuote(input, path, side, start, end, startByte = null, endByte = null) {
 	for (const e of input.references ?? []) if (e.path === path && e.side === side && e.start_line === start && e.end_line === end && e.start_byte === startByte && e.end_byte === endByte) return e.quote
-	if (side === 'context') {
-		for (const context of input.context.filter(f => f.path === path)) {
+	const file = input.files.find(f => (side === 'base' ? f.previous_path ?? f.path : f.path) === path)
+	if (side !== 'context' && file) {
+		const quote = segmentQuote(file, side === 'base' ? 'before' : 'after', start, end, startByte, endByte)
+		if (quote !== null) return quote
+	}
+	{
+		for (const context of input.context.filter(f => f.path === path && (f.side ?? 'context') === side)) {
 			if (context.segments) {
 				const quote = segmentQuote({ after: { bytes: context.bytes },
 					hunks: [{ rows: context.segments.map(after => ({ after })) }] }, 'after', start, end, startByte, endByte)
@@ -35,8 +40,6 @@ export function sourceQuote(input, path, side, start, end, startByte = null, end
 		}
 		return null
 	}
-	const file = input.files.find(f => f.path === path || (side === 'base' && f.previous_path === path))
-	return file ? segmentQuote(file, side === 'base' ? 'before' : 'after', start, end, startByte, endByte) : null
 }
 
 function validateFile(file) {
@@ -79,7 +82,14 @@ export function createReviewInput(bundle) {
 		requireValue(!paths.has(file.path), 'duplicate changed path')
 		paths.add(file.path)
 	}
-	for (const context of input.context) requireValue(validPath(context.path) && (typeof context.content === 'string' || Array.isArray(context.segments)), 'invalid context')
+	const contexts = new Set()
+	for (const context of input.context) {
+		requireValue(validPath(context.path) && (typeof context.content === 'string' || Array.isArray(context.segments)), 'invalid context')
+		requireValue(context.side === undefined || (['base', 'head'].includes(context.side) && context.commit_sha === input[`${context.side}_sha`]), 'invalid pinned context identity')
+		const key = canonical([context.path, context.side ?? 'context'])
+		requireValue(!contexts.has(key), 'duplicate context identity')
+		contexts.add(key)
+	}
 	return { ...input, input_digest: digest(input), reviewer_version: reviewerVersion }
 }
 
@@ -89,26 +99,40 @@ export function unavailable(input, reason, extra = {}) {
 		findings: [], omitted_paths: input.files.map((f) => f.path), reason, ...extra }
 }
 
+// Retained only in the mode-0600 runner result, never the public reason/receipt.
+const diagnostic = (result, input) => ({ input_digest: input.input_digest, scope: input.scope ?? null,
+	completion: result.completion, omitted_paths: result.omitted_paths.filter(p => p.length <= 1024 && (input.manifest ?? input.files).some(f => f.path === p)).slice(0, 32),
+	reason: result.reason.slice(0, 4096), context_notes: result.context_notes.slice(0, 16).map(n => n.slice(0, 1024)),
+	context_requests: result.context_requests.filter(r => validPath(r.path) && r.path.length <= 1024).slice(0, contextRequestLimit).map(r => ({ path: r.path, side: r.side })),
+})
+
 export function parseReviewResult(text, input) {
+	let diagnostics
 	try {
 		const result = validateSchema(JSON.parse(text), resultSchema)
 		for (const key of ['repository_id', 'base_sha', 'head_sha', 'input_digest', 'reviewer_version', 'policy_version']) requireValue(result[key] === input[key], `mismatched ${key}`)
-		// Only schema-validated enums, counts and a presence flag cross the
-		// diagnostic boundary. Model prose and omitted path values may echo source.
 		const incomplete = [
 			result.completion !== 'complete' && `completion=${result.completion}`,
 			result.omitted_paths.length > 0 && `omitted_paths=${result.omitted_paths.length}`,
 			result.reason !== '' && 'reason=nonempty',
 		].filter(Boolean)
-		requireValue(incomplete.length === 0, `review incomplete (${incomplete.join(', ')})`)
+		if (incomplete.length || result.context_requests.length) diagnostics = diagnostic(result, input)
+		const paths = new Set((input.manifest ?? input.files).map(f => f.path))
+		requireValue(result.omitted_paths.every(p => paths.has(p)) && new Set(result.omitted_paths).size === result.omitted_paths.length, 'invalid omitted changed paths')
+		requireValue(result.context_requests.length <= contextRequestLimit && result.context_requests.every(r => validPath(r.path) && r.path.length <= 1024), 'invalid context request')
+		requireValue(result.completion !== 'complete' || (incomplete.length === 0 && result.context_requests.length === 0), 'inconsistent complete review')
 		for (const finding of result.findings) {
 			requireValue(finding.end_line >= finding.start_line && (input.scope?.kind === 'synthesis' ? input.manifest : input.files).some(f => f.path === finding.path), 'finding outside supplied source')
 			if (input.scope?.kind !== 'synthesis') requireValue(input.files.some(f => f.path === finding.path && changedRanges(f).some(r => r.side === finding.side && finding.start_line >= r.start && finding.end_line <= r.end)), 'finding outside changed source')
 			for (const evidence of finding.evidence) requireValue(sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte) === evidence.quote, 'evidence differs from supplied source')
 		}
 		for (const evidence of result.related_evidence) requireValue(sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte) === evidence.quote, 'related evidence differs from supplied source')
+		if (incomplete.length) return { ...unavailable(input, `review incomplete (${incomplete.join(', ')})`),
+			status: result.completion, omitted_paths: result.omitted_paths.length ? result.omitted_paths : [...paths],
+			context_requests: result.context_requests, diagnostics }
 		return { ...result, status: 'complete' }
 	} catch (error) {
-		return unavailable(input, error instanceof SyntaxError ? 'invalid JSON review result' : error.message)
+		return unavailable(input, error instanceof SyntaxError ? 'invalid JSON review result' : error.message,
+			diagnostics ? { diagnostics } : {})
 	}
 }
