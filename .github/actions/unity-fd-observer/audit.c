@@ -1,9 +1,11 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <link.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -23,12 +25,28 @@ static void emit(const char *event, intptr_t fd, int known)
     if (getrlimit(RLIMIT_NOFILE, &limit) != 0)
         return;
     long open_max = sysconf(_SC_OPEN_MAX);
-    fprintf(stderr,
+    const char *path = getenv("UNITY_FD_OBSERVER_LOG");
+    if (path == NULL || *path == '\0')
+        return;
+    char record[512];
+    int length = snprintf(record, sizeof(record),
             "unity-fd-observer event=%s pid=%ld fd=%" PRIdPTR " fd_known=%d "
             "soft=%" PRIuMAX " hard=%" PRIuMAX " sysconf=%ld\n",
             event, (long)getpid(), fd, known, (uintmax_t)limit.rlim_cur,
             (uintmax_t)limit.rlim_max, open_max);
-    fflush(stderr);
+    if (length <= 0 || (size_t)length >= sizeof(record))
+        return;
+    /* Unity classifies some child-process stderr as compiler errors. Keep all
+     * observer output in its own file, including when that file is unavailable.
+     * Never retain a descriptor across an observed call or child exec. */
+    int output = open(path, O_WRONLY | O_APPEND | O_CLOEXEC);
+    if (output < 0)
+        return;
+    ssize_t written;
+    do {
+        written = write(output, record, (size_t)length);
+    } while (written < 0 && errno == EINTR);
+    close(output);
 }
 
 __attribute__((constructor)) static void start(void)

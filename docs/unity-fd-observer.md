@@ -6,7 +6,8 @@ editor, change a resource limit, or retry a build. Use a full published commit
 SHA when enabling it before an existing real Unity run:
 
 ```yaml
-- uses: SylphxAI/.github/.github/actions/unity-fd-observer@<full-commit-sha> # main
+- id: fd-observer
+  uses: SylphxAI/.github/.github/actions/unity-fd-observer@<full-commit-sha> # main
   with:
     enabled: 'true'
 ```
@@ -18,7 +19,7 @@ a read-only bind mount and `LD_AUDIT`. Other Docker commands pass through.
 Commands with Docker global options before `run` are not instrumented. An
 existing explicit `LD_AUDIT` is refused rather than replaced.
 
-The observer emits `unity-fd-observer` lines at process startup, immediately
+The observer appends `unity-fd-observer` lines to a separate per-launch file at process startup, immediately
 before `SystemNative_FcntlSetCloseOnExec` (the Mono NamedPipe path), and at
 `__assert_fail`. Each line contains PID, the actual native descriptor argument
 when known, nofile soft/hard limits and `sysconf(_SC_OPEN_MAX)`. An assertion
@@ -26,6 +27,17 @@ outside that native call has `fd_known=0`; its stale descriptor is not evidence.
 The original resolved native functions always execute. An assertion still
 terminates the process and its Docker exit status still propagates. No command
 arguments, environment values, credentials or descriptor targets are logged.
+
+Native diagnostics never enter compiler stdout or stderr: Unity treats some
+successful child processes' stderr as compiler errors. After each foreground
+Docker launch, the runner wrapper adds the event count and last 40 events to
+the GitHub step summary. Complete files remain under the action's
+`log-directory` output, which an `always()` artifact-upload step can retain.
+Each container receives its own writable log-file mount alongside the read-only
+audit library. Logging opens and closes its descriptor within each event; it
+does not hold a descriptor across the observed native call. If a diagnostic
+file or summary is unavailable, the original call and exit status still
+propagate without fallback output to compiler streams.
 
 This changes function binding and timing, so a successful observed run is not
 proof that an intermittent failure is fixed. A recurrence with an observed
