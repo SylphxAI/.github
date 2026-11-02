@@ -151,9 +151,24 @@ requests. A stale identity retains no model diagnostics. Per-round digests and
 partition scope preserve provenance in `recovery_diagnostics` inside the
 mode-0600 runner-local `pr-review-results.json`; these diagnostics are not
 returned in public receipts, Checks, annotations, stdout or step summaries.
-The receipt includes only machine-authored recovery counts/stop codes and
+Recovery receipts include only machine-authored counts/stop codes and
 accumulated serialized request sizes. A diagnostic explains what the model
 reported, not whether its explanation is a proven root cause.
+
+A schema- and identity-valid result with a failed evidence anchor retains one
+bounded `validation_failure` in the final receipt and runner result. Version 1
+records the first rejected finding/related-evidence index, its exact input digest,
+side, integer line/byte coordinates, and expected/returned UTF8 byte lengths and
+SHA256 digests. `quote_mismatch` means those supplied coordinates resolved to
+source with different bytes; `source_unavailable` means they did not resolve.
+Only a known supplied path with a conservative printable spelling is emitted;
+unknown or unsafe paths become null. Neither source quotes nor model prose enter
+this receipt, Checks, annotations or summaries. Partition/synthesis failures keep
+the failing part's digest, not an invented whole-review identity. A stale or
+schema-invalid response retains no anchor receipt. This diagnostic does not
+weaken verbatim validation, prove a root cause, add an inference retry or turn
+unavailable work into a pass. The existing CLI prints and saves the safe receipt,
+so it survives the ephemeral runner without exporting private round diagnostics.
 
 The shared model deadline is ten minutes from review-step start; the process is stopped
 at thirteen minutes and the always-run finalizer settles unfinished checks as

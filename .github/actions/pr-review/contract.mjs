@@ -106,8 +106,24 @@ const diagnostic = (result, input) => ({ input_digest: input.input_digest, scope
 	context_requests: result.context_requests.filter(r => validPath(r.path) && r.path.length <= 1024).slice(0, contextRequestLimit).map(r => ({ path: r.path, side: r.side })),
 })
 
+// Only machine-authored metadata crosses the public receipt boundary. Unknown
+// paths and all source/model prose stay out, even when the quote is a secret.
+function evidenceFailure(input, evidence, expected, kind, index, findingIndex) {
+	const known = (input.files ?? []).some(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path) ||
+		(input.context ?? []).some(c => c.path === evidence.path && (c.side ?? 'context') === evidence.side) ||
+		(input.references ?? []).some(r => r.path === evidence.path && r.side === evidence.side)
+	const fingerprint = quote => quote === null ? null : ({ bytes: Buffer.byteLength(quote),
+		sha256: createHash('sha256').update(quote).digest('hex') })
+	return { version: 1, code: expected === null ? 'source_unavailable' : 'quote_mismatch',
+		input_digest: input.input_digest, kind, evidence_index: index, finding_index: findingIndex,
+		path: known && validPath(evidence.path) && /^[a-zA-Z0-9._/ @+-]{1,1024}$/.test(evidence.path) ? evidence.path : null,
+		side: evidence.side, start_line: evidence.start_line, end_line: evidence.end_line,
+		start_byte: evidence.start_byte, end_byte: evidence.end_byte,
+		expected: fingerprint(expected), returned: fingerprint(evidence.quote) }
+}
+
 export function parseReviewResult(text, input) {
-	let diagnostics
+	let diagnostics, validationFailure
 	try {
 		const result = validateSchema(JSON.parse(text), resultSchema)
 		for (const key of ['repository_id', 'base_sha', 'head_sha', 'input_digest', 'reviewer_version', 'policy_version']) requireValue(result[key] === input[key], `mismatched ${key}`)
@@ -121,18 +137,25 @@ export function parseReviewResult(text, input) {
 		requireValue(result.omitted_paths.every(p => paths.has(p)) && new Set(result.omitted_paths).size === result.omitted_paths.length, 'invalid omitted changed paths')
 		requireValue(result.context_requests.length <= contextRequestLimit && result.context_requests.every(r => validPath(r.path) && r.path.length <= 1024), 'invalid context request')
 		requireValue(result.completion !== 'complete' || (incomplete.length === 0 && result.context_requests.length === 0), 'inconsistent complete review')
-		for (const finding of result.findings) {
+		const requireEvidence = (evidence, kind, index, findingIndex = null) => {
+			const expected = sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte)
+			if (expected !== evidence.quote) {
+				validationFailure = evidenceFailure(input, evidence, expected, kind, index, findingIndex)
+				throw new Error(kind === 'related_evidence' ? 'related evidence differs from supplied source' : 'evidence differs from supplied source')
+			}
+		}
+		for (const [findingIndex, finding] of result.findings.entries()) {
 			requireValue(finding.end_line >= finding.start_line && (input.scope?.kind === 'synthesis' ? input.manifest : input.files).some(f => f.path === finding.path), 'finding outside supplied source')
 			if (input.scope?.kind !== 'synthesis') requireValue(input.files.some(f => f.path === finding.path && changedRanges(f).some(r => r.side === finding.side && finding.start_line >= r.start && finding.end_line <= r.end)), 'finding outside changed source')
-			for (const evidence of finding.evidence) requireValue(sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte) === evidence.quote, 'evidence differs from supplied source')
+			for (const [index, evidence] of finding.evidence.entries()) requireEvidence(evidence, 'finding_evidence', index, findingIndex)
 		}
-		for (const evidence of result.related_evidence) requireValue(sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte) === evidence.quote, 'related evidence differs from supplied source')
+		for (const [index, evidence] of result.related_evidence.entries()) requireEvidence(evidence, 'related_evidence', index)
 		if (incomplete.length) return { ...unavailable(input, `review incomplete (${incomplete.join(', ')})`),
 			status: result.completion, omitted_paths: result.omitted_paths.length ? result.omitted_paths : [...paths],
 			context_requests: result.context_requests, diagnostics }
 		return { ...result, status: 'complete' }
 	} catch (error) {
 		return unavailable(input, error instanceof SyntaxError ? 'invalid JSON review result' : error.message,
-			diagnostics ? { diagnostics } : {})
+			{ ...(diagnostics ? { diagnostics } : {}), ...(validationFailure ? { validation_failure: validationFailure } : {}) })
 	}
 }

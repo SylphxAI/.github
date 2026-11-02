@@ -182,6 +182,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, findings: result.findings.length,
       ...(result.status === 'complete' ? {} : { unavailable: true, reason: result.reason }),
       parts: result.parts, budget: result.budget, request_bytes: result.request_bytes, recovery: result.recovery,
+      ...(result.validation_failure ? { validation_failure: result.validation_failure } : {}),
       started_at: run.started_at, observed_at: observedAt,
       session_name: result.session_name, input_digest: input.input_digest, reviewer_version: input.reviewer_version,
       elapsed_ms: Date.now() - started };
