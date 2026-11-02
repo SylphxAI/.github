@@ -1,0 +1,28 @@
+name: Literal address guard
+description: Reject added IP literals owned by a freshly generated infrastructure inventory, with exact scalar authorizations only.
+inputs:
+  base:
+    description: Base commit of the checked diff; required and must be locally available.
+    required: true
+  head:
+    description: Head commit of the checked diff.
+    default: HEAD
+  inventory:
+    description: Generated version-1 JSON inventory, with source revision and blob digest receipts.
+    required: true
+  inventory-root:
+    description: Checkout of the inventory owner at its current source revision; defaults to the caller checkout.
+    default: .
+runs:
+  using: composite
+  steps:
+    - name: Reject new inventory-owned address literals
+      shell: bash
+      env:
+        ADDRESS_BASE: ${{ inputs.base }}
+        ADDRESS_HEAD: ${{ inputs.head }}
+        ADDRESS_INVENTORY: ${{ inputs.inventory }}
+        ADDRESS_INVENTORY_ROOT: ${{ inputs.inventory-root }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/check.py" --base "$ADDRESS_BASE" --head "$ADDRESS_HEAD" \
+          --inventory "$ADDRESS_INVENTORY" --inventory-root "$ADDRESS_INVENTORY_ROOT"

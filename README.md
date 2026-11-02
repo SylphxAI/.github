@@ -22,6 +22,7 @@ Use one from another repository with
 | [needs-pass](.github/actions/needs-pass/action.yml) | The aggregate verdict of a workflow, including [added-commit secret scanning](docs/secret-scan.md) on PRs and merge groups. A skipped job never counts as passing a required check outside `merge_group`: list PR-time jobs in `required-unless-merge-group` so a `workflow_dispatch` run cannot post a green check over a red one |
 | [workflow-lint](.github/actions/workflow-lint/README.md) | Actionlint syntax/reference checks, pre-merge performance rules, and job timeout/required-path failure contracts (report-only inventory or enforce) |
 | [secret-scan](.github/actions/secret-scan/action.yml) | Runs gitleaks over added commits; reports locations without values and accepts exact reasoned exceptions |
+| [literal-address-guard](.github/actions/literal-address-guard/README.md) | Rejects newly added infrastructure-owned IP literals from a freshly generated inventory, with exact declaration-scalar authorizations |
 | [plain-language](.github/actions/plain-language/action.yml) | Warns about coined terms on the lines a pull request adds |
 | [identifiers](.github/actions/identifiers/action.yml) | Fails when a change adds an id generator, or a text or serial primary key, that is not a UUIDv7 |
 | [chat-senders](.github/actions/chat-senders/README.md) | Fails when a change adds a direct Telegram, Slack or Discord chat-API host outside the action's allow-list; products send chat through Notify |
