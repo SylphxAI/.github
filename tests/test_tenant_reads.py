@@ -171,7 +171,8 @@ class PublicGuardTests(unittest.TestCase):
         base = f.commit({WORKFLOW: workflow(), "sylphx.toml": MANIFEST})
         plan = f.plan(base)
         self.assertEqual(plan["introduced_rules"], ["architecture/C1/deal-randomness",
-                         "architecture/C1/project-portability", RULE, "force-push", "model-selector"])
+                         "architecture/C1/project-portability", RULE, "force-push", "legacy/solar2d",
+                         "model-selector"])
         self.assertEqual(len(plan["evidence"]["added_records"]), 1)
         adopted = f.commit({sc.BASELINE: plan["baseline_text"]})
         f.check(base, 0)
@@ -229,7 +230,7 @@ class PublicGuardTests(unittest.TestCase):
         self.assertIn(RULE, sc.adoption.current_rules())
         files = {sc.adoption.PREFIX + name: (ACTION / name).read_text() for name in (
             "action.yml", "stack_conformance.py", "architecture.py", "model_pins.py", "tenant_reads.py",
-            "deal_randomness.py", "no_force_push.py", "project_portability.py")}
+            "deal_randomness.py", "no_force_push.py", "project_portability.py", "staged_retirement.py")}
         files["policy/deal-randomness-scope.json"] = (ACTION.parents[2] / "policy/deal-randomness-scope.json").read_text()
         for dependency in ("scripts/source_provenance.py", "policy/source-relocations.json"):
             files[dependency] = (ROOT / dependency).read_text()

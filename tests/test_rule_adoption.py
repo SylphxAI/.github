@@ -178,7 +178,7 @@ class AdoptionTests(unittest.TestCase):
         result = f.plan(base)
         self.assertEqual(result["introduced_rules"], ["architecture/C1/cache-economy", "architecture/C1/deal-randomness",
                          "architecture/C1/project-portability",
-                         "architecture/C2/tenant-read-functions", "force-push", "model-pin", "model-selector"])
+                         "architecture/C2/tenant-read-functions", "force-push", "legacy/solar2d", "model-pin", "model-selector"])
         self.assertTrue(all(row.startswith("model-pin ") for row in result["evidence"]["added_records"]))
         record = sc.architecture.baseline_key(sc.architecture.evaluate(sc.Tree(str(f.root), base), "example/app", None, TODAY)["findings"][0])
         f.commit({sc.BASELINE: result["baseline_text"] + sc.architecture.BASELINE_MARKER + "\n" + record + "\n"})
@@ -235,11 +235,13 @@ class AdoptionTests(unittest.TestCase):
                 with mock.patch.object(a, "current_rules", return_value=enforced | {cache_rule}):
                     introduced, _ = a.introduced_rules(tree, "", shared_repo=str(ROOT))
                     self.assertEqual(introduced, {cache_rule})
-                    self.assertEqual(a.seed_permissions(tree, a.RULE_MARKER + cache_rule + "\n", "", set()),
+                    self.assertEqual(a.seed_permissions(tree, a.RULE_MARKER + cache_rule + "\n", "", set(),
+                                                        shared_repo=str(ROOT)),
                                      {cache_rule})
                     for rule in enforced:
                         with self.assertRaisesRegex(ValueError, "already enforced"):
-                            a.seed_permissions(tree, a.RULE_MARKER + rule + "\n", "", set())
+                            a.seed_permissions(tree, a.RULE_MARKER + rule + "\n", "", set(),
+                                               shared_repo=str(ROOT))
 
     def test_forged_capability_profile_and_wrong_source_are_rejected(self):
         data = a.load_registry()

@@ -151,6 +151,13 @@ def source_profile(tree):
                 raise ValueError("source-relocation checker dependency missing: " + path)
             parse(value)
             sources[path] = hashlib.sha256(value.encode()).hexdigest()
+    if "staged_retirement" in (texts["stack_conformance.py"] or ""):
+        path = PREFIX + "staged_retirement.py"
+        value = tree.read(path)
+        if value is None:
+            raise ValueError("staged-retirement checker dependency missing")
+        ast.parse(value)
+        sources[path] = hashlib.sha256(value.encode()).hexdigest()
     if texts["stack_conformance.py"] is None or "stack_conformance.py" not in (texts["action.yml"] or ""):
         raise ValueError("unrecognized stack checker entrypoint")
     module = ast.parse(texts["stack_conformance.py"])
@@ -194,7 +201,7 @@ def model_rules(source):
 
 def current_rules():
     return (architecture_rules((HERE / "architecture.py").read_text())
-            | model_rules((HERE / "model_pins.py").read_text()) | {"force-push"})
+            | model_rules((HERE / "model_pins.py").read_text()) | {"force-push", "legacy/solar2d"})
 
 
 def profile_id(profile):
@@ -246,9 +253,15 @@ class PublishedCheckerTree:
         return raw.decode("utf-8")
 
 
-def old_checkers(base_tree, *, shared_repo=None, source_tree=None):
+def old_checkers(base_tree, *, shared_repo=None, source_tree=None, tree_cache=None):
     registry = load_registry()
     evidence = []
+    cache = {} if tree_cache is None else tree_cache
+    def read_source(pin):
+        if pin not in cache:
+            cache[pin] = (_checker().Tree(shared_repo, pin) if shared_repo is not None
+                          else (source_tree if source_tree is not None else PublishedCheckerTree)(pin))
+        return cache[pin]
     for pin in checker_pins(base_tree):
         identity = registry["commits"].get(pin)
         actual = None
@@ -257,8 +270,7 @@ def old_checkers(base_tree, *, shared_repo=None, source_tree=None):
             if shared_repo is None and source_tree is None:
                 raise ValueError(unknown)
             try:
-                actual = source_profile(_checker().Tree(shared_repo, pin) if shared_repo is not None
-                                        else source_tree(pin))
+                actual = source_profile(read_source(pin))
             except (OSError, ValueError, RuntimeError, KeyError, TypeError, SyntaxError,
                     StopIteration, subprocess.SubprocessError) as error:
                 raise ValueError(unknown + "; checker source is unavailable or invalid: " + str(error)) from None
@@ -268,7 +280,7 @@ def old_checkers(base_tree, *, shared_repo=None, source_tree=None):
         profile = registry["profiles"][identity]
         if shared_repo is not None:
             if actual is None:
-                actual = source_profile(_checker().Tree(shared_repo, pin))
+                actual = source_profile(read_source(pin))
             if actual != profile:
                 raise ValueError("old checker source capability provenance mismatch: " + pin)
         evidence.append({"commit": pin, "profile": identity, **profile})
@@ -316,14 +328,43 @@ def cache_adoption_requested(base_tree, head_tree, base_text, head_text):
     return bool(after) and before != after
 
 
+def legacy_rules(profile, *, shared_repo=None, source_tree=None, tree_cache=None):
+    """Prove category introduction from profile-bound old source, never execute it.
+
+    Historical profile hashes and rule lists stay immutable. This additional
+    conservative read treats any Solar2D literal in the old departures function
+    as prior enforcement: a renamed adoption category cannot reset the guard.
+    """
+    cache = {} if tree_cache is None else tree_cache
+    pin = profile["commit"]
+    if pin not in cache:
+        cache[pin] = (_checker().Tree(shared_repo, pin) if shared_repo is not None
+                      else (source_tree if source_tree is not None else PublishedCheckerTree)(pin))
+    tree = cache[pin]
+    path = PREFIX + "stack_conformance.py"
+    source = tree.read(path)
+    if source is None or hashlib.sha256(source.encode()).hexdigest() != profile["sources"].get(path):
+        raise ValueError("old legacy category source provenance mismatch")
+    scan = next(node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name == "departures")
+    return {"legacy/solar2d"} if any(isinstance(node, ast.Constant) and isinstance(node.value, str)
+           and "solar2d" in node.value.lower() for node in ast.walk(scan)) else set()
+
+
 def introduced_rules(base_tree, baseline_text, *, shared_repo=None, source_tree=None, head_tree=None):
+    source_cache = {}
     if head_tree is not None and not checker_pins(base_tree, required=False):
         # Initial onboarding still requires an immutable candidate caller.
         checker_pins(head_tree)
         profiles = []
     else:
-        profiles = old_checkers(base_tree, shared_repo=shared_repo, source_tree=source_tree)
+        profiles = old_checkers(base_tree, shared_repo=shared_repo, source_tree=source_tree, tree_cache=source_cache)
     enforced = {rule for profile in profiles for rule in profile["rules"]}
+    for profile in profiles:
+        # Only category adoption needs this extra immutable-source read.
+        if "legacy/solar2d" not in adopted_rules(baseline_text):
+            enforced |= legacy_rules(profile, shared_repo=shared_repo, source_tree=source_tree,
+                                     tree_cache=source_cache)
     adopted = adopted_rules(baseline_text)
     if "# model-alias-ratchet-v1" in (baseline_text or "").splitlines():
         adopted.add("model-pin")
@@ -403,7 +444,7 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
         if candidate_departures - inherited_departures:
             raise ValueError("new head stack departure cannot be adopted: "
                              + ", ".join(sorted(candidate_departures - inherited_departures)))
-        additions |= candidate_departures
+        additions |= {line for line in candidate_departures if not line.startswith("solar2d ")}
     for before, after, key, rule_id in (
             (base_arch, head_arch, sc.architecture.baseline_key,
              lambda row: "architecture/" + row["class"] + "/" + row["rule"]),
@@ -418,6 +459,9 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
                     raise ValueError("new head debt cannot be adopted: " + key(row))
                 if not row.get("decision"):
                     additions.add(key(row))
+    retirement_text, retirement_additions = sc.staged_retirement.plan(
+        base_tree, head_tree, original, introduced, sc.departures, sc.parse_baseline, baseline)
+    additions |= retirement_additions
     existing = sc.parse_baseline(original) or set()
     additions -= existing
     lines = []
@@ -429,7 +473,7 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
         lines.append(sc.no_force_push.BASELINE_MARKER)
     lines += [RULE_MARKER + rule for rule in sorted(introduced)]
     lines += sorted(additions)
-    text = original or ""
+    text = retirement_text
     if lines:
         text += ("\n" if text and not text.endswith("\n") else "") + "\n".join(lines) + "\n"
     return {"baseline_text": text, "introduced_rules": sorted(introduced),

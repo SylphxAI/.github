@@ -186,7 +186,8 @@ class RelocationTests(unittest.TestCase):
                 return tree.paths() + ['scripts/source_provenance.py', 'policy/source-relocations.json']
             def read(self, path):
                 if path in ('.github/actions/stack-conformance/stack_conformance.py',
-                            'scripts/source_provenance.py', 'policy/source-relocations.json'):
+                            'scripts/source_provenance.py', 'policy/source-relocations.json',
+                            '.github/actions/stack-conformance/staged_retirement.py'):
                     return (ROOT / path).read_text()
                 return tree.read(path)
         profile = sc.adoption.source_profile(CurrentSources())

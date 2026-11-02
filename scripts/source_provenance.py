@@ -163,6 +163,11 @@ class TreeView:
     def paths(self):
         return self._paths
 
+    def entries(self):
+        stem = self.prefix + '/' if self.prefix else ''
+        entries = self.tree.entries()
+        return {path: entries[stem + path] for path in self._paths}
+
     def read(self, path, **kwargs):
         if path not in self._path_set:
             return None
@@ -183,7 +188,7 @@ def local_changes(changed, prefix):
     return {p[len(stem):]: lines for p, lines in changed.items() if p.startswith(stem)}
 
 
-def legacy_errors(head, base, records, baseline, departures, parse_baseline, decide):
+def legacy_errors(head, base, records, baseline, departures, parse_baseline, decide, retirement=None):
     errors = []
     for row in records:
         current = TreeView(head, row['prefix'])
@@ -191,8 +196,10 @@ def legacy_errors(head, base, records, baseline, departures, parse_baseline, dec
         def legacy(tree):
             parsed = parse_baseline(tree.read(baseline))
             return None if parsed is None else {v for v in parsed if not v.startswith(('architecture ', 'model-pin ', 'force-push '))}
-        errors += [row['prefix'] + ': ' + error for error in
-                   decide(departures(current), legacy(current), legacy(prior))]
+        scoped_errors = (retirement.check(current, prior, legacy(current), legacy(prior),
+                         departures, decide, baseline=baseline) if retirement else
+                         decide(departures(current), legacy(current), legacy(prior)))
+        errors += [row['prefix'] + ': ' + error for error in scoped_errors]
     return errors
 
 

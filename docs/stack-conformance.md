@@ -32,6 +32,51 @@ Web apps, tools and scripts on TypeScript and Bun are the default stack, so a
 Next.js server or a static site is not a departure. Paths under
 `node_modules`, `vendor`, `target`, `dist`, `build` and `.next` are skipped.
 
+## Source-bound staged retirement
+
+`solar2d` remains a retirement finding, not an active-engine classification.
+A checker bump may stage independently observed existing inputs while a faithful
+replacement is unfinished; it does not prove replacement parity or authorize a
+live cutover. New staged records have this form:
+
+```text
+# stack-rule-adopted-v1 legacy/solar2d
+solar2d <build.settings> <sha256>
+```
+
+The adoption helper independently scans base and candidate Git trees. It may
+introduce this category only when every immutable, profile-verified old checker
+predates Solar2D detection (or on initial checker onboarding). It reads historical
+source as data; an old checker that already detected Solar2D cannot reset the
+rule by adopting the new category name. Existing capability profile identities
+stay unchanged. Missing or mismatched historical source fails closed.
+
+The digest binds **every tracked entry below the project directory**, with its
+relative path, Git mode and object identity. Binary assets, symlinks and gitlinks
+are included, not only `build.settings` and `main.lua`. The ratchet file itself is
+excluded to avoid self-reference; there are no caller-defined exclusions.
+A root-level project consequently binds the rest of its repository too: this is
+a conservative source boundary, not guessed Lua/asset coverage. Changes outside
+a nested project remain possible, including source routing and modern-engine
+work elsewhere in the monorepo.
+
+At first staging and on later changes, candidate inputs must be an
+identical-value subset of base inputs. New projects, new files, changed bytes,
+renames and mode changes fail, even if a caller recomputes the digest. Deletions
+may update a binding; deleting every bound input removes the record, but keeps the adoption
+marker so it cannot reopen staging. `adoption.py adopt` also refreshes existing
+bindings after deletion-only changes. Findings remain in `legacy_departures` in
+the report while any bound input remains, even after deleting `build.settings`
+or `main.lua`. Removing only a detector anchor cannot drop the binding or permit
+changes to retained source. This is not proof that a live product
+has been safely retired; its owner still verifies users and callers.
+
+Historical path-only Solar2D records retain their existing shrinking ratchet;
+new path-only records cannot replace source-bound adoption. Model, tenant-read,
+architecture, SQL and other guards are unchanged and cannot be waived by this
+record. An exact source relocation carries a committed binding through its
+prefix-rooted view; it does not create permission to seed a new binding.
+
 ## Contribution metadata permissions
 
 The existing shared-pin check follows caller jobs through local/shared reusable
