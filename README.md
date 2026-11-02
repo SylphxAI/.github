@@ -65,7 +65,8 @@ Company repositories delete a pull request's head branch when it merges
 in [docs/repository-settings.md](docs/repository-settings.md) and
 [scripts/set-delete-branch-on-merge.sh](scripts/set-delete-branch-on-merge.sh).
 
-Shared branch integrity and the property-scoped `ci-ok` rule are inherited from
-Enterprise; their scope, source payloads and safe migration procedure are in
+Shared branch integrity is inherited from Enterprise. The property-scoped `ci-ok`
+rule remains organization-level because the Enterprise API refused the candidate.
+Current scope, source payloads and the migration constraint are in
 [Enterprise repository rules](docs/enterprise-rulesets.md). Merge queues remain
 repository-level policy ([settings](docs/merge-queue-settings.md)).

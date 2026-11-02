@@ -3,14 +3,14 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICY = json.loads((ROOT / "policy/enterprise-ci.json").read_text())
+POLICY = json.loads((ROOT / "policy/enterprise-ci-candidate.json").read_text())
 PROPERTIES = json.loads((ROOT / "policy/enterprise-properties.json").read_text())
 
 
-def test_shared_gate_stays_at_enterprise_without_bypasses_or_queue():
+def test_candidate_stays_in_evaluate_without_bypasses_or_queue():
     assert POLICY["name"] == "enterprise-required-ci-gate"
     assert POLICY["target"] == "branch"
-    assert POLICY["enforcement"] == "active"
+    assert POLICY["enforcement"] == "evaluate"
     assert POLICY["bypass_actors"] == []
     assert POLICY["rules"] == [{
         "type": "required_status_checks",
