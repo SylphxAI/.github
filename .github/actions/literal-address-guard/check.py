@@ -17,12 +17,13 @@ import sys
 # A token cannot be a substring of a dotted number, hostname or identifier.
 # Ports and brackets are delimiters. IPv6 zone identifiers are ignored for
 # matching, not for the reported span. IPv4-mapped IPv6 is also checked as IPv4.
+URL_AUTHORITY = re.compile(r"//[^\s/?#]*$")
 V4 = re.compile(r"(?<![\w.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![\w.])")
 V6 = re.compile(r"(?<![\w.:])(?=[0-9a-fA-F:.]*:)[0-9a-fA-F:.]+(?:%[\w.-]+)?(?:/[0-9]{1,3})?(?![\w.:%/])")
 
 
 def git(root, *args):
-    return subprocess.check_output(["git", "-C", str(root), *args])
+    return subprocess.check_output(["git", "--literal-pathspecs", "-C", str(root), *args])
 
 
 def revision(root, ref):
@@ -38,10 +39,10 @@ def literals(text):
                 continue
             raw = match.group()
             start, end = match.span()
-            if pattern is V4 and not text[:start].endswith("//"):
+            if pattern is V4 and not URL_AUTHORITY.search(text[:start]):
                 # A slash is also an ordinary URL delimiter. Only extend a
                 # standalone host token into a complete CIDR, never a URL path
-                # (including numeric paths such as https://host/24).
+                # (including userinfo and numeric paths such as https://user@host/24).
                 suffix = re.match(r"/[0-9]{1,2}(?![\w./])", text[end:])
                 if suffix:
                     raw += suffix.group()

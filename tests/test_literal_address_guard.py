@@ -24,6 +24,9 @@ class Tokens(unittest.TestCase):
             'http://192.0.2.10/': ['192.0.2.10/32'],
             'https://192.0.2.10/24': ['192.0.2.10/32'],
             '//192.0.2.10/99': ['192.0.2.10/32'],
+            'http://user@192.0.2.10/24': ['192.0.2.10/32'],
+            'http://user:password@192.0.2.10/24': ['192.0.2.10/32'],
+            '//user:password@192.0.2.10/24': ['192.0.2.10/32'],
             '192.0.2.10/24/path': ['192.0.2.10/32'],
             '192.0.2.0/24': ['192.0.2.0/24'],
             '"192.0.2.10",192.0.2.11/32': ['192.0.2.10/32', '192.0.2.11/32'],
@@ -112,6 +115,19 @@ class History(unittest.TestCase):
         self.write('folder/\n日本語.ts', 'first\nx\u0085https://192.0.2.10:443\n')
         self.commit()
         self.assertEqual(self.check()[0][:2], ('folder/\n日本語.ts', 2))
+
+    def test_every_filename_is_literal_not_a_git_pathspec(self):
+        paths = (':foo', ':(literal)README', ':(exclude)nothing',
+                 ':(glob)**', 'literal[1].md', 'folder/\n日本語.ts')
+        for path in paths:
+            self.write(path, 'target: https://192.0.2.10:443\n')
+        self.commit()
+        self.assertEqual({hit[0] for hit in self.check()}, set(paths))
+        # Changing one magic-looking filename must not scan a different file.
+        self.base = self.git('rev-parse', 'HEAD')
+        self.write(':foo', 'changed: https://192.0.2.10:443\n')
+        self.commit()
+        self.assertEqual([hit[0] for hit in self.check()], [':foo'])
 
     def test_stale_and_forged_inventory_fail_closed(self):
         policy = self.policy()
