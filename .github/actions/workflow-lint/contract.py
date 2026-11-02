@@ -123,7 +123,7 @@ def scan_workflow(file, text):
 def scan_dir(root):
     repository = os.environ.get("GITHUB_REPOSITORY", "")
     entry = exempt(repository, datetime.datetime.now(datetime.timezone.utc).date()) if repository else None
-    if entry and entry['class'] == 'hands-off':
+    if entry and entry['class'] in ('hands-off', 'frozen-legacy', 'paused-or-stopped'):
         return []
     folder = root / ".github/workflows"
     findings = []

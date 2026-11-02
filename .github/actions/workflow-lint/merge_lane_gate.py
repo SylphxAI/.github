@@ -139,11 +139,15 @@ def read_workflows(api, sha):
 
 
 def exempt(repository, today):
+    scope = json.loads((SOURCE / 'policy/merge-lane-scope.json').read_text())
+    if repository in scope['excluded_repositories']:
+        return {'class': 'paused-or-stopped', 'owner': 'CEO', 'review': 'portfolio lifecycle decision',
+                **scope['excluded_repositories'][repository]}
     policy = load_policy(SOURCE / 'policy/optimistic-merge.json')
     entry, _ = exemption_for(policy, repository, today)
     # Existing audit-only no-build/frozen entries do not silently waive a new
     # required runner rule. Only an explicit, expiring R8 policy does.
-    return entry if entry and (entry['class'] == 'hands-off' or
+    return entry if entry and (entry['class'] in ('hands-off', 'frozen-legacy') or
         entry['class'] == 'static-runner-policy' and 'R8' in waived_rows(policy, entry)) else None
 
 
@@ -156,13 +160,16 @@ def main():
         repository = os.environ['GITHUB_REPOSITORY']
         entry = exempt(repository, datetime.datetime.now(datetime.timezone.utc).date())
         if entry:
-            print(f"merge-lane: explicit {entry['class']} exemption; owner={entry['owner']}, review={entry['review']}")
+            print(f"merge-lane: explicit {entry['class']} exemption; skipped, not covered; owner={entry['owner']}, review={entry['review']}")
+            return 0
+        event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())
+        if (event.get('repository') or {}).get('archived') is True:
+            print('merge-lane: archived repository; skipped, not covered')
             return 0
         state = delivery_state()
         if state is True:
             print('merge-lane: delivered customer repository; skipped')
             return 0
-        event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_bytes())
         policy = contribution()
         api = policy.GitHub(repository, os.environ.get('GITHUB_TOKEN', ''))
         if event_name == 'workflow_dispatch':

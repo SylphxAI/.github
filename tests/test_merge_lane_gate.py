@@ -138,12 +138,23 @@ class RequiredVerdict(unittest.TestCase):
         entry = {'class': 'static-runner-policy', 'repos': ['SylphxAI/example'],
                  'reason': 'reviewed parser limitation', 'owner': 'Kyle', 'review': '2026-12-01'}
         for cls, expected in (('static-runner-policy', True), ('no-build', False),
-                              ('suite-is-gate', False), ('hands-off', True)):
+                              ('suite-is-gate', False), ('hands-off', True), ('frozen-legacy', True)):
             item = {**entry, 'class': cls}
             with patch.object(gate, 'load_policy', return_value={'exemptions': [item], 'classes': {
                     cls: {'waives': ['*'] if cls == 'hands-off' else ['R8']}}}):
                 self.assertEqual(bool(gate.exempt('SylphxAI/example', datetime.date(2026, 11, 2))), expected)
                 self.assertIsNone(gate.exempt('SylphxAI/example', datetime.date(2027, 1, 1)))
+
+    def test_frozen_and_paused_repositories_skip_not_coverage(self):
+        for repo in ('Cubeage/big2-tycoon-2', 'Cubeage/mahjong-tycoon-tw',
+                     'Cubeage/mahjong-keel', 'SylphxAI/kalkas', 'TseFamily/tse-family-learning'):
+            entry = gate.exempt(repo, datetime.date(2026, 11, 2))
+            self.assertIsNotNone(entry, repo)
+        self.assertIsNone(gate.exempt('Cubeage/hk-mahjong-tycoon', datetime.date(2026, 11, 2)))
+        result, output, read, _ = self.run_gate(event={'repository': {'archived': True}}, text=PLAIN)
+        self.assertEqual(result, 0)
+        self.assertIn('skipped, not covered', output)
+        read.assert_not_called()
 
     def test_property_retries_but_unreadable_property_does_not_bypass_source(self):
         for values, expected_calls in (([None, False], 2), ([None, None, None], 3)):
@@ -210,9 +221,7 @@ class RequiredVerdict(unittest.TestCase):
             first = action['runs']['steps'][0]
             self.assertEqual(first['name'], 'Require merge-lane routing')
             self.assertIn('../merge-lane/check.sh', first['run'])
-        standalone = (ROOT / '.github/actions/merge-lane/action.yml').read_text()
         script = (ROOT / '.github/actions/merge-lane/check.sh').read_text()
-        self.assertNotIn('checkout', standalone.split('runs:', 1)[1])
         self.assertIn('PyYAML==6.0.3', script)
         self.assertIn('--only-binary=:all:', script)
 

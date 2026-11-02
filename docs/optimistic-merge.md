@@ -479,8 +479,9 @@ Update repository-local static runner checks and their regression tests in the
 same change so they accept the canonical same-size selector. Only an explicit,
 reasoned, owned and unexpired `static-runner-policy` exemption waives required
 R8. Existing `no-build` and `suite-is-gate` audit exemptions do not waive it.
-Repositories in the `hands-off` class and delivered customer repositories stay
-outside the rollout. HK Mahjong Tycoon is under active development and is not
+Repositories in the `hands-off` or `frozen-legacy` classes, paused/stopped
+products, archived repositories and delivered customer repositories stay
+outside the rollout and do not count as guard coverage. HK Mahjong Tycoon is under active development and is not
 hands-off.
 
 The verdict jobs (`ci-ok`, `verified`) run on `sylphx-linux-control`, the

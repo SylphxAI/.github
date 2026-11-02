@@ -2,24 +2,16 @@
 
 A merge group must not wait behind pull-request builds when its organization
 already serves a same-size merge pool. Both shared verdict actions (`ci-ok`
-and `needs-pass`) enforce R8 before they can return success. Custom verdicts
-can include the standalone action in their **existing required job**:
-
-```yaml
-permissions:
-  contents: read
-steps:
-  - uses: SylphxAI/.github/.github/actions/merge-lane@<full-release-sha>
-```
+and `needs-pass`) enforce R8 before they can return success.
 
 Run the verdict on `pull_request` and `merge_group`, on
-`sylphx-linux-control`. No caller checkout is needed. When the tested commit already exists in the
-caller checkout, source is read directly from its immutable Git objects, not
-mutable worktree files, so no source API read is needed. Python 3 and pip are
-required; PyYAML 6.0.3 is installed into a runner-temporary directory.
-Publishing a shared action does not update old immutable pins or make an
-optional job required. Adoption must update the pin or add the standalone step
-and read the repository's real required-check chain back.
+`sylphx-linux-control`. No caller checkout is needed. When the tested commit
+already exists in the caller checkout, source is read directly from its
+immutable Git objects, not mutable worktree files, so no source API read is
+needed. Python 3 and pip are required; PyYAML 6.0.3 is installed into a
+runner-temporary directory. Publishing these shared actions does not update
+old immutable pins or make an optional job required. Ordinary future pin
+updates inherit the guard; this publication does not launch a fleet rollout.
 
 ## What the check proves
 
@@ -53,7 +45,12 @@ failure-propagation findings.
 ## Exclusions and boundaries
 
 Delivered customer repositories (`sylphx_delivery=delivered`) and repositories
-in the policy's `hands-off` class are excluded. The property read retries at most three times. If still unreadable, it warns
+in the policy's `hands-off` or `frozen-legacy` classes are excluded, as are
+archived and paused/stopped products. These skips are reported and do not count
+as coverage. [`policy/merge-lane-scope.json`](../policy/merge-lane-scope.json)
+records the portfolio source, immutable revision and reason for each lifecycle
+exclusion, including LearningQuest outside company scope. A rollout reads all
+exemption reasons, delivery properties and the portfolio before opening a PR. The property read retries at most three times. If still unreadable, it warns
 and inspects source as non-delivered: clean source passes and a violation
 still fails. Hands-off exclusion happens before API reads. Source reads also
 retry at most three times, except explicit rate limits are not retried.
