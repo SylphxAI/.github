@@ -9,6 +9,7 @@ the executable jobs in the called workflow are checked instead.
 
 from __future__ import annotations
 
+import datetime
 import os
 import pathlib
 import shlex
@@ -18,6 +19,10 @@ from typing import NamedTuple
 import yaml
 
 from perf_gate import delivered
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "scripts"))
+from merge_lane import merge_lane_findings
+from merge_lane_gate import exempt
 
 
 class Finding(NamedTuple):
@@ -116,12 +121,38 @@ def scan_workflow(file, text):
 
 
 def scan_dir(root):
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    entry = exempt(repository, datetime.datetime.now(datetime.timezone.utc).date()) if repository else None
+    if entry and entry['class'] == 'hands-off':
+        return []
     folder = root / ".github/workflows"
     findings = []
+    workflows = {}
     if folder.is_dir():
         for path in sorted(folder.iterdir()):
             if path.is_file() and path.suffix in (".yml", ".yaml"):
-                findings.extend(scan_workflow(str(path.relative_to(root)), path.read_text(encoding="utf-8")))
+                text = path.read_text(encoding="utf-8")
+                workflows[path.name] = text
+                findings.extend(scan_workflow(str(path.relative_to(root)), text))
+    # The required verdict repeats R8 against immutable source without relying
+    # on checkout. Here it also fails early for workflow-lint consumers, even
+    # when unrelated legacy contract findings are report-only.
+    private = None
+    try:
+        import json
+        event = json.loads(pathlib.Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        private = event.get("repository", {}).get("private")
+    except (KeyError, OSError, ValueError):
+        pass
+    notes = []
+    if entry:
+        return findings
+    for finding in merge_lane_findings(workflows, private=private,
+            org=repository.split("/")[0] if repository else None, notes=notes):
+        findings.append(Finding(".github/workflows/" + finding.file, finding.line,
+            f"job {finding.job}: {finding.problem}; use the same-size -merge twin", True))
+    for note in notes:
+        print(f"::notice file=.github/workflows/{note.file},line={note.line}::job {note.job}: {note.problem}")
     return findings
 
 

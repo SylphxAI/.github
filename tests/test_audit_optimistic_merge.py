@@ -329,6 +329,17 @@ class RowFailureTest(unittest.TestCase):
         self.assertEqual(failing(rows), {"R3b", "R8"}, rows)
         self.assertIn("lst.yml (a)", rows["R8"]["detail"])
 
+    def test_r8_org_contract_plain_unserved_capacity_is_notice_not_failure(self) -> None:
+        facts = conformant('Cubeage', 'test')
+        facts['all_workflows']['heavy.yml'] = 'on: merge_group\njobs:\n  build:\n    runs-on: sylphx-linux-xlarge\n'
+        row = run_rows(facts)['R8']
+        self.assertEqual(row['status'], 'PASS')
+        self.assertIn('NOTICE heavy.yml (build)', row['detail'])
+        facts['all_workflows']['heavy.yml'] += '  wrong:\n    runs-on: sylphx-linux-xlarge-merge\n'
+        row = run_rows(facts)['R8']
+        self.assertEqual(row['status'], 'FAIL')
+        self.assertIn('unserved twin', row['detail'])
+
     def test_r9_pull_request_workflows_cancel_only_pull_request_runs(self) -> None:
         head = "# optimistic-merge: gate-external\non:\n  pull_request:\n  merge_group:\n"
         cases = {
@@ -652,10 +663,13 @@ class PolicyTest(unittest.TestCase):
         today = datetime.date(2026, 10, 5)
         for repo, kind in (("Cubeage/big2-tycoon", "suite-is-gate"), ("Cubeage/cubeage-studio", "suite-is-gate"),
                            ("Cubeage/fun-big2-hk", "on-red-notify"), ("Cubeage/fun-big2-tw", "on-red-notify"),
-                           ("SylphxAI/bgca", "hands-off"), ("Cubeage/hk-mahjong-tycoon", "hands-off"),
+                           ("SylphxAI/bgca", "hands-off"),
                            ("Cubeage/Big2TycoonHk", "frozen-legacy"),
                            ("SylphxAI/work-e2e-fixture", "suite-is-gate")):
             self.assertEqual(audit.exemption_for(POLICY, repo, today)[0]["class"], kind, repo)
+
+    def test_actively_maintained_hkmt_is_not_hands_off(self) -> None:
+        self.assertIsNone(audit.exemption_for(POLICY, "Cubeage/hk-mahjong-tycoon", datetime.date(2026, 11, 2))[0])
 
     def test_a_security_advisory_fork_is_exempt_and_its_parent_is_not(self) -> None:
         today = datetime.date(2026, 10, 6)

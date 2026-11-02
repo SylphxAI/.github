@@ -1,0 +1,29 @@
+{
+  "source": {
+    "repository": "SylphxAI/cloud",
+    "path": "contracts/capacity/tiers.toml",
+    "sha": "816fd2a1e41de11dfe22d9916903e7f53e34350e",
+    "read_utc": "2026-11-02T21:41:23.252613+00:00"
+  },
+  "orgs": {
+    "SylphxAI": [
+      "sylphx-linux-small-merge",
+      "sylphx-linux-standard-merge",
+      "sylphx-linux-large-merge",
+      "sylphx-linux-xlarge-merge",
+      "sylphx-linux-2xlarge-merge"
+    ],
+    "EpiowAI": [
+      "sylphx-linux-standard-merge",
+      "sylphx-linux-large-merge",
+      "sylphx-linux-xlarge-merge"
+    ],
+    "OzyrixLtd": [
+      "sylphx-linux-large-merge"
+    ],
+    "TseFamily": [],
+    "Cubeage": [
+      "sylphx-linux-standard-merge"
+    ]
+  }
+}

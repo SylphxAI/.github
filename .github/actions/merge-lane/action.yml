@@ -1,0 +1,20 @@
+name: merge-lane
+description: >
+  Refuses merge-group jobs on the shared pull-request build pool. Reads every
+  workflow at the immutable tested revision, follows local reusable calls and
+  selects known event, visibility, matrix and input branches. No caller checkout
+  is needed. Requires contents: read and Python 3 with pip. Delivered repositories
+  are excluded. Put this in the required code verdict, on pull_request as well
+  as merge_group; ci-ok and needs-pass already include it.
+inputs:
+  token:
+    description: Token for immutable workflow and delivery-property reads.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Require merge-lane routing
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh"

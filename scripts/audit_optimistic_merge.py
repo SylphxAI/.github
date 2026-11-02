@@ -31,7 +31,7 @@ Rows, per non-archived repository of the policy's organizations:
        reaches the repository; the red-main handler's Broker path mints the
        same token per repository through the platform), `notify` elsewhere
   R8   merge lane: in a workflow that runs on merge_group, every job on the
-       `sylphx-linux-standard` or `sylphx-linux-xlarge` pool selects its
+       shared Linux pool selects its served, same-size
        `-merge` twin on merge_group, so a merge group never queues behind the
        pull-request backlog (verdict jobs on `sylphx-linux-control` and jobs
        that skip merge_group are out of scope)
@@ -61,6 +61,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+# Resolve beside this file even when imported by an action from another checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from merge_lane import merge_lane_findings, merge_lane_misses
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "policy" / "optimistic-merge.json"
@@ -113,7 +117,7 @@ def waived_rows(policy: dict, entry: dict) -> set[str]:
     return set(ROWS) if rows == ["*"] else set(rows)
 
 
-# --- workflow text helpers (stdlib only; the repo's own tests parse them with PyYAML) --
+# --- workflow text helpers (R8 uses the shared pinned PyYAML parser) --
 
 
 def _code_lines(text: str) -> list[str]:
@@ -265,48 +269,6 @@ def job_needs(text: str, job: str) -> list[str]:
                 for m in [re.match(r"^\s*-\s*(\S+)", entry)] if m]
     return []
 
-
-BUILD_POOL = re.compile(r"sylphx-linux-(?:standard|xlarge)(?![\w-])")
-MERGE_LANE = re.compile(r"sylphx-linux-(?:standard|xlarge)-merge(?![\w-])")
-
-
-def job_runs_on(body: list[str]) -> str | None:
-    """The `runs-on:` of one job as text (an inline value or its list items), None if it has none."""
-    for i, line in enumerate(body):
-        match = re.match(r"^\s*runs-on\s*:\s*(.*)$", line)
-        if not match:
-            continue
-        value = match.group(1).strip()
-        if value:
-            return value
-        return " ".join(entry.strip() for entry in _sub_block(body, i))
-    return None
-
-
-def job_skips_merge_group(body: list[str]) -> bool:
-    """A single-line `if:` that only lets pull_request (or anything but merge_group) run the job."""
-    for line in body:
-        match = re.match(r"^\s*if\s*:\s*(.*)$", line)
-        if match:
-            cond = match.group(1)
-            return bool(re.search(r"event_name\s*!=\s*'merge_group'|event_name\s*==\s*'(?:pull_request|push|schedule|workflow_dispatch)'", cond)
-                        and not re.search(r"event_name\s*==\s*'merge_group'", cond))
-    return False
-
-
-def merge_lane_misses(text: str) -> list[str]:
-    """Jobs of a merge_group workflow on the shared build pool without the `-merge` selector."""
-    if "merge_group" not in triggers(text):
-        return []
-    misses = []
-    for job_id, body in jobs(text).items():
-        runs_on = job_runs_on(body)
-        if runs_on is None or not BUILD_POOL.search(runs_on) or MERGE_LANE.search(runs_on):
-            continue
-        if re.search(r"\$\{\{[^}]*(?:matrix|inputs)\.", runs_on) or job_skips_merge_group(body):
-            continue  # decided at run time, or never a merge-group job
-        misses.append(job_id)
-    return misses
 
 
 PR_ONLY_CANCEL = re.compile(r"""^\$\{\{\s*github\.event_name\s*==\s*'pull_request'\s*\}\}$""")
@@ -748,11 +710,15 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
     if not candidates:
         rows["R8"] = _row("FAIL", "workflow files unreadable") if unreadable else _row("SKIP", "no workflows read")
     else:
-        missed = {name: merge_lane_misses(text) for name, text in sorted(candidates.items())}
-        missed = {name: ids for name, ids in missed.items() if ids}
-        rows["R8"] = need(not missed, "merge-group jobs select the merge lane",
-                          "merge_group job on the pull-request pool without a `-merge` runner: "
-                          + "; ".join(f"{name} ({', '.join(ids)})" for name, ids in missed.items()))
+        missed, notes, reasons = {}, [], []
+        for finding in merge_lane_findings(candidates, private=facts.get("private"), org=org, notes=notes):
+            missed.setdefault(finding.file, []).append(finding.job)
+            reasons.append(finding.problem)
+        capacity = "; ".join(f"NOTICE {n.file} ({n.job}): {n.problem}" for n in notes)
+        rows["R8"] = need(not missed, "merge-group jobs select served same-size merge lanes" +
+                          ("; " + capacity if capacity else ""),
+                          "; ".join(f"{name} ({', '.join(ids)})" for name, ids in missed.items()) +
+                          ": " + "; ".join(sorted(set(reasons))))
 
     # R9
     if not candidates:

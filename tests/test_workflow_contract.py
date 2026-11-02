@@ -3,6 +3,8 @@
 import importlib.util
 import pathlib
 import sys
+import tempfile
+import os
 import unittest
 from unittest.mock import patch
 
@@ -27,6 +29,31 @@ def workflow(build="", steps="      - run: pytest", extra=""):
 class ContractTest(unittest.TestCase):
     def scan(self, text):
         return contract.scan_workflow("ci.yml", text)
+
+    def test_r8_blocks_even_report_only_but_unserved_plain_is_a_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            folder = root / '.github/workflows'
+            folder.mkdir(parents=True)
+            path = folder / 'merge.yml'
+            path.write_text('on: merge_group\njobs:\n  build:\n    timeout-minutes: 5\n    runs-on: sylphx-linux-standard\n')
+            with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'Cubeage/example'}, clear=True):
+                found = contract.scan_dir(root)
+                self.assertEqual(len(found), 1)
+                self.assertTrue(found[0].blocking)
+                self.assertEqual(contract.exit_code(found, 'report-only'), 1)
+                path.write_text(path.read_text().replace('standard', 'xlarge'))
+                self.assertEqual(contract.scan_dir(root), [])
+
+    def test_hands_off_skips_before_reading_workflows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            folder = root / '.github/workflows'
+            folder.mkdir(parents=True)
+            (folder / 'invalid.yml').write_text('invalid: [')
+            for repo in ('SylphxAI/bgca', 'SylphxAI/openclaw-sylphx'):
+                with patch.dict(os.environ, {'GITHUB_REPOSITORY': repo}, clear=True):
+                    self.assertEqual(contract.scan_dir(root), [])
 
     def test_valid(self):
         self.assertEqual(self.scan(workflow()), [])

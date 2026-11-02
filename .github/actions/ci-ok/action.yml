@@ -1,6 +1,6 @@
 name: ci-ok
 description: >
-  Enforces shared contribution metadata policy and scans added commits for
+  Enforces served same-size merge-lane routing and shared contribution metadata policy and scans added commits for
   secrets, then requires explicitly named job dependencies to have succeeded.
   Run the calling job with needs for every required job and if always(), and
   pass toJSON(needs) plus the required YAML job IDs. An absent, skipped,
@@ -27,6 +27,11 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Require merge-lane routing
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: bash "$GITHUB_ACTION_PATH/../merge-lane/check.sh"
     - name: Check contribution metadata
       shell: bash
       env:
