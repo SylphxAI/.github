@@ -47,7 +47,7 @@ class DeviceCaptureTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(capture.CaptureError):
                 capture.check_identity({**IDENTITY,**changes},PARENT)
 
-    def exercise(self, identity=None, cli="sylphx 1.2.3", flags="--scenario JSON --size LABEL", exit_code=0):
+    def exercise(self, identity=None, cli="sylphx 1.2.3", flags="--scenario JSON --size LABEL", exit_code=0, primary_log=True):
         receipt = FakeReceipt(identity)
         calls = []
         with tempfile.TemporaryDirectory() as directory:
@@ -68,13 +68,25 @@ class DeviceCaptureTests(unittest.TestCase):
                 self.assertEqual(kwargs["env"]["SYLPHX_BASE_URL"],capture.API)
                 self.assertEqual(args[args.index("--env")+1],PARENT)
                 self.assertEqual(args[args.index("--size")+1],"phone")
+                device = Path(args[args.index("--out")+1])
+                device.mkdir(parents=True)
+                if primary_log:
+                    (device/"logcat.txt").write_text("game ready\n")
+                    (device/"logcat-tail.txt").write_text("late diagnostics\n")
                 return subprocess.CompletedProcess(args,exit_code)
             with patch.object(capture.subprocess,"run",side_effect=run), \
                  patch.object(capture.time,"sleep") as sleep, \
                  patch.dict(os.environ,{"ACTIONS_ID_TOKEN_REQUEST_URL":"https://oidc.example/token?x=1",
-                                        "ACTIONS_ID_TOKEN_REQUEST_TOKEN":"test-request"}), \
+                                        "ACTIONS_ID_TOKEN_REQUEST_TOKEN":"test-request",
+                                        "GITHUB_OUTPUT":str(root/"github-output")}), \
                  contextlib.redirect_stdout(io.StringIO()) as output:
-                capture.execute(receipt,options)
+                try:
+                    capture.execute(receipt,options)
+                finally:
+                    if (root/"output/device/logcat.txt").is_file():
+                        self.assertIn("logcat="+str(root/"output/device/launch-logcat.txt"), (root/"github-output").read_text())
+                        self.assertEqual((root/"output/device/launch-logcat.txt").read_text(), "game ready\n\nlate diagnostics\n\n")
+                        self.assertEqual(receipt.data["capture_exit"], exit_code)
         return receipt,calls,sleep,output.getvalue()
 
     def test_positive_published_cli_exact_identity_before_single_lease_driver(self):
@@ -97,6 +109,37 @@ class DeviceCaptureTests(unittest.TestCase):
     def test_cli_failure_is_not_reported_as_capture_success(self):
         with self.assertRaises(capture.CaptureError):
             self.exercise(exit_code=2)
+
+    def test_success_without_primary_logcat_is_not_launch_evidence(self):
+        with self.assertRaisesRegex(capture.CaptureError, "no primary logcat"):
+            self.exercise(primary_log=False)
+
+    def test_combined_logcat_preserves_startup_and_late_crash_without_changing_raw_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            device = Path(directory)/"device"
+            device.mkdir()
+            primary, tail = device/"logcat.txt", device/"logcat-tail.txt"
+            primary.write_bytes(b"game: ready\ntruncated")
+            tail.write_bytes(b"ANR in com.example.game\n")
+            combined = capture.collect_logcat(directory)
+            self.assertEqual(combined, device/"launch-logcat.txt")
+            self.assertEqual(combined.read_bytes(), b"game: ready\ntruncated\nANR in com.example.game\n\n")
+            self.assertEqual(primary.read_bytes(), b"game: ready\ntruncated")
+            self.assertEqual(tail.read_bytes(), b"ANR in com.example.game\n")
+            # Rebuilding diagnostics must not concatenate the generated file
+            # into itself or depend on directory enumeration order.
+            expected = combined.read_bytes()
+            self.assertEqual(capture.collect_logcat(directory).read_bytes(), expected)
+
+    def test_primary_without_tail_is_retained_and_tail_without_primary_is_not_substituted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            device = Path(directory)/"device"
+            device.mkdir()
+            (device/"logcat-tail.txt").write_text("tail without startup\n")
+            self.assertIsNone(capture.collect_logcat(directory))
+            (device/"logcat-tail.txt").unlink()
+            (device/"logcat.txt").write_text("game: ready\n")
+            self.assertEqual(capture.collect_logcat(directory).read_text(), "game: ready\n\n")
 
     def test_only_same_token_propagation_reads_are_retried_with_a_finite_bound(self):
         receipt = FakeReceipt()

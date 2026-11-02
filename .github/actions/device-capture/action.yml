@@ -26,6 +26,9 @@ inputs:
     description: New local output directory, including safe identity and CLI receipts.
     required: true
 outputs:
+  logcat:
+    description: Primary logcat followed by any diagnostic tail; use this for launch/crash gates, not an arbitrary logcat file.
+    value: ${{ steps.capture.outputs.logcat }}
   receipt:
     description: Safe local identity/request receipt, containing no credentials.
     value: ${{ steps.capture.outputs.receipt }}
