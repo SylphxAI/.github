@@ -332,6 +332,7 @@ def test_readiness_binds_the_exact_issued_key_and_subject(monkeypatch, field, va
 
 @pytest.mark.parametrize("body,code", [
     ({"code": "key_not_yet_propagated", "error": "key_not_yet_propagated"}, "key_not_yet_propagated"),
+    ({"error": {"code": "NOT_YET_PROPAGATED", "message": "private-provider-token"}}, "NOT_YET_PROPAGATED"),
     ({"error": {"code": "PERMISSION_DENIED", "message": "private-provider-token"}}, "PERMISSION_DENIED"),
     ({"error": "key_expired"}, "key_expired"),
     ({"code": "private-provider-token", "error": "private-provider-token"}, ""),
@@ -351,6 +352,71 @@ def test_http_refusals_retain_only_known_codes_for_both_public_error_shapes(body
     assert "private-provider-token" not in str(caught.value)
     if code:
         assert "code=" + code in str(caught.value)
+
+
+@pytest.mark.parametrize("code", ["NOT_YET_PROPAGATED", "key_not_yet_propagated"])
+def test_access_call_retries_cross_replica_401_not_yet_propagated_within_bound(monkeypatch, code):
+    access_environment(monkeypatch)
+    with (
+        mock.patch.object(lane.time, "sleep"),
+        mock.patch.object(lane, "json_request", side_effect=[
+            {"value": "job-oidc"}, issued_key(),
+        ]),
+        mock.patch.object(lane, "read_identity", return_value=ready_key()),
+    ):
+        access = lane.Access("declared-publisher")
+    assert access.expiry > time.time() + 500
+    answer = upload()
+    with (
+        mock.patch.object(lane.time, "sleep") as sleep,
+        mock.patch.object(
+            lane,
+            "json_request",
+            side_effect=[
+                lane.HttpFailure(401, code),
+                lane.HttpFailure(401, code),
+                answer,
+            ],
+        ) as request,
+    ):
+        reference, _, _ = access.prepare(PARENT)
+    assert reference == f"{IMAGE}:up_one"
+    assert request.call_count == 3
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 1]
+
+
+def test_access_call_does_not_retry_other_401_codes_or_exceed_retry_bound(monkeypatch):
+    access_environment(monkeypatch)
+    with (
+        mock.patch.object(lane.time, "sleep"),
+        mock.patch.object(lane, "json_request", side_effect=[
+            {"value": "job-oidc"}, issued_key(),
+        ]),
+        mock.patch.object(lane, "read_identity", return_value=ready_key()),
+    ):
+        access = lane.Access("declared-publisher")
+    with (
+        mock.patch.object(lane.time, "sleep") as sleep,
+        mock.patch.object(
+            lane, "json_request", side_effect=lane.HttpFailure(401, "UNAUTHENTICATED")
+        ) as request,
+        pytest.raises(lane.HttpFailure) as caught,
+    ):
+        access.call(f"/v1/{PARENT}/artifacts:prepareUpload", document={})
+    assert caught.value.code == "UNAUTHENTICATED"
+    assert request.call_count == 1
+    sleep.assert_not_called()
+    with (
+        mock.patch.object(lane.time, "sleep") as sleep,
+        mock.patch.object(
+            lane, "json_request", side_effect=lane.HttpFailure(401, "NOT_YET_PROPAGATED")
+        ) as request,
+        pytest.raises(lane.HttpFailure) as caught,
+    ):
+        access.call(f"/v1/{PARENT}/artifacts:prepareUpload", document={})
+    assert caught.value.code == "NOT_YET_PROPAGATED"
+    assert request.call_count == 6
+    assert len(sleep.call_args_list) == 5
 
 
 @pytest.mark.parametrize(
@@ -589,6 +655,7 @@ def test_pipeline_cleans_credentials_and_emits_receipt_only_after_full_success(
         for tag in ("up_runtime", "up_evidence", "up_refresh")
     ]
     access = mock.Mock()
+    access.expiry = time.time() + 600
     access.prepare.side_effect = preparations
     observed = []
 
@@ -649,11 +716,22 @@ def test_pipeline_cleans_credentials_and_emits_receipt_only_after_full_success(
                 lane.run()
         else:
             lane.run()
-            assert exchange.call_count == 2
+            assert exchange.call_count == 1
+            assert access.prepare.call_count == 2
             assert [call.args[1] for call in push.call_args_list] == [
                 f"{IMAGE}:up_runtime",
                 f"{IMAGE}:up_evidence",
             ]
+            shutil.rmtree(next(tmp_path.glob("artifact-image-*")))
+            access.expiry = time.time() + 300
+            access.prepare.side_effect = preparations
+            exchange.reset_mock()
+            access.prepare.reset_mock()
+            push.reset_mock()
+            observed.clear()
+            lane.run()
+            assert exchange.call_count == 2
+            assert access.prepare.call_count == 3
     roots = list(tmp_path.glob("artifact-image-*"))
     assert len(roots) == 1
     assert not (roots[0] / "registry-auth").exists()

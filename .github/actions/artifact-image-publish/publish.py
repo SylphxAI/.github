@@ -47,6 +47,7 @@ SAFE_ERROR_CODES = frozenset({
     "UNAUTHENTICATED", "PERMISSION_DENIED", "INVALID_ARGUMENT", "NOT_FOUND",
     "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ALREADY_EXISTS",
     "RESOURCE_ALREADY_EXISTS", "IDEMPOTENCY_IN_PROGRESS", "UNAVAILABLE", "INTERNAL",
+    "NOT_YET_PROPAGATED",
     "key_malformed", "key_bad_checksum", "key_unknown", "key_revoked",
     "key_expired", "key_wrong_mode", "missing_scope", "service_not_enabled",
     "not_entitled", "policy_denied", "resource_not_allowed",
@@ -220,6 +221,7 @@ def write_auth(directory, token, auth):
 class Access:
     def __init__(self, ci_name):
         self.key = ""
+        self.expiry = 0.0
         url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
         parsed = urllib.parse.urlsplit(url)
         if (
@@ -268,17 +270,29 @@ class Access:
                 or identity.get("api_key") != answer["key"]["name"]):
             raise ReadinessError("ready identity differs from the issued key")
         self.key = key
+        self.expiry = expiry.timestamp()
 
     def call(self, path, *, document=None, idempotency=None):
         headers = {"Authorization": "Bearer " + self.key}
         if idempotency:
             headers["Idempotency-Key"] = idempotency
-        return json_request(
-            API + path,
-            method="GET" if document is None else "POST",
-            headers=headers,
-            document=document,
-        )
+        for attempt in range(6):
+            try:
+                return json_request(
+                    API + path,
+                    method="GET" if document is None else "POST",
+                    headers=headers,
+                    document=document,
+                )
+            except HttpFailure as error:
+                if (
+                    error.status == 401
+                    and error.code in ("NOT_YET_PROPAGATED", "key_not_yet_propagated")
+                    and attempt < 5
+                ):
+                    time.sleep(1)
+                    continue
+                raise
 
     def prepare(self, parent):
         return validate_upload(
@@ -560,9 +574,8 @@ def run():
             }
         )
         write_auth(auth_dir, evidence_token, evidence_auth)
-        access.key = ""
-        token = evidence_token = ""
-        auth = evidence_auth = None
+        token = ""
+        auth = None
         print("artifact_publish stage=build", flush=True)
         shell(commands[0], env)
         print("artifact_publish stage=package-evidence", flush=True)
@@ -571,11 +584,16 @@ def run():
             raise ValueError("evidence-command produced no evidence bundle")
         runtime = local_manifest(root / "image-oci")
         evidence = local_manifest(root / "evidence-oci")
-        # Fresh public credentials after a possibly long build. The original
-        # unique server-issued upload references remain the publish targets.
+        # Reuse the prepared Access key and upload credentials when > 300s of
+        # Access key lifetime remain; otherwise mint fresh credentials after a
+        # long build while keeping the original unique upload references.
         print("artifact_publish stage=publish", flush=True)
-        access = Access(os.environ["INPUT_CI_NAME"])
-        _, token, auth = access.prepare(parent)
+        if getattr(access, "expiry", 0.0) - time.time() > 300:
+            token, auth = evidence_token, evidence_auth
+        else:
+            access.key = ""
+            access = Access(os.environ["INPUT_CI_NAME"])
+            _, token, auth = access.prepare(parent)
         write_auth(auth_dir, token, auth)
         push(root / "image-oci", image_ref, auth_dir / "skopeo-auth.json")
         push(root / "evidence-oci", evidence_ref, auth_dir / "skopeo-auth.json")
