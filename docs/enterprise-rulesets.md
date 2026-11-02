@@ -84,7 +84,7 @@ or rule parameters. A repository should inherit these rules, not duplicate them.
 
 ## Primary sources
 
-Read on 2026-11-02 at 16:40–16:47 UTC:
+Read on 2026-11-02 at 16:37–16:43 UTC:
 
 - [Enterprise rules REST API](https://docs.github.com/en/enterprise-cloud@latest/rest/enterprise-admin/rules?apiVersion=2022-11-28)
 - [Enterprise custom properties REST API](https://docs.github.com/en/enterprise-cloud@latest/rest/enterprise-admin/custom-properties?apiVersion=2022-11-28)
