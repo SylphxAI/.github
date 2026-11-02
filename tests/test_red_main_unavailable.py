@@ -60,6 +60,12 @@ elif "/actions/workflows/" in path:
     if os.environ.get("HISTORY_UNAVAILABLE") == "yes":
         print("HTTP 502: history unavailable", file=sys.stderr)
         sys.exit(1)
+    if "HISTORY_ENDLESS" in os.environ:
+        page = int(path.rsplit("page=", 1)[1])
+        print(json.dumps(dict(total_count=int(os.environ["HISTORY_ENDLESS"]), workflow_runs=[
+            dict(id=page * 1000 + i, status="in_progress", conclusion=None,
+                 created_at="2026-09-30T11:00:00Z") for i in range(100)])))
+        sys.exit(0)
     if "HISTORY_PAGES" in os.environ:
         print(json.dumps(json.loads(os.environ["HISTORY_PAGES"])[int(path.rsplit("page=", 1)[1]) - 1]))
         sys.exit(0)
@@ -322,7 +328,7 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.assertIn("confirmed=no", (self.root / "output").read_text())
         self.assertIn("was 'success'", self.summary())
         # History that never reaches a predecessor within the bound is unknown, not absent.
-        self.env["HISTORY_PAGES"] = json.dumps([dict(total_count=600, workflow_runs=[dict(row, id=row["id"] + i * 100) for row in newer]) for i in range(5)])
+        self.env["HISTORY_ENDLESS"] = "5001"
         result = self.execute("Confirm the same unit failed on two consecutive completed runs")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("previous-run history is unavailable", self.summary())

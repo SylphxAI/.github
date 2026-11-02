@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 
 ACTIONS_APP_ID = 15368
 PAGE_LIMIT = 5
+RUN_PAGE_LIMIT = 50  # 5,000 retained runs of one workflow.
 WALK_LIMIT = 200
 
 
@@ -71,13 +72,13 @@ def full_push(run, repo, branch, workflow, sha=None):
     return producer_origin(run, repo, branch, workflow, sha) == "eligible"
 
 
-def paged(path, key, reader=None):
+def paged(path, key, reader=None, limit=PAGE_LIMIT):
     """Require complete counted coverage; adapters may supply a counted reader."""
     reader = api if reader is None else reader
     rows = []
     total = None
     identities = set()
-    for page in range(1, PAGE_LIMIT + 1):
+    for page in range(1, limit + 1):
         body = reader(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
         count = body.get("total_count") if isinstance(body, dict) else None
         batch = body.get(key) if isinstance(body, dict) else None
@@ -140,14 +141,31 @@ def checked_verdict(run, repo, branch, workflow, name="verified"):
     return check.get("conclusion") or "unknown"
 
 
+def branch_history(repo, branch, workflow, reader=None):
+    """Every retained push run of a workflow on a branch, or an error.
+
+    GitHub caps a filtered run list at 1,000 results: past that, total_count
+    still counts every run while the pages come back empty, so a filtered read
+    of a busy workflow can never be complete. Only the unfiltered list is, so
+    it is read whole and filtered here. A row that cannot be placed stays in,
+    for the caller's origin check to refuse.
+    """
+    rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs",
+                 "workflow_runs", reader, RUN_PAGE_LIMIT)
+    return [row for row in rows if not (
+        isinstance(row, dict) and isinstance(row.get("event"), str) and isinstance(row.get("head_branch"), str)
+        and (row["event"] != "push" or row["head_branch"] != branch))]
+
+
 def push_runs(repo, branch, workflow, sha=None):
-    query = {"event": "push", "branch": branch}
-    if sha:
-        query["head_sha"] = sha
     # No whole-run status filter: a failed optional publish is not a failed
     # verified proof, and a newer genuine failure must not be hidden.
-    rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?{urlencode(query)}",
-                 "workflow_runs")
+    if sha:
+        query = urlencode({"event": "push", "branch": branch, "head_sha": sha})
+        rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?{query}",
+                     "workflow_runs")
+    else:
+        rows = branch_history(repo, branch, workflow)
     candidates = []
     for row in rows:
         origin = producer_origin(row, repo, branch, workflow, sha)
@@ -174,29 +192,30 @@ def sha_verdict(repo, branch, workflow, sha, name="verified"):
     return checked_verdict(run, repo, branch, workflow, name) if run else "unknown"
 
 
-def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=False):
-    rows = push_runs(repo, branch, workflow)
-    if remote:
-        sha = head
-        ancestors = []
-        for _ in range(WALK_LIMIT):
-            parents = api(f"repos/{repo}/commits/{sha}").get("parents", [])
-            if not parents:
-                break
-            sha = parents[0]["sha"]
-            ancestors.append(sha)
-            # Stop at the first authenticated success. No current-HEAD base.
-            run = latest_run(rows, sha)
-            if run and checked_verdict(run, repo, branch, workflow, name) == "success":
-                return sha
-        return ""
+def local_ancestors(head):
     ancestors = subprocess.run(["git", "rev-list", "--first-parent", f"--max-count={WALK_LIMIT}",
                                 f"{head}^"], capture_output=True, text=True, check=False)
-    if ancestors.returncode:
-        return ""
-    for sha in ancestors.stdout.split():
-        run = latest_run(rows, sha)
-        if run and checked_verdict(run, repo, branch, workflow, name) == "success":
+    return [] if ancestors.returncode else ancestors.stdout.split()
+
+
+def remote_ancestors(repo, sha):
+    for _ in range(WALK_LIMIT):
+        parents = api(f"repos/{repo}/commits/{sha}").get("parents", [])
+        if not parents:
+            return
+        sha = parents[0]["sha"]
+        yield sha
+
+
+def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=False):
+    """The newest first-parent ancestor with an authenticated success, or "".
+
+    Starts at the head's parent and reads one exact commit per ancestor until
+    the first success, so the cost follows the unverified range, not the
+    history. A commit without a success is walked over and stays in the range.
+    """
+    for sha in remote_ancestors(repo, head) if remote else local_ancestors(head):
+        if sha_verdict(repo, branch, workflow, sha, name) == "success":
             return sha
     return ""
 
@@ -337,8 +356,7 @@ def main():
     if command == "history":
         # Require complete history: no undocumented provider ordering can
         # establish the predecessor from a partial set. Exhausted bounds fail.
-        rows = paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?"
-                     + urlencode({"event": "push", "branch": branch}), "workflow_runs")
+        rows = branch_history(repo, branch, workflow)
         print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
     elif command == "failed-lanes":
         print(failed_lanes(repo, identity))

@@ -9,7 +9,9 @@ verify workflow agree on what "changed" means:
   merge_group    base = the merge group's base commit (everything the group adds)
   push, dispatch base = the newest first-parent ancestor with an authenticated
                  successful `verified` job from a full push of the approved
-                 workflow on the tracked branch (200 commits at most).
+                 workflow on the tracked branch (200 commits at most), read
+                 one exact commit at a time, so the reads follow the range and
+                 never the length of the history.
                  Diagnostic, recording and merge-group runs never count.
                  One run therefore covers every commit since the last one whose
                  full suite passed, never a single commit (a base of HEAD~1

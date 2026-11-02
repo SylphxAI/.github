@@ -89,11 +89,39 @@ class BaseTest(unittest.TestCase):
         self.assertEqual(ci_range.base_for("schedule", {}, "o/r", "verify.yml", "main"), "")
 
 
-class MainTest(unittest.TestCase):
-    """End to end on a real repository, for the events that need no API."""
+# `gh api` for a push: only the commit in GH_VERIFIED has a verified run, and the
+# list answers exact commit reads alone, so nothing can lean on complete history.
+FAKE_GH = r"""#!/usr/bin/env python3
+import json, os, re, sys
+path = sys.argv[2]
+verified = os.environ["GH_VERIFIED"]
+if verified == "unavailable":
+    print("HTTP 502", file=sys.stderr)
+    sys.exit(1)
+identity = dict(id=7, full_name="o/r")
+run = dict(id=5, workflow_id=6, check_suite_id=8, run_attempt=1, repository=identity, head_repository=identity,
+           event="push", head_branch="main", path=".github/workflows/ci.yml", head_sha=verified)
+job = dict(id=9, run_id=5, run_attempt=1, head_sha=verified, name="verified", status="completed", conclusion="success",
+           check_run_url="https://api.github.com/repos/o/r/check-runs/77")
+if "/jobs?" in path:
+    body = dict(total_count=1, jobs=[job])
+elif "/check-runs/" in path:
+    body = dict(id=77, app=dict(id=15368, slug="github-actions"), head_sha=verified, name="verified",
+                check_suite=dict(id=8), details_url="https://github.com/o/r/actions/runs/5/job/9",
+                status="completed", conclusion="success")
+else:
+    sha = re.search(r"head_sha=([0-9a-f]{40})", path)[1]
+    rows = [run] if sha == verified else []
+    body = dict(total_count=len(rows), workflow_runs=rows)
+print(json.dumps(body))
+"""
 
-    def run_in_repo(self, event: str, payload_for) -> dict[str, str]:
-        with tempfile.TemporaryDirectory() as tmp:
+
+class MainTest(unittest.TestCase):
+    """End to end on a real repository, with a fake forge where a push needs one."""
+
+    def run_in_repo(self, event: str, payload_for, verified=None) -> dict[str, str]:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as tools:
             git = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True, capture_output=True, text=True).stdout.strip()
             git("init", "-q", "-b", "main")
             git("config", "user.email", "t@example.com")
@@ -113,9 +141,16 @@ class MainTest(unittest.TestCase):
                        GITHUB_EVENT_PATH=str(event_path), GITHUB_OUTPUT=str(out), GITHUB_REPOSITORY="o/r",
                        GITHUB_WORKFLOW_REF="o/r/.github/workflows/ci.yml@refs/heads/main", TOKEN="x")
             env.pop("GITHUB_STEP_SUMMARY", None)
+            if verified is not None:
+                gh = pathlib.Path(tools, "gh")
+                gh.write_text(FAKE_GH)
+                gh.chmod(0o755)
+                env["GH_VERIFIED"] = base if verified == "base" else verified
+                env["PATH"] = f"{tools}{os.pathsep}{env['PATH']}"
             try:
-                subprocess.run(["python3", str(ROOT / ".github/actions/ci-range/ci_range.py")], cwd=tmp, env=env,
-                               check=True, capture_output=True, text=True)
+                done = subprocess.run(["python3", str(ROOT / ".github/actions/ci-range/ci_range.py")], cwd=tmp, env=env,
+                                      check=True, capture_output=True, text=True)
+                self.log = done.stdout
                 return dict(line.split("=", 1) for line in out.read_text().splitlines()), base
             finally:
                 event_path.unlink(missing_ok=True)
@@ -131,6 +166,23 @@ class MainTest(unittest.TestCase):
         outputs, _ = self.run_in_repo("schedule", lambda b: {})
         self.assertEqual((outputs["base"], outputs["changed"]), ("", ""))
         self.assertTrue(all(json.loads(outputs["run"]).values()))
+
+    def test_push_selects_from_the_last_verified_commit(self) -> None:
+        outputs, base = self.run_in_repo("push", lambda b: {}, verified="base")
+        self.assertEqual(outputs["base"], base)
+        self.assertEqual(outputs["changed"], "1")
+        self.assertEqual(json.loads(outputs["run"]), {"lint": True, "test": True, "e2e": False})
+
+    def test_push_with_no_verified_ancestor_runs_every_lane(self) -> None:
+        outputs, _ = self.run_in_repo("push", lambda b: {}, verified="0" * 40)
+        self.assertEqual((outputs["base"], outputs["changed"]), ("", ""))
+        self.assertTrue(all(json.loads(outputs["run"]).values()))
+
+    def test_push_with_an_unreadable_forge_runs_every_lane(self) -> None:
+        outputs, _ = self.run_in_repo("push", lambda b: {}, verified="unavailable")
+        self.assertEqual((outputs["base"], outputs["changed"]), ("", ""))
+        self.assertTrue(all(json.loads(outputs["run"]).values()))
+        self.assertIn("::warning::authenticated post-main base unavailable", self.log)
 
 
 class NeedsPassTest(unittest.TestCase):

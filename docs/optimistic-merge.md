@@ -243,6 +243,12 @@ benchmark or nightly) never makes the trunk red here.
   mask a genuine post-main failure. The shared red-main handler embeds the
   exact same helper (a source-equality regression prevents drift) for event
   selection, the same-SHA green guard and revert baseline.
+  The baseline walks first-parent ancestors one exact commit at a time and
+  stops at the first success, so its reads follow the unverified range. Run
+  history itself, which only the red-main handler needs, is read unfiltered and
+  filtered here: GitHub caps a filtered run list at 1,000 results while its
+  `total_count` still counts every run, so a filtered read of a busy workflow
+  can never be complete.
   Unknown/incomplete reads fail closed: Verify runs all lanes, there is no
   trusted baseline or deploy proof, and no destructive revert is authorized.
   They do not silence red-main recovery: eligible runs with unavailable proof
@@ -373,8 +379,8 @@ credentials. Run history and jobs require stable `total_count` envelopes and
 complete distinct coverage. Issues use GraphQL's `totalCount` connection through
 the same reader because REST issue lists provide no total. Each issue page must
 also have `hasNextPage == (cumulative raw nodes < totalCount)`; a contradictory
-continuation flag invalidates enumeration before any mutation. The shared five-page
-limit fails closed, as do missing counts, short pages, duplicates, GraphQL errors,
+continuation flag invalidates enumeration before any mutation. The read limits
+(five pages, or 50 for run history) fail closed, as do missing counts, short pages, duplicates, GraphQL errors,
 and missing/null/blank status or conclusion on a potentially relevant run.
 No such read can produce a recovery comment or close. The handler lists
 all issue pages and states, matches both the App author id and a hidden stable

@@ -45,6 +45,51 @@ def objects(row, conclusion="success", job_id=300, check_id=30):
     return job, check
 
 
+class Forge:
+    """GitHub's run list as read on 2026-11-01: 1,235 runs, and a 1,000-result cap.
+
+    With any filter the pages stop at 1,000, page 11 is empty and reports
+    total_count 0, while earlier pages report every run. The unfiltered list has
+    no cap. Each commit has one run, newest first; `verdicts` maps a commit
+    position to its `verified` conclusion and anything unset is a failure.
+    """
+
+    def __init__(self, count=1235, verdicts=None, other=None):
+        self.commits = [f"{n:040x}" for n in range(1, count + 1)]
+        self.verdicts = verdicts or {}
+        self.rows = [run(count - n, sha) for n, sha in enumerate(self.commits)]
+        self.rows += other or []
+        self.reads = []
+
+    def __call__(self, path):
+        self.reads.append(path)
+        if "/commits/" in path:
+            sha = path.rsplit("/", 1)[1]
+            position = self.commits.index(sha) + 1
+            return {"parents": [{"sha": self.commits[position]}] if position < len(self.commits) else []}
+        if "/check-runs/" in path:
+            return self.check
+        if "/jobs?" in path:
+            identity = int(path.split("/actions/runs/")[1].split("/")[0])
+            row = next(r for r in self.rows if r["id"] == identity)
+            verdict = self.verdicts.get(self.commits.index(row["head_sha"]), "failure")
+            if verdict is None:     # A replaced run: cancelled, no jobs.
+                return {"total_count": 0, "jobs": []}
+            job, self.check = objects(row, verdict)
+            return {"total_count": 1, "jobs": [job]}
+        query = dict(part.split("=", 1) for part in path.split("?", 1)[1].split("&"))
+        page = int(query["page"])
+        rows = self.rows
+        if "head_sha" in query:
+            rows = [r for r in rows if r["head_sha"] == query["head_sha"]]
+        elif "branch" in query or "event" in query or "status" in query:
+            if page > 10:
+                return {"total_count": 0, "workflow_runs": []}
+            rows = [r for r in rows if r["head_branch"] == query["branch"]][:1000]
+            return {"total_count": len(self.rows), "workflow_runs": rows[(page - 1) * 100:page * 100]}
+        return {"total_count": len(rows), "workflow_runs": rows[(page - 1) * 100:page * 100]}
+
+
 class ProofTest(unittest.TestCase):
     def test_reusable_payload_is_the_same_canonical_helper(self):
         # The handler's copy of the helper is checked in under .github/red_main/
@@ -108,6 +153,9 @@ class ProofTest(unittest.TestCase):
         with patch.object(proof, "api", side_effect=[dict(total_count=600, workflow_runs=rows(i * 100 + 1, 100)) for i in range(5)]):
             with self.assertRaisesRegex(ValueError, "exhausted"):
                 proof.paged("p", "workflow_runs")
+        with patch.object(proof, "api", side_effect=[dict(total_count=600, workflow_runs=rows(i * 100 + 1, 100)) for i in range(2)]):
+            with self.assertRaisesRegex(ValueError, "exhausted"):
+                proof.paged("p", "workflow_runs", limit=2)
 
     def test_omitted_newest_same_sha_producer_never_exposes_older_proof(self):
         old = run(1)
@@ -117,6 +165,8 @@ class ProofTest(unittest.TestCase):
             def api(path):
                 if "/runs?" in path:   # provider advertises two rows but returns only the older
                     return {"total_count": 2, "workflow_runs": [old]}
+                if "/commits/" in path:
+                    return {"parents": [{"sha": SHA}]}
                 return {"total_count": 1, "jobs": [job]} if "/jobs?" in path else check
             with self.subTest(older=verdict), patch.object(proof, "api", side_effect=api):
                 with self.assertRaisesRegex(ValueError, "inconsistent"):
@@ -379,6 +429,115 @@ class ProofTest(unittest.TestCase):
         for body in (text, *[p.read_text() for p in (ROOT / ".github/red_main").iterdir()]):
             self.assertNotIn("status=success&per_page=1", body)
             self.assertNotIn("check_name=$name&filter=latest", body)
+
+
+class BaseWalkTest(unittest.TestCase):
+    """One run covers every commit since the last verified one (cloud#8893)."""
+
+    def walk(self, forge):
+        """`git rev-list` from a checkout at the forge's newest commit."""
+        def rev_list(args, **_):
+            self.assertEqual(args[-1], f"{forge.commits[0]}^")
+            limit = int(args[3].split("=")[1])
+            return type("Result", (), {"returncode": 0, "stdout": "\n".join(forge.commits[1:1 + limit])})()
+        with patch.object(proof, "api", side_effect=forge), patch.object(proof.subprocess, "run", side_effect=rev_list):
+            return proof.last_verified(REPO, "main", "verify.yml", forge.commits[0])
+
+    def test_a_history_past_the_provider_cap_still_finds_its_base(self):
+        forge = Forge(verdicts={3: "success"})
+        self.assertEqual(self.walk(forge), forge.commits[3])
+
+    def test_the_reads_follow_the_range_not_the_history(self):
+        for count in (50, 1235, 5000):
+            with self.subTest(count=count):
+                forge = Forge(count=count, verdicts={1: None, 2: "failure", 3: "success"})
+                self.assertEqual(self.walk(forge), forge.commits[3])
+                listings = [path for path in forge.reads if "/actions/workflows/" in path]
+                self.assertEqual(len(listings), 3)
+                self.assertTrue(all("head_sha=" in path for path in listings), listings)
+                self.assertLessEqual(len(forge.reads), 8)
+
+    def test_every_unverified_commit_stays_in_the_range(self):
+        # A red commit nobody fixed, a replaced run with no jobs and a run with
+        # no readable verdict are all walked over: the base is older than each.
+        forge = Forge(verdicts={0: "failure", 1: None, 2: "cancelled", 3: "failure", 4: "skipped", 5: "success", 6: "success"})
+        self.assertEqual(self.walk(forge), forge.commits[5])
+
+    def test_the_head_is_never_its_own_base(self):
+        forge = Forge(verdicts={0: "success", 1: "failure", 2: "success"})
+        self.assertEqual(self.walk(forge), forge.commits[2])
+
+    def test_the_walk_stops_at_its_limit_and_finds_no_base(self):
+        forge = Forge(verdicts={proof.WALK_LIMIT + 1: "success"})
+        self.assertEqual(self.walk(forge), "")
+        self.assertEqual(len([path for path in forge.reads if "/actions/workflows/" in path]), proof.WALK_LIMIT)
+
+    def test_a_success_at_the_limit_is_still_found(self):
+        forge = Forge(verdicts={proof.WALK_LIMIT: "success"})
+        self.assertEqual(self.walk(forge), forge.commits[proof.WALK_LIMIT])
+
+    def test_a_failed_read_is_an_error_not_an_older_base(self):
+        forge = Forge(verdicts={3: "success"})
+        def flaky(path):
+            if forge.commits[2] in path:
+                raise RuntimeError("HTTP 502")
+            return forge(path)
+        listing = type("Result", (), {"returncode": 0, "stdout": "\n".join(forge.commits[1:])})()
+        with patch.object(proof, "api", side_effect=flaky), patch.object(proof.subprocess, "run", return_value=listing), \
+                self.assertRaisesRegex(RuntimeError, "HTTP 502"):
+            proof.last_verified(REPO, "main", "verify.yml", forge.commits[0])
+
+    def test_the_remote_walk_reads_the_same_base_one_commit_at_a_time(self):
+        forge = Forge(verdicts={3: "success"})
+        with patch.object(proof, "api", side_effect=forge):
+            self.assertEqual(proof.last_verified(REPO, "main", "verify.yml", forge.commits[0], remote=True), forge.commits[3])
+        self.assertEqual(len([path for path in forge.reads if "/commits/" in path]), 3)
+
+    def test_a_root_commit_has_no_base(self):
+        forge = Forge(count=1)
+        with patch.object(proof, "api", side_effect=forge):
+            self.assertEqual(proof.last_verified(REPO, "main", "verify.yml", forge.commits[0], remote=True), "")
+
+
+class BranchHistoryTest(unittest.TestCase):
+    def read(self, forge):
+        with patch.object(proof, "api", side_effect=forge):
+            return proof.branch_history(REPO, "main", "verify.yml")
+
+    def test_every_run_is_read_past_the_provider_cap(self):
+        forge = Forge()
+        self.assertEqual(len(self.read(forge)), 1235)
+        self.assertEqual(len(forge.reads), 13)
+        self.assertTrue(all("event=" not in p and "branch=" not in p and "status=" not in p for p in forge.reads))
+
+    def test_a_filtered_read_of_the_same_history_could_never_be_complete(self):
+        with patch.object(proof, "api", side_effect=Forge()), self.assertRaisesRegex(ValueError, "inconsistent"):
+            proof.paged("repos/o/r/actions/workflows/verify.yml/runs?event=push&branch=main", "workflow_runs",
+                        limit=proof.RUN_PAGE_LIMIT)
+
+    def test_runs_elsewhere_are_dropped_here_as_the_filter_did(self):
+        other = [run(9000, event="workflow_dispatch"), run(9001, head_branch="sylphx-verify/x"),
+                 run(9002, event="pull_request", head_repository=None)]
+        self.assertEqual({row["id"] for row in self.read(Forge(count=2, other=other))}, {1, 2})
+        # The trunk's own dispatched diagnostic never looks like a push.
+        self.assertEqual({row["event"] for row in self.read(Forge(count=2, other=other))}, {"push"})
+
+    def test_a_row_that_cannot_be_placed_reaches_the_origin_check(self):
+        for field in ("event", "head_branch"):
+            with self.subTest(field=field):
+                bad = run(9000)
+                bad.pop(field)
+                forge = Forge(count=2, other=[bad])
+                self.assertIn(9000, {row["id"] for row in self.read(forge)})
+                # It stays a candidate, so it can only ever be unknown proof.
+                with patch.object(proof, "api", side_effect=forge):
+                    self.assertIn(9000, {row["id"] for row in proof.push_runs(REPO, "main", "verify.yml")})
+
+    def test_a_history_past_the_bound_is_an_error_not_a_partial_list(self):
+        pages = [dict(total_count=proof.RUN_PAGE_LIMIT * 100 + 1,
+                      workflow_runs=[run(i * 100 + n + 1) for n in range(100)]) for i in range(proof.RUN_PAGE_LIMIT)]
+        with patch.object(proof, "api", side_effect=pages), self.assertRaisesRegex(ValueError, "exhausted"):
+            proof.branch_history(REPO, "main", "verify.yml")
 
 
 if __name__ == "__main__":

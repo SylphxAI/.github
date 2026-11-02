@@ -31,7 +31,6 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ElementTree
 from datetime import datetime
-from urllib.parse import urlencode
 
 WALK_RUNS = 100
 SETTLED = ("success", "failure", "timed_out")
@@ -214,9 +213,7 @@ def main():
     if not units:
         print("none no confirmed unit besides the aggregate job")
         return
-    history = proof.paged(f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[-1]}/runs?"
-                          + urlencode({"event": "push", "branch": branch}), "workflow_runs")
-    runs = earlier_runs(history, created,
+    runs = earlier_runs(proof.branch_history(repo, branch, workflow), created,
                         lambda row: proof.producer_origin(row, repo, branch, workflow) == "eligible")
     run, cleared, read = find_window(units, runs, live_loader(proof, repo))
     if run is None:
