@@ -141,7 +141,7 @@ class Census:
             auto = str(edition) != '2015' or not any(k in data for k in ('lib', 'bin', 'test', 'bench', 'example'))
             # Explicit targets override automatic targets with the same name.
             lib = data.get('lib', {})
-            if 'lib' in data or settings.get('autolib', auto):
+            if 'lib' in data or settings.get('autolib', True):
                 self.target(package / lib.get('path', 'src/lib.rs'), package)
             for kind, directory, flag in [('bin', 'src/bin', 'autobins'), ('test', 'tests', 'autotests'), ('bench', 'benches', 'autobenches'), ('example', 'examples', 'autoexamples')]:
                 explicit = data.get(kind, [])
@@ -206,20 +206,22 @@ class Census:
                 paths = [literal(attrs[j+2]) for j in range(len(attrs)-2) if attrs[j:j+2] == ['path', '=']]
                 paths = [p for p in paths if p is not None]
                 if ts[i+2] == ';':
-                    candidates = [path_base / p for p in paths]
+                    candidates = [(path_base / p, True) for p in paths]
                     # cfg_attr(path=...) also has the non-attribute branch.
                     if not paths or 'cfg_attr' in attrs:
-                        candidates += [directory / (name + '.rs'), directory / name / 'mod.rs']
-                    for candidate in candidates:
+                        candidates += [(directory / (name + '.rs'), False), (directory / name / 'mod.rs', False)]
+                    for candidate, overridden in candidates:
                         candidate = candidate.resolve()
-                        child_dir = candidate.parent if paths or candidate.name == 'mod.rs' else candidate.with_suffix('')
+                        child_dir = candidate.parent if overridden or candidate.name == 'mod.rs' else candidate.with_suffix('')
                         self.visit(candidate, child_dir, package)
                     i += 3
                     attrs = []
                     continue
                 if ts[i+2] == '{':
                     end = balanced(ts, i+2)
-                    dirs = [path_base / p for p in paths] or [directory / name]
+                    dirs = [path_base / p for p in paths]
+                    if not paths or 'cfg_attr' in attrs:
+                        dirs.append(directory / name)
                     for child in dirs:
                         self.scan(ts[i+3:end-1], file, child, child, package)
                     i = end
@@ -229,7 +231,8 @@ class Census:
                 end = balanced(ts, i+2)
                 value = include_path(ts[i+3:end-1], package)
                 if value is not None:
-                    self.visit(file.parent / value, directory, package)
+                    included = (file.parent / value).resolve()
+                    self.visit(included, included.parent, package)
                 elif '"OUT_DIR"' not in ts[i+3:end-1]:
                     self.dynamic.add(self.rel(file))
                 i = end

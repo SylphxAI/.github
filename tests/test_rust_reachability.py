@@ -130,7 +130,7 @@ const C: char = '\\'';
         self.put('Cargo.toml', '[package]\nname="fixture"\nversion="0.1.0"\n[[bin]]\nname="chosen"\npath="chosen.rs"\n')
         self.put('chosen.rs', '')
         self.put('tests/unused.rs', '')
-        self.assertEqual(self.result()['orphans'], ['src/lib.rs', 'tests/unused.rs'])
+        self.assertEqual(self.result()['orphans'], ['tests/unused.rs'])
 
     def test_inherited_modern_edition_keeps_automatic_discovery(self):
         self.put('Cargo.toml', '[workspace]\nmembers=["child"]\n[workspace.package]\nedition="2021"\n')
@@ -140,6 +140,34 @@ const C: char = '\\'';
         self.put('child/src/lib.rs', '')
         self.put('child/tests/automatic.rs', '')
         self.assertEqual(self.result()['orphans'], [])
+
+    def test_path_override_children_are_relative_to_source_directory(self):
+        self.put('src/lib.rs', '#[path="actual.rs"] mod shadow;')
+        self.put('src/actual.rs', 'mod child;')
+        self.put('src/child.rs', '')
+        self.put('src/actual/child.rs', '')
+        self.assertEqual(self.result()['orphans'], ['src/actual/child.rs'])
+
+    def test_cfg_attr_module_children_keep_each_branch_directory(self):
+        self.put('src/lib.rs', '#[cfg_attr(feature="alt",path="other.rs")] mod portable;')
+        self.put('src/other.rs', 'mod child;')
+        self.put('src/child.rs', '')
+        self.put('src/portable.rs', 'mod child;')
+        self.put('src/portable/child.rs', '')
+        self.assertEqual(self.result()['orphans'], [])
+
+    def test_cfg_attr_inline_module_keeps_default_directory(self):
+        self.put('src/lib.rs', '#[cfg_attr(feature="alt",path="alternate")] mod inline { mod child; }')
+        self.put('src/alternate/child.rs', '')
+        self.put('src/inline/child.rs', '')
+        self.assertEqual(self.result()['orphans'], [])
+
+    def test_included_modules_are_relative_to_included_source(self):
+        self.put('src/lib.rs', 'include!("generated/parts.rs");')
+        self.put('src/generated/parts.rs', 'mod child;')
+        self.put('src/generated/child.rs', '')
+        self.put('src/child.rs', '')
+        self.assertEqual(self.result()['orphans'], ['src/child.rs'])
 
     def test_dynamic_include_requires_inspection(self):
         self.put('src/lib.rs', 'include!(custom_source!());')
