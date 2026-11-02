@@ -2,9 +2,9 @@
 
 `needs-pass` and `ci-ok` scan the commits added by every `pull_request` and `merge_group`
 before returning a green verdict. A repository calling both gates scans twice
-by design; a scan takes seconds and needs no shared receipt or deduplication
-state. Updating the existing action pin enables the
-check; callers need no new workflow step or checkout. The job needs
+by design, without shared receipts or deduplication state. Acquisition time
+depends on the added history's object sizes and transport. Updating the existing
+action pin enables the check; callers need no new workflow step or checkout. The job needs
 `contents: read` and a self-hosted Linux runner (`sylphx-linux-control` is enough).
 No license or paid service is used.
 
@@ -13,6 +13,19 @@ It runs the checksum-pinned MIT gitleaks 8.30.1 binary with its default rules.
 It never checks out or executes the target repository's code. Authentication
 uses the existing job token, is scoped to the GitHub server and stays in the
 process environment rather than the repository configuration.
+
+Acquisition and detection have separate bounded phases. After fetching commit
+and tree metadata, the scanner inventories both sides of every changed blob,
+including intermediate commits, deletions and all merge parents. It explicitly
+fetches missing bodies in one promisor request rather than one automatic request
+per patch. Binary objects and unfamiliar file extensions are not excluded from
+acquisition; the detector's existing rules still decide what produces a finding.
+The detector runs with implicit lazy fetching disabled, so its execution budget
+is not also a hidden network-transfer budget. The code-owned limits are defined
+in `secret_scan.py`; slow or incomplete acquisition and a detector timeout still
+fail closed. Flushed phase labels and elapsed times distinguish these failures
+without printing command arguments, remote addresses, blob bodies or raw
+subprocess diagnostics. No target code is executed.
 
 For pull requests the range is `pull_request.base.sha..pull_request.head.sha`;
 for merge groups it is `merge_group.base_sha..merge_group.head_sha`. Every commit
