@@ -91,13 +91,53 @@ checks, changing the strict flag, or altering conditions or bypass actors.
 Unscoped rulesets keep their required checks unchanged. A missing declared
 target or a changed ruleset name refuses apply rather than silently missing a
 repository. Dry-run reports required-check drift and App IDs; apply reads back
-the resulting bindings, and the existing saved-ruleset rollback restores them.
+the resulting bindings. The saved before object is the recovery source; see the
+queue-only rollback limitation below.
 
 A ruleset inherited from an organization or enterprise ruleset (GraphQL `source`
 not `Repository`) is reported `INHERITED` and never written: REST has no path to
 write it, and the enterprise ruleset already requires 0 approvals. A new
 repository therefore needs no manual step for the review count; the next run
 reads whatever repository ruleset it carries, queue or not.
+
+## First required check on an existing queue
+
+A queue with no required checks may merge without creating an observable
+merge-group run. Do not manufacture a test change or wait for a merge-group
+proof that its current rules cannot produce. For that bootstrap only:
+
+1. Merge the real producer first, with unfiltered `pull_request`, `merge_group`
+   and default-branch push events. Read its original PR and merged-main checks,
+   exact commits and publisher identity.
+2. Declare only that repository, existing ruleset ID/name and observed context
+   here. Preserve its current queue settings with a reasoned override; do not
+   activate another repository or an unobserved review producer.
+3. Apply with `--repo ORG/NAME`, retain the before object, and read back the
+   complete ruleset and effective default-branch rules.
+4. Correct the repository's now-stale delivery manifest in a genuine PR. Read
+   that original PR, merge-group and merged-main result. A missing or failed
+   merge-group producer remains non-success; repair its cause, never bypass
+   the gate or rerun a failed queue entry.
+
+The first scoped target is `Cubeage/solar2d-singular-sdk`, ruleset `20321316`.
+Its Android producer passed original PR run `41449602348` and main run
+`41453570358` at merged commit `9bab4031edecc1266e0a55ed949d1bbd2ccdd4de`.
+The 2026-11-02 13:43 UTC read found an active queue and no required checks.
+Its existing ALLGREEN grouping, build/merge limits of 10, and 60-minute timeout
+are preserved. This entry neither enables Release nor claims a merge-group
+receipt before the post-adoption change has actually run.
+
+GitHub's merge-queue documentation and repository-rules REST schema were read
+on 2026-11-02 at 13:43 UTC: the Actions producer must include `merge_group`,
+and required checks can bind an `integration_id`. Sources:
+<https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue>
+and <https://docs.github.com/en/rest/repos/rules?apiVersion=2022-11-28>.
+
+`--rollback` currently restores queue parameters only; it does **not** undo a
+required-check addition or publisher binding. For those fields, retain the
+saved before object and restore the affected rule through GitHub's supported
+ruleset update, preserving unrelated intervening changes and reading the
+result back. Do not call a queue-only rollback a required-check recovery.
 
 ## Review gate rollout barrier
 
@@ -135,9 +175,10 @@ archived, so it is an `exclude` entry: the tool never reads or writes it, and a
 repository with no queue left to protect is not given a new required check.
 
 Save a fresh backup directory per rollout. If posting stops or the gate blocks
-approved heads, use `--rollback` with that directory and read back the restored
-App bindings and CI gate. A successful PUT alone is not an apply or rollback
-receipt.
+approved heads, restore the affected required-check rule from that directory
+through the supported ruleset update and read back the App bindings and CI gate.
+`--rollback` alone restores queue parameters, not required checks. A successful
+PUT alone is not an apply or rollback receipt.
 
 
 ## Commands

@@ -459,20 +459,22 @@ class ApplyTests(unittest.TestCase):
 class RequiredCheckTests(unittest.TestCase):
     def fake(self):
         return FakeGh({
-            entry["repo"]: ruleset(entry["ruleset_id"], entry["ruleset"], POLICY["settings"], reviews=0)
+            entry["repo"]: ruleset(entry["ruleset_id"], entry["ruleset"], amq.desired_settings(SHIPPED_POLICY, entry["repo"], entry["ruleset"]), reviews=0)
             for entry in SHIPPED_POLICY["required_checks"]})
 
     def rows(self, gh):
-        return amq.plan(amq.read_org(gh, "SylphxAI"), SHIPPED_POLICY, {})
+        return amq.plan([item for org in SHIPPED_POLICY["orgs"] for item in amq.read_org(gh, org)], SHIPPED_POLICY, {})
 
     def test_declared_review_gate_covers_the_gated_repositories(self):
         self.assertEqual([entry["repo"] for entry in SHIPPED_POLICY["required_checks"]],
                          ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/desk-tools", "SylphxAI/.github",
-                          "SylphxAI/owner"])
+                          "SylphxAI/owner", "Cubeage/solar2d-singular-sdk"])
         for entry in SHIPPED_POLICY["required_checks"]:
             expected = [
                 {"context": "ci-ok", "integration_id": 15368},
                 {"context": "review-ok", "integration_id": 5155317}]
+            if entry["repo"] == "Cubeage/solar2d-singular-sdk":
+                expected = [{"context": "ci-ok", "integration_id": 15368}]
             if entry["repo"] == "SylphxAI/owner":
                 # owner's plain-language workflow produces always-loaded on its pull request heads; no other repository does.
                 expected = [
@@ -484,7 +486,7 @@ class RequiredCheckTests(unittest.TestCase):
 
     def test_scoped_missing_review_check_is_reported_with_exact_issuer(self):
         rows = [row for row in self.rows(self.fake()) if row["status"] == "DRIFT"]
-        self.assertEqual(len(rows), len(SHIPPED_POLICY["required_checks"]))
+        self.assertEqual(len(rows), len(SHIPPED_POLICY["required_checks"]) - 1)
         for row in rows:
             before, after = row["changes"]["required_status_checks"]
             self.assertEqual(before, [{"context": "ci-ok", "integration_id": 15368}])
@@ -492,7 +494,7 @@ class RequiredCheckTests(unittest.TestCase):
             for check in entry["checks"][1:]:
                 self.assertIn(check, after)
 
-    def test_apply_adds_gate_preserves_other_checks_and_rollback_restores_bindings(self):
+    def test_apply_adds_gate_preserves_other_checks_and_queue_rollback_keeps_bindings(self):
         gh = self.fake()
         cloud = gh.rulesets["SylphxAI/cloud"]
         cloud["rules"][1]["parameters"]["required_status_checks"].append(
@@ -522,7 +524,7 @@ class RequiredCheckTests(unittest.TestCase):
         gh.rulesets["SylphxAI/janus"] = ruleset(24403813, "janus-main", POLICY["settings"], reviews=0)
         with tempfile.TemporaryDirectory() as directory:
             amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0)
-        self.assertEqual({repo for repo, _ in gh.puts}, {entry["repo"] for entry in SHIPPED_POLICY["required_checks"]})
+        self.assertEqual({repo for repo, _ in gh.puts}, {entry["repo"] for entry in SHIPPED_POLICY["required_checks"] if entry["repo"] != "Cubeage/solar2d-singular-sdk"})
         self.assertEqual(gh.rulesets["SylphxAI/janus"]["rules"][1], ruleset(1, "x", POLICY["settings"])["rules"][1])
         checks = gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"]
         self.assertNotIn({"context": "review-ok", "integration_id": 15368}, checks)
@@ -567,7 +569,7 @@ class RequiredCheckTests(unittest.TestCase):
                          [{"context": "review-ok", "integration_id": 5155317},
                           {"context": "ci-ok", "integration_id": 15368}])
 
-    def test_wrong_issuer_in_readback_and_rollback_is_not_reported_as_success(self):
+    def test_wrong_issuer_fails_apply_but_queue_only_rollback_preserves_it(self):
         gh = self.fake()
         original = gh.rest
         written = set()
@@ -590,6 +592,61 @@ class RequiredCheckTests(unittest.TestCase):
             # Queue-only rollback preserves the live check binding, even if
             # a prior apply's binding write failed its readback.
             self.assertTrue(all(row["result"] == "RESTORED" for row in restored))
+
+
+class FirstGateAdoptionTests(unittest.TestCase):
+    repo = "Cubeage/solar2d-singular-sdk"
+
+    def before(self):
+        body = ruleset(20321316, "sylphx-merge-queue", OLD, reviews=None)
+        body["rules"] = [r for r in body["rules"] if r["type"] != "required_status_checks"]
+        return body
+
+    def test_scoped_adoption_only_adds_the_observed_check(self):
+        before = self.before()
+        neighbor = ruleset(91, "other-queue", OLD, checks=("neighbor-check",))
+        gh = FakeGh({self.repo: before, "Cubeage/neighbor": neighbor})
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = amq.main(["--repo", self.repo, "--apply", "--backup-dir", directory, "--json"], gh=gh)
+            self.assertEqual(rc, 0)
+            result = json.loads(output.getvalue())
+            drift = [row for row in result["plan"] if row["status"] == "DRIFT"]
+            self.assertEqual(len(drift), 1)
+            self.assertEqual(set(drift[0]["changes"]), {"required_status_checks"})
+            self.assertEqual([repo for repo, _ in gh.puts], [self.repo])
+            after = gh.rulesets[self.repo]
+            self.assertEqual(after["rules"][:-1], before["rules"])
+            for field in ("name", "target", "enforcement", "conditions", "bypass_actors"):
+                self.assertEqual(after[field], before[field])
+            self.assertEqual(after["rules"][-1]["parameters"], {
+                "strict_required_status_checks_policy": False,
+                "do_not_enforce_on_create": False,
+                "required_status_checks": [{"context": "ci-ok", "integration_id": 15368}]})
+            self.assertEqual(gh.rulesets["Cubeage/neighbor"], neighbor)
+            self.assertEqual(gh.property_reads, [self.repo])
+            saved = json.loads((pathlib.Path(directory) / "Cubeage__solar2d-singular-sdk__20321316.json").read_text())
+            self.assertEqual(saved, before)
+            gh.puts.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(amq.main(["--repo", self.repo, "--apply", "--backup-dir", directory], gh=gh), 0)
+            self.assertEqual(gh.puts, [])
+
+    def test_delivered_target_remains_excluded_without_a_write(self):
+        gh = FakeGh({self.repo: self.before()}, properties={self.repo: [
+            {"property_name": "sylphx_delivery", "value": "delivered"}]})
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(amq.main(["--repo", self.repo, "--apply", "--backup-dir", directory], gh=gh), 0)
+        self.assertEqual(gh.puts, [])
+
+    def test_changed_target_identity_cannot_be_applied(self):
+        before = self.before()
+        before["name"] = "renamed"
+        gh = FakeGh({self.repo: before})
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(amq.main(["--repo", self.repo, "--apply", "--backup-dir", directory], gh=gh), 2)
+        self.assertEqual(gh.puts, [])
 
 
 class ExtraApprovalTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "doc": "docs/merge-queue-settings.md. The one source for merge queue settings, approving review count and explicitly scoped required checks. Applied by scripts/apply_merge_queue.py (dry-run by default). Required checks roll out only after their producer is installed, backfilled and observed on PR heads and merge groups.",
+  "doc": "docs/merge-queue-settings.md. The one source for merge queue settings, approving review count and explicitly scoped required checks. Applied by scripts/apply_merge_queue.py (dry-run by default). Required checks follow the readiness procedure in that document, including the scoped first-check bootstrap for an existing queue with no required contexts.",
   "orgs": [
     "SylphxAI",
     "Cubeage",
@@ -45,6 +45,16 @@
     }
   ],
   "overrides": [
+    {
+      "repo": "Cubeage/solar2d-singular-sdk",
+      "ruleset": "sylphx-merge-queue",
+      "settings": {
+        "grouping_strategy": "ALLGREEN",
+        "max_entries_to_build": 10,
+        "max_entries_to_merge": 10
+      },
+      "reason": "Preserve the existing queue settings read on 2026-11-02 while adopting the Android compilation and package gate; this rollout changes required checks, not queue capacity or grouping."
+    },
     {
       "repo": "Cubeage/hk-mahjong-tycoon-keel",
       "ruleset": "sylphx-merge-queue",
@@ -111,6 +121,15 @@
         { "context": "always-loaded", "integration_id": 15368 }
       ],
       "reason": "always-loaded is owner's plain-language check on the files every agent loads (.github/workflows/plain-language.yml): owner has reported it on pull request heads since 2026-10-19, so its producer is observed where it is required. ci-ok comes from owner's Rulings workflow. The check is added only after this entry lands; the policy tool never adds it to a repository whose workflows do not produce it."
+    },
+    {
+      "repo": "Cubeage/solar2d-singular-sdk",
+      "ruleset": "sylphx-merge-queue",
+      "ruleset_id": 20321316,
+      "checks": [
+        { "context": "ci-ok", "integration_id": 15368 }
+      ],
+      "reason": "Build Android now compiles and validates the package on PR, merge_group and main events. Original PR run 41449602348 and merged-main run 41453570358 passed on 2026-11-02. This existing queue had no required checks and no merge-group runs; require the observed producer first, then verify its first real merge group through the necessary delivery-manifest correction. Release remains disabled and is not activated by this policy."
     }
   ],
   "fast_gate_overrides": [
