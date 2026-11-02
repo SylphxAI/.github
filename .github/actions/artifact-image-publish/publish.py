@@ -24,6 +24,9 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
+from access_ready import ReadinessError, issued_subject, read_identity, wait_for_identity
+
 API = "https://api.sylphx.com"
 REGISTRY = "registry.sylphx.com"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -40,12 +43,33 @@ IMAGE_TYPES = (
 MANIFEST_TYPES = INDEX_TYPES + IMAGE_TYPES
 # Public Artifact prepareUpload mint cap (kernel/artifacts).
 MAX_REGISTRY_TOKEN_SECONDS = 3600
+SAFE_ERROR_CODES = frozenset({
+    "UNAUTHENTICATED", "PERMISSION_DENIED", "INVALID_ARGUMENT", "NOT_FOUND",
+    "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ALREADY_EXISTS",
+    "RESOURCE_ALREADY_EXISTS", "IDEMPOTENCY_IN_PROGRESS", "UNAVAILABLE", "INTERNAL",
+    "key_malformed", "key_bad_checksum", "key_unknown", "key_revoked",
+    "key_expired", "key_wrong_mode", "missing_scope", "service_not_enabled",
+    "not_entitled", "policy_denied", "resource_not_allowed",
+    "key_not_yet_propagated", "access_snapshot_stale",
+})
 
 
 class HttpFailure(Exception):
     def __init__(self, status: int, code: str):
-        super().__init__(f"public Artifact request refused (HTTP {status})")
+        detail = f"; code={code}" if code in SAFE_ERROR_CODES else ""
+        super().__init__(f"public Artifact request refused (HTTP {status}{detail})")
         self.status, self.code = status, code
+
+
+def error_code(body):
+    """Retain only known machine codes, never arbitrary provider text."""
+    if not isinstance(body, dict):
+        return ""
+    code = body.get("code")
+    if code is None:
+        error = body.get("error")
+        code = error.get("code") if isinstance(error, dict) else error
+    return code if isinstance(code, str) and code in SAFE_ERROR_CODES else ""
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -68,7 +92,7 @@ def request(url: str, *, method: str = "GET", headers=None, document=None):
         # Only the machine code is retained. Error messages/bodies can contain secrets.
         try:
             body = json.loads(error.read(65536))
-            code = body.get("code", body.get("error", {}).get("code", ""))
+            code = error_code(body)
         except (ValueError, AttributeError, TypeError):
             code = ""
         raise HttpFailure(error.code, code) from None
@@ -237,8 +261,13 @@ class Access:
         expiry = datetime.fromisoformat(answer["expires_at"].replace("Z", "+00:00"))
         if expiry.tzinfo is None or expiry.timestamp() <= time.time() + wait / 1000:
             raise ValueError("Access returned an expired key")
+        org, principal = issued_subject(answer)
+        identity = wait_for_identity(read_identity, key, wait, API)
+        if (identity.get("org") != org
+                or principal != org + "/principals/" + identity.get("principal", "")
+                or identity.get("api_key") != answer["key"]["name"]):
+            raise ReadinessError("ready identity differs from the issued key")
         self.key = key
-        time.sleep(wait / 1000)
 
     def call(self, path, *, document=None, idempotency=None):
         headers = {"Authorization": "Bearer " + self.key}
@@ -621,6 +650,7 @@ def main():
         TypeError,
         AttributeError,
         RuntimeError,
+        ReadinessError,
         subprocess.SubprocessError,
         urllib.error.URLError,
     ):
