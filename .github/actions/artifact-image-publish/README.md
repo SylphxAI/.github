@@ -14,6 +14,16 @@ Runtime and evidence use the same server-selected `<org>/<project>-image`
 repository. No registry name, repository, API key, or internal credential is
 accepted as an input.
 
+After each exchange, the action uses the shared Access readiness helper to
+read `GET /v1/whoami` with that same key. It honors the issuer's delay, then
+waits at most 30 seconds for the exact issued key, organization and principal.
+Only an explicit `401 key_not_yet_propagated` repeats that read. Other denials
+and transport failures stop immediately. Artifact writes are never retried by
+this readiness check. Known API error codes are retained in diagnostics;
+provider messages and unknown codes remain private. Readiness on one API
+replica does not claim readiness on every replica: a later Artifact refusal
+still stops publication.
+
 The action checks the returned credential's repository, exact pull/push grant,
 audience and bounded expiry before use. These checks do not verify a JWT
 signature locally: TLS authenticates the API answer, and the registry verifies

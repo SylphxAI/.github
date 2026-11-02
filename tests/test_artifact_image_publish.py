@@ -26,6 +26,21 @@ lane = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lane)
 PARENT = "orgs/org_example/projects/prj_example"
 IMAGE = lane.expected_image(PARENT)
+ACCESS_KEY_NAME = PARENT + "/api_keys/key_test"
+
+
+def issued_key(wait=500):
+    return {
+        "api_key": "ci-key", "active_after_ms": wait,
+        "expires_at": datetime.fromtimestamp(time.time() + 600, timezone.utc).isoformat(),
+        "key": {"name": ACCESS_KEY_NAME,
+                "status": {"principal": "orgs/org_example/principals/prn_test"}},
+    }
+
+
+def ready_key():
+    return {"org": "orgs/org_example", "principal": "prn_test",
+            "api_key": ACCESS_KEY_NAME}
 
 
 def token(claims):
@@ -212,16 +227,11 @@ def test_access_exchange_uses_source_job_oidc_audience_and_declared_name(monkeyp
             "json_request",
             side_effect=[
                 {"value": "job-oidc"},
-                {
-                    "api_key": "ci-key",
-                    "active_after_ms": 500,
-                    "expires_at": datetime.fromtimestamp(
-                        time.time() + 600, timezone.utc
-                    ).isoformat(),
-                },
+                issued_key(),
             ],
         ) as request,
         mock.patch.object(lane.time, "sleep") as sleep,
+        mock.patch.object(lane, "read_identity", return_value=ready_key()) as identity,
     ):
         access = lane.Access("declared-publisher")
     assert access.key == "ci-key"
@@ -232,6 +242,115 @@ def test_access_exchange_uses_source_job_oidc_audience_and_declared_name(monkeyp
         "token": "job-oidc",
     }
     sleep.assert_called_once_with(0.5)
+    assert identity.call_args.args == (lane.API + "/v1/whoami", "ci-key")
+    assert identity.call_args.kwargs["allow_propagation"] is True
+
+
+def access_environment(monkeypatch):
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://github-oidc.example/token")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request-secret")
+
+
+def test_delayed_key_uses_shared_readiness_and_never_reissues_or_retries_writes(monkeypatch):
+    access_environment(monkeypatch)
+    now = [0.0]
+    with (
+        mock.patch.object(lane.time, "monotonic", side_effect=lambda: now[0]),
+        mock.patch.object(lane.time, "sleep", side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)),
+        mock.patch.object(lane, "json_request", side_effect=[
+            {"value": "job-oidc"}, issued_key(3000),
+        ]) as request,
+        mock.patch.object(lane, "read_identity", side_effect=[
+            {"code": "key_not_yet_propagated"}, ready_key(),
+        ]) as identity,
+    ):
+        assert lane.Access("declared-publisher").key == "ci-key"
+    assert now[0] == 5
+    assert request.call_count == 2
+    assert identity.call_count == 2
+    for call in identity.call_args_list:
+        assert call.args == (lane.API + "/v1/whoami", "ci-key")
+        assert call.kwargs["allow_propagation"] is True
+    assert [call.kwargs["timeout"] for call in identity.call_args_list] == [30, 28]
+
+
+def test_never_ready_key_expires_one_read_budget_without_artifact_calls(monkeypatch):
+    access_environment(monkeypatch)
+    now = [0.0]
+    with (
+        mock.patch.object(lane.time, "monotonic", side_effect=lambda: now[0]),
+        mock.patch.object(lane.time, "sleep", side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)),
+        mock.patch.object(lane, "json_request", side_effect=[
+            {"value": "job-oidc"}, issued_key(3000),
+        ]) as request,
+        mock.patch.object(lane, "read_identity", return_value={"code": "key_not_yet_propagated"}),
+        pytest.raises(lane.ReadinessError),
+    ):
+        lane.Access("declared-publisher")
+    assert now[0] == 33
+    assert request.call_count == 2
+
+
+@pytest.mark.parametrize("failure", [
+    lane.ReadinessError("Access readiness refused with HTTP 401"),
+    lane.ReadinessError("Access readiness refused with HTTP 403"),
+    lane.ReadinessError("Access readiness refused with HTTP 503"),
+    lane.ReadinessError("Access readiness read failed at the network"),
+])
+def test_readiness_permanent_and_transport_refusals_are_not_retried(monkeypatch, failure):
+    access_environment(monkeypatch)
+    with (
+        mock.patch.object(lane.time, "sleep"),
+        mock.patch.object(lane, "json_request", side_effect=[
+            {"value": "job-oidc"}, issued_key(),
+        ]) as request,
+        mock.patch.object(lane, "read_identity", side_effect=failure) as identity,
+        pytest.raises(lane.ReadinessError),
+    ):
+        lane.Access("declared-publisher")
+    assert request.call_count == 2
+    assert identity.call_count == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("org", "orgs/other"), ("principal", "prn_other"),
+    ("api_key", PARENT + "/api_keys/another_key"),
+])
+def test_readiness_binds_the_exact_issued_key_and_subject(monkeypatch, field, value):
+    access_environment(monkeypatch)
+    with (
+        mock.patch.object(lane.time, "sleep"),
+        mock.patch.object(lane, "json_request", side_effect=[
+            {"value": "job-oidc"}, issued_key(),
+        ]) as request,
+        mock.patch.object(lane, "read_identity", return_value=dict(ready_key(), **{field: value})),
+        pytest.raises(lane.ReadinessError),
+    ):
+        lane.Access("declared-publisher")
+    assert request.call_count == 2
+
+
+@pytest.mark.parametrize("body,code", [
+    ({"code": "key_not_yet_propagated", "error": "key_not_yet_propagated"}, "key_not_yet_propagated"),
+    ({"error": {"code": "PERMISSION_DENIED", "message": "private-provider-token"}}, "PERMISSION_DENIED"),
+    ({"error": "key_expired"}, "key_expired"),
+    ({"code": "private-provider-token", "error": "private-provider-token"}, ""),
+    ({"error": ["private-provider-token"]}, ""),
+    (["private-provider-token"], ""),
+])
+def test_http_refusals_retain_only_known_codes_for_both_public_error_shapes(body, code):
+    failure = lane.urllib.error.HTTPError(
+        lane.API + "/v1/whoami", 401, "private-provider-token", {},
+        io.BytesIO(json.dumps(body).encode()),
+    )
+    with mock.patch.object(lane.urllib.request, "build_opener") as opener:
+        opener.return_value.open.side_effect = failure
+        with pytest.raises(lane.HttpFailure) as caught:
+            lane.json_request(lane.API + "/v1/whoami")
+    assert caught.value.code == code
+    assert "private-provider-token" not in str(caught.value)
+    if code:
+        assert "code=" + code in str(caught.value)
 
 
 @pytest.mark.parametrize(
