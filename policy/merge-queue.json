@@ -44,7 +44,22 @@
       "reason": "Archived 2026-10-15: the retired work system. Read-only; its rulesets are left as they are."
     }
   ],
-  "overrides": [],
+  "overrides": [
+    {
+      "repo": "Cubeage/hk-mahjong-tycoon-keel",
+      "ruleset": "sylphx-merge-queue",
+      "settings": {
+        "merge_method": "SQUASH",
+        "grouping_strategy": "ALLGREEN",
+        "max_entries_to_build": 10,
+        "min_entries_to_merge": 1,
+        "max_entries_to_merge": 10,
+        "min_entries_to_merge_wait_minutes": 0,
+        "check_response_timeout_minutes": 120
+      },
+      "reason": "The passing native/browser merge-group gate completed 82 minutes after enqueue on 2026-11-02, beyond the 60-minute deadline. Allow 120 minutes with margin and preserve the repository's other existing queue settings and required checks."
+    }
+  ],
   "required_checks": [
     {
       "repo": "SylphxAI/cloud",

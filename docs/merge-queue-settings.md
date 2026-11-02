@@ -40,6 +40,14 @@ another check (cloud's `deploy/pins` branch by `pin-ok`). `exclude` lists
 repositories never read or written; the hands-off repositories of
 `policy/optimistic-merge.json` are always excluded.
 
+HK Mahjong Tycoon's Keel repository has a 120-minute response deadline. On
+2026-11-02 its passing merge-group checks completed 82 minutes after enqueue:
+the browser job took 75 minutes, including 42 minutes for the Hall panel checks.
+The 60-minute deadline removed the entry before its required `test` check could
+finish. The scoped override allows that measured work plus margin while keeping
+the repository's other queue parameters and required checks. Other repositories
+retain the default deadline.
+
 ## Required approving reviews: none
 
 Repository `pull_request` rules require zero human approving reviews (policy
