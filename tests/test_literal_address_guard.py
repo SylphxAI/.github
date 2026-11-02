@@ -20,8 +20,23 @@ class Tokens(unittest.TestCase):
     def test_urls_ports_ipv6_and_boundaries(self):
         fixtures = {
             'https://192.0.2.10:443/path': ['192.0.2.10/32'],
+            'https://192.0.2.10/health': ['192.0.2.10/32'],
+            'http://192.0.2.10/': ['192.0.2.10/32'],
+            'https://192.0.2.10/24': ['192.0.2.10/32'],
+            '//192.0.2.10/99': ['192.0.2.10/32'],
+            'http://user@192.0.2.10/24': ['192.0.2.10/32'],
+            'http://user:password@192.0.2.10/24': ['192.0.2.10/32'],
+            '//user:password@192.0.2.10/24': ['192.0.2.10/32'],
+            '192.0.2.10/24/path': ['192.0.2.10/32'],
+            '192.0.2.0/24': ['192.0.2.0/24'],
+            'Retire 192.0.2.10.': ['192.0.2.10/32'],
+            'Retire 192.0.2.10., then proceed.': ['192.0.2.10/32'],
+            '192.0.2.10.10 192.0.2.10.example': [],
             '"192.0.2.10",192.0.2.11/32': ['192.0.2.10/32', '192.0.2.11/32'],
             'https://[2001:DB8:1234::1]:443/x': ['2001:db8:1234::1/128'],
+            'Retire 2001:db8:1234::1.': ['2001:db8:1234::1/128'],
+            'Retire 2001:db8:1234::/64.': ['2001:db8:1234::/64'],
+            'Retire ::ffff:192.0.2.10.': [str(ipaddress.ip_network('::ffff:192.0.2.10/128')), '192.0.2.10/32'],
             '2001:0db8:1234:0000:0000:0000:0000:0001': ['2001:db8:1234::1/128'],
             '::ffff:192.0.2.10': [str(ipaddress.ip_network('::ffff:192.0.2.10/128')), '192.0.2.10/32'],
             '[fe80::1%eth0]': ['fe80::1/128'],
@@ -106,6 +121,19 @@ class History(unittest.TestCase):
         self.write('folder/\n日本語.ts', 'first\nx\u0085https://192.0.2.10:443\n')
         self.commit()
         self.assertEqual(self.check()[0][:2], ('folder/\n日本語.ts', 2))
+
+    def test_every_filename_is_literal_not_a_git_pathspec(self):
+        paths = (':foo', ':(literal)README', ':(exclude)nothing',
+                 ':(glob)**', 'literal[1].md', 'folder/\n日本語.ts')
+        for path in paths:
+            self.write(path, 'target: https://192.0.2.10:443\n')
+        self.commit()
+        self.assertEqual({hit[0] for hit in self.check()}, set(paths))
+        # Changing one magic-looking filename must not scan a different file.
+        self.base = self.git('rev-parse', 'HEAD')
+        self.write(':foo', 'changed: https://192.0.2.10:443\n')
+        self.commit()
+        self.assertEqual([hit[0] for hit in self.check()], [':foo'])
 
     def test_stale_and_forged_inventory_fail_closed(self):
         policy = self.policy()
