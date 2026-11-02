@@ -5,10 +5,15 @@ inputs:
     description: Enable observation for this job's Docker launches of UNITY_IMAGE
     required: false
     default: 'false'
+outputs:
+  log-directory:
+    description: Job-local diagnostic files to retain as an artifact; also summarized per launch
+    value: ${{ steps.prepare.outputs.log-directory }}
 runs:
   using: composite
   steps:
-    - if: inputs.enabled == 'true'
+    - id: prepare
+      if: inputs.enabled == 'true'
       shell: bash
       env:
         OBSERVER_ACTION_PATH: ${{ github.action_path }}
