@@ -117,10 +117,11 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     ...(interrupted?.validation_failure ? { validation_failure: interrupted.validation_failure } : {}) };
   const summaries = completed.map((r, i) => ({ part: i + 1,
     paths: parts[i].files.map(f => f.path), summary: r.review_summary,
-    related_evidence: r.related_evidence, findings: r.findings, context_notes: r.context_notes }));
+    related_evidence: r.related_evidence, binary_reviews: r.binary_reviews, findings: r.findings, context_notes: r.context_notes }));
   const synthesis = seal({ ...bare(input), files: [], context: input.context.filter(c => c.absent === true), manifest: manifest(input),
     source_digest: input.input_digest, scope: { kind: 'synthesis' }, reviewed_parts: summaries,
-    references: completed.flatMap(r => [...r.related_evidence, ...r.findings.flatMap(f => f.evidence)]) });
+    references: completed.flatMap(r => [...r.related_evidence, ...r.findings.flatMap(f => f.evidence),
+      ...(r.binary_reviews ?? []).flatMap(b => [...b.source_evidence, ...b.derivation_evidence])]) });
   if (requestBytes(synthesis) > byteBudget) return { ...base, reason: 'All source parts completed, but cross-file synthesis exceeds the configured model context.' };
   const head = await isCurrent();
   if (head !== true) return { ...base, reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };

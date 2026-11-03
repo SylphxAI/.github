@@ -13,7 +13,7 @@ const inputFor = (context = []) => createReviewInput({ schema_version: 2, reposi
   files: [bundleFile({ filename: 'src/change.js', status: 'modified' }, 'before\n', 'after\n')], context });
 const wire = (input, extra = {}) => ({ schema_version: 1, repository_id: input.repository_id, base_sha: input.base_sha,
   head_sha: input.head_sha, input_digest: input.input_digest, reviewer_version: reviewerVersion, policy_version: input.policy_version,
-  completion: 'complete', findings: [], related_evidence: [], review_summary: 'Reviewed the complete changed behavior.',
+  completion: 'complete', findings: [], related_evidence: [], binary_reviews: [], review_summary: 'Reviewed the complete changed behavior.',
   omitted_paths: [], context_notes: [], context_requests: [], reason: '', ...extra });
 const parsed = (input, extra) => parseReviewResult(JSON.stringify(wire(input, extra)), input);
 const missing = (input, requests = [{ path: 'src/caller.js', side: 'head' }]) => parsed(input, {
@@ -253,7 +253,7 @@ for (const mode of ['recovery', 'absence', 'anchor']) test(`CLI ${mode} persists
           const input = JSON.parse(body.messages[1].content); calls++;
           const result = { schema_version: 1, repository_id: input.repository_id, base_sha: base, head_sha: head,
             input_digest: input.input_digest, reviewer_version: input.reviewer_version, policy_version: input.policy_version,
-            completion: calls === 1 ? 'incomplete' : 'complete', findings: [], related_evidence: [], review_summary: 'Reviewed source.',
+            completion: calls === 1 ? 'incomplete' : 'complete', findings: [], related_evidence: [], binary_reviews: [], review_summary: 'Reviewed source.',
             omitted_paths: calls === 1 ? ['src/change.js'] : [], context_notes: [],
             context_requests: calls === 1 ? [{ path: mode === 'absence' ? 'PRIVATE_CLI_DIAGNOSTIC.js' : 'src/caller.js', side: 'head' }] : [], reason: calls === 1 ? 'PRIVATE_CLI_DIAGNOSTIC' : '' };
           if (mode === 'anchor') Object.assign(result, { completion: 'complete', omitted_paths: [], context_requests: [], reason: '',

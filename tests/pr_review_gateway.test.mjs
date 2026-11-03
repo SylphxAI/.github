@@ -17,7 +17,7 @@ function wire(input, findings = []) {
   return { schema_version: 1, repository_id: input.repository_id, base_sha: input.base_sha,
     head_sha: input.head_sha, input_digest: input.input_digest, reviewer_version: reviewerVersion,
     policy_version: input.policy_version, completion: 'complete', findings, omitted_paths: [], context_notes: [], context_requests: [], reason: '',
-    review_summary: 'The return value behavior was reviewed.', related_evidence: [] };
+    review_summary: 'The return value behavior was reviewed.', related_evidence: [], binary_reviews: [] };
 }
 const finding = { path: 'src/value.js', side: 'head', start_line: 1, end_line: 1, severity: 'medium',
   title: 'The value is discarded', explanation: 'The return value is always undefined.', trigger: 'A caller supplies a value.',

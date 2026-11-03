@@ -63,7 +63,7 @@ export class GitHub {
     }
   }
 
-  async source(path, sha, optional = false, { deadlineMs, maxBytes = Infinity } = {}) {
+  async source(path, sha, optional = false, { deadlineMs, maxBytes = Infinity, allowBinary = false } = {}) {
     if (!validSha(sha) || !validPath(path)) throw new Unavailable('Invalid pinned source reference.');
     let object, treeSha = sha;
     const segments = path.split('/');
@@ -87,7 +87,7 @@ export class GitHub {
     if (object.size > maxBytes) throw new Unavailable('Pinned source exceeds the context recovery byte limit.');
     object = await this.request(`/git/blobs/${blobSha}`, { deadlineMs });
     if (object.size > maxBytes) throw new Unavailable('Pinned source exceeds the context recovery byte limit.');
-    if (object.encoding !== 'base64' || typeof object.content !== 'string') {
+    if (!Number.isSafeInteger(object.size) || object.size < 0 || object.encoding !== 'base64' || typeof object.content !== 'string') {
       throw new Unavailable(`Source ${path} has no complete content.`);
     }
     const bytes = Buffer.from(object.content, 'base64');
@@ -97,7 +97,10 @@ export class GitHub {
       const content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
       if (content.includes('\0')) throw new Error('binary');
       return content;
-    } catch { throw new Unavailable(`Source ${path} is not UTF-8 text.`); }
+    } catch {
+      if (allowBinary) return bytes;
+      throw new Unavailable(`Source ${path} is not UTF-8 text.`);
+    }
   }
 
   async current(target, { deadlineMs } = {}) {

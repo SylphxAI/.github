@@ -36,13 +36,16 @@ export function literalSegments(content, json = false, maxCharacters = 2048) {
 
 const metadata = (content, segments) => content === null ? null : {
   sha256: digest(content), bytes: Buffer.byteLength(content),
-  line_count: content === '' ? 0 : content.replace(/\n$/, '').split('\n').length,
-  segments: segments.length,
+  ...(Buffer.isBuffer(content) ? { encoding: 'binary', line_count: null, segments: 0 } : {
+    line_count: content === '' ? 0 : content.replace(/\n$/, '').split('\n').length,
+    segments: segments.length }),
 };
 
 export function segmentBundleFile(file, before, after) {
   const json = file.filename.endsWith('.json');
-  const sides = { before: literalSegments(before, json), after: literalSegments(after, json) };
+  const binary = Buffer.isBuffer(before) || Buffer.isBuffer(after);
+  const sides = { before: literalSegments(Buffer.isBuffer(before) ? null : before, json),
+    after: literalSegments(Buffer.isBuffer(after) ? null : after, json) };
   const view = segments => segments.map(s => JSON.stringify(s.content)).join('\n') + (segments.length ? '\n' : '');
   const patch = sourcePatch(view(sides.before), view(sides.after),
     Buffer.byteLength(before ?? '') + Buffer.byteLength(after ?? '') <= 80_000 ? Math.max(sides.before.length, sides.after.length) : 40);
@@ -78,7 +81,9 @@ export function segmentBundleFile(file, before, after) {
     }
   }
   return { path: file.filename, previous_path: file.previous_filename ?? null, status: file.status,
-    source_mode: 'segments', representation: json ? 'literal-json-segments-v1' : 'literal-line-segments-v1',
+    source_mode: binary ? 'binary-metadata' : 'segments',
+    representation: binary ? 'binary-metadata-v1' : json ? 'literal-json-segments-v1' : 'literal-line-segments-v1',
+    ...(binary ? { limitation: 'Binary bytes are not supplied as text, decoded, or regenerated. Review related source and derivation evidence; hashes do not prove semantic equivalence.' } : {}),
     before: metadata(before, sides.before), after: metadata(after, sides.after), hunks };
 }
 
