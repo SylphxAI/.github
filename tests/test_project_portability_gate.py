@@ -27,6 +27,34 @@ class ProjectPortabilityGateTests(unittest.TestCase):
         f.commit({SOURCE: SAFE, 'deploy/service.yaml': 'origin: "https://api.tenant.svc.cluster.local"\n'})
         f.check(base, 0)
 
+    def test_cli_rust_negative_contexts_never_adopt_or_hide_new_destinations(self):
+        f = self.fixture()
+        original = '# existing baseline\n'
+        base = f.commit({WORKFLOW: workflow(OLD), SOURCE: SAFE, sc.BASELINE: original})
+        negative = (
+            'const DENIED: &str = "/var/run/secrets/kubernetes.io/serviceaccount";\n'
+            'fn status(host: &str) -> bool {\n'
+            ' anyhow::ensure!(host.chars().all(|c| c.is_ascii()), "use https://host:7233");\n'
+            ' host == DENIED || host.starts_with(DENIED) ||\n'
+            ' std::env::var_os("KUBERNETES_SERVICE_HOST").is_some()\n}\n')
+        f.commit({'src/status.rs': negative, 'sylphx.toml': '[env]\nKUBERNETES_SERVICE_HOST = ""\n'})
+        result = f.plan(base)
+        self.assertFalse(any(RULE.replace('/', ' ', 2) in record
+                             for record in result['evidence']['added_records']))
+        f.commit({WORKFLOW: workflow(UNKNOWN), sc.BASELINE: result['baseline_text']})
+        f.check(base, 0)
+        for positive in [
+            'fn dial() { unknown("http://gate:24001"); }',
+            'fn dial() { tracing::warn!("{}", connect("http://gate:24001")); }',
+            'fn dial() { read(DENIED); }',
+            'fn dial() { std::env::var_os("KUBERNETES_SERVICE_HOST").unwrap(); }',
+        ]:
+            with self.subTest(positive=positive):
+                f.commit({'src/status.rs': negative + positive, sc.BASELINE: original, WORKFLOW: workflow(OLD)})
+                with self.assertRaisesRegex(ValueError, 'new head debt'):
+                    f.plan(base)
+                self.assertIn('project-portability', f.check(base, 1)[0])
+
     def test_inherited_adoption_only_shrinks_and_copying_adds_debt(self):
         f = self.fixture()
         base = f.commit({WORKFLOW: workflow(OLD), SOURCE: BAD})

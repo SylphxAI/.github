@@ -138,6 +138,132 @@ class ProjectPortabilityTests(unittest.TestCase):
         self.assertEqual(report['unreadable'], [])
         self.assertTrue(any(row['rule'] == 'cache-economy' for row in report['findings']))
 
+    def test_rust_balanced_diagnostic_format_arguments_only(self):
+        message = '"configure an origin such as https://host:7233"'
+        cases = [
+            'anyhow::ensure!(url.host_str().is_some_and(|host| !host.is_empty()) && url.port().is_some(), ' + message + ');',
+            'anyhow::ensure!(' + 'nested(' * 40 + 'ready' + ')' * 40 + ', ' + message + ');',
+            'assert!(ready(), ' + message + ');',
+            'assert_eq!(left(), right(), ' + message + ');',
+            'tracing::warn!(' + message + ', display(value));',
+            'input.ok_or(' + message + ')?;',
+        ]
+        for source in cases:
+            with self.subTest(source=source):
+                self.assertEqual(scan('src/client.rs', source), [])
+        destination = '"https://api.tenant.svc.cluster.local"'
+        sources = [
+            'anyhow::ensure!(connect(' + destination + '), ' + message + ');',
+            'anyhow::ensure!(ready(), ' + message + ', connect(' + destination + '));',
+            'tracing::warn!("{}", connect(' + destination + '));',
+            'anyhow::ensure!(ready(), build(' + destination + '));',
+            'unknown!(' + destination + ');',
+            'ensure(true, ' + destination + ');',
+            'assert(true, ' + destination + ');',
+            'panic(' + destination + ');',
+            'warn(' + destination + ');',
+            'assert_eq!(' + destination + ', actual, "unexpected");',
+        ]
+        for source in sources:
+            with self.subTest(source=source):
+                self.assertEqual(len(scan('src/client.rs', source)), 1)
+        self.assertEqual(len(scan('src/client.rs', cases[0] + ' connect(' + destination + ');')), 1)
+
+    def test_rust_comparison_vocabulary_is_not_a_destination(self):
+        literal = '"/var/run/secrets/kubernetes.io/serviceaccount"'
+        cases = ['path == ' + literal, literal + ' != path',
+                 'path.starts_with(' + literal + ')', 'path.ends_with(' + literal + ')',
+                 'host == "api.tenant.svc.cluster.local"',
+                 'host != "http://gate:24001"']
+        for source in cases:
+            with self.subTest(source=source):
+                self.assertEqual(scan('src/client.rs', 'fn classify() { let rejected = ' + source + '; }'), [])
+        sources = ['read(' + literal + ')', 'path == ' + literal + '.to_owned()',
+                   'path.starts_with(read(' + literal + '))',
+                   'prefix + ' + literal + ' == path',
+                   'format!("{}", ' + literal + ') == path',
+                   'path.starts_with(' + literal + ', other)',
+                   'path == build(' + literal + ')',
+                   'unknown! { path == ' + literal + ' }',
+                   'macro_rules! build { () => { path == ' + literal + ' } }',
+                   'macro_rules! r#build { () => { path == ' + literal + ' } }',
+                   '工具!(path == ' + literal + ')',
+                   'bu\u0301ild!(path == ' + literal + ')',
+                   '#[build] fn classify() { path == ' + literal + ' }',
+                   '#[inline::connect(path == ' + literal + ')] fn classify() {}',
+                   'read(' + literal + '); #[]']
+        for source in sources:
+            with self.subTest(source=source):
+                self.assertEqual(len(scan('src/client.rs', source)), 1)
+
+    def test_rust_private_constants_require_every_use_to_be_comparison_only(self):
+        declaration = 'const DENIED_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount";\n'
+        classification = ('fn strip() { mounts.retain(|mount| { let path = mount.path(); '
+                          '!(path == DENIED_PATH || path.starts_with(DENIED_PATH)) }); }')
+        self.assertEqual(scan('src/client.rs', declaration + classification), [])
+        for use in ['read(DENIED_PATH);', 'let alias = DENIED_PATH;',
+                    'fn value() -> &str { DENIED_PATH }', 'unknown!(DENIED_PATH);',
+                    'host == DENIED_PATH.to_owned();', 'use self::DENIED_PATH;',
+                    'let DENIED_PATH = other; path == DENIED_PATH;',
+                    'path == module::DENIED_PATH;',
+                    'mod external_child;', 'mod r#external_child;', 'mod 工具;', 'build!();',
+                    'format!("{DENIED_PATH}");',
+                    r'format!("{DENIED_\x50ATH}");', r'format!("{DENIED_\u{50}ATH}");', '#[build] fn emitted() {}', 'include!("more.rs");',
+                    'unknown! { path == DENIED_PATH }']:
+            with self.subTest(use=use):
+                self.assertEqual(len(scan('src/client.rs', declaration + classification + use)), 1)
+        for prefix in ['pub ', 'pub(crate) ', 'pub(super) ', '#[build] ', '#[derive(Custom)] ', '#[inline::connect] ']:
+            self.assertEqual(len(scan('src/client.rs', prefix + declaration + classification)), 1)
+        self.assertEqual(len(scan('src/client.rs', declaration)), 1)
+        for whitespace in ['\u0085', '\u200e', '\u200f', '\u2028', '\u2029']:
+            self.assertEqual(len(scan('src/client.rs', declaration + classification +
+                                      'mod' + whitespace + 'consumer;')), 1)
+            self.assertEqual(len(scan('src/client.rs', 'macro_rules' + whitespace +
+                                      '! build { () => { path == "http://gate:24001" } }')), 1)
+        unicode_source = declaration.replace('DENIED_PATH', 'CAFÉ') + classification.replace('DENIED_PATH', 'CAFÉ')
+        self.assertEqual(len(scan('src/client.rs', unicode_source + 'read(CAFE\u0301);')), 1)
+        self.assertEqual(len(scan('src/client.rs', 'pub trait Policy { ' + declaration + ' }' + classification)), 1)
+        self.assertEqual(len(scan('src/client.rs', 'impl Policy { ' + declaration + ' }' + classification)), 1)
+        # Other occurrences and explicit runtime constructors stay independent.
+        self.assertEqual(len(scan('src/client.rs', declaration + classification +
+                                  ' read("/var/run/secrets/kubernetes.io/serviceaccount"); Config::incluster_env();')), 2)
+
+    def test_rust_environment_presence_does_not_extract_the_endpoint(self):
+        for function, methods in [('var_os', ['is_some', 'is_none']), ('var', ['is_ok', 'is_err'])]:
+            for method in methods:
+                source = 'std::env::' + function + '("KUBERNETES_SERVICE_HOST").' + method + '()'
+                with self.subTest(source=source):
+                    self.assertEqual(scan('src/status.rs', source), [])
+        sources = [
+            'std::env::var_os("KUBERNETES_SERVICE_HOST")',
+            'var_os("KUBERNETES_SERVICE_HOST").unwrap()',
+            'std::env::var_os(' + ' ' * 200 + '"KUBERNETES_SERVICE_HOST").unwrap()',
+            'std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_default()',
+            'std::env::var_os("KUBERNETES_SERVICE_HOST").map(connect).is_some()',
+            'let value = std::env::var_os("KUBERNETES_SERVICE_HOST"); value.is_some()',
+            'std::env::var_os("KUBERNETES_SERVICE_HOST").is_some(value)',
+            'other::std::env::var_os("KUBERNETES_SERVICE_HOST").is_some()',
+            'std::env::var_os["KUBERNETES_SERVICE_HOST"].is_some()',
+            'std::env::var_os{"KUBERNETES_SERVICE_HOST"}.is_some()',
+            'unknown!(std::env::var_os("KUBERNETES_SERVICE_HOST").is_some())',
+            '工具!(std::env::var_os("KUBERNETES_SERVICE_HOST").is_some())',
+            'unknown("KUBERNETES_SERVICE_HOST")',
+        ]
+        for source in sources[:-1]:
+            with self.subTest(source=source):
+                self.assertEqual(len(scan('src/client.rs', source)), 1)
+        # Unknown context never gains a new exclusion for destinations.
+        self.assertEqual(len(scan('src/client.rs', 'unknown("http://gate:24001")')), 1)
+        self.assertEqual(len(scan('src/client.rs', 'std::env::var_os("KUBERNETES_SERVICE_HOST").is_some();'
+                                  ' connect("http://gate:24001");')), 1)
+
+    def test_rust_unbalanced_context_does_not_suppress_destinations(self):
+        for source in ['ensure!(ready(), "http://gate:24001";',
+                       'fn f() { host == "http://gate:24001"; ]',
+                       'std::env::var_os("KUBERNETES_SERVICE_HOST").is_some(']:
+            with self.subTest(source=source):
+                self.assertEqual(len(scan('src/client.rs', source)), 1)
+
     def test_allowlist_is_limited_to_manifests(self):
         manifest = 'origin: "http://api.tenant.svc.cluster.local"\n'
         for path in ['deploy/service.yaml', 'infra/service.yaml', 'charts/service/templates/deployment.yaml', '.github/workflows/ci.yml']:
