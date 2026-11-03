@@ -73,6 +73,7 @@
   "required_checks": [
     {
       "repo": "SylphxAI/cloud",
+      "repo_aliases": ["SylphxAI/sylphx"],
       "ruleset": "sylphx-merge-queue",
       "ruleset_id": 20321070,
       "checks": [
@@ -135,6 +136,7 @@
   "fast_gate_overrides": [
     {
       "repo": "SylphxAI/cloud",
+      "repo_aliases": ["SylphxAI/sylphx"],
       "ruleset": "sylphx-deploy-pins",
       "context": "pin-ok",
       "reason": "The deploy/pins branch is gated by its own check, pin-ok, not by the code gate."

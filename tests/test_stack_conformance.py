@@ -341,7 +341,7 @@ class AgentRuntimePolicyTest(unittest.TestCase):
 
     def test_policy_file(self):
         policy = json.loads(sc.AGENT_RUNTIME_POLICY.read_text())
-        self.assertEqual(policy["owner_repos"], ["SylphxAI/cloud"])
+        self.assertEqual(policy["owner_repos"], ["SylphxAI/cloud", "SylphxAI/sylphx"])
         seen = set()
         for entry in policy["baseline"]:
             self.assertRegex(entry["repo"], r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -470,7 +470,7 @@ class KnowledgeTablePolicyTest(unittest.TestCase):
 
     def test_policy_file(self):
         policy = json.loads(sc.KNOWLEDGE_POLICY.read_text())
-        self.assertEqual(policy["owner_repos"], ["SylphxAI/cloud"])
+        self.assertEqual(policy["owner_repos"], ["SylphxAI/cloud", "SylphxAI/sylphx"])
         seen = set()
         for entry in policy["baseline"]:
             self.assertRegex(entry["repo"], r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")

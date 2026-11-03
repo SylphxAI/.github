@@ -133,6 +133,13 @@ def load_policy(path: Path) -> dict:
             if context in contexts:
                 raise ValueError(f"duplicate required check context {context}")
             contexts.add(context)
+    for key in ("exclude", "overrides", "fast_gate_overrides", "required_checks"):
+        for entry in policy.get(key, []):
+            aliases = entry.get("repo_aliases", [])
+            if (not isinstance(aliases, list) or any(not isinstance(alias, str) or
+                    len(alias.split("/")) != 2 or not all(alias.split("/")) for alias in aliases)
+                    or len(set(aliases)) != len(aliases) or entry["repo"] in aliases):
+                raise ValueError("repo_aliases must be distinct owner/name identities")
     return policy
 
 
@@ -160,28 +167,33 @@ def hands_off_repos(path: Path = HANDS_OFF_POLICY) -> set[str]:
 
 def excluded(policy: dict, hands_off: set[str]) -> dict[str, str]:
     out = {r: "hands-off in policy/optimistic-merge.json" for r in hands_off}
-    out.update({e["repo"]: e["reason"] for e in policy.get("exclude", [])})
+    out.update({name: e["reason"] for e in policy.get("exclude", []) for name in repository_names(e)})
     return out
+
+
+def repository_names(entry: dict) -> set[str]:
+    """Explicit pre/post-rename names; never infer identity from a suffix."""
+    return {entry["repo"], *entry.get("repo_aliases", [])}
 
 
 def desired_settings(policy: dict, repo: str, ruleset: str) -> dict:
     out = dict(policy["settings"])
     for entry in policy.get("overrides", []):
-        if entry["repo"] == repo and entry["ruleset"] == ruleset:
+        if repo in repository_names(entry) and entry["ruleset"] == ruleset:
             out.update(entry["settings"])
     return out
 
 
 def expected_gate(policy: dict, repo: str, ruleset: str) -> str:
     for entry in policy.get("fast_gate_overrides", []):
-        if entry["repo"] == repo and entry["ruleset"] == ruleset:
+        if repo in repository_names(entry) and entry["ruleset"] == ruleset:
             return entry["context"]
     return policy["fast_gate"]["context"]
 
 
 def desired_checks(policy: dict, repo: str, rid: int, name: str) -> list[dict]:
     for entry in policy.get("required_checks", []):
-        if entry["repo"] == repo and entry["ruleset_id"] == rid:
+        if repo in repository_names(entry) and entry["ruleset_id"] == rid:
             if entry["ruleset"] != name:
                 raise ValueError(f"{repo} ruleset {rid} name differs from policy")
             return entry["checks"]
@@ -365,9 +377,10 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
         rows.append(row)
     found = {(item["repo"], item["id"]) for item in fleet}
     for target in policy.get("required_checks", []):
-        if target["repo"] in skip or (only and target["repo"] not in only):
+        names = repository_names(target)
+        if names & skip.keys() or (only and not names & only):
             continue
-        if (target["repo"], target["ruleset_id"]) not in found:
+        if not any((name, target["ruleset_id"]) in found for name in names):
             rows.append({"repo": target["repo"], "id": target["ruleset_id"],
                          "ruleset": target["ruleset"], "enforcement": None, "refs": [],
                          "status": "MISSING", "changes": {},
