@@ -694,8 +694,10 @@ use and every known code use is comparison-only. Exported/associated constants,
 shadowing, aliases, returns, configuration, file reads, implicit format capture,
 unknown macro/attribute expansion, external child modules and other unresolved
 uses retain the finding; escaped literal spellings also prevent a closed-use
-proof. Identifiers are NFC-normalized as in Rust. Only known expression macros and built-in attributes
-can participate in the private-constant proof. These are
+proof. Identifiers follow [Rust NFC/raw-identifier normalization](https://doc.rust-lang.org/reference/identifiers.html#normalization)
+(read 2026-11-03 at 17:46 UTC); [Rust whitespace](https://doc.rust-lang.org/reference/whitespace.html)
+separates tokens (read at 17:51 UTC). Only known expression macros and built-in
+attributes can participate in the private-constant proof. These are
 lexical proofs, not Rust type/name resolution or a whole-program use census.
 
 A direct `std::env::var_os("KUBERNETES_SERVICE_HOST").is_some()`/`.is_none()` or
