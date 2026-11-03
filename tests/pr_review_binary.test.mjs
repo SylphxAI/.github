@@ -198,3 +198,39 @@ test('binary provenance can be resolved from changed source and generator in lat
   assert.equal(result.status, 'complete');
   assert.deepEqual(result.binary_reviews, [provenance]);
 });
+
+test('binary-only producer recovers pinned text provenance without refetching binary bytes', async () => {
+  const github = provider(payload), reads = [], inputs = [];
+  github.current = async () => true;
+  const original = github.source.bind(github);
+  github.source = async (path, sha, optional, options) => {
+    reads.push({ path, sha });
+    if (path === 'source.proto') return source;
+    if (path === 'generate.js') return generator;
+    if (path !== binary.filename && optional) return null;
+    return original(path, sha, optional, options);
+  };
+  github.begin = async () => ({ id: 1, head_sha: head, app: { id: APP_ID }, name: CHECK_NAME });
+  github.finish = async (run, conclusion) => ({ ...run, conclusion });
+  const target = { kind: 'pull_request', number: 7, base_sha: base, head_sha: head, repository_id: '1', files: [binary] };
+  const receipt = await produceReview({ github, target, trigger, createReviewInput, engineVersion: 'binary-test',
+    engine: async input => {
+      inputs.push(input);
+      if (inputs.length === 1) {
+        assert.equal(input.context.length, 0);
+        return parse(input, { completion: 'incomplete', omitted_paths: [binary.filename], reason: 'Need original source and generator.',
+          binary_reviews: [{ ...provenance, status: 'unresolved', source_evidence: [], derivation_evidence: [] }],
+          context_requests: [{ path: 'source.proto', side: 'head' }, { path: 'generate.js', side: 'head' }] });
+      }
+      assert.deepEqual(input.context, [{ path: 'source.proto', side: 'head', commit_sha: head, content: source },
+        { path: 'generate.js', side: 'head', commit_sha: head, content: generator }]);
+      return parse(input);
+    } });
+  assert.equal(receipt.conclusion, 'success');
+  assert.equal(inputs.length, 2);
+  assert.notEqual(inputs[0].input_digest, inputs[1].input_digest);
+  assert.equal(receipt.input_digest, inputs[1].input_digest);
+  assert.deepEqual(reads.filter(r => r.path === binary.filename), [{ path: binary.filename, sha: base }, { path: binary.filename, sha: head }]);
+  assert.deepEqual(reads.filter(r => ['source.proto', 'generate.js'].includes(r.path)),
+    [{ path: 'source.proto', sha: head }, { path: 'generate.js', sha: head }]);
+});
