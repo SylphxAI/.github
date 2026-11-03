@@ -235,3 +235,67 @@ test('CRLF source uses absolute lines with canonical evidence line endings', () 
     evidence: [{ ...finding.evidence[0], start_line: 4001, end_line: 4001, quote: 'changed 4000' }] };
   assert.equal(parseReviewResult(JSON.stringify(wire(windows, [changed])), windows).status, 'complete');
 });
+
+test('failed evidence receipts distinguish quote mismatch from absent source without retaining either quote', () => {
+  const input = inputFor(), canary = 'PRIVATE_QUOTE_漢字\r\n::warning::model prose';
+  const fingerprint = value => ({ bytes: Buffer.byteLength(value), sha256: createHash('sha256').update(value).digest('hex') });
+  for (const kind of ['finding_evidence', 'related_evidence']) {
+    const evidence = { ...finding.evidence[0], quote: canary };
+    const result = parseReviewResult(JSON.stringify(kind === 'finding_evidence' ?
+      wire(input, [{ ...finding, evidence: [evidence] }]) : { ...wire(input), related_evidence: [evidence] }), input);
+    assert.equal(result.status, 'unavailable');
+    assert.equal(result.reason, kind === 'related_evidence' ? 'related evidence differs from supplied source' : 'evidence differs from supplied source');
+    assert.deepEqual(result.validation_failure, { version: 1, code: 'quote_mismatch', input_digest: input.input_digest,
+      kind, evidence_index: 0, finding_index: kind === 'finding_evidence' ? 0 : null,
+      path: 'src/value.js', side: 'head', start_line: 1, end_line: 1, start_byte: null, end_byte: null,
+      expected: fingerprint('return undefined'), returned: fingerprint(canary) });
+    assert.ok(!JSON.stringify(result).includes(canary));
+    const absent = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ ...evidence, start_line: 300, end_line: 300 }] }), input);
+    assert.equal(absent.validation_failure.code, 'source_unavailable');
+    assert.equal(absent.validation_failure.expected, null);
+    assert.equal(absent.validation_failure.start_line, 300);
+  }
+  assert.equal(parseReviewResult(JSON.stringify(wire(input, [finding])), input).validation_failure, undefined);
+});
+
+test('evidence metadata never emits unknown paths or stale and malformed model data', () => {
+  const input = inputFor(), canary = 'PRIVATE_UNKNOWN_PATH';
+  const forged = { ...wire(input), related_evidence: [{ ...finding.evidence[0], path: canary, quote: canary }] };
+  const result = parseReviewResult(JSON.stringify(forged), input);
+  assert.equal(result.status, 'unavailable'); assert.equal(result.validation_failure.path, null);
+  assert.equal(result.validation_failure.code, 'source_unavailable');
+  assert.ok(!JSON.stringify(result).includes(canary));
+  assert.ok(Buffer.byteLength(JSON.stringify(result.validation_failure)) < 2048);
+  for (const change of [{ head_sha: input.base_sha }, { input_digest: 'stale' }, { extra: canary },
+    { related_evidence: [{ ...finding.evidence[0], start_byte: -1 }] }]) {
+    assert.equal(parseReviewResult(JSON.stringify({ ...forged, ...change }), input).validation_failure, undefined);
+  }
+});
+
+test('byte-qualified evidence fingerprints exact UTF8 and CRLF without normalizing the validator', () => {
+  const input = inputFor('old\r\n', '漢字🐉\r\n'), source = '漢字🐉\r\n';
+  const evidence = { ...finding.evidence[0], start_byte: 0, end_byte: Buffer.byteLength(source), quote: source };
+  assert.equal(parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [evidence] }), input).status, 'complete');
+  const result = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ ...evidence, quote: source.replace('\r', '') }] }), input);
+  assert.equal(result.status, 'unavailable'); assert.equal(result.validation_failure.code, 'quote_mismatch');
+  assert.equal(result.validation_failure.expected.bytes, Buffer.byteLength(source));
+  assert.equal(result.validation_failure.expected.sha256, createHash('sha256').update(source).digest('hex'));
+  assert.equal(result.validation_failure.end_byte, Buffer.byteLength(source));
+});
+
+
+test('known renamed and context identities are located but unsafe supplied path spellings remain masked', () => {
+  const bundle = { schema_version: 2, repository: 'example/repo', repository_id: '1', base_sha: 'a'.repeat(40),
+    head_sha: 'b'.repeat(40), policy_version: '1', trigger: { kind: 'workflow_run', id: '42', generation: '1' },
+    files: [bundleFile({ filename: 'src/new.js', previous_filename: 'src/old.js', status: 'renamed' }, 'same\n', 'same\n')],
+    context: [{ path: 'caller.js', content: 'caller\n' }, { path: 'unsafe::notice.js', content: 'caller\n' }] };
+  const input = createReviewInput(bundle);
+  for (const [path, side, knownPath] of [['src/old.js', 'base', 'src/old.js'], ['caller.js', 'context', 'caller.js'],
+    ['unsafe::notice.js', 'context', null]]) {
+    const result = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path, side,
+      start_line: 1, end_line: 1, start_byte: null, end_byte: null, quote: 'different' }] }), input);
+    assert.equal(result.status, 'unavailable'); assert.equal(result.validation_failure.code, 'quote_mismatch');
+    assert.equal(result.validation_failure.path, knownPath);
+    if (knownPath === null) assert.ok(!JSON.stringify(result.validation_failure).includes(path));
+  }
+});

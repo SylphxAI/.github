@@ -178,3 +178,25 @@ test('large context is fully partitioned, and deleted and renamed paths retain r
   assert.equal(findings[1].side, 'base');
   assert.equal(parseReviewResult(JSON.stringify(wire(input, findings)), input).status, 'complete');
 });
+
+
+test('failed-anchor receipts survive partition and synthesis boundaries with the failing input digest and no retry', async () => {
+  const input = largeInput(), planned = planReview(input, measure, budget).length;
+  for (const phase of ['partition', 'synthesis']) {
+    const posts = [];
+    const result = await reviewPartitions(input, { requestBytes: measure, byteBudget: budget, execute: async part => {
+      posts.push(part);
+      const { file, row } = part.scope.kind === 'synthesis' ? changed(posts[0]) : changed(part);
+      const evidence = evidenceFor(file, row);
+      const fail = phase === part.scope.kind;
+      return parseReviewResult(JSON.stringify(wire(part, [], { related_evidence: [{ ...evidence,
+        ...(fail ? { quote: 'PRIVATE_FAILED_ANCHOR' } : {}) }] })), part);
+    } });
+    assert.equal(result.status, 'incomplete');
+    assert.equal(result.validation_failure.code, 'quote_mismatch');
+    assert.equal(result.validation_failure.input_digest, posts.at(-1).input_digest);
+    assert.notEqual(result.validation_failure.input_digest, input.input_digest);
+    assert.equal(posts.length, phase === 'partition' ? 1 : planned + 1);
+    assert.ok(!JSON.stringify(result).includes('PRIVATE_FAILED_ANCHOR'));
+  }
+});

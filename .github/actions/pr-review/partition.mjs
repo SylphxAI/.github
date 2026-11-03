@@ -113,7 +113,8 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     omitted_paths: input.files.filter(f => parts.some((p, i) => p.files.some(pf => pf.path === f.path) && !completedIndexes.has(i))).map(f => f.path) };
   if (failures.length) return { ...base, reason: failures.join(' ').slice(0, 2000),
     context_requests: interrupted?.status === 'incomplete' ? interrupted.context_requests ?? [] : [],
-    ...(interrupted?.diagnostics ? { diagnostics: interrupted.diagnostics } : {}) };
+    ...(interrupted?.diagnostics ? { diagnostics: interrupted.diagnostics } : {}),
+    ...(interrupted?.validation_failure ? { validation_failure: interrupted.validation_failure } : {}) };
   const summaries = completed.map((r, i) => ({ part: i + 1,
     paths: parts[i].files.map(f => f.path), summary: r.review_summary,
     related_evidence: r.related_evidence, findings: r.findings, context_notes: r.context_notes }));
@@ -128,7 +129,8 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   catch { result = unavailable(synthesis, 'Cross-file synthesis could not complete.'); }
   if (result.status !== 'complete') return { ...base, reason: `Cross-file synthesis: ${result.reason}`,
     context_requests: result.status === 'incomplete' ? result.context_requests ?? [] : [],
-    ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
+    ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+    ...(result.validation_failure ? { validation_failure: result.validation_failure } : {}) };
   const findings = unionFindings([...completed, result]);
   // Every synthesized anchor must still be a real changed source coordinate.
   if (findings.some(f => !input.files.some(file => file.path === f.path && changedRanges(file)

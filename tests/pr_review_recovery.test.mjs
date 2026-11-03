@@ -226,7 +226,7 @@ test('only validated omitted names are retained and request/file bounds share th
     (_, n) => ({ path: `src/${n}.js`, side: 'head' })) }).status, 'unavailable');
 });
 
-test('CLI persists private round diagnostics mode-0600 and emits only the safe final receipt', async () => {
+for (const mode of ['recovery', 'anchor']) test(`CLI ${mode} persists mode-0600 results and emits only the safe final receipt`, async () => {
   const { mkdtempSync, writeFileSync, readFileSync, statSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -235,7 +235,7 @@ test('CLI persists private round diagnostics mode-0600 and emits only the safe f
   try {
     writeFileSync(join(directory, 'pr-review-auth.json'), JSON.stringify({ checkToken: 'fixture', inferenceToken: 'fixture' }), { mode: 0o600 });
     writeFileSync(join(directory, 'event.json'), JSON.stringify({ repository: { full_name: 'example/repo', id: 1 }, inputs: { 'pull-request': '7' } }));
-    async function preload() {
+    async function preload(mode) {
       const { createHash } = await import('node:crypto');
       const { writeFileSync } = await import('node:fs');
       const base = 'a'.repeat(40), head = 'b'.repeat(40), treeSha = 'c'.repeat(40), blobs = new Map();
@@ -256,6 +256,9 @@ test('CLI persists private round diagnostics mode-0600 and emits only the safe f
             completion: calls === 1 ? 'incomplete' : 'complete', findings: [], related_evidence: [], review_summary: 'Reviewed source.',
             omitted_paths: calls === 1 ? ['src/change.js'] : [], context_notes: [],
             context_requests: calls === 1 ? [{ path: 'src/caller.js', side: 'head' }] : [], reason: calls === 1 ? 'PRIVATE_CLI_DIAGNOSTIC' : '' };
+          if (mode === 'anchor') Object.assign(result, { completion: 'complete', omitted_paths: [], context_requests: [], reason: '',
+            related_evidence: [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1,
+              start_byte: null, end_byte: null, quote: 'PRIVATE_CLI_ANCHOR' }] });
           data = { object: 'chat.completion', model: 'vendor/reviewer', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(result) } }] };
         } else if (path.endsWith('/pulls/7')) data = { state: 'open', changed_files: 1, title: 'Review this source',
           head: { sha: head }, base: { sha: base, ref: 'main', repo: { id: 1 } } };
@@ -276,7 +279,7 @@ test('CLI persists private round diagnostics mode-0600 and emits only the safe f
         return { ok: true, status: 200, json: async () => data };
       };
     }
-    writeFileSync(join(directory, 'preload.mjs'), `await (${preload.toString()})();`);
+    writeFileSync(join(directory, 'preload.mjs'), `await (${preload.toString()})(${JSON.stringify(mode)});`);
     const process = spawnSync('node', ['--import', join(directory, 'preload.mjs'), '.github/actions/pr-review/cli.mjs', 'review'], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10_000,
       env: { ...globalThis.process.env, RUNNER_TEMP: directory, GITHUB_REPOSITORY: 'example/repo', GITHUB_EVENT_NAME: 'workflow_dispatch',
@@ -284,13 +287,36 @@ test('CLI persists private round diagnostics mode-0600 and emits only the safe f
         REVIEW_MODEL: 'vendor/reviewer', REVIEW_MAX_OUTPUT_TOKENS: '8192', GITHUB_STEP_SUMMARY: join(directory, 'summary.md') },
     });
     assert.equal(process.status, 0, process.stderr);
-    assert.equal(JSON.parse(process.stdout).reviews[0].conclusion, 'success');
+    const receipt = JSON.parse(process.stdout).reviews[0];
+    assert.equal(receipt.conclusion, mode === 'recovery' ? 'success' : 'neutral');
     const results = JSON.parse(readFileSync(join(directory, 'pr-review-results.json')));
-    assert.equal(results[0].recovery_diagnostics[0].reason, 'PRIVATE_CLI_DIAGNOSTIC');
+    if (mode === 'recovery') assert.equal(results[0].recovery_diagnostics[0].reason, 'PRIVATE_CLI_DIAGNOSTIC');
+    else {
+      assert.equal(receipt.validation_failure.code, 'quote_mismatch');
+      assert.deepEqual(receipt.validation_failure, results[0].validation_failure);
+      assert.deepEqual(receipt.validation_failure, JSON.parse(readFileSync(join(directory, 'pr-review-receipts.json')))[0].validation_failure);
+      assert.equal(receipt.request_bytes.length, 1);
+    }
     assert.equal(statSync(join(directory, 'pr-review-results.json')).mode & 0o777, 0o600);
     for (const output of [process.stdout, process.stderr, readFileSync(join(directory, 'pr-review-receipts.json'), 'utf8'),
       readFileSync(join(directory, 'public-check.json'), 'utf8'), readFileSync(join(directory, 'summary.md'), 'utf8')]) {
       assert.ok(!output.includes('PRIVATE_CLI_DIAGNOSTIC'));
+      assert.ok(!output.includes('PRIVATE_CLI_ANCHOR'));
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('publisher retains a safe failed-anchor receipt without inferred recovery or public quote leakage', async () => {
+  const github = new Publisher(), saved = []; let calls = 0;
+  const receipt = await produceReview({ github, target, trigger: inputFor().trigger, createReviewInput, engineVersion: reviewerVersion,
+    onResult: result => saved.push(result), engine: async input => {
+      calls++;
+      return parsed(input, { related_evidence: [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1,
+        start_byte: null, end_byte: null, quote: 'PRIVATE_FAILED_ANCHOR' }] });
+    } });
+  assert.equal(calls, 1); assert.equal(receipt.conclusion, 'neutral'); assert.equal(receipt.unavailable, true);
+  assert.equal(receipt.validation_failure.code, 'quote_mismatch');
+  assert.deepEqual(receipt.validation_failure, saved.at(-1).validation_failure);
+  assert.deepEqual(receipt.recovery, { rounds: 0, added_files: 0, added_bytes: 0, stop: 'unavailable' });
+  assert.ok(!JSON.stringify({ receipt, check: github.run, saved }).includes('PRIVATE_FAILED_ANCHOR'));
 });

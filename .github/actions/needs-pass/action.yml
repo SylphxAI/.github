@@ -1,6 +1,6 @@
 name: needs-pass
 description: >
-  Enforces shared contribution metadata policy (contents and pull-requests:
+  Enforces served same-size merge-lane routing and shared contribution metadata policy (contents and pull-requests:
   read), then automatically scans the added commits of every pull request and merge group
   for secrets before returning the aggregate verdict. Fetches immutable Git
   objects into a temporary bare repository; no caller checkout is needed.
@@ -55,6 +55,11 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Require merge-lane routing
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: bash "$GITHUB_ACTION_PATH/../merge-lane/check.sh"
     - name: Check contribution metadata
       shell: bash
       env:

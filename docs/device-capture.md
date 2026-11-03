@@ -41,6 +41,21 @@ principal and CLI exit. The CLI writes native PNGs, hashes, step receipts,
 logcat and JUnit under `output/device`, and releases its lease on exit. Retain
 that directory through the existing CI handover mechanism, including failures.
 
+The `logcat` action output names `output/device/launch-logcat.txt`: the primary
+`logcat.txt` followed by the optional `logcat-tail.txt`, with a line boundary
+between them. Use this output for title-owned ready-marker and crash gates;
+never choose a file with `find ... -name 'logcat*' | head`. The tail can omit a
+valid startup marker, while the primary can omit a later crash. Four Fun
+Mahjong Verify runs on 2026-11-01/02 falsely failed after selecting only the
+tail ([41310094317](https://github.com/Cubeage/fun-mahjong-keel/actions/runs/41310094317),
+[41349118189](https://github.com/Cubeage/fun-mahjong-keel/actions/runs/41349118189),
+[41360558751](https://github.com/Cubeage/fun-mahjong-keel/actions/runs/41360558751),
+[41362433151](https://github.com/Cubeage/fun-mahjong-keel/actions/runs/41362433151));
+the gate must retain both spans. Raw files remain unchanged for diagnosis.
+The combined output is also retained when a capture fails, if its primary log
+exists; it never turns a failing CLI result into a pass. A successful CLI with
+no primary log is refused rather than treated as launch evidence.
+
 A zero exit proves the scenario executed with package/foreground/native-size
 guards, **not** visual acceptance of a named lobby/table/shop. Inspect actual
 PNGs before calibrating unattended navigation. It proves no account, purchase,

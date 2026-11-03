@@ -1,0 +1,34 @@
+{
+  "source": {
+    "repository": "SylphxAI/owner",
+    "sha": "a1815c8e2479374e1e0b3fd2c2fe09a4feff58cf",
+    "read_utc": "2026-11-02T22:05:55Z"
+  },
+  "excluded_repositories": {
+    "SylphxAI/kalkas": {
+      "path": "company/portfolio.md",
+      "line": 95,
+      "reason": "Paused by Kyle on 2026-10-31: no new development; preserve existing serving users."
+    },
+    "Cubeage/mahjong-keel": {
+      "path": "company/portfolio.md",
+      "line": 171,
+      "reason": "Paused by Kyle on 2026-10-31: the new 3D game stops; HK Mahjong Tycoon is remade directly instead."
+    },
+    "Cubeage/blackjack-showdown": {
+      "path": "company/portfolio.md",
+      "line": 265,
+      "reason": "Stopped shipping: Cubeage no longer makes this title; nothing new ships; preserve live backend and listing."
+    },
+    "Cubeage/crumple-keel": {
+      "path": "company/portfolio.md",
+      "line": 260,
+      "reason": "Parked, design only and not built; a restart needs a lifecycle decision."
+    },
+    "TseFamily/tse-family-learning": {
+      "path": "company/decisions.md",
+      "line": 11,
+      "reason": "LearningQuest left company scope on 2026-10-30; Kyle personal project, no company rollout."
+    }
+  }
+}
