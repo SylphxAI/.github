@@ -447,7 +447,7 @@ class ContributionPolicy(unittest.TestCase):
     def test_both_verdicts_run_policy_without_waiver(self):
         for action in ('needs-pass', 'ci-ok'):
             doc = yaml.safe_load((ROOT / '.github/actions' / action / 'action.yml').read_text())
-            step = doc['runs']['steps'][0]
+            step = next(s for s in doc['runs']['steps'] if 'contribution_policy.py' in s.get('run', ''))
             self.assertIn('contribution_policy.py', step['run'])
             self.assertNotIn('if', step)
             self.assertEqual(doc['inputs']['separate-pr-metadata']['default'], 'false')

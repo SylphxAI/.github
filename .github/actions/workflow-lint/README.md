@@ -31,7 +31,12 @@ The contract scans `.github/workflows/*.yml` and `*.yaml` in the checkout:
   action), every job is treated as required. Optional jobs outside an explicit
   aggregate graph may tolerate failures, but still need timeouts.
 
-`contract-mode: report-only` emits warnings and a count, exiting successfully.
+`contract-mode: report-only` emits warnings and a count for legacy timeout
+and failure-propagation findings. Manual approval/maintenance booking and
+[R8 merge-lane routing](../../../docs/merge-lane.md) remain blocking in either
+mode. R8 follows all workflows in the checkout and their local reusable calls,
+including matrices, input defaults and job conditions, using the same core as
+the immutable-source required verdict and fleet audit.
 It is the initial default so callers can inventory and repair violations before
 switching their gate to `enforce`. The org-wide rollout must pin the new action,
 repair the inventory, require its gate, and then change the shared default to

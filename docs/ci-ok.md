@@ -36,8 +36,10 @@ succeeded. A required lane must preserve failures rather than mask them with
 The action uses the existing `needs-pass` result policy. Explicitly required
 jobs must succeed. Other dependencies may skip for intentional path filtering,
 but their failures, cancellations and unknown results still fail the gate.
-Contribution metadata and added-commit secret scanning remain part of the
-verdict.
+Contribution metadata, added-commit secret scanning and the required
+[merge-lane check](merge-lane.md) remain part of the verdict. The latter reads
+workflow source at the tested commit without a caller checkout and refuses
+merge-group jobs on a plain build pool when a same-size merge twin is served.
 
 GitHub keeps the verdict pending while a needed job runs. `if: always()` lets
 it report failure after a dependency failed or skipped. A cancelled required

@@ -448,19 +448,41 @@ leaves the alert open; no parallel writer should edit lifecycle markers.
 
 ## Runners
 
-Merge-group jobs run on the merge lane: `runs-on: ${{ github.event_name ==
-'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}`
-(`-xlarge-merge` for xlarge jobs), so a merge group never waits behind the
-pull-request backlog. The gate starter already uses it.
+Merge-group jobs select their **served, same-size** merge twin:
 
-A repository whose own policy check reads a static runner label (for example
-`check-owned-ci-runners.ts` in `EpiowAI/epiow-legacy` or
-`check-owned-runner-profiles.py` in `EpiowAI/korvana`) refuses the dynamic
-expression: name the label that repository already allows (`runs-on:
-sylphx-linux-standard`, or the profile's label of the same size class) on every
-gate lane. R8 reads a static label as a FAIL, so list such a repository in
-[`policy/optimistic-merge.json`](../policy/optimistic-merge.json) under an
-exemption that waives R8, with its class, reason, owner and review date.
+```yaml
+runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+```
+
+The per-organization serving contract is recorded in
+[`policy/merge-runner-labels.json`](../policy/merge-runner-labels.json), with the
+upstream `SylphxAI/cloud` commit and read time. At that revision, SylphxAI serves
+small, standard, large, xlarge and 2xlarge; EpiowAI serves standard, large and
+xlarge; OzyrixLtd serves large; Cubeage serves standard. A label existing in
+another organization is not evidence that this organization serves it.
+
+Keep a plain pool when its same-size twin is not served. R8 passes it with a
+notice; an unserved `-merge` label fails because the job would have no serving
+pool. Never change runner size or add capacity merely to satisfy routing. For
+example, Cubeage's xlarge Android build and candidate bundles retain their
+serving plain lane. Capacity is a separate measured decision.
+
+The [merge-lane check](merge-lane.md) is part of both shared verdict actions,
+not just the fleet audit. It reads all workflows at the exact tested commit,
+including merge-reachable local reusable workflows, matrix rows, inputs and
+job conditions. Comments, step conditions, a wrong-event selector or an
+unresolved expression with a plain-label fallback do not excuse a job.
+A public repository may select free standard hosted runners; public visibility
+does not excuse a self-hosted plain pool with a served twin.
+
+Update repository-local static runner checks and their regression tests in the
+same change so they accept the canonical same-size selector. Only an explicit,
+reasoned, owned and unexpired `static-runner-policy` exemption waives required
+R8. Existing `no-build` and `suite-is-gate` audit exemptions do not waive it.
+Repositories in the `hands-off` or `frozen-legacy` classes, paused/stopped
+products, archived repositories and delivered customer repositories stay
+outside the rollout and do not count as guard coverage. HK Mahjong Tycoon is under active development and is not
+hands-off.
 
 The verdict jobs (`ci-ok`, `verified`) run on `sylphx-linux-control`, the
 reserved gate pool; it has no `-merge` twin. Use `if: always() && !cancelled()`:
@@ -496,7 +518,7 @@ exemption and writes the whole report with `--json`.
 | R5 | `ci.yml` has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
 | R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
 | R7 | `on_red` is `revert` (or `revert_pr_unarmed`) where the builder App reaches the repository, `notify` elsewhere |
-| R8 | in every workflow that runs on `merge_group`, each job on `sylphx-linux-standard` or `sylphx-linux-xlarge` selects its `-merge` twin on `merge_group` (the expression under Runners); verdict jobs on `sylphx-linux-control`, jobs whose `if:` keeps `merge_group` out, and runners chosen by `matrix`/`inputs` are out of scope. A repository whose own policy check reads a static runner label (see Runners) declares it in a named exemption |
+| R8 | every merge-reachable shared Linux job selects its served, same-size `-merge` twin, following local reusable calls, job conditions, matrix rows and inputs. Control and hosted pools pass. A plain pool without a served same-size twin passes with a capacity notice; an unserved twin fails. Required verdict actions enforce the same rule against the tested commit. See [merge-lane.md](merge-lane.md) for source and coverage boundaries |
 | R9 | every workflow that runs on `pull_request` has a workflow-level `concurrency:` whose `cancel-in-progress` is `${{ github.event_name == 'pull_request' }}` ([ci-template.md](ci-template.md#concurrency)): a superseded pull-request run is cancelled, a merge-group or trunk run never is; a literal `true` holds only where neither `merge_group` nor a push to the default branch starts the workflow |
 
 Unreadable is FAIL. A repository whose rows are waived by a policy

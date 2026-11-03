@@ -30,6 +30,10 @@
       "waives": ["R1", "R2", "R3", "R3b", "R4", "R5", "R7"],
       "meaning": "Whole pull-request CI is short enough (p90 about 5 minutes or less) that the merge gate already is the full suite, so there is no post-merge verification to add. The merge queue and a required check still must exist, and `verified` is never one."
     },
+    "static-runner-policy": {
+      "waives": ["R8"],
+      "meaning": "An explicitly named, expiring runner-policy exception. Requires class, reason, owner and review; no automatic static-label waiver."
+    },
     "on-red-notify": {
       "waives": ["R7"],
       "meaning": "Declares an on_red the builder App does not back yet; the handler runs as notify until the App reaches the organization."
@@ -76,8 +80,8 @@
     },
     {
       "class": "hands-off",
-      "repos": ["SylphxAI/bgca", "Cubeage/hk-mahjong-tycoon", "SylphxAI/openclaw-sylphx"],
-      "reason": "Delivered customer repository (bgca), protected original (hk-mahjong-tycoon) and the hosted stopgap (openclaw-sylphx): no work unless their owner asks.",
+      "repos": ["SylphxAI/bgca", "SylphxAI/openclaw-sylphx"],
+      "reason": "Delivered customer repository (bgca) and the hosted stopgap (openclaw-sylphx): no work unless their owner asks.",
       "owner": "CEO",
       "review": "2027-04-04"
     },
