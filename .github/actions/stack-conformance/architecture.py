@@ -100,7 +100,7 @@ def blank(text):
     return "".join("\n" if c == "\n" else " " for c in text)
 
 
-def source_views(text, suffix, *, test_bodies=False):
+def source_views(text, suffix, *, test_bodies=False, legacy_rust=False):
     """Return comment-free text and code with literal contents masked; same offsets."""
     comment_free, code, comments = list(text), list(text), []
     if suffix == ".py":
@@ -130,12 +130,14 @@ def source_views(text, suffix, *, test_bodies=False):
     else:
         char_or_string = r"'(?:\\.|[^'\\\n])'" if suffix == ".rs" else r"'(?:\\.|[^'\\])*'"
         token = re.compile(r'//[^\n]*|/\*.*?\*/|\br(\#*)"[\s\S]*?"\1|"(?:\\.|[^"\\])*"|' + char_or_string + r'|`(?:\\.|[^`\\])*`', re.S)
-        for match in token.finditer(text):
-            value = match.group()
-            code[match.start():match.end()] = blank(value)
-            if value.startswith(("//", "/*")):
-                comment_free[match.start():match.end()] = blank(value)
-                comments.append((match.start(), match.end()))
+        tokens = (project_portability.rust_tokens(text) if suffix == ".rs" and not legacy_rust
+                  else (("comment" if m.group().startswith(("//", "/*")) else "literal", m.start(), m.end())
+                        for m in token.finditer(text)))
+        for kind, start, end in tokens:
+            code[start:end] = blank(text[start:end])
+            if kind == "comment":
+                comment_free[start:end] = blank(text[start:end])
+                comments.append((start, end))
         if suffix == ".rs" and not test_bodies:
             # Inline test modules are fixtures too; do not hide adjacent production.
             for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*"
@@ -428,10 +430,13 @@ def economy_cache_reads(clean, code, suffix):
 
 def cache_display_proof(tree, path, text, line):
     """A reason and test reference are evidence, never a proof of program semantics."""
-    source_line = text.splitlines()[line - 1]
-    _, _, comments = source_views(source_line, pathlib.PurePosixPath(path).suffix)
+    lines = text.splitlines(keepends=True)
+    line_start = sum(map(len, lines[:line - 1]))
+    line_end = line_start + len(lines[line - 1])
+    _, _, comments = source_views(text, pathlib.PurePosixPath(path).suffix)
     for start, end in comments:
-        marker = re.search(r"cache-display-only:\s*(.+?);\s*test=([^\s#;]+)#([\w-]+)\s*(?:\*/)?$", source_line[start:end])
+        marker = re.search(r"cache-display-only:\s*(.+?);\s*test=([^\s#;]+)#([\w-]+)\s*(?:\*/)?$",
+                           text[max(start, line_start):min(end, line_end)] if start < line_end and end > line_start else "")
         if not marker or not marker[1].strip():
             continue
         reason, test_path, name = marker.groups()
@@ -466,8 +471,27 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
     out = []
     add = lambda at, cls, rule, why, end=None: out.append(finding(path, text, at, cls, rule, why, end))
     if not excluded(path):
-        for at, end, why in project_portability.scan(path, text, source_views):
+        portable = project_portability.scan(path, text, source_views)
+        for at, end, why in portable:
             add(at, "C1", "project-portability", why, end)
+        if suffix == ".rs" and portable:
+            # Frozen pre-repair recognition is evidence for rekeying old debt,
+            # never an alternate detector or an allowance for a new destination.
+            legacy_views = source_views(text, suffix, legacy_rust=True)
+            legacy = project_portability.scan(path, text, lambda t, s: legacy_views, legacy_rust=True)
+            legacy_literals = {(a, b) for a, b, _ in
+                               project_portability.literals(legacy_views[0], suffix, legacy_rust=True)}
+            legacy_rows = with_occurrences([finding(path, text, a, "C1", "project-portability", why, b)
+                                           for a, b, why in legacy])
+            for (a, b, _), old in zip(legacy, legacy_rows):
+                for (start, end, _), row in zip(portable, out):
+                    # Legacy lifetimes can enclose real literals. Conversely,
+                    # br/cr raw tokens can enclose the old quoted-body finding.
+                    # Reverse containment requires literal evidence: an old
+                    # spurious executable call inside raw text is not debt.
+                    if (a <= start and end <= b or
+                            (a, b) in legacy_literals and start <= a and b <= end):
+                        row.setdefault("legacy_portability_keys", []).append(baseline_key(old))
     if suffix not in SOURCE | CONFIG:
         return with_occurrences(out)
     scope_reason = None
@@ -736,8 +760,32 @@ def baseline_errors(findings, head_records, base_records, base_findings, introdu
     existing = {baseline_key(row) for row in base_findings
                 if "architecture/" + row["class"] + "/" + row["rule"] in introduced_rules}
     errors = ["stale architecture baseline record: " + key for key in sorted(head_records - actual)]
+    # Explicit constituent correction is not new destination debt. The old key must
+    # independently resolve at the actual base to corrected literal occurrences;
+    # those exact path/span/occurrences must survive at the head. Old records must
+    # be removed in the same change. No equivalence is inferred from head text.
+    replacements = portability_rekeys(base_findings, base_records)
+    actual = {baseline_key(row) for row in findings}
+    corrected = {key for members in replacements.values() for key in members}
+    existing |= {new for old, members in replacements.items()
+                 if (old not in head_records or old in corrected) and members <= actual for new in members}
     allowed = base_records | existing
     errors += ["architecture baseline cannot grow or seed new debt: " + key for key in sorted(head_records - allowed)]
     for row in findings:
         row["baseline_recorded"] = baseline_key(row) in head_records
     return errors
+
+
+def portability_rekeys(base_findings, base_records):
+    """Enumerate corrected occurrences inside each exact recorded legacy span.
+
+    A formerly overbroad token can contain several real literals; a raw token
+    can instead wrap a formerly quoted-body finding. All members are individually
+    identified at the base, never inferred from the head.
+    """
+    candidates = {}
+    for row in base_findings:
+        for old in row.get("legacy_portability_keys", ()):
+            if old in base_records and old != baseline_key(row):
+                candidates.setdefault(old, set()).add(baseline_key(row))
+    return candidates
