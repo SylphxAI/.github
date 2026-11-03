@@ -680,6 +680,34 @@ Comments, ordinary fixture paths, inline Rust tests, bare refusal suffixes and
 diagnostic examples are excluded. Native client languages and runtime shell
 entrypoints use the same rule.
 
+Rust exclusions use balanced lexical argument boundaries, not a prefix window
+or an entire diagnostic call. Only a known diagnostic's literal message/format
+argument is excluded (for example, argument 1 of `ensure!`/`assert!`); destinations
+in its predicate or nested formatting I/O still fail. This follows the
+[`anyhow::ensure!` 1.0.104 contract](https://docs.rs/anyhow/1.0.104/anyhow/macro.ensure.html)
+(read 2026-11-03 at 17:26 UTC).
+
+A complete literal equality/inequality operand or sole `starts_with`/`ends_with`
+argument is comparison vocabulary, not a constructed destination. A private
+simple Rust `const NAME: &str = "..."` is excluded only when it has at least one
+use and every known code use is comparison-only. Exported/associated constants,
+shadowing, aliases, returns, configuration, file reads, implicit format capture,
+unknown macro/attribute expansion, external child modules and other unresolved
+uses retain the finding; escaped literal spellings also prevent a closed-use
+proof. Identifiers are NFC-normalized as in Rust. Only known expression macros and built-in attributes
+can participate in the private-constant proof. These are
+lexical proofs, not Rust type/name resolution or a whole-program use census.
+
+A direct `std::env::var_os("KUBERNETES_SERVICE_HOST").is_some()`/`.is_none()` or
+`std::env::var(...).is_ok()`/`.is_err()` only reports presence; it does not extract
+an endpoint and is excluded. Reading, aliasing, mapping or unwrapping the value
+still fails, including actual `var_os` value use. This preserves Rust's native
+empty/non-Unicode handling rather than replacing the source expression
+([`var_os` contract](https://doc.rust-lang.org/std/env/fn.var_os.html),
+Rust 1.99.1, read 2026-11-03 at 17:14 UTC). Unknown or unbalanced context gains no
+exclusion. None of these cases authorizes a private default, TLS change, caller
+exception or baseline growth.
+
 Deployment manifests may name infrastructure. The allowlist applies to YAML,
 TOML, JSON and XML under deployment/infra/Helm/GitOps/CI directories, plus
 `sylphx.toml` and `*.deployment.profile.toml`. Source code in those directories
