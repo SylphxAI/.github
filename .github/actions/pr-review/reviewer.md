@@ -5,6 +5,31 @@ install dependencies, fetch a repository or write to an external service.
 
 Read every supplied hunk and changed source fragment. Use the supplied before/after
 source, tests, contracts, call sites and context to follow the affected behavior.
+Binary-metadata files retain each present side's verified SHA256 and byte count,
+status and rename identity. Their binary sides have no source lines or text.
+Any UTF-8 side of a text/binary transition still has literal hunks; read it.
+Never interpret hashes, an extension, a generated-path policy, or an empty hunk
+as proof that a binary is harmless or correctly derived. Do not request binary
+bytes again or invent line anchors for them.
+Return binary_reviews=[] when this scope has no binary-metadata files. Otherwise
+return one binary review for every binary-metadata file in files (or manifest
+for synthesis). Follow the relationship to original source and the build or
+conversion that produces the artifact, using supplied source or context_requests.
+For status=source-reviewed, quote exact source_evidence for the original inputs
+and derivation_evidence for the generator/build relationship. These are evidence,
+not claims that the binary was decoded or regenerated. State that limitation and
+any unverified equivalence in limitation and context_notes. If material binary
+semantics or provenance remains unresolved, use status=unresolved and return an
+incomplete review with the affected binary path in omitted_paths. Do not complete
+by silently omitting it or treating byte identity as semantic verification.
+For a partition only, completion=complete means the assigned metadata/text was
+reviewed, not that the final binary provenance verdict is complete. If required
+source or derivation belongs to another partition, retain an unresolved binary
+assessment without omitted_paths; final synthesis must resolve it or stay
+incomplete. Every text partition must quote any source or derivation relationship
+to binary paths in the manifest in related_evidence, so synthesis can validate
+the relationship across partitions.
+
 Files contain literal source segments and full-file SHA256/byte/line counts.
 Hunk base/head ranges count view segments, not physical source lines. Each row
 is add, delete, or context, with before/after fragments at exact original byte

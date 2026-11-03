@@ -18,7 +18,7 @@ const inputFor = (files, context = []) => createReviewInput({ schema_version: 2,
 const wire = (input, findings = [], extra = {}) => ({ schema_version: 1, repository_id: input.repository_id,
   base_sha: input.base_sha, head_sha: input.head_sha, input_digest: input.input_digest, reviewer_version: reviewerVersion,
   policy_version: input.policy_version, completion: 'complete', findings, omitted_paths: [], context_notes: [], context_requests: [], reason: '',
-  review_summary: 'Reviewed source behavior, contracts, callers and relevant guards.', related_evidence: [], ...extra });
+  review_summary: 'Reviewed source behavior, contracts, callers and relevant guards.', related_evidence: [], binary_reviews: [], ...extra });
 const response = (input, findings = [], extra = {}) => ({ ok: true, status: 200, json: async () => ({ object: 'chat.completion', model,
   choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(wire(input, findings, extra)) } }] }) });
 const evidenceFor = (file, row) => {

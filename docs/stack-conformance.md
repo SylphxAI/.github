@@ -693,6 +693,38 @@ editing or resurrecting a removed occurrence fails. Architecture decisions
 cannot exempt this rule. The capability profile binds the executable detector
 module, preserving historical profile identities when that module is absent.
 
+Rust literals follow the [Rust Reference token grammar](https://doc.rust-lang.org/reference/tokens.html)
+(read 2026-11-03 at 14:40 UTC): lifetimes and labels are not single-quoted
+strings; character escapes, raw `r`/`br`/`cr` delimiters and nested block
+comments retain their source boundaries. SQL quotes and comment-looking text
+inside a literal do not change an adjacent destination's identity. Unterminated
+Rust strings or block comments refuse scanning rather than hiding source.
+
+Earlier scanners could hash a span extending from a Rust lifetime through SQL
+and several real destination literals. During a pin bump, the same offline
+helper explicitly replaces an exact recorded legacy span with ordinary
+six-field records for its actual constituents. It independently reproduces the
+old recognition at the immutable base, identifies each contained corrected
+path/span/occurrence there, and requires every member to survive unchanged at
+the candidate. Raw `br`/`cr` tokens can instead wrap an old quoted-body finding;
+that correction requires old literal evidence, not a spurious executable call
+inside raw text. Occurrence renumbering is resolved from the exact old spans,
+not from equal hash text alone. One old record can become several corrected
+records only when every constituent is individually proven; no new destination
+or occurrence is accepted. Overlapping records produce one output identity.
+The receipt reports `portability_rekeys` with each old record, corrected records
+and constituent count, plus `rekeyed_records` and `corrected_constituents`.
+
+This is an identity correction, not another rule adoption: the rule marker
+stays, old malformed records must be removed, and the required check derives
+the same replacements independently from its actual base. There are no aliases,
+group records or caller exceptions. A changed, copied, removed or genuinely
+unrecorded constituent refuses automatic migration. Removing unrelated
+unrecorded debt is allowed; it is never grandfathered by this correction.
+An unchanged old malformed record still fails as stale, and corrected records
+subsequently obey the ordinary shrinking ratchet. The helper writes no baseline
+or evidence on refusal.
+
 The existing required stack verdict carries this rule. A caller qualification
 must include one actual failing private-destination change and a clean passing
 change, and demonstrate that failure reaches its required aggregate. This

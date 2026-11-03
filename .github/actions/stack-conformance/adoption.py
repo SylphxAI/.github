@@ -422,6 +422,52 @@ def _checker():
     return module
 
 
+def migrate_portability_records(original, base_findings, head_findings, architecture, parse_baseline):
+    """Replace only base-proven malformed Rust identities; never seed debt."""
+    records = parse_baseline(original) or set()
+    mappings = architecture.portability_rekeys(base_findings, records)
+    base_keys = {architecture.baseline_key(row) for row in base_findings
+                 if row["rule"] == "project-portability"}
+    head_keys = {architecture.baseline_key(row) for row in head_findings
+                 if row["rule"] == "project-portability"}
+    if mappings and head_keys - base_keys:
+        raise ValueError("new head debt cannot be migrated: " + ", ".join(sorted(head_keys - base_keys)))
+    covered = (records & base_keys) | {key for members in mappings.values() for key in members}
+    if mappings and head_keys - covered:
+        raise ValueError("unrecorded portability debt cannot be migrated: " + ", ".join(sorted(head_keys - covered)))
+    for old, members in mappings.items():
+        if members - head_keys:
+            raise ValueError("changed or removed portability constituent; no migration generated: " + old)
+    # A broad legacy span can overlap an independently recorded executable
+    # call. Emit each corrected identity once, including those retained as-is.
+    corrected = {key for members in mappings.values() for key in members}
+    lines, emitted = [], set()
+    for line in (original or "").splitlines(keepends=True):
+        old = next(iter(parse_baseline(line) or ()), "")
+        body = line.rstrip("\r\n")
+        ending = line[len(body):]
+        _, marker, annotation = body.partition("#")
+        if old in mappings:
+            members = sorted(mappings[old] - emitted)
+            if members:
+                lines.append("\n".join(members) + (" #" + annotation if marker else "") + ending)
+                emitted.update(members)
+            elif marker:
+                lines.append("#" + annotation + ending)
+        elif old not in corrected or old not in emitted:
+            lines.append(line)
+            emitted.add(old)
+        elif marker:
+            lines.append("#" + annotation + ending)
+    text = "".join(lines)
+    if (parse_baseline(text) or set()) != (records - set(mappings)) | corrected:
+        raise ValueError("portability correction did not produce the planned exact records")
+    # The receipt contains identities and cardinalities, never source values.
+    receipt = [{"old_record": old, "corrected_records": sorted(members),
+                "constituent_count": len(members)} for old, members in sorted(mappings.items())]
+    return text, receipt
+
+
 def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, baseline=".github/stack-departures.txt"):
     """Return baseline text, introduced rules and evidence; never mutate either tree."""
     sc = _checker()
@@ -466,8 +512,10 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
                     raise ValueError("new head debt cannot be adopted: " + key(row))
                 if not row.get("decision"):
                     additions.add(key(row))
+    migrated, rekeys = migrate_portability_records(original, base_arch["findings"], head_arch["findings"],
+                                                     sc.architecture, sc.parse_baseline)
     retirement_text, retirement_additions = sc.staged_retirement.plan(
-        base_tree, head_tree, original, introduced, sc.departures, sc.parse_baseline, baseline)
+        base_tree, head_tree, migrated, introduced, sc.departures, sc.parse_baseline, baseline)
     additions |= retirement_additions
     existing = sc.parse_baseline(original) or set()
     additions -= existing
@@ -484,7 +532,9 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     if lines:
         text += ("\n" if text and not text.endswith("\n") else "") + "\n".join(lines) + "\n"
     return {"baseline_text": text, "introduced_rules": sorted(introduced),
-            "evidence": {"old_checkers": profiles, "added_records": sorted(additions)}}
+            "evidence": {"old_checkers": profiles, "added_records": sorted(additions),
+                         "portability_rekeys": rekeys, "rekeyed_records": len(rekeys),
+                         "corrected_constituents": sum(r["constituent_count"] for r in rekeys)}}
 
 
 def main(argv=None):
@@ -521,7 +571,8 @@ def main(argv=None):
         pathlib.Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(args.output).write_bytes(result["baseline_text"].encode())
         pathlib.Path(args.evidence).write_text(json.dumps(evidence, indent=2) + "\n")
-        print(f"adopted {len(result['introduced_rules'])} newly introduced rules; added {len(evidence['added_records'])} inherited records")
+        print(f"adopted {len(result['introduced_rules'])} newly introduced rules; added {len(evidence['added_records'])} inherited records; "
+              f"corrected {evidence['rekeyed_records']} malformed portability records to {evidence['corrected_constituents']} exact constituents")
         return 0
     except (ValueError, OSError, StopIteration, SyntaxError, subprocess.CalledProcessError) as error:
         parser.exit(1, "adoption refused: " + str(error) + "\n")

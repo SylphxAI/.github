@@ -72,8 +72,8 @@ export async function collectBundle(github, target, trigger) {
     if (!['added', 'modified', 'removed', 'renamed', 'copied'].includes(file.status)) {
       throw new Unavailable(`Unsupported change kind for ${file.filename}.`);
     }
-    const before = file.status === 'added' ? null : await github.source(file.previous_filename ?? file.filename, target.base_sha);
-    const after = file.status === 'removed' ? null : await github.source(file.filename, target.head_sha);
+    const before = file.status === 'added' ? null : await github.source(file.previous_filename ?? file.filename, target.base_sha, false, { allowBinary: true });
+    const after = file.status === 'removed' ? null : await github.source(file.filename, target.head_sha, false, { allowBinary: true });
     files.push(bundleFile(file, before, after));
   }
   const context = [];
@@ -122,6 +122,8 @@ function outputFor(result, input) {
   const blocking = result.findings.filter(f => ['critical', 'high', 'medium'].includes(f.severity));
   const summary = [`Head: \`${input.head_sha}\``, `Reviewer: \`${input.reviewer_version}\``,
     `Source digest: \`${input.input_digest}\``, `${result.findings.length} findings; ${blocking.length} blocking.`];
+  if (input.files.some(f => f.source_mode === 'binary-metadata')) summary.push('Binary content is represented by verified byte counts and hashes, not decoded bytes. Source/derivation review does not prove regeneration or binary semantic equivalence.');
+  for (const review of result.binary_reviews ?? []) summary.push(`Binary provenance: ${review.path} — ${review.status}. Source: ${review.source_evidence.map(e => e.path).join(', ')}. Derivation: ${review.derivation_evidence.map(e => e.path).join(', ')}. Limitation: ${review.limitation}`);
   if (result.parts) summary.push(`Source parts: ${result.parts.completed}/${result.parts.planned} complete.`);
   if (result.recovery_sources?.length) summary.push(`Pinned context outcomes (path fingerprints, not source):\n\n\`\`\`json\n${JSON.stringify(result.recovery_sources)}\n\`\`\``);
   if (result.status !== 'complete') summary.push(`Review incomplete: ${result.reason}\nUnreviewed changed paths: ${result.omitted_paths.length}.`);
