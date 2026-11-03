@@ -1,0 +1,44 @@
+name: Auth surface guard
+description: >
+  Enforces the group-wide Single Source of Truth (SSOT) Passwordless Auth
+  standard across product repositories: rejects new standalone /signup,
+  /register, or /forgot-password routes, handwritten <input type="password">
+  forms in product web UIs, and public web SMS OTP sign-in surfaces, while
+  preserving shared Sylphx Auth / @sylphx/apps implementations and legacy
+  live-title continuity (# auth-surface-guard: allow(legacy-continuity)).
+inputs:
+  base:
+    description: Base commit of the checked diff (optional; when empty, diffs HEAD^1 or scans HEAD).
+    default: ""
+  head:
+    description: Head commit of the checked diff.
+    default: HEAD
+  root:
+    description: Repository checkout root to inspect.
+    default: .
+  token:
+    description: Read-only GitHub token to check sylphx_delivery custom property.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Enforce unified passwordless auth surface contract
+      shell: bash
+      env:
+        AUTH_GUARD_BASE: ${{ inputs.base }}
+        AUTH_GUARD_HEAD: ${{ inputs.head }}
+        AUTH_GUARD_ROOT: ${{ inputs.root }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GH_TOKEN:-}" ]; then
+          delivery="$(gh api "repos/$GITHUB_REPOSITORY/properties/values" \
+            --jq '.[] | select(.property_name == "sylphx_delivery") | .value' 2>/dev/null || true)"
+          if [ "$delivery" = "delivered" ]; then
+            echo "::notice::$GITHUB_REPOSITORY is a delivered customer repository; auth-surface-guard is skipped."
+            exit 0
+          fi
+        fi
+        python3 "$GITHUB_ACTION_PATH/check.py" \
+          --root "$AUTH_GUARD_ROOT" \
+          --base "$AUTH_GUARD_BASE" \
+          --head "$AUTH_GUARD_HEAD"

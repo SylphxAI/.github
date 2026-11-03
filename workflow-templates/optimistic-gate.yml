@@ -99,6 +99,9 @@ jobs:
         with:
           ref: ${{ github.event.inputs.code-merge || github.sha }}
       - uses: SylphxAI/.github/.github/actions/workflow-lint@main
+      - uses: SylphxAI/.github/.github/actions/auth-surface-guard@main
+        with:
+          base: ${{ needs.plan.outputs.base }}
       # Rust: install the toolchain first, then
       #   - uses: SylphxAI/.github/.github/actions/rust-sccache@main
       # (no secret: Sylphx runners carry the org's own cache credential)
