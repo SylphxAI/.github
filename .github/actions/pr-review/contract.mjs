@@ -28,6 +28,7 @@ export function sourceQuote(input, path, side, start, end, startByte = null, end
 	}
 	{
 		for (const context of input.context.filter(f => f.path === path && (f.side ?? 'context') === side)) {
+			if (context.absent === true) continue
 			if (context.segments) {
 				const quote = segmentQuote({ after: { bytes: context.bytes },
 					hunks: [{ rows: context.segments.map(after => ({ after })) }] }, 'after', start, end, startByte, endByte)
@@ -84,8 +85,13 @@ export function createReviewInput(bundle) {
 	}
 	const contexts = new Set()
 	for (const context of input.context) {
-		requireValue(validPath(context.path) && (typeof context.content === 'string' || Array.isArray(context.segments)), 'invalid context')
+		const absent = context.absent === true
+		requireValue(context.absent === undefined || absent, 'invalid absence evidence')
+		requireValue(validPath(context.path) && (absent
+			? ['base', 'head'].includes(context.side) && Object.keys(context).every(k => ['path', 'side', 'commit_sha', 'absent'].includes(k))
+			: typeof context.content === 'string' || Array.isArray(context.segments)), 'invalid context')
 		requireValue(context.side === undefined || (['base', 'head'].includes(context.side) && context.commit_sha === input[`${context.side}_sha`]), 'invalid pinned context identity')
+		if (absent) requireValue(!input.files.some(f => (context.side === 'base' ? f.previous_path ?? f.path : f.path) === context.path && f[context.side === 'base' ? 'before' : 'after'] !== null), 'absence contradicts supplied source')
 		const key = canonical([context.path, context.side ?? 'context'])
 		requireValue(!contexts.has(key), 'duplicate context identity')
 		contexts.add(key)
@@ -110,7 +116,7 @@ const diagnostic = (result, input) => ({ input_digest: input.input_digest, scope
 // paths and all source/model prose stay out, even when the quote is a secret.
 function evidenceFailure(input, evidence, expected, kind, index, findingIndex) {
 	const known = (input.files ?? []).some(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path) ||
-		(input.context ?? []).some(c => c.path === evidence.path && (c.side ?? 'context') === evidence.side) ||
+		(input.context ?? []).some(c => c.absent !== true && c.path === evidence.path && (c.side ?? 'context') === evidence.side) ||
 		(input.references ?? []).some(r => r.path === evidence.path && r.side === evidence.side)
 	const fingerprint = quote => quote === null ? null : ({ bytes: Buffer.byteLength(quote),
 		sha256: createHash('sha256').update(quote).digest('hex') })

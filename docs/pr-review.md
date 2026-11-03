@@ -64,10 +64,16 @@ An identity- and schema-valid incomplete review can request related files throug
 reads ordinary UTF-8 files only from the sealed merge-base/head commits, verifies
 the Git blob identity, and adds their side and commit SHA to the source bundle.
 It never accepts a model-supplied ref, URL, command or repository. Renamed base
-evidence uses the previous path; head evidence uses the current path.
+evidence uses the previous path; head evidence uses the current path. A missing
+component in a complete pinned Git tree supplies `{path, side, commit_sha,
+absent:true}` instead of invented empty content. This proves only that exact path
+is absent at that commit, not that a dependency is unnecessary or the change is
+correct. Present and absent evidence from a request batch are delivered together;
+a later absent path never discards already collected source. HTTP failures and
+unsupported source are not absence evidence.
 
 The recovery bounds live in `recovery.mjs` and the request schema: at most three
-augmentation rounds, sixteen added source identities, and one MiB of added text,
+augmentation rounds, sixteen added source identities (including absence), and one MiB of added text,
 further limited by the qualified request-byte budget. Duplicate requests are
 coalesced; source already supplied in full cannot trigger another inference.
 Each genuine augmentation reseals the entire input and re-runs whole-scope
@@ -76,10 +82,13 @@ output settings and original absolute deadline. The final Check and receipt bind
 the final source digest. Earlier conclusions are replaced, not unioned across
 enriched rounds: newly supplied guards or callers can disprove them.
 
-Missing, binary, linked, oversized or unavailable files, repeated requests,
-exhausted bounds, deadline expiry and an unverified/changed head stop recovery
-honestly. There is no same-input inference retry, quota fallback, model change
-or manual verdict.
+Binary, linked, oversized or unavailable files, repeated requests, exhausted
+bounds, deadline expiry and an unverified/changed head stop recovery honestly.
+A pinned absence changes the evidence digest once and cannot trigger repeated
+reads or unchanged inference. It cannot be quoted as source. The reviewer must
+still return incomplete when material source remains unresolved; absence never
+manufactures completion. There is no same-input inference retry, quota fallback,
+model change or manual verdict.
 
 Explicit review paths take precedence over tier0/generated paths; unknown paths
 default to review. A `[review]` title also requests a review. Known tier0-only
@@ -151,9 +160,15 @@ requests. A stale identity retains no model diagnostics. Per-round digests and
 partition scope preserve provenance in `recovery_diagnostics` inside the
 mode-0600 runner-local `pr-review-results.json`; these diagnostics are not
 returned in public receipts, Checks, annotations, stdout or step summaries.
-Recovery receipts include only machine-authored counts/stop codes and
-accumulated serialized request sizes. A diagnostic explains what the model
-reported, not whether its explanation is a proven root cause.
+Recovery receipts include only machine-authored counts/stop codes, accumulated
+serialized request sizes, and bounded `recovery_sources` outcomes. Each outcome
+binds the requesting input digest, side, exact commit, SHA256 of the requested
+path, status (`present`, `absent` or `unavailable`), and collected byte count.
+Neither requested paths nor model prose cross this public boundary. Collected
+bytes can exceed sealed `added_files` progress if a later operational failure
+stops a batch; outcomes distinguish collection from delivery. A diagnostic
+explains what the model reported, not whether its explanation is a proven root
+cause.
 
 A schema- and identity-valid result with a failed evidence anchor retains one
 bounded `validation_failure` in the final receipt and runner result. Version 1

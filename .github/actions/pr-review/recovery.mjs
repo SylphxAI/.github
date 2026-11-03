@@ -1,5 +1,5 @@
 import { contextRequestLimit } from './schema.mjs';
-import { validPath } from './github.mjs';
+import { validPath, digest } from './github.mjs';
 import { fileSegments, segmentWindows } from './source.mjs';
 
 // Recovery is evidence collection, not an inference retry. Its fixed total
@@ -12,7 +12,7 @@ export async function recoverContext({ input, github, target, execute, createRev
     const windows = segmentWindows(segments);
     return bytes === 0 || (windows.length === 1 && windows[0].start_byte === 0 && windows[0].end_byte === bytes);
   };
-  const seen = new Set(input.context.filter(c => c.side && (typeof c.content === 'string' || complete(c.bytes, c.segments)))
+  const seen = new Set(input.context.filter(c => c.side && (c.absent === true || typeof c.content === 'string' || complete(c.bytes, c.segments)))
     .map(c => `${c.side}:${c.path}`));
   for (const file of input.files) for (const [side, sourceSide] of [['base', 'before'], ['head', 'after']]) {
     const metadata = file[sourceSide];
@@ -21,11 +21,11 @@ export async function recoverContext({ input, github, target, execute, createRev
       seen.add(`${side}:${side === 'base' ? file.previous_path ?? file.path : file.path}`);
     }
   }
-  const diagnostics = [], sizes = [];
+  const diagnostics = [], sizes = [], sources = [];
   let rounds = 0, added = 0, bytes = 0, result;
   const record = async stop => {
     result = { ...result, recovery: { rounds, added_files: added, added_bytes: bytes, stop },
-      recovery_diagnostics: diagnostics, request_bytes: [...sizes] };
+      recovery_diagnostics: diagnostics, recovery_sources: [...sources], request_bytes: [...sizes] };
     await onResult?.(result);
   };
   const stop = async (cause, reason) => {
@@ -67,15 +67,22 @@ export async function recoverContext({ input, github, target, execute, createRev
       try { current = await github.current(target, { deadlineMs }); } catch { current = null; }
       if (current !== true) return stop('head_unverified', 'Current head changed or could not be verified during context recovery.');
       const commit_sha = input[`${request.side}_sha`];
+      const outcome = { input_digest: input.input_digest, path_sha256: digest(request.path),
+        side: request.side, commit_sha };
       let content;
       try { content = await github.source(request.path, commit_sha, true,
         { deadlineMs, maxBytes: Math.min(recoveryLimits.bytes, result.budget?.request_byte_limit ?? Infinity) - bytes }); }
-      catch { return stop('source_unavailable', 'Requested pinned context could not be collected.'); }
-      if (content === null) return stop('source_absent', 'Requested pinned context is absent.');
-      bytes += Buffer.byteLength(content);
+      catch {
+        sources.push({ ...outcome, status: 'unavailable', bytes: 0 });
+        return stop('source_unavailable', 'Requested pinned context could not be collected.');
+      }
+      const size = content === null ? 0 : Buffer.byteLength(content);
+      sources.push({ ...outcome, status: content === null ? 'absent' : 'present', bytes: size });
+      bytes += size;
       if (bytes > Math.min(recoveryLimits.bytes, result.budget?.request_byte_limit ?? Infinity)) return stop('byte_limit', 'Context recovery byte limit reached.');
       seen.add(key);
-      context.push({ path: request.path, side: request.side, commit_sha, content });
+      context.push({ path: request.path, side: request.side, commit_sha,
+        ...(content === null ? { absent: true } : { content }) });
     }
     let current;
     try { current = await github.current(target, { deadlineMs }); } catch { current = null; }
