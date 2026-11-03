@@ -1,0 +1,39 @@
+name: Broker source credentials
+description: Independent read-only grants per repository, exposed through a path-aware job-local Git helper. Caller grants id-token write.
+inputs:
+  ci-name:
+    description: Exact Access CI declaration for the signed top-level workflow.
+    required: true
+  repositories:
+    description: Comma or newline separated full owner/name repositories.
+    required: true
+  trust-policies:
+    description: JSON map from every requested owner/name to its own TrustPolicy resource.
+    required: true
+  api-url:
+    description: Ordinary platform HTTPS API base.
+    default: https://api.sylphx.com
+  expected-issuer:
+    description: Optional exact issuer pin, github-apps/{numeric id}.
+    default: ''
+  expected-connection:
+    description: Optional exact Connection resource pin.
+    default: ''
+outputs:
+  credentials-file:
+    description: Job-local path-aware TSV credential map, not a token-bearing URL. Caller must remove it after source reads on every terminal path. BuildKit mounts it and CARGO_GIT_CREDENTIAL_HELPER as secrets; never use credential-store.
+    value: ${{ steps.credentials.outputs.credentials-file }}
+runs:
+  using: composite
+  steps:
+    - name: Authorize independent source repositories
+      id: credentials
+      shell: bash
+      env:
+        BROKER_CI_NAME: ${{ inputs.ci-name }}
+        REPOSITORIES: ${{ inputs.repositories }}
+        TRUST_POLICIES: ${{ inputs.trust-policies }}
+        API_URL: ${{ inputs.api-url }}
+        EXPECTED_ISSUER: ${{ inputs.expected-issuer }}
+        EXPECTED_CONNECTION: ${{ inputs.expected-connection }}
+      run: python3 "$GITHUB_ACTION_PATH/configure.py"
