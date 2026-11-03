@@ -69,6 +69,8 @@ wasm-bindgen fixture payload into an otherwise empty tools root, then requires
 a second Keel build and no second wasm-bindgen build. It checks the exact
 wasm-bindgen version, its companion executable and the Keel CLI. Offline tests execute those exact
 workflow shell steps and confirm an extra wasm-bindgen build still fails.
+They also execute the composite action's actual key shell across both pin
+changes and verify each restore/save step uses the independent tool key/path.
 The action's real cache restore/save steps still run; their external hit rate
 is not a functional correctness assertion.
 

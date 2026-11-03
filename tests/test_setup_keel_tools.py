@@ -219,6 +219,38 @@ class InstallerTest(unittest.TestCase):
         self.assertTrue((new_root / "bin" / "wasm-bindgen-test-runner").is_file())
         self.assertTrue((new_root / "bin" / "wasm-bindgen").resolve().is_relative_to(new_root))
 
+    def test_composite_cache_keys_and_paths_are_independent_per_tool(self):
+        action = yaml.safe_load((ACTION / "action.yml").read_text())
+        steps = action["runs"]["steps"]
+        key_script = next(step["run"] for step in steps if step.get("id") == "key")
+
+        def keys(pin, bindgen):
+            output = pathlib.Path(self.tmp.name) / "key-output"
+            output.unlink(missing_ok=True)
+            result = subprocess.run(["bash", "-euo", "pipefail", "-c", key_script],
+                env={**self.env, "KEEL_PIN": pin, "WASM_BINDGEN": bindgen,
+                     "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64",
+                     "INSTALLER": str(INSTALLER), "GITHUB_OUTPUT": str(output)},
+                text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+        first = keys("a" * 40, "0.2.93")
+        moved_keel = keys("b" * 40, "0.2.93")
+        moved_bindgen = keys("a" * 40, "0.2.95")
+        self.assertNotEqual(first["keel-key"], moved_keel["keel-key"])
+        self.assertEqual(first["bindgen-key"], moved_keel["bindgen-key"])
+        self.assertEqual(first["keel-key"], moved_bindgen["keel-key"])
+        self.assertNotEqual(first["bindgen-key"], moved_bindgen["bindgen-key"])
+        cache_steps = [step for step in steps if step.get("uses", "").startswith("actions/cache/")]
+        wiring = [(step["uses"].split("@")[0].rsplit("/", 1)[1],
+                   step["with"]["key"], step["with"]["path"]) for step in cache_steps]
+        self.assertCountEqual(wiring, [(operation,
+            "${{ steps.key.outputs." + tool + "-key }}",
+            "${{ steps.key.outputs.root }}/" + directory)
+            for operation in ("restore", "save")
+            for tool, directory in (("keel", "keel"), ("bindgen", "wasm-bindgen"))])
+
     def consumer_step(self, name):
         workflow = yaml.safe_load((ROOT / ".github/workflows/project-control.yml").read_text())
         return next(step["run"] for step in workflow["jobs"]["tests"]["steps"]
