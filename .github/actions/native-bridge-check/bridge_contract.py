@@ -17,6 +17,7 @@ import struct
 import sys
 import tarfile
 import urllib.request
+import urllib.parse
 import zipfile
 
 
@@ -188,6 +189,19 @@ def lua_calls(text, receivers):
     literals = [(m.start(), m.end()) for m in re.finditer(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', text)]
     def in_literal(offset):
         return any(start <= offset < end for start, end in literals)
+    receivers = set(receivers)
+    # Discover direct require/pcall imports and aliases too. Adapter parameters
+    # are covered by the conventional native receiver names supplied by caller.
+    for m in re.finditer(r'(\w+)\s*=\s*(?:require\s*\(?|pcall\(\s*require\s*,)\s*["\']plugin\.cubeage["\']', text):
+        if not in_literal(m.start()):
+            receivers.add(m[1])
+    changed = True
+    while changed:
+        changed = False
+        for m in re.finditer(r'\b(\w+)\s*=\s*(\w+)\b', text):
+            if m[2] in receivers and m[1] not in receivers and not in_literal(m.start()):
+                receivers.add(m[1])
+                changed = True
     receiver = "(?:" + "|".join(re.escape(x) for x in receivers) + ")"
     member = rf'\b{receiver}\s*(?:[.:]\s*([A-Za-z_]\w*)|\[\s*["\']([^"\']+)["\']\s*\])'
     # A contiguous return-the-first-available selector is an explicit any-of
@@ -253,7 +267,13 @@ def api(path, binary=False):
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request("https://api.github.com/repos/Cubeage/cubeage-native-sdk/" + path,
                                      headers=headers)
-    with urllib.request.urlopen(request, timeout=60) as response:
+    class AssetRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, url):
+            redirected = super().redirect_request(req, fp, code, msg, headers, url)
+            if urllib.parse.urlsplit(url).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+                redirected.remove_header("Authorization")
+            return redirected
+    with urllib.request.build_opener(AssetRedirect()).open(request, timeout=60) as response:
         data = response.read()
     return data if binary else json.loads(data)
 
@@ -297,6 +317,11 @@ def check(root, artifact=None, sdk_source=None, receivers=("sdk", "plugin", "cub
         digest = "sha256:" + hashlib.sha256(data).hexdigest()
     else:
         data, digest = released_asset(ref, asset_name)
+    pin_file = root / "client/ci/cubeage_sdk_pin.json"
+    if pin_file.exists():
+        pin = json.loads(pin_file.read_text())
+        if pin["ref"] != ref or pin["assets"].get(asset_name) != digest.removeprefix("sha256:"):
+            raise ContractError("released artifact disagrees with the title's SDK pin digest")
     report = {"engine": engine, "pin": ref, "artifact": asset_name, "digest": digest,
               "registered": [], "calls": [], "missing": []}
     sources = []

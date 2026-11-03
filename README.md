@@ -15,6 +15,7 @@ Use one from another repository with
 | [metadata-sync](.github/actions/metadata-sync/README.md) | Offline required-region/field patching with whole-plan validation and deterministic check/write; caller owns rendering ([anymd/repomap adoption](.github/actions/metadata-sync/README.md#adoption-in-anymd-and-repomap)) |
 | [brand](.github/actions/brand/README.md) | Builds brand assets or checks provenance hashes and surface copies, with caller-owned masters and data |
 | [ci-ok](.github/actions/ci-ok/action.yml) | Requires named job dependencies to succeed, with contribution metadata and added-commit secret checks; [caller migration](docs/ci-ok.md) |
+| [native-bridge-check](docs/native-bridge-check.md) | Checks Lua and Unity Android dispatch names against the exact pinned SDK release artifact |
 | [contribution-policy](docs/contribution-policy.md) | Checks commit identities and public pull request metadata; included in both shared verdict actions |
 | [migration-guard](docs/migration-guard.md) | Refuses destructive PostgreSQL/MySQL migrations, edits to merged SQL migrations, and unsafe changes to schema snapshots |
 | [setup-ci-test](docs/ci-test.md) | Installs `ci-test`, which requires fresh evidence of executed libtest, JUnit or Vitest tests and preserves runner failures |

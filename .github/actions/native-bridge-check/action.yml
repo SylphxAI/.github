@@ -1,0 +1,39 @@
+name: Native bridge contract
+description: Compare native dispatch names with the exact released Android SDK artifact the title pins.
+inputs:
+  token:
+    description: Existing read-only token for Cubeage/cubeage-native-sdk; otherwise mint one with the reader App.
+    default: ''
+  reader-app-id:
+    description: Read-only Cubeage CI Reader App ID.
+    default: ''
+  reader-app-key:
+    description: Read-only Cubeage CI Reader App private key.
+    default: ''
+  root:
+    description: Title checkout root, containing client/.
+    default: .
+runs:
+  using: composite
+  steps:
+    - name: Require a self-hosted runner
+      shell: bash
+      env:
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      run: test "$RUNNER_ENVIRONMENT" = self-hosted
+    - name: Mint read-only SDK token
+      if: inputs.token == ''
+      id: reader
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      with:
+        app-id: ${{ inputs.reader-app-id }}
+        private-key: ${{ inputs.reader-app-key }}
+        owner: Cubeage
+        repositories: cubeage-native-sdk
+        permission-contents: read
+    - name: Verify released native registrations
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token || steps.reader.outputs.token }}
+        TITLE_ROOT: ${{ inputs.root }}
+      run: python3 "$GITHUB_ACTION_PATH/bridge_contract.py" --root "$TITLE_ROOT"
