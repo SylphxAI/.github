@@ -162,3 +162,39 @@ test('binary partition manifests, coverage and synthesis preserve provenance evi
   assert.equal(result.status, 'complete');
   assert.deepEqual(result.binary_reviews, [provenance]);
 });
+
+test('binary provenance can be resolved from changed source and generator in later partitions', async () => {
+  const files = [bundleFile(binary, Buffer.from([0]), payload),
+    bundleFile({ filename: 'source.proto', status: 'added' }, null, source + Array.from({ length: 200 }, (_, i) => `field_${i}_${"x".repeat(100)}\n`).join('')),
+    bundleFile({ filename: 'generate.js', status: 'added' }, null, generator)];
+  const input = createReviewInput({ ...bundle(files), context: [] });
+  const size = value => Buffer.byteLength(JSON.stringify(value));
+  const budget = 19000, parts = planReview(input, size, budget);
+  assert.ok(parts.length > 2);
+  assert.deepEqual(parts[0].files.map(f => f.path), [binary.filename]);
+  let calls = 0, synthesis;
+  const result = await reviewPartitions(input, { requestBytes: size, byteBudget: budget,
+    execute: async part => {
+      calls++;
+      if (part.scope.kind === 'synthesis') {
+        synthesis = part;
+        assert.ok(part.references.some(e => e.path === 'source.proto'));
+        assert.ok(part.references.some(e => e.path === 'generate.js'));
+        assert.equal(parse(part, { binary_reviews: [{ ...provenance, status: 'unresolved' }] }).status, 'unavailable');
+        return parse(part);
+      }
+      const related_evidence = [];
+      for (const quote of [...provenance.source_evidence, ...provenance.derivation_evidence]) {
+        if (part.files.some(f => f.path === quote.path && fileSegments(f, 'after').some(s => s.start_line === 1))) related_evidence.push(quote);
+      }
+      const binary_reviews = part.files.some(f => f.path === binary.filename)
+        ? [{ ...provenance, status: 'unresolved', source_evidence: [], derivation_evidence: [] }] : [];
+      const parsed = parse(part, { related_evidence, binary_reviews });
+      assert.equal(parsed.status, 'complete');
+      return parsed;
+    } });
+  assert.equal(calls, parts.length + 1);
+  assert.ok(synthesis);
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(result.binary_reviews, [provenance]);
+});

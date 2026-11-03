@@ -64,7 +64,11 @@ review requires verbatim quoted input-source and generator/build relationship
 evidence for each binary path; unknown or materially unreviewable provenance
 stays incomplete. The reviewer can request related text through normal pinned
 context recovery. Partition manifests and synthesis retain binary identities,
-assessments and their validated evidence. The Check summary makes the limitation
+assessments and their validated evidence. A completed partition may retain a
+provisional unresolved binary assessment when provenance belongs to another
+part; other parts carry relationship quotes in related evidence, and final
+synthesis still requires resolved source/derivation evidence for every binary.
+The Check summary makes the limitation
 visible: source/derivation review does not decode the artifact or prove
 regeneration/semantic equivalence. Byte hashes prove identity, not correctness.
 Missing, truncated, corrupted or unsupported objects still fail closed before

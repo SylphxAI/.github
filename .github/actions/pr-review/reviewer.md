@@ -22,6 +22,13 @@ any unverified equivalence in limitation and context_notes. If material binary
 semantics or provenance remains unresolved, use status=unresolved and return an
 incomplete review with the affected binary path in omitted_paths. Do not complete
 by silently omitting it or treating byte identity as semantic verification.
+For a partition only, completion=complete means the assigned metadata/text was
+reviewed, not that the final binary provenance verdict is complete. If required
+source or derivation belongs to another partition, retain an unresolved binary
+assessment without omitted_paths; final synthesis must resolve it or stay
+incomplete. Every text partition must quote any source or derivation relationship
+to binary paths in the manifest in related_evidence, so synthesis can validate
+the relationship across partitions.
 
 Files contain literal source segments and full-file SHA256/byte/line counts.
 Hunk base/head ranges count view segments, not physical source lines. Each row
