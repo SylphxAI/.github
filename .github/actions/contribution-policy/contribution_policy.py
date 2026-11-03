@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import argparse
+from email.utils import parsedate_to_datetime
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import random
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[3]
 POLICY = ROOT / 'policy/contribution-policy.json'
 SHA = re.compile(r'[0-9a-f]{40}\Z')
+GET_503_BACKOFF_SECONDS = (1, 2)
+RETRY_AFTER_LIMIT_SECONDS = 30
 
 
 class PolicyError(Exception):
@@ -93,6 +98,27 @@ def evaluate(pull_request, commits, policy, *, verified_github_commits=()):
     return findings
 
 
+def metadata_retry_delay(retry_after, backoff):
+    """Honor a server's minimum wait without extending the bounded GET budget."""
+    delay = backoff + random.uniform(0, 1)
+    if retry_after is not None:
+        try:
+            value = retry_after.strip()
+            if re.fullmatch(r'[0-9]+', value):
+                minimum = int(value)
+            else:
+                date = parsedate_to_datetime(value)
+                if date.tzinfo is None:
+                    return None
+                minimum = max(0, date.timestamp() - time.time())
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return None
+        if minimum > RETRY_AFTER_LIMIT_SECONDS:
+            return None
+        delay = max(delay, minimum)
+    return delay
+
+
 class GitHub:
     def __init__(self, repository, token):
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
@@ -109,27 +135,38 @@ class GitHub:
                                                   'Accept': 'application/vnd.github+json',
                                                   'Content-Type': 'application/json',
                                                   'X-GitHub-Api-Version': '2022-11-28'})
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return json.load(response)
-        except urllib.error.HTTPError as error:
+        for attempt in range(len(GET_503_BACKOFF_SECONDS) + 1):
             try:
-                body = json.loads(error.read(8192))
-                message = body.get('message', '') if isinstance(body, dict) else ''
-            except (OSError, ValueError, TypeError):
-                message = ''
-            headers = error.headers or {}
-            if error.code == 429 or error.code == 403 and (
-                    headers.get('X-RateLimit-Remaining') == '0' or 'rate limit' in str(message).lower()):
-                raise PolicyError(f'GitHub metadata read failed (HTTP {error.code}: rate limit exceeded)') from None
-            pulls = re.search(r'/repos/[^/]+/[^/]+/(?:pulls(?:/|\?|$)|commits/[0-9a-f]{40}/pulls(?:\?|$))', url)
-            queue = isinstance(data, dict) and 'mergeQueue' in data.get('query', '')
-            if error.code == 403 and (pulls or queue) and message in {
-                    'Resource not accessible by integration', 'Resource not accessible by personal access token'}:
-                raise PolicyError('caller workflow lacks pull-requests: read') from None
-            raise PolicyError(f'GitHub metadata read failed (HTTP {error.code})') from None
-        except (OSError, ValueError):
-            raise PolicyError('GitHub metadata read failed') from None
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as error:
+                try:
+                    body = json.loads(error.read(8192))
+                    message = body.get('message', '') if isinstance(body, dict) else ''
+                except (OSError, ValueError, TypeError):
+                    message = ''
+                finally:
+                    error.close()
+                headers = error.headers or {}
+                rate_limited = headers.get('X-RateLimit-Remaining') == '0' or 'rate limit' in str(message).lower()
+                if error.code == 429 or error.code == 403 and rate_limited:
+                    raise PolicyError(f'GitHub metadata read failed (HTTP {error.code}: rate limit exceeded)') from None
+                if request.get_method() == 'GET' and error.code == 503 and not rate_limited and \
+                        attempt < len(GET_503_BACKOFF_SECONDS):
+                    delay = metadata_retry_delay(headers.get('Retry-After'), GET_503_BACKOFF_SECONDS[attempt])
+                    if delay is not None:
+                        print('Contribution policy: GitHub metadata GET failed (HTTP 503); '
+                              f'retrying request (attempt {attempt + 2}/{len(GET_503_BACKOFF_SECONDS) + 1}).')
+                        time.sleep(delay)
+                        continue
+                pulls = re.search(r'/repos/[^/]+/[^/]+/(?:pulls(?:/|\?|$)|commits/[0-9a-f]{40}/pulls(?:\?|$))', url)
+                queue = isinstance(data, dict) and 'mergeQueue' in data.get('query', '')
+                if error.code == 403 and (pulls or queue) and message in {
+                        'Resource not accessible by integration', 'Resource not accessible by personal access token'}:
+                    raise PolicyError('caller workflow lacks pull-requests: read') from None
+                raise PolicyError(f'GitHub metadata read failed (HTTP {error.code})') from None
+            except (OSError, ValueError):
+                raise PolicyError('GitHub metadata read failed') from None
 
     def get(self, path):
         return self.read(self.root + '/repos/' + self.repository + '/' + path)
