@@ -40,9 +40,12 @@ At `.github` commit `2d3754ae9e91dba47d443e582a91f95cde5acbcc`, there are no
 `uses: SylphxAI/cloud/...` consumers in this repository's actions, reusable
 workflows or starter templates. There are no platform-name-bound Broker trust
 policies, OIDC subject allowlists or registry image paths here to rewrite.
-Broker and registry actions pass the caller's numeric `github.repository_id`;
-trust declarations belong to their caller's platform configuration. Preserve
-currently published image paths independently of the source repository rename.
+Registry actions pass the caller's numeric `github.repository_id`. Broker's
+write-token action instead sends an explicit caller-supplied `owner/name`
+repository request alongside its OIDC exchange. Check both that request and the
+caller's trust/identity binding in the platform configuration at cutover;
+there is no platform-name-specific trust declaration in this repository.
+Preserve currently published image paths independently of the source rename.
 
 Organization code searches on 2026-11-03 found no old-name executable `uses:`
 consumer in indexed workflow/action/template files. This is an indexed search,
