@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -101,6 +102,24 @@ def mask(token):
     return token
 
 
+def collect_logcat(output):
+    """Keep startup and late crash evidence together without changing either raw log."""
+    device = Path(output) / "device"
+    primary = device / "logcat.txt"
+    if not primary.is_file():
+        return None
+    combined = device / "launch-logcat.txt"
+    with combined.open("wb") as target:
+        for source in (primary, device / "logcat-tail.txt"):
+            if source.is_file():
+                with source.open("rb") as stream:
+                    shutil.copyfileobj(stream, target)
+                # A truncated primary may not end in a newline. Never join its
+                # final partial line to the tail's first crash/ready line.
+                target.write(b"\n")
+    return combined
+
+
 def execute(receipt, options):
     ci_name, parent, app, scenario, size, version, output = options
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,62}", ci_name) or not PARENT.fullmatch(parent):
@@ -141,9 +160,18 @@ def execute(receipt, options):
     result = subprocess.run(["sylphx", "devices", "run", "--app", app, "--env", parent,
                              "--scenario", scenario, "--size", size, "--out", str(Path(output) / "device")], env=env, check=False)
     receipt.data.update(capture_completed_at=utc(), capture_exit=result.returncode)
+    # Keep the CLI's result even if collecting diagnostics itself fails.
+    receipt.save()
+    logcat = collect_logcat(output)
+    if logcat is not None:
+        receipt.data["logcat"] = str(logcat)
+        with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+            stream.write("logcat=" + str(logcat) + "\n")
     receipt.save()
     if result.returncode:
         raise CaptureError("native capture did not pass; inspect the device and identity receipts")
+    if logcat is None:
+        raise CaptureError("native capture returned no primary logcat; no launch verdict is available")
 
 
 def main():
