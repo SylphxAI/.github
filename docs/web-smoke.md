@@ -16,12 +16,30 @@ older Keel pin:
 | Check | Passes when |
 | --- | --- |
 | `slow-3g-splash` | a cold load (empty cache) on Chrome's "Slow 3G" (400 ms round trip, 400 kbit/s) paints the title's splash within 1 s, the splash holds the title's name, shows no failure, and its progress bar then moves. This is the web boot standard: no black page while the title downloads. |
-| `boot` (`--live`) | the title draws a ready frame (`data-keel-ready`) within 10 s with no boot failure, the console holds no error (a panic, an uncaught exception, a failed request), no synchronous wasm instance, large module compile or XHR on the main thread, and, with `tap`, one touch tap on that control changes the accessibility mirror. A black screen never gets a ready frame, so it fails here. |
+| `boot` (`--live`) | the title draws a ready frame (`data-keel-ready`) within 10 s after merge or in a live/manual check (60 s functional ceiling for pull requests and merge groups) with no boot failure, the console holds no error (a panic, an uncaught exception, a failed request), no synchronous wasm instance, large module compile or XHR on the main thread, and, with `tap`, one touch tap on that control changes the accessibility mirror. A black screen never gets a ready frame, so it fails here. |
 | `served-q11` | every wasm module in the pack that has a precompressed `<file>.br` beside it is within 3 % of brotli quality 11 of the module (served/q11 at most 1.03), and the copy decodes to the module. This is what a host with brotli_static, or a worker that serves the `.br` copies, sends to `Accept-Encoding: br`; a host that compresses on the fly sends about 1.25. A module with no `.br` copy is reported, and fails only with `require-precompressed: "true"`. |
 | `first-load` (with `first-load-baseline`) | the cold first page's requested pack files stay within the title's recorded compressed bytes plus 2%, and its recorded baseline has not increased from the PR/merge-group base. A material reduction requires a lower record. |
 
 The browser is a runner's headless Chrome on a software GPU, not a phone: it proves a title shows a
 splash and starts and answers a touch, not how fast it draws. Frame times are judged on devices.
+
+## Pre-merge ready-frame quarantine
+
+The 24-hour title run census ending **2026-11-03 10:38 UTC** found **two** exact
+`no ready frame within 10 s` failures across **two titles**: Pinpoint
+[merge group 41588225071/job125761198100](https://github.com/Cubeage/pinpoint-keel/actions/runs/41588225071/job/125761198100)
+and Dearhouse
+[pull request 41590760703/job125766703629](https://github.com/Cubeage/dearhouse-keel/actions/runs/41590760703/job/125766703629).
+Both used headless Chrome153.0.8010.52/SwiftShader, 390×844 DPR1 touch, with
+WebGPU and no reported boot/console error. This is a common observed failure,
+not proof that either pack finishes at 60 s or that runner load caused it.
+
+The shared action uses a **60 s functional ready-frame ceiling only for
+`pull_request` and `merge_group`**. It does not retry. A never-ready or blank
+boot, panic, console error, failed touch or byte-budget violation still fails.
+Slow 3G splash and progress timing are unchanged. Push/post-merge and
+manual/live checks keep the exact **10 s** default; a pre-merge success is not
+a performance pass. Callers do not copy an event-based budget expression.
 
 ## Adopting it in a title
 
@@ -60,7 +78,7 @@ action stops with an error before it does anything.
 | `splash-budget-ms` | `1000` | First contentful paint budget on Slow 3G. |
 | `tap` | empty | Accessibility-mirror id of the start control to touch-tap once. |
 | `viewport` | `390x844,touch` | Boot check viewport. |
-| `budget-s` | `10` | Seconds to a ready frame (and for the bar to move on Slow 3G). |
+| `budget-s` | `10` | Ready-frame seconds after merge or for a live/manual check; unchanged Slow 3G progress budget. Pull requests and merge groups use at least 60 s for functional boot on SwiftShader, without retrying. |
 | `ignore-console` | empty | Console errors to ignore, one regular expression per line. Empty: a failed request, a CORS block, a panic or an uncaught exception fails the check. |
 | `offline-dependencies` | `api\.cubeage\.com/cubeage\.v1\.AuthService/` | Endpoints the title calls at boot that the smoke cannot reach, one regular expression per line. The pack is served from `127.0.0.1`, which the Cubeage API does not allow as an origin, so the guest sign-in is CORS-blocked; a network or CORS failure naming one is skipped and listed in the output. A 5xx, a console error from the title, any other endpoint and a missing frame still fail. Setting it replaces the default (list the default too to add an entry); empty means none. |
 | `max-served-ratio` | `1.03` | Largest served/q11 a wasm module may have. |
@@ -121,8 +139,9 @@ does not ignore their errors.
 - `the splash painted after N ms` or `nothing painted`: the page waits for script or wasm before it
   paints, or the HTML has no splash. Fix the title's pack or repin to a Keel with the boot shell.
 - `the page has no #keel-splash`: the pack predates the web boot standard. Repin.
-- `no ready frame` or a boot failure: the title does not start. The log shows the page's own message
-  and the console error.
+- `no ready frame`: the title did not present within that check's ceiling; this alone does not
+  distinguish slow software rendering from a broken boot. Read the renderer, console and boot status.
+  A boot failure, panic or console error remains a failure at either ceiling.
 - `served/q11 ... over the bound` or `no precompressed ... .br`: the pack's brotli copy of a wasm module is weaker than quality 11, or missing. Re-run the title's precompress step at quality 11 (`lgwin` 24) and point the host at the copies.
 - A console error: a panic, an exception or a failed request on the page.
 

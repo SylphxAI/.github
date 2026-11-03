@@ -72,6 +72,9 @@ BROWSER_SMOKE = textwrap.dedent("""
         print("FAIL: nothing painted on Slow 3G within 10 s" if mode == "slow-3g-splash" else "FAIL: no ready frame within 10 s")
         sys.exit(1)
     if mode == "live":
+        if "DELAYED" in body and float(argv[argv.index("--budget-s") + 1]) < 20:
+            print("FAIL: no ready frame within 10 s")
+            sys.exit(1)
         ignore = [argv[i + 1] for i, a in enumerate(argv) if a == "--ignore-console"]
         logged = [l[len("CONSOLE: "):] for l in body.splitlines() if l.startswith("CONSOLE: ")]
         found = console_problems(logged, ignore)
@@ -188,6 +191,29 @@ class Commands(unittest.TestCase):
         self.assertEqual(names, ["boot"])
 
 
+class ReadyFrameBudget(unittest.TestCase):
+    def test_only_premerge_events_have_a_functional_ceiling(self):
+        for event in ("pull_request", "merge_group"):
+            self.assertEqual(web_smoke.ready_frame_budget(10, event), 60, event)
+        for event in ("push", "workflow_dispatch", "schedule", "workflow_call", "pull_request_target", ""):
+            self.assertEqual(web_smoke.ready_frame_budget(10, event), 10, event)
+
+    def test_explicit_larger_budgets_are_not_shortened(self):
+        self.assertEqual(web_smoke.ready_frame_budget(90, "pull_request"), 90)
+        self.assertEqual(web_smoke.ready_frame_budget(15, "push"), 15)
+
+    def test_slow_3g_budget_and_other_checks_do_not_change(self):
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "merge_group"}):
+            commands = dict(web_smoke.smoke_commands("/k", "/c", "u", Options(
+                tap="begin", report="/r", first_load_baseline="/baseline")))
+        for name, budget in (("slow-3g-splash", "10.0"), ("boot", "60.0"), ("touch", "60.0")):
+            command = commands[name]
+            self.assertEqual(command[command.index("--budget-s") + 1], budget)
+        self.assertIn("--ignore-console", commands["boot"])
+        self.assertIn("--report", commands["boot"])
+        self.assertIn("--tap", commands["touch"])
+
+
 class OfflineIgnores(unittest.TestCase):
     def test_an_empty_list_ignores_nothing(self):
         self.assertEqual(web_smoke.offline_ignores([]), [])
@@ -282,6 +308,18 @@ class RunAgainstAStandIn(unittest.TestCase):
         self.assertIn("| boot | FAIL |", summary)
         self.assertIn("FAIL: nothing painted on Slow 3G", summary)
         self.assertIn("::error title=web-smoke slow-3g-splash::", out)
+
+    def test_delayed_boot_is_functional_premerge_but_fails_exact_postmerge_budget(self):
+        for event, expected in (("pull_request", 0), ("merge_group", 0), ("push", 1), ("workflow_dispatch", 1)):
+            with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": event}):
+                rc, out = self.run_it("<html>DELAYED</html>", slow_3g_splash=False)
+            self.assertEqual(rc, expected, (event, out))
+
+    def test_premerge_still_rejects_blank_frames_and_panics(self):
+        for body in ("<html>BLACK</html>", "CONSOLE: panicked at game.rs:1"):
+            with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "merge_group"}):
+                rc, out = self.run_it(body, slow_3g_splash=False)
+            self.assertEqual(rc, 1, out)
 
     def test_the_server_is_stopped_afterwards(self):
         started = []

@@ -43,7 +43,10 @@ inputs:
     description: Viewport of the boot check, WIDTHxHEIGHT[,touch].
     default: 390x844,touch
   budget-s:
-    description: Seconds the title has to draw its ready frame (and the bar to move on Slow 3G).
+    description: >
+      Ready-frame budget after merge or for live/manual checks, and the unchanged Slow 3G progress
+      budget. Pull requests and merge groups use at least 60 s for functional boot on the runner's
+      software GPU; console, blank-frame, touch and byte checks still apply. No automatic retry.
     default: "10"
   ignore-console:
     description: >
