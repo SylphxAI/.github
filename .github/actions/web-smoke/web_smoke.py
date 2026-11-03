@@ -305,6 +305,12 @@ def offline_ignores(dependencies) -> list[str]:
     return out
 
 
+def ready_frame_budget(budget_s: float, event_name: str | None = None) -> float:
+    """Pre-merge software rendering proves a boot, not a repeatable frame time."""
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "") if event_name is None else event_name
+    return max(60.0, budget_s) if event_name in ("pull_request", "merge_group") else budget_s
+
+
 def smoke_commands(keel: str, chrome: str, url: str, opts) -> list[tuple[str, list[str]]]:
     script = os.path.join(keel, "scripts", "browser_smoke.py")
     commands = []
@@ -313,7 +319,7 @@ def smoke_commands(keel: str, chrome: str, url: str, opts) -> list[tuple[str, li
                                             "--splash-budget-ms", str(opts.splash_budget_ms),
                                             "--budget-s", str(opts.budget_s), url]))
     live = [sys.executable, script, "--chrome", chrome, "--live", "--viewport", opts.viewport, "--dpr", "1",
-            "--budget-s", str(opts.budget_s)]
+            "--budget-s", str(ready_frame_budget(opts.budget_s))]
     first_load = bool(getattr(opts, "first_load_baseline", ""))
     if opts.tap and not first_load:
         live += ["--tap", opts.tap]
@@ -445,6 +451,8 @@ def cmd_run(opts) -> int:
         raise Refused("offline-dependencies holds a bad regular expression: %s" % e)
     print("offline dependencies (network or CORS failures skipped, anything else fails): %s"
           % (", ".join(deps) or "none"))
+    print("ready-frame ceiling: %g s (event=%s; Slow 3G timing unchanged)"
+          % (ready_frame_budget(opts.budget_s), os.environ.get("GITHUB_EVENT_NAME", "local")))
     port = free_port()
     served_ok, served_out = served_q11(pack, opts.max_served_ratio, opts.require_precompressed)
     print("::group::served-q11")
