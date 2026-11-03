@@ -10,6 +10,8 @@
 *	\.(md|mdx)$	documentation names hosts and sends nothing
 SylphxAI/cloud	^services/notify/	Notify's chat sender
 SylphxAI/cloud	^services/ai/.*/telegram_operator_bot/	conversational agent: the AI service's operator bot
+SylphxAI/sylphx	^services/notify/	Notify's chat sender
+SylphxAI/sylphx	^services/ai/.*/telegram_operator_bot/	conversational agent: the AI service's operator bot
 SylphxAI/spiron	^crates/spiron-channels/	conversational agent: channel adapters
 SylphxAI/spiron	^crates/spiron-api/src/ingress/	conversational agent: channel ingress
 SylphxAI/spiron	^scripts/egress-client-allowlist\.json$	egress policy that admits the chat hosts

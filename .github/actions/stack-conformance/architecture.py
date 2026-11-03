@@ -327,6 +327,9 @@ def cache_economy_applicability(repository, path):
         raise ValueError("invalid cache economy domain profiles")
     profile = policy["repositories"].get(repository)
     if profile is None:
+        profile = next((row for row in policy["repositories"].values()
+                        if repository in row.get("aliases", [])), None)
+    if profile is None:
         return True
     if not isinstance(profile.get("reason"), str) or not profile["reason"].strip():
         raise ValueError("cache economy domain profile requires a reason")

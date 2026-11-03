@@ -8,6 +8,7 @@
       "reason": "Spiron has no player economy; talent credentials, queue leases and prompt-cache work do not authorize player balances or rewards."
     },
     "SylphxAI/cloud": {
+      "aliases": ["SylphxAI/sylphx"],
       "applicability": "paths",
       "include": [
         "services/money/**",

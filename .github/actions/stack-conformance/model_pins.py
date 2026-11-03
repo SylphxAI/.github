@@ -9,6 +9,8 @@ import pathlib
 import re
 from urllib.parse import quote
 
+PLATFORM_REPOSITORIES = frozenset({"SylphxAI/cloud", "SylphxAI/sylphx"})
+
 POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy/model-aliases.json"
 BASELINE_MARKER = "# model-alias-ratchet-v1"
 SELECTOR_RULE = "model-selector"
@@ -87,7 +89,7 @@ def load_aliases(path=None):
     if data.get("version") != 1 or not isinstance(data.get("aliases"), list):
         raise ValueError("invalid pinned model-alias declaration")
     source = data.get("source", {})
-    if (source.get("repository") != "SylphxAI/cloud"
+    if (source.get("repository") not in PLATFORM_REPOSITORIES
             or not re.fullmatch(r"[0-9a-f]{40}", source.get("commit", ""))
             or not source.get("path")
             or not re.fullmatch(r"[0-9a-f]{64}", source.get("sha256", ""))):
@@ -111,7 +113,8 @@ def excluded(path):
 
 def exemption(repository, path):
     return next((row for row in EXEMPTIONS
-                 if row["repository"] == repository and
+                 if (row["repository"] == repository or
+                     row["repository"] in PLATFORM_REPOSITORIES and repository in PLATFORM_REPOSITORIES) and
                  (path.startswith(row["path"]) if row["path"].endswith("/") else path == row["path"])), None)
 
 

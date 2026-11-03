@@ -40,3 +40,6 @@ Repository scanning belongs to [Sylphx Enact Repository
 Ingestion](https://github.com/SylphxAI/enact/blob/main/docs/specs/repository-ingestion.md).
 GroundAtlas package/action dogfood is retired; the accepted historical decision
 remains in `docs/adr/0003-local-groundatlas-project-control-gate.md`.
+
+Platform repository renaming and shared-policy compatibility are documented in
+[docs/platform-repository-rename.md](docs/platform-repository-rename.md).
