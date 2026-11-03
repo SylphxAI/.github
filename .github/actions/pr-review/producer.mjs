@@ -123,6 +123,7 @@ function outputFor(result, input) {
   const summary = [`Head: \`${input.head_sha}\``, `Reviewer: \`${input.reviewer_version}\``,
     `Source digest: \`${input.input_digest}\``, `${result.findings.length} findings; ${blocking.length} blocking.`];
   if (result.parts) summary.push(`Source parts: ${result.parts.completed}/${result.parts.planned} complete.`);
+  if (result.recovery_sources?.length) summary.push(`Pinned context outcomes (path fingerprints, not source):\n\n\`\`\`json\n${JSON.stringify(result.recovery_sources)}\n\`\`\``);
   if (result.status !== 'complete') summary.push(`Review incomplete: ${result.reason}\nUnreviewed changed paths: ${result.omitted_paths.length}.`);
   for (const note of result.context_notes ?? []) summary.push(`Context: ${note}`);
   for (const finding of result.findings.filter(f => f.side === 'base')) {
@@ -182,6 +183,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, findings: result.findings.length,
       ...(result.status === 'complete' ? {} : { unavailable: true, reason: result.reason }),
       parts: result.parts, budget: result.budget, request_bytes: result.request_bytes, recovery: result.recovery,
+      recovery_sources: result.recovery_sources,
       ...(result.validation_failure ? { validation_failure: result.validation_failure } : {}),
       started_at: run.started_at, observed_at: observedAt,
       session_name: result.session_name, input_digest: input.input_digest, reviewer_version: input.reviewer_version,

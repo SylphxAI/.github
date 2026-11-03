@@ -47,7 +47,7 @@ export function planReview(input, requestBytes, byteBudget) {
   const pending = input.files.map(file => ({ file }));
   if (!repeated.length) for (const c of context) {
     const { content, ...identity } = c;
-    pending.push({ context: c.segments ? c : { ...identity,
+    pending.push({ context: c.absent === true || c.segments ? c : { ...identity,
       sha256: sourceDigest(content), bytes: Buffer.byteLength(content), segments: literalSegments(content) } });
   }
   const parts = [];
@@ -63,7 +63,7 @@ export function planReview(input, requestBytes, byteBudget) {
     if (partFiles.length || partContext.length > repeated.length) { flush(); at--; continue; }
     let split;
     if (unit.file) split = splitFile(unit.file)?.map(file => ({ file }));
-    else if (unit.context.segments.length > 1) {
+    else if (unit.context.segments?.length > 1) {
       const middle = Math.ceil(unit.context.segments.length / 2);
       split = [unit.context.segments.slice(0, middle), unit.context.segments.slice(middle)]
         .map(segments => ({ context: { ...unit.context, segments } }));
@@ -118,7 +118,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   const summaries = completed.map((r, i) => ({ part: i + 1,
     paths: parts[i].files.map(f => f.path), summary: r.review_summary,
     related_evidence: r.related_evidence, findings: r.findings, context_notes: r.context_notes }));
-  const synthesis = seal({ ...bare(input), files: [], context: [], manifest: manifest(input),
+  const synthesis = seal({ ...bare(input), files: [], context: input.context.filter(c => c.absent === true), manifest: manifest(input),
     source_digest: input.input_digest, scope: { kind: 'synthesis' }, reviewed_parts: summaries,
     references: completed.flatMap(r => [...r.related_evidence, ...r.findings.flatMap(f => f.evidence)]) });
   if (requestBytes(synthesis) > byteBudget) return { ...base, reason: 'All source parts completed, but cross-file synthesis exceeds the configured model context.' };

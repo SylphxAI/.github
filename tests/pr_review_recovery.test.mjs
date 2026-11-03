@@ -73,7 +73,7 @@ test('absent, already supplied, repeated, invalid, deadline and head-change requ
         return missing(input, [{ path: failure === 'invalid' ? '../outside' : failure === 'already-supplied' ? 'src/change.js' : 'src/caller.js', side: 'head' }]);
       } });
     assert.notEqual(result.result.status, 'complete', failure);
-    assert.equal(calls, failure === 'deadline' ? 0 : failure === 'repeated' ? 2 : 1, failure);
+    assert.equal(calls, failure === 'deadline' ? 0 : ['absent', 'repeated'].includes(failure) ? 2 : 1, failure);
     if (['head', 'deadline', 'already-supplied', 'invalid'].includes(failure)) assert.equal(reads, 0, failure);
     assert.ok(!result.result.reason.includes('private error'));
   }
@@ -226,7 +226,7 @@ test('only validated omitted names are retained and request/file bounds share th
     (_, n) => ({ path: `src/${n}.js`, side: 'head' })) }).status, 'unavailable');
 });
 
-for (const mode of ['recovery', 'anchor']) test(`CLI ${mode} persists mode-0600 results and emits only the safe final receipt`, async () => {
+for (const mode of ['recovery', 'absence', 'anchor']) test(`CLI ${mode} persists mode-0600 results and emits only the safe final receipt`, async () => {
   const { mkdtempSync, writeFileSync, readFileSync, statSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -255,7 +255,7 @@ for (const mode of ['recovery', 'anchor']) test(`CLI ${mode} persists mode-0600 
             input_digest: input.input_digest, reviewer_version: input.reviewer_version, policy_version: input.policy_version,
             completion: calls === 1 ? 'incomplete' : 'complete', findings: [], related_evidence: [], review_summary: 'Reviewed source.',
             omitted_paths: calls === 1 ? ['src/change.js'] : [], context_notes: [],
-            context_requests: calls === 1 ? [{ path: 'src/caller.js', side: 'head' }] : [], reason: calls === 1 ? 'PRIVATE_CLI_DIAGNOSTIC' : '' };
+            context_requests: calls === 1 ? [{ path: mode === 'absence' ? 'PRIVATE_CLI_DIAGNOSTIC.js' : 'src/caller.js', side: 'head' }] : [], reason: calls === 1 ? 'PRIVATE_CLI_DIAGNOSTIC' : '' };
           if (mode === 'anchor') Object.assign(result, { completion: 'complete', omitted_paths: [], context_requests: [], reason: '',
             related_evidence: [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1,
               start_byte: null, end_byte: null, quote: 'PRIVATE_CLI_ANCHOR' }] });
@@ -288,9 +288,13 @@ for (const mode of ['recovery', 'anchor']) test(`CLI ${mode} persists mode-0600 
     });
     assert.equal(process.status, 0, process.stderr);
     const receipt = JSON.parse(process.stdout).reviews[0];
-    assert.equal(receipt.conclusion, mode === 'recovery' ? 'success' : 'neutral');
+    assert.equal(receipt.conclusion, mode === 'anchor' ? 'neutral' : 'success');
     const results = JSON.parse(readFileSync(join(directory, 'pr-review-results.json')));
-    if (mode === 'recovery') assert.equal(results[0].recovery_diagnostics[0].reason, 'PRIVATE_CLI_DIAGNOSTIC');
+    if (mode !== 'anchor') {
+      assert.equal(results[0].recovery_diagnostics[0].reason, 'PRIVATE_CLI_DIAGNOSTIC');
+      assert.equal(receipt.recovery_sources[0].status, mode === 'absence' ? 'absent' : 'present');
+      assert.deepEqual(receipt.recovery_sources, results[0].recovery_sources);
+    }
     else {
       assert.equal(receipt.validation_failure.code, 'quote_mismatch');
       assert.deepEqual(receipt.validation_failure, results[0].validation_failure);
@@ -319,4 +323,72 @@ test('publisher retains a safe failed-anchor receipt without inferred recovery o
   assert.deepEqual(receipt.validation_failure, saved.at(-1).validation_failure);
   assert.deepEqual(receipt.recovery, { rounds: 0, added_files: 0, added_bytes: 0, stop: 'unavailable' });
   assert.ok(!JSON.stringify({ receipt, check: github.run, saved }).includes('PRIVATE_FAILED_ANCHOR'));
+});
+
+
+test('mixed present and absent pinned context survives either batch order and changes the sealed input', async () => {
+  for (const reverse of [false, true]) {
+    const requests = [{ path: 'src/caller.js', side: 'head' }, { path: 'src/missing.js', side: 'base' }];
+    if (reverse) requests.reverse();
+    const seen = [], pins = [], content = 'x'.repeat(68919);
+    const result = await runRecovery({ github: { current: async () => true, source: async (path, sha, optional) => {
+      pins.push([path, sha, optional]); return path === 'src/caller.js' ? content : null;
+    } }, execute: async input => {
+      seen.push(input);
+      if (seen.length === 1) return missing(input, requests);
+      assert.deepEqual(input.context.find(c => c.absent), { path: 'src/missing.js', side: 'base', commit_sha: base, absent: true });
+      assert.equal(input.context.find(c => !c.absent).content, content);
+      return parsed(input);
+    } });
+    assert.equal(result.result.status, 'complete'); assert.equal(seen.length, 2);
+    assert.notEqual(seen[0].input_digest, seen[1].input_digest);
+    assert.deepEqual(result.result.recovery, { rounds: 1, added_files: 2, added_bytes: 68919, stop: 'complete' });
+    assert.deepEqual(pins, requests.map(r => [r.path, r.side === 'base' ? base : head, true]));
+    assert.deepEqual(result.result.recovery_sources.map(s => [s.side, s.commit_sha, s.status, s.bytes]),
+      requests.map(r => [r.side, r.side === 'base' ? base : head, r.side === 'base' ? 'absent' : 'present', r.side === 'base' ? 0 : 68919]));
+    assert.ok(result.result.recovery_sources.every(s => s.input_digest === seen[0].input_digest && /^[a-f0-9]{64}$/.test(s.path_sha256)));
+  }
+});
+
+test('pinned absence is negative evidence, never literal source or an automatic complete review', async () => {
+  let calls = 0, reads = 0;
+  const result = await runRecovery({ github: { current: async () => true, source: async () => { reads++; return null; } },
+    execute: async input => { calls++; return missing(input); } });
+  assert.equal(calls, 2); assert.equal(reads, 1);
+  assert.equal(result.result.status, 'incomplete'); assert.equal(result.result.recovery.stop, 'no_new_context');
+  assert.deepEqual(result.result.recovery, { rounds: 1, added_files: 1, added_bytes: 0, stop: 'no_new_context' });
+  assert.equal(sourceQuote(result.input, 'src/caller.js', 'head', 1, 1), null);
+  const invalid = parsed(result.input, { related_evidence: [{ path: 'src/caller.js', side: 'head', start_line: 1, end_line: 1,
+    start_byte: null, end_byte: null, quote: 'invented missing source' }] });
+  assert.equal(invalid.status, 'unavailable'); assert.equal(invalid.validation_failure.code, 'source_unavailable');
+  assert.equal(invalid.validation_failure.path, null);
+  for (const change of [{ content: '' }, { segments: [] }, { side: undefined }, { commit_sha: base }, { absent: false }, { path: 'src/change.js' }]) {
+    assert.throws(() => inputFor([{ path: 'src/caller.js', side: 'head', commit_sha: head, absent: true, ...change }]));
+  }
+});
+
+test('absence units remain indivisible in partitioned context and explicitly accompany synthesis', async () => {
+  const absent = { path: 'src/missing.js', side: 'head', commit_sha: head, absent: true };
+  const input = inputFor([{ path: 'AGENTS.md', content: 'instructions\n'.repeat(2000) }, absent]);
+  const parts = planReview(input, value => Buffer.byteLength(JSON.stringify(value)), 12_000);
+  assert.ok(parts.length > 1);
+  assert.deepEqual(parts.flatMap(p => p.context.filter(c => c.absent)), [absent]);
+  let synthesized = false;
+  const result = await reviewPartitions(input, { byteBudget: 12_000, requestBytes: x => Buffer.byteLength(JSON.stringify(x)),
+    execute: async part => {
+      if (part.scope?.kind === 'synthesis') { synthesized = true; assert.deepEqual(part.context, [absent]); }
+      return parsed(part);
+    } });
+  assert.equal(synthesized, true); assert.equal(result.status, 'complete');
+});
+
+test('source unavailability is not absence, and collected outcomes do not imply sealed progress', async () => {
+  const result = await runRecovery({ github: { current: async () => true, source: async path => {
+    if (path === 'src/caller.js') return 'caller\n';
+    throw new Error('PRIVATE_SOURCE_ERROR');
+  } }, execute: async input => missing(input, [{ path: 'src/caller.js', side: 'head' }, { path: 'PRIVATE_SOURCE_PATH', side: 'base' }]) });
+  assert.equal(result.result.recovery.stop, 'source_unavailable'); assert.equal(result.input.context.length, 0);
+  assert.deepEqual(result.result.recovery, { rounds: 0, added_files: 0, added_bytes: 7, stop: 'source_unavailable' });
+  assert.deepEqual(result.result.recovery_sources.map(s => s.status), ['present', 'unavailable']);
+  assert.ok(!JSON.stringify(result.result.recovery_sources).includes('PRIVATE_SOURCE'));
 });
