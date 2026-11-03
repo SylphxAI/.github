@@ -51,6 +51,25 @@ complete hunks over the literal segment view, with external diff/text conversion
 disabled. Every literal change is included. Small files retain full surrounding
 source; large files retain 40 surrounding view segments per hunk.
 
+Changed ordinary files that contain NUL or invalid UTF-8 use a finite
+`binary-metadata-v1` representation instead of fatal text decoding. Each present
+side retains its verified full-byte SHA256 and size, with status, rename identity
+and the bundle's pinned commit identities. Raw binary bytes, base64 and lossy
+replacement text never enter the prompt. Text sides of text/binary transitions
+retain their literal hunks. Binary sides have no invented lines or annotations.
+
+The result includes `binary_reviews` (empty for text-only scopes). Every binary
+path needs an explicit source/derivation assessment and limitation. A complete
+review requires verbatim quoted input-source and generator/build relationship
+evidence for each binary path; unknown or materially unreviewable provenance
+stays incomplete. The reviewer can request related text through normal pinned
+context recovery. Partition manifests and synthesis retain binary identities,
+assessments and their validated evidence. The Check summary makes the limitation
+visible: source/derivation review does not decode the artifact or prove
+regeneration/semantic equivalence. Byte hashes prove identity, not correctness.
+Missing, truncated, corrupted or unsupported objects still fail closed before
+inference. Policy and related-context reads remain text-only.
+
 JSON is split lexically outside strings, without parsing or serializing values.
 Numeric/string spelling, key order, duplicates, whitespace and invalid input are
 preserved exactly. Concatenating view segments recovers the source. Long literals

@@ -46,10 +46,15 @@ export function sourceQuote(input, path, side, start, end, startByte = null, end
 function validateFile(file) {
 	requireValue(validPath(file.path) && (file.previous_path === null || validPath(file.previous_path)), 'invalid source path')
 	requireValue(['added', 'modified', 'removed', 'renamed', 'copied'].includes(file.status), 'invalid file status')
-	requireValue(file.source_mode === 'segments' && ['literal-json-segments-v1', 'literal-line-segments-v1'].includes(file.representation), 'invalid source representation')
+	const binary = file.source_mode === 'binary-metadata'
+	requireValue(binary ? file.representation === 'binary-metadata-v1' && nonempty(file.limitation) :
+		file.source_mode === 'segments' && ['literal-json-segments-v1', 'literal-line-segments-v1'].includes(file.representation), 'invalid source representation')
+	if (binary) requireValue(['before', 'after'].some(side => file[side]?.encoding === 'binary'), 'binary side required')
 	for (const side of ['before', 'after']) {
 		const metadata = file[side]
-		requireValue(metadata === null || (/^[a-f0-9]{64}$/.test(metadata.sha256) && ['bytes', 'line_count', 'segments'].every(k => Number.isSafeInteger(metadata[k]) && metadata[k] >= 0)), 'full source identity required')
+		requireValue(metadata === null || (/^[a-f0-9]{64}$/.test(metadata.sha256) && Number.isSafeInteger(metadata.bytes) && metadata.bytes >= 0 &&
+			(metadata.encoding === 'binary' ? binary && metadata.line_count === null && metadata.segments === 0 :
+				['line_count', 'segments'].every(k => Number.isSafeInteger(metadata[k]) && metadata[k] >= 0))), 'full source identity required')
 	}
 	requireValue(file.status === 'added' ? file.before === null && file.after !== null : file.status === 'removed' ? file.before !== null && file.after === null : file.before !== null && file.after !== null, 'missing source side')
 	requireValue(Array.isArray(file.hunks) && file.hunks.length > 0, 'complete hunks required')
@@ -61,7 +66,7 @@ function validateFile(file) {
 				const required = side === 'before' ? row.kind !== 'add' : row.kind !== 'delete'
 				const s = row[side]
 				requireValue(required === Boolean(s), 'hunk source missing')
-				if (s) requireValue(file[side] !== null && typeof s.content === 'string' && s.content.length > 0 &&
+				if (s) requireValue(file[side] !== null && file[side].encoding !== 'binary' && typeof s.content === 'string' && s.content.length > 0 &&
 					['start_byte', 'end_byte', 'start_line', 'end_line', 'start_column', 'end_column'].every(k => Number.isSafeInteger(s[k]) && s[k] >= (k.endsWith('byte') ? 0 : 1)) &&
 					s.end_byte - s.start_byte === Buffer.byteLength(s.content) && s.end_byte <= file[side].bytes, 'invalid literal source segment')
 			}
@@ -150,6 +155,16 @@ export function parseReviewResult(text, input) {
 				throw new Error(kind === 'related_evidence' ? 'related evidence differs from supplied source' : 'evidence differs from supplied source')
 			}
 		}
+		const binaryFiles = (input.scope?.kind === 'synthesis' ? input.manifest : input.files).filter(f => f.source_mode === 'binary-metadata')
+		const binaryPaths = new Set(binaryFiles.map(f => f.path))
+		requireValue(result.binary_reviews.every(r => binaryPaths.has(r.path)) && new Set(result.binary_reviews.map(r => r.path)).size === result.binary_reviews.length, 'invalid binary review paths')
+		for (const review of result.binary_reviews) {
+			for (const [kind, evidence] of [['source', review.source_evidence], ['derivation', review.derivation_evidence]]) {
+				for (const [index, quote] of evidence.entries()) requireEvidence(quote, `binary_${kind}_evidence`, index)
+			}
+			if (review.status === 'source-reviewed') requireValue(review.source_evidence.length > 0 && review.derivation_evidence.length > 0, 'binary provenance requires source and derivation evidence')
+		}
+		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length && result.binary_reviews.every(r => r.status === 'source-reviewed'), 'binary provenance review incomplete')
 		for (const [findingIndex, finding] of result.findings.entries()) {
 			requireValue(finding.end_line >= finding.start_line && (input.scope?.kind === 'synthesis' ? input.manifest : input.files).some(f => f.path === finding.path), 'finding outside supplied source')
 			if (input.scope?.kind !== 'synthesis') requireValue(input.files.some(f => f.path === finding.path && changedRanges(f).some(r => r.side === finding.side && finding.start_line >= r.start && finding.end_line <= r.end)), 'finding outside changed source')

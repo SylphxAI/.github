@@ -27,6 +27,11 @@ export const resultSchema = object({
 		title: text, explanation: text, trigger: text, consequence: text,
 		evidence: { type: 'array', minItems: 1, items: evidence },
 	}) },
+	binary_reviews: { type: 'array', items: object({
+		path: text, status: { type: 'string', enum: ['source-reviewed', 'unresolved'] },
+		source_evidence: { type: 'array', items: evidence },
+		derivation_evidence: { type: 'array', items: evidence }, limitation: text,
+	}) },
 	review_summary: text,
 	related_evidence: { type: 'array', items: evidence },
 	omitted_paths: { type: 'array', items: text },

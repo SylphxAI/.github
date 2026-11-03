@@ -17,7 +17,7 @@ export async function recoverContext({ input, github, target, execute, createRev
   for (const file of input.files) for (const [side, sourceSide] of [['base', 'before'], ['head', 'after']]) {
     const metadata = file[sourceSide];
     if (!metadata) continue;
-    if (complete(metadata.bytes, fileSegments(file, sourceSide))) {
+    if (metadata.encoding === 'binary' || complete(metadata.bytes, fileSegments(file, sourceSide))) {
       seen.add(`${side}:${side === 'base' ? file.previous_path ?? file.path : file.path}`);
     }
   }
