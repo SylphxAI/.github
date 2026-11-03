@@ -39,6 +39,9 @@ customer repositories remain exempt under the existing property check.
 
 Python 3.11+ is required (`tomllib`); git and the checked-out source tree are
 the only inputs. The check performs no network request, dependency fetch, or
-compilation. Work is linear in the scanned source/module edges; a 4,273-file
-monorepo scan measured 9.1s on 2026-11-02, with smaller repos under 4s. It runs
-only during the existing conformance job and retains no service or cache.
+compilation. Work is linear in the scanned source/module edges. A check of the
+merged cloud tree `c18a0997ddb1e6c7deeb5839db8fabd20b15aafb` on 2026-11-03
+scanned 4,296 files in 6.920s with zero orphans, parser errors or unresolved
+includes; its 22 regression fixtures passed. The original 54-repository census
+measured smaller repositories under 4s. It runs only during the existing
+conformance job and retains no service or cache.
