@@ -87,8 +87,8 @@ def rust_tokens(text):
 # destination. Unknown syntax or escaping uses keep the ordinary finding.
 # Non-ASCII continuations include combining marks (Python \w is narrower than
 # Rust XID_Continue). Group conservatively; unknown names cannot gain exclusions.
-RUST_IDENTIFIER = re.compile(r'(?:[^\W\d]|[^\x00-\x7f])(?:\w|[^\x00-\x7f])*')
-RUST_CODE_TOKEN = re.compile(r'::|==|!=|&&|\|\||=>|->|(?:r#)?' + RUST_IDENTIFIER.pattern + r'|[^\s]')
+RUST_IDENTIFIER = re.compile(r'(?:[^\W\d]|[^\x00-\x7f\s\u200e\u200f])(?:\w|[^\x00-\x7f\s\u200e\u200f])*')
+RUST_CODE_TOKEN = re.compile(r'::|==|!=|&&|\|\||=>|->|(?:r#)?' + RUST_IDENTIFIER.pattern + r'|[^\s\u200e\u200f]')
 DIAGNOSTIC_ARGUMENT = {name: 0 for name in (
     'error', 'warn', 'info', 'debug', 'trace', 'print', 'println', 'eprintln',
     'anyhow', 'bail', 'panic')}
@@ -167,6 +167,8 @@ class RustContext:
                 continue
             opening = i + 2 if v[i + 1] == '!' else i + 1
             if v[opening] != '[' or opening not in self.close:
+                return False
+            if opening + 1 >= self.close[opening]:
                 return False
             name = v[opening + 1]
             if v[opening + 2] not in {'(', '=', ']'}:

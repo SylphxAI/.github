@@ -1074,7 +1074,7 @@
         "model-selector"
       ]
     },
-    "a55c12257ffc285404b7b2a33febe3f956a74c8acb26ccc433d3b13a58014f4e": {
+    "f3e06450bd7f57df6900f766fef2f10b549ea36f27794313b47247ca76f69b3f": {
       "sources": {
         ".github/actions/stack-conformance/action.yml": "f3f6d2d78a55da4db59430e5797c6f11c36f6da90493ffa6b3bfa900d6addaf6",
         ".github/actions/stack-conformance/stack_conformance.py": "a5e97a65e7bbde6cf3b6fda50b59714fa34b7e34977df5f102a3cf5436175520",
@@ -1084,7 +1084,7 @@
         ".github/actions/stack-conformance/no_force_push.py": "00e8a1f2de8b1eebc12ab7856d2dd37d7bdd6ea7c4f99953fca44f56b282cec9",
         ".github/actions/stack-conformance/cache-economy-profiles.json": "111ab4144992210a1e30ecdd596a36f8694046a679645b4bc117ae69702a4e21",
         ".github/actions/stack-conformance/deal_randomness.py": "217ae9616e7d0db3600eaca497d21c3bf190f1cd2c4140256d83f422b7388c97",
-        ".github/actions/stack-conformance/project_portability.py": "f070364a3211516aa0fc27c3f96b79f671efcf0d3220c6a531d48d17cfc59adc",
+        ".github/actions/stack-conformance/project_portability.py": "49e43f1a38db9393e7e26d8c384041251c8b18e9257e870776ea8c1d4ca7dd7e",
         ".github/actions/stack-conformance/rust_reachability.py": "10fa10fdd4d424677ae682300f8ce28319e72c9e16f9ca2b1d4539b300e3e6e7",
         "policy/deal-randomness-scope.json": "8936933d322b886ac22162f2140d681a9555f225db0f39f9e84dbf60d9243650",
         "scripts/source_provenance.py": "ff7c7a05ace9c57cbe300995a4c38fefca37a601f7216ab507dd302f0706bdcb",

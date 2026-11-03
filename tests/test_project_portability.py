@@ -190,7 +190,8 @@ class ProjectPortabilityTests(unittest.TestCase):
                    '工具!(path == ' + literal + ')',
                    'bu\u0301ild!(path == ' + literal + ')',
                    '#[build] fn classify() { path == ' + literal + ' }',
-                   '#[inline::connect(path == ' + literal + ')] fn classify() {}']
+                   '#[inline::connect(path == ' + literal + ')] fn classify() {}',
+                   'read(' + literal + '); #[]']
         for source in sources:
             with self.subTest(source=source):
                 self.assertEqual(len(scan('src/client.rs', source)), 1)
@@ -214,6 +215,11 @@ class ProjectPortabilityTests(unittest.TestCase):
         for prefix in ['pub ', 'pub(crate) ', 'pub(super) ', '#[build] ', '#[derive(Custom)] ', '#[inline::connect] ']:
             self.assertEqual(len(scan('src/client.rs', prefix + declaration + classification)), 1)
         self.assertEqual(len(scan('src/client.rs', declaration)), 1)
+        for whitespace in ['\u0085', '\u200e', '\u200f', '\u2028', '\u2029']:
+            self.assertEqual(len(scan('src/client.rs', declaration + classification +
+                                      'mod' + whitespace + 'consumer;')), 1)
+            self.assertEqual(len(scan('src/client.rs', 'macro_rules' + whitespace +
+                                      '! build { () => { path == "http://gate:24001" } }')), 1)
         unicode_source = declaration.replace('DENIED_PATH', 'CAFÉ') + classification.replace('DENIED_PATH', 'CAFÉ')
         self.assertEqual(len(scan('src/client.rs', unicode_source + 'read(CAFE\u0301);')), 1)
         self.assertEqual(len(scan('src/client.rs', 'pub trait Policy { ' + declaration + ' }' + classification)), 1)
