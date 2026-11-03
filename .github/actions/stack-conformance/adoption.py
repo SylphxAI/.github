@@ -21,6 +21,10 @@ HERE = pathlib.Path(__file__).resolve().parent
 REGISTRY = HERE / "checker-capabilities.json"
 CACHE_APPROVALS = HERE / "cache-safe-reads.json"
 CACHE_RULE = "architecture/C1/cache-economy"
+PORTABILITY_RULE = "architecture/C1/project-portability"
+RUST_LITERAL_COVERAGE = PORTABILITY_RULE + "-rust-literals"
+# Reviewed frozen regex recognizer; no other source may reopen this coverage.
+LEGACY_PORTABILITY_SHA256 = "db21349c065cb1dee56d9b4aa4ce2c60de916d446efd30025f7be9752605f4cf"
 PREFIX = ".github/actions/stack-conformance/"
 RULE_MARKER = "# stack-rule-adopted-v1 "
 STACK_USE = re.compile(
@@ -208,7 +212,8 @@ def model_rules(source):
 
 def current_rules():
     return (architecture_rules((HERE / "architecture.py").read_text())
-            | model_rules((HERE / "model_pins.py").read_text()) | {"force-push", "legacy/solar2d"})
+            | model_rules((HERE / "model_pins.py").read_text())
+            | {"force-push", "legacy/solar2d", RUST_LITERAL_COVERAGE})
 
 
 def profile_id(profile):
@@ -358,6 +363,26 @@ def legacy_rules(profile, *, shared_repo=None, source_tree=None, tree_cache=None
            and "solar2d" in node.value.lower() for node in ast.walk(scan)) else set()
 
 
+def rust_literal_coverage_enforced(profile, *, shared_repo=None, source_tree=None, tree_cache=None):
+    """Only a reviewed, profile-bound frozen recognizer predates this coverage.
+
+    Historical profiles stay immutable. Unknown or lexical-aware source is
+    conservatively already enforcing: registering a new profile cannot reset
+    this one-time allowance. Historical code is read as data, never executed.
+    """
+    cache = {} if tree_cache is None else tree_cache
+    pin = profile["commit"]
+    if pin not in cache:
+        cache[pin] = (_checker().Tree(shared_repo, pin) if shared_repo is not None
+                      else (source_tree if source_tree is not None else PublishedCheckerTree)(pin))
+    path = PREFIX + "project_portability.py"
+    source = cache[pin].read(path)
+    digest = hashlib.sha256(source.encode()).hexdigest() if source is not None else None
+    if digest is None or digest != profile["sources"].get(path):
+        raise ValueError("old Rust portability coverage source provenance mismatch")
+    return digest != LEGACY_PORTABILITY_SHA256
+
+
 def introduced_rules(base_tree, baseline_text, *, shared_repo=None, source_tree=None, head_tree=None):
     source_cache = {}
     if head_tree is not None and not checker_pins(base_tree, required=False):
@@ -367,6 +392,13 @@ def introduced_rules(base_tree, baseline_text, *, shared_repo=None, source_tree=
     else:
         profiles = old_checkers(base_tree, shared_repo=shared_repo, source_tree=source_tree, tree_cache=source_cache)
     enforced = {rule for profile in profiles for rule in profile["rules"]}
+    # Whole-rule introduction already covers all inherited portability debt.
+    # Otherwise every old enforcing pin must be the exact pre-lexer source.
+    if (PORTABILITY_RULE not in enforced or
+            any(rust_literal_coverage_enforced(profile, shared_repo=shared_repo,
+                    source_tree=source_tree, tree_cache=source_cache)
+                for profile in profiles if PORTABILITY_RULE in profile["rules"])):
+        enforced.add(RUST_LITERAL_COVERAGE)
     for profile in profiles:
         # Only category adoption needs this extra immutable-source read.
         if "legacy/solar2d" not in adopted_rules(baseline_text):
@@ -412,6 +444,10 @@ def seed_permissions(base_tree, head_text, base_text, grown_records, *, shared_r
                                      head_tree=head_tree)
     if requested - introduced:
         raise ValueError("cannot adopt rules already enforced by an old checker: " + ", ".join(sorted(requested - introduced)))
+    # This sub-capability shares the existing finding identity, so its marker
+    # must be explicit to consume the one-time permission in this very bump.
+    if RUST_LITERAL_COVERAGE not in requested:
+        introduced.discard(RUST_LITERAL_COVERAGE)
     return introduced
 
 
@@ -422,7 +458,8 @@ def _checker():
     return module
 
 
-def migrate_portability_records(original, base_findings, head_findings, architecture, parse_baseline):
+def migrate_portability_records(original, base_findings, head_findings, architecture, parse_baseline,
+                                coverage_records=None):
     """Replace only base-proven malformed Rust identities; never seed debt."""
     records = parse_baseline(original) or set()
     mappings = architecture.portability_rekeys(base_findings, records)
@@ -430,10 +467,12 @@ def migrate_portability_records(original, base_findings, head_findings, architec
                  if row["rule"] == "project-portability"}
     head_keys = {architecture.baseline_key(row) for row in head_findings
                  if row["rule"] == "project-portability"}
-    if mappings and head_keys - base_keys:
+    coverage = coverage_records is not None
+    if (mappings or coverage) and head_keys - base_keys:
         raise ValueError("new head debt cannot be migrated: " + ", ".join(sorted(head_keys - base_keys)))
-    covered = (records & base_keys) | {key for members in mappings.values() for key in members}
-    if mappings and head_keys - covered:
+    covered = ((records & base_keys) | {key for members in mappings.values() for key in members}
+               | (set(coverage_records or ()) & base_keys & head_keys))
+    if (mappings or coverage) and head_keys - covered:
         raise ValueError("unrecorded portability debt cannot be migrated: " + ", ".join(sorted(head_keys - covered)))
     for old, members in mappings.items():
         if members - head_keys:
@@ -503,17 +542,23 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
              lambda row: "architecture/" + row["class"] + "/" + row["rule"]),
             (base_models, head_models, sc.model_pins.baseline_key, sc.model_pins.rule_id),
             (base_force, head_force, sc.no_force_push.baseline_key, lambda row: "force-push")):
-        inherited = {key(row) for row in before["findings"] if not row.get("scope_warning")}
+        eligible = (sc.architecture.adoption_eligible if before is base_arch else
+                    lambda row, rules: rule_id(row) in rules)
+        inherited = {key(row) for row in before["findings"]
+                     if not row.get("scope_warning") and eligible(row, introduced)}
         for row in after["findings"]:
             if row.get("scope_warning"):
                 continue
-            if rule_id(row) in introduced:
+            if eligible(row, introduced):
                 if key(row) not in inherited:
                     raise ValueError("new head debt cannot be adopted: " + key(row))
                 if not row.get("decision"):
                     additions.add(key(row))
     migrated, rekeys = migrate_portability_records(original, base_arch["findings"], head_arch["findings"],
-                                                     sc.architecture, sc.parse_baseline)
+        sc.architecture, sc.parse_baseline,
+        coverage_records={sc.architecture.baseline_key(row) for row in base_arch["findings"]
+                          if sc.architecture.adoption_eligible(row, {RUST_LITERAL_COVERAGE})}
+                         if RUST_LITERAL_COVERAGE in introduced else None)
     retirement_text, retirement_additions = sc.staged_retirement.plan(
         base_tree, head_tree, migrated, introduced, sc.departures, sc.parse_baseline, baseline)
     additions |= retirement_additions

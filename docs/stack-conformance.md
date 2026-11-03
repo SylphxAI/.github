@@ -725,6 +725,28 @@ An unchanged old malformed record still fails as stale, and corrected records
 subsequently obey the ordinary shrinking ratchet. The helper writes no baseline
 or evidence on refusal.
 
+A lexical repair can also expose a Rust destination the frozen regex detector
+never recognized at all. During that transition, the helper may add the explicit
+one-time marker
+`# stack-rule-adopted-v1 architecture/C1/project-portability-rust-literals`.
+This is coverage within the same rule, not a new finding identity. The old
+immutable, registered detector source must match the reviewed pre-lexer SHA-256
+in `adoption.py`; lexical-aware, mixed or unknown old sources cannot reopen it.
+Historical capability profiles remain unchanged.
+
+Only exact Rust findings independently present at the base and surviving at the
+head qualify. The old detector must have recognized neither the literal nor an
+equal source span anywhere in that file, even under a different occurrence
+number. Previously recognized but unrecorded debt, diagnostic-context changes,
+other languages, moved or changed literals and extra copies are not eligible.
+The helper and required check use the same eligibility predicate; the required
+check independently derives base and head evidence and requires the explicit
+marker before allowing record growth. That marker cannot be removed or reused;
+subsequent records only shrink. This coverage can combine with the exact rekey
+operation above, but never weakens its constituent-preservation checks. An old
+record whose bytes collide with a different current occurrence is not an
+allowance for that different occurrence.
+
 The existing required stack verdict carries this rule. A caller qualification
 must include one actual failing private-destination change and a clean passing
 change, and demonstrate that failure reaches its required aggregate. This
