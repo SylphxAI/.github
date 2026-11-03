@@ -90,6 +90,54 @@ class ProjectPortabilityTests(unittest.TestCase):
         self.assertEqual(len(scan('nginx/docker-entrypoint.sh', 'curl http://api.tenant.svc.cluster.local/health\n')), 1)
         self.assertEqual(len(scan('nginx/docker-entrypoint.sh', 'curl "http://api.tenant.svc.cluster.local/health"\n')), 1)
 
+    def test_rust_lifetimes_sql_and_chars_do_not_change_literal_boundaries(self):
+        import hashlib
+        destination = '"https://api.tenant.svc.cluster.local"'
+        source = ("async fn write<'a>(tx: &mut Transaction<'_, Postgres>) {\n"
+                  " let sql = r##\"SELECT 'canonical', 'pending', \"quoted\" /* SQL */\"##;\n"
+                  " let quote = '\\\''; let unicode = '\\u{1F980}';\n"
+                  " let endpoint = " + destination + ";\n}\nfn next<'b>() {}\n")
+        row, = scan('src/client.rs', source)
+        self.assertEqual(row['line'], 4)
+        self.assertEqual(row['end_line'], 4)
+        self.assertEqual(row['span_sha256'], hashlib.sha256(destination.encode()).hexdigest())
+        # The body may change, but the actual destination literal identity does not.
+        edited = source.replace("'canonical'", "'stopped'").replace("Transaction<'_,", "Transaction<'a,")
+        self.assertEqual(scan('src/client.rs', edited)[0]['span_sha256'], row['span_sha256'])
+
+    def test_rust_raw_byte_c_strings_and_nested_comments(self):
+        for prefix in ['r', 'br', 'cr']:
+            with self.subTest(prefix=prefix):
+                source = 'let sql = ' + prefix + "##\"SELECT \"literal\", 'pending'; // /* SQL */\nhttp://gate:24001\"##;"
+                row, = scan('src/client.rs', source)
+                self.assertEqual(row['line'], 1)
+                self.assertEqual(row['end_line'], 2)
+        for literal in ['"http://gate:24001"', 'b"http://gate:24001"', 'c"http://gate:24001"']:
+            self.assertEqual(len(scan('src/client.rs', 'let endpoint = ' + literal + ';')), 1)
+        comment = '/* outer /* nested */ "http://hidden:24001" */\n'
+        self.assertEqual(scan('src/client.rs', comment), [])
+        source = comment + "'retry: loop { let c = '\\x27'; break 'retry; }\nlet endpoint = \"http://gate:24001\";"
+        self.assertEqual(len(scan('src/client.rs', source)), 1)
+        # Literal contents cannot create executable in-cluster calls.
+        self.assertEqual(scan('src/client.rs', 'let sql = r#"Config::incluster_env() /* not a comment */"#;'), [])
+        self.assertEqual(len(scan('src/client.rs', "let sql = r#\"SELECT 'pending'\"#; Config::incluster_env();")), 1)
+
+    def test_rust_unterminated_full_source_fails_closed(self):
+        for source in ['let x = r##"http://gate"#;', 'let x = "http://gate', '/* http://gate']:
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(ValueError, 'unterminated Rust'):
+                    scan('src/client.rs', source)
+
+    def test_multiline_rust_cache_argument_uses_full_file_comment_spans(self):
+        import datetime
+        source = ('pub async fn apply_purchase() {\n'
+                  ' let offer = state.offer_cache.get(r#"first\nsecond"#).await;\n'
+                  ' grant(offer);\n}\n')
+        report = sc.architecture.evaluate(sc.DictTree({'src/shop.rs': source}), 'example/app', None,
+                                          datetime.date(2026, 11, 3))
+        self.assertEqual(report['unreadable'], [])
+        self.assertTrue(any(row['rule'] == 'cache-economy' for row in report['findings']))
+
     def test_allowlist_is_limited_to_manifests(self):
         manifest = 'origin: "http://api.tenant.svc.cluster.local"\n'
         for path in ['deploy/service.yaml', 'infra/service.yaml', 'charts/service/templates/deployment.yaml', '.github/workflows/ci.yml']:

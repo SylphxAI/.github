@@ -26,6 +26,69 @@ DIAGNOSTIC = re.compile(r'\b(?:error|warn|info|debug|trace|log|print|println|epr
 MOUNT = re.compile(r'/var/run/secrets/kubernetes\.io/serviceaccount(?:/[^\s\"\x27`]*)?')
 
 
+# Rust apostrophes introduce either one character or a lifetime/label, never an
+# arbitrary single-quoted string. Raw delimiters and nested comments are lexical
+# tokens: quotes, SQL strings and comment markers inside them have no effect.
+RUST_RAW = re.compile(r'(?<![\w])(?:br|cr|r)(\#*)"')
+RUST_CHAR = re.compile(r"'(?:[^'\\\n\r\t]|\\(?:[nrt\\0'\"]|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}))'")
+
+
+def rust_tokens(text):
+    """Yield (kind, start, end) tokens, preserving original source offsets."""
+    at, size = 0, len(text)
+    while at < size:
+        start = at
+        if text.startswith('//', at):
+            at = text.find('\n', at)
+            at = size if at < 0 else at
+            yield 'comment', start, at
+        elif text.startswith('/*', at):
+            at, depth = at + 2, 1
+            while at < size and depth:
+                if text.startswith('/*', at):
+                    depth, at = depth + 1, at + 2
+                elif text.startswith('*/', at):
+                    depth, at = depth - 1, at + 2
+                else:
+                    at += 1
+            if depth:
+                raise ValueError('unterminated Rust block comment')
+            yield 'comment', start, at
+        elif raw := RUST_RAW.match(text, at):
+            close = '"' + raw[1]
+            finish = text.find(close, raw.end())
+            if finish < 0:
+                raise ValueError('unterminated Rust raw string')
+            at = finish + len(close)
+            yield 'literal', start, at
+        elif text[at] == '"':
+            at += 1
+            while at < size:
+                if text[at] == '\\':
+                    at += 2
+                elif text[at] == '"':
+                    at += 1
+                    break
+                else:
+                    at += 1
+            else:
+                raise ValueError('unterminated Rust string')
+            yield 'literal', start, at
+        elif text[at] == "'" and (char := RUST_CHAR.match(text, at)):
+            at = char.end()
+            yield 'literal', start, at
+        else:
+            at += 1
+
+
+def literals(text, suffix, *, legacy_rust=False):
+    if suffix == '.rs' and not legacy_rust:
+        yield from ((start, end, text[start:end]) for kind, start, end in rust_tokens(text)
+                    if kind == 'literal')
+    else:
+        yield from ((m.start(), m.end(), m.group()) for m in LITERAL.finditer(text))
+
+
 def manifest(path):
     """Only manifest formats are allowed by deployment directory names."""
     p = pathlib.PurePosixPath(path)
@@ -78,7 +141,7 @@ def views(text, suffix, source_views):
     return clean, code
 
 
-def scan(path, text, source_views):
+def scan(path, text, source_views, *, legacy_rust=False):
     if not supported(path) or manifest(path):
         return []
     lower = text.lower()
@@ -89,11 +152,10 @@ def scan(path, text, source_views):
     suffix = pathlib.PurePosixPath(path).suffix
     clean, code = views(text, suffix, source_views)
     out = []
-    for literal in LITERAL.finditer(clean):
-        prefix = clean[max(0, literal.start() - 120):literal.start()]
+    for start, end, value in literals(clean, suffix, legacy_rust=legacy_rust):
+        prefix = clean[max(0, start - 120):start]
         if DIAGNOSTIC.search(prefix):
             continue
-        value = literal.group()
         for match in SUFFIX.finditer(value):
             if not destination_host_span(value, match.start(), match.end()):
                 continue
@@ -102,16 +164,16 @@ def scan(path, text, source_views):
             # A concatenated suffix or template host still constructs a target.
             if not re.search(r'[\w}$.-]+$', before) and not re.search(r'\+\s*$', prefix):
                 continue
-            out.append((literal.start(), literal.end(), 'Runtime source embeds cluster-private DNS; configure a reachable public API origin'))
+            out.append((start, end, 'Runtime source embeds cluster-private DNS; configure a reachable public API origin'))
             break
         else:
             if short_service_url(value) or any(destination_host_span(value, m.start(), m.end())
                     for m in re.finditer(r'\bkubernetes\.default\b', value)):
-                out.append((literal.start(), literal.end(), 'Runtime source embeds a single-label service or Kubernetes API hostname'))
+                out.append((start, end, 'Runtime source embeds a single-label service or Kubernetes API hostname'))
             elif MOUNT.search(value):
-                out.append((literal.start(), literal.end(), 'Runtime source assumes the Kubernetes service-account secret mount'))
+                out.append((start, end, 'Runtime source assumes the Kubernetes service-account secret mount'))
             elif re.search(r'KUBERNETES_SERVICE_(?:HOST|PORT)', value) and re.search(r'\b(?:var|getenv|env|environ|get_env|GetEnvironmentVariable)\b', prefix, re.I):
-                out.append((literal.start(), literal.end(), 'Runtime source reads an in-cluster Kubernetes endpoint variable'))
+                out.append((start, end, 'Runtime source reads an in-cluster Kubernetes endpoint variable'))
     for match in IN_CLUSTER.finditer(code):
         out.append((match.start(), match.end(), 'Runtime source explicitly constructs an in-cluster Kubernetes client'))
     for match in re.finditer(r'\bprocess\.env\.KUBERNETES_SERVICE_(?:HOST|PORT)\b', code):
