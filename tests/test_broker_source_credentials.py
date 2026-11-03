@@ -121,6 +121,12 @@ class SourceCredentialTests(unittest.TestCase):
                     configure.configure(self.env)
                 access.assert_not_called()
 
+    def test_setup_failure_removes_already_issued_credentials(self):
+        self.env['GITHUB_ENV'] = str(self.root / 'missing' / 'env')
+        with self.assertRaises(OSError):
+            self.setup_credentials()
+        self.assertFalse(list(self.root.glob('broker-git-*')))
+
     def test_partial_exchange_failure_has_no_fallback_or_credential_file(self):
         with self.assertRaises(configure.ExchangeError):
             self.setup_credentials(fail=REPOS[1])

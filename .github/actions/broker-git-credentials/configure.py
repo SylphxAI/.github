@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,43 +44,47 @@ def configure(env):
                           expected_issuer=env.get('EXPECTED_ISSUER', ''), expected_connection=env.get('EXPECTED_CONNECTION', ''))
         grants[repo.lower()] = result['token']
     root = Path(tempfile.mkdtemp(prefix='broker-git-', dir=env['RUNNER_TEMP']))
-    root.chmod(0o700)
-    credentials = root / 'credentials.tsv'
-    credentials.touch(mode=0o600)
-    credentials.write_text(''.join(repo + '\t' + token + '\n' for repo, token in grants.items()))
-    global_config = root / 'global'
-    global_config.touch(mode=0o600)
-    safe = subprocess.run(['git', 'config', '--global', '--get-all', 'safe.directory'], text=True, capture_output=True, env=env)
-    for directory in safe.stdout.splitlines():
-        if directory:
-            subprocess.run(['git', 'config', '--file', str(global_config), '--add', 'safe.directory', directory], check=True, env=env)
-    # Empty helpers reset inherited command/local lists. Extraheaders from checkout
-    # must also be cleared. A fresh global config drops old insteadOf rewrites.
-    helper = '!sh ' + shlex.quote(str(Path(__file__).with_name('credential.sh'))) + ' ' + shlex.quote(str(credentials))
-    inherited = subprocess.run(['git', 'config', '--name-only', '--get-regexp',
-                                r'^(credential(\..*)?\.helper|http(\..*)?\.extraheader)$'],
-                               capture_output=True, text=True, check=False, env=env)
-    # Also reset path-specific helpers/headers: a generic reset does not override
-    # a more-specific stale checkout credential. Never copy their values.
-    reset = sorted({name for name in inherited.stdout.splitlines()
-                    if name.lower().startswith('credential.') or name.lower() == 'http.extraheader'
-                    or re.fullmatch(r'http\.https?://github\.com(?::[0-9]+)?(?:/.*)?\.extraheader', name, re.IGNORECASE)}
-                   | {'credential.helper', 'credential.https://github.com.helper',
-                      'http.https://github.com/.extraheader', 'http.extraheader'})
-    config = [(name, '') for name in reset]
-    config += [('credential.https://github.com.helper', helper), ('credential.useHttpPath', 'true')]
-    with open(env['GITHUB_ENV'], 'a') as out:
-        for offset, (name, value) in enumerate(config, int(count)):
-            out.write(f'GIT_CONFIG_KEY_{offset}={name}\nGIT_CONFIG_VALUE_{offset}={value}\n')
-        out.write(f'GIT_CONFIG_COUNT={int(count) + len(config)}\nGIT_CONFIG_GLOBAL={global_config}\nGIT_CONFIG_NOSYSTEM=1\n')
-        out.write(f'CARGO_GIT_CREDENTIALS_FILE={credentials}\nCARGO_GIT_CREDENTIAL_HELPER={Path(__file__).with_name("credential.sh")}\nCARGO_NET_GIT_FETCH_WITH_CLI=true\nGIT_TERMINAL_PROMPT=0\n')
-    with open(env['GITHUB_OUTPUT'], 'a') as out:
-        out.write(f'credentials-file={credentials}\n')
+    try:
+        root.chmod(0o700)
+        credentials = root / 'credentials.tsv'
+        credentials.touch(mode=0o600)
+        credentials.write_text(''.join(repo + '\t' + token + '\n' for repo, token in grants.items()))
+        global_config = root / 'global'
+        global_config.touch(mode=0o600)
+        safe = subprocess.run(['git', 'config', '--global', '--get-all', 'safe.directory'], text=True, capture_output=True, env=env)
+        for directory in safe.stdout.splitlines():
+            if directory:
+                subprocess.run(['git', 'config', '--file', str(global_config), '--add', 'safe.directory', directory], check=True, env=env)
+        # Empty helpers reset inherited command/local lists. Extraheaders from checkout
+        # must also be cleared. A fresh global config drops old insteadOf rewrites.
+        helper = '!sh ' + shlex.quote(str(Path(__file__).with_name('credential.sh'))) + ' ' + shlex.quote(str(credentials))
+        inherited = subprocess.run(['git', 'config', '--name-only', '--get-regexp',
+                                    r'^(credential(\..*)?\.helper|http(\..*)?\.extraheader)$'],
+                                   capture_output=True, text=True, check=False, env=env)
+        # Also reset path-specific helpers/headers: a generic reset does not override
+        # a more-specific stale checkout credential. Never copy their values.
+        reset = sorted({name for name in inherited.stdout.splitlines()
+                        if name.lower().startswith('credential.') or name.lower() == 'http.extraheader'
+                        or re.fullmatch(r'http\.https?://github\.com(?::[0-9]+)?(?:/.*)?\.extraheader', name, re.IGNORECASE)}
+                       | {'credential.helper', 'credential.https://github.com.helper',
+                          'http.https://github.com/.extraheader', 'http.extraheader'})
+        config = [(name, '') for name in reset]
+        config += [('credential.https://github.com.helper', helper), ('credential.useHttpPath', 'true')]
+        with open(env['GITHUB_ENV'], 'a') as out:
+            for offset, (name, value) in enumerate(config, int(count)):
+                out.write(f'GIT_CONFIG_KEY_{offset}={name}\nGIT_CONFIG_VALUE_{offset}={value}\n')
+            out.write(f'GIT_CONFIG_COUNT={int(count) + len(config)}\nGIT_CONFIG_GLOBAL={global_config}\nGIT_CONFIG_NOSYSTEM=1\n')
+            out.write(f'CARGO_GIT_CREDENTIALS_FILE={credentials}\nCARGO_GIT_CREDENTIAL_HELPER={Path(__file__).with_name("credential.sh")}\nCARGO_NET_GIT_FETCH_WITH_CLI=true\nGIT_TERMINAL_PROMPT=0\n')
+        with open(env['GITHUB_OUTPUT'], 'a') as out:
+            out.write(f'credentials-file={credentials}\n')
+    except BaseException:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
 
 
 if __name__ == '__main__':
     try:
         configure(dict(os.environ))
-    except (ExchangeError, ReadinessError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+    except (ExchangeError, ReadinessError, ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
         print('::error::source credential setup failed; no fallback or retried exchange', file=sys.stderr)
         raise SystemExit(1)
