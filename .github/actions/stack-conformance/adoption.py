@@ -556,8 +556,10 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
                     additions.add(key(row))
     migrated, rekeys = migrate_portability_records(original, base_arch["findings"], head_arch["findings"],
         sc.architecture, sc.parse_baseline,
-        coverage_records={sc.architecture.baseline_key(row) for row in base_arch["findings"]
-                          if sc.architecture.adoption_eligible(row, {RUST_LITERAL_COVERAGE})}
+        coverage_records=({sc.architecture.baseline_key(row) for row in base_arch["findings"]
+                           if sc.architecture.adoption_eligible(row, {RUST_LITERAL_COVERAGE})}
+                          & {sc.architecture.baseline_key(row) for row in head_arch["findings"]
+                             if sc.architecture.adoption_eligible(row, {RUST_LITERAL_COVERAGE})})
                          if RUST_LITERAL_COVERAGE in introduced else None)
     retirement_text, retirement_additions = sc.staged_retirement.plan(
         base_tree, head_tree, migrated, introduced, sc.departures, sc.parse_baseline, baseline)

@@ -115,6 +115,18 @@ class RustPortabilityAdoptionTests(unittest.TestCase):
                 self.assertIn('already enforced', output)
                 self.assertIn('cannot grow', output)
 
+    def test_context_change_cannot_turn_ineligible_head_into_coverage(self):
+        f, base = self.fixture()
+        source = 'fn client() { let url = "http://gate:24001"; }\n'
+        before, = ARCH.scan_file(PATH, UNSEEN, 'example/app', set(), [])
+        after, = ARCH.scan_file(PATH, source, 'example/app', set(), [])
+        self.assertEqual(ARCH.baseline_key(before), ARCH.baseline_key(after))
+        self.assertTrue(ARCH.adoption_eligible(before, {COVERAGE}))
+        self.assertFalse(ARCH.adoption_eligible(after, {COVERAGE}))
+        f.commit({PATH: source})
+        with self.assertRaisesRegex(ValueError, 'unrecorded portability debt'):
+            f.plan(base)
+
     def test_equal_literal_ordinal_shift_cannot_relabel_previously_seen_debt(self):
         source = ("fn first<'a>() { let x = std::env::var(\"KUBERNETES_SERVICE_HOST\"); }\n"
                   "fn next<'b>() {}\n"
