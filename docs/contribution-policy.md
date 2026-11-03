@@ -40,6 +40,27 @@ open PR head runs the same policy. Post-merge push events do not recheck old
 history. Missing permissions, missing PR metadata, unreadable Git objects, and
 metadata changing during a read fail the check.
 
+A REST metadata GET that receives HTTP 503 can make at most three attempts with
+unchanged request identity and credentials. The two waits use one- and two-second
+backoff plus up to one second of jitter; each attempt retains the 30-second socket
+timeout. A `Retry-After` delay or HTTP-date is honored as a minimum wait. An invalid
+value or a wait above 30 seconds fails closed instead of retrying early. The
+reader closes each failed response before waiting and reports only the fixed
+status and attempt, never the response body, URL, credentials or header values.
+Exhausted HTTP 503 acquisition still exits 2; successful acquisition still runs
+every metadata, identity and provenance check. Other HTTP statuses, rate-limit
+indicators, transport/JSON errors and GraphQL POST reads are not retried. This
+bounded read recovery never reruns tests, jobs or workflows or replaces their
+evidence.
+
+This behavior follows [HTTP 503 and Retry-After semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.6.4)
+(RFC 9110 §§15.6.4 and 10.2.3, read 2026-11-03 at 13:29:52 UTC). The attempt and wait limits are
+local acquisition budgets, not a claim that a provider outage will recover in
+that window. GitHub's [REST troubleshooting guidance](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api)
+(read 2026-11-03 at 13:29:51 UTC) distinguishes rate limits from server/timeout
+failures; this
+reader never retries a quota or authorization refusal.
+
 Callers grant `contents: read` and `pull-requests: read` to the verdict job
 and every reusable workflow through which it runs. `pull-requests: write`
 also supplies the read. Stack conformance follows the actual local and shared

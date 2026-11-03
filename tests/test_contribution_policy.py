@@ -519,5 +519,211 @@ class ContributionPolicy(unittest.TestCase):
                                             check_pull_text=False)
 
 
+class MetadataTransport(unittest.TestCase):
+    """Fault the real transport and CLI without network requests or real sleeps."""
+
+    def setUp(self):
+        self.api = checker.GitHub('example/repo', 'read-token')
+        self.sleep = self.enterContext(mock.patch.object(checker.time, 'sleep'))
+        self.jitter = self.enterContext(mock.patch.object(checker.random, 'uniform', return_value=0))
+        self.output = self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+
+    @staticmethod
+    def response(data):
+        return io.BytesIO(json.dumps(data).encode())
+
+    def failure(self, status=503, headers=None, message='untrusted-body read-token ::error::injected'):
+        error = urllib.error.HTTPError('https://api.github.com/?read-token', status, 'read-token',
+                                       headers or {}, self.response({'message': message}))
+        self.addCleanup(error.close)
+        return error
+
+    def main(self, replies, commits=None):
+        with tempfile.TemporaryDirectory() as directory:
+            event, report = Path(directory) / 'event.json', Path(directory) / 'report.json'
+            event.write_text(json.dumps({'number': 1, 'pull_request': pull()}))
+            with mock.patch.dict(os.environ, {'GITHUB_EVENT_NAME': 'pull_request',
+                    'GITHUB_EVENT_PATH': str(event), 'GITHUB_REPOSITORY': 'example/repo',
+                    'GITHUB_SHA': HEAD, 'CONTRIBUTION_POLICY_TOKEN': 'read-token'}), \
+                    mock.patch.object(checker.urllib.request, 'urlopen', side_effect=replies) as opened, \
+                    mock.patch.object(checker, 'range_commits', return_value=commits if commits is not None else [commit()]):
+                status = checker.main(['--report', str(report)])
+            return status, json.loads(report.read_text()), opened
+
+    def assert_safe_output(self, report=None):
+        text = self.output.getvalue() + json.dumps(report)
+        for forbidden in ('read-token', 'untrusted-body', '::error::injected', 'https://', 'Retry-After'):
+            self.assertNotIn(forbidden, text)
+
+    def test_503_get_recovers_with_identical_request_and_closes_before_wait(self):
+        error = self.failure()
+        self.sleep.side_effect = lambda delay: self.assertTrue(error.closed)
+        with mock.patch.object(checker.urllib.request, 'urlopen',
+                               side_effect=[error, self.response(pull())]) as opened:
+            self.assertEqual(self.api.get('pulls/1'), pull())
+        self.assertEqual(opened.call_count, 2)
+        first, second = (call.args[0] for call in opened.call_args_list)
+        self.assertIs(first, second)
+        self.assertEqual(first.get_method(), 'GET')
+        self.assertEqual(first.full_url, 'https://api.github.com/repos/example/repo/pulls/1')
+        self.assertEqual(first.get_header('Authorization'), 'Bearer read-token')
+        self.assertEqual(first.get_header('X-github-api-version'), '2022-11-28')
+        self.assertTrue(all(call.kwargs == {'timeout': 30} for call in opened.call_args_list))
+        self.sleep.assert_called_once_with(1)
+        self.assertIn('HTTP 503', self.output.getvalue())
+        self.assertIn('attempt 2/3', self.output.getvalue())
+        self.assert_safe_output()
+
+    def test_two_503s_recover_and_never_restart_the_policy_snapshot(self):
+        status, report, opened = self.main([self.failure(), self.failure(),
+                                           self.response(pull()), self.response(pull())])
+        self.assertEqual(status, 0)
+        self.assertEqual(report, {'passed': True, 'findings': []})
+        self.assertEqual(opened.call_count, 4)  # Three attempts before, one fresh read after.
+        self.assertEqual(self.sleep.call_args_list, [mock.call(1), mock.call(2)])
+        self.assert_safe_output(report)
+
+    def test_exhausted_503s_keep_exit_two_and_failed_report(self):
+        errors = [self.failure() for _ in range(3)]
+        status, report, opened = self.main(errors)
+        self.assertEqual(status, 2)
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['error'], 'GitHub metadata read failed (HTTP 503)')
+        self.assertEqual(opened.call_count, 3)
+        self.assertEqual(self.sleep.call_args_list, [mock.call(1), mock.call(2)])
+        self.assertTrue(all(error.closed for error in errors))
+        self.assert_safe_output(report)
+
+    def test_permanent_http_errors_fail_once_without_sleep(self):
+        for status in (401, 403, 404, 422, 429, 500, 502, 504):
+            with self.subTest(status=status):
+                error = self.failure(status, {'Retry-After': '1'})
+                with mock.patch.object(checker.urllib.request, 'urlopen', side_effect=error) as opened:
+                    with self.assertRaises(checker.PolicyError):
+                        self.api.get('pulls/1')
+                opened.assert_called_once()
+                self.assertTrue(error.closed)
+        self.sleep.assert_not_called()
+        self.assert_safe_output()
+
+    def test_fatal_403_after_503_stops_recovery_and_keeps_permission_diagnostic(self):
+        status, report, opened = self.main([self.failure(), self.failure(403,
+                                           message='Resource not accessible by integration')])
+        self.assertEqual(status, 2)
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['error'], 'caller workflow lacks pull-requests: read')
+        self.assertEqual(opened.call_count, 2)
+        self.sleep.assert_called_once_with(1)
+        self.assert_safe_output(report)
+
+    def test_503_rate_indicators_are_not_retried(self):
+        for headers, message in [({'X-RateLimit-Remaining': '0'}, 'unavailable'),
+                                  ({}, 'API rate limit exceeded'), ({}, 'Secondary rate limit')]:
+            with self.subTest(headers=headers, message=message):
+                with mock.patch.object(checker.urllib.request, 'urlopen',
+                                       side_effect=self.failure(headers=headers, message=message)) as opened:
+                    with self.assertRaisesRegex(checker.PolicyError, 'HTTP 503'):
+                        self.api.get('pulls/1')
+                opened.assert_called_once()
+        self.sleep.assert_not_called()
+
+    def test_retry_after_minimum_and_jitter_are_bounded(self):
+        for header, expected in [(None, 1.5), ('0', 1.5), ('5', 5), ('30', 30),
+                ('Thu, 01 Jan 1970 00:16:45 GMT', 5), ('Thu, 01 Jan 1970 00:00:00 GMT', 1.5)]:
+            with self.subTest(header=header):
+                self.sleep.reset_mock()
+                self.jitter.return_value = 0.5
+                headers = {} if header is None else {'Retry-After': header}
+                with mock.patch.object(checker.time, 'time', return_value=1000), \
+                        mock.patch.object(checker.urllib.request, 'urlopen',
+                                         side_effect=[self.failure(headers=headers), self.response(pull())]):
+                    self.assertEqual(self.api.get('pulls/1'), pull())
+                self.sleep.assert_called_once_with(expected)
+        self.assertTrue(all(call == mock.call(0, 1) for call in self.jitter.call_args_list))
+        self.assert_safe_output()
+
+    def test_invalid_or_overbudget_retry_after_fails_closed_without_shortening_wait(self):
+        for header in ('31', '999999999999999999999999', '-1', '1.5', '', 'read-token',
+                       'Thu, 01 Jan 1970 00:17:11 GMT', 'Thu, 01 Jan 1970 00:16:45'):
+            with self.subTest(header=header), mock.patch.object(checker.time, 'time', return_value=1000), \
+                    mock.patch.object(checker.urllib.request, 'urlopen',
+                                     side_effect=self.failure(headers={'Retry-After': header})) as opened:
+                with self.assertRaisesRegex(checker.PolicyError, 'HTTP 503'):
+                    self.api.get('pulls/1')
+                opened.assert_called_once()
+        self.sleep.assert_not_called()
+        self.assert_safe_output()
+
+    def test_graphql_post_503_and_transport_or_json_failures_are_not_retried(self):
+        with mock.patch.object(checker.urllib.request, 'urlopen', side_effect=self.failure()) as opened:
+            with self.assertRaisesRegex(checker.PolicyError, 'HTTP 503'):
+                self.api.queue_entries('main')
+        opened.assert_called_once()
+        self.assertEqual(opened.call_args.args[0].get_method(), 'POST')
+        for result in (OSError('read-token'), io.BytesIO(b'untrusted-body read-token')):
+            with self.subTest(result=type(result).__name__), \
+                    mock.patch.object(checker.urllib.request, 'urlopen', side_effect=[result]) as opened:
+                with self.assertRaisesRegex(checker.PolicyError, 'metadata read failed'):
+                    self.api.get('pulls/1')
+                opened.assert_called_once()
+        self.sleep.assert_not_called()
+        self.assert_safe_output()
+
+    def test_recovered_metadata_still_refuses_identity_text_and_incomplete_fields(self):
+        for label in ('author', 'committer', 'commit-text', 'pull-text', 'incomplete'):
+            with self.subTest(case=label):
+                current, item = pull(), commit()
+                if label in ('author', 'committer'):
+                    item['commit'][label] = {'name': 'Example', 'email': 'example@example.com'}
+                elif label == 'commit-text':
+                    item['commit']['message'] = 'Co-authored-by: Codex <codex@example.com>'
+                elif label == 'pull-text':
+                    current['body'] = 'Agent: example'
+                else:
+                    del current['title']
+                status, report, opened = self.main([self.failure(), self.response(current),
+                                                   self.response(current)], [item])
+                self.assertEqual(status, 2 if label == 'incomplete' else 1)
+                self.assertFalse(report['passed'])
+                self.assertEqual(opened.call_count, 3)
+                self.assert_safe_output(report)
+
+    def test_503_during_second_snapshot_read_cannot_hide_metadata_or_revision_changes(self):
+        for field in ('title', 'body', 'head', 'base'):
+            with self.subTest(field=field):
+                changed = pull()
+                if field == 'head':
+                    changed[field]['sha'] = 'c' * 40
+                elif field == 'base':
+                    changed[field]['ref'] = 'release'
+                else:
+                    changed[field] = 'Changed while checking'
+                status, report, opened = self.main([self.response(pull()), self.failure(), self.response(changed)])
+                self.assertEqual(status, 2)
+                self.assertFalse(report['passed'])
+                self.assertIn('changed during', report['error'])
+                self.assertEqual(opened.call_count, 3)
+                self.assert_safe_output(report)
+
+    def test_recovered_provenance_read_still_requires_matching_signed_commit(self):
+        for label in ('unsigned', 'wrong-sha', 'wrong-message'):
+            with self.subTest(case=label):
+                item = commit()
+                item['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+                remote = signed_github(item)
+                if label == 'unsigned':
+                    remote['commit']['verification']['verified'] = False
+                elif label == 'wrong-sha':
+                    remote['sha'] = 'c' * 40
+                else:
+                    remote['commit']['message'] = 'Different commit'
+                status, report, opened = self.main([self.response(pull()), self.response(pull()),
+                                                   self.failure(), self.response(remote)], [item])
+                self.assertEqual(status, 1 if label == 'unsigned' else 2)
+                self.assertFalse(report['passed'])
+                self.assertEqual(opened.call_count, 4)
+                self.assert_safe_output(report)
+
+
 if __name__ == '__main__':
     unittest.main()
