@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import unittest
 
+import yaml
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ACTION = ROOT / ".github" / "actions" / "setup-keel-tools"
 INSTALLER = ACTION / "install-keel-tools.sh"
@@ -216,6 +218,54 @@ class InstallerTest(unittest.TestCase):
         self.assertNotIn("building wasm-bindgen", r.stdout)
         self.assertTrue((new_root / "bin" / "wasm-bindgen-test-runner").is_file())
         self.assertTrue((new_root / "bin" / "wasm-bindgen").resolve().is_relative_to(new_root))
+
+    def consumer_step(self, name):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/project-control.yml").read_text())
+        return next(step["run"] for step in workflow["jobs"]["tests"]["steps"]
+                    if step.get("name") == name)
+
+    def test_consumer_restores_only_bindgen_without_requiring_a_remote_cache_hit(self):
+        self.assertEqual(self.run_installer("install", str(self.root)).returncode, 0)
+        payload = {str(path.relative_to(self.root / "wasm-bindgen")): path.read_bytes()
+                   for path in (self.root / "wasm-bindgen").rglob("*") if path.is_file()}
+        github_env = pathlib.Path(self.tmp.name) / "github_env"
+        env = {**self.env, "KEEL_CONSUMER_SOURCE": str(pathlib.Path(self.tmp.name) / "keel-work"),
+               "GITHUB_ENV": str(github_env)}
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c",
+            self.consumer_step("Move only the consumer Keel pin")], env=env,
+            text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({path.name for path in self.root.iterdir()}, {"wasm-bindgen"})
+        restored = {str(path.relative_to(self.root / "wasm-bindgen")): path.read_bytes()
+                    for path in (self.root / "wasm-bindgen").rglob("*") if path.is_file()}
+        self.assertEqual(restored, payload)
+        outputs = dict(line.split("=", 1) for line in github_env.read_text().splitlines())
+        result = self.run_installer("install", str(self.root),
+            KEEL_PIN=outputs["KEEL_CONSUMER_PIN"], KEEL_SRC=env["KEEL_CONSUMER_SOURCE"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sum("wasm-bindgen-cli" in line for line in self.builds()), 1)
+        self.assertEqual(sum("install --path" in line for line in self.builds()), 2)
+        verify_env = {**env, **outputs, "KEEL_CONSUMER_BINDGEN": "0.2.93",
+                      "PATH": f"{self.root / 'bin'}:{env['PATH']}"}
+        verify = lambda: subprocess.run(["bash", "-euo", "pipefail", "-c",
+            self.consumer_step("Verify independent tool cache reuse")], env=verify_env,
+            text=True, capture_output=True)
+        self.assertEqual(verify().returncode, 0)
+        # A real redundant bindgen rebuild must still fail the consumer's
+        # unchanged install-count assertion; this is not a skip or a retry.
+        with self.cargo_log.open("a") as log:
+            log.write("install wasm-bindgen-cli\n")
+        self.assertNotEqual(verify().returncode, 0)
+
+    def test_consumer_refuses_missing_bindgen_payload_before_discarding_tools(self):
+        self.assertEqual(self.run_installer("install", str(self.root), WASM_BINDGEN="none").returncode, 0)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c",
+            self.consumer_step("Move only the consumer Keel pin")],
+            env={**self.env, "KEEL_CONSUMER_SOURCE": str(pathlib.Path(self.tmp.name) / "keel-work"),
+                 "GITHUB_ENV": str(pathlib.Path(self.tmp.name) / "github_env")},
+            text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.root / "keel/bin/keel").is_file())
 
     def test_feature_change_reuses_bindgen(self):
         self.assertEqual(self.run_installer("install", str(self.root)).returncode, 0)

@@ -12,8 +12,8 @@ needs on `PATH`:
 
 Each tool has a separate cache under `$RUNNER_TEMP/keel-tools`, keyed by
 runner OS and arch, the installer's hash and that tool's version (plus
-`features` for Keel). Moving a Keel pin reuses wasm-bindgen; changing the
-wasm-bindgen version reuses Keel. Only missing tools build from source.
+`features` for Keel). Moving a Keel pin reuses a present/restored wasm-bindgen cache; changing the
+wasm-bindgen version reuses Keel. Cache misses build the missing tools from source.
 Each install carries a stamp written after success, and caches are saved
 straight after installation. The shared `bin` output exposes both tools and
 their companion executables. A fully warm run logs `keel tools from cache`.
@@ -61,3 +61,23 @@ binaries too. It does not clone Keel or require a source checkout.
 The shared pin check verifies that the title's manifest and lock use that
 same public version; it also verifies the facade and CLI publication and
 source lineage.
+
+## Consumer proof and cache misses
+
+The functional CI consumer moves only the Keel pin, restores only the known
+wasm-bindgen fixture payload into an otherwise empty tools root, then requires
+a second Keel build and no second wasm-bindgen build. It checks the exact
+wasm-bindgen version, its companion executable and the Keel CLI. Offline tests execute those exact
+workflow shell steps and confirm an extra wasm-bindgen build still fails.
+The action's real cache restore/save steps still run; their external hit rate
+is not a functional correctness assertion.
+
+Queue run [41618406546](https://github.com/SylphxAI/.github/actions/runs/41618406546)
+on 2026-11-03 saved a wasm-bindgen cache and immediately missed the same key,
+failing the former service-hit-dependent assertion despite passing all 1,949
+unit tests. It was not retried. The replacement uses a controlled restored
+payload; the cause of the external miss is not established. The pinned
+[actions/cache v4 contract](https://github.com/actions/cache/blob/0057852bfaa89a56745cba8c7296529d2fc39830/README.md#outputs)
+(read 2026-11-03 10:35 UTC) defines a normal cache-miss outcome and recommends
+installing missing dependencies. No cache service availability assumption
+belongs in the tool-reuse regression.

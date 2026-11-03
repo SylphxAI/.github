@@ -151,8 +151,16 @@ jobs:
           git -C "$KEEL_CONSUMER_SOURCE" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m 'Move consumer pin'
           echo "KEEL_CONSUMER_PIN=$(git -C "$KEEL_CONSUMER_SOURCE" rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "BINDGEN_INSTALLS=$(grep -c wasm-bindgen-cli "$CARGO_LOG" || true)" >> "$GITHUB_ENV"
-          # Force the next invocation to restore from the cache service.
-          rm -rf "${RUNNER_TEMP:?}/keel-tools"
+          # The functional proof needs a known restored payload, not an
+          # immediate hit from the external cache service. Queue run 41618406546
+          # saved the key and then missed it in the same job. Cache misses must
+          # remain a supported cold-build path, never a flaky gate or a retry.
+          snapshot="$(mktemp -d "${RUNNER_TEMP:?}/keel-tools-cache.XXXXXX")"
+          cp -a "$RUNNER_TEMP/keel-tools/wasm-bindgen" "$snapshot/wasm-bindgen"
+          rm -rf "$RUNNER_TEMP/keel-tools"
+          mkdir -p "$RUNNER_TEMP/keel-tools"
+          mv "$snapshot/wasm-bindgen" "$RUNNER_TEMP/keel-tools/wasm-bindgen"
+          rmdir "$snapshot"
       - name: Restore unchanged wasm-bindgen for the new Keel pin
         uses: ./.github/actions/setup-keel-tools
         with:
