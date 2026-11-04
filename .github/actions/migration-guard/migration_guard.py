@@ -1816,6 +1816,22 @@ def event_range(env: dict[str, str]) -> tuple[str, str]:
     return base, head
 
 
+def merge_group_target_base(root: Path, env: dict[str, str], base: str) -> str | None:
+    if env.get("MIGRATION_BASE") or not env.get("GITHUB_EVENT_PATH"):
+        return None
+    event = json.loads(Path(env["GITHUB_EVENT_PATH"]).read_text())
+    base_ref = event.get("merge_group", {}).get("base_ref", "")
+    if not isinstance(base_ref, str) or not base_ref.startswith("refs/heads/"):
+        return None
+    branch = base_ref.removeprefix("refs/heads/")
+    for candidate in (f"refs/remotes/origin/{branch}", base_ref):
+        proc = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
+                              capture_output=True, text=True)
+        if proc.returncode == 0 and proc.stdout.strip() and proc.stdout.strip() != base:
+            return proc.stdout.strip()
+    return None
+
+
 def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1836,8 +1852,15 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
             raise ValueError("at least one migration directory or schema file is required")
         base, head = event_range({**env, "MIGRATION_BASE": args.base, "MIGRATION_HEAD": args.head})
         root = Path(env.get("GITHUB_WORKSPACE", "."))
+        target_base = merge_group_target_base(root, {**env, "MIGRATION_BASE": args.base}, base)
         errors, count = check_range(root, base, head, dirs, args.dialect, schemas, args.concurrent_index_runtime,
                                     repository=env.get("GITHUB_REPOSITORY", ""))
+        if target_base:
+            target_errors, target_count = check_range(root, target_base, head, dirs, args.dialect, schemas,
+                                                      args.concurrent_index_runtime,
+                                                      repository=env.get("GITHUB_REPOSITORY", ""))
+            errors = list(dict.fromkeys([*target_errors, *errors]))
+            count = max(count, target_count)
         if errors:
             print("\n".join(errors))
             print("::error::Migration safety check failed. Merged migrations are immutable. Ship an expand step before contracting; add `-- contract: <reference>` naming that released step in the new migration or changed schema snapshot.")

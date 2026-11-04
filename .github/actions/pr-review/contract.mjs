@@ -149,7 +149,17 @@ export function parseReviewResult(text, input) {
 		requireValue(result.context_requests.length <= contextRequestLimit && result.context_requests.every(r => validPath(r.path) && r.path.length <= 1024), 'invalid context request')
 		requireValue(result.completion !== 'complete' || (incomplete.length === 0 && result.context_requests.length === 0), 'inconsistent complete review')
 		const requireEvidence = (evidence, kind, index, findingIndex = null) => {
-			const expected = sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte)
+			let expected = sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte)
+			if (expected !== evidence.quote && evidence.start_byte === null && evidence.end_byte === null && evidence.end_line >= evidence.start_line) {
+				const span = evidence.end_line - evidence.start_line
+				const matches = [-3, -2, -1, 1, 2, 3].filter(delta => evidence.start_line + delta >= 1 &&
+					sourceQuote(input, evidence.path, evidence.side, evidence.start_line + delta, evidence.start_line + delta + span, null, null) === evidence.quote)
+				if (matches.length === 1) {
+					evidence.start_line += matches[0]
+					evidence.end_line += matches[0]
+					expected = evidence.quote
+				}
+			}
 			if (expected !== evidence.quote) {
 				validationFailure = evidenceFailure(input, evidence, expected, kind, index, findingIndex)
 				throw new Error(kind === 'related_evidence' ? 'related evidence differs from supplied source' : 'evidence differs from supplied source')

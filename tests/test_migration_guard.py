@@ -327,6 +327,26 @@ class HistoryTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(guard.main([], {**env, "MIGRATION_BASE": "missing-ref"}), 1)
 
+    def test_merge_group_checks_against_target_branch_when_queue_ahead_has_violation(self):
+        self.git("checkout", "-qb", "queue-ahead")
+        self.write("db/0002_bad_ahead.sql", "DROP TABLE accounts;")
+        ahead = self.commit()
+        self.write("db/0003_good_second.sql", "ALTER TABLE accounts ADD nickname text;")
+        second = self.commit()
+        event_path = self.root / "event.json"
+        event_path.write_text(json.dumps({
+            "merge_group": {"base_ref": "refs/heads/main", "base_sha": ahead, "head_sha": second},
+        }))
+        env = {
+            "GITHUB_WORKSPACE": str(self.root),
+            "GITHUB_EVENT_PATH": str(event_path),
+            "MIGRATION_DIALECT": "postgres",
+            "MIGRATION_DIRECTORIES": "db",
+        }
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(guard.main([], env), 1)
+        self.assertIn("0002_bad_ahead.sql", output.getvalue())
+
     def test_recorded_unapplied_withdrawal_and_refusals(self):
         import hashlib
         unapplied = "db/20261217091104_unapplied_kind.sql"
