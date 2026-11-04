@@ -210,7 +210,7 @@ def procedural_statement(stmt: list[Token]) -> list[Token]:
     if starts(stmt, "CREATE") or starts(stmt, "DO"):
         return stmt
     depth = 0
-    commands = {"ALTER", "CREATE", "SET", "DO", "CALL", "EXECUTE", "PREPARE", "DELIMITER"}
+    commands = {"ALTER", "CREATE", "SET", "DO", "CALL", "EXECUTE", "PREPARE", "DELIMITER", "GRANT", "REVOKE"}
     boundaries = {"BEGIN", "ATOMIC", "THEN", "ELSE", "LOOP"}
     for i, token in enumerate(stmt):
         if depth == 0 and token.kind == "word" and token.value in commands:
@@ -1156,7 +1156,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             # inspection; these statements need an explicit contract review.
             out.append((stmt[0].line, "SQL lexical mode change requires a contract reference"))
         non_dml_on = starts(control_stmt, "GRANT") or starts(control_stmt, "REVOKE")
-        on_index = next((j for j, t in enumerate(scan_stmt) if kw(t, "ON")), 0) if non_dml_on else 0
+        grant_start = len(scan_stmt) - len(control_stmt) if non_dml_on and trigger_condition is None else 0
+        on_index = next((j for j in range(grant_start, len(scan_stmt)) if kw(scan_stmt[j], "ON")), len(scan_stmt)) if non_dml_on else 0
         for i, token in enumerate(scan_stmt):
             tail = scan_stmt[i:]
             if any(starts(tail, "DROP", obj) for obj in ("TABLE", "COLUMN", "SCHEMA", "DATABASE")):
@@ -1171,7 +1172,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 out.append((token.line, "RENAME"))
             # Each mutation needs its own top-level WHERE. A WHERE in a nested
             # SELECT, quoted string, or a second statement does not qualify.
-            if (kw(token, "DELETE") or kw(token, "UPDATE")) and i >= on_index and not (i and kw(scan_stmt[i - 1], "ON")):
+            if (kw(token, "DELETE") or kw(token, "UPDATE")) and not (non_dml_on and grant_start <= i < on_index) and not (i and kw(scan_stmt[i - 1], "ON")):
                 # Stop at the enclosing CTE/subquery boundary as well as the
                 # statement end. A later CTE's WHERE cannot qualify this one.
                 suffix, depth = [], 0

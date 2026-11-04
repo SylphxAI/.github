@@ -602,5 +602,14 @@ class CatalogAndDeclarationCorrections(unittest.TestCase):
             self.assertEqual(rows[3], 'inherited')
 
 
+    def test_cargo_build_script_standard_env_vars_are_allowed(self):
+        files = {
+            'crates/keel-example-services/build.rs': 'fn main() { let _ = std::env::var_os("OUT_DIR"); let _ = std::env::var("CARGO_MANIFEST_DIR"); }\n',
+            'crates/keel-example-services/src/lib.rs': 'pub fn bad() { let _ = std::env::var_os("OUT_DIR"); }\n',
+        }
+        findings = self.evaluate(files)['findings']
+        self.assertEqual([f['path'] for f in findings], ['crates/keel-example-services/src/lib.rs'])
+
+
 if __name__ == '__main__':
     unittest.main()

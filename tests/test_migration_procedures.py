@@ -133,5 +133,29 @@ class ProcedureTests(unittest.TestCase):
             self.assertIn('SET NOT NULL', str(guard.check_sql(sql, 'postgres')))
 
 
+    def test_procedural_grant_and_revoke_privilege_keywords_are_not_dml(self):
+        sql = """
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sylphx_notify_app') THEN
+            GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.web_push_vapid_keys TO sylphx_notify_app;
+            REVOKE UPDATE, DELETE ON TABLE public.web_push_vapid_keys FROM PUBLIC;
+          END IF;
+        END
+        $$;
+        """
+        self.assertEqual(guard.check_sql(sql, 'postgres'), [])
+        bad_sql = """
+        DO $$
+        BEGIN
+          IF EXISTS (WITH d AS (DELETE FROM public.web_push_vapid_keys RETURNING 1) SELECT 1 FROM d JOIN pg_roles ON true) THEN
+            GRANT SELECT, UPDATE ON TABLE public.web_push_vapid_keys TO sylphx_notify_app;
+          END IF;
+        END
+        $$;
+        """
+        self.assertIn('DELETE without WHERE', str(guard.check_sql(bad_sql, 'postgres')))
+
+
 if __name__ == "__main__":
     unittest.main()
