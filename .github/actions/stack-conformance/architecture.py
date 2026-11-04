@@ -486,6 +486,17 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
                                project_portability.literals(legacy_views[0], suffix, legacy_rust=True)}
             legacy_rows = with_occurrences([finding(path, text, a, "C1", "project-portability", why, b)
                                            for a, b, why in legacy])
+            legacy_hashes = {row["span_sha256"] for row in legacy_rows}
+            for (start, end, _), row in zip(portable, out):
+                # Coverage is lexical, not a reset for newly refined context
+                # rules: an already recognized literal cannot be seeded.
+                row["legacy_portability_literal_seen"] = any(
+                    a <= start and end <= b or start <= a and b <= end
+                    for a, b in legacy_literals)
+                # An unseen equal token can shift onto a previously seen
+                # token's ordinal. Coverage must not relabel old unrecorded
+                # debt as that hidden token when either occurrence disappears.
+                row["legacy_portability_seen_span"] = row["span_sha256"] in legacy_hashes
             for (a, b, _), old in zip(legacy, legacy_rows):
                 for (start, end, _), row in zip(portable, out):
                     # Legacy lifetimes can enclose real literals. Conversely,
@@ -752,6 +763,22 @@ def baseline_key(row):
                      row["span_sha256"], str(row["occurrence"])))
 
 
+def adoption_eligible(row, introduced_rules):
+    """One permission predicate for the offline helper and required ratchet.
+
+    Rust lexical coverage admits only findings wholly unseen by the frozen
+    detector, not previously recognized but unrecorded debt or malformed spans.
+    Exact base/head keys and cardinalities are checked by each caller.
+    """
+    rule = "architecture/" + row["class"] + "/" + row["rule"]
+    return (rule in introduced_rules or
+            rule == "architecture/C1/project-portability" and row["path"].endswith(".rs")
+            and rule + "-rust-literals" in introduced_rules
+            and not row.get("legacy_portability_keys")
+            and not row.get("legacy_portability_seen_span")
+            and not row.get("legacy_portability_literal_seen"))
+
+
 def baseline_errors(findings, head_records, base_records, base_findings, introduced_rules=()):
     """The existing stack baseline can track exact inherited architecture debt.
 
@@ -760,8 +787,10 @@ def baseline_errors(findings, head_records, base_records, base_findings, introdu
     Thereafter the recorded set can only shrink.
     """
     actual = {baseline_key(row) for row in findings}
-    existing = {baseline_key(row) for row in base_findings
-                if "architecture/" + row["class"] + "/" + row["rule"] in introduced_rules}
+    existing = ({baseline_key(row) for row in base_findings
+                 if adoption_eligible(row, introduced_rules)}
+                & {baseline_key(row) for row in findings
+                   if adoption_eligible(row, introduced_rules)})
     errors = ["stale architecture baseline record: " + key for key in sorted(head_records - actual)]
     # Explicit constituent correction is not new destination debt. The old key must
     # independently resolve at the actual base to corrected literal occurrences;
@@ -772,7 +801,10 @@ def baseline_errors(findings, head_records, base_records, base_findings, introdu
     corrected = {key for members in replacements.values() for key in members}
     existing |= {new for old, members in replacements.items()
                  if (old not in head_records or old in corrected) and members <= actual for new in members}
-    allowed = base_records | existing
+    # An old key can collide with a different current occurrence after
+    # renumbering. Once it resolves to corrected constituents it is no longer
+    # an unconditional allowance, even when its bytes remain an actual key.
+    allowed = (base_records - set(replacements)) | existing
     errors += ["architecture baseline cannot grow or seed new debt: " + key for key in sorted(head_records - allowed)]
     for row in findings:
         row["baseline_recorded"] = baseline_key(row) in head_records
