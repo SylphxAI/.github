@@ -236,6 +236,10 @@ def _missing_git_tree_objects(repo, tree):
 def blob_candidate(path):
     """Source, configuration and policy inputs; leave unrelated binary assets absent."""
     p = pathlib.PurePosixPath(path)
+    # This scan inspects contents before excluding non-automation libraries;
+    # its read domain includes test/docs sources other scans may exclude.
+    if no_force_push.candidate(path):
+        return True
     if path == BASELINE or path.startswith(".github/") and p.suffix in {".yml", ".yaml", ".json"}:
         return True
     if not model_pins.excluded(path) and p.suffix in model_pins.SOURCE:

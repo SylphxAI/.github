@@ -253,6 +253,15 @@ class ScannerWalkTests(unittest.TestCase):
         with mock.patch.object(sc.architecture, 'matching_end', side_effect=AssertionError('unrelated body walked')):
             self.assertEqual(list(sc.architecture.named_bodies(clean, code, '.java', lambda name: False)), [])
 
+    def test_branch_command_inputs_are_bulk_candidates_before_content_filtering(self):
+        paths = ['tests/publish' + suffix for suffix in sc.no_force_push.SHELL | sc.no_force_push.SOURCE]
+        paths += ['docs/example.py', 'tests/fixtures/action.yml', 'tests/fixtures/package.json',
+                  'tools/Makefile', 'tools/justfile', 'tools/Dockerfile']
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue(sc.blob_candidate(path))
+        self.assertFalse(sc.blob_candidate('assets/image.png'))
+
     def test_sparse_blobless_clone_bulk_fetches_candidates_once(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -332,6 +341,13 @@ class ScannerWalkTests(unittest.TestCase):
                      '.github/stack-departures.txt': f'# {revision} baseline\n',
                      'assets/image.png': f'binary asset {revision}'}
             files.update({f'src/input-{i}.ts': f'export const value = {value}; // input {i}\n' for i in range(32)})
+            # The branch-command scanner reads these before content filtering,
+            # even when architecture/model rules exclude fixtures or docs.
+            files.update({f'tests/publish{suffix}': f'# harmless {revision} {suffix}\n'
+                          for suffix in sc.no_force_push.SHELL | sc.no_force_push.SOURCE})
+            files.update({'docs/example.py': f'print("{revision}")\n',
+                          'tests/fixtures/action.yml': f'name: {revision}\n',
+                          'tests/fixtures/package.json': json.dumps({'name': revision})})
             for name, content in files.items():
                 target = origin / name
                 target.parent.mkdir(parents=True, exist_ok=True)

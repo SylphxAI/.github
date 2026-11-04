@@ -342,18 +342,24 @@ def unsafe_ref_update(argv):
     return None
 
 
+def candidate(path):
+    """Paths whose contents scan must read before deciding automation scope."""
+    p = pathlib.PurePosixPath(path)
+    return not (set(p.parts) & SKIP) and (
+        p.suffix in SHELL | SOURCE | {".yml", ".yaml"}
+        or p.name in {"Makefile", "justfile", "Dockerfile", "package.json"})
+
+
 def scan(tree):
     findings, unreadable = [], []
     files = {}
     for path in sorted(tree.paths()):
-        p = pathlib.PurePosixPath(path)
-        if set(p.parts) & SKIP:
+        if not candidate(path):
             continue
+        p = pathlib.PurePosixPath(path)
         shell = p.suffix in SHELL or p.name in {"Makefile", "justfile", "Dockerfile"}
         workflow = p.suffix in {".yml", ".yaml"}
         package = p.name == "package.json"
-        if not (shell or workflow or package or p.suffix in SOURCE):
-            continue
         text = tree.read(path)
         if text is None:
             unreadable.append({"path": path, "reason": "Git blob unavailable"})

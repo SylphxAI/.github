@@ -493,8 +493,13 @@ partial clone, it inventories missing objects for each compared tree, then
 fetches missing source, configuration and policy candidates together from the
 configured promisor remote. This also covers historical base blobs that an
 ordinary depth-one checkout never materialized. Sparse checkouts and renamed
-remotes use the same path; unrelated binary assets may remain absent. A failed
-or timed-out bulk fetch fails the check and names the affected revision rather
+remotes use the same path; unrelated binary assets may remain absent. The batch
+candidate set includes every scanner's pre-read domain, including branch-command
+checks of test/docs sources and all supported script suffixes. That scanner's
+content-dependent automation filter stays after acquisition; excluding a path
+from another scanner must not turn these reads into one network fetch per file.
+The branch-command scanner and the prefetcher share the same path predicate.
+A failed or timed-out bulk fetch fails the check and names the affected revision rather
 than silently skipping its source. Complete clones retain their existing
 missing-object behavior without additional Git processes.
 
