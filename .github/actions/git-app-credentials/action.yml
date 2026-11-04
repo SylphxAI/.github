@@ -6,9 +6,10 @@ description: >-
   git credentials, so cargo must fetch through the git CLI
   (CARGO_NET_GIT_FETCH_WITH_CLI=true).
 
-  The token is written to a 0600 file under RUNNER_TEMP and referenced only by
-  the job's GIT_CONFIG_* environment; nothing is written to a layer, a tag, or
-  the global git config, and the file is removed at the end of the job.
+  Source mode writes a 0600 credential file under RUNNER_TEMP. Optional Cargo
+  registry mode instead uses a repository-scoped Git Basic header and a masked
+  Cargo Bearer token in the job environment, with no credential file. Neither
+  mode writes credentials to image layers, tags or global Git configuration.
 
   This is the one admitted path for a private cross-project source read in CI.
   The caller supplies the App id and key; the credential is scoped by the
@@ -25,12 +26,19 @@ inputs:
     description: Installation owner for the private repositories.
     required: false
     default: SylphxAI
+  registry:
+    description: Optional Cargo registry name. Registry mode permits exactly one index repository and uses masked in-memory credentials instead of a credential file.
+    required: false
+    default: ''
   repositories:
     description: Comma or newline separated repositories the token may read.
     required: false
     default: identity
 
 outputs:
+  token:
+    description: Read-only token for the exact requested repositories; pass to BuildKit only as a secret.
+    value: ${{ steps.app-token.outputs.token }}
   credentials-file:
     description: Path of the job-scoped git credential file.
     value: ${{ steps.credentials.outputs.credentials_file }}
@@ -48,7 +56,59 @@ runs:
         repositories: ${{ inputs.repositories }}
         permission-contents: read
 
+    - name: Configure Cargo registry credentials
+      if: ${{ inputs.registry != '' }}
+      shell: bash
+      env:
+        APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        REGISTRY: ${{ inputs.registry }}
+        REGISTRY_OWNER: ${{ inputs.owner }}
+        REGISTRY_REPOSITORY: ${{ inputs.repositories }}
+      run: |
+        set -euo pipefail
+        : "${APP_TOKEN:?missing GitHub App installation token}"
+        : "${RUNNER_TEMP:?missing RUNNER_TEMP}"
+        : "${GITHUB_ENV:?missing GITHUB_ENV}"
+        [[ "$REGISTRY" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] || { echo "::error::invalid Cargo registry name" >&2; exit 1; }
+        [[ "$REGISTRY_OWNER" =~ ^[A-Za-z0-9-]+$ ]] || { echo "::error::invalid registry owner" >&2; exit 1; }
+        [[ "$REGISTRY_REPOSITORY" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "::error::registry mode requires exactly one repository" >&2; exit 1; }
+        offset="${GIT_CONFIG_COUNT:-0}"
+        [[ "$offset" =~ ^[0-9]+$ ]] || { echo "::error::invalid existing Git configuration count" >&2; exit 1; }
+        # No inherited tokenized rewrites or durable helpers. Only checkout-safe
+        # directory declarations survive in this non-secret global config.
+        umask 077
+        job_global="${RUNNER_TEMP}/cargo-registry-gitconfig"
+        : > "$job_global"
+        while IFS= read -r safe_dir; do
+          [ -n "$safe_dir" ] || continue
+          git config --file "$job_global" --add safe.directory "$safe_dir"
+        done < <(git config --global --get-all safe.directory 2>/dev/null || true)
+        index_url="https://github.com/${REGISTRY_OWNER}/${REGISTRY_REPOSITORY}.git"
+        basic="AUTHORIZATION: Basic $(printf 'x-access-token:%s' "$APP_TOKEN" | base64 | tr -d '\n')"
+        bearer="Bearer $APP_TOKEN"
+        echo "::add-mask::$basic"
+        echo "::add-mask::$bearer"
+        registry_env="$(printf '%s' "$REGISTRY" | tr '[:lower:]-' '[:upper:]_')"
+        job_env() {
+          printf '%s=%s\n' "$1" "$2" >> "$GITHUB_ENV"
+          export "$1=$2"
+        }
+        job_env GIT_CONFIG_GLOBAL "$job_global"
+        job_env GIT_CONFIG_NOSYSTEM 1
+        job_env "GIT_CONFIG_KEY_${offset}" credential.helper
+        job_env "GIT_CONFIG_VALUE_${offset}" ""
+        job_env "GIT_CONFIG_KEY_$((offset + 1))" "http.${index_url}.extraheader"
+        job_env "GIT_CONFIG_VALUE_$((offset + 1))" "$basic"
+        job_env GIT_CONFIG_COUNT "$((offset + 2))"
+        job_env GIT_TERMINAL_PROMPT 0
+        job_env CARGO_NET_GIT_FETCH_WITH_CLI true
+        job_env "CARGO_REGISTRIES_${registry_env}_TOKEN" "$bearer"
+        # A probe verifies the same scoped Git transport Cargo will use.
+        out=$(git ls-remote "$index_url" HEAD)
+        echo "$out" | grep -qE '^[0-9a-f]{40}[[:space:]]+HEAD$'
+
     - name: Configure job-scoped git credentials
+      if: ${{ inputs.registry == '' }}
       id: credentials
       shell: bash
       env:
