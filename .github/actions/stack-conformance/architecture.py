@@ -610,6 +610,8 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
         name = m.group(1) or m.group(2)
         if not code[m.start():m.start()+2].strip():
             continue
+        if pathlib.PurePosixPath(path).name == "build.rs" and (name.startswith("CARGO_") or name in {"OUT_DIR", "TARGET", "HOST", "PROFILE", "OPT_LEVEL", "DEBUG", "NUM_JOBS", "RUSTC", "RUSTDOC", "RUSTC_LINKER", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS"}):
+            continue
         if name not in declared and not name.startswith(("GITHUB_", "RUNNER_")) and name not in {"CI", "HOME", "PATH", "TMPDIR"}:
             add(m.start(), "C4", "undeclared-setting", "Literal environment read lacks a declaration in the environment schema or sample")
     if suffix == ".py":
