@@ -58,7 +58,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.inputs.code-merge || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - uses: ./.github/actions/auth-surface-guard
+        with:
+          base: ${{ github.event.inputs.code-base || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
