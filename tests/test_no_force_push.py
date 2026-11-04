@@ -90,6 +90,23 @@ spawnSync('git', ['push', 'origin', 'pin']);
         errors = guard.decide(report["findings"], set(), set(), [], True, True)
         self.assertNotIn("private-credential", json.dumps([report, errors]))
 
+    def test_candidate_matches_the_complete_pre_read_domain(self):
+        files = {f'tests/fixtures/input{suffix}': '# ordinary library text\n'
+                 for suffix in guard.SHELL | guard.SOURCE | {'.yml', '.yaml'}}
+        files.update({f'docs/{name}': '{}\n' for name in
+                      ['Makefile', 'justfile', 'Dockerfile', 'package.json']})
+        files.update({'vendor/tool.sh': None, 'assets/image.png': None, 'docs/readme.md': None})
+        tree = Tree(files)
+        reads = []
+        def read(path):
+            reads.append(path)
+            return files[path]
+        tree.read = read
+        report = guard.scan(tree)
+        self.assertEqual(set(reads), {path for path in files if guard.candidate(path)})
+        self.assertEqual(report['unreadable'], [])
+        self.assertEqual(report['findings'], [])
+
     def test_unreadable_candidate_fails_closed(self):
         report = guard.scan(Tree({"scripts/publish.sh": None}))
         self.assertEqual(report["unreadable"], [{"path": "scripts/publish.sh", "reason": "Git blob unavailable"}])

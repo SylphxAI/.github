@@ -30,6 +30,7 @@ Use one from another repository with
 | [chat-senders](.github/actions/chat-senders/README.md) | Fails when a change adds a direct Telegram, Slack or Discord chat-API host outside the action's allow-list; products send chat through Notify |
 | [stack-conformance](docs/stack-conformance.md) | Fails a change that adds a departure from the default stack, an agent-runtime part Sylphx Agents owns that `policy/agent-runtime.json` does not allow until a date, or a knowledge-graph or CRM table that `policy/knowledge-tables.json` does not allow until a date |
 | [zh-hant](.github/actions/zh-hant/action.yml) | Fails when a change adds a Simplified-only character to Traditional Chinese text |
+| [Broker CI actions](docs/broker-ci-actions.md) | One-repository Broker exchange, independent path-aware source credentials, and top-level-identity image/red-main adapters |
 | [git-app-credentials](.github/actions/git-app-credentials/action.yml) | Creates a job-scoped GitHub App token for private git and cargo fetches |
 | [cache-toolchain](.github/actions/cache-toolchain/action.yml) | Dependency cache keyed per toolchain (cargo, bun, npm, pnpm, gradle, unity) |
 | [run-store](docs/run-store.md) | Hands a file or directory between the jobs of a run through the BuildCache gateway, keyed by run id; CI never depends on GitHub artifact storage |

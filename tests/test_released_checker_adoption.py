@@ -57,7 +57,13 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
             fixture.commit({WORKFLOW: workflow(UNKNOWN)})
             plan = fixture.plan(base)
             self.assertEqual(plan["evidence"]["old_checkers"], [])
-            self.assertEqual(set(plan["introduced_rules"]), sc.adoption.current_rules())
+            # Whole-rule onboarding already covers inherited Rust literals;
+            # the narrower transition capability must not add a second marker.
+            coverage = sc.adoption.RUST_LITERAL_COVERAGE
+            self.assertEqual(set(plan["introduced_rules"]),
+                             sc.adoption.current_rules() - {coverage})
+            self.assertNotIn(sc.adoption.RULE_MARKER + coverage,
+                             plan["baseline_text"])
             self.assertEqual(len(plan["evidence"]["added_records"]), 2)
             self.assertTrue(plan["baseline_text"].startswith(baseline))
             adopted = fixture.commit({sc.BASELINE: plan["baseline_text"]})

@@ -1,33 +1,13 @@
 name: broker-write-token
-description: >-
-  Trade this job's GitHub Actions OIDC token for a one-repository GitHub App
-  installation token through the Sylphx platform, with no App private key
-  anywhere (company/credentials.md, the Broker is the only signer).
-
-  Two hops, both on the platform:
-  1. `POST /v1/access/github/token` with the job's OIDC token (audience
-     `sylphx-access`) and the workflow's `[[ci]]` declaration name, for a
-     short-lived Access key. The declaration pins the repository, the workflow
-     file and the ref, so a fork or a pull-request event cannot trade.
-   2. `POST /v1/{trust_policy}:exchangeToken` with that key, narrowed to the one
-     calling repository, for an installation token carrying only what the
-      TrustPolicy grants.
-      The Access key's advertised propagation delay and same-key `whoami`
-      readiness are checked before this one Broker request; no mint or Broker
-      POST is retried.
-
-  The token is written to a 0600 file under RUNNER_TEMP and returned as an
-  output the caller masks as a secret; it is never printed. A failed hop writes
-  its reason to the `failure` output and fails unless `soft-fail` is true.
+description: Exchange this signed job identity for one repository through Access and Broker. No PEM, fallback, persisted
+  token URL or retried write. Read-only uses the separate ExchangeReadToken RPC.
 inputs:
   trust-policy:
-    description: >-
-      The Kernel Broker TrustPolicy, `orgs/{org}/trust_policies/{policy}`.
+    description: The Kernel Broker TrustPolicy, `orgs/{org}/trust_policies/{policy}`.
     required: true
   ci-name:
-    description: >-
-      The `[[ci]]` declaration name this workflow exchanges under. Defaults to
-      the TrustPolicy id (the last path segment).
+    description: The `[[ci]]` declaration name this workflow exchanges under. Defaults to the TrustPolicy id (the
+      last path segment).
     required: false
     default: ''
   repository:
@@ -38,11 +18,30 @@ inputs:
     required: false
     default: https://api.sylphx.com
   soft-fail:
-    description: >-
-      `true` writes the reason to the `failure` output and succeeds instead of
-      failing the step; the caller reports it by name. Default `false`.
+    description: '`true` writes the reason to the `failure` output and succeeds instead of failing the step; the
+      caller reports it by name. Default `false`.'
     required: false
     default: 'false'
+  permissions:
+    description: Explicit JSON map of GitHub permissions; empty inherits policy only for ordinary exchange.
+    required: false
+    default: '{}'
+  read-only:
+    description: true selects ExchangeReadToken; explicit read permissions required.
+    required: false
+    default: 'false'
+  app-slug:
+    description: Optional bot slug, checked against the returned issuer via public GitHub App metadata.
+    required: false
+    default: ''
+  expected-issuer:
+    description: Optional exact issuer pin, github-apps/{numeric id}.
+    required: false
+    default: ''
+  expected-connection:
+    description: Optional exact canonical Connection resource pin.
+    required: false
+    default: ''
 outputs:
   token:
     description: The installation token, empty when the exchange failed.
@@ -53,78 +52,36 @@ outputs:
   failure:
     description: A one-line reason when the exchange failed, empty on success.
     value: ${{ steps.exchange.outputs.failure }}
+  issuer:
+    description: Authoritative nonsecret Broker issuer.
+    value: ${{ steps.exchange.outputs.issuer }}
+  connection:
+    description: Authoritative nonsecret Broker connection.
+    value: ${{ steps.exchange.outputs.connection }}
+  expire-time:
+    description: Authoritative nonsecret Broker expire-time.
+    value: ${{ steps.exchange.outputs.expire-time }}
+  token-exchange:
+    description: Authoritative nonsecret Broker token-exchange.
+    value: ${{ steps.exchange.outputs.token-exchange }}
+  permissions:
+    description: Authoritative nonsecret Broker permissions.
+    value: ${{ steps.exchange.outputs.permissions }}
 runs:
   using: composite
   steps:
-    - name: Exchange the OIDC token for an installation token
-      id: exchange
-      shell: bash
-      env:
-        BROKER_POLICY: ${{ inputs.trust-policy }}
-        BROKER_CI_NAME: ${{ inputs.ci-name }}
-        REPO: ${{ inputs.repository }}
-        API_URL: ${{ inputs.api-url }}
-        SOFT_FAIL: ${{ inputs.soft-fail }}
-      run: |
-        set -uo pipefail
-        fail() {
-          printf '::error::%s\n' "$1"
-          { echo "failure=$1"; echo "token="; } >>"$GITHUB_OUTPUT"
-          [ "$SOFT_FAIL" = true ] || exit 1
-        }
-        [ -n "${BROKER_POLICY:-}" ] || { fail "broker-write-token: trust-policy is empty"; exit 0; }
-        # The runner injects these at step execution, not into the expression
-        # env context. Renaming them through an env expression loses authority.
-        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-          fail "no Actions OIDC request URL/token: the caller must grant id-token: write for the Broker path to $BROKER_POLICY"
-          exit 0
-        fi
-        ci_name="${BROKER_CI_NAME:-${BROKER_POLICY##*/}}"
-        # 1. GitHub OIDC token -> short-lived Access key.
-        oidc=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sylphx-access" | jq -r '.value // empty') || {
-          fail "the GitHub OIDC token request to $ACTIONS_ID_TOKEN_REQUEST_URL failed at the network"; exit 0; }
-        if [ -z "$oidc" ]; then
-          fail "the GitHub OIDC token request returned no token: the caller must grant id-token: write"
-          exit 0
-        fi
-        key_reply=$(curl -sS -X POST "${API_URL}/v1/access/github/token" \
-          -H 'content-type: application/json' \
-          --data "$(jq -cn --arg n "$ci_name" --arg t "$oidc" '{name:$n,token:$t}')") || {
-          fail "the Access key exchange (POST /v1/access/github/token, ci $ci_name) failed at the network"; exit 0; }
-        api_key=$(jq -r '.api_key // empty' <<<"$key_reply")
-        if [ -z "$api_key" ]; then
-          why=$(jq -r '.detail // .title // "no reason given"' <<<"$key_reply")
-          fail "no Access key for ci $ci_name: $why (is $REPO declared under [[ci]]?)"
-          exit 0
-        fi
-        echo "::add-mask::$api_key"
-        # A minted key is not necessarily visible to every serving verifier.
-        # Wait/read the SAME key before the one Broker POST; never remint or
-        # retry that write on a propagation refusal.
-        if ! printf '%s' "$key_reply" | python3 "$GITHUB_ACTION_PATH/../_shared/access_ready.py" --api-url "$API_URL"; then
-          fail "the issued Access key is not ready; no Broker exchange was sent"
-          exit 0
-        fi
-        # 2. Access key -> one-repository installation token.
-        policy="${BROKER_POLICY%/}"
-        tok_reply=$(curl -sS -X POST "${API_URL}/v1/${policy}:exchangeToken" \
-          -H 'content-type: application/json' \
-          -H "Authorization: Bearer ${api_key}" \
-          --data "$(jq -cn --arg r "$REPO" '{repositories:[$r]}')") || {
-          fail "the Broker exchange (POST /v1/${policy}:exchangeToken) failed at the network"; exit 0; }
-        token=$(jq -r '.token // empty' <<<"$tok_reply")
-        if [ -z "$token" ]; then
-          why=$(jq -r '.detail // .title // "no reason given"' <<<"$tok_reply")
-          fail "no installation token from $policy for $REPO: $why"
-          exit 0
-        fi
-        echo "::add-mask::$token"
-        printf '%s' "$token" >"${RUNNER_TEMP:?}/broker-token"
-        chmod 600 "${RUNNER_TEMP}/broker-token"
-        {
-          echo "token=$token"
-          echo "app-slug=sylphx-ai"
-          echo "failure="
-        } >>"$GITHUB_OUTPUT"
-        echo "the Broker minted a one-repository installation token for $REPO under $policy"
+  - name: Exchange the OIDC token for an installation token
+    id: exchange
+    shell: bash
+    env:
+      BROKER_POLICY: ${{ inputs.trust-policy }}
+      BROKER_CI_NAME: ${{ inputs.ci-name }}
+      REPO: ${{ inputs.repository }}
+      API_URL: ${{ inputs.api-url }}
+      SOFT_FAIL: ${{ inputs.soft-fail }}
+      READ_ONLY: ${{ inputs.read-only }}
+      PERMISSIONS: ${{ inputs.permissions }}
+      APP_SLUG: ${{ inputs.app-slug }}
+      EXPECTED_ISSUER: ${{ inputs.expected-issuer }}
+      EXPECTED_CONNECTION: ${{ inputs.expected-connection }}
+    run: python3 "$GITHUB_ACTION_PATH/exchange.py"
