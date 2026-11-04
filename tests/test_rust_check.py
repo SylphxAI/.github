@@ -87,6 +87,30 @@ class RustCheckWorkflow(unittest.TestCase):
         self.assertNotIn("ci-sccache", job)
         self.assertNotIn("AWS_ACCESS_KEY_ID", job)
 
+    def test_private_cargo_registry_is_opt_in_and_uses_pinned_git_app_credentials(self) -> None:
+        spec = yaml.safe_load(self.text)
+        inputs = (spec.get("on") or spec[True])["workflow_call"]["inputs"]
+        for name in ("registry", "registry-owner", "registry-repository"):
+            self.assertEqual(inputs[name]["required"], False)
+            self.assertEqual(inputs[name]["type"], "string")
+            self.assertEqual(inputs[name]["default"], "")
+        step = next(s for s in spec["jobs"]["check"]["steps"] if s.get("name") == "Private Cargo registry")
+        self.assertEqual(step["if"], "inputs.registry != ''")
+        self.assertEqual(
+            step["uses"],
+            "SylphxAI/.github/.github/actions/git-app-credentials@8fa6fbcb2289110ab4b713768db3e3e8faf3e1c9",
+        )
+        self.assertEqual(
+            step["with"],
+            {
+                "app-id": "${{ secrets.GIT_DEPS_APP_ID }}",
+                "private-key": "${{ secrets.GIT_DEPS_APP_KEY }}",
+                "registry": "${{ inputs.registry }}",
+                "owner": "${{ inputs.registry-owner }}",
+                "repositories": "${{ inputs.registry-repository }}",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

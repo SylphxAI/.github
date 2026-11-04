@@ -299,3 +299,21 @@ test('known renamed and context identities are located but unsafe supplied path 
     if (knownPath === null) assert.ok(!JSON.stringify(result.validation_failure).includes(path));
   }
 });
+
+test('line-qualified evidence recovers unique verbatim nearby lines and refuses ambiguous or non-verbatim quotes', () => {
+  const head = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'duplicate', 'duplicate', 'omega'].join('\n') + '\n';
+  const input = inputFor('old\n', head);
+  const shifted = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
+    start_line: 2, end_line: 3, start_byte: null, end_byte: null, quote: 'delta\nepsilon' }] }), input);
+  assert.equal(shifted.status, 'complete');
+  assert.equal(shifted.related_evidence[0].start_line, 4);
+  assert.equal(shifted.related_evidence[0].end_line, 5);
+  const ambiguous = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
+    start_line: 5, end_line: 5, start_byte: null, end_byte: null, quote: 'duplicate' }] }), input);
+  assert.equal(ambiguous.status, 'unavailable');
+  assert.equal(ambiguous.validation_failure.code, 'quote_mismatch');
+  const tooFar = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
+    start_line: 1, end_line: 1, start_byte: null, end_byte: null, quote: 'omega' }] }), input);
+  assert.equal(tooFar.status, 'unavailable');
+  assert.equal(tooFar.validation_failure.code, 'quote_mismatch');
+});

@@ -46,6 +46,21 @@ on:
         required: false
         type: string
         default: ''
+      registry:
+        description: Named Cargo registry configured through the caller's git-deps App when set.
+        required: false
+        type: string
+        default: ''
+      registry-owner:
+        description: Organization or user that owns the private Cargo registry repository.
+        required: false
+        type: string
+        default: ''
+      registry-repository:
+        description: Repository that backs the private Cargo registry index.
+        required: false
+        type: string
+        default: ''
     secrets:
       GIT_DEPS_APP_ID:
         description: Id of the caller's own reader App, installed on the owners in git-deps.
@@ -146,6 +161,15 @@ jobs:
           # later lint step finds it on the same toolchain.
           rustup component add clippy
           cargo --version
+      - name: Private Cargo registry
+        if: inputs.registry != ''
+        uses: SylphxAI/.github/.github/actions/git-app-credentials@8fa6fbcb2289110ab4b713768db3e3e8faf3e1c9 # main
+        with:
+          app-id: ${{ secrets.GIT_DEPS_APP_ID }}
+          private-key: ${{ secrets.GIT_DEPS_APP_KEY }}
+          registry: ${{ inputs.registry }}
+          owner: ${{ inputs.registry-owner }}
+          repositories: ${{ inputs.registry-repository }}
       - name: Private git dependencies
         if: inputs.git-deps != ''
         env:
