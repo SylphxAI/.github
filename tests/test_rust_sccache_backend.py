@@ -614,7 +614,8 @@ class RustSccacheStart(unittest.TestCase):
         import yaml
 
         action = yaml.safe_load((ACTION / "action.yml").read_text())
-        condition = action["runs"]["steps"][0]["if"]
+        condition = next(step for step in action["runs"]["steps"]
+                         if step.get("name") == "Export the Actions cache service to sccache")["if"]
         self.assertNotIn("inputs.s3-", condition)
         self.assertIn("inputs.actions-cache != 'false'", condition)
 

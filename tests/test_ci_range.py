@@ -313,16 +313,28 @@ class WorkflowLintArgumentsTest(unittest.TestCase):
     def test_patterns_and_args_are_never_word_split(self) -> None:
         import yaml
         action = yaml.safe_load((ROOT / ".github" / "actions" / "workflow-lint" / "action.yml").read_text())
-        step = action["runs"]["steps"][0]
+        step = next(step for step in action["runs"]["steps"] if "VERSION" in step.get("env", {}))
         with tempfile.TemporaryDirectory() as tmp:
             fake = pathlib.Path(tmp, "actionlint")
             fake.write_text('#!/usr/bin/env bash\n'
                             'if [ "${1:-}" = -version ]; then echo "$VERSION"; exit 0; fi\n'
                             'for a in "$@"; do printf "%s\\n" "$a"; done > "$OUT"\n')
             fake.chmod(0o755)
+            # A warm archive must work with the upstream completely unavailable.
+            import hashlib
+            import tarfile
+            archive_dir = pathlib.Path(tmp, "pinned-tools", "actionlint-" + step["env"]["SHA256"])
+            archive_dir.mkdir(parents=True)
+            archive = archive_dir / "a.tgz"
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(fake, arcname="actionlint")
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            curl = pathlib.Path(tmp, "curl")
+            curl.write_text("#!/bin/sh\nexit 99\n")
+            curl.chmod(0o755)
             out = pathlib.Path(tmp, "argv")
             env = dict(os.environ, PATH=f"{tmp}:{os.environ['PATH']}", RUNNER_TEMP=tmp, OUT=str(out),
-                       VERSION=step["env"]["VERSION"], SHA256=step["env"]["SHA256"],
+                       VERSION=step["env"]["VERSION"], SHA256=digest,
                        IGNORE='label ".+" is unknown\n\nproperty "x y" is not defined\n',
                        ARGS="-config-file\n.github/actionlint.yaml\n")
             subprocess.run(["bash", "-c", step["run"]], env=env, check=True)
@@ -331,6 +343,13 @@ class WorkflowLintArgumentsTest(unittest.TestCase):
                 "-ignore", 'label ".+" is unknown',
                 "-ignore", 'property "x y" is not defined',
                 "-config-file", ".github/actionlint.yaml"])
+            # A poisoned restore is refused before executing the cached binary.
+            archive.write_bytes(b"corrupted archive")
+            out.unlink()
+            result = subprocess.run(["bash", "-c", step["run"]], env=env, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(out.exists())
+
 
 
 class StarterWorkflowTest(unittest.TestCase):
