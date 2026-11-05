@@ -317,6 +317,25 @@ class HistoryTests(unittest.TestCase):
         newer_main = self.commit()
         self.assertEqual(guard.check_range(self.root, newer_main, feature, ["db"], "postgres"), ([], 0))
 
+    def test_branch_behind_main_cannot_insert_migration_before_newer_main_top(self):
+        self.git("checkout", "-qb", "feature")
+        self.write("db/0002_feature.sql", "SELECT 1;")
+        feature = self.commit()
+        self.git("checkout", "-q", "main")
+        self.write("db/0003_main.sql", "SELECT 1;")
+        newer_main = self.commit()
+        errors, count = guard.check_range(self.root, newer_main, feature, ["db"], "postgres")
+        self.assertEqual(count, 1)
+        self.assertIn("above 3 already on the base", "\n".join(errors))
+
+    def test_future_timestamp_migration_is_refused(self):
+        from datetime import datetime, timedelta, timezone
+        future_prefix = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y%m%d%H%M%S")
+        self.write(f"db/{future_prefix}_hkt_mistake.sql", "SELECT 1;")
+        self.commit()
+        errors, _ = self.check()
+        self.assertIn("is in the future (more than 15 minutes ahead of UTC)", "\n".join(errors))
+
     def test_main_reports_failure_and_never_executes_sql(self):
         self.write("db/0002_drop.sql", "DROP TABLE accounts;")
         self.commit()
