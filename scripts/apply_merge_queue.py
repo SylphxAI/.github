@@ -25,7 +25,8 @@ a user (every desk App's), so it would hold every bot pull request for an
 approval `ci-ok` already made; the policy converges it to false. Required checks
 are additive: unrelated checks and every other ruleset field are preserved.
 Inherited organization or enterprise rulesets are reported and never written.
-The fast gate and strict flag are reported fleet-wide, but checks are changed
+The strict flag is converged to false on rulesets carrying a merge queue;
+non-queue rulesets retain their strict flag. The fast gate is reported fleet-wide, but checks are changed
 only on the declared repository/ruleset ID/name targets. Before adding a gate,
 follow the producer/backfill/live-posting/alert readiness procedure in
 docs/merge-queue-settings.md. Rollback restores queue parameters only; required-check
@@ -54,6 +55,7 @@ DEFAULT_POLICY = ROOT / "policy" / "merge-queue.json"
 HANDS_OFF_POLICY = ROOT / "policy" / "optimistic-merge.json"
 REVIEW_KEY = "required_approving_review_count"
 EXTRA_APPROVAL_KEY = "require_extra_approval_for_unattributed_changes"
+STRICT_KEY = "strict_required_status_checks_policy"
 
 # REST (snake_case) <-> GraphQL (camelCase) names of the merge queue parameters.
 PARAMS = {
@@ -105,6 +107,8 @@ def load_policy(path: Path) -> dict:
                 raise ValueError(f"{key} entry {entry.get('repo')!r} lacks {missing}")
     for entry in policy.get("overrides", []):
         check_settings(entry["settings"], f"override {entry['repo']}")
+    if policy.get("queue_required_status_checks", {}).get(STRICT_KEY) is not False:
+        raise ValueError(f"queue_required_status_checks.{STRICT_KEY} must be false")
     targets = set()
     required = policy.get("required_checks", [])
     if not isinstance(required, list):
@@ -359,6 +363,10 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
         wanted = merge_checks(current, checks)
         if checks and wanted != current:
             changes["required_status_checks"] = [current, wanted]
+        if item["live"] is not None and item["required"] is not None:
+            strict = policy["queue_required_status_checks"][STRICT_KEY]
+            if item["strict"] is not strict:
+                changes[STRICT_KEY] = [item["strict"], strict]
         if item["live"] is None:
             row.update(status="DRIFT" if changes else "OK", changes=changes, notes=[])
             rows.append(row)
@@ -371,8 +379,6 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
             notes.append(f"fast gate {gate} is not a required check (required: {', '.join(item['required']) or 'none'})")
         elif len(item["required"]) > 1:
             notes.append("also required: " + ", ".join(c for c in item["required"] if c != gate))
-        if item["strict"]:
-            notes.append("strict_required_status_checks_policy is on (not managed here)")
         row.update(status="DRIFT" if changes else "OK", changes=changes, notes=notes)
         rows.append(row)
     found = {(item["repo"], item["id"]) for item in fleet}
@@ -421,7 +427,8 @@ def with_queue(ruleset: dict, settings: dict) -> dict:
     return body
 
 
-def with_rules(ruleset: dict, settings: dict, review_count: int, extra_approval: bool, checks: list[dict]) -> dict:
+def with_rules(ruleset: dict, settings: dict, review_count: int, extra_approval: bool, checks: list[dict],
+               strict: bool | None = None) -> dict:
     body = put_body(ruleset)
     rules = []
     has_checks = False
@@ -434,12 +441,14 @@ def with_rules(ruleset: dict, settings: dict, review_count: int, extra_approval:
         elif rule["type"] == "required_status_checks":
             has_checks = True
             params = rule.get("parameters") or {}
+            if strict is not None:
+                params = {**params, STRICT_KEY: strict}
             rule = {**rule, "parameters": {**params, "required_status_checks":
                     merge_checks(params.get("required_status_checks", []), checks)}}
         rules.append(rule)
     if checks and not has_checks:
         rules.append({"type": "required_status_checks", "parameters": {
-            "strict_required_status_checks_policy": False,
+            STRICT_KEY: strict if strict is not None else True,
             "do_not_enforce_on_create": False,
             "required_status_checks": [dict(check) for check in checks]}})
     body["rules"] = rules
@@ -457,13 +466,14 @@ def review_count(ruleset: dict) -> int | None:
 
 
 def managed(ruleset: dict) -> tuple:
-    """Queue parameters, review count, extra-approval flag, and exact required-check App bindings."""
+    """Queue parameters, review count, extra-approval flag, and exact required-check App bindings and strict flag."""
     rule = next((r for r in ruleset["rules"] if r["type"] == "required_status_checks"), None)
     checks = (rule.get("parameters") or {}).get("required_status_checks", []) if rule else None
     bindings = None if checks is None else tuple(sorted(
         ((check["context"], check.get("integration_id") or None) for check in checks),
         key=lambda pair: (pair[0], pair[1] or 0)))
-    return queue_params(ruleset), review_count(ruleset), extra_approval(ruleset), bindings
+    strict = (rule.get("parameters") or {}).get(STRICT_KEY) if rule else None
+    return queue_params(ruleset), review_count(ruleset), extra_approval(ruleset), bindings, strict
 
 
 def backup_path(backup_dir: Path, row: dict) -> Path:
@@ -495,7 +505,8 @@ def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | N
             count = policy["review"][REVIEW_KEY]
             extra = policy["review"][EXTRA_APPROVAL_KEY]
             checks = desired_checks(policy, row["repo"], row["id"], before["name"])
-            body = with_rules(before, settings, count, extra, checks)
+            strict = policy["queue_required_status_checks"][STRICT_KEY] if queue_params(before) is not None else None
+            body = with_rules(before, settings, count, extra, checks, strict)
             want = managed(body)
             after = gh.rest(path, "PUT", body)
             if managed(after) != want:
