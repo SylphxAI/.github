@@ -88,7 +88,15 @@ The tool manages merge-queue parameters, approving review counts, the
 extra-approval flag and explicitly scoped required-check bindings. `required_checks` names the exact repository,
 ruleset ID and name, a reason, and `{context, integration_id}` checks. It adds
 missing checks or corrects their publisher bindings without deleting unrelated
-checks, changing the strict flag, or altering conditions or bypass actors.
+checks or altering conditions or bypass actors. Independently,
+`queue_required_status_checks.strict_required_status_checks_policy: false`
+converges the strict flag on repository rulesets carrying a `merge_queue` rule.
+Non-queue rulesets preserve their existing strict flag (new non-queue check
+rules default to strict=true). Excluded and inherited rulesets are never changed.
+The managed readback includes contexts, App bindings and the strict flag.
+GitHub documents that a queue provides the same up-to-date protection without
+requiring authors to update PR branches ([merge queue documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue),
+read 2026-11-05).
 Unscoped rulesets keep their required checks unchanged. A missing declared
 target or a changed ruleset name refuses apply rather than silently missing a
 repository. Dry-run reports required-check drift and App IDs; apply reads back

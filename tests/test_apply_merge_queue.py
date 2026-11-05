@@ -711,3 +711,78 @@ class ExtraApprovalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StrictConvergenceTests(unittest.TestCase):
+    def fake(self, queue=True):
+        rs = ruleset(42, "queue", POLICY["settings"] if queue else None, reviews=0)
+        rs["rules"][1 if queue else 0]["parameters"][amq.STRICT_KEY] = True
+        return FakeGh({"SylphxAI/example": rs})
+
+    def rows(self, gh, skip=None):
+        fleet = amq.read_org(gh, "SylphxAI")
+        amq.enrich_extra_approval(gh, fleet, skip or {}, set())
+        return amq.plan(fleet, POLICY, skip or {})
+
+    def test_strict_only_drift_converges_and_is_idempotent(self):
+        gh = self.fake()
+        rows = self.rows(gh)
+        row = next(r for r in rows if r["id"] == 42)
+        self.assertEqual(row["changes"], {amq.STRICT_KEY: [True, False]})
+        before = copy.deepcopy(gh.rulesets["SylphxAI/example"])
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(amq.apply(gh, rows, POLICY, pathlib.Path(directory), pause=0)[0]["result"], "APPLIED")
+            expected = copy.deepcopy(before)
+            expected["rules"][1]["parameters"][amq.STRICT_KEY] = False
+            self.assertEqual(gh.rulesets["SylphxAI/example"], expected)
+            self.assertEqual(amq.apply(gh, self.rows(gh), POLICY, pathlib.Path(directory), pause=0), [])
+        self.assertEqual(len(gh.puts), 1)
+
+    def test_nonqueue_strict_true_survives_other_drift(self):
+        gh = self.fake(queue=False)
+        gh.rulesets["SylphxAI/example"]["rules"][-1]["parameters"][amq.REVIEW_KEY] = 1
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(amq.apply(gh, self.rows(gh), POLICY, pathlib.Path(directory), pause=0)[0]["result"], "APPLIED")
+        self.assertIs(gh.rulesets["SylphxAI/example"]["rules"][0]["parameters"][amq.STRICT_KEY], True)
+
+    def test_excluded_and_inherited_rulesets_are_not_written(self):
+        gh = self.fake()
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(amq.apply(gh, self.rows(gh, {"SylphxAI/example": "hands-off"}),
+                                       POLICY, pathlib.Path(directory), pause=0), [])
+        self.assertEqual(gh.puts, [])
+
+    def test_readback_rejects_correct_bindings_with_wrong_strict_flag(self):
+        class IgnoresStrict(FakeGh):
+            def rest(self, path, method="GET", body=None):
+                if method == "PUT":
+                    body = copy.deepcopy(body)
+                    next(r for r in body["rules"] if r["type"] == "required_status_checks")["parameters"][amq.STRICT_KEY] = True
+                return super().rest(path, method, body)
+        gh = IgnoresStrict(self.fake().rulesets)
+        with tempfile.TemporaryDirectory() as directory:
+            result = amq.apply(gh, self.rows(gh), POLICY, pathlib.Path(directory), pause=0)
+        self.assertEqual(result[0]["result"], "FAILED: read back differs")
+        self.assertGreaterEqual(len(gh.detail_reads), 3)
+
+    def test_queue_check_creation_and_binding_correction_include_false(self):
+        gh = self.fake()
+        rs = gh.rulesets["SylphxAI/example"]
+        checks = [{"context": "ci-ok", "integration_id": 99}, {"context": "review-ok", "integration_id": 77}]
+        body = amq.with_rules(rs, POLICY["settings"], 0, False, checks, False)
+        self.assertEqual(body["rules"][1]["parameters"]["required_status_checks"], checks)
+        self.assertIs(body["rules"][1]["parameters"][amq.STRICT_KEY], False)
+        rs["rules"] = [r for r in rs["rules"] if r["type"] != "required_status_checks"]
+        for strict in (False, None):
+            body = amq.with_rules(rs, POLICY["settings"], 0, False, checks, strict)
+            self.assertIs(body["rules"][-1]["parameters"][amq.STRICT_KEY], strict if strict is not None else True)
+
+    def test_policy_requires_explicit_false_not_falsey(self):
+        for value in (None, 0, "false", True):
+            policy = copy.deepcopy(POLICY)
+            policy["queue_required_status_checks"][amq.STRICT_KEY] = value
+            with tempfile.TemporaryDirectory() as directory:
+                path = pathlib.Path(directory) / "policy.json"
+                path.write_text(json.dumps(policy))
+                with self.assertRaises(ValueError):
+                    amq.load_policy(path)
