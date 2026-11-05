@@ -39,6 +39,12 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Restore actionlint release archive
+      id: restore-binary
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ runner.temp }}/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        key: pinned-release-actionlint-linux-x64-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
     - shell: bash
       env:
         VERSION: 1.7.12
@@ -47,16 +53,19 @@ runs:
         ARGS: ${{ inputs.args }}
       run: |
         set -euo pipefail
-        bin=actionlint
-        if [ "$(actionlint -version 2>/dev/null | head -1)" != "$VERSION" ]; then
-          dir="$RUNNER_TEMP/actionlint-$VERSION"
-          mkdir -p "$dir"
-          curl --retry 5 --retry-connrefused -sSfL -o "$dir/a.tgz" \
+        dir="$RUNNER_TEMP/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        mkdir -p "$dir"
+        if [ ! -f "$dir/a.tgz" ]; then
+          curl --retry 5 --retry-connrefused --retry-max-time 180 --connect-timeout 20 --max-time 120 -sSfL -o "$dir/a.tgz.part" \
             "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
-          echo "$SHA256  $dir/a.tgz" | sha256sum -c --quiet
-          tar -xzf "$dir/a.tgz" -C "$dir" actionlint
-          bin="$dir/actionlint"
+          echo "$SHA256  $dir/a.tgz.part" | sha256sum -c --quiet
+          mv "$dir/a.tgz.part" "$dir/a.tgz"
+        else
+          echo "actionlint release archive from cache"
         fi
+        echo "$SHA256  $dir/a.tgz" | sha256sum -c --quiet
+        tar -xzf "$dir/a.tgz" -C "$dir" actionlint
+        bin="$dir/actionlint"
         # shellcheck and pyflakes integrations are off: they depend on what the
         # runner image happens to carry, and a gate must not.
         # Every argument is one line of an input: nothing is word-split or
@@ -69,6 +78,12 @@ runs:
           [ -n "$line" ] && argv+=("$line")
         done <<<"$ARGS"
         "$bin" "${argv[@]}"
+    - name: Save actionlint release archive
+      if: steps.restore-binary.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ runner.temp }}/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        key: pinned-release-actionlint-linux-x64-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
     - name: No non-deterministic gate before merge
       shell: bash
       env:
