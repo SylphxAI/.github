@@ -131,8 +131,6 @@ runs:
         # Incremental artifacts are not cacheable, and sccache refuses them.
         echo "RUST_FONTCONFIG_DLOPEN=1" >> "$GITHUB_ENV"
         echo "FREETYPE2_NO_PKG_CONFIG=1" >> "$GITHUB_ENV"
-        echo "RUST_FONTCONFIG_DLOPEN=1" >> "$GITHUB_ENV"
-        echo "FREETYPE2_NO_PKG_CONFIG=1" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
         . "$GITHUB_ACTION_PATH/start.sh"
