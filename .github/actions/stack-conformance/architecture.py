@@ -818,11 +818,16 @@ def portability_rekeys(base_findings, base_records):
 
     A formerly overbroad token can contain several real literals; a raw token
     can instead wrap a formerly quoted-body finding. All members are individually
-    identified at the base, never inferred from the head.
+    identified at the base, never inferred from the head. Once a shifted
+    occurrence is already recorded at the base under its current key and its
+    legacy key belongs to an earlier current occurrence whose own legacy span
+    was already retired, no rekey remains pending.
     """
+    actual = {baseline_key(row) for row in base_findings}
     candidates = {}
     for row in base_findings:
+        key = baseline_key(row)
         for old in row.get("legacy_portability_keys", ()):
-            if old in base_records and old != baseline_key(row):
-                candidates.setdefault(old, set()).add(baseline_key(row))
+            if old in base_records and old != key and (old not in actual or key not in base_records):
+                candidates.setdefault(old, set()).add(key)
     return candidates

@@ -193,8 +193,11 @@ class ProjectPortabilityGateTests(unittest.TestCase):
         self.assertEqual(result['evidence']['corrected_constituents'], 2)
         self.assertEqual(len([line for line in result['baseline_text'].splitlines()
                               if line.startswith('architecture ')]), 2)
-        f.commit({sc.BASELINE: result['baseline_text']})
+        migrated = f.commit({sc.BASELINE: result['baseline_text']})
         f.check(base, 0)
+        f.check(migrated, 0)
+        f.commit({path: source.replace("fn next<'b>() {}", "fn next<'b>() { let _ = 1; }")})
+        f.check(migrated, 0)
         f.commit({path: source + 'const THIRD: &str = "http://gate:24001";\n'})
         self.assertIn('project-portability', f.check(base, 1)[0])
 
