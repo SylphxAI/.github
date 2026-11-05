@@ -79,6 +79,13 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Restore sccache release archive
+      id: restore-binary
+      if: runner.os == 'Linux' && runner.arch == 'X64'
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ runner.temp }}/pinned-tools/sccache-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
+        key: pinned-release-sccache-linux-x64-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
     - name: Export the Actions cache service to sccache
       if: inputs.actions-cache != 'false' && runner.os == 'Linux' && runner.arch == 'X64'
       uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
@@ -106,11 +113,17 @@ runs:
         BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
       run: |
         set -euo pipefail
-        dir="$RUNNER_TEMP/sccache-bin"
+        dir="$RUNNER_TEMP/pinned-tools/sccache-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
         mkdir -p "$dir"
         name="sccache-$VERSION-x86_64-unknown-linux-musl"
-        curl --retry 5 --retry-connrefused -sSfL -o "$dir/sccache.tgz" \
-          "https://github.com/mozilla/sccache/releases/download/$VERSION/$name.tar.gz"
+        if [ ! -f "$dir/sccache.tgz" ]; then
+          curl --retry 5 --retry-connrefused --retry-max-time 180 --connect-timeout 20 --max-time 120 -sSfL -o "$dir/sccache.tgz.part" \
+            "https://github.com/mozilla/sccache/releases/download/$VERSION/$name.tar.gz"
+          echo "$SHA256  $dir/sccache.tgz.part" | sha256sum -c --quiet
+          mv "$dir/sccache.tgz.part" "$dir/sccache.tgz"
+        else
+          echo "sccache release archive from cache"
+        fi
         echo "$SHA256  $dir/sccache.tgz" | sha256sum -c --quiet
         tar -xzf "$dir/sccache.tgz" -C "$dir" --strip-components=1 "$name/sccache"
         echo "$dir" >> "$GITHUB_PATH"
@@ -118,6 +131,14 @@ runs:
         # Incremental artifacts are not cacheable, and sccache refuses them.
         echo "RUST_FONTCONFIG_DLOPEN=1" >> "$GITHUB_ENV"
         echo "FREETYPE2_NO_PKG_CONFIG=1" >> "$GITHUB_ENV"
+        echo "RUST_FONTCONFIG_DLOPEN=1" >> "$GITHUB_ENV"
+        echo "FREETYPE2_NO_PKG_CONFIG=1" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
         . "$GITHUB_ACTION_PATH/start.sh"
+    - name: Save sccache release archive
+      if: runner.os == 'Linux' && runner.arch == 'X64' && steps.restore-binary.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ runner.temp }}/pinned-tools/sccache-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
+        key: pinned-release-sccache-linux-x64-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
