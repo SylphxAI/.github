@@ -32,6 +32,7 @@ def commit(sha=HEAD, message='Improve parser'):
 
 def pull():
     return {'number': 1, 'state': 'open', 'title': 'Improve parser', 'body': 'Validated parser behavior.',
+            'user': {'login': 'shtse8', 'id': 8020099, 'type': 'User'},
             'head': {'sha': HEAD, 'repo': {'updated_at': 'before'}},
             'base': {'sha': BASE, 'ref': 'main', 'repo': {'updated_at': 'before'}}}
 
@@ -74,6 +75,52 @@ class ContributionPolicy(unittest.TestCase):
                 for role in identity['roles']:
                     item['commit'][role] = identity
                 self.assertEqual(checker.evaluate(pull(), [item], POLICY), [])
+
+    def test_pull_request_opener_must_be_approved_because_it_authors_the_queue_squash(self):
+        cases = [
+            ('approved user', {'login': 'shtse8', 'id': 8020099, 'type': 'User'}, None),
+            ('agent application', {'login': 'sylphx-desk-studio[bot]', 'id': 336710508, 'type': 'Bot'},
+             'unapproved-pr-opener'),
+            ('automation application', {'login': 'sylphx-ai[bot]', 'id': 212550965, 'type': 'Bot'},
+             'unapproved-pr-opener'),
+            ('workflow token', {'login': 'github-actions[bot]', 'id': 41898282, 'type': 'Bot'},
+             'unapproved-pr-opener'),
+            ('login look-alike', {'login': 'shtse8', 'id': 1, 'type': 'User'}, 'unapproved-pr-opener'),
+            ('id look-alike', {'login': 'example', 'id': 8020099, 'type': 'User'}, 'unapproved-pr-opener'),
+        ]
+        for label, user, refused in cases:
+            with self.subTest(case=label):
+                pr = pull()
+                pr['user'] = user
+                findings = checker.evaluate(pr, [commit()], POLICY)
+                if refused:
+                    self.assertEqual(findings, [{'rule': refused, 'location': 'pull-request.user', 'line': 0}])
+                else:
+                    self.assertEqual(findings, [])
+        for user in (None, {'login': 'shtse8'}, {'login': 'shtse8', 'id': '8020099'}):
+            with self.subTest(user=user):
+                pr = pull()
+                if user is None:
+                    del pr['user']
+                else:
+                    pr['user'] = user
+                with self.assertRaises(checker.PolicyError):
+                    checker.evaluate(pr, [commit()], POLICY)
+        self.assertEqual(checker.evaluate(None, [commit()], POLICY), [])
+
+    def test_unapproved_opener_prints_the_remedy_at_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / 'snapshot.json'
+            pr = pull()
+            pr['user'] = {'login': 'sylphx-desk-services[bot]', 'id': 336710515, 'type': 'Bot'}
+            snapshot.write_text(json.dumps({'pull_request': pr, 'commits': [commit()]}))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = checker.main(['--input', str(snapshot)])
+            self.assertEqual(status, 1)
+            self.assertIn('unapproved-pr-opener at pull-request.user:0', output.getvalue())
+            self.assertIn('reopen this branch as an approved account', output.getvalue())
+            self.assertNotIn('sylphx-desk-services', output.getvalue())
 
     def test_identity_pair_cannot_mix_approved_names_and_emails(self):
         item = commit()

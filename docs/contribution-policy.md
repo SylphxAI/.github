@@ -25,6 +25,16 @@ email. Kyle's pushed commits continue to use `Kyle Tse <hi@kylet.se>`; Gmail
 with an ordinary committer fails. The exception never waives commit-message or
 PR-text checks, and merge-group membership must still resolve completely.
 
+A merge-queue squash commit is authored by the account that opened the pull
+request, not by the branch's commit authors. A pull request opened by an App
+(for example `sylphx-ai[bot]`, `sylphx-desk-studio[bot]` or
+`github-actions[bot]`) therefore produces a bot-authored squash that the
+`github_generated` rule refuses. To fail before the queue builds it, the PR
+check compares the opener's exact login and numeric user id with
+`pull_request_openers` and reports `unapproved-pr-opener` at
+`pull-request.user`. The remedy is to reopen the same branch as an approved
+account. Missing opener metadata fails closed.
+
 The check rejects attribution trailers, tool coauthors, and the configured
 coordination identifiers in commit messages and PR titles and bodies. Ordinary
 discussion of a product, model, generator, or command is allowed. Findings name

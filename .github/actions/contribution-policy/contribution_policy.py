@@ -76,6 +76,15 @@ def evaluate(pull_request, commits, policy, *, verified_github_commits=()):
             raise PolicyError('pull request metadata is incomplete')
         for field in ('title', 'body'):
             text(pull_request.get(field), 'pull-request.' + field)
+        # A queue squash is authored by the account that opened the pull request, so an
+        # unapproved opener is refused here instead of after the merge queue has built it.
+        opener = pull_request.get('user')
+        if not isinstance(opener, dict) or not isinstance(opener.get('login'), str) or \
+                not isinstance(opener.get('id'), int):
+            raise PolicyError('pull request metadata is incomplete')
+        openers = {(item['login'], item['id']) for item in policy['pull_request_openers']}
+        if (opener['login'], opener['id']) not in openers:
+            findings.append({'rule': 'unapproved-pr-opener', 'location': 'pull-request.user', 'line': 0})
     for item in commits:
         sha = item.get('sha', '')
         if not SHA.fullmatch(sha):
@@ -402,6 +411,9 @@ def main(argv=None):
             args.report.write_text(json.dumps({'passed': not findings, 'findings': findings}, indent=2) + '\n')
         for finding in findings:
             print('::error::Contribution policy: {rule} at {location}:{line}'.format(**finding))
+        if any(finding['rule'] == 'unapproved-pr-opener' for finding in findings):
+            print('Contribution policy: the merge queue authors its squash commit as the pull request opener; '
+                  'reopen this branch as an approved account.')
         print(f'Contribution policy: {len(findings)} finding(s).')
         return int(bool(findings))
     except (PolicyError, KeyError, ValueError, OSError) as error:
