@@ -12,6 +12,9 @@
       {"name": "Kyle Tse", "email": "shtse8@gmail.com"}
     ]
   },
+  "pull_request_openers": [
+    {"login": "shtse8", "id": 8020099}
+  ],
   "attribution_names": [
     "AI", "LLM", "assistant", "agent", "bot", "Claude", "Codex", "Copilot", "Cursor",
     "ChatGPT", "Gemini", "GPT", "OpenAI", "Anthropic", "Aider", "Devin", "CodeRabbit",
