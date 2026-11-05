@@ -242,7 +242,8 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(first["bindgen-key"], moved_keel["bindgen-key"])
         self.assertEqual(first["keel-key"], moved_bindgen["keel-key"])
         self.assertNotEqual(first["bindgen-key"], moved_bindgen["bindgen-key"])
-        cache_steps = [step for step in steps if step.get("uses", "").startswith("actions/cache/")]
+        cache_steps = [step for step in steps if step.get("uses", "").startswith("actions/cache/")
+                       and "toolchain" not in step["with"]["key"]]
         wiring = [(step["uses"].split("@")[0].rsplit("/", 1)[1],
                    step["with"]["key"], step["with"]["path"]) for step in cache_steps]
         self.assertCountEqual(wiring, [(operation,
@@ -250,6 +251,23 @@ class InstallerTest(unittest.TestCase):
             "${{ steps.key.outputs.root }}/" + directory)
             for operation in ("restore", "save")
             for tool, directory in (("keel", "keel"), ("bindgen", "wasm-bindgen"))])
+
+    def test_release_toolchain_cache_wraps_setup_and_saves_before_pack(self):
+        action = yaml.safe_load((ACTION / "action.yml").read_text())
+        steps = action["runs"]["steps"]
+        restore = next(s for s in steps if s.get("id") == "restore-toolchain")
+        setup = next(s for s in steps if s.get("name") == "Provision checksum-verified Keel toolchain")
+        save = next(s for s in steps if s.get("uses", "").startswith("actions/cache/save")
+                    and "toolchain" in s["with"]["key"])
+        self.assertLess(steps.index(restore), steps.index(setup))
+        self.assertLess(steps.index(setup), steps.index(save))
+        self.assertEqual(restore["with"]["path"], "${{ steps.key.outputs.toolchain-root }}")
+        self.assertEqual(save["with"]["path"], restore["with"]["path"])
+        self.assertEqual(save["with"]["key"], restore["with"]["key"])
+        self.assertIn('"$ROOT/bin/keel" setup', setup["run"])
+        installer = next(s for s in steps if s.get("run") == 'bash "$INSTALLER" install "$ROOT"')
+        self.assertEqual(installer["env"]["RUST_FONTCONFIG_DLOPEN"], "1")
+        self.assertEqual(installer["env"]["FREETYPE2_NO_PKG_CONFIG"], "1")
 
     def consumer_step(self, name):
         workflow = yaml.safe_load((ROOT / ".github/workflows/project-control.yml").read_text())
