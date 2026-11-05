@@ -919,11 +919,13 @@ def cmd_pr(args):
     import base64
 
     auth = "AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    git = ["git", "-c", "user.name=keel-repin[bot]", "-c", "user.email=keel-repin@users.noreply.github.com"]
+    git = ["git", "-c", "user.name=Kyle Tse", "-c", "user.email=hi@kylet.se"]
     run([*git, "checkout", "-B", branch], cwd=root)
     run([*git, "add", "-A", "--", source_pathspec(root, source)], cwd=root)
     check_staged_scope(root, source)
-    run([*git, "commit", "-q", "-m", title], cwd=root)
+    run([*git, "commit", "-q", "-m", title], cwd=root, env={**os.environ,
+        "GIT_AUTHOR_NAME": "Kyle Tse", "GIT_AUTHOR_EMAIL": "hi@kylet.se",
+        "GIT_COMMITTER_NAME": "Kyle Tse", "GIT_COMMITTER_EMAIL": "hi@kylet.se"})
     report["head_sha"] = run(["git", "rev-parse", "HEAD"], cwd=root).stdout.strip()
     run([*git, "-c", f"http.extraheader={auth}", "push", "origin", f"HEAD:refs/heads/{branch}"], cwd=root)
     cmd = [*gh, "pr", "create", "--base", args.base, "--head", branch, "--title", title, "--body", body]
