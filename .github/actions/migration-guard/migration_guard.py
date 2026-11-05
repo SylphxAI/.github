@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 import hashlib
 import importlib.util
@@ -1662,6 +1662,16 @@ def version(path: str) -> int | None:
     return int(match[1]) if match else None
 
 
+def version_timestamp(path: str) -> datetime | None:
+    match = re.match(r"(\d{14})_", PurePosixPath(path).name)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match[1], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def recorded_unapplied_withdrawal(root: Path, new_tree: dict[str, tuple[str, str]],
                                   path: str, old_blob: tuple[str, str],
                                   env: dict[str, str] | None = None) -> bool:
@@ -1770,12 +1780,23 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
                 continue
             errors.append(f"{path}: merged migration was modified, deleted or renamed; append a new migration instead")
     added = sorted(new.keys() - old.keys())
+    base_migrations = old if ancestor == base else {**old, **migrations(tree_files(root, base))}
     tops: dict[str, int] = {}
-    for path in old:
+    top_timestamps: dict[str, datetime] = {}
+    for path in base_migrations:
         v = version(path)
         parent = str(PurePosixPath(path).parent)
         if v is not None:
             tops[parent] = max(tops.get(parent, -1), v)
+        ts = version_timestamp(path)
+        if ts is not None and (parent not in top_timestamps or ts > top_timestamps[parent]):
+            top_timestamps[parent] = ts
+    now_utc = datetime.now(timezone.utc)
+    withdrawn_parents = {
+        str(PurePosixPath(p).parent)
+        for p, blob in old.items()
+        if p not in new and recorded_unapplied_withdrawal(root, new_tree, p, blob)
+    }
     versions = Counter((str(PurePosixPath(p).parent), version(p)) for p in added if version(p) is not None)
     for path in added:
         mode, oid = new[path]
@@ -1785,6 +1806,12 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
         v, parent = version(path), str(PurePosixPath(path).parent)
         if v is not None and (v <= tops.get(parent, -1) or versions[parent, v] > 1):
             errors.append(f"{path}: migration version must be unique and above {tops.get(parent, -1)} already on the base")
+        ts = version_timestamp(path)
+        if ts is not None:
+            ref_ts = max(now_utc, top_timestamps[parent]) if parent in top_timestamps else now_utc
+            allowance = timedelta(days=2) if parent in withdrawn_parents and parent in top_timestamps and top_timestamps[parent] > now_utc else timedelta(minutes=15)
+            if ts > ref_ts + allowance:
+                errors.append(f"{path}: migration timestamp {v} is in the future (more than 15 minutes ahead of UTC); use UTC (date -u +%Y%m%d%H%M%S)")
         try:
             sql = git(root, "cat-file", "blob", oid)
             errors.extend(f"{path}:{line}: {reason}" for line, reason in check_sql(sql, dialect, concurrent_index_runtime))
