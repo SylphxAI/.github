@@ -157,6 +157,12 @@ runs:
           n=$((n + 1))
         }
         add "https://github.com/SylphxAI/keel" "$KEEL_TOKEN"
+        # Cargo patches also use the SSH URL; replace it with the same scoped HTTPS credential.
+        {
+          echo "GIT_CONFIG_KEY_$n=url.https://x-access-token:$KEEL_TOKEN@github.com/SylphxAI/keel.insteadOf"
+          echo "GIT_CONFIG_VALUE_$n=ssh://git@github.com/SylphxAI/keel"
+        } >> "$GITHUB_ENV"
+        n=$((n + 1))
         if [ "$LAYER" != keel ]; then
           : "${LAYER_TOKEN:?missing shared-layer read token}"
           case "$LAYER" in
@@ -171,6 +177,8 @@ runs:
         fi
         {
           echo "GIT_CONFIG_COUNT=$n"
+          echo "RUST_FONTCONFIG_DLOPEN=1"
+          echo "FREETYPE2_NO_PKG_CONFIG=1"
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true"
           echo "GIT_TERMINAL_PROMPT=0"
         } >> "$GITHUB_ENV"
