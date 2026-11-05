@@ -101,3 +101,32 @@ runs:
       with:
         path: ${{ steps.key.outputs.root }}/wasm-bindgen
         key: ${{ steps.key.outputs.bindgen-key }}
+    # Keel's release toolchain is separate from its CLI. Restore across CLI
+    # pins: keel setup resolves its own versioned tool directories and verifies
+    # checksums on a miss. Never cache credentials, locks or project state.
+    - id: restore-toolchain
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.keel/tools
+        key: keel-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.keel-key }}-${{ steps.key.outputs.bindgen-key }}
+        restore-keys: |
+          keel-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-
+    - name: Provision checksum-verified Keel toolchain
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ROOT: ${{ steps.key.outputs.root }}
+        TOOLCHAIN_CACHE_HIT: ${{ steps.restore-toolchain.outputs.cache-matched-key }}
+      run: |
+        set -euo pipefail
+        if [ -n "$TOOLCHAIN_CACHE_HIT" ]; then
+          echo "Keel release toolchain restored from cache: $TOOLCHAIN_CACHE_HIT"
+        fi
+        "$ROOT/bin/keel" setup
+    # Persist before packing: even a later title failure must leave these tools
+    # available to the next run, not depend on the cache action's success-only post.
+    - if: steps.restore-toolchain.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.keel/tools
+        key: keel-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.keel-key }}-${{ steps.key.outputs.bindgen-key }}

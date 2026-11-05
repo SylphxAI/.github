@@ -83,3 +83,21 @@ payload; the cause of the external miss is not established. The pinned
 (read 2026-11-03 10:35 UTC) defines a normal cache-miss outcome and recommends
 installing missing dependencies. No cache service availability assumption
 belongs in the tool-reuse regression.
+
+## Managed release toolchain
+
+After exposing the CLI and wasm-bindgen, the action restores `~/.keel/tools`,
+runs `keel setup`, then saves the tools immediately (before a title pack can
+fail). This includes Binaryen's versioned `wasm-opt` and `wasm-split` install
+and any Keel-managed wasm-bindgen prebuilt. It excludes home credentials,
+locks, downloads and project data. Run this action with the default Keel home.
+The existing Rust toolchain action supplies rustup and the wasm target.
+
+The cache is isolated by OS/architecture and keyed by the CLI and bindgen
+pins; a restore prefix reuses unchanged tool versions across CLI upgrades.
+`keel setup` checks the requested versions and provisions only missing tools,
+checking the pinned Binaryen SHA-256 (or upstream wasm-bindgen/rustup-init
+checksum) before extracting. A warm setup reports each tool as present and
+makes no release request. Cold downloads retry transient failures with bounded
+exponential backoff in Keel; checksum mismatch is never retried as a transfer.
+The restore step logs `Keel release toolchain restored from cache` with its key.
