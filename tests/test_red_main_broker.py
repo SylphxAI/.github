@@ -29,8 +29,13 @@ config = sys.stdin.read()
 with open(os.environ['WIRE'], 'a') as out:
     out.write(json.dumps({'args': args, 'config': config}) + '\n')
 url = args[args.index('--url') + 1]
-for fragment, value in json.load(open(os.environ['REPLIES'])).items():
+replies_data = json.load(open(os.environ['REPLIES']))
+for fragment, value in list(replies_data.items()):
     if fragment in url:
+        if isinstance(value, list):
+            current = value.pop(0) if len(value) > 1 else value[0]
+            json.dump(replies_data, open(os.environ['REPLIES'], 'w'))
+            value = current
         status = value.get('_http', 200)
         body = dict(value)
         body.pop('_http', None)
@@ -159,13 +164,38 @@ class ExchangeTests(unittest.TestCase):
         self.assertIn('app-slug=\n', output)  # No company-global identity default.
 
     def test_refused_write_is_never_retried_and_response_secrets_are_not_echoed(self):
-        for soft_fail in ('true', 'false'):
-            code, log, output, wire = run_script(replies(**{':exchangeToken': {'_http': 403, 'detail': 'private-provider-secret'}}), env(SOFT_FAIL=soft_fail))
-            self.assertEqual(code, 0 if soft_fail == 'true' else 1)
-            self.assertEqual(len(wire), 4)
-            self.assertNotIn('private-provider-secret', log + output)
-            self.assertIn('request was not retried', log)
-            self.assertIn('token=\nfailure=', output)
+        for refusal in (
+            {'_http': 403, 'detail': 'private-provider-secret'},
+            {'_http': 401, 'code': 'invalid_api_key', 'detail': 'private-provider-secret'},
+            {'_http': 401, 'detail': 'private-provider-secret'},
+        ):
+            for soft_fail in ('true', 'false'):
+                with self.subTest(refusal=refusal, soft_fail=soft_fail):
+                    code, log, output, wire = run_script(replies(**{':exchangeToken': refusal}), env(SOFT_FAIL=soft_fail))
+                    self.assertEqual(code, 0 if soft_fail == 'true' else 1)
+                    self.assertEqual(len(wire), 4)
+                    self.assertNotIn('private-provider-secret', log + output)
+                    self.assertIn('request was not retried', log)
+                    self.assertIn('token=\nfailure=', output)
+
+    def test_broker_exchange_retries_only_key_not_yet_propagated_within_margin(self):
+        lagging = {'_http': 401, 'code': 'key_not_yet_propagated', 'detail': 'private-propagation-detail'}
+        code, log, output, wire = run_script(
+            replies(**{':exchangeToken': [lagging, grant()]}),
+            env(),
+        )
+        self.assertEqual(code, 0, log)
+        self.assertIn('token=ghs_install\n', output)
+        self.assertEqual(len(wire), 5)
+        self.assertNotIn('private-propagation-detail', log + output)
+        code, log, output, wire = run_script(
+            replies(**{':exchangeReadToken': [lagging, grant()]}),
+            env(READ_ONLY='true', PERMISSIONS=json.dumps(PERMISSIONS)),
+        )
+        self.assertEqual(code, 0, log)
+        self.assertIn('token=ghs_install\n', output)
+        self.assertEqual(len(wire), 5)
+        self.assertNotIn('private-propagation-detail', log + output)
 
 
 if __name__ == '__main__':
