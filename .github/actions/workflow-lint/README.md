@@ -57,3 +57,33 @@ CONTRACT_MODE=report-only python3 path/to/workflow-lint/contract.py
 `ignore` and `args` configure actionlint only; the contract always scans the
 checkout's workflows. Python tests are `python -m unittest discover -s tests
 -p test_workflow_contract.py` from the shared action repository.
+
+
+## IO pool prerequisites
+
+Jobs whose `runs-on` contains `sylphx-linux-io` (including expressions, lists,
+label mappings and literal matrix choices) must meet these blocking rules even
+in report-only mode. Publishing the checker does not activate this runner pool.
+
+1. No inline `run:` steps.
+2. Every remote action uses a full 40-hex commit SHA. Pinned remote composites
+   are trusted at that SHA; the checker does not fetch or recurse into them.
+3. Local actions require an identifiable preceding checkout of `SylphxAI/.github`
+   with an explicit 40-hex `ref`. The checkout path must provide the action;
+   conditional, PR-head, dynamic-ref and unrelated checkouts do not qualify.
+4. For `workflow_run`, the job condition or every io routing branch requires
+   `github.event.workflow_run.head_repository.full_name == github.repository`.
+   Mentioning the comparison in an unrelated OR branch does not qualify.
+5. Job-level permissions explicitly include `contents: read`. Other permitted
+   read scopes are `actions`, `pull-requests`, `checks` and `statuses`. Only the
+   pinned shared `pr-review` action (including a qualifying local checkout) may
+   request `id-token`, `checks`, `statuses` or `pull-requests` write access.
+   Secrets are denied by default, including inherited workflow environment
+   values. `io-reviewer-secrets` names the reviewer token exceptions, separated
+   by commas; only reviewer jobs may use them. Dynamic secret lookup is refused.
+
+Run `python -m unittest discover -s tests -p 'test_*contract.py'` for the workflow
+contract and io prerequisite cases. The permission and expression semantics are
+based on the [GitHub workflow syntax](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions)
+read on 2026-11-06 UTC. Expressions whose io safety cannot be established must
+use the explicit job condition or a conjunction on each io branch.

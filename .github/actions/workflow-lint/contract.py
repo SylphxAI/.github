@@ -12,6 +12,8 @@ from __future__ import annotations
 import datetime
 import os
 import pathlib
+import posixpath
+import re
 import shlex
 import sys
 from typing import NamedTuple
@@ -96,6 +98,7 @@ def scan_workflow(file, text):
 
     for name, node in jobs.items():
         job = fields(node)
+        scan_io_job(document, name, node, add)
         if "uses" not in job and "timeout-minutes" not in job:
             add(node, f"job {name}: missing timeout-minutes")
         # Manual gates are forbidden even outside the required needs graph.
@@ -118,6 +121,168 @@ def scan_workflow(file, text):
             if run is not None and masks_failure(scalar(run)):
                 add(run, f"job {name}: || true hides a required failure")
     return findings
+
+
+IO_LABEL = "sylphx-linux-io"
+SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
+FORK_GUARD = "github.event.workflow_run.head_repository.full_name==github.repository"
+
+
+def node_text(node):
+    if isinstance(node, yaml.ScalarNode):
+        return node.value
+    if isinstance(node, yaml.SequenceNode):
+        return " ".join(node_text(n) for n in node.value)
+    return " ".join(node_text(n) for n in fields(node).values())
+
+
+def split_expression(value, operator):
+    """Split only top-level operators, respecting strings and parentheses."""
+    parts, start, depth, quote, index = [], 0, 0, False, 0
+    while index < len(value):
+        char = value[index]
+        if char == "'":
+            if quote and index + 1 < len(value) and value[index + 1] == "'":
+                index += 2
+                continue
+            quote = not quote
+        elif not quote:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            elif depth == 0 and value.startswith(operator, index):
+                parts.append(value[start:index].strip())
+                index += len(operator)
+                start = index
+                continue
+        index += 1
+    return parts + [value[start:].strip()]
+
+
+def unwrap_expression(value):
+    value = value.strip()
+    if value.startswith("${{") and value.endswith("}}"):
+        value = value[3:-2].strip()
+    while value.startswith("(") and value.endswith(")"):
+        # Only strip parentheses enclosing the entire expression.
+        depth, quote, closes_early = 0, False, False
+        for index, char in enumerate(value):
+            if char == "'":
+                quote = not quote
+            elif not quote:
+                depth += (char == "(") - (char == ")")
+                if depth == 0 and index < len(value) - 1:
+                    closes_early = True
+                    break
+        if closes_early:
+            break
+        value = value[1:-1].strip()
+    return value
+
+
+def requires_same_repository(value):
+    value = unwrap_expression(value)
+    alternatives = split_expression(value, "||")
+    if len(alternatives) > 1:
+        return all(requires_same_repository(part) for part in alternatives)
+    terms = split_expression(value, "&&")
+    if len(terms) > 1:
+        return any(requires_same_repository(part) for part in terms)
+    return re.sub(r"\s+", "", value) == FORK_GUARD
+
+
+def guarded_io_route(value, guarded=False):
+    value = unwrap_expression(value)
+    alternatives = split_expression(value, "||")
+    if len(alternatives) > 1:
+        return all(guarded_io_route(part, guarded) for part in alternatives)
+    terms = split_expression(value, "&&")
+    if len(terms) > 1:
+        guarded = guarded or any(requires_same_repository(part) for part in terms)
+        return all(guarded_io_route(part, guarded) for part in terms)
+    return IO_LABEL not in value or guarded
+
+
+def scan_io_job(document, name, node, add):
+    job = fields(node)
+    runner = job.get("runs-on")
+    route = node_text(runner)
+    matrix_io = "matrix." in route and IO_LABEL in node_text(job.get("strategy"))
+    if IO_LABEL not in route and not matrix_io:
+        return
+
+    def fail(where, problem):
+        add(where, f"job {name}: io pool: {problem}", blocking=True)
+
+    steps = sequence(job.get("steps"))
+    checkouts = []
+    for step in steps:
+        props = fields(step)
+        if "run" in props:
+            fail(props["run"], "inline run is forbidden; use SHA-pinned actions")
+        action = props.get("uses")
+        target = scalar(action)
+        if not action:
+            continue
+        if target.startswith("./"):
+            path = posixpath.normpath(target)
+            providers = [(base, trusted) for base, trusted in checkouts
+                         if path == base or path.startswith(base + "/") or base == "."]
+            overwritten = any(not trusted and base.startswith(path + "/")
+                              for base, trusted in checkouts)
+            if (path.startswith("../") or path == ".." or overwritten or not providers
+                    or not max(providers, key=lambda p: len(p[0]))[1]):
+                fail(action, "local action requires a preceding SylphxAI/.github checkout with a 40-hex ref")
+        elif not SHA.fullmatch(target.rpartition("@")[2]):
+            fail(action, "remote uses must be pinned to a 40-hex SHA")
+        if target.lower().startswith("actions/checkout@"):
+            options = fields(props.get("with"))
+            base = posixpath.normpath(scalar(options.get("path")) or ".")
+            trusted = (scalar(options.get("repository")) == "SylphxAI/.github"
+                       and bool(SHA.fullmatch(scalar(options.get("ref"))))
+                       and "if" not in props and "continue-on-error" not in props
+                       and scalar(options.get("clean")) != "false"
+                       and "${{" not in base and not base.startswith(("../", "/")) and base != "..")
+            # A checkout also replaces provenance below its destination.
+            checkouts = [(p, t) for p, t in checkouts
+                         if base != "." and p != base and not p.startswith(base + "/")]
+            checkouts.append((base, trusted))
+
+    triggers = fields(document).get("on")
+    workflow_run = ("workflow_run" in fields(triggers)
+                    or scalar(triggers) == "workflow_run"
+                    or any(scalar(n) == "workflow_run" for n in sequence(triggers)))
+    if workflow_run and not requires_same_repository(scalar(job.get("if"))):
+        if matrix_io or not guarded_io_route(route):
+            fail(runner, "workflow_run io routing requires head_repository.full_name == github.repository")
+
+    permissions = fields(job.get("permissions"))
+    if scalar(permissions.get("contents")) != "read":
+        fail(job.get("permissions") or node, "declare job-level minimal permissions with contents: read")
+    reviewer = any(re.fullmatch(
+        r"(?:SylphxAI/\.github/|\./(?:[^/]+/)*)\.github/actions/pr-review(?:@[0-9a-fA-F]{40})?",
+        scalar(fields(step).get("uses"))) for step in steps)
+    for permission, value in permissions.items():
+        level = scalar(value)
+        allowed = (permission in {"contents", "actions", "pull-requests", "checks", "statuses"}
+                   and level in {"read", "none"})
+        allowed |= (reviewer and permission in {"id-token", "checks", "statuses", "pull-requests"}
+                    and level == "write")
+        if not allowed:
+            fail(value, f"permission {permission}: {level} is outside minimal reviewer permissions")
+
+    allowed_secrets = set(filter(None, re.split(r"[\s,]+", os.environ.get("IO_REVIEWER_SECRETS", ""))))
+    # Workflow env/defaults are inherited, so scan them as well as the full job.
+    nodes = [node, fields(document).get("env"), fields(document).get("defaults")]
+    for scope in nodes:
+        text = node_text(scope)
+        for expression in re.findall(r"\$\{\{(.*?)\}\}", text, re.S):
+            remainder = re.sub(r"secrets\s*\.\s*([A-Za-z_][A-Za-z_0-9]*)",
+                lambda m: "" if reviewer and m[1] in allowed_secrets else m[0], expression)
+            if re.search(r"\bsecrets\b", remainder):
+                fail(scope, "repository secrets are forbidden except configured reviewer token names")
+                break
 
 
 def scan_dir(root):
