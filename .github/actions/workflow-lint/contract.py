@@ -23,7 +23,8 @@ import yaml
 from perf_gate import delivered
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "scripts"))
-from merge_lane import merge_lane_findings, runner_evaluations
+from merge_lane import (WorkflowLoader, contexts, expression, merge_lane_findings,
+                        runner_evaluations, runner_values)
 from merge_lane_gate import exempt
 
 
@@ -157,21 +158,28 @@ def scan_release_job(document, name, node, add, routes):
     """
     job = fields(node)
     runner = job.get("runs-on")
+    if runner is None:
+        return
     selector = fields(runner).get("labels") if isinstance(runner, yaml.MappingNode) else runner
     route = node_text(selector)
-    release = bool(RELEASE_LITERAL.search(route)) or any(
-        isinstance(value, str) and value.startswith(RELEASE_PREFIX)
-        for evaluation in routes for value in evaluation.values)
-    if not routes and "matrix." in route:
-        release |= bool(RELEASE_LITERAL.search(node_text(job.get("strategy"))))
     triggers = fields(document).get("on")
     trigger_fields = fields(triggers)
-    # A workflow_call-only file has no independent event evaluation. Its
-    # selector's input defaults still declare a route into the release pool.
+    # Inspect declarations independently of job guards, including call-only
+    # workflows with no event routes. Reuse the selector/matrix interpreter.
+    declared = yaml.load(yaml.serialize(node), Loader=WorkflowLoader)
+    context = {}
     for event in ("workflow_call", "workflow_dispatch"):
         inputs = fields(fields(trigger_fields.get(event)).get("inputs"))
-        for key in re.findall(r"\binputs\.([\w-]+)", route):
-            release |= bool(RELEASE_LITERAL.search(node_text(fields(inputs.get(key)).get("default"))))
+        for key, properties in inputs.items():
+            default = fields(properties).get("default")
+            if default is not None:
+                value = yaml.load(yaml.serialize(default), Loader=WorkflowLoader)
+                context.setdefault("inputs." + key, set()).update(expression(value, {}))
+    values = set().union(*(runner_values(declared.get("runs-on"), expanded)
+                           for expanded in contexts(declared, context)))
+    values.update(value for evaluation in routes for value in evaluation.values)
+    release = bool(RELEASE_LITERAL.search(route)) or any(
+        isinstance(value, str) and value.startswith(RELEASE_PREFIX) for value in values)
     if not release:
         return
 

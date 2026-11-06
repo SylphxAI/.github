@@ -82,6 +82,11 @@ class ReleasePoolContractTest(unittest.TestCase):
         self.assertTrue(self.scan(workflow("pull_request", "${{ matrix.runner }}", extra)))
         self.assertEqual(self.scan(workflow("workflow_dispatch", "${{ matrix.runner }}", extra)), [])
 
+    def test_skipped_formatted_selector_still_declares_release_use(self):
+        runner = "${{ format('sylphx-linux-{0}', 'release') }}"
+        self.assertTrue(self.scan(workflow("pull_request", runner, "    if: false\n")))
+        self.assertTrue(self.scan(workflow("workflow_call", runner)))
+
     def test_workflow_call_default_cannot_hide_a_release_selector(self):
         trigger = "\n  workflow_call:\n    inputs:\n      runner:\n        type: string\n        default: sylphx-linux-release"
         self.assertTrue(self.scan(workflow(trigger, "${{ inputs.runner }}")))
@@ -92,6 +97,7 @@ class ReleasePoolContractTest(unittest.TestCase):
         extra = ("    strategy:\n      matrix:\n        runner: [sylphx-linux-standard]\n"
                  "        description: [sylphx-linux-release]\n")
         self.assertEqual(self.scan(workflow("pull_request", "${{ matrix.runner }}", extra)), [])
+        self.assertEqual(self.scan(workflow("workflow_call", "${{ matrix.runner }}", extra)), [])
 
     def test_other_runner_pools_keep_their_current_trigger_contract(self):
         for runner in ("sylphx-linux-standard", "sylphx-linux-standard-merge",
