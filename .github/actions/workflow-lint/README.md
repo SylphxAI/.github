@@ -27,12 +27,21 @@ The contract scans `.github/workflows/*.yml` and `*.yaml` in the checkout:
 - Jobs on the transitive `needs` graph of `ci-ok`, a job named `ci-ok`, or a
   job using the shared `needs-pass`/`ci-ok` action cannot set `continue-on-error`
   except to literal `false`, at job or step level, or run `|| true`.
-- With no aggregate, or an aggregate without `needs` (the API-based `ci-ok`
-  action), every job is treated as required. Optional jobs outside an explicit
-  aggregate graph may tolerate failures, but still need timeouts.
+- Every independently triggered `pull_request` or `merge_group` job must be
+  in that event's `ci-ok` transitive `needs` closure. The shared `ci-ok` action
+  is also recognized under a different job ID, including local action paths.
+  Legacy `ci-ok-polling` gates cover their nonignored observed checks across
+  workflows; ignored or unresolved check names are not assumed covered.
+- An intentionally nonblocking workflow declares a header comment with a reason:
+  `# optimistic-merge: advisory — Nonblocking diagnostic report.`
+  A bare marker, a comment in a run body or an independent reusable-workflow
+  run cannot establish coverage. A reusable call in the gate does not await a
+  separate PR-triggered run of that workflow; use `workflow_call` for required work.
+- Without an explicit aggregate graph, the legacy failure-masking check still
+  treats every job as required. Advisory jobs still need timeouts.
 
 `contract-mode: report-only` emits warnings and a count for legacy timeout
-and failure-propagation findings. Manual approval/maintenance booking and
+and failure-propagation findings. Gate coverage, manual approval/maintenance booking and
 [R8 merge-lane routing](../../../docs/merge-lane.md) remain blocking in either
 mode. R8 follows all workflows in the checkout and their local reusable calls,
 including matrices, input defaults and job conditions, using the same core as

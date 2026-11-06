@@ -23,7 +23,7 @@ import yaml
 from perf_gate import delivered
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "scripts"))
-from merge_lane import merge_lane_findings, runner_evaluations
+from merge_lane import WorkflowLoader, contexts, events, merge_lane_findings, runnable, runner_evaluations
 from merge_lane_gate import exempt
 
 
@@ -86,6 +86,84 @@ def required_jobs(jobs):
         required.add(name)
         pending.extend(dependencies(jobs[name]))
     return required
+
+
+GATING_EVENTS = {"pull_request", "merge_group"}
+ADVISORY = re.compile(r"^#\s*optimistic-merge:\s*advisory\b(.*)$", re.I | re.M)
+
+
+def aggregate_action(action):
+    """Only the shared action, including its checked-out local spelling."""
+    for name in ("ci-ok", "ci-ok-polling"):
+        path = f".github/actions/{name}"
+        if action == "./" + path or action.startswith("SylphxAI/.github/" + path + "@"):
+            return name
+    return ""
+
+
+def gate_coverage(workflows):
+    """Every independently triggered job needs a completion boundary or a reason.
+
+    A local reusable call is covered as a job in its caller's needs graph. Its
+    standalone PR/merge-group run, if any, still needs its own boundary: a call
+    in another workflow cannot await that independent run.
+    """
+    documents = {file: yaml.compose(text, Loader=yaml.BaseLoader) for file, text in workflows.items()}
+    decoded = {file: yaml.load(text, Loader=WorkflowLoader) or {} for file, text in workflows.items()}
+    findings, active, gates, advisory = [], {}, {}, {}
+    for file, document in documents.items():
+        jobs = fields(fields(document).get("jobs"))
+        # A column-zero header comment cannot be confused with text in a run body.
+        header = workflows[file][:fields(document).get("jobs", document).start_mark.index] if document else ""
+        declaration = ADVISORY.search(header)
+        reason = declaration.group(1).strip(" \t:-—") if declaration else ""
+        advisory[file] = bool(reason)
+        if declaration and not reason:
+            findings.append(Finding(file, header[:declaration.start()].count("\n") + 1,
+                "advisory declaration must include a reason", True))
+        for event in events(decoded[file]) & GATING_EVENTS:
+            context = {"github.event_name": {event}, "github.event.repository.private": {True, False}}
+            running = {name for name, job in (decoded[file].get("jobs") or {}).items()
+                       if any(runnable(job, c) for c in contexts(job, context))}
+            active[file, event] = running
+            for name in running:
+                job = fields(jobs[name])
+                steps = [fields(step) for step in sequence(job.get("steps"))]
+                pollers = [step for step in steps if aggregate_action(scalar(step.get("uses"))) == "ci-ok-polling"]
+                if (name == "ci-ok" or scalar(job.get("name")) == "ci-ok" or pollers
+                        or any(aggregate_action(scalar(step.get("uses"))) == "ci-ok" for step in steps)):
+                    gates.setdefault(event, []).append((file, name, pollers))
+    for (file, event), running in active.items():
+        jobs = fields(fields(documents[file]).get("jobs"))
+        covered = set()
+        for gate_file, root, pollers in gates.get(event, []):
+            if pollers:
+                # Polling observes all nonignored GitHub Actions checks, including
+                # path-filtered jobs outside an explicit required list.
+                for poller in pollers:
+                    inputs = fields(poller.get("with"))
+                    ignored = scalar(inputs.get("ignore"))
+                    self_name = scalar(inputs.get("job-name")) or "ci-ok"
+                    for name in running:
+                        check = scalar(fields(jobs[name]).get("name")) or name
+                        if ("${{" not in ignored + self_name + check
+                                and check not in {n.strip() for n in ignored.split(",")} | {self_name}):
+                            covered.add(name)
+            if file != gate_file:
+                continue
+            pending = [root]
+            while pending:
+                name = pending.pop()
+                if name in covered or name not in jobs:
+                    continue
+                covered.add(name)
+                pending.extend(dependencies(jobs[name]))
+        for name in sorted(running - covered):
+            if not advisory[file]:
+                findings.append(Finding(file, jobs[name].start_mark.line + 1,
+                    f"job {name}: {event} job is outside ci-ok's required closure; "
+                    "add it to the gate or declare # optimistic-merge: advisory <reason>", True))
+    return findings
 
 
 def scan_workflow(file, text, evaluations=None):
@@ -332,6 +410,7 @@ def scan_dir(root):
     evaluations = runner_evaluations(workflows, private=private)
     for name, text in workflows.items():
         findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations))
+    findings.extend(gate_coverage({'.github/workflows/' + name: text for name, text in workflows.items()}))
     if entry:
         return findings
     for finding in merge_lane_findings(workflows, private=private,

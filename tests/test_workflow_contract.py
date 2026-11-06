@@ -36,7 +36,7 @@ class ContractTest(unittest.TestCase):
             folder = root / '.github/workflows'
             folder.mkdir(parents=True)
             path = folder / 'merge.yml'
-            path.write_text('on: merge_group\njobs:\n  build:\n    timeout-minutes: 5\n    runs-on: sylphx-linux-standard\n')
+            path.write_text('# optimistic-merge: advisory — Runner-policy fixture.\non: merge_group\njobs:\n  build:\n    timeout-minutes: 5\n    runs-on: sylphx-linux-standard\n')
             with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'Cubeage/example'}, clear=True):
                 found = contract.scan_dir(root)
                 self.assertEqual(len(found), 1)
@@ -228,6 +228,76 @@ class ContractTest(unittest.TestCase):
                     self.assertTrue(any(a.startswith("::error ") and ": manual " in a for a in annotations))
                     legacy = next(a for a in annotations if "continue-on-error" in a)
                     self.assertTrue(legacy.startswith("::warning " if mode == "report-only" else "::error "))
+
+
+class GateCoverageTest(unittest.TestCase):
+    def scan(self, text, **others):
+        return contract.gate_coverage({"ci.yml": text, **others})
+
+    def test_new_job_outside_gate_fails_for_both_events(self):
+        for event in ("pull_request", "merge_group"):
+            text = workflow(extra="  extra: {runs-on: ubuntu-latest, steps: [{run: pytest}]}\n").replace("on: pull_request", "on: " + event)
+            found = self.scan(text)
+            self.assertEqual(len(found), 1)
+            self.assertIn(f"job extra: {event} job is outside ci-ok", found[0].problem)
+            self.assertEqual(contract.exit_code(found, "report-only"), 1)
+            self.assertEqual(self.scan(text.replace("needs: [build]", "needs: [build, extra]")), [])
+
+    def test_transitive_scalar_and_sequence_needs(self):
+        text = workflow(build="    needs: setup\n", extra="  setup: {runs-on: ubuntu-latest, steps: [{run: setup}]}\n")
+        self.assertEqual(self.scan(text), [])
+
+    def test_reasoned_advisory_and_missing_reason(self):
+        for event in ("pull_request", "merge_group"):
+            independent = f"on: {event}\njobs: {{report: {{runs-on: ubuntu-latest}}}}\n"
+            self.assertEqual(self.scan(workflow(), report=independent).__len__(), 1)
+            self.assertEqual(self.scan(workflow(), report="# optimistic-merge: advisory — Nonblocking diagnostic report.\n" + independent), [])
+            found = self.scan(workflow(), report="# optimistic-merge: advisory\n" + independent)
+            self.assertTrue(any("must include a reason" in f.problem for f in found))
+            self.assertTrue(any("job report:" in f.problem for f in found))
+
+    def test_header_declaration_cannot_be_spoofed_by_run_body(self):
+        independent = "on: pull_request\njobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          # optimistic-merge: advisory — Not a declaration.\n          pytest\n"
+        self.assertEqual(len(self.scan(workflow(), extra=independent)), 1)
+
+    def test_no_gate_or_no_dependencies_does_not_mean_everything_is_covered(self):
+        self.assertEqual(len(self.scan("on: pull_request\njobs: {test: {runs-on: ubuntu-latest}}")), 1)
+        self.assertEqual(len(self.scan(workflow().replace("    needs: [build]\n", ""))), 1)
+
+    def test_postmerge_only_job_and_workflow_are_out_of_scope(self):
+        text = workflow(extra="  release: {if: github.event_name == 'push', runs-on: ubuntu-latest}\n")
+        self.assertEqual(self.scan(text, release="on: push\njobs: {publish: {runs-on: ubuntu-latest}}"), [])
+
+    def test_local_and_remote_shared_ci_ok_action_aliases(self):
+        for action in ("./.github/actions/ci-ok", "SylphxAI/.github/.github/actions/ci-ok@" + "a" * 40):
+            text = workflow().replace("  ci-ok:", "  verdict:").replace("      - run: echo ok", "      - uses: " + action)
+            self.assertEqual(self.scan(text), [])
+
+    def test_polling_observes_cross_workflow_jobs_but_not_ignored_checks(self):
+        for event in ("pull_request", "merge_group"):
+            gate = f"on: {event}\njobs:\n  ci-ok:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: SylphxAI/.github/.github/actions/ci-ok-polling@{'a' * 40}\n"
+            check = f"on: {event}\njobs: {{test: {{name: Tests, runs-on: ubuntu-latest}}}}"
+            self.assertEqual(self.scan(gate, test=check), [])
+            found = self.scan(gate + "        with: {ignore: Tests}\n", test=check)
+            self.assertEqual(len(found), 1)
+            self.assertIn("job test:", found[0].problem)
+            self.assertEqual(self.scan(gate + "        with: {ignore: Tests}\n", test="# optimistic-merge: advisory — Optional report.\n" + check), [])
+
+    def test_independent_trigger_is_not_awaited_by_a_reusable_call(self):
+        gate = workflow().replace("    steps:\n      - run: pytest", "    uses: ./.github/workflows/test.yml")
+        self.assertEqual(self.scan(gate, test="on: workflow_call\njobs: {test: {runs-on: ubuntu-latest}}"), [])
+        self.assertEqual(len(self.scan(gate, test="on: [pull_request, workflow_call]\njobs: {test: {runs-on: ubuntu-latest}}")), 1)
+
+    def test_repository_scan_wires_the_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            folder = root / ".github/workflows"
+            folder.mkdir(parents=True)
+            (folder / "ci.yml").write_text(workflow())
+            (folder / "test.yml").write_text("on: [pull_request, merge_group]\njobs: {extra: {runs-on: ubuntu-latest, timeout-minutes: 1}}")
+            found = contract.scan_dir(root)
+            self.assertEqual(len(found), 2)
+            self.assertTrue(all("job extra:" in f.problem and f.blocking for f in found))
 
 
 if __name__ == "__main__":
