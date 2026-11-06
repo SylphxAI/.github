@@ -164,6 +164,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   // other parts. Supply only its requested pinned source, without recollecting it
   // or putting the full validation bundle on the wire.
   for (let round = 0; result.status === 'incomplete' && round < recoveryLimits.rounds; round++) {
+    if (input.context_recovery === 'exhausted') break;
     const requests = result.context_requests ?? [];
     if (!requests.length) break;
     const requested = [...new Map(requests.map(r => [canonical([r.path, r.side]), r])).values()]

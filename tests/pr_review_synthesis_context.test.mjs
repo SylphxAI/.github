@@ -101,6 +101,17 @@ test('repeated in-bundle requests stop after the existing recovery round limit',
   }
 });
 
+test('exhausted recovery keeps one synthesis POST and preserves the incomplete reason', async () => {
+  const input = createReviewInput({ ...inputFor(), context_recovery: 'exhausted' });
+  const requests = [{ path: 'src/file0.js', side: 'head' }];
+  const { result, synthesis, posts } = await run(input, () => incomplete(requests));
+  assert.equal(result.status, 'incomplete');
+  assert.equal(synthesis.length, 1);
+  assert.equal(posts.length, result.parts.planned + 1);
+  assert.equal(result.reason, 'Cross-file synthesis: review incomplete (completion=incomplete, reason=nonempty)');
+  assert.deepEqual(result.context_requests, requests);
+});
+
 test('successive synthesis requests include only the latest requested source and retain verified absence', async () => {
   const absent = { path: 'src/absent.js', side: 'head', commit_sha: 'b'.repeat(40), absent: true };
   const { result, synthesis } = await run(inputFor([absent]), (part, attempt) => {
