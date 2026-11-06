@@ -31,6 +31,29 @@ class ExpectedChecksContractTest(unittest.TestCase):
     def compile(self, workflows, **kwargs):
         return compiler.compile_declaration(workflows, require_verifier=False, **kwargs)
 
+    def test_org_source_checkout_contains_compiler_dependency_closure(self):
+        workflow = compiler.yaml.load((ROOT / '.github/workflows/expected-checks.yml').read_text(),
+                                      Loader=compiler.WorkflowLoader)
+        checkout, = [step for step in workflow['jobs']['verify']['steps']
+                     if step.get('with', {}).get('path') == 'verifier']
+        self.assertEqual(checkout['with']['repository'], 'SylphxAI/.github')
+        self.assertEqual(checkout['with']['ref'], '${{ github.workflow_sha }}')
+        with tempfile.TemporaryDirectory() as temporary:
+            source = pathlib.Path(temporary) / 'verifier'
+            def git(*args):
+                return subprocess.run(['git', *args], check=True, capture_output=True, text=True)
+            git('clone', '--quiet', '--shared', '--no-checkout', str(ROOT), str(source))
+            patterns = checkout['with'].get('sparse-checkout')
+            if patterns:
+                git('-C', str(source), 'sparse-checkout', 'init', '--cone')
+                git('-C', str(source), 'sparse-checkout', 'set', *patterns.splitlines())
+            git('-C', str(source), 'checkout', '--quiet', '--detach', 'HEAD')
+            result = subprocess.run([sys.executable,
+                str(source / '.github/actions/workflow-lint/expected_checks.py'), '--help'],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('require canonical declaration', result.stdout)
+
     def test_resolved_schema_combines_identical_event_filters(self):
         self.assertEqual(self.compile({'test.yml': simple()}), {'version': 2, 'checks': [{
             'name': 'test', 'workflow': 'test.yml', 'events': ['merge_group', 'pull_request'],

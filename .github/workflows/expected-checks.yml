@@ -33,10 +33,6 @@ jobs:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
           path: verifier
-          sparse-checkout: |
-            .github/actions/expected-checks
-            .github/actions/workflow-lint
-            scripts
       - uses: ./verifier/.github/actions/expected-checks
         with:
           root: ${{ github.workspace }}/consumer
