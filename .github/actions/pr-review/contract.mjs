@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { contextRequestLimit, resultSchema, validateSchema } from './schema.mjs'
-import { segmentQuote, changedRanges } from './source.mjs'
+import { segmentQuote, fileSegments, segmentWindows, changedRanges } from './source.mjs'
 
 export function canonical(value) {
 	if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -156,22 +156,49 @@ export function parseReviewResult(text, input) {
 		requireValue(result.omitted_paths.every(p => paths.has(p)) && new Set(result.omitted_paths).size === result.omitted_paths.length, 'invalid omitted changed paths')
 		requireValue(result.context_requests.length <= contextRequestLimit && result.context_requests.every(r => validPath(r.path) && r.path.length <= 1024), 'invalid context request')
 		requireValue(result.completion !== 'complete' || (incomplete.length === 0 && result.context_requests.length === 0), 'inconsistent complete review')
+		const snapped = []
 		const requireEvidence = (evidence, kind, index, findingIndex = null) => {
 			let expected = sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte)
-			if (expected !== evidence.quote && evidence.start_byte === null && evidence.end_byte === null && evidence.end_line >= evidence.start_line) {
-				const matches = []
-				for (const startDelta of [-6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6]) {
-					const start = evidence.start_line + startDelta
-					if (start < 1) continue
-					for (const endDelta of [-6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6]) {
-						const end = evidence.end_line + endDelta
-						if (end < start || (startDelta === 0 && endDelta === 0)) continue
-						if (sourceQuote(input, evidence.path, evidence.side, start, end, null, null) === evidence.quote) matches.push([start, end])
+			if (expected !== evidence.quote && evidence.start_byte === null && evidence.end_byte === null && evidence.end_line >= evidence.start_line && nonempty(evidence.quote)) {
+				const from = { start_line: evidence.start_line, end_line: evidence.end_line }
+				const quoteLines = lines(evidence.quote), span = quoteLines.length, firstLine = quoteLines[0]
+				const seen = new Set(), matches = []
+				const addMatch = (start, end) => {
+					const key = `${start}:${end}`
+					if (!seen.has(key) && sourceQuote(input, evidence.path, evidence.side, start, end, null, null) === evidence.quote) {
+						seen.add(key)
+						matches.push([start, end])
+					}
+				}
+				const scanWindows = windows => {
+					for (const w of windows) {
+						const wLines = lines(w.content)
+						for (let i = 0; i + span <= wLines.length; i++) {
+							if (wLines[i] === firstLine) addMatch(w.start_line + i, w.start_line + i + span - 1)
+						}
+					}
+				}
+				for (const e of input.references ?? []) {
+					if (e.path === evidence.path && e.side === evidence.side && e.start_byte === null && e.end_byte === null && e.quote === evidence.quote) {
+						addMatch(e.start_line, e.end_line)
+					}
+				}
+				const file = input.files.find(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path)
+				if (evidence.side !== 'context' && file) scanWindows(segmentWindows(fileSegments(file, evidence.side === 'base' ? 'before' : 'after')))
+				for (const c of input.context.filter(f => f.absent !== true && f.path === evidence.path)) {
+					if (c.segments) scanWindows(segmentWindows(c.segments))
+					else if (typeof c.content === 'string') {
+						const cLines = lines(c.content)
+						for (let i = 0; i + span <= cLines.length; i++) {
+							if (cLines[i] === firstLine) addMatch(i + 1, i + span)
+						}
 					}
 				}
 				if (matches.length === 1) {
 					;[evidence.start_line, evidence.end_line] = matches[0]
 					expected = evidence.quote
+					snapped.push({ kind, evidence_index: index, finding_index: findingIndex, path: evidence.path, side: evidence.side,
+						from_start_line: from.start_line, from_end_line: from.end_line, start_line: evidence.start_line, end_line: evidence.end_line })
 				}
 			}
 			if (expected !== evidence.quote) {
@@ -191,14 +218,26 @@ export function parseReviewResult(text, input) {
 		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length && (input.scope?.kind === 'partition' || result.binary_reviews.every(r => r.status === 'source-reviewed')), 'binary provenance review incomplete')
 		for (const [findingIndex, finding] of result.findings.entries()) {
 			requireValue(finding.end_line >= finding.start_line && (input.scope?.kind === 'synthesis' ? input.manifest : input.files).some(f => f.path === finding.path), 'finding outside supplied source')
-			if (input.scope?.kind !== 'synthesis') requireValue(input.files.some(f => f.path === finding.path && changedRanges(f).some(r => r.side === finding.side && finding.start_line >= r.start && finding.end_line <= r.end)), 'finding outside changed source')
 			for (const [index, evidence] of finding.evidence.entries()) requireEvidence(evidence, 'finding_evidence', index, findingIndex)
+			if (input.scope?.kind !== 'synthesis') {
+				const file = input.files.find(f => f.path === finding.path)
+				const inChanged = f => file && changedRanges(file).some(r => r.side === f.side && f.start_line >= r.start && f.end_line <= r.end)
+				if (!inChanged(finding) && file) {
+					const snap = snapped.find(s => s.kind === 'finding_evidence' && s.finding_index === findingIndex && s.path === finding.path && s.side === finding.side &&
+						inChanged({ side: finding.side, start_line: s.start_line, end_line: s.end_line }))
+					if (snap) {
+						finding.start_line = snap.start_line
+						finding.end_line = snap.end_line
+					}
+				}
+				requireValue(inChanged(finding), 'finding outside changed source')
+			}
 		}
 		for (const [index, evidence] of result.related_evidence.entries()) requireEvidence(evidence, 'related_evidence', index)
 		if (incomplete.length) return { ...unavailable(input, `review incomplete (${incomplete.join(', ')})`),
 			status: result.completion, omitted_paths: result.omitted_paths.length ? result.omitted_paths : [...paths],
 			context_requests: result.context_requests, diagnostics }
-		return { ...result, status: 'complete' }
+		return { ...result, status: 'complete', ...(snapped.length ? { snapped_evidence: snapped } : {}) }
 	} catch (error) {
 		return unavailable(input, error instanceof SyntaxError ? 'invalid JSON review result' : error.message,
 			{ ...(diagnostics ? { diagnostics } : {}), ...(validationFailure ? { validation_failure: validationFailure } : {}) })

@@ -69,35 +69,49 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
   };
 
   async function infer(input, requestBody) {
-    const remaining = deadlineMs - Date.now();
-    if (!(remaining > 0)) return unavailable(input, 'Review deadline expired before inference.');
-    let response;
-    try {
-      response = await fetcher(new URL('/v1/chat/completions', origin), {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(remaining),
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body: requestBody,
-      });
-    } catch {
-      return unavailable(input, Date.now() >= deadlineMs ? 'Review inference exceeded its deadline.' : 'Review inference failed at the network.');
+    const alreadySuppliedRequest = r =>
+      (input.context ?? []).some(c => c.path === r.path && ((c.side ?? 'context') === r.side || (c.side ?? 'context') === 'context')) ||
+      (input.scope?.partitioned_context ?? []).some(c => c.path === r.path && (c.side === r.side || c.side === 'context')) ||
+      (input.manifest ?? input.files ?? []).some(f => (r.side === 'base' ? f.previous_path ?? f.path : f.path) === r.path && f[r.side === 'base' ? 'before' : 'after'] !== null);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const remaining = deadlineMs - Date.now();
+      if (!(remaining > 0)) return unavailable(input, 'Review deadline expired before inference.');
+      let response;
+      try {
+        response = await fetcher(new URL('/v1/chat/completions', origin), {
+          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(remaining),
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: requestBody,
+        });
+      } catch {
+        return unavailable(input, Date.now() >= deadlineMs ? 'Review inference exceeded its deadline.' : 'Review inference failed at the network.');
+      }
+      let body;
+      try { body = await response.json(); } catch {
+        if (Date.now() >= deadlineMs) return unavailable(input, 'Review inference exceeded its deadline.');
+        if (response.ok && attempt < 3) continue;
+        return unavailable(input, `Review gateway returned invalid JSON (HTTP ${response.status}).`);
+      }
+      if (!response.ok) {
+        // Only a bounded machine code is safe to publish. Provider prose may echo
+        // source or credentials and therefore never crosses this boundary.
+        const code = body.error?.code;
+        const suffix = typeof code === 'string' && /^[a-z0-9_]{1,80}$/.test(code) ? ` (${code})` : '';
+        return unavailable(input, `Review gateway refused HTTP ${response.status}${suffix}.`);
+      }
+      const choice = body.choices?.[0];
+      if (body.object !== 'chat.completion' || body.model !== model || body.choices?.length !== 1 ||
+          choice?.finish_reason !== 'stop' || choice.message?.role !== 'assistant' ||
+          choice.message.refusal || choice.message.tool_calls?.length || typeof choice.message.content !== 'string') {
+        return unavailable(input, 'Review inference was refused, interrupted, or did not return the configured model result.');
+      }
+      const parsed = parseReviewResult(choice.message.content, input);
+      if (attempt < 3 && Date.now() < deadlineMs && (
+        (parsed.status === 'unavailable' && parsed.reason === 'invalid JSON review result') ||
+        (input.scope?.kind === 'partition' && parsed.status === 'incomplete' &&
+          (parsed.context_requests?.length ?? 0) > 0 && parsed.context_requests.every(alreadySuppliedRequest))
+      )) continue;
+      return parsed;
     }
-    let body;
-    try { body = await response.json(); } catch {
-      return unavailable(input, Date.now() >= deadlineMs ? 'Review inference exceeded its deadline.' : `Review gateway returned invalid JSON (HTTP ${response.status}).`);
-    }
-    if (!response.ok) {
-      // Only a bounded machine code is safe to publish. Provider prose may echo
-      // source or credentials and therefore never crosses this boundary.
-      const code = body.error?.code;
-      const suffix = typeof code === 'string' && /^[a-z0-9_]{1,80}$/.test(code) ? ` (${code})` : '';
-      return unavailable(input, `Review gateway refused HTTP ${response.status}${suffix}.`);
-    }
-    const choice = body.choices?.[0];
-    if (body.object !== 'chat.completion' || body.model !== model || body.choices?.length !== 1 ||
-        choice?.finish_reason !== 'stop' || choice.message?.role !== 'assistant' ||
-        choice.message.refusal || choice.message.tool_calls?.length || typeof choice.message.content !== 'string') {
-      return unavailable(input, 'Review inference was refused, interrupted, or did not return the configured model result.');
-    }
-    return parseReviewResult(choice.message.content, input);
   }
 }

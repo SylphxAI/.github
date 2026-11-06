@@ -372,25 +372,49 @@ test('known renamed and context identities are located but unsafe supplied path 
   }
 });
 
-test('line-qualified evidence recovers unique verbatim nearby lines and refuses ambiguous or non-verbatim quotes', () => {
-  const head = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'duplicate', 'duplicate', 'omega'].join('\n') + '\n';
+test('line-qualified evidence recovers unique verbatim supplied lines, records snapped ranges, and refuses ambiguous or non-verbatim quotes', () => {
+  const head = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'duplicate', 'duplicate', ...Array.from({ length: 16 }, (_, i) => `line_${i}`), 'omega'].join('\n') + '\n';
   const input = inputFor('old\n', head);
   const shifted = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
     start_line: 1, end_line: 2, start_byte: null, end_byte: null, quote: 'epsilon\nduplicate' }] }), input);
   assert.equal(shifted.status, 'complete');
   assert.equal(shifted.related_evidence[0].start_line, 5);
   assert.equal(shifted.related_evidence[0].end_line, 6);
+  assert.deepEqual(shifted.snapped_evidence, [{ kind: 'related_evidence', evidence_index: 0, finding_index: null,
+    path: 'src/value.js', side: 'head', from_start_line: 1, from_end_line: 2, start_line: 5, end_line: 6 }]);
   const halfOpen = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
     start_line: 4, end_line: 6, start_byte: null, end_byte: null, quote: 'delta\nepsilon' }] }), input);
   assert.equal(halfOpen.status, 'complete');
   assert.equal(halfOpen.related_evidence[0].start_line, 4);
   assert.equal(halfOpen.related_evidence[0].end_line, 5);
+  const farUnique = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
+    start_line: 7, end_line: 7, start_byte: null, end_byte: null, quote: 'omega' }] }), input);
+  assert.equal(farUnique.status, 'complete');
+  assert.equal(farUnique.related_evidence[0].start_line, 24);
+  assert.equal(farUnique.related_evidence[0].end_line, 24);
+  assert.equal(farUnique.snapped_evidence[0].from_start_line, 7);
+  assert.equal(farUnique.snapped_evidence[0].start_line, 24);
   const ambiguous = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
     start_line: 5, end_line: 5, start_byte: null, end_byte: null, quote: 'duplicate' }] }), input);
   assert.equal(ambiguous.status, 'unavailable');
   assert.equal(ambiguous.validation_failure.code, 'quote_mismatch');
-  const tooFar = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
-    start_line: 1, end_line: 1, start_byte: null, end_byte: null, quote: 'omega' }] }), input);
-  assert.equal(tooFar.status, 'unavailable');
-  assert.equal(tooFar.validation_failure.code, 'quote_mismatch');
+  const nonVerbatim = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
+    start_line: 1, end_line: 1, start_byte: null, end_byte: null, quote: 'omega_missing' }] }), input);
+  assert.equal(nonVerbatim.status, 'unavailable');
+  assert.equal(nonVerbatim.validation_failure.code, 'quote_mismatch');
+});
+
+test('gateway retries transient HTTP 200 invalid JSON per part within the deadline', async () => {
+  const input = inputFor(); let attempts = 0;
+  const review = gatewayReviewer({ token: 'private-value', model: 'vendor/reviewer', deadlineMs: Date.now() + 5000,
+    fetcher: async () => {
+      attempts++;
+      if (attempts === 1) return { ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected end of JSON input'); } };
+      if (attempts === 2) return { ok: true, status: 200, json: async () => ({ object: 'chat.completion', model: 'vendor/reviewer',
+        choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{truncated' } }] }) };
+      return { ok: true, status: 200, json: async () => reply(input) };
+    } });
+  const result = await review(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(attempts, 3);
 });
