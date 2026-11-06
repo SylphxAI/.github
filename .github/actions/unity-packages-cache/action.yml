@@ -2,7 +2,7 @@ name: unity-packages-cache
 description: Embed the complete SHA256-pinned Unity registry package closure from Build Cache before launching Unity; no registry fallback.
 inputs:
   project-path:
-    description: Prepared Unity project containing committed packages-lock.json and unity-packages.json.
+    description: Prepared Unity project path (workspace-relative or absolute) containing committed packages-lock.json and unity-packages.json.
     required: true
   mirror:
     description: Existing Build Cache HTTPS origin.
@@ -20,4 +20,7 @@ runs:
       env:
         PROJECT_PATH: ${{ inputs.project-path }}
         MIRROR: ${{ inputs.mirror }}
-      run: python3 "$GITHUB_ACTION_PATH/packages.py" hydrate --project "$GITHUB_WORKSPACE/$PROJECT_PATH" --mirror "$MIRROR"
+      run: |
+        project="$PROJECT_PATH"
+        if [[ "$project" != /* ]]; then project="$GITHUB_WORKSPACE/$project"; fi
+        python3 "$GITHUB_ACTION_PATH/packages.py" hydrate --project "$project" --mirror "$MIRROR"

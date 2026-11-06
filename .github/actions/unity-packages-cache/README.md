@@ -37,6 +37,8 @@ and Git dependencies keep their existing preparation steps.
     block-package-registry: 'true'
 ```
 
+The project path may be workspace-relative or an absolute job-owned temporary project.
+
 Run hydration after dependency preparation and before every project's first
 editor invocation. Use a clean checkout; existing embedded directories are never
 overwritten. Hydration stages and verifies the whole closure before installing
@@ -52,7 +54,11 @@ invalidate the Unity pins.
 
 `block-package-registry: 'true'` maps `packages.unity.com`,
 `download.packages.unity.com` and `cdn.packages.unity.com` to loopback in the
-compilation container. For other editor entrypoints, pass the same three
+compilation container and selects fresh container-local `UPM_CACHE_ROOT`,
+`UPM_CACHE_PATH` and `UPM_NPM_CACHE_PATH` locations so a licence probe or image
+cache override cannot prewarm the proof. The subsidiary variables override the root
+([Unity 2022.3 documentation](https://docs.unity3d.com/2022.3/Documentation/Manual/upm-config-cache.html),
+read 2026-11-06). For other editor entrypoints, pass the same three
 `--add-host <host>:127.0.0.1` Docker arguments. Do not configure an HTTP proxy
 that could bypass these mappings. Test initial adoption with no `Library` or
 user-level Unity package cache and record successful resolution for each editor

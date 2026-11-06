@@ -21,8 +21,11 @@ case "${BLOCK_PACKAGE_REGISTRY:-false}" in
     }
     registry_args=(--add-host packages.unity.com:127.0.0.1
       --add-host download.packages.unity.com:127.0.0.1
-      --add-host cdn.packages.unity.com:127.0.0.1)
-    echo "Unity package registry and archive hosts blocked in the editor container"
+      --add-host cdn.packages.unity.com:127.0.0.1
+      --env UPM_CACHE_ROOT=/tmp/sylphx-upm-cold
+      --env UPM_CACHE_PATH=/tmp/sylphx-upm-cold/packages
+      --env UPM_NPM_CACHE_PATH=/tmp/sylphx-upm-cold/npm)
+    echo "Unity package registry and archive hosts blocked; fresh container-local UPM_CACHE_ROOT=/tmp/sylphx-upm-cold"
     ;;
   false) ;;
   *) echo "::error::block-package-registry must be true or false"; exit 1 ;;

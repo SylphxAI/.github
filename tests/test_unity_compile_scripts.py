@@ -111,6 +111,9 @@ class UnityCompileScripts(unittest.TestCase):
             result = subprocess.run(["bash", str(ACTION / "compile.sh")], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 42)
             captured = args.read_text().splitlines()
+            self.assertIn("UPM_CACHE_ROOT=/tmp/sylphx-upm-cold", captured)
+            self.assertIn("UPM_CACHE_PATH=/tmp/sylphx-upm-cold/packages", captured)
+            self.assertIn("UPM_NPM_CACHE_PATH=/tmp/sylphx-upm-cold/npm", captured)
             for host in ("packages.unity.com", "download.packages.unity.com", "cdn.packages.unity.com"):
                 index = captured.index(host + ":127.0.0.1")
                 self.assertEqual(captured[index - 1], "--add-host")

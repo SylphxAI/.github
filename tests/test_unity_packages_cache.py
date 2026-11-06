@@ -3,6 +3,8 @@ import http.server
 import importlib.util
 import io
 import json
+import os
+import subprocess
 from pathlib import Path
 import tarfile
 import tempfile
@@ -231,12 +233,31 @@ class UnityPackagesCache(unittest.TestCase):
             result = upm.pin(self.project)
         self.assertEqual(json.loads(result.read_text()), self.pins)
 
+    def test_action_resolves_relative_and_absolute_project_paths_without_shell_interpolation(self):
+        source = (ACTION / "action.yml").read_text()
+        body = source.split("      run: |\n", 1)[1]
+        script = "\n".join(line.removeprefix("        ") for line in body.splitlines())
+        with tempfile.TemporaryDirectory() as temporary:
+            action = Path(temporary) / "action"
+            action.mkdir()
+            (action / "packages.py").write_text("import json,sys; print(json.dumps(sys.argv[1:]))")
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            for project, expected in (("project with spaces", workspace / "project with spaces"),
+                                      (str(Path(temporary) / "isolated project"), Path(temporary) / "isolated project")):
+                with self.subTest(project=project):
+                    result = subprocess.run(["bash", "-euc", script], text=True, capture_output=True,
+                        env=os.environ | {"GITHUB_WORKSPACE": str(workspace), "GITHUB_ACTION_PATH": str(action),
+                                          "PROJECT_PATH": project, "MIRROR": upm.MIRROR})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), ["hydrate", "--project", str(expected), "--mirror", upm.MIRROR])
+
     def test_action_only_hydrates_and_does_not_contact_registry(self):
         source = (ACTION / "action.yml").read_text()
         self.assertIn('packages.py" hydrate', source)
         self.assertNotIn('packages.py" pin', source)
         self.assertNotIn("packages.unity.com", source)
-        self.assertIn('"$GITHUB_WORKSPACE/$PROJECT_PATH"', source)
+        self.assertIn('project="$GITHUB_WORKSPACE/$project"', source)
 
 
 if __name__ == "__main__":
