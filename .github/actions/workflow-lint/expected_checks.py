@@ -104,8 +104,14 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifi
                 "events": sorted(EVENTS), "paths": None, "paths_ignore": None}] if require_verifier else []
     remote_cache = {}
 
-    def boundary(job):
-        if 'always()' not in str(job.get('if', '')) or job.get('continue-on-error', False) is not False:
+    def boundary(job, context):
+        condition = str(job.get('if', ''))
+        # A boundary must run after failure/cancellation too. Do not use the
+        # healthy-path success() substitution, or accept always() in a string.
+        unquoted = re.sub(r"'(?:''|[^'])*'", "''", condition)
+        if (not re.search(r'\balways\s*\(\s*\)', unquoted) or
+                not all(truth(value) == {True} for value in expression(condition, context, condition=True)) or
+                job.get('continue-on-error', False) is not False):
             return False
         for step in job.get('steps', []):
             if not re.fullmatch(r'SylphxAI/\.github/\.github/actions/(?:needs-pass|ci-ok)@[a-fA-F0-9]{40}', step.get('uses', '')):
@@ -138,7 +144,7 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifi
                     if key in visited or key not in active:
                         continue
                     visited.add(key)
-                    if not (healthy_unconditional(jobs[key], context) and boundary(jobs[key])):
+                    if not (healthy_unconditional(jobs[key], context) and boundary(jobs[key], context)):
                         continue
                     children = set(needs(jobs[key])) & active
                     represented.update(children)
@@ -147,7 +153,7 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifi
             selected = {key for key in candidates if healthy_unconditional(jobs[key], context)}
         for key in candidates - selected:
             aggregates = [other for other in selected
-                          if boundary(jobs[other])
+                          if boundary(jobs[other], context)
                           and key in needs(jobs[other])]
             if not aggregates:
                 raise DeclarationError(f"{location}/{key}: conditional check needs an always-running required aggregate")
@@ -155,15 +161,18 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifi
         # A static always-running completion boundary represents all matrix
         # legs; no fabricated per-leg name belongs in the runtime contract.
         selected -= {key for key in selected if not identify_only and jobs[key].get("strategy") is not None and any(
-            other != key and boundary(jobs[other]) and
+            other != key and boundary(jobs[other], context) and
             key in needs(jobs[other]) for other in selected)}
         for key in sorted(selected):
             job = jobs[key]
             if identify_only:
                 name = job.get("name", key)
-                # A dynamic producer has no literal identity to census.
-                # Required dynamic/matrix names still refuse during selection.
-                if not isinstance(name, str) or "${{" in name:
+                # Matrix base names are not emitted check identities: a job
+                # named Tests produces Tests (1), Tests (2), etc. Do not invent
+                # an unsuffixed alias. Required matrix/dynamic names still
+                # refuse unless represented by a proven completion boundary.
+                strategy = job.get("strategy")
+                if (isinstance(strategy, dict) and "matrix" in strategy) or not isinstance(name, str) or "${{" in name:
                     continue
             else:
                 name = literal_name(key, job, location)
@@ -310,8 +319,11 @@ def main():
                 return subprocess.check_output(['git', '-C', str(args.root), 'show',
                     f'{args.expected_sha}:{path}'], text=True, stderr=subprocess.DEVNULL)
 
-            paths = subprocess.check_output(['git', '-C', str(args.root), 'ls-tree', '-r',
-                '--name-only', args.expected_sha, '--', '.github/workflows'], text=True).splitlines()
+            # Git's human-readable quoting and text newline conversion both
+            # alter valid filenames. NUL-delimited bytes preserve the tree.
+            paths = [os.fsdecode(path) for path in subprocess.check_output([
+                'git', '-C', str(args.root), 'ls-tree', '-rz', '--name-only',
+                args.expected_sha, '--', '.github/workflows']).split(b'\0') if path]
             workflows = {pathlib.PurePosixPath(path).name: committed(path)
                 for path in paths if pathlib.PurePosixPath(path).parent == pathlib.PurePosixPath('.github/workflows')
                 and pathlib.PurePosixPath(path).suffix in {'.yml', '.yaml'}}

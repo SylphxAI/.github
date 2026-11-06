@@ -22,7 +22,7 @@ def verifier():
 
 
 def aggregate():
-    return ('  verified:\n    name: verified\n    needs: test\n    if: always() && !cancelled()\n'
+    return ('  verified:\n    name: verified\n    needs: test\n    if: always()\n'
             '    steps:\n      - uses: SylphxAI/.github/.github/actions/needs-pass@' + 'a' * 40 +
             '\n        with:\n          needs: ${{ toJSON(needs) }}\n')
 
@@ -105,7 +105,7 @@ class ExpectedChecksContractTest(unittest.TestCase):
         text = simple(extra=extra).replace('    name: test', "    if: needs.scope.outputs.selected == 'true'\n    name: test")
         self.assertEqual([r['name'] for r in self.compile({'test.yml': text})['checks']], ['verified'])
         with self.assertRaisesRegex(compiler.DeclarationError, 'always-running required aggregate'):
-            self.compile({'test.yml': text.replace('    if: always() && !cancelled()\n', '')})
+            self.compile({'test.yml': text.replace('    if: always()\n', '')})
 
     def test_unaggregated_conditional_terminal_refuses(self):
         with self.assertRaisesRegex(compiler.DeclarationError, 'conditional check'):
@@ -164,6 +164,24 @@ class ExpectedChecksContractTest(unittest.TestCase):
         strict_middle = aggregate().replace('  verified:', '  middle:').replace('    name: verified', '    name: middle')
         self.assertEqual([r['name'] for r in self.compile({'caller.yml': caller,
             'reusable.yml': child + strict_middle + gate})['checks']], ['call / ci-ok'])
+
+    def test_reusable_pruning_requires_boundary_on_failure_and_cancellation(self):
+        caller = 'on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n'
+        child = simple('${{ matrix.name }}', trigger='on: workflow_call').replace(
+            '    name:', '    strategy: {matrix: {name: [one, two]}}\n    name:', 1)
+        middle = aggregate().replace('  verified:', '  middle:').replace('    name: verified', '    name: middle')
+        gate = aggregate().replace('  verified:', '  ci-ok:').replace('    name: verified', '    name: ci-ok').replace('    needs: test', '    needs: middle')
+        for condition in ['always() && success()', 'always() && !failure()', 'always() && !cancelled()',
+                          "always() && needs.test.result == 'success'", "${{ 'always()' == 'always()' }}"]:
+            with self.subTest(condition=condition), self.assertRaises(compiler.DeclarationError):
+                self.compile({'caller.yml': caller, 'reusable.yml': child + middle.replace(
+                    '    if: always()', '    if: ' + condition) + gate})
+        for condition in ['always()', '${{ always() }}', "always() && github.event_name == 'pull_request'",
+                          'always() || success()']:
+            with self.subTest(condition=condition):
+                records = self.compile({'caller.yml': caller, 'reusable.yml': child + middle.replace(
+                    '    if: always()', '    if: ' + condition) + gate})['checks']
+                self.assertEqual([r['name'] for r in records], ['call / ci-ok'])
 
     def test_reusable_noop_does_not_prune_unconditional_children(self):
         caller = 'on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n'
@@ -243,6 +261,27 @@ class ExpectedChecksContractTest(unittest.TestCase):
         text = text.replace('    name: test', '    strategy: {matrix: {version: [1, 2]}}\n    name: test')
         self.assertEqual([r['name'] for r in self.compile({'test.yml': text})['checks']], ['verified'])
 
+    def test_matrix_base_name_is_not_an_unsuffixed_producer_identity(self):
+        matrix = simple('Tests', extra=aggregate()).replace(
+            '    name: Tests', '    strategy: {matrix: {shard: [1, 2]}}\n    name: Tests')
+        independent = '  separate:\n    name: Tests\n    steps: [{run: true}]\n'
+        self.assertEqual([r['name'] for r in self.compile({'ci.yml': matrix + independent})['checks']],
+                         ['Tests', 'verified'])
+        # The same distinction holds through reusable caller name prefixes.
+        caller = 'on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n'
+        called = (matrix + independent).replace('on: [pull_request, merge_group]', 'on: workflow_call')
+        self.assertEqual([r['name'] for r in self.compile({'caller.yml': caller,
+            'reusable.yml': called})['checks']], ['call / Tests', 'call / verified'])
+
+    def test_non_matrix_strategy_is_a_literal_producer_identity(self):
+        for option in ['fail-fast: false', 'max-parallel: 2']:
+            with self.subTest(option=option):
+                covered = simple('Tests', extra=aggregate()).replace(
+                    '    name: Tests', f'    strategy: {{{option}}}\n    name: Tests')
+                independent = '  separate:\n    name: Tests\n    steps: [{run: true}]\n'
+                with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):
+                    self.compile({'ci.yml': covered + independent})
+
     def test_same_workflow_duplicate_names_refuse_before_grouping(self):
         text = simple(extra='  duplicate:\n    name: test\n    steps: [{run: true}]\n')
         with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):
@@ -290,6 +329,41 @@ class ExpectedChecksContractTest(unittest.TestCase):
         for vector in fixture['vectors']:
             with self.subTest(vector=vector):
                 self.assertEqual(matches_path(vector['patterns'], vector['path']), vector['expected'])
+
+    def test_verifier_inventory_preserves_nonascii_and_git_quoted_filenames(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            folder = root / '.github/workflows'
+            folder.mkdir(parents=True)
+            names = {'測試.yml': 'unicode', 'tab\t"quote\r\n.yml': 'quoted'}
+            for filename, check in names.items():
+                (folder / filename).write_text(simple(check))
+            def git(*args):
+                return subprocess.check_output(['git', '-C', tmp, *args], text=True, stderr=subprocess.DEVNULL).strip()
+            def commit(message):
+                git('add', '.')
+                git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', message)
+                return git('rev-parse', 'HEAD')
+            git('init', '-q')
+            commit('quoted source names')
+            command = [sys.executable, str(pathlib.Path(compiler.__file__)), '--root', tmp]
+            generated = subprocess.run([*command, '--write'], capture_output=True, text=True)
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            path = root / compiler.DECLARATION
+            declaration = json.loads(path.read_text())
+            self.assertEqual({r['workflow'] for r in declaration['checks']},
+                             {*names, compiler.VERIFIER_WORKFLOW})
+            sha = commit('complete declaration')
+            verified = subprocess.run([*command, '--verify', '--expected-sha', sha], capture_output=True, text=True)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            # An omitted Git-quoted workflow must not disappear from the
+            # trusted verifier's inventory while remaining executable.
+            declaration['checks'] = [r for r in declaration['checks'] if r['workflow'] not in names]
+            path.write_text(compiler.render(declaration))
+            sha = commit('omit quoted workflows')
+            refused = subprocess.run([*command, '--verify', '--expected-sha', sha], capture_output=True, text=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn('missing or drifted', refused.stderr)
 
     def test_real_verifier_entrypoint_binds_canonical_bytes_to_exact_sha(self):
         with tempfile.TemporaryDirectory() as tmp:
