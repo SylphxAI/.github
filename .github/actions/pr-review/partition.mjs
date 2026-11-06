@@ -1,6 +1,7 @@
 import { digest, reviewerVersion, unavailable, canonical } from './contract.mjs';
-import { literalSegments, changedRanges } from './source.mjs';
+import { literalSegments, changedRanges, fileSegments } from './source.mjs';
 import { digest as sourceDigest } from './github.mjs';
+import { recoveryLimits } from './recovery.mjs';
 
 export const seal = value => ({ ...value, input_digest: digest(value), reviewer_version: reviewerVersion });
 const bare = input => { const { input_digest, reviewer_version, ...value } = input; return value; };
@@ -92,6 +93,20 @@ export function unionFindings(results) {
   return [...new Map(results.flatMap(r => r.findings).map(f => [canonical(f), f])).values()];
 }
 
+function requestedSource(input, request) {
+  if (!['base', 'head'].includes(request.side)) return null;
+  const context = input.context.find(c => c.path === request.path && c.side === request.side && c.absent !== true);
+  if (context) return context;
+  const side = request.side === 'base' ? 'before' : 'after';
+  const file = input.files.find(f => (request.side === 'base' ? f.previous_path ?? f.path : f.path) === request.path);
+  const metadata = file?.[side];
+  if (!metadata || metadata.encoding === 'binary') return null;
+  const segments = fileSegments(file, side);
+  if (metadata.bytes > 0 && !segments.length) return null;
+  return { path: request.path, side: request.side, commit_sha: input[`${request.side}_sha`],
+    sha256: metadata.sha256, bytes: metadata.bytes, segments };
+}
+
 export async function reviewPartitions(input, { execute, requestBytes, byteBudget, current = async () => true, completedParts }) {
   const isCurrent = async () => { try { return await current(); } catch { return null; } };
   let parts;
@@ -145,6 +160,23 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   let result;
   try { result = await execute(synthesis, { files: input.files, context: input.context }); }
   catch { result = unavailable(synthesis, 'Cross-file synthesis could not complete.'); }
+  // A synthesis initially receives summaries, not the source already reviewed in
+  // other parts. Supply only its requested pinned source, without recollecting it
+  // or putting the full validation bundle on the wire.
+  for (let round = 0; result.status === 'incomplete' && round < recoveryLimits.rounds; round++) {
+    if (input.context_recovery === 'exhausted') break;
+    const requests = result.context_requests ?? [];
+    if (!requests.length) break;
+    const requested = [...new Map(requests.map(r => [canonical([r.path, r.side]), r])).values()]
+      .map(r => requestedSource(input, r));
+    if (requested.some(c => c === null)) break;
+    const next = seal({ ...bare(synthesis), context: [...synthesis.context, ...requested] });
+    if (requestBytes(next) > byteBudget) break;
+    const head = await isCurrent();
+    if (head !== true) return { ...base, reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
+    try { result = await execute(next, { files: input.files, context: input.context }); }
+    catch { result = unavailable(next, 'Cross-file synthesis could not complete.'); }
+  }
   if (result.status !== 'complete') return { ...base, reason: `Cross-file synthesis: ${result.reason}`,
     context_requests: result.status === 'incomplete' ? result.context_requests ?? [] : [],
     ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
