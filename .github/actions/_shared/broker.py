@@ -5,9 +5,16 @@ import json
 import os
 import re
 import subprocess
+import time
 from urllib.parse import urlsplit
 
-from access_ready import issued_subject, wait_for_identity, read_identity, ReadinessError
+from access_ready import (
+    READINESS_MARGIN_SECONDS,
+    ReadinessError,
+    issued_subject,
+    read_identity,
+    wait_for_identity,
+)
 
 
 class ExchangeError(Exception):
@@ -19,27 +26,51 @@ def mask(value):
     print('::add-mask::' + value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'), flush=True)
 
 
-def request(url, *, token=None, body=None):
+PROPAGATION_RETRY_SECONDS = 2
+
+
+def request(url, *, token=None, body=None, allow_propagation=False):
     """Secrets travel only on stdin, never argv, URL, stderr or retry logs."""
     config = []
     if token:
         config.append('header = ' + json.dumps('Authorization: Bearer ' + token))
-    args = ['curl', '-sS', '--max-time', '60', '--url', url, '-K', '-', '--write-out', '\n%{http_code}']
     if body is not None:
-        args += ['--request', 'POST']
         config += ['header = "content-type: application/json"', 'data = ' + json.dumps(json.dumps(body))]
-    result = subprocess.run(args, input='\n'.join(config) + '\n', text=True, capture_output=True, timeout=65)
-    if result.returncode:
-        raise ExchangeError('credential exchange failed at the network; request was not retried')
-    try:
-        raw, status = result.stdout.rsplit('\n', 1)
-        data = json.loads(raw)
-        if int(status) != 200 or not isinstance(data, dict):
-            raise ValueError()
-        return data
-    except (ValueError, TypeError):
-        # Provider error bodies can reflect credentials; do not print them.
-        raise ExchangeError('credential endpoint refused or returned invalid JSON; request was not retried') from None
+    stdin_payload = '\n'.join(config) + '\n'
+    deadline = time.monotonic() + (READINESS_MARGIN_SECONDS if allow_propagation else 0)
+    while True:
+        max_time = 60
+        if allow_propagation:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ExchangeError('credential endpoint refused or returned invalid JSON; request was not retried')
+            max_time = min(60, max(1, remaining))
+        args = ['curl', '-sS', '--max-time', str(max_time), '--url', url, '-K', '-', '--write-out', '\n%{http_code}']
+        if body is not None:
+            args += ['--request', 'POST']
+        result = subprocess.run(args, input=stdin_payload, text=True, capture_output=True, timeout=max_time + 5)
+        if result.returncode:
+            raise ExchangeError('credential exchange failed at the network; request was not retried')
+        try:
+            raw, status = result.stdout.rsplit('\n', 1)
+            data = json.loads(raw)
+            status_code = int(status)
+            if not isinstance(data, dict):
+                raise ValueError()
+        except (ValueError, TypeError):
+            # Provider error bodies can reflect credentials; do not print them.
+            raise ExchangeError('credential endpoint refused or returned invalid JSON; request was not retried') from None
+        if status_code == 200:
+            return data
+        if (allow_propagation and status_code == 401
+                and data.get('code') == 'key_not_yet_propagated'
+                and time.monotonic() < deadline):
+            wait_seconds = min(PROPAGATION_RETRY_SECONDS, max(0, deadline - time.monotonic()))
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            if time.monotonic() < deadline:
+                continue
+        raise ExchangeError('credential endpoint refused or returned invalid JSON; request was not retried')
 
 
 def validate(api_url, policy, repository, permissions, read_only):
@@ -85,7 +116,7 @@ def exchange(api_url, policy, repository, permissions, read_only=False, ci_name=
     body = {'repositories': [repository]}
     if permissions:
         body['permissions'] = permissions
-    result = request(api_url.rstrip('/') + '/v1/' + policy + ':' + method, token=key, body=body)
+    result = request(api_url.rstrip('/') + '/v1/' + policy + ':' + method, token=key, body=body, allow_propagation=True)
     token = result.get('token')
     if not isinstance(token, str) or not token or any(ord(c) < 33 or ord(c) > 126 for c in token):
         raise ExchangeError('no installation token from Broker')
