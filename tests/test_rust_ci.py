@@ -62,12 +62,15 @@ class RustCiWorkflow(unittest.TestCase):
             if "run" in s:
                 self.assertNotIn("${{", s["run"], s.get("name"))
 
-    def test_only_sylphx_runner_labels_are_reachable(self) -> None:
+    def test_hosted_override_is_explicit_public_and_standard_only(self) -> None:
         runs_on = job()["runs-on"]
         self.assertIn("sylphx-linux-{0}{1}", runs_on)
         self.assertIn("inputs.runner-class == 'xlarge' && 'xlarge' || 'standard'", runs_on)
         self.assertIn("github.event_name == 'merge_group' && '-merge' || ''", runs_on)
-        self.assertNotRegex(self.text, r"(ubuntu|macos|windows)-(latest|\d)")
+        self.assertIn("!github.event.repository.private && inputs.runs-on == 'ubuntu-latest' && 'ubuntu-latest'", runs_on)
+        spec = yaml.safe_load(self.text)[True]["workflow_call"]["inputs"]
+        self.assertEqual(spec["runs-on"]["default"], "")
+        self.assertNotRegex(self.text, r"(macos|windows)-(latest|\d)")
 
     def test_job_may_request_an_oidc_token_and_nothing_else_beyond_read(self) -> None:
         # BuildCache authenticates the job by its GitHub OIDC identity.
