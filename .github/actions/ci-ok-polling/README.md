@@ -1,46 +1,40 @@
 # Legacy cross-workflow verdict
 
-This action supports legacy repositories whose required checks span independent
+This action supports legacy repositories whose checks span independent
 workflows. Prefer the strict [`ci-ok`](../ci-ok) action with explicit `needs:`
 dependencies; that dependency graph is the target completion boundary.
 
 A completed failed, cancelled, timed-out, action-required, startup-failed or
 stale check fails immediately on the next successful poll, even while other
-checks remain queued or running. Failed empty gating workflow suites also fail
-immediately. Success still requires two consecutive complete, passing polls.
-Skipped and neutral checks pass unless listed in `required`.
+checks remain queued or running. Failure does not wait for a stable inventory.
+
+Success behavior is unchanged from the earlier cross-workflow action: every
+observed, nonignored check must complete, skipped and neutral checks pass, and
+two consecutive complete polls must report the same check names. Pending-only
+inventories keep waiting. The polling interval defaults to 20 seconds, after an
+initial 45-second registration delay.
 
 ```yaml
 permissions:
-  actions: read
   checks: read
-  contents: read
-  pull-requests: read
 jobs:
   ci-ok:
     runs-on: sylphx-linux-control
     steps:
       - uses: SylphxAI/.github/.github/actions/ci-ok-polling@<full-release-sha> # main
         with:
-          expected: build,tests,optional-lint
-          required: build,tests
+          timeout-minutes: "110"
+          ignore: advisory-lint
 ```
 
-`expected` must name the complete set of gated **check display names**, including
-conditionally skipped jobs, for this event. It is mandatory and cannot include
-the gate itself or ignored checks. Missing expected checks keep the verdict
-pending until they register or the timeout fails closed. An incomplete inventory
-never establishes that an expected check ran. If path filters omit a workflow
-entirely, the caller must derive the expected set for that change without
-omitting any required validation. Observed nonignored checks still count even
-when absent from `expected`.
+Existing callers only change the action path and immutable SHA. `job-name`
+(default `ci-ok`) excludes the calling check, `ignore` lists advisory checks,
+and `all-apps` optionally includes check runs outside GitHub Actions.
 
-Keep existing advisory exclusions in `ignore`; the calling check defaults to
-`ci-ok` and can be changed with `job-name`. Only GitHub Actions checks count
-unless `all-apps` is true. Superseded workflow attempts do not count, and API
-budget exhaustion past the deadline fails closed. `timeout-minutes` defaults
-to 110; the default poll interval is 20 seconds (60 on a low API budget).
+## Completion boundary limitation
 
-This action cannot infer checks that a caller omits from its declared expected
-set. Keep that declaration aligned with the workflow definitions, just as the
-strict verdict requires its caller to declare every required dependency.
+A stable check inventory cannot prove that a workflow registered every required
+check. This action intentionally preserves the legacy success behavior; it
+does not repair that limitation. Use the strict dependency-based verdict when
+migrating a repository's completion boundary. Do not adopt this legacy action
+for new workflows.
