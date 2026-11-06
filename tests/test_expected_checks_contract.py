@@ -31,6 +31,18 @@ class ExpectedChecksContractTest(unittest.TestCase):
     def compile(self, workflows, **kwargs):
         return compiler.compile_declaration(workflows, require_verifier=False, **kwargs)
 
+    def test_source_runner_is_hosted_only_for_explicit_public_visibility(self):
+        workflow = compiler.yaml.load((ROOT / '.github/workflows/expected-checks.yml').read_text(),
+                                      Loader=compiler.WorkflowLoader)
+        selector = workflow['jobs']['verify']['runs-on']
+        # Missing repository fields resolve to null in the GitHub event context.
+        for visibility in ('public', 'private', 'internal', '', None):
+            with self.subTest(visibility=visibility):
+                context = {'github.event.repository.visibility': {visibility},
+                           'github.event.repository.private': {None}}
+                self.assertEqual(compiler.expression(selector, context),
+                                 {'ubuntu-latest' if visibility == 'public' else 'sylphx-linux-control'})
+
     def test_org_source_checkout_contains_compiler_dependency_closure(self):
         workflow = compiler.yaml.load((ROOT / '.github/workflows/expected-checks.yml').read_text(),
                                       Loader=compiler.WorkflowLoader)

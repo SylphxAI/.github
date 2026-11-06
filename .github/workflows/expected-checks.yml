@@ -16,7 +16,7 @@ jobs:
     # This condition is constant true for every enrolled target; target PRs
     # cannot replace this workflow or the implementation checked out below.
     if: github.repository != 'SylphxAI/.github'
-    runs-on: ${{ github.event.repository.private == false && 'ubuntu-latest' || 'sylphx-linux-control' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     timeout-minutes: 5
     steps:
       - name: Read the evaluated consumer commit without running consumer code
