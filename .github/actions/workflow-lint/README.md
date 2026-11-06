@@ -105,9 +105,11 @@ cover GitHub's documented grammar, including ordered exclusion/reinclusion;
 Python `fnmatch` is not equivalent. Unsupported syntax is refused. Conditional
 or matrix children need a direct, always-running aggregate that executes the
 pinned shared `needs-pass`/`ci-ok` action over `toJSON(needs)`, without advisory
-exemptions. Reusable `ci-ok` closures are pruned only across these proven direct
-edges; a no-op aggregate or transitive pass-through is not evidence of failure
-propagation. Required expression/matrix check names are refused; immutable
+exemptions. The job guard must remain true after failure and cancellation;
+`always() && success()`, `always() && !cancelled()`, or an `always()` string
+literal cannot prove a boundary. Reusable `ci-ok` closures are pruned only across
+these proven direct edges; a no-op aggregate or transitive pass-through is not
+evidence of failure propagation. Required expression/matrix check names are refused; immutable
 reusable calls expand to `caller / callee` names. A local call nested inside a
 remote reusable stays in that remote repository at the same SHA. Literal
 producer names are checked before pruning covered jobs, including reusable
