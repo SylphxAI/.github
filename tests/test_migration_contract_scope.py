@@ -43,6 +43,21 @@ class ContractScopeTests(unittest.TestCase):
                     self.assertEqual(guard.check_sql(MARKER + sql + "\nDROP TABLE accounts;", dialect), [(3, "DROP TABLE")])
                     self.assertEqual(guard.check_sql(MARKER + sql + "\n" + MARKER + "DROP TABLE accounts;", dialect), [])
 
+    def test_begin_identifiers_in_headers_and_single_statement_bodies_are_not_blocks(self):
+        for sql in [
+            "CREATE PROCEDURE begin() BEGIN SELECT 1; END;",
+            "CREATE FUNCTION begin() RETURNS int BEGIN RETURN 1; END;",
+            "CREATE PROCEDURE p() SELECT begin FROM source;",
+            "CREATE FUNCTION f() RETURNS int RETURN begin;",
+            "CREATE TRIGGER t BEFORE INSERT ON begin FOR EACH ROW SET NEW.id=1;",
+            "CREATE TRIGGER t BEFORE INSERT ON begin FOR EACH ROW BEGIN SET NEW.id=1; END;",
+            "CREATE EVENT begin ON SCHEDULE EVERY 1 DAY DO SELECT begin FROM source;",
+            "CREATE EVENT begin ON SCHEDULE EVERY 1 DAY DO BEGIN SELECT 1; END;",
+        ]:
+            with self.subTest(sql=sql):
+                self.assertEqual(guard.check_sql(MARKER + sql, "mysql"), [])
+                self.assertEqual(guard.check_sql(MARKER + sql + "\nDROP TABLE accounts;", "mysql"), [(3, "DROP TABLE")])
+
     def test_nested_inline_blocks_keep_the_outer_boundary(self):
         for dialect, sql in [
             ("postgres", "CREATE PROCEDURE p() LANGUAGE SQL BEGIN ATOMIC CREATE PROCEDURE nested() LANGUAGE SQL BEGIN ATOMIC SELECT 1; END; SELECT 2; END;"),

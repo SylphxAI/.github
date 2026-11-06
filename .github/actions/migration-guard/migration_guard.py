@@ -171,7 +171,6 @@ def split(tokens: list[Token], separator: str) -> list[list[Token]]:
     return [part for part in parts if part]
 
 
-
 def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
     """Split top-level SQL, retaining opaque inline routine envelopes.
 
@@ -205,14 +204,8 @@ def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
                 substart = i + 1
         elif not blocks:
             if depth == 0 and kw(token, "BEGIN"):
-                kind = routine_kind(procedural_statement(tokens[start:i]))
-                header = top_level(procedural_statement(tokens[start:i]))
-                mysql_header = kind is not None and not any(
-                    t.kind == "word" and t.value in {"SELECT", "RETURN", "SET", "CALL"}
-                    for t in header)
-                opener = dialect == "mysql" and mysql_header or (
-                    dialect == "postgres" and kind in {"FUNCTION", "PROCEDURE"}
-                    and i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC"))
+                opener = inline_body_header(procedural_statement(tokens[start:i]), dialect) and (
+                    dialect == "mysql" or i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC"))
                 if opener:
                     blocks.append("BEGIN")
                     substart = i + (2 if dialect == "postgres" else 1)
@@ -229,8 +222,8 @@ def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
             if dialect == "mysql" and (not prefix or label or after_control or handler):
                 blocks.append("BEGIN")
                 substart = i + 1
-            elif (i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC")
-                  and routine_kind(tokens[substart:i]) in {"FUNCTION", "PROCEDURE"}):
+            elif (dialect == "postgres" and i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC")
+                  and inline_body_header(tokens[substart:i], dialect)):
                 blocks.append("BEGIN")
                 substart = i + 2
         elif kw(token, "END") and (blocks[-1] == "CASE" or i == substart):
@@ -255,6 +248,41 @@ def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
     if start < len(tokens):
         parts.append(tokens[start:])
     return parts
+
+
+def inline_body_header(prefix: list[Token], dialect: str) -> bool:
+    """Prove BEGIN follows a definition header, not a name or SQL expression."""
+    kind = routine_kind(prefix)
+    if not kind or kind == "DO":
+        return False
+    at = next(i for i, t in enumerate(prefix) if kw(t, kind))
+    object_name, at = name(prefix, at + 1)
+    if not object_name:
+        return False
+    if kind in {"FUNCTION", "PROCEDURE"}:
+        if at >= len(prefix) or prefix[at].value != "(":
+            return False
+        _, at = group(prefix, at)
+    elif kind == "TRIGGER":
+        if dialect != "mysql":
+            return False
+        row = next((i for i in range(at, len(prefix)) if starts(prefix[i:], "FOR", "EACH", "ROW")), None)
+        if row is None:
+            return False
+        at = row + 3
+    elif kind == "EVENT":
+        if dialect != "mysql":
+            return False
+        do = next((i for i in range(at, len(prefix)) if kw(prefix[i], "DO")), None)
+        if do is None:
+            return False
+        at = do + 1
+    # Header attributes are not executable body statements. Reject a BEGIN
+    # identifier used by a single-statement body (SELECT begin, RETURN begin).
+    return not any(t.kind == "word" and t.value in {
+        "SELECT", "RETURN", "SET", "CALL", "INSERT", "UPDATE", "DELETE", "REPLACE",
+        "WITH", "ALTER", "CREATE", "DROP", "TRUNCATE", "GRANT", "REVOKE",
+        "IF", "CASE", "LOOP", "WHILE", "REPEAT"} for t in top_level(prefix[at:]))
 
 
 def inline_routine(stmt: list[Token], dialect: str) -> bool:
