@@ -155,6 +155,16 @@ remain unchanged. Partition and synthesis results both preserve the discarded-it
 count in the Check Run summary: `N items discarded: evidence not in source`.
 No discarded quote or finding prose is published.
 
+Each outbound response schema binds repository, base/head, policy, reviewer and
+`input_digest` to that exact request using single-value enums. For a partition,
+recovery round or synthesis, `source_digest` identifies the overall source bundle;
+it is not that request's `input_digest`. A miscopied input digest receives bounded
+correction within the existing three-attempt limit (one attempt in the final
+verdict pass). The parser never rewrites a returned identity. A persistent digest
+mismatch fails explicitly as `Review invalid`, retaining the failed part and
+reason instead of publishing neutral. Actual gateway refusal, transport failure
+or an unverifiable current head still uses the normal unavailability path.
+
 Before inference, the action reads the configured model's supported public catalog
 row at `/v1/public/models/{model}`. It reserves the configured output budget, or
 the published output maximum when that setting is omitted, without changing the
@@ -275,6 +285,10 @@ after a later capacity refusal within one review scope. Recovery cases also
 cover pinned related-source acquisition, stale-round rejection, replaced findings,
 partition/synthesis requests, no-progress and resource/head/deadline stops, and a
 full CLI fixture proving mode-0600 diagnostic persistence without public leaks.
+Three-part regressions exercise a part-2 digest mismatch after pinned context
+recovery, persistent mismatch failure, exact request-bound schemas, and a part-2
+unsupported quote without losing complete source coverage. These reproduce the
+observed rejection classes, not the unavailable raw model response bytes.
 
 Activation acceptance records the real Check Run ID/App/head, event-to-check and
 review elapsed times, concrete findings, a new-push result, and a real defect/

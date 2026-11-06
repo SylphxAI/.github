@@ -120,7 +120,12 @@ exact path while recovery is open. In the final bounded pass, state remaining
 assumptions or grounded defects and complete the assessment. Never infer completeness merely from empty findings.
 
 Return exactly one JSON object matching the supplied result schema. Copy the input
-identity fields unchanged. completion is complete only after every changed path
+identity fields unchanged from this request. In particular, input_digest is the
+seal of this exact part, context-recovery request or synthesis. source_digest is
+the overall source bundle's provenance, not a replacement for input_digest. Do
+not reuse a seal from another part or an earlier recovery round. The response
+schema binds these identity fields to this request's exact values.
+completion is complete only after every changed path
 was reviewed within the assigned scope, with no omissions, refusal or interrupted
 work. For completion="complete", set omitted_paths=[], context_requests=[] and reason="" exactly.
 Put explanations and non-blocking context notes in context_notes, not reason.

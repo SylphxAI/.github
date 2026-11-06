@@ -2,9 +2,15 @@ import { reviewerInstructions, resultSchema, parseReviewResult, unavailable, sou
 import { reviewPartitions } from './partition.mjs';
 
 export function reviewRequest(input, { model, maxOutputTokens, reasoningEffort }) {
+  // Each part/recovery/synthesis has its own seal. The overall source_digest
+  // is provenance, not the identity of this particular inference request.
+  const schema = { ...resultSchema, properties: { ...resultSchema.properties,
+    ...Object.fromEntries(['repository_id', 'base_sha', 'head_sha', 'input_digest', 'reviewer_version', 'policy_version']
+      .map(key => [key, { ...resultSchema.properties[key], enum: [input[key]] }])),
+  } };
   return JSON.stringify({ model, stream: false, store: false,
     messages: [{ role: 'system', content: reviewerInstructions }, { role: 'user', content: JSON.stringify(input) }],
-    response_format: { type: 'json_schema', json_schema: { name: 'pr_review', strict: true, schema: resultSchema } },
+    response_format: { type: 'json_schema', json_schema: { name: 'pr_review', strict: true, schema } },
     ...(maxOutputTokens === undefined ? {} : { max_completion_tokens: maxOutputTokens }),
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   });
@@ -108,6 +114,21 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
         return unavailable(input, 'Review inference was refused, interrupted, or did not return the configured model result.');
       }
       let parsed = parseReviewResult(choice.message.content, input);
+      if (parsed.status === 'unavailable' && parsed.reason === 'mismatched input_digest') {
+        if (!(retriesAllowed && attempt < 3 && Date.now() < deadlineMs)) {
+          // Never repair a returned seal on the model's behalf or accept a
+          // result from another scope. A persistent bad seal is a failed
+          // assessment, not a transport outage and not a clean review.
+          return { ...parsed, terminal_invalid: true };
+        }
+        const original = JSON.parse(originalBody);
+        const correction = JSON.stringify({ reason: parsed.reason, input_digest: input.input_digest,
+          rule: 'Copy this request\'s input_digest exactly; source_digest and seals from other parts or recovery rounds are not its identity. Return the full review for this supplied scope.' });
+        const correctedBody = JSON.stringify({ ...original, messages: [...original.messages,
+          { role: 'assistant', content: choice.message.content }, { role: 'user', content: correction }] });
+        requestBody = Buffer.byteLength(correctedBody) <= byteLimit ? correctedBody : originalBody;
+        continue;
+      }
       if (parsed.status === 'unavailable' && sourceValidationReasons.includes(parsed.reason) &&
           !(retriesAllowed && attempt < 3 && Date.now() < deadlineMs)) {
         // Correction opportunities are exhausted. Discard only unsupported

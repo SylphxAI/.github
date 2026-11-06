@@ -12,6 +12,7 @@ const outcomes = [
   { conclusion: 'success', title: 'Review complete', exit: 0 },
   { conclusion: 'failure', title: '2 defects require a change', exit: 1 },
   { conclusion: 'failure', title: 'Review incomplete', exit: 1 },
+  { conclusion: 'failure', title: 'Review invalid', exit: 1 },
   { conclusion: 'neutral', title: 'Review unavailable', exit: 1 },
   { conclusion: 'neutral', title: 'Review outside path policy', exit: 0, applicable: false },
   { conclusion: 'cancelled', title: 'Head superseded', exit: 1 },

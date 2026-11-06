@@ -146,6 +146,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     omitted_paths: input.files.filter(f => parts.some((p, i) => p.files.some(pf => pf.path === f.path) && !completedIndexes.has(i))).map(f => f.path) };
   if (failures.length) return { ...base, status: interrupted?.status === 'incomplete' ? 'incomplete' : 'unavailable', reason: failures.join(' ').slice(0, 2000),
     context_requests: interrupted?.status === 'incomplete' ? interrupted.context_requests ?? [] : [],
+    ...(interrupted?.terminal_invalid ? { terminal_invalid: true } : {}),
     ...(interrupted?.diagnostics ? { diagnostics: interrupted.diagnostics } : {}),
     ...(interrupted?.validation_failure ? { validation_failure: interrupted.validation_failure } : {}) };
   const summaries = completed.map((r, i) => ({ part: i + 1,
@@ -180,6 +181,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   }
   if (result.status !== 'complete') return { ...base, status: result.status, discarded_items: discardedItems([...completed, result]), findings: unionFindings([...completed, result]), reason: `Cross-file synthesis: ${result.reason}`,
     context_requests: result.status === 'incomplete' ? result.context_requests ?? [] : [],
+    ...(result.terminal_invalid ? { terminal_invalid: true } : {}),
     ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
     ...(result.validation_failure ? { validation_failure: result.validation_failure } : {}) };
   const findings = unionFindings([...completed, result]);
