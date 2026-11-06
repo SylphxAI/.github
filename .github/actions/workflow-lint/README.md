@@ -118,14 +118,20 @@ incomplete or empty diffs cannot prove irrelevance. Unrepresentable event
 relevance is always required. A runtime reads JSON at the evaluated SHA and never
 parses workflow YAML.
 
-Completeness requires a schema-valid declaration containing
-`expected-checks / verify` for both events with `paths: null`, plus successful
-verification of the exact evaluated SHA. A same-name check from GitHub Actions
-(integration 15368) is **not sufficient**: the check's workflow-run provenance
-must identify the organization-required source repository, workflow path and
-pinned source SHA from trusted configuration, and the evaluated PR/merge group.
-Missing or unproven provenance fails closed. Do not infer job provenance from an
-unrelated entry in `referenced_workflows`.
+Completeness uses **two independent gates**. The verdict runtime requires a
+present, schema-valid declaration at the evaluated SHA and evaluates its
+resolved check identities. The organization ruleset separately requires the
+pinned verifier workflow to succeed; GitHub enforces that workflow's identity
+at enqueue/merge. A consumer-local same-name no-op cannot satisfy the rule.
+
+Do not try to authenticate the organization verifier from ordinary REST check
+metadata. The execution test on 2026-11-06 UTC showed that both required-source
+and consumer-local runs report the target repository and local-relative
+workflow path, with empty `referenced_workflows`. GitHub Actions app identity,
+check name and `CheckRun.isRequired` do not prove which source executed. The
+organization rule, not a guessed runtime provenance field, is the trust anchor.
+A forged/incomplete declaration may mislead the runtime but cannot pass the
+independent trusted verifier and cannot merge.
 
 The org-required source checks out consumer and verifier separately. Verifier
 code comes from `SylphxAI/.github` at `github.workflow_sha`, never from consumer
@@ -146,9 +152,14 @@ example deleting a test job) is a CI-configuration change, not generator drift.
 Workflow/action configuration must receive the automated high-risk code review;
 the verifier does not decide whether the requested test policy is appropriate.
 
-The pinned organization rule and runtime adoption are separate rollout steps.
-Until an actual organization-required run proves the source provenance fields,
-these files are implementation and conformance tests, not a live trust claim.
+The same execution test proved `github.workflow_sha` equals the organization
+rule's pinned source SHA, while `github.sha` identifies the target PR merge.
+Pin the org rule to source repository `SylphxAI/.github` (ID `1091169653`), path
+`.github/workflows/expected-checks.yml`, and the published full source SHA.
+Stage declarations before activating the rule. At coordinated cutoff enable
+the source rule, runtime declaration consumption and the temporary poller's
+verifier requirement together. Existing PR heads without the declaration need
+a normal branch update; missing data never means an empty inventory.
 
 
 ## IO pool prerequisites

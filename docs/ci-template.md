@@ -161,9 +161,11 @@ its PR could otherwise replace that check with a same-name no-op.
 
 Generate canonical data with `expected_checks.py --write`. The trusted verifier
 compares it with source from the exact evaluated Git tree, independently on PRs
-and merge groups. The runnerless verdict additionally requires the check's
-successful evaluated-SHA receipt and trusted source repo/path/SHA provenance,
-not just the GitHub Actions app and check name. Final merge safety uses the
-merge-group tree; PR-head declarations do not claim to cover later base changes.
+and merge groups. The runnerless verdict requires present, schema-valid JSON at
+the evaluated SHA. Independently, the org rule requires success from the pinned verifier
+source; GitHub enforces its identity at enqueue/merge. Ordinary REST check
+metadata cannot authenticate that source, so the runtime must not guess from
+check names, Actions app identity or `referenced_workflows`. Final merge safety
+uses the merge-group tree; PR-head declarations do not claim to cover later base changes.
 Consistent workflow/JSON policy edits still require high-risk CI-config review.
 See [the declaration contract](../.github/actions/workflow-lint/README.md#resolved-expected-check-declaration).
