@@ -176,15 +176,17 @@ test('partition and synthesis observations retain notes and cross-file anchors f
   assert.match(result.context_notes.join('\n'), /Outside the change/);
 });
 
-test('grounded findings from an incomplete assessment survive a later clean or unavailable final pass', async () => {
+test('an incomplete finding can be reassessed by a final verdict but is not erased by final unavailability', async () => {
   for (const final of ['complete', 'unavailable']) {
     const { receipt, run, posts } = await publish(input => input.context_recovery !== 'exhausted'
       ? { ...incomplete(input), findings: [finding([evidence('change.js', 'after')])] }
       : { ...wire(input, []), ...(final === 'unavailable' ? { completion: final, omitted_paths: ['change.js'], reason: 'Gateway unavailable.' } : {}) });
     assert.equal(posts.length, 2);
-    assert.equal(receipt.conclusion, 'failure');
-    assert.equal(run.output.annotations.length, 1);
-    assert.equal(run.output.annotations[0].start_line, 1);
-    if (final === 'unavailable') assert.match(receipt.reason, /Final verdict unavailable/);
+    assert.equal(receipt.conclusion, final === 'complete' ? 'success' : 'failure');
+    assert.equal(run.output.annotations.length, final === 'complete' ? 0 : 1);
+    if (final === 'unavailable') {
+      assert.equal(run.output.annotations[0].start_line, 1);
+      assert.match(receipt.reason, /Final verdict unavailable/);
+    }
   }
 });

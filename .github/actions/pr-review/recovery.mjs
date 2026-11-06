@@ -34,7 +34,6 @@ export async function recoverContext({ input, github, target, execute, createRev
     await record(cause);
     return { input, result };
   };
-  const grounded = new Map();
   const infer = async () => {
     let next;
     try { next = validateResult(await execute(input), input); }
@@ -43,15 +42,13 @@ export async function recoverContext({ input, github, target, execute, createRev
         input_digest: input.input_digest, reviewer_version: input.reviewer_version,
         findings: [], omitted_paths: input.files.map(f => f.path), reason: 'Review engine could not return a valid pinned result.' };
     }
-    // Enriching context cannot erase an already validated defect. Later source
-    // or transport incompleteness must not turn an established blocker clean.
-    for (const finding of next.findings) grounded.set(canonical(finding), finding);
-    return { ...next, findings: [...grounded.values()] };
+    return next;
   };
   const finalizeBudget = async (cause, reason, nextRoundEstimateMs) => {
     // One terminal inference, not another context collection cycle. Re-sealing
     // binds the instruction to the exact evidence and normal result validation.
     if (deadlineMs - Date.now() <= 0 || deadlineMs - Date.now() < nextRoundEstimateMs) return stop('deadline', 'Insufficient review deadline remaining for the final verdict.');
+    const previous = result;
     const originalReason = result.reason;
     input = createReviewInput({ ...input, context_recovery: 'exhausted' });
     result = await infer();
@@ -61,6 +58,8 @@ export async function recoverContext({ input, github, target, execute, createRev
       await record(`${cause}_finalized`);
       return { input, result };
     }
+    result = { ...result, findings: [...new Map([...previous.findings, ...result.findings]
+      .map(finding => [canonical(finding), finding])).values()] };
     // A valid model assessment that still refuses a verdict is a terminal
     // review failure, not infrastructure unavailability or a clean review.
     if (result.status === 'incomplete') result = { ...result, terminal_incomplete: true };
