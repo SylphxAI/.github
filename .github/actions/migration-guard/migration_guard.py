@@ -1672,6 +1672,26 @@ def version_timestamp(path: str) -> datetime | None:
         return None
 
 
+MIGRATION_CLOCK_STORES_PATH = "scripts/migrations/clock-stores.txt"
+MIGRATION_CLOCK_OFFSET = timedelta(days=48)
+
+
+def clock_store_parents(root: Path, tree: dict[str, tuple[str, str]]) -> set[str]:
+    entry = tree.get(MIGRATION_CLOCK_STORES_PATH)
+    if entry is None or entry[0] not in {"100644", "100755"}:
+        return set()
+    try:
+        raw = git(root, "cat-file", "blob", entry[1])
+    except subprocess.CalledProcessError:
+        return set()
+    stores: set[str] = set()
+    for line in raw.splitlines():
+        text = line.strip().rstrip("/")
+        if text and not text.startswith("#"):
+            stores.add(str(PurePosixPath(text)))
+    return stores
+
+
 def recorded_unapplied_withdrawal(root: Path, new_tree: dict[str, tuple[str, str]],
                                   path: str, old_blob: tuple[str, str],
                                   env: dict[str, str] | None = None) -> bool:
@@ -1792,6 +1812,7 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
         if ts is not None and (parent not in top_timestamps or ts > top_timestamps[parent]):
             top_timestamps[parent] = ts
     now_utc = datetime.now(timezone.utc)
+    clock_parents = clock_store_parents(root, new_tree)
     withdrawn_parents = {
         str(PurePosixPath(p).parent)
         for p, blob in old.items()
@@ -1808,7 +1829,12 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
             errors.append(f"{path}: migration version must be unique and above {tops.get(parent, -1)} already on the base")
         ts = version_timestamp(path)
         if ts is not None:
-            ref_ts = max(now_utc, top_timestamps[parent]) if parent in top_timestamps else now_utc
+            on_clock = (
+                parent in clock_parents
+                or (parent in top_timestamps and top_timestamps[parent] > now_utc + timedelta(days=1))
+            )
+            clock_now = now_utc + MIGRATION_CLOCK_OFFSET if on_clock else now_utc
+            ref_ts = max(clock_now, top_timestamps[parent]) if parent in top_timestamps else clock_now
             allowance = timedelta(days=2) if parent in withdrawn_parents and parent in top_timestamps and top_timestamps[parent] > now_utc else timedelta(minutes=15)
             if ts > ref_ts + allowance:
                 errors.append(f"{path}: migration timestamp {v} is in the future (more than 15 minutes ahead of UTC); use UTC (date -u +%Y%m%d%H%M%S)")
