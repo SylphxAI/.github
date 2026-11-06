@@ -214,11 +214,14 @@ def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
         elif kw(token, "BEGIN") and depth == 0:
             prefix = tokens[substart:i]
             label = len(prefix) == 2 and prefix[0].kind in {"word", "identifier"} and prefix[1].value == ":"
-            control = prefix and prefix[0].kind == "word" and prefix[0].value in {
+            expression = any(t.kind == "word" and t.value in {
+                "SELECT", "RETURN", "SET", "CALL", "INSERT", "UPDATE", "DELETE"}
+                for t in top_level(prefix))
+            control = not expression and prefix and prefix[0].kind == "word" and prefix[0].value in {
                 "IF", "ELSEIF", "ELSE", "WHILE", "LOOP", "REPEAT", "FOR", "CASE"}
             after_control = control and prefix[-1].kind == "word" and prefix[-1].value in {
                 "THEN", "ELSE", "DO", "LOOP", "REPEAT"}
-            handler = starts(prefix, "DECLARE") and has(prefix, "HANDLER")
+            handler = not expression and starts(prefix, "DECLARE") and has(prefix, "HANDLER")
             if dialect == "mysql" and (not prefix or label or after_control or handler):
                 blocks.append("BEGIN")
                 substart = i + 1
@@ -306,7 +309,7 @@ def executed_mode_change(stmt: list[Token], dialect: str, nesting: int = 0) -> b
         source = unquote_postgres_literal(token)
         if source is not None:
             inner, _ = lex(source, dialect)
-            if any(executed_mode_change(part, dialect, nesting + 1) for part in split(inner, ";")):
+            if any(executed_mode_change(part, dialect, nesting + 1) for part in sql_statements(inner, dialect)):
                 return True
     return False
 

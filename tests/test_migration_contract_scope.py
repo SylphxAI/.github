@@ -63,6 +63,8 @@ class ContractScopeTests(unittest.TestCase):
             ("postgres", "CREATE PROCEDURE p() LANGUAGE SQL BEGIN ATOMIC CREATE PROCEDURE nested() LANGUAGE SQL BEGIN ATOMIC SELECT 1; END; SELECT 2; END;"),
             ("mysql", "CREATE PROCEDURE p() BEGIN BEGIN SELECT 1; END; SELECT 2; END;"),
             ("mysql", "CREATE PROCEDURE p() BEGIN IF true THEN BEGIN SELECT begin FROM t; END; END IF; END;"),
+            ("mysql", "CREATE PROCEDURE p() BEGIN IF true THEN SELECT CASE WHEN true THEN begin ELSE 1 END; END IF; END;"),
+            ("mysql", "CREATE PROCEDURE p() BEGIN DECLARE CONTINUE HANDLER FOR 1050 SET @x=begin; SELECT 1; END;"),
             ("mysql", "CREATE PROCEDURE p() BEGIN CASE WHEN true THEN BEGIN SELECT 1; END; ELSE SELECT 2; END CASE; END;"),
             ("mysql", "CREATE PROCEDURE p() BEGIN DECLARE CONTINUE HANDLER FOR 1050 BEGIN SELECT 1; END; SELECT 2; END;"),
             ("mysql", "CREATE PROCEDURE p() outer_label: BEGIN inner_label: BEGIN SELECT 1; END inner_label; END outer_label;"),
@@ -105,7 +107,12 @@ class ContractScopeTests(unittest.TestCase):
                     "DO $$ BEGIN DO $inner$ BEGIN SET standard_conforming_strings=off; END; $inner$; END; $$; SELECT 1;"]:
             with self.subTest(sql=sql), self.assertRaisesRegex(guard.SqlError, "lexical mode change must be the final"):
                 guard.check_sql(MARKER + sql, "postgres")
-        self.assertEqual(guard.check_sql(MARKER + "CREATE PROCEDURE p() LANGUAGE SQL AS $$ SET standard_conforming_strings=off; $$; SELECT 1;", "postgres"), [])
+        for sql in [
+            "CREATE PROCEDURE p() LANGUAGE SQL AS $$ SET standard_conforming_strings=off; $$; SELECT 1;",
+            "DO $$ BEGIN CREATE PROCEDURE p() LANGUAGE SQL BEGIN ATOMIC SELECT 1; SET standard_conforming_strings=off; END; END; $$; SELECT 1;",
+        ]:
+            with self.subTest(unexecuted_definition=sql):
+                self.assertEqual(guard.check_sql(MARKER + sql, "postgres"), [])
 
     def test_marked_statements_still_update_enclosing_safety_facts(self):
         for dialect in ("postgres", "mysql"):
