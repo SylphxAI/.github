@@ -367,6 +367,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/rust-ci.yml
     with:
+      runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
       workspace: tests/fixtures/rust-node-consumer
       node-version: '22'
       npm-ci: true
