@@ -24,6 +24,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
       # Pin the shared action to a reviewed commit SHA with a `# main` marker.
       - uses: SylphxAI/.github/.github/actions/migration-guard@<commit-sha> # main
