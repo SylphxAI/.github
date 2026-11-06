@@ -237,6 +237,67 @@ class UnityPackagesCache(unittest.TestCase):
         self.assertEqual(upm.load(self.project / "Packages/packages-lock.json")["dependencies"], self.registry)
         self.assertFalse(list((self.project / "Packages").glob(".unity-upm-*")))
 
+    def test_ambiguous_cdn_directory_binds_both_sources_and_pin_verifies_content(self):
+        name, directory = "1.2.3", "1.2.3-4.5.6"
+        metadata_url = f"{upm.REGISTRY}/{name}"
+        cdn = f"https://cdn.packages.unity.com/tarballs/{name}/{directory}/" + "a" * 40 + ".tgz"
+        build_opener = upm.urllib.request.build_opener
+        for version in ("4.5.6", "1.2.3-4.5.6"):
+            source = f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz"
+            for case in ("valid", "wrong version", "SHA1 mismatch", "wrong name"):
+                with self.subTest(version=version, case=case), tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+                    project = Path(temporary)
+                    packages = project / "Packages"
+                    packages.mkdir()
+                    node = {"version": version, "source": "registry", "url": upm.REGISTRY, "dependencies": {}}
+                    (packages / "manifest.json").write_text(json.dumps({"dependencies": {name: version}}))
+                    (packages / "packages-lock.json").write_text(json.dumps({"dependencies": {name: node}}))
+                    pins = packages / "unity-packages.json"
+                    self.assertFalse(pins.exists())
+                    body = archive("com.other.package" if case == "wrong name" else name,
+                                   "9.9.9" if case == "wrong version" else version)
+                    shasum = "0" * 40 if case == "SHA1 mismatch" else hashlib.sha1(body).hexdigest()
+                    self.assertEqual(shasum == hashlib.sha1(body).hexdigest(), case != "SHA1 mismatch")
+                    metadata = {"versions": {version: {"dist": {"tarball": source, "shasum": shasum}}}}
+                    # The same ambiguous URL has isolated response state in every
+                    # case: neither a previous body nor a previous pin can mask a guard.
+                    routes = {metadata_url: (200, {}, json.dumps(metadata).encode()),
+                              source: (302, {"Location": cdn}, b""), cdn: (200, {}, body)}
+                    requests = []
+
+                    class HTTPSFixture(upm.urllib.request.HTTPSHandler):
+                        def https_open(self, request):
+                            requests.append(request.full_url)
+                            code, headers, data = routes[request.full_url]
+                            message = Message()
+                            for key, value in headers.items():
+                                message[key] = value
+                            response = upm.urllib.response.addinfourl(io.BytesIO(data), message, request.full_url, code)
+                            response.msg = "Fixture response"
+                            return response
+
+                    metadata_opener = build_opener(HTTPSFixture)
+                    def opener(*handlers):
+                        return build_opener(*handlers, HTTPSFixture)
+                    with patch.object(upm.urllib.request, "build_opener", side_effect=opener), patch.object(
+                            upm.urllib.request, "urlopen", side_effect=metadata_opener.open), patch.object(
+                            upm, "unpack", wraps=upm.unpack) as unpack:
+                        if case == "valid":
+                            generated = json.loads(upm.pin(project).read_text())
+                            self.assertEqual(generated["packages"], {name: {"version": version,
+                                             "sha256": hashlib.sha256(body).hexdigest(), "archiveBytes": len(body)}})
+                        else:
+                            error = "SHA1 mismatch" if case == "SHA1 mismatch" else "archive identity differs"
+                            with self.assertRaisesRegex(ValueError, error):
+                                upm.pin(project)
+                            self.assertFalse(pins.exists())
+                        if case == "SHA1 mismatch":
+                            unpack.assert_not_called()
+                        else:
+                            unpack.assert_called_once()
+                            self.assertEqual(unpack.call_args.args[2:], (name, node))
+                    self.assertEqual(requests, [metadata_url, source, cdn])
+
     def test_outside_publisher_manifest_drift_refused_before_network(self):
         self.add_registry_package()
         upm.validate(self.project)  # Positive control: a malformed plan cannot satisfy this negative.

@@ -100,8 +100,9 @@ class UnityCDNRedirect(urllib.request.HTTPRedirectHandler):
         name, directory, filename = parts[2:]
         if not NAME.fullmatch(name) or not re.fullmatch(r"[a-f0-9]{40}\.tgz", filename):
             raise ValueError("unexpected Unity archive redirect")
-        # A version may itself start with <name>-; bind both possible directory
-        # interpretations to the exact download identity instead of guessing.
+        # A version may itself start with <name>-; the exact download source
+        # selects the requested identity, not this ambiguous CDN directory.
+        # pin() then verifies metadata SHA1 and archive name/version/dependencies.
         versions = (directory, directory.removeprefix(name + "-"))
         if not any(VERSION.fullmatch(version) and req.full_url in (
                 f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz", newurl)
