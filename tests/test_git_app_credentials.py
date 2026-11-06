@@ -1,4 +1,5 @@
 import base64
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
@@ -6,6 +7,7 @@ import stat
 import subprocess
 import tempfile
 import textwrap
+import threading
 import unittest
 
 import yaml
@@ -102,6 +104,105 @@ def test_job_credential_wins_over_inherited_helpers_and_preserves_command_config
     assert "fresh-test-token" not in original_global
 
 
+class RegistryHttpHeaders(unittest.TestCase):
+    def check_transport(self, persisted_checkout):
+        expected = "Basic " + base64.b64encode(
+            ("x-access-token:" + TOKEN).encode()
+        ).decode()
+        checkout_header = "Basic checkout-fixture"
+        requests = []
+
+        class Index(BaseHTTPRequestHandler):
+            def do_GET(self):
+                headers = self.headers.get_all("Authorization", [])
+                requests.append((self.path, headers))
+                wanted = [expected] if "/cargo-index.git/" in self.path else (
+                    [checkout_header] if persisted_checkout else []
+                )
+                if headers != wanted:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                # A minimal real Git smart-HTTP advertisement; no Git mock.
+                def packet(payload):
+                    return f"{len(payload) + 4:04x}".encode() + payload
+
+                ref = b"a" * 40
+                body = packet(b"# service=git-upload-pack\n") + b"0000"
+                body += packet(ref + b" HEAD\x00symref=HEAD:refs/heads/main\n")
+                body += packet(ref + b" refs/heads/main\n") + b"0000"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-git-upload-pack-advertisement")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Index)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "runner").mkdir()
+                checkout = root / "checkout"
+                env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "CARGO_"))}
+                env.update(
+                    APP_TOKEN=TOKEN,
+                    REGISTRY="cubeage",
+                    REGISTRY_OWNER="Cubeage",
+                    REGISTRY_REPOSITORY="cargo-index",
+                    RUNNER_TEMP=str(root / "runner"),
+                    GITHUB_ENV=str(root / "github-env"),
+                    GIT_CONFIG_GLOBAL=os.devnull,
+                    GIT_CONFIG_NOSYSTEM="1",
+                    GIT_CONFIG_COUNT="1",
+                    GIT_CONFIG_KEY_0="protocol.version",
+                    GIT_CONFIG_VALUE_0="0",
+                )
+                subprocess.run(["git", "init", "-q", str(checkout)], env=env, check=True)
+                base = f"http://127.0.0.1:{server.server_port}"
+                if persisted_checkout:
+                    subprocess.run(
+                        ["git", "config", "--local", f"http.{base}/.extraheader", "AUTHORIZATION: " + checkout_header],
+                        cwd=checkout, env=env, check=True,
+                    )
+                # Substitute only the transport origin. Run the action's actual
+                # shell, real Git configuration resolution and HTTP requests.
+                script = _registry_script().replace(
+                    'index_url="https://github.com/', f'index_url="{base}/'
+                )
+                result = subprocess.run(
+                    ["bash", "-c", script], cwd=checkout, env=env,
+                    text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(requests[0][1], [expected])
+                exported = dict(line.split("=", 1) for line in (root / "github-env").read_text().splitlines())
+                env.update(exported)
+                # A sibling source repository retains its checkout header and
+                # never receives the registry's Authorization header.
+                sibling = subprocess.run(
+                    ["git", "ls-remote", base + "/Cubeage/cubeage-kit.git", "HEAD"],
+                    cwd=checkout, env=env, text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(sibling.returncode, 0, sibling.stderr)
+                self.assertEqual(requests[1][1], [checkout_header] if persisted_checkout else [])
+                self.assertEqual(env["GIT_CONFIG_KEY_0"], "protocol.version")
+                self.assertEqual(env["GIT_CONFIG_VALUE_0"], "0")
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
+    def test_persisted_checkout_sends_one_index_authorization(self):
+        self.check_transport(True)
+
+    def test_unpersisted_checkout_sends_one_index_authorization(self):
+        self.check_transport(False)
+
+
 class RegistryCredentials(unittest.TestCase):
     def run_action(self, overrides=None):
         tmp = tempfile.TemporaryDirectory()
@@ -157,8 +258,11 @@ class RegistryCredentials(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(probe["argv"], ["ls-remote", "https://github.com/Cubeage/cargo-index.git", "HEAD"])
         expected = "AUTHORIZATION: Basic " + base64.b64encode(("x-access-token:" + TOKEN).encode()).decode()
-        self.assertEqual(env["GIT_CONFIG_VALUE_1"], expected)
+        self.assertEqual(env["GIT_CONFIG_VALUE_1"], "")
         self.assertEqual(env["GIT_CONFIG_KEY_1"], "http.https://github.com/Cubeage/cargo-index.git.extraheader")
+        self.assertEqual(env["GIT_CONFIG_VALUE_2"], expected)
+        self.assertEqual(env["GIT_CONFIG_KEY_2"], "http.https://github.com/Cubeage/cargo-index.git.extraheader")
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "credential.helper")
         self.assertEqual(env["GIT_CONFIG_VALUE_0"], "")
         self.assertEqual(env["CARGO_REGISTRIES_CUBEAGE_TOKEN"], "Bearer " + TOKEN)
@@ -187,7 +291,7 @@ class RegistryCredentials(unittest.TestCase):
             }
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(env["GIT_CONFIG_COUNT"], "4")
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "5")
         self.assertEqual(env["GIT_CONFIG_KEY_2"], "credential.helper")
         self.assertEqual(probe["GIT_CONFIG_KEY_0"], "protocol.version")
         self.assertNotIn("GIT_CONFIG_KEY_0", env)

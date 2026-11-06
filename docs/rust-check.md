@@ -60,3 +60,16 @@ A workspace that depends on private git repositories passes them as
 read-only token for exactly those repositories and fetches through it; no
 platform credential is involved. Without a toolchain file the check uses
 stable; with `rust-toolchain(.toml)` it uses the pinned toolchain.
+
+For a private Cargo registry, pass `registry`, `registry-owner` and
+`registry-repository` with the same reader App secrets. The shared
+`git-app-credentials` action scopes its Git header to that index repository and
+its Cargo token to the named registry. It resets the index's inherited HTTP
+header list before adding its single Authorization header, so a checkout that
+persists its own credentials does not send duplicate headers. Other repositories'
+headers and the caller's existing command-scoped Git settings remain intact.
+Callers can still use `persist-credentials: false` to avoid storing the checkout
+token in `.git/config`.
+
+Git's [`http.extraHeader` contract](https://github.com/git/git/blob/0ffa3e35c7c82ab8d0de226149fb03b3f7674d05/Documentation/config/http.adoc)
+(read 2026-11-06) defines an empty value as resetting the extra-header list.
