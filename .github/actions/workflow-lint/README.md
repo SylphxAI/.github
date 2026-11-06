@@ -77,35 +77,78 @@ checkout's workflows. Python tests are `python -m unittest discover -s tests
 
 ## Resolved expected-check declaration
 
-Repositories with independently triggered required checks can enroll by committing
-`.github/required-workflow-checks.json`. The [v2 schema](expected-checks.schema.json)
-is runtime data, not a second YAML interpreter. Generate it from a checkout with:
+Repositories with independently triggered required checks enroll by committing
+`.github/required-workflow-checks.json` and requiring the SHA-pinned
+[organization verifier workflow](../../workflows/expected-checks.yml) in an
+organization ruleset. **A verifier installed inside the evaluated repository
+cannot establish trust:** the PR could replace it with a same-name no-op.
+Do not install a consumer-local verifier workflow.
+
+The [v2 schema](expected-checks.schema.json) is runtime data, not a second YAML
+interpreter. Generate it from a checkout with:
 
 ```sh
 python3 path/to/workflow-lint/expected_checks.py --write
 ```
 
 The compiler resolves exact check names, triggering events and path filters from
-that checkout. The contract check fails on any declaration drift, even in
-`report-only` mode. Repositories without the file are not enrolled automatically.
-Publishing a declaration alone does not activate a required verdict or a poller.
+that checkout. Enrolled drift blocks even in `report-only` mode. Repositories
+without the file are not enrolled automatically. A declaration alone activates
+neither a required workflow nor a verdict runtime.
 
-Each record has `name`, `workflow`, `events`, `paths` and `paths_ignore`. A check
-whose events have different path filters gets separate records: a filtered PR
-run must not make an unconditional merge-group run optional. `paths: null` means
-always required; ignore-only triggers normalize to `paths: ["**"]` plus the
-original `paths_ignore`. Preserve GitHub's ordered negative/positive glob
-semantics. Conditional children are represented by an always-running required
-aggregate. Required matrix or expression-based names are refused; reusable calls
-expand to literal `caller / callee` check names from local or full-SHA sources.
-Ambiguous names across independently triggered workflows are refused.
+Each record has `name`, `workflow`, `events`, `paths` and `paths_ignore`. Distinct
+event filters produce separate records: a filtered PR run cannot make an
+unconditional merge-group run optional. `paths: null` means always required;
+ignore-only triggers normalize to `paths: ["**"]` plus the original
+`paths_ignore`. The shared [glob vectors](../../../tests/fixtures/github-path-glob-vectors.json)
+cover GitHub's documented grammar, including ordered exclusion/reinclusion;
+Python `fnmatch` is not equivalent. Unsupported syntax is refused. Conditional
+or matrix children need a direct, always-running aggregate that executes the
+pinned shared `needs-pass`/`ci-ok` action over `toJSON(needs)`, without advisory
+exemptions. A no-op aggregate or transitive pass-through is not evidence of
+failure propagation. Required expression/matrix check names are refused;
+immutable reusable calls expand to `caller / callee` names. A local call nested
+inside a remote reusable stays in that remote repository at the same SHA.
+Duplicate names within an event cannot alias, even in one workflow.
 
 Consumers match the complete changed-file set: PR base...head from fully
 paginated PR files (GitHub's 3,000-file cap fails closed), or the whole merge
-group's event `base_sha`...`head_sha`, never only the current PR's files. An
-unknown/incomplete/empty diff cannot prove irrelevance. If an event's relevance
-cannot be represented, use `paths: null`; an expected-but-missing check refuses.
-A runtime consumes this JSON at the evaluated SHA and never parses workflow YAML.
+group's event `base_sha`...`head_sha`, never only the current PR's files. Unknown,
+incomplete or empty diffs cannot prove irrelevance. Unrepresentable event
+relevance is always required. A runtime reads JSON at the evaluated SHA and never
+parses workflow YAML.
+
+Completeness requires a schema-valid declaration containing
+`expected-checks / verify` for both events with `paths: null`, plus successful
+verification of the exact evaluated SHA. A same-name check from GitHub Actions
+(integration 15368) is **not sufficient**: the check's workflow-run provenance
+must identify the organization-required source repository, workflow path and
+pinned source SHA from trusted configuration, and the evaluated PR/merge group.
+Missing or unproven provenance fails closed. Do not infer job provenance from an
+unrelated entry in `referenced_workflows`.
+
+The org-required source checks out consumer and verifier separately. Verifier
+code comes from `SylphxAI/.github` at `github.workflow_sha`, never from consumer
+code. It checks consumer HEAD against PR head / merge-group SHA, reads workflow
+YAML and declaration bytes from that **Git tree**, and compares canonical output
+byte-for-byte. A dirty working tree cannot add, omit or shadow a check. Only
+`.github/workflows/*.yml` and `*.yaml` are workflows; nested directories cannot
+shadow a top-level file. Its reserved verifier record is always emitted;
+consumer-local checks may not reuse the name. Missing or drifted declarations
+refuse. A path-selected lint job is not the trusted completeness receipt.
+
+**Boundary:** PR declarations bind the PR head. Ordinary PR Actions may use the
+synthetic PR merge commit for local workflow source, so head-only verification
+does not claim to describe base-branch changes introduced after divergence.
+Mandatory merge-group verification over the actual merge-group tree is the
+final merge-safety receipt. A PR that changes YAML and JSON consistently (for
+example deleting a test job) is a CI-configuration change, not generator drift.
+Workflow/action configuration must receive the automated high-risk code review;
+the verifier does not decide whether the requested test policy is appropriate.
+
+The pinned organization rule and runtime adoption are separate rollout steps.
+Until an actual organization-required run proves the source provenance fields,
+these files are implementation and conformance tests, not a live trust claim.
 
 
 ## IO pool prerequisites

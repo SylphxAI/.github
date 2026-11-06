@@ -13,15 +13,19 @@ import os
 import pathlib
 import re
 import sys
+import subprocess
 import urllib.request
 
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "scripts"))
 from merge_lane import WorkflowLoader, contexts, events, expression, runnable, truth
+from github_paths import pattern_regex
 
 DECLARATION = ".github/required-workflow-checks.json"
 EVENTS = {"pull_request", "merge_group"}
+VERIFIER_NAME = "expected-checks / verify"
+VERIFIER_WORKFLOW = "expected-checks.yml"
 ADVISORY = re.compile(r"^#\s*optimistic-merge:\s*advisory\b([^\n]+)", re.I | re.M)
 REMOTE = re.compile(r"([\w.-]+)/([\w.-]+)/(.github/workflows/[^@]+\.ya?ml)@([a-fA-F0-9]{40})$")
 
@@ -89,15 +93,30 @@ def fetch_reusable(target):
         raise DeclarationError(f"cannot resolve immutable reusable workflow {target}: {error}") from error
 
 
-def compile_declaration(workflows, resolve_remote=fetch_reusable):
+def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifier=True):
     """Resolve names/events/filters at lint time, never on the verdict runtime."""
     sources = {file.removeprefix("./").removeprefix(".github/workflows/"): text
                for file, text in workflows.items()}
     decoded = {file: yaml.load(text, Loader=WorkflowLoader) or {} for file, text in sources.items()}
-    records = []
+    # This check is emitted by a SHA-pinned organization-required workflow,
+    # not by replaceable YAML in the evaluated repository.
+    records = [{"name": VERIFIER_NAME, "workflow": VERIFIER_WORKFLOW,
+                "events": sorted(EVENTS), "paths": None, "paths_ignore": None}] if require_verifier else []
     remote_cache = {}
 
-    def required_names(document, context, location, candidates=None, ancestry=()):
+    def boundary(job):
+        if 'always()' not in str(job.get('if', '')) or job.get('continue-on-error', False) is not False:
+            return False
+        for step in job.get('steps', []):
+            if not re.fullmatch(r'SylphxAI/\.github/\.github/actions/(?:needs-pass|ci-ok)@[a-fA-F0-9]{40}', step.get('uses', '')):
+                continue
+            inputs = step.get('with', {})
+            if ('if' not in step and step.get('continue-on-error', False) is False and
+                    inputs.get('needs', '').replace(' ', '') == '${{toJSON(needs)}}' and not inputs.get('advisory')):
+                return True
+        return False
+
+    def required_names(document, context, location, candidates=None, ancestry=(), origin=None):
         jobs = document.get("jobs", {})
         active = {key for key, job in jobs.items()
                   if any(runnable(job, expanded) for expanded in contexts(job, context))}
@@ -109,11 +128,16 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable):
         selected = {key for key in candidates if healthy_unconditional(jobs[key], context)}
         for key in candidates - selected:
             aggregates = [other for other in selected
-                          if "always()" in str(jobs[other].get("if", ""))
-                          and key in closure(jobs, [other])]
+                          if boundary(jobs[other])
+                          and key in needs(jobs[other])]
             if not aggregates:
                 raise DeclarationError(f"{location}/{key}: conditional check needs an always-running required aggregate")
         result = []
+        # A static always-running completion boundary represents all matrix
+        # legs; no fabricated per-leg name belongs in the runtime contract.
+        selected -= {key for key in selected if jobs[key].get("strategy") is not None and any(
+            other != key and boundary(jobs[other]) and
+            key in needs(jobs[other]) for other in selected)}
         for key in sorted(selected):
             job = jobs[key]
             name = literal_name(key, job, location)
@@ -123,14 +147,20 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable):
                 continue
             if target in ancestry:
                 raise DeclarationError(f"recursive reusable workflow: {target}")
+            if target.startswith('./.github/workflows/') and origin is not None:
+                repository, ref = origin
+                target = f'{repository}/{target[2:]}@{ref}'
+            nested_origin = origin
             if target.startswith("./.github/workflows/"):
                 file = target.removeprefix("./.github/workflows/")
                 if file not in decoded:
                     raise DeclarationError(f"missing local reusable workflow: {target}")
                 called = decoded[file]
             else:
-                if not REMOTE.fullmatch(target):
+                match = REMOTE.fullmatch(target)
+                if not match:
                     raise DeclarationError(f"reusable workflow must use a full immutable SHA: {target}")
+                nested_origin = (f'{match[1]}/{match[2]}', match[4])
                 if target not in remote_cache:
                     remote_cache[target] = yaml.load(resolve_remote(target), Loader=WorkflowLoader) or {}
                 called = remote_cache[target]
@@ -141,13 +171,16 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable):
             for input_name, definition in definitions.items():
                 value = (job.get("with") or {}).get(input_name, definition.get("default", False if definition.get("type") == "boolean" else ""))
                 inherited["inputs." + input_name] = expression(value, context)
-            result.extend(name + " / " + child for child in required_names(called, inherited, target, ancestry=(*ancestry, target)))
+            result.extend(name + " / " + child for child in required_names(called, inherited, target, ancestry=(*ancestry, target), origin=nested_origin))
         return result
 
+    emitted = {(VERIFIER_NAME, event): 'organization-required workflow' for event in EVENTS} if require_verifier else {}
     for file, document in sorted(decoded.items()):
         header = re.split(r"^jobs:", sources[file], maxsplit=1, flags=re.M)[0]
         advisory = ADVISORY.search(header)
         if advisory and advisory.group(1).strip(" \t:-—"):
+            if file == VERIFIER_WORKFLOW and require_verifier:
+                raise DeclarationError("expected-checks verifier cannot be advisory")
             continue
         for event in sorted(events(document) & EVENTS):
             context = {"github.event_name": {event}, "github.event.repository.private": {True, False}}
@@ -161,13 +194,26 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable):
                 if patterns is not None and (not isinstance(patterns, list) or not patterns or
                         any(not isinstance(p, str) or not p or "${{" in p for p in patterns)):
                     raise DeclarationError(f"{file}: {label} must contain literal GitHub path patterns")
+                for pattern in patterns or []:
+                    try:
+                        pattern_regex(pattern.removeprefix('!'))
+                    except ValueError as error:
+                        raise DeclarationError(f'{file}: {error}') from error
             if paths is not None and ignored is not None:
                 raise DeclarationError(f"{file}: paths and paths-ignore cannot be combined")
+            if event != 'pull_request' and (paths is not None or ignored is not None):
+                raise DeclarationError(f'{file}: {event} does not support path filters')
+            if paths is not None and not any(not pattern.startswith('!') for pattern in paths):
+                raise DeclarationError(f'{file}: paths requires a nonnegative pattern')
             # v2 paths:null is unconditionally relevant. Normalize GitHub's
             # ignore-only trigger to include-all plus its exclusion filter.
             if ignored is not None:
                 paths = ["**"]
             for name in required_names(document, context, file, independent):
+                identity = name, event
+                if identity in emitted:
+                    raise DeclarationError(f'ambiguous check name {name!r} on {event}: {emitted[identity]} and {file}')
+                emitted[identity] = file
                 record = {"name": name, "workflow": file, "events": [event],
                           "paths": paths, "paths_ignore": ignored}
                 existing = next((r for r in records if all(r[k] == record[k] for k in ("name", "workflow", "paths", "paths_ignore"))), None)
@@ -191,27 +237,62 @@ def check_declaration(root, workflows):
         return []
     try:
         expected = compile_declaration(workflows)
-        actual = json.loads(path.read_text())
-        if actual == expected:
+        if path.read_text() == render(expected):
             return []
         return ["expected-check declaration drift; regenerate with expected_checks.py --write"]
     except (DeclarationError, ValueError, TypeError, KeyError) as error:
         return [str(error)]
 
 
+def render(declaration):
+    return json.dumps(declaration, indent=2, ensure_ascii=False) + "\n"
+
+
+def verify_checkout(root, expected_sha):
+    if not re.fullmatch(r"[a-fA-F0-9]{40}", expected_sha or ""):
+        raise DeclarationError("missing exact evaluated PR head / merge-group SHA")
+    actual = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    if actual.lower() != expected_sha.lower():
+        raise DeclarationError(f"checkout HEAD {actual} differs from evaluated SHA {expected_sha}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true", help="write the resolved v2 declaration")
+    parser.add_argument("--verify", action="store_true", help="require canonical declaration and exact evaluated checkout")
+    parser.add_argument("--expected-sha", default=os.environ.get("EXPECTED_SHA", ""))
     parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path.cwd())
     args = parser.parse_args()
-    folder = args.root / ".github/workflows"
-    workflows = {p.name: p.read_text() for p in sorted(folder.iterdir()) if p.suffix in (".yml", ".yaml")}
     try:
+        if args.verify:
+            if args.write:
+                parser.error('--verify cannot write')
+            verify_checkout(args.root, args.expected_sha)
+
+            def committed(path):
+                return subprocess.check_output(['git', '-C', str(args.root), 'show',
+                    f'{args.expected_sha}:{path}'], text=True, stderr=subprocess.DEVNULL)
+
+            paths = subprocess.check_output(['git', '-C', str(args.root), 'ls-tree', '-r',
+                '--name-only', args.expected_sha, '--', '.github/workflows'], text=True).splitlines()
+            workflows = {pathlib.PurePosixPath(path).name: committed(path)
+                for path in paths if pathlib.PurePosixPath(path).parent == pathlib.PurePosixPath('.github/workflows')
+                and pathlib.PurePosixPath(path).suffix in {'.yml', '.yaml'}}
+        else:
+            folder = args.root / '.github/workflows'
+            workflows = {p.name: p.read_text() for p in sorted(folder.iterdir()) if p.suffix in ('.yml', '.yaml')}
         declaration = compile_declaration(workflows)
-    except DeclarationError as error:
+    except (DeclarationError, yaml.YAMLError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, str(error) + "\n")
-    output = json.dumps(declaration, indent=2, ensure_ascii=False) + "\n"
-    if args.write:
+    output = render(declaration)
+    if args.verify:
+        try:
+            if committed(DECLARATION) != output:
+                raise DeclarationError("missing or drifted expected-check declaration; regenerate with --write")
+        except (DeclarationError, OSError, subprocess.CalledProcessError) as error:
+            parser.exit(1, str(error) + "\n")
+        print(f"Verified {DECLARATION} at {args.expected_sha}")
+    elif args.write:
         (args.root / DECLARATION).write_text(output)
     else:
         print(output, end="")
