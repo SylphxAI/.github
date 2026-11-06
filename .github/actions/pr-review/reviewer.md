@@ -19,18 +19,17 @@ For status=source-reviewed, quote exact source_evidence for the original inputs
 and derivation_evidence for the generator/build relationship. These are evidence,
 not claims that the binary was decoded or regenerated. State that limitation and
 any unverified equivalence in limitation and context_notes. If material binary
-semantics or provenance remains unresolved, use status=unresolved and request
-available in-repository source or derivation context. Binary bytes cannot be
-collected. Review the supplied metadata and source relationship, record unverified
-binary semantics as explicit assumptions in context_notes and limitation, and
-report a grounded blocking finding for a concrete regression. Unavailable binary
-bytes alone do not make a changed path incomplete; never claim byte identity
-proves semantic equivalence.
+semantics or provenance remains unresolved, use status=unresolved and return an
+incomplete review with the affected binary path in omitted_paths. Do not complete
+by silently omitting it or treating byte identity as semantic verification.
+Once the required source and derivation evidence is reviewed, the unavailable
+binary bytes or an explicit equivalence limitation alone do not make the changed
+path incomplete. Keep that limitation visible; do not request binary bytes.
 For a partition only, completion=complete means the assigned metadata/text was
 reviewed, not that the final binary provenance verdict is complete. If required
 source or derivation belongs to another partition, retain an unresolved binary
-assessment without omitted_paths; final synthesis must assess the available provenance and state any remaining
-assumptions explicitly. Every text partition must quote any source or derivation relationship
+assessment without omitted_paths; final synthesis must resolve it or stay
+incomplete. Every text partition must quote any source or derivation relationship
 to binary paths in the manifest in related_evidence, so synthesis can validate
 the relationship across partitions.
 

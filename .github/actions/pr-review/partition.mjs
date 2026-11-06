@@ -138,12 +138,12 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     completedIndexes.add(i);
   }
   const snappedFromParts = completed.flatMap(r => r.snapped_evidence ?? []);
-  const base = { ...unavailable(input, ''), status: 'incomplete', findings: unionFindings(completed),
+  const base = { ...unavailable(input, ''), status: 'incomplete', findings: unionFindings([...completed, ...(interrupted ? [interrupted] : [])]),
     context_notes: completed.flatMap(r => r.context_notes ?? []),
     ...(snappedFromParts.length ? { snapped_evidence: snappedFromParts } : {}),
     parts: { planned: parts.length, completed: completed.length },
     omitted_paths: input.files.filter(f => parts.some((p, i) => p.files.some(pf => pf.path === f.path) && !completedIndexes.has(i))).map(f => f.path) };
-  if (failures.length) return { ...base, reason: failures.join(' ').slice(0, 2000),
+  if (failures.length) return { ...base, status: interrupted?.status === 'incomplete' ? 'incomplete' : 'unavailable', reason: failures.join(' ').slice(0, 2000),
     context_requests: interrupted?.status === 'incomplete' ? interrupted.context_requests ?? [] : [],
     ...(interrupted?.diagnostics ? { diagnostics: interrupted.diagnostics } : {}),
     ...(interrupted?.validation_failure ? { validation_failure: interrupted.validation_failure } : {}) };
@@ -156,7 +156,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
       ...(r.binary_reviews ?? []).flatMap(b => [...b.source_evidence, ...b.derivation_evidence])]) });
   if (requestBytes(synthesis) > byteBudget) return { ...base, reason: 'All source parts completed, but cross-file synthesis exceeds the configured model context.' };
   const head = await isCurrent();
-  if (head !== true) return { ...base, reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
+  if (head !== true) return { ...base, status: 'unavailable', reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
   let result;
   try { result = await execute(synthesis, { files: input.files, context: input.context }); }
   catch { result = unavailable(synthesis, 'Cross-file synthesis could not complete.'); }
@@ -173,11 +173,11 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     const next = seal({ ...bare(synthesis), context: [...synthesis.context, ...requested] });
     if (requestBytes(next) > byteBudget) break;
     const head = await isCurrent();
-    if (head !== true) return { ...base, reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
+    if (head !== true) return { ...base, status: 'unavailable', reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
     try { result = await execute(next, { files: input.files, context: input.context }); }
     catch { result = unavailable(next, 'Cross-file synthesis could not complete.'); }
   }
-  if (result.status !== 'complete') return { ...base, reason: `Cross-file synthesis: ${result.reason}`,
+  if (result.status !== 'complete') return { ...base, status: result.status, findings: unionFindings([...completed, result]), reason: `Cross-file synthesis: ${result.reason}`,
     context_requests: result.status === 'incomplete' ? result.context_requests ?? [] : [],
     ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
     ...(result.validation_failure ? { validation_failure: result.validation_failure } : {}) };

@@ -167,7 +167,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     let current;
     try { current = await github.current(target); }
     catch {
-      result = { ...result, status: 'incomplete', reason: 'Current head could not be verified after source review.' };
+      result = { ...result, status: 'incomplete', terminal_incomplete: false, reason: 'Current head could not be verified after source review.' };
       await onResult?.(result);
     }
     if (current === false) {

@@ -258,7 +258,7 @@ export function parseReviewResult(text, input) {
 			}
 			if (review.status === 'source-reviewed') requireValue(review.source_evidence.length > 0 && review.derivation_evidence.length > 0, 'binary provenance requires source and derivation evidence')
 		}
-		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length, 'binary provenance review incomplete')
+		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length && (input.scope?.kind === 'partition' || result.binary_reviews.every(r => r.status === 'source-reviewed')), 'binary provenance review incomplete')
 		const outsideChange = []
 		const files = input.source_files ?? input.files
 		for (const [findingIndex, finding] of result.findings.entries()) {
@@ -289,7 +289,7 @@ export function parseReviewResult(text, input) {
 		for (const f of outsideChange) result.context_notes.push(`Outside the change (non-blocking; ${f.severity}): ${f.title} (${f.path}, ${f.side} lines ${f.start_line}–${f.end_line}). ${f.explanation} Trigger: ${f.trigger} Consequence: ${f.consequence}`)
 		for (const [index, evidence] of result.related_evidence.entries()) requireEvidence(evidence, 'related_evidence', index)
 		if (incomplete.length) return { ...unavailable(input, `review incomplete (${incomplete.join(', ')})`),
-			status: result.completion, omitted_paths: result.omitted_paths.length ? result.omitted_paths : [...paths],
+			status: result.completion, findings: result.findings, omitted_paths: result.omitted_paths.length ? result.omitted_paths : [...paths],
 			context_requests: result.context_requests, diagnostics }
 		return { ...result, status: 'complete', ...(snapped.length ? { snapped_evidence: snapped } : {}) }
 	} catch (error) {

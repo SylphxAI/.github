@@ -1,4 +1,5 @@
 import { contextRequestLimit } from './schema.mjs';
+import { canonical } from './contract.mjs';
 import { validPath, digest } from './github.mjs';
 import { fileSegments, segmentWindows } from './source.mjs';
 
@@ -33,13 +34,19 @@ export async function recoverContext({ input, github, target, execute, createRev
     await record(cause);
     return { input, result };
   };
+  const grounded = new Map();
   const infer = async () => {
-    try { return validateResult(await execute(input), input); }
+    let next;
+    try { next = validateResult(await execute(input), input); }
     catch {
-      return { status: 'unavailable', head_sha: input.head_sha, base_sha: input.base_sha,
+      next = { status: 'unavailable', head_sha: input.head_sha, base_sha: input.base_sha,
         input_digest: input.input_digest, reviewer_version: input.reviewer_version,
         findings: [], omitted_paths: input.files.map(f => f.path), reason: 'Review engine could not return a valid pinned result.' };
     }
+    // Enriching context cannot erase an already validated defect. Later source
+    // or transport incompleteness must not turn an established blocker clean.
+    for (const finding of next.findings) grounded.set(canonical(finding), finding);
+    return { ...next, findings: [...grounded.values()] };
   };
   const finalizeBudget = async (cause, reason, nextRoundEstimateMs) => {
     // One terminal inference, not another context collection cycle. Re-sealing
@@ -57,6 +64,7 @@ export async function recoverContext({ input, github, target, execute, createRev
     // A valid model assessment that still refuses a verdict is a terminal
     // review failure, not infrastructure unavailability or a clean review.
     if (result.status === 'incomplete') result = { ...result, terminal_incomplete: true };
+    else return stop(cause, `Final verdict unavailable. ${reason}`);
     result = { ...result, reason: originalReason };
     return stop(cause, reason);
   };
