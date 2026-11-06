@@ -69,7 +69,8 @@ def required_jobs(jobs):
         job = fields(node)
         actions = [scalar(fields(step).get("uses")) for step in sequence(job.get("steps"))]
         if name == "ci-ok" or scalar(job.get("name")) == "ci-ok" or any(
-            "/actions/needs-pass@" in action or "/actions/ci-ok@" in action for action in actions
+            any(f"/actions/{aggregate}@" in action for aggregate in ("needs-pass", "ci-ok", "ci-ok-polling"))
+            for action in actions
         ):
             roots.append(name)
     # ci-ok can aggregate all checks via the API, with no local needs graph.
