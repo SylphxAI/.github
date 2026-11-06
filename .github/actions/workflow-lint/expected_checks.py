@@ -167,9 +167,11 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifi
             job = jobs[key]
             if identify_only:
                 name = job.get("name", key)
-                # A dynamic producer has no literal identity to census.
-                # Required dynamic/matrix names still refuse during selection.
-                if not isinstance(name, str) or "${{" in name:
+                # Matrix base names are not emitted check identities: a job
+                # named Tests produces Tests (1), Tests (2), etc. Do not invent
+                # an unsuffixed alias. Required matrix/dynamic names still
+                # refuse unless represented by a proven completion boundary.
+                if job.get("strategy") is not None or not isinstance(name, str) or "${{" in name:
                     continue
             else:
                 name = literal_name(key, job, location)
@@ -316,8 +318,11 @@ def main():
                 return subprocess.check_output(['git', '-C', str(args.root), 'show',
                     f'{args.expected_sha}:{path}'], text=True, stderr=subprocess.DEVNULL)
 
-            paths = subprocess.check_output(['git', '-C', str(args.root), 'ls-tree', '-r',
-                '--name-only', args.expected_sha, '--', '.github/workflows'], text=True).splitlines()
+            # Git's human-readable quoting and text newline conversion both
+            # alter valid filenames. NUL-delimited bytes preserve the tree.
+            paths = [os.fsdecode(path) for path in subprocess.check_output([
+                'git', '-C', str(args.root), 'ls-tree', '-rz', '--name-only',
+                args.expected_sha, '--', '.github/workflows']).split(b'\0') if path]
             workflows = {pathlib.PurePosixPath(path).name: committed(path)
                 for path in paths if pathlib.PurePosixPath(path).parent == pathlib.PurePosixPath('.github/workflows')
                 and pathlib.PurePosixPath(path).suffix in {'.yml', '.yaml'}}
