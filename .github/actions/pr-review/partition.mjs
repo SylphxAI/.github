@@ -143,7 +143,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   const head = await isCurrent();
   if (head !== true) return { ...base, reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
   let result;
-  try { result = await execute(synthesis); }
+  try { result = await execute(synthesis, { files: input.files, context: input.context }); }
   catch { result = unavailable(synthesis, 'Cross-file synthesis could not complete.'); }
   if (result.status !== 'complete') return { ...base, reason: `Cross-file synthesis: ${result.reason}`,
     context_requests: result.status === 'incomplete' ? result.context_requests ?? [] : [],

@@ -200,3 +200,37 @@ test('failed-anchor receipts survive partition and synthesis boundaries with the
     assert.ok(!JSON.stringify(result).includes('PRIVATE_FAILED_ANCHOR'));
   }
 });
+
+test('cross-file synthesis validates line-qualified sub-ranges, byte-stripped references, and full bundle source without bloating wire payload', async () => {
+  const input = largeInput(), posts = [];
+  const review = gatewayReviewer({ token: 'private-value', ...configuration, deadlineMs: Date.now() + 10_000,
+    fetcher: async (url, request) => {
+      if (request.method === 'GET') return { ok: true, json: async () => metadata };
+      const body = JSON.parse(request.body), part = JSON.parse(body.messages[1].content);
+      assert.equal(part.source_files, undefined);
+      assert.equal(part.source_context, undefined);
+      posts.push(part);
+      if (part.scope?.kind === 'synthesis') {
+        assert.deepEqual(part.files, []);
+        const ref0 = part.references[0];
+        // Cite a byte-qualified partition reference using line-only coordinates (start_byte: null, end_byte: null),
+        // plus a verbatim line from another changed file in input.files that was not included in references.
+        const unreferencedFile = input.files.at(-1);
+        const unreferencedLine = 'fn row42() { return "new-6-42"; }';
+        return response(part, [], {
+          related_evidence: [
+            { path: ref0.path, side: ref0.side, start_line: ref0.start_line, end_line: ref0.end_line,
+              start_byte: null, end_byte: null, quote: ref0.quote.replace(/\r?\n$/, '') },
+            { path: unreferencedFile.path, side: 'head', start_line: 43, end_line: 43,
+              start_byte: null, end_byte: null, quote: unreferencedLine },
+          ],
+        });
+      }
+      const { file, row } = changed(part);
+      return response(part, [], { related_evidence: [evidenceFor(file, row)] });
+    } });
+  const result = await review(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.input_digest, input.input_digest);
+  assert.equal(result.parts.completed, result.parts.planned);
+});
