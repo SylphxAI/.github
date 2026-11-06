@@ -84,7 +84,7 @@ export function unionFindings(results) {
   return [...new Map(results.flatMap(r => r.findings).map(f => [canonical(f), f])).values()];
 }
 
-export async function reviewPartitions(input, { execute, requestBytes, byteBudget, current = async () => true }) {
+export async function reviewPartitions(input, { execute, requestBytes, byteBudget, current = async () => true, completedParts }) {
   const isCurrent = async () => { try { return await current(); } catch { return null; } };
   let parts;
   try { parts = planReview(input, requestBytes, byteBudget); }
@@ -98,12 +98,19 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   const completed = [], failures = [], completedIndexes = new Set();
   let interrupted;
   for (let i = 0; i < parts.length; i++) {
+    const partKey = `${i}:${parts.length}:${digest(parts[i].files)}:${parts[i].files.length ? '' : digest(parts[i].context)}`;
+    if (completedParts?.has(partKey)) {
+      completed.push({ ...completedParts.get(partKey), input_digest: parts[i].input_digest });
+      completedIndexes.add(i);
+      continue;
+    }
     const head = await isCurrent();
     if (head !== true) { failures.push(head === false ? 'Head superseded before the next review part.' : 'Current head could not be verified before the next review part.'); break; }
     let result;
     try { result = await execute(parts[i]); }
     catch { result = unavailable(parts[i], 'Review part could not complete.'); }
     if (result.status !== 'complete') { interrupted = result; failures.push(`Part ${i + 1}/${parts.length}: ${result.reason}`); break; }
+    completedParts?.set(partKey, result);
     completed.push(result);
     completedIndexes.add(i);
   }
