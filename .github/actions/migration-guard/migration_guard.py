@@ -1358,8 +1358,86 @@ def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
     return []
 
 
-def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "") -> list[tuple[int, str]]:
+
+
+def is_zero_lock_timeout(stmt: list[Token]) -> bool:
+    """Return True if stmt is SET [SESSION] lock_timeout = 0 / '0s' / '0ms'."""
+    if not starts(stmt, "SET"):
+        return False
+    at = 2 if len(stmt) > 1 and stmt[1].kind == "word" and stmt[1].value == "SESSION" else 1
+    if at >= len(stmt) or stmt[at].kind not in {"word", "identifier"} or stmt[at].value.lower() != "lock_timeout":
+        return False
+    tail = stmt[at + 1:]
+    if len(tail) != 2 or not (tail[0].value == "=" or kw(tail[0], "TO")):
+        return False
+    val = tail[1]
+    if val.kind == "word":
+        return (val.raw or val.value) == "0"
+    if val.kind == "literal":
+        text = unquote_postgres_literal(val)
+        return bool(text is not None and re.fullmatch(r"\s*0+(?:\.0+)?\s*(?:us|ms|s|min|h|d)?\s*", text, re.I))
+    return False
+
+
+def asserts_index_valid(later_sql: str, index_name: str) -> bool:
+    """Return True if later_sql asserts pg_index.indisvalid for index_name and raises on failure."""
+    stripped = re.sub(r"/\*[\s\S]*?\*/", " ", later_sql)
+    stripped = re.sub(r"--[^\n]*", " ", stripped)
+    if not (re.search(r"\bpg_index\b", stripped, re.I)
+            and re.search(r"\bindisvalid\b", stripped, re.I)
+            and re.search(r"\braise\s+exception\b", stripped, re.I)):
+        return False
+    pattern = rf"(?<![\w$]){re.escape(index_name)}(?![\w$])"
+    return bool(re.search(pattern, stripped, re.I))
+
+
+def paired_concurrent_index_valid(sql: str, tokens: list[Token], dialect: str,
+                                  later_bodies: tuple[str, ...] | list[str] = ()) -> bool:
+    """Return True if sql is a resume-safe concurrent index file paired with a later validity check."""
+    if dialect != "postgres" or not later_bodies:
+        return False
+    if not re.search(r"^\s*--\s*atlas:txmode\s+none\b", sql, re.I | re.M):
+        return False
+    lock_zero = False
+    stmt_positive = False
+    created_indexes: list[str] = []
+    for stmt in split(tokens, ";"):
+        if not stmt:
+            continue
+        if is_zero_lock_timeout(stmt):
+            lock_zero = True
+            continue
+        timeout = timeout_setting(stmt)
+        if timeout is not None:
+            param, valid = timeout
+            if param == "*":
+                lock_zero = False
+                stmt_positive = False
+            elif param == "lock_timeout":
+                lock_zero = False
+            elif param == "statement_timeout":
+                stmt_positive = valid
+            continue
+        if starts(stmt, "COMMENT", "ON", "INDEX"):
+            continue
+        concurrent = concurrent_index_target(stmt)
+        if concurrent is not None:
+            kind, target, conditional = concurrent
+            if kind == "CREATE" and conditional and target is not None and lock_zero and stmt_positive:
+                created_indexes.append(target[1])
+                continue
+        return False
+    if not created_indexes:
+        return False
+    return all(any(asserts_index_valid(body, idx) for body in later_bodies) for idx in created_indexes)
+
+
+def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "",
+              later_bodies: tuple[str, ...] | list[str] = ()) -> list[tuple[int, str]]:
     tokens, markers = lex(sql, dialect)
+    if (concurrent_index_runtime != CONCURRENT_INDEX_RUNTIME
+            and paired_concurrent_index_valid(sql, tokens, dialect, later_bodies)):
+        return []
     # Lexical failures remain errors even when a marker is present.
     errors = token_violations(tokens, dialect)
     # A released-expand reference does not prove resumability or effective
@@ -1840,7 +1918,16 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
                 errors.append(f"{path}: migration timestamp {v} is in the future (more than 15 minutes ahead of UTC); use UTC (date -u +%Y%m%d%H%M%S)")
         try:
             sql = git(root, "cat-file", "blob", oid)
-            errors.extend(f"{path}:{line}: {reason}" for line, reason in check_sql(sql, dialect, concurrent_index_runtime))
+            later_bodies: list[str] = []
+            if "CONCURRENTLY" in sql.upper():
+                cur_name = PurePosixPath(path).name
+                for other_path in sorted(new):
+                    if (str(PurePosixPath(other_path).parent) == parent
+                            and PurePosixPath(other_path).name > cur_name
+                            and new[other_path][0] in {"100644", "100755"}):
+                        later_bodies.append(git(root, "cat-file", "blob", new[other_path][1]))
+            errors.extend(f"{path}:{line}: {reason}" for line, reason in check_sql(
+                sql, dialect, concurrent_index_runtime, later_bodies=later_bodies))
         except (SqlError, UnicodeError) as exc:
             errors.append(f"{path}: cannot inspect SQL: {exc}")
     for path in schemas or []:
