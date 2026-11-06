@@ -292,10 +292,12 @@ class UnityPackagesCache(unittest.TestCase):
 
     def test_maintenance_redirect_allows_only_canonical_identity_bound_unity_cdn_paths(self):
         handler = upm.UnityCDNRedirect()
-        for name in ("com.autodesk.fbx", "com.unity.burst", "net.3company.tool_name-v2", "x." + "a" * 212):
-            for directory in ("5.1.3", f"{name}-5.1.3"):
-                with self.subTest(name=name, directory=directory):
-                    request = upm.urllib.request.Request(f"https://download.packages.unity.com/{name}/-/{name}-5.1.3.tgz")
+        for name, version in (("com.autodesk.fbx", "5.1.3"), ("com.unity.burst", "5.1.3"),
+                              ("net.3company.tool_name-v2", "5.1.3"), ("x." + "a" * 212, "5.1.3"),
+                              ("1.2.3", "1.2.3-rc.1"), ("1.2.3", "1.2.3-4.5")):
+            for directory in (version, f"{name}-{version}"):
+                with self.subTest(name=name, version=version, directory=directory):
+                    request = upm.urllib.request.Request(f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz")
                     valid = f"https://cdn.packages.unity.com/tarballs/{name}/{directory}/" + "a" * 40 + ".tgz"
                     self.assertEqual(handler.redirect_request(request, None, 302, "Found", {}, valid).full_url, valid)
                     cdn_request = upm.urllib.request.Request(valid)

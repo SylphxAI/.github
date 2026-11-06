@@ -98,13 +98,14 @@ class UnityCDNRedirect(urllib.request.HTTPRedirectHandler):
                 len(parts) != 5 or parts[:2] != ["", "tarballs"]):
             raise ValueError("unexpected Unity archive redirect")
         name, directory, filename = parts[2:]
-        # Both directories are served upstream, independent of publisher name.
-        version = directory.removeprefix(name + "-")
-        if (not NAME.fullmatch(name) or not VERSION.fullmatch(version) or
-                not re.fullmatch(r"[a-f0-9]{40}\.tgz", filename)):
+        if not NAME.fullmatch(name) or not re.fullmatch(r"[a-f0-9]{40}\.tgz", filename):
             raise ValueError("unexpected Unity archive redirect")
-        download = f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz"
-        if req.full_url not in (download, newurl):
+        # A version may itself start with <name>-; bind both possible directory
+        # interpretations to the exact download identity instead of guessing.
+        versions = (directory, directory.removeprefix(name + "-"))
+        if not any(VERSION.fullmatch(version) and req.full_url in (
+                f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz", newurl)
+                for version in versions):
             raise ValueError("unexpected Unity archive redirect")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
