@@ -13,6 +13,12 @@ const instructions = readFileSync(new URL('./reviewer.md', import.meta.url), 'ut
 export const reviewerVersion = `sha256:${digest({ instructions, resultSchema })}`
 export const reviewerInstructions = `${instructions}\nReviewer version: ${reviewerVersion}\nResult schema: ${canonical(resultSchema)}\n`
 export { resultSchema }
+export const sourceValidationReasons = Object.freeze([
+	'finding outside changed source',
+	'finding outside supplied source',
+	'evidence differs from supplied source',
+	'related evidence differs from supplied source',
+])
 
 function requireValue(ok, message) { if (!ok) throw new Error(message) }
 const nonempty = (s) => typeof s === 'string' && s.trim().length > 0
