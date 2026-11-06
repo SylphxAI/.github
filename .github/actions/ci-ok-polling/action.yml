@@ -1,0 +1,54 @@
+name: ci-ok-polling
+description: >
+  Legacy cross-workflow verdict. Fails immediately when a gated check fails,
+  even while others are pending. Success requires every explicitly expected
+  check to register and complete. Prefer ci-ok with explicit job dependencies.
+inputs:
+  token:
+    description: Token with checks, actions, contents and pull-requests read.
+    default: ${{ github.token }}
+  expected:
+    description: Comma-separated complete set of gated check display names, including conditional jobs.
+    required: true
+  required:
+    description: Expected check names that must succeed, rather than skip or conclude neutral.
+    default: ""
+  job-name:
+    description: Calling job's check name, excluded from polling.
+    default: ci-ok
+  ignore:
+    description: Comma-separated advisory check names to ignore.
+    default: ""
+  timeout-minutes:
+    description: Give up after this many minutes.
+    default: "110"
+  all-apps:
+    description: Include check runs from other apps, not just GitHub Actions.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Check contribution metadata
+      shell: bash
+      env:
+        CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py"
+    - name: Scan added commits for secrets
+      shell: bash
+      env:
+        SECRET_SCAN_TOKEN: ${{ inputs.token }}
+      run: python3 "$GITHUB_ACTION_PATH/../secret-scan/secret_scan.py" --fetch --pre-merge-only
+    - name: Require completed cross-workflow checks
+      shell: bash
+      env:
+        REPO: ${{ github.repository }}
+        SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        TOKEN: ${{ inputs.token }}
+        SELF_NAME: ${{ inputs.job-name }}
+        CI_OK_IGNORE: ${{ inputs.ignore }}
+        CI_OK_REQUIRED: ${{ inputs.required }}
+        CI_OK_EXPECTED: ${{ inputs.expected }}
+        EVENT_NAME: ${{ github.event_name }}
+        CI_OK_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        CI_OK_ALL_APPS: ${{ inputs.all-apps }}
+      run: python3 "$GITHUB_ACTION_PATH/ci_ok.py"
