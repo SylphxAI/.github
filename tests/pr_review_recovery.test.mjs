@@ -73,7 +73,7 @@ test('absent, already supplied, repeated, invalid, deadline and head-change requ
         return missing(input, [{ path: failure === 'invalid' ? '../outside' : failure === 'already-supplied' ? 'src/change.js' : 'src/caller.js', side: 'head' }]);
       } });
     assert.notEqual(result.result.status, 'complete', failure);
-    assert.equal(calls, failure === 'deadline' ? 0 : ['absent', 'repeated', 'byte-limit'].includes(failure) ? 2 : 1, failure);
+    assert.equal(calls, failure === 'deadline' ? 0 : ['absent', 'repeated'].includes(failure) ? 3 : ['byte-limit', 'already-supplied'].includes(failure) ? 2 : 1, failure);
     if (['head', 'deadline', 'already-supplied', 'invalid'].includes(failure)) assert.equal(reads, 0, failure);
     assert.ok(!result.result.reason.includes('private error'));
   }
@@ -367,7 +367,7 @@ test('pinned absence is negative evidence, never literal source or an automatic 
   let calls = 0, reads = 0;
   const result = await runRecovery({ github: { current: async () => true, source: async () => { reads++; return null; } },
     execute: async input => { calls++; return missing(input); } });
-  assert.equal(calls, 2); assert.equal(reads, 1);
+  assert.equal(calls, 3); assert.equal(reads, 1);
   assert.equal(result.result.status, 'incomplete'); assert.equal(result.result.recovery.stop, 'no_new_context');
   assert.deepEqual(result.result.recovery, { rounds: 1, added_files: 1, added_bytes: 0, stop: 'no_new_context' });
   assert.equal(sourceQuote(result.input, 'src/caller.js', 'head', 1, 1), null);

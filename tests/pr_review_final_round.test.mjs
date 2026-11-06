@@ -65,6 +65,7 @@ test('a final round requesting context preserves the original stop and never sta
   assert.equal(outcome.posts.length, 5);
   assert.equal(reads, 3);
   assert.equal(outcome.result.status, 'incomplete');
+  assert.equal(outcome.result.terminal_incomplete, true);
   assert.equal(outcome.result.recovery.stop, 'round_limit');
   assert.equal(outcome.result.reason,
     'review incomplete (completion=incomplete, omitted_paths=1, reason=nonempty) Context recovery round limit reached.');
@@ -114,13 +115,13 @@ test('insufficient remaining deadline prevents the final round at every budget b
       } });
     assert.equal(calls, limit === 'round' ? 4 : limit === 'file' ? 2 : 1);
     assert.equal(outcome.input.context_recovery, undefined);
-    assert.equal(outcome.result.recovery.stop, limit === 'byte' ? 'byte_limit' : 'deadline');
-    assert.match(outcome.result.reason, limit === 'byte' ? /Context recovery byte limit reached/ : /Insufficient review deadline remaining/);
+    assert.equal(outcome.result.recovery.stop, 'deadline');
+    assert.match(outcome.result.reason, /Insufficient review deadline remaining/);
   });
 });
 
 test('excluded stops never trigger a final inference', async t => {
-  for (const cause of ['deadline', 'head_unverified', 'source_unavailable', 'invalid_request', 'no_new_context']) {
+  for (const cause of ['deadline', 'head_unverified', 'source_unavailable', 'invalid_request']) {
     await t.test(cause, async () => {
       let calls = 0, reads = 0;
       const outcome = await run({ deadlineMs: cause === 'deadline' ? Date.now() - 1 : Infinity,
@@ -167,7 +168,27 @@ test('the final wire marker is digested and ordinary pinned-result validation st
     assert.equal(calls, 5);
     assert.equal(rejected.result.status, 'unavailable');
     assert.equal(rejected.result.recovery.stop, 'round_limit');
-    assert.equal(rejected.result.reason,
-      'review incomplete (completion=incomplete, omitted_paths=1, reason=nonempty) Context recovery round limit reached.');
+    assert.match(rejected.result.reason, /Review engine could not return a valid pinned result\. Final verdict unavailable\. Context recovery round limit reached\./);
+  });
+});
+
+test('every recovery budget boundary preserves a grounded final defect or explicitly fails an incomplete verdict', async t => {
+  for (const limit of ['round', 'file', 'byte']) for (const verdict of ['defect', 'incomplete']) await t.test(`${limit}/${verdict}`, async () => {
+    const outcome = await overWire((input, call) => {
+      if (input.context_recovery !== 'exhausted') return wire(input, limit === 'file' && call === 1
+        ? Array.from({ length: recoveryLimits.files }, (_, n) => request(n)) : [request(100 + call)]);
+      if (verdict === 'incomplete') return wire(input, [request(999)]);
+      return { ...wire(input), findings: [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1,
+        severity: 'high', title: 'The new value breaks the contract', explanation: 'The supplied contract requires the original value.',
+        trigger: 'A consumer reads this value.', consequence: 'The consumer rejects the new value.',
+        evidence: [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1,
+          start_byte: null, end_byte: null, quote: 'after' }] }] };
+    }, { github: { current: async () => true, source: async () => limit === 'byte'
+      ? 'x'.repeat(recoveryLimits.bytes + 1) : 'dependency\n' } });
+    assert.equal(outcome.posts.length, limit === 'round' ? 5 : limit === 'file' ? 3 : 2);
+    assert.equal(outcome.result.status, verdict === 'defect' ? 'complete' : 'incomplete');
+    assert.equal(outcome.result.terminal_incomplete === true, verdict === 'incomplete');
+    assert.equal(outcome.result.findings.length, verdict === 'defect' ? 1 : 0);
+    assert.equal(outcome.result.recovery.stop, `${limit}_limit${verdict === 'defect' ? '_finalized' : ''}`);
   });
 });

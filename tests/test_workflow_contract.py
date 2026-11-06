@@ -174,6 +174,17 @@ class ContractTest(unittest.TestCase):
         text = workflow(build="    needs: ci-ok\n    continue-on-error: true\n")
         self.assertEqual(len(self.scan(text)), 1)
 
+    def test_polling_aggregate_keeps_all_jobs_required_beside_local_verdict(self):
+        text = workflow(extra=(
+            "  report:\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n"
+            "    steps:\n      - run: report || true\n"
+            "  cross-workflow:\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n"
+            "    steps:\n      - uses: SylphxAI/.github/.github/actions/ci-ok-polling@main\n"
+        ))
+        found = self.scan(text)
+        self.assertEqual(len(found), 1)
+        self.assertIn("job report: || true hides a required failure", found[0].problem)
+
     def test_delivered_or_unreadable_property_skips(self):
         for state in (True, None):
             with patch.dict(contract.os.environ, {"GITHUB_ACTIONS": "true"}, clear=True), \

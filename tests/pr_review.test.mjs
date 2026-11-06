@@ -92,7 +92,7 @@ test('incomplete aggregate preserves findings and publishes their real annotatio
   assert.equal(github.runs[0].output.annotations[0].start_line, 1);
   const low = new Provider();
   assert.equal((await produceReview({ ...options(low), engine: async input => ({ ...complete(input, [{ ...finding, severity: 'low' }]),
-    status: 'incomplete', omitted_paths: [changed.filename], reason: 'Unreviewed source remains.' }) })).conclusion, 'neutral');
+    status: 'incomplete', omitted_paths: [changed.filename], reason: 'Unreviewed source remains.' }) })).conclusion, 'failure');
 });
 
 test('a final head-read failure retains defects while publishing explicit incompleteness', async () => {

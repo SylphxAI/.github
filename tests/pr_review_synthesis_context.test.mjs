@@ -131,7 +131,7 @@ test('head changes and unverified heads stop before the additional synthesis POS
       requested = true;
       return incomplete([{ path: 'src/file0.js', side: 'head' }]);
     }, async () => requested ? head : true);
-    assert.equal(result.status, 'incomplete');
+    assert.equal(result.status, 'unavailable');
     assert.equal(synthesis.length, 1);
     assert.match(result.reason, head === false ? /superseded/ : /could not be verified/);
   }
@@ -153,7 +153,7 @@ test('re-synthesis validates unrequested bundle context and refuses quotes absen
     // requested-source synthesis; it must still reject a persistently false quote.
     assert.equal(synthesis.length, mode === 'forged' ? 4 : 2);
     if (mode === 'forged') {
-      assert.equal(result.status, 'incomplete');
+      assert.equal(result.status, 'unavailable');
       assert.equal(result.validation_failure.code, 'quote_mismatch');
       assert.equal(result.validation_failure.path, unrequested.path);
       assert.equal(result.validation_failure.input_digest, synthesis[1].input_digest);
