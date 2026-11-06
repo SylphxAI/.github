@@ -308,6 +308,11 @@ test('line-qualified evidence recovers unique verbatim nearby lines and refuses 
   assert.equal(shifted.status, 'complete');
   assert.equal(shifted.related_evidence[0].start_line, 4);
   assert.equal(shifted.related_evidence[0].end_line, 5);
+  const halfOpen = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
+    start_line: 4, end_line: 6, start_byte: null, end_byte: null, quote: 'delta\nepsilon' }] }), input);
+  assert.equal(halfOpen.status, 'complete');
+  assert.equal(halfOpen.related_evidence[0].start_line, 4);
+  assert.equal(halfOpen.related_evidence[0].end_line, 5);
   const ambiguous = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
     start_line: 5, end_line: 5, start_byte: null, end_byte: null, quote: 'duplicate' }] }), input);
   assert.equal(ambiguous.status, 'unavailable');
