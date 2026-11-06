@@ -1,4 +1,4 @@
-import { digest, reviewerVersion, unavailable, canonical } from './contract.mjs';
+import { digest, reviewerVersion, unavailable, canonical, discardedItems } from './contract.mjs';
 import { literalSegments, changedRanges, fileSegments } from './source.mjs';
 import { digest as sourceDigest } from './github.mjs';
 import { recoveryLimits } from './recovery.mjs';
@@ -140,6 +140,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   const snappedFromParts = completed.flatMap(r => r.snapped_evidence ?? []);
   const base = { ...unavailable(input, ''), status: 'incomplete', findings: unionFindings([...completed, ...(interrupted ? [interrupted] : [])]),
     context_notes: completed.flatMap(r => r.context_notes ?? []),
+    discarded_items: discardedItems([...completed, ...(interrupted ? [interrupted] : [])]),
     ...(snappedFromParts.length ? { snapped_evidence: snappedFromParts } : {}),
     parts: { planned: parts.length, completed: completed.length },
     omitted_paths: input.files.filter(f => parts.some((p, i) => p.files.some(pf => pf.path === f.path) && !completedIndexes.has(i))).map(f => f.path) };
@@ -177,7 +178,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     try { result = await execute(next, { files: input.files, context: input.context }); }
     catch { result = unavailable(next, 'Cross-file synthesis could not complete.'); }
   }
-  if (result.status !== 'complete') return { ...base, status: result.status, findings: unionFindings([...completed, result]), reason: `Cross-file synthesis: ${result.reason}`,
+  if (result.status !== 'complete') return { ...base, status: result.status, discarded_items: discardedItems([...completed, result]), findings: unionFindings([...completed, result]), reason: `Cross-file synthesis: ${result.reason}`,
     context_requests: result.status === 'incomplete' ? result.context_requests ?? [] : [],
     ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
     ...(result.validation_failure ? { validation_failure: result.validation_failure } : {}) };
@@ -191,5 +192,6 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   return { ...result, status: 'complete', head_sha: input.head_sha, base_sha: input.base_sha,
     input_digest: input.input_digest, reviewer_version: input.reviewer_version, findings,
     context_notes: [...base.context_notes, ...result.context_notes], parts: base.parts,
+    discarded_items: discardedItems([...completed, result]),
     ...(snappedAll.length ? { snapped_evidence: snappedAll } : {}) };
 }

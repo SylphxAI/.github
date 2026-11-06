@@ -168,7 +168,9 @@ function evidenceFailure(input, evidence, expected, kind, index, findingIndex) {
 		expected: fingerprint(expected), returned: fingerprint(evidence.quote) }
 }
 
-export function parseReviewResult(text, input) {
+export const discardedItems = results => [...new Set(results.flatMap(r => r.discarded_items ?? []))]
+
+export function parseReviewResult(text, input, { discardUngrounded = false } = {}) {
 	let diagnostics, validationFailure
 	try {
 		const result = validateSchema(JSON.parse(text), resultSchema)
@@ -249,6 +251,18 @@ export function parseReviewResult(text, input) {
 				throw new Error(kind === 'related_evidence' ? 'related evidence differs from supplied source' : 'evidence differs from supplied source')
 			}
 		}
+		const discarded = []
+		const groundedItem = (item, kind, index, validate) => {
+			const snappedAt = snapped.length
+			try { validate(); return true }
+			catch (error) {
+				if (!discardUngrounded || !validationFailure || !['evidence differs from supplied source', 'related evidence differs from supplied source'].includes(error.message)) throw error
+				snapped.length = snappedAt
+				discarded.push(digest({ scope: input.scope ?? null, kind, index, item }))
+				validationFailure = undefined
+				return false
+			}
+		}
 		const binaryFiles = (input.scope?.kind === 'synthesis' ? input.manifest : input.files).filter(f => f.source_mode === 'binary-metadata')
 		const binaryPaths = new Set(binaryFiles.map(f => f.path))
 		requireValue(result.binary_reviews.every(r => binaryPaths.has(r.path)) && new Set(result.binary_reviews.map(r => r.path)).size === result.binary_reviews.length, 'invalid binary review paths')
@@ -259,11 +273,13 @@ export function parseReviewResult(text, input) {
 			if (review.status === 'source-reviewed') requireValue(review.source_evidence.length > 0 && review.derivation_evidence.length > 0, 'binary provenance requires source and derivation evidence')
 		}
 		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length && (input.scope?.kind === 'partition' || result.binary_reviews.every(r => r.status === 'source-reviewed')), 'binary provenance review incomplete')
-		const outsideChange = []
+		const outsideChange = [], ungroundedFindings = []
 		const files = input.source_files ?? input.files
 		for (const [findingIndex, finding] of result.findings.entries()) {
 			requireValue(finding.end_line >= finding.start_line && (input.scope?.kind === 'synthesis' ? input.manifest : input.files).some(f => f.path === finding.path), 'finding outside supplied source')
-			for (const [index, evidence] of finding.evidence.entries()) requireEvidence(evidence, 'finding_evidence', index, findingIndex)
+			if (!groundedItem(finding, 'finding', findingIndex, () => {
+				for (const [index, evidence] of finding.evidence.entries()) requireEvidence(evidence, 'finding_evidence', index, findingIndex)
+			})) { ungroundedFindings.push(finding); continue }
 			const inChanged = files.some(file => file.path === finding.path && changedRanges(file).some(r =>
 				r.side === finding.side && finding.start_line >= r.start && finding.end_line <= r.end))
 			if (inChanged) continue
@@ -283,14 +299,16 @@ export function parseReviewResult(text, input) {
 			if (anchor) Object.assign(finding, anchor)
 			else outsideChange.push(finding)
 		}
-		result.findings = result.findings.filter(f => !outsideChange.includes(f))
+		result.findings = result.findings.filter(f => !outsideChange.includes(f) && !ungroundedFindings.includes(f))
 		// Keep the complete grounded observation in the visible summary, never an
 		// off-diff annotation or a blocking verdict. Do not silently discard it.
 		for (const f of outsideChange) result.context_notes.push(`Outside the change (non-blocking; ${f.severity}): ${f.title} (${f.path}, ${f.side} lines ${f.start_line}–${f.end_line}). ${f.explanation} Trigger: ${f.trigger} Consequence: ${f.consequence}`)
-		for (const [index, evidence] of result.related_evidence.entries()) requireEvidence(evidence, 'related_evidence', index)
+		result.related_evidence = result.related_evidence.filter((evidence, index) =>
+			groundedItem(evidence, 'related_evidence', index, () => requireEvidence(evidence, 'related_evidence', index)))
+		if (discarded.length) result.discarded_items = discarded
 		if (incomplete.length) return { ...unavailable(input, `review incomplete (${incomplete.join(', ')})`),
 			status: result.completion, findings: result.findings, omitted_paths: result.omitted_paths.length ? result.omitted_paths : [...paths],
-			context_requests: result.context_requests, diagnostics }
+			context_requests: result.context_requests, diagnostics, ...(discarded.length ? { discarded_items: discarded } : {}) }
 		return { ...result, status: 'complete', ...(snapped.length ? { snapped_evidence: snapped } : {}) }
 	} catch (error) {
 		return unavailable(input, error instanceof SyntaxError ? 'invalid JSON review result' : error.message,

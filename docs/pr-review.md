@@ -146,8 +146,15 @@ The first verbatim-validated evidence overlapping any changed range supplies the
 anchor, including another changed file or renamed base source, with severity
 unchanged. If no evidence touches the change, retain the observation, original
 severity and causal explanation as a visible non-blocking outside-the-change
-note, never an off-diff annotation. Unknown paths and fabricated quotes still fail
-source validation.
+note, never an off-diff annotation. Unknown finding anchors still fail validation.
+A quote that cannot be grounded triggers the existing bounded correction attempts.
+Once those attempts are exhausted (or disabled for the single final verdict pass),
+discard only the ungrounded related-evidence item or its entire finding. Every
+retained quote still passes verbatim validation. The part can complete without
+that unsupported claim; identity, source coverage and binary-provenance checks
+remain unchanged. Partition and synthesis results both preserve the discarded-item
+count in the Check Run summary: `N items discarded: evidence not in source`.
+No discarded quote or finding prose is published.
 
 Before inference, the action reads the configured model's supported public catalog
 row at `/v1/public/models/{model}`. It reserves the configured output budget, or
@@ -187,7 +194,7 @@ An `invalid_json_schema` refusal remains unavailable; fix and publish the
 shared action, adopt its immutable pin, and inspect the new consumer result
 before claiming review acceptance. Do not retry an unchanged request.
 
-An inference refusal, timeout, invalid evidence, unsupported source or malformed
+An inference refusal, timeout, unsupported source, invalid binary evidence or malformed
 output receives neutral with a bounded reason when no grounded blocking finding
 is already present. A model's valid incomplete assessment instead uses bounded
 recovery and its final verdict pass; persistent incompleteness is failure, not
@@ -218,8 +225,11 @@ stops a batch; outcomes distinguish collection from delivery. A diagnostic
 explains what the model reported, not whether its explanation is a proven root
 cause.
 
-A schema- and identity-valid result with a failed evidence anchor retains one
-bounded `validation_failure` in the final receipt and runner result. Version 1
+A schema- and identity-valid result rejected for a failed evidence anchor retains
+one bounded `validation_failure` in the final receipt and runner result. When
+correction attempts instead discard unsupported finding or related-evidence
+items, the receipt carries only their count and the runner result keeps opaque
+item fingerprints for deduplication across cached parts and final assessment. Version 1
 records the first rejected finding/related-evidence index, its exact input digest,
 side, integer line/byte coordinates, and expected/returned UTF8 byte lengths and
 SHA256 digests. `quote_mismatch` means those supplied coordinates resolved to
