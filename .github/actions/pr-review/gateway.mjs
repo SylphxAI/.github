@@ -128,12 +128,13 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
       const fields = echoed && typeof echoed === 'object' && !Array.isArray(echoed) ? identityFields.filter(key => echoed[key] !== input[key]) : [];
       // Fixed field names and fingerprints retain each raw echo's identity
       // without retaining arbitrary model strings or echoed source/secrets.
-      const identity = { input_digest: input.input_digest, scope: input.scope ?? null, attempt,
+      const identity = { input_digest: input.input_digest, scope: input.scope ?? null, attempt, response_sha256: digest(choice.message.content),
         expected: requestIdentity(input), returned: Object.fromEntries(identityFields.map(key => {
-          const value = echoed?.[key], encoded = value === undefined ? null : JSON.stringify(value);
+          const value = echoed?.[key], scalar = value === null || ['string', 'number', 'boolean'].includes(typeof value);
+          const encoded = scalar ? JSON.stringify(value) : null;
           return [key, { type: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
             value: value === input[key] ? input[key] : '[redacted]',
-            bytes: encoded === null ? null : Buffer.byteLength(encoded), sha256: encoded === null ? null : digest(value) }];
+            bytes: encoded === null ? null : Buffer.byteLength(encoded), sha256: scalar ? digest(value) : null }];
         })) };
       identities.push(identity);
       if (fields.length) identityLog(identity);

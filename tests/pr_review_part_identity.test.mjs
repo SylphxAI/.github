@@ -26,7 +26,7 @@ const wire = (input, changes = {}) => ({ schema_version: 1, repository_id: input
   completion: 'complete', findings: [], omitted_paths: [], context_notes: [], context_requests: [], reason: '',
   review_summary: 'Reviewed every assigned source row, the dependency and changed contract.', related_evidence: [], binary_reviews: [], ...changes });
 const response = value => ({ ok: true, status: 200, json: async () => ({ object: 'chat.completion', model,
-  choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(value) } }] }) });
+  choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: typeof value === 'string' ? value : JSON.stringify(value) } }] }) });
 function engine(reply, byteLimit = byteBudget) {
   const posts = [], attempts = new Map(), logged = [];
   const review = gatewayReviewer({ token: 'fixture', ...configuration, identityLog: record => logged.push(record), deadlineMs: Date.now() + 10_000,
@@ -240,4 +240,17 @@ test('malformed findings after bounded correction are terminal-invalid rather th
   assert.equal(posts.filter(p => partNumber(p.part) === 3).length, 3);
   assert.deepEqual(saved.at(-1).invalid_result, { code: 'malformed_assessment', fields: [] });
   assert.deepEqual(run.output.annotations, []);
+});
+
+
+test('deep malformed identity values cannot turn diagnostic collection into a neutral outage', async () => {
+  const raw = '['.repeat(12_000) + '0' + ']'.repeat(12_000);
+  const { receipt, saved } = await publish(part => second(part)
+    ? JSON.stringify(wire(part)).replace(/"reviewer_version":"[^"]*"/, '"reviewer_version":' + raw)
+    : wire(part));
+  assert.equal(receipt.conclusion, 'failure');
+  assert.deepEqual(saved.at(-1).invalid_result, { code: 'identity_mismatch', fields: ['reviewer_version'] });
+  const record = saved.at(-1).identity_diagnostics.find(d => d.returned.reviewer_version.type === 'array');
+  assert.ok(record); assert.match(record.response_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(record.returned.reviewer_version.value, '[redacted]');
 });
