@@ -1,4 +1,4 @@
-import { reviewerInstructions, resultSchema, parseReviewResult, unavailable } from './contract.mjs';
+import { reviewerInstructions, resultSchema, parseReviewResult, unavailable, sourceValidationReasons } from './contract.mjs';
 import { reviewPartitions } from './partition.mjs';
 
 export function reviewRequest(input, { model, maxOutputTokens, reasoningEffort }) {
@@ -62,13 +62,15 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
       const body = reviewRequest(value, configuration), bytes = Buffer.byteLength(body);
       if (bytes > budget.request_byte_limit) return unavailable(value, 'Review request exceeds the qualified model context.');
       sizes.push(bytes);
-      return infer(sourceScope ? { ...value, source_files: sourceScope.files, source_context: sourceScope.context } : value, body);
+      return infer(sourceScope ? { ...value, source_files: sourceScope.files, source_context: sourceScope.context } : value, body, budget.request_byte_limit);
     };
     const result = await reviewPartitions(input, { execute, requestBytes, byteBudget: budget.request_byte_limit, current, completedParts });
     return { ...result, budget, request_bytes: sizes };
   };
 
-  async function infer(input, requestBody) {
+  async function infer(input, originalBody, byteLimit) {
+    let requestBody = originalBody;
+    const retriesAllowed = input.context_recovery !== 'exhausted';
     const alreadySuppliedRequest = r =>
       (input.context ?? []).some(c => c.path === r.path && ((c.side ?? 'context') === r.side || (c.side ?? 'context') === 'context')) ||
       (input.scope?.partitioned_context ?? []).some(c => c.path === r.path && (c.side === r.side || c.side === 'context')) ||
@@ -89,7 +91,7 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
       let body;
       try { body = await response.json(); } catch {
         if (Date.now() >= deadlineMs) return unavailable(input, 'Review inference exceeded its deadline.');
-        if (response.ok && attempt < 3) continue;
+        if (retriesAllowed && response.ok && attempt < 3) continue;
         return unavailable(input, `Review gateway returned invalid JSON (HTTP ${response.status}).`);
       }
       if (!response.ok) {
@@ -106,7 +108,20 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
         return unavailable(input, 'Review inference was refused, interrupted, or did not return the configured model result.');
       }
       const parsed = parseReviewResult(choice.message.content, input);
-      if (attempt < 3 && Date.now() < deadlineMs && (
+      if (retriesAllowed && attempt < 3 && Date.now() < deadlineMs &&
+          parsed.status === 'unavailable' && sourceValidationReasons.includes(parsed.reason)) {
+        const failure = parsed.validation_failure;
+        const correction = JSON.stringify({ reason: parsed.reason,
+          validation_failure: failure ? { kind: failure.kind, index: failure.evidence_index,
+            finding_index: failure.finding_index, path: failure.path, side: failure.side } : null,
+          rule: "anchor every finding on lines inside its file's changed hunks; cite unchanged lines only as evidence; quote evidence verbatim with exact line numbers" });
+        const original = JSON.parse(originalBody);
+        const correctedBody = JSON.stringify({ ...original, messages: [...original.messages,
+          { role: 'assistant', content: choice.message.content }, { role: 'user', content: correction }] });
+        requestBody = Buffer.byteLength(correctedBody) <= byteLimit ? correctedBody : originalBody;
+        continue;
+      }
+      if (retriesAllowed && attempt < 3 && Date.now() < deadlineMs && (
         (parsed.status === 'unavailable' && parsed.reason === 'invalid JSON review result') ||
         (input.scope?.kind === 'partition' && parsed.status === 'incomplete' &&
           (parsed.context_requests?.length ?? 0) > 0 && parsed.context_requests.every(alreadySuppliedRequest))
