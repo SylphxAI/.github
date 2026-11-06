@@ -336,6 +336,23 @@ class HistoryTests(unittest.TestCase):
         errors, _ = self.check()
         self.assertIn("is in the future (more than 15 minutes ahead of UTC)", "\n".join(errors))
 
+    def test_clock_governed_store_accepts_48_day_clock_after_quiet_days(self):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        base_clock = (now + timedelta(days=44)).strftime("%Y%m%d%H%M%S")
+        self.write("scripts/migrations/clock-stores.txt", "db\n")
+        self.write(f"db/{base_clock}_earlier_clock.sql", "SELECT 1;")
+        self.base = self.commit()
+        current_clock = (now + timedelta(days=48)).strftime("%Y%m%d%H%M%S")
+        self.write(f"db/{current_clock}_current_clock.sql", "SELECT 1;")
+        self.commit()
+        self.assertEqual(self.check(), ([], 1))
+        ahead_of_clock = (now + timedelta(days=48, hours=8)).strftime("%Y%m%d%H%M%S")
+        self.write(f"db/{ahead_of_clock}_beyond_clock.sql", "SELECT 1;")
+        self.commit()
+        errors, _ = self.check()
+        self.assertIn("is in the future (more than 15 minutes ahead of UTC)", "\n".join(errors))
+
     def test_main_reports_failure_and_never_executes_sql(self):
         self.write("db/0002_drop.sql", "DROP TABLE accounts;")
         self.commit()
