@@ -97,9 +97,13 @@ runs:
         job_env GIT_CONFIG_NOSYSTEM 1
         job_env "GIT_CONFIG_KEY_${offset}" credential.helper
         job_env "GIT_CONFIG_VALUE_${offset}" ""
+        # Git appends HTTP headers from every matching scope, including the
+        # checkout's host-wide header. Reset only this index's list first.
         job_env "GIT_CONFIG_KEY_$((offset + 1))" "http.${index_url}.extraheader"
-        job_env "GIT_CONFIG_VALUE_$((offset + 1))" "$basic"
-        job_env GIT_CONFIG_COUNT "$((offset + 2))"
+        job_env "GIT_CONFIG_VALUE_$((offset + 1))" ""
+        job_env "GIT_CONFIG_KEY_$((offset + 2))" "http.${index_url}.extraheader"
+        job_env "GIT_CONFIG_VALUE_$((offset + 2))" "$basic"
+        job_env GIT_CONFIG_COUNT "$((offset + 3))"
         job_env GIT_TERMINAL_PROMPT 0
         job_env CARGO_NET_GIT_FETCH_WITH_CLI true
         job_env "CARGO_REGISTRIES_${registry_env}_TOKEN" "$bearer"
