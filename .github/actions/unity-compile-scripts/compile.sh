@@ -12,8 +12,23 @@ receipt="$root/$project/$output/compile-receipt.json"
 # A stale successful receipt must not survive a failed compilation.
 rm -f "$receipt"
 echo "Player C# output: /workspace/$project/$output; host receipt: $receipt"
+registry_args=()
+case "${BLOCK_PACKAGE_REGISTRY:-false}" in
+  true)
+    test -s "$root/$project/.unity-packages-cache-receipt.json" || {
+      echo "::error::Pinned Unity package hydration receipt is required before registry blocking"
+      exit 1
+    }
+    registry_args=(--add-host packages.unity.com:127.0.0.1
+      --add-host download.packages.unity.com:127.0.0.1
+      --add-host cdn.packages.unity.com:127.0.0.1)
+    echo "Unity package registry and archive hosts blocked in the editor container"
+    ;;
+  false) ;;
+  *) echo "::error::block-package-registry must be true or false"; exit 1 ;;
+esac
 set +e
-docker run --rm --workdir /workspace \
+docker run --rm --workdir /workspace "${registry_args[@]}" \
   --volume "$root:/workspace" --volume "$LICENSE_HOME:/root" \
   --env SYLPHX_COMPILE_TARGET="$COMPILE_TARGET" \
   --env SYLPHX_COMPILE_OUTPUT="/workspace/$project/$output" \

@@ -1,0 +1,23 @@
+name: unity-packages-cache
+description: Embed the complete SHA256-pinned Unity registry package closure from Build Cache before launching Unity; no registry fallback.
+inputs:
+  project-path:
+    description: Prepared Unity project containing committed packages-lock.json and unity-packages.json.
+    required: true
+  mirror:
+    description: Existing Build Cache HTTPS origin.
+    default: https://build-cache.sylphx.net
+outputs:
+  receipt:
+    description: Local receipt listing every embedded package and its archive SHA256.
+    value: ${{ steps.hydrate.outputs.receipt }}
+runs:
+  using: composite
+  steps:
+    - name: Hydrate pinned Unity packages without registry access
+      id: hydrate
+      shell: bash
+      env:
+        PROJECT_PATH: ${{ inputs.project-path }}
+        MIRROR: ${{ inputs.mirror }}
+      run: python3 "$GITHUB_ACTION_PATH/packages.py" hydrate --project "$GITHUB_WORKSPACE/$PROJECT_PATH" --mirror "$MIRROR"
