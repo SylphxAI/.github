@@ -1,12 +1,11 @@
-import { reviewerInstructions, resultSchema, parseReviewResult, unavailable, sourceValidationReasons } from './contract.mjs';
+import { reviewerInstructions, resultSchema, parseReviewResult, unavailable, sourceValidationReasons, identityFields, requestIdentity, digest } from './contract.mjs';
 import { reviewPartitions } from './partition.mjs';
 
 export function reviewRequest(input, { model, maxOutputTokens, reasoningEffort }) {
   // Each part/recovery/synthesis has its own seal. The overall source_digest
   // is provenance, not the identity of this particular inference request.
   const schema = { ...resultSchema, properties: { ...resultSchema.properties,
-    ...Object.fromEntries(['repository_id', 'base_sha', 'head_sha', 'input_digest', 'reviewer_version', 'policy_version']
-      .map(key => [key, { ...resultSchema.properties[key], enum: [input[key]] }])),
+    ...Object.fromEntries(identityFields.map(key => [key, { ...resultSchema.properties[key], enum: [input[key]] }])),
   } };
   return JSON.stringify({ model, stream: false, store: false,
     messages: [{ role: 'system', content: reviewerInstructions }, { role: 'user', content: JSON.stringify(input) }],
@@ -47,7 +46,7 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
     throw new Error('Invalid review output budget.');
   }
   const configuration = { model, maxOutputTokens, reasoningEffort };
-  const completedParts = new Map();
+  const completedParts = new Map(), identities = [];
   return async input => {
     let budget;
     try {
@@ -64,18 +63,28 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
     } catch { return unavailable(input, 'Review model context metadata is unavailable or invalid.'); }
     const requestBytes = value => Buffer.byteLength(reviewRequest(value, configuration));
     const sizes = [];
+    let invalidResult;
     const execute = async (value, sourceScope) => {
       const body = reviewRequest(value, configuration), bytes = Buffer.byteLength(body);
       if (bytes > budget.request_byte_limit) return unavailable(value, 'Review request exceeds the qualified model context.');
       sizes.push(bytes);
-      return infer(sourceScope ? { ...value, source_files: sourceScope.files, source_context: sourceScope.context } : value, body, budget.request_byte_limit);
+      const result = await infer(sourceScope ? { ...value, source_files: sourceScope.files, source_context: sourceScope.context } : value, body, budget.request_byte_limit);
+      if (result.invalid_result) invalidResult = result.invalid_result;
+      return { ...result, ...requestIdentity(value) };
     };
     const result = await reviewPartitions(input, { execute, requestBytes, byteBudget: budget.request_byte_limit, current, completedParts });
-    return { ...result, budget, request_bytes: sizes };
+    return { ...result, budget, request_bytes: sizes, identity_diagnostics: [...identities], ...(invalidResult ? { invalid_result: invalidResult } : {}) };
   };
 
   async function infer(input, originalBody, byteLimit) {
     let requestBody = originalBody;
+    const finish = result => ({ ...result, ...requestIdentity(input) });
+    const correct = (content, correction) => {
+      const original = JSON.parse(originalBody);
+      const body = JSON.stringify({ ...original, messages: [...original.messages,
+        { role: 'assistant', content }, { role: 'user', content: JSON.stringify(correction) }] });
+      requestBody = Buffer.byteLength(body) <= byteLimit ? body : originalBody;
+    };
     const retriesAllowed = input.context_recovery !== 'exhausted';
     const alreadySuppliedRequest = r =>
       (input.context ?? []).some(c => c.path === r.path && ((c.side ?? 'context') === r.side || (c.side ?? 'context') === 'context')) ||
@@ -113,39 +122,34 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
           choice.message.refusal || choice.message.tool_calls?.length || typeof choice.message.content !== 'string') {
         return unavailable(input, 'Review inference was refused, interrupted, or did not return the configured model result.');
       }
+      let echoed;
+      try { echoed = JSON.parse(choice.message.content); } catch {}
+      const fields = echoed && typeof echoed === 'object' && !Array.isArray(echoed) ? identityFields.filter(key => echoed[key] !== input[key]) : [];
+      // Fixed field names and fingerprints retain each raw echo's identity
+      // without retaining arbitrary model strings or echoed source/secrets.
+      identities.push({ input_digest: input.input_digest, scope: input.scope ?? null, attempt,
+        expected: requestIdentity(input), returned: Object.fromEntries(identityFields.map(key => {
+          const value = echoed?.[key], encoded = value === undefined ? null : JSON.stringify(value);
+          return [key, { type: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
+            value: value === input[key] ? input[key] : '[redacted]',
+            bytes: encoded === null ? null : Buffer.byteLength(encoded), sha256: encoded === null ? null : digest(value) }];
+        })) });
       let parsed = parseReviewResult(choice.message.content, input);
-      if (parsed.status === 'unavailable' && parsed.reason === 'mismatched input_digest') {
-        if (!(retriesAllowed && attempt < 3 && Date.now() < deadlineMs)) {
-          // Never repair a returned seal on the model's behalf or accept a
-          // result from another scope. A persistent bad seal is a failed
-          // assessment, not a transport outage and not a clean review.
-          return { ...parsed, terminal_invalid: true };
-        }
-        const original = JSON.parse(originalBody);
-        const correction = JSON.stringify({ reason: parsed.reason, input_digest: input.input_digest,
-          rule: 'Copy this request\'s input_digest exactly; source_digest and seals from other parts or recovery rounds are not its identity. Return the full review for this supplied scope.' });
-        const correctedBody = JSON.stringify({ ...original, messages: [...original.messages,
-          { role: 'assistant', content: choice.message.content }, { role: 'user', content: correction }] });
-        requestBody = Buffer.byteLength(correctedBody) <= byteLimit ? correctedBody : originalBody;
-        continue;
-      }
-      if (parsed.status === 'unavailable' && sourceValidationReasons.includes(parsed.reason) &&
-          !(retriesAllowed && attempt < 3 && Date.now() < deadlineMs)) {
-        // Correction opportunities are exhausted. Discard only unsupported
-        // claims; every item that survives still passes exact-source validation.
+      const mayCorrect = retriesAllowed && attempt < 3 && Date.now() < deadlineMs;
+      if (parsed.status === 'unavailable' && sourceValidationReasons.includes(parsed.reason) && !mayCorrect) {
         parsed = parseReviewResult(choice.message.content, input, { discardUngrounded: true });
       }
-      if (retriesAllowed && attempt < 3 && Date.now() < deadlineMs &&
-          parsed.status === 'unavailable' && sourceValidationReasons.includes(parsed.reason)) {
+      if (parsed.status === 'unavailable' && !parsed.reason.startsWith('review incomplete (')) {
+        if (!mayCorrect) return finish({ ...parsed, terminal_invalid: true,
+          invalid_result: { code: fields.length ? 'identity_mismatch' : 'malformed_assessment', fields } });
         const failure = parsed.validation_failure;
-        const correction = JSON.stringify({ reason: parsed.reason,
+        const correction = { reason: parsed.reason,
           validation_failure: failure ? { kind: failure.kind, index: failure.evidence_index,
             finding_index: failure.finding_index, path: failure.path, side: failure.side } : null,
-          rule: "anchor every finding on lines inside its file's changed hunks; cite unchanged lines only as evidence; quote evidence verbatim with exact line numbers" });
-        const original = JSON.parse(originalBody);
-        const correctedBody = JSON.stringify({ ...original, messages: [...original.messages,
-          { role: 'assistant', content: choice.message.content }, { role: 'user', content: correction }] });
-        requestBody = Buffer.byteLength(correctedBody) <= byteLimit ? correctedBody : originalBody;
+          rule: "anchor every finding on lines inside its file's changed hunks; cite unchanged lines only as evidence; quote evidence verbatim with exact line numbers" };
+        if (fields.length || !sourceValidationReasons.includes(parsed.reason)) Object.assign(correction, requestIdentity(input), { fields,
+          rule: 'Copy all six supplied request identity fields exactly; source_digest and other scopes are not request identity. Return the full schema-valid assessment for this scope with grounded findings.' });
+        correct(choice.message.content, correction);
         continue;
       }
       if (retriesAllowed && attempt < 3 && Date.now() < deadlineMs && (
@@ -153,7 +157,7 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
         (input.scope?.kind === 'partition' && parsed.status === 'incomplete' &&
           (parsed.context_requests?.length ?? 0) > 0 && parsed.context_requests.every(alreadySuppliedRequest))
       )) continue;
-      return parsed;
+      return finish(parsed);
     }
   }
 }

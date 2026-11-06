@@ -95,9 +95,11 @@ for (const retry of ['HTTP invalid JSON', 'review invalid JSON', 'supplied conte
   });
 }
 
-test('non-source validator failures do not trigger corrective retries', async () => {
+test('identity validator failures share bounded correction and end terminal-invalid', async () => {
   const { result, posts } = await run(inputFor(), part => wire(part, { head_sha: part.base_sha }));
-  assert.equal(result.reason, 'mismatched head_sha'); assert.equal(posts.length, 1);
+  assert.equal(result.reason, 'mismatched head_sha'); assert.equal(posts.length, 3);
+  assert.equal(result.terminal_invalid, true);
+  assert.deepEqual(result.invalid_result, { code: 'identity_mismatch', fields: ['head_sha'] });
 });
 
 test('real partitioned synthesis keeps local validation source out of corrective requests', async () => {
