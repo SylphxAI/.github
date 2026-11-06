@@ -228,9 +228,9 @@ def create_table_definition(stmt: list[Token], dialect: str) -> tuple[str, list[
 def declared_table_tokens(tokens: list[Token], dialect: str, nesting: int = 0) -> set[str]:
     """Conservatively reserve historical CREATE and table-rename destinations.
 
-    Routine and dynamic SQL literals may contain earlier declarations too. They
+    Routine bodies and literal EXECUTE SQL may contain declarations too. They
     can remove eligibility, never grant it; comments and ordinary value strings
-    without DDL stay inert. Unknown/overdeep SQL fails closed via SqlError.
+    stay inert. Uninspectable/overdeep SQL fails closed via SqlError.
     """
     if nesting > 64:
         raise SqlError("historical declaration nesting is too deep to inspect")
@@ -270,9 +270,14 @@ def declared_table_tokens(tokens: list[Token], dialect: str, nesting: int = 0) -
                     continue
                 target, _ = snapshot_name(stmt, at, dialect)
                 tables.add(target[-1].casefold())
-        if token.kind == "literal":
+        # Only SQL bodies/EXECUTE text are declarations, never a column default
+        # or SELECT value which happens to contain SQL-looking text.
+        body_at = i - 1 if i and kw(tokens[i - 1], "E") else i
+        sql_literal = body_at and any(kw(tokens[body_at - 1], w) for w in ("DO", "AS", "EXECUTE"))
+        sql_literal = sql_literal or body_at >= 3 and starts(tokens[body_at - 3:body_at - 1], "DO", "LANGUAGE")
+        if token.kind == "literal" and sql_literal:
             source = unquote_postgres_literal(token)
-            if source and re.search(r"\b(?:CREATE|RENAME|ALTER)\b", source, re.I):
+            if source:
                 inner, _ = lex(source, dialect)
                 tables.update(declared_table_tokens(inner, dialect, nesting + 1))
     return tables

@@ -111,6 +111,7 @@ class HistoryCascadeTests(unittest.TestCase):
         histories = [
             ("postgres", "DO $$ BEGIN CREATE TABLE hidden (id int); END $$;"),
             ("postgres", "DO 'BEGIN CREATE TABLE hidden (id int); END';"),
+            ("postgres", "DO LANGUAGE plpgsql $$ BEGIN CREATE TABLE hidden (id int); END $$;"),
             ("postgres", "DO $$ BEGIN EXECUTE 'CREATE TABLE hidden (id int)'; END $$;"),
             ("postgres", 'ALTER TABLE "app"."child" RENAME TO "Hidden";'),
             ("mysql", "RENAME TABLE child TO other, original TO `Hidden`;"),
@@ -143,6 +144,14 @@ class HistoryCascadeTests(unittest.TestCase):
                     self.assertIn("ON DELETE CASCADE changes child data; statement: CREATE TABLE", output)
                     self.assertNotIn("Merged migrations are immutable", output)
                     self.assertNotIn("Ship an expand step", output)
+
+    def test_historical_comments_and_value_literals_do_not_declare_tables(self):
+        self.write("0001_initial.sql", "SELECT 'CREATE TABLE fresh (id int)'; -- CREATE TABLE fresh(id int)\n"
+                   "CREATE TABLE settings (note text DEFAULT 'ALTER TABLE old RENAME TO fresh');")
+        self.base = self.commit()
+        self.write("0002_fk.sql", "CREATE TABLE fresh (id int REFERENCES parent(id) ON DELETE CASCADE);")
+        self.commit()
+        self.assertEqual(self.run_guard()[0], 0)
 
     def test_earlier_file_in_same_range_is_historical(self):
         self.write("0002_create.sql", 'CREATE TABLE fresh (id int);')
