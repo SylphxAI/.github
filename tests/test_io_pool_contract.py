@@ -66,9 +66,27 @@ class IoPoolContractTest(unittest.TestCase):
     def test_no_remote_composite_recursion(self):
         self.assertEqual(self.scan(workflow("      - uses: SylphxAI/.github/.github/actions/pr-review@" + SHA)), [])
 
+    def test_checkout_overlap_and_unknown_destinations(self):
+        local = "      - uses: ./shared/.github/actions/pr-review"
+        for path in (".", "shared", "shared/.github/actions/pr-review/subdir",
+                     "${{ inputs.destination }}"):
+            steps = self.checkout() + self.checkout(repository="org/untrusted", path=path) + local
+            with self.subTest(path=path):
+                self.assertTrue(self.scan(workflow(steps)))
+        # An unrelated checkout cannot replace this action's source.
+        self.assertEqual(self.scan(workflow(
+            self.checkout() + self.checkout(repository="org/untrusted", path="other") + local)), [])
+        # A later unconditional root checkout re-establishes known provenance.
+        self.assertEqual(self.scan(workflow(
+            self.checkout(path="${{ inputs.destination }}") + self.checkout(path=".")
+            + "      - uses: ./.github/actions/pr-review")), [])
+
     def test_workflow_run_fork_routing(self):
         safe = "${{ " + GUARD + " && 'sylphx-linux-io' || 'sylphx-linux-standard' }}"
         self.assertEqual(self.scan(workflow(runner=safe, trigger="[workflow_run]")), [])
+        self.assertEqual(self.scan(workflow(
+            runner="${{ (" + GUARD + ") && ('sylphx-linux-io') || 'standard' }}",
+            trigger="workflow_run")), [])
         self.assertEqual(self.scan(workflow(trigger="workflow_run", extra="    if: " + GUARD + "\n")), [])
         for runner in ("sylphx-linux-io",
                        "${{ " + GUARD + " || 'sylphx-linux-io' }}",
@@ -97,6 +115,13 @@ class IoPoolContractTest(unittest.TestCase):
             self.assertTrue(self.scan(workflow(reviewer + token.replace("secrets.REVIEWER_TOKEN", "secrets[inputs.name]"))))
         inherited = "env:\n  SECRET: ${{ secrets.DEPLOY_KEY }}\n"
         self.assertTrue(self.scan(inherited + workflow()))
+
+    def test_case_insensitive_secret_context(self):
+        reviewer = "      - uses: SylphxAI/.github/.github/actions/pr-review@" + SHA
+        token = "\n        with:\n          token: ${{ SeCrEtS.reviewer_token }}"
+        self.assertTrue(self.scan(workflow(reviewer + token)))
+        with patch.dict(os.environ, {"IO_REVIEWER_SECRETS": "REVIEWER_TOKEN"}):
+            self.assertEqual(self.scan(workflow(reviewer + token)), [])
 
     def test_matrix_io_is_checked(self):
         text = workflow("      - run: echo unsafe", runner="${{ matrix.runner }}",

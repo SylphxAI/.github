@@ -239,6 +239,10 @@ def scan_io_job(document, name, node, add):
         if target.lower().startswith("actions/checkout@"):
             options = fields(props.get("with"))
             base = posixpath.normpath(scalar(options.get("path")) or ".")
+            if "${{" in base or base.startswith(("../", "/")) or base == "..":
+                # The destination may overlap any previously trusted checkout.
+                checkouts = [(".", False)]
+                continue
             trusted = (scalar(options.get("repository")) == "SylphxAI/.github"
                        and bool(SHA.fullmatch(scalar(options.get("ref"))))
                        and "if" not in props and "continue-on-error" not in props
@@ -272,15 +276,17 @@ def scan_io_job(document, name, node, add):
         if not allowed:
             fail(value, f"permission {permission}: {level} is outside minimal reviewer permissions")
 
-    allowed_secrets = set(filter(None, re.split(r"[\s,]+", os.environ.get("IO_REVIEWER_SECRETS", ""))))
+    allowed_secrets = {name.upper() for name in re.split(
+        r"[\s,]+", os.environ.get("IO_REVIEWER_SECRETS", "")) if name}
     # Workflow env/defaults are inherited, so scan them as well as the full job.
     nodes = [node, fields(document).get("env"), fields(document).get("defaults")]
     for scope in nodes:
         text = node_text(scope)
         for expression in re.findall(r"\$\{\{(.*?)\}\}", text, re.S):
-            remainder = re.sub(r"secrets\s*\.\s*([A-Za-z_][A-Za-z_0-9]*)",
-                lambda m: "" if reviewer and m[1] in allowed_secrets else m[0], expression)
-            if re.search(r"\bsecrets\b", remainder):
+            remainder = re.sub(r"\bsecrets\s*\.\s*([A-Za-z_][A-Za-z_0-9]*)",
+                lambda m: "" if reviewer and m[1].upper() in allowed_secrets else m[0],
+                expression, flags=re.I)
+            if re.search(r"\bsecrets\b", remainder, re.I):
                 fail(scope, "repository secrets are forbidden except configured reviewer token names")
                 break
 
