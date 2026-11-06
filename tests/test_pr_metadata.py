@@ -87,7 +87,9 @@ class MetadataEvents(unittest.TestCase):
                 self.assertTrue(accepts(workflow, 'workflow_dispatch'))
                 self.assertEqual(set(workflow['jobs']), {'pr-metadata'})
                 job = workflow['jobs']['pr-metadata']
-                self.assertEqual(job['runs-on'], 'sylphx-linux-control')
+                self.assertEqual(job['runs-on'],
+                                 "${{ github.event.repository.private && 'sylphx-linux-control' || 'ubuntu-latest' }}"
+                                 if path == ROOT / '.github/workflows/pr-metadata.yml' else 'sylphx-linux-control')
                 self.assertNotIn('if', job)
                 self.assertNotIn('continue-on-error', job)
                 for step in job['steps']:
