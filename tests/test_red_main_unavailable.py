@@ -90,7 +90,7 @@ else:
 
 FAKE_PROOF = '''
 import os, sys
-if sys.argv[1] == "history":
+if sys.argv[1] in ("history", "failed-lanes", "failed-jobs"):
     import subprocess
     sys.exit(subprocess.run([sys.executable, os.path.join(os.environ["RUNNER_TEMP"], "red-main/real_proof.py"), *sys.argv[1:]]).returncode)
 value = (os.environ.get("BASE_RESULT", "") if sys.argv[1] == "remote-base" else
@@ -125,7 +125,7 @@ class UnavailableHandlerTest(unittest.TestCase):
         self.env = dict(os.environ, RUNNER_TEMP=str(self.root),
                         RUN_STORE_JUNIT=str(ROOT / ".github/actions/run-store/get-junit.py"),
                         PATH=f"{binaries}:{os.environ['PATH']}",
-                        GITHUB_OUTPUT=str(self.root / "output"),
+                        GITHUB_OUTPUT=str(self.root / "output"), GITHUB_RUN_ID="100", GITHUB_RUN_ATTEMPT="1",
                         TRUNK="main", REPO="SylphxAI/cloud", VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME="verified",
                         EVENT_RUN_ID="1", RUN_ID="1", HEAD_SHA=SHA, SHORT_SHA=SHA[:9],
                         RUN_URL=RUN["html_url"], RUN_FIXTURE=json.dumps(RUN),

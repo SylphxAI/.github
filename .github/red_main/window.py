@@ -33,7 +33,7 @@ import xml.etree.ElementTree as ElementTree
 from datetime import datetime
 
 WALK_RUNS = 100
-SETTLED = ("success", "failure", "timed_out")
+SETTLED = ("success", "failure", "timed_out", "cancelled")
 FAILED = ("failure", "timed_out")
 
 
@@ -171,8 +171,13 @@ def judge(targets, failing):
     return "pass none of the target units failed in the candidate"
 
 
-def live_loader(proof, repo):
+def live_loader(proof, repo, branch="main", workflow="verify.yml", aggregate="verified"):
     def load(run):
+        # Authenticate cancelled candidates lazily, inside the bounded walk,
+        # rather than fanning out checks over the whole retained history.
+        if (run.get("conclusion") == "cancelled"
+                and proof.checked_verdict(run, repo, branch, workflow, aggregate) != "failure"):
+            return Evidence({}, lambda: (set(), set(), set()))
         try:
             rows = proof.paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
         except Exception:
@@ -182,7 +187,11 @@ def live_loader(proof, repo):
             name = row.get("name")
             if (isinstance(name, str) and name.strip() and row.get("run_id") == run["id"]
                     and row.get("status") == "completed"):
-                jobs[name.replace(",", ";")] = row.get("conclusion")
+                conclusion = row.get("conclusion")
+                if (run.get("status") == "completed" and run.get("conclusion") == "cancelled"
+                        and proof.failure_before_cancel(row) and proof.authenticated_job(run, row, repo)):
+                    conclusion = "failure"
+                jobs[name.replace(",", ";")] = conclusion
 
         def junit():
             work = tempfile.mkdtemp(prefix="junit-window-")
@@ -215,7 +224,7 @@ def main():
         return
     runs = earlier_runs(proof.branch_history(repo, branch, workflow), created,
                         lambda row: proof.producer_origin(row, repo, branch, workflow) == "eligible")
-    run, cleared, read = find_window(units, runs, live_loader(proof, repo))
+    run, cleared, read = find_window(units, runs, live_loader(proof, repo, branch, workflow, aggregate))
     if run is None:
         print(f"none no earlier completed run clears a failing unit (read {read} of {len(runs)})")
         return

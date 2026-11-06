@@ -65,7 +65,7 @@ def confirm(prev_conclusion: str, prev_rows: str, cur_rows: str) -> str:
 
 class InfraTest(unittest.TestCase):
     def test_classifier_fetches_annotations_by_linked_check_not_job_id(self):
-        fixture = dict(job("cache", ["Restore cache"]), id=300,
+        fixture = dict(job("cache", ["Restore cache"]), id=300, run_id=1, status="completed",
                        check_run_url="https://api.github.com/repos/SylphxAI/cloud/check-runs/30")
         script = '''
 set -euo pipefail
@@ -86,8 +86,14 @@ classify_run 1
             work.mkdir()
             (work / "infra.py").write_text(INFRA)
             (work / "proof.py").write_text(embedded("PROOF_PY"))
+            # failed-jobs is now the shared normalized reader, so its provider
+            # call crosses a process boundary instead of a shell function.
+            forge = root / "gh"
+            forge.write_text("#!/usr/bin/env python3\nimport json, os\n"
+                             "print(json.dumps(dict(total_count=1, jobs=[json.loads(os.environ['FIXTURE_JOB'])])))\n")
+            forge.chmod(0o755)
             env = dict(os.environ, RUNNER_TEMP=directory, REPO="SylphxAI/cloud",
-                       FIXTURE_JOB=json.dumps(fixture))
+                       PATH=f"{root}:{os.environ['PATH']}", FIXTURE_JOB=json.dumps(fixture))
             result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "infra cache-403")

@@ -16,8 +16,10 @@ name: Red main
 #      `main` is red and blocks the queue - one jump in 30 minutes per
 #      repository, recorded on the pull request it jumps.
 #
-# Self-heal rules: only COMPLETED verify runs count (cancelled and skipped are
-# ignored); a real failure reverts only after the SAME failing unit (job and
+# Self-heal rules: only COMPLETED verify runs count. Plain cancellations and
+# skipped runs are ignored; an authenticated required failure before a successful
+# self-cancel hook still counts as red (docs/fail-fast-proof.md). A real failure
+# reverts only after the SAME failing unit (job and
 # test) failed on two consecutive completed runs, at the first-bad commit; and
 # a run whose every failing step's TERMINAL ERROR is an infrastructure
 # signature (installation token mint, artifact upload, cache 403, runner set-up
@@ -1051,9 +1053,7 @@ jobs:
             exit 1
           fi
           short_sha=$(cut -c1-9 <<<"$head_sha")
-          if ! failed_lanes=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" --paginate \
-            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | .name | gsub(","; ";")' \
-            | paste -sd, -); then
+          if ! failed_lanes=$(python3 "$WORK_DIR/proof.py" failed-lanes "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$run_id"); then
             failed_lanes=""
             say "The failed lanes could not be listed; investigation or escalation must recover that evidence."
           fi
@@ -1270,7 +1270,7 @@ jobs:
             exit 1
           fi
           if ! prev=$(python3 "$RUNNER_TEMP/red-main/proof.py" history "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$created" \
-            | python3 "$RUNNER_TEMP/red-main/prev.py" "$created"); then
+            | python3 "$RUNNER_TEMP/red-main/prev.py" "$created" "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$VERIFY_CHECK_NAME"); then
             say "**Unverified:** previous-run history is unavailable or invalid, not genuinely absent; escalating without confirmation."
             echo "::error::previous-run history unavailable"
             exit 1

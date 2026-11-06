@@ -127,10 +127,8 @@ gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }
 # classifier error never falls into the revert path.
 classify_run() {
   local run_id="$1" jobs_json enriched id check_id notes
-  jobs_json=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" --paginate \
-    --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")
-          | {id, check_run_url, name, conclusion, steps: [(.steps // [])[] | {name, conclusion}]}' \
-    | jq -s '.') || return 1
+  jobs_json=$(python3 "$WORK_DIR/proof.py" failed-jobs "$REPO" "${TRUNK:-main}" \
+    "${VERIFY_WORKFLOW:-verify.yml}" "$run_id") || return 1
   enriched='[]'
   for id in $(jq -r '.[].id' <<<"$jobs_json"); do
     check_id=$(jq -c --argjson id "$id" '.[] | select(.id == $id)' <<<"$jobs_json" \

@@ -206,7 +206,7 @@ class RunSelectionTest(unittest.TestCase):
             history_row(7, "timed_out"), history_row(9, "failure"),
         ]
         runs = WINDOW.earlier_runs(rows, at(8), eligible)
-        self.assertEqual([r["id"] for r in runs], [run_id(7), run_id(2), run_id(1)])
+        self.assertEqual([r["id"] for r in runs], [run_id(7), run_id(3), run_id(2), run_id(1)])
 
 
 class ContinuousRedTest(unittest.TestCase):

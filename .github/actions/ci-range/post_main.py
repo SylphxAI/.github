@@ -15,6 +15,10 @@ import sys
 from urllib.parse import urlencode
 
 ACTIONS_APP_ID = 15368
+# Opt-in required-job marker: callers put this successful self-cancel step only
+# after required work. A plain cancellation, including a cancelled sibling, is
+# not evidence of failure. Keep the caller's YAML anchor name byte-identical.
+FAIL_FAST_STEP = "Cancel failed current run"
 PAGE_LIMIT = 5
 RUN_PAGE_LIMIT = 50  # 5,000 retained runs of one workflow.
 WALK_LIMIT = 200
@@ -109,36 +113,76 @@ def linked_check_id(job, repo):
     return int(match[1]) if match else None
 
 
+def failure_before_cancel(job):
+    """The successful opt-in hook and an earlier failure, never the hook itself.
+
+    GitHub force-cancel changes a failing job's conclusion to cancelled, but
+    preserves the earlier step's failure (cloud run 42287638550, 2026-11-06).
+    The fixed hook name declares required work in the reviewed main workflow.
+    """
+    if job.get("status") != "completed" or job.get("conclusion") != "cancelled":
+        return False
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
+        return False
+    hooks = [i for i, step in enumerate(steps) if step.get("name") == FAIL_FAST_STEP]
+    if len(hooks) != 1:
+        return False
+    index = hooks[0]
+    if steps[index].get("status") != "completed" or steps[index].get("conclusion") != "success":
+        return False
+    return any(step.get("status") == "completed" and step.get("conclusion") == "failure"
+               for step in steps[:index])
+
+
+def authenticated_job(run, job, repo):
+    """Bind a jobs-API row to this attempt's GitHub Actions check producer."""
+    name = job.get("name")
+    check_id = linked_check_id(job, repo)
+    if (not isinstance(name, str) or not name.strip()
+            or type(job.get("id")) is not int or job["id"] < 1 or check_id is None
+            or job.get("run_id") != run["id"] or job.get("run_attempt") != run.get("run_attempt")
+            or not positive_id(run.get("run_attempt")) or job.get("head_sha") != run["head_sha"]):
+        return False
+    check = api(f"repos/{repo}/check-runs/{check_id}")
+    return (check.get("id") == check_id and check.get("app", {}).get("id") == ACTIONS_APP_ID
+            and check.get("app", {}).get("slug") == "github-actions"
+            and check.get("head_sha") == run["head_sha"] and check.get("name") == name
+            and check.get("check_suite", {}).get("id") == run["check_suite_id"]
+            and check.get("details_url") == f"https://github.com/{repo}/actions/runs/{run['id']}/job/{job['id']}"
+            and check.get("status") == job.get("status")
+            and check.get("conclusion") == job.get("conclusion"))
+
+
 def checked_verdict(run, repo, branch, workflow, name="verified"):
-    """Read the latest attempt's aggregate job AND its authenticated check."""
+    """Authenticated aggregate, or required work failed before self-cancellation.
+
+    Failure fallback never admits a deploy or a baseline: success still requires
+    the original aggregate job/check. Cancellation alone is neither red nor green.
+    """
     origin = producer_origin(run, repo, branch, workflow)
     if origin != "eligible":
         return origin
     jobs = paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
-    jobs = [job for job in jobs if job.get("name") == name]
-    if len(jobs) != 1:
+    aggregates = [job for job in jobs if job.get("name") == name]
+    verdict = "unknown"
+    if len(aggregates) > 1:
         return "unknown"
-    job = jobs[0]
-    check_id = linked_check_id(job, repo)
-    if (type(job.get("id")) is not int or job["id"] < 1 or check_id is None
-            or job.get("run_id") != run["id"] or job.get("run_attempt") != run.get("run_attempt")
-            or not isinstance(run.get("run_attempt"), int) or run["run_attempt"] < 1
-            or job.get("head_sha") != run["head_sha"]):
-        return "unknown"
-    # Run, job and check ids are distinct identities. Fetch the locally built
-    # path for the linked check; its details URL must name this actual job.
-    check = api(f"repos/{repo}/check-runs/{check_id}")
-    if (check.get("id") != check_id or check.get("app", {}).get("id") != ACTIONS_APP_ID
-            or check.get("app", {}).get("slug") != "github-actions"
-            or check.get("head_sha") != run["head_sha"] or check.get("name") != name
-            or check.get("check_suite", {}).get("id") != run["check_suite_id"]
-            or check.get("details_url") != f"https://github.com/{repo}/actions/runs/{run['id']}/job/{job['id']}"
-            or check.get("status") != job.get("status")
-            or check.get("conclusion") != job.get("conclusion")):
-        return "unknown"
-    if check.get("status") != "completed":
-        return "pending"
-    return check.get("conclusion") or "unknown"
+    if len(aggregates) == 1:
+        job = aggregates[0]
+        if not authenticated_job(run, job, repo):
+            return "unknown"
+        verdict = (job.get("conclusion") or "unknown") if job.get("status") == "completed" else "pending"
+        # Optional work may be cancelled after verified succeeded. Preserve that
+        # authenticated aggregate and every existing non-cancellation verdict.
+        if verdict not in ("cancelled", "skipped", "pending"):
+            return verdict
+    if run.get("status") == "completed" and run.get("conclusion") == "cancelled":
+        marked = [job for job in jobs if failure_before_cancel(job)]
+        if marked:
+            return "failure" if all(authenticated_job(run, job, repo) for job in marked) else "unknown"
+        return "cancelled"
+    return verdict
 
 
 def branch_history(repo, branch, workflow, reader=None):
@@ -223,7 +267,7 @@ def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=F
 PENDING_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
-def failed_jobs(repo, identity):
+def failed_jobs(repo, identity, branch="main", workflow="verify.yml"):
     """Failing jobs of a completed run. Complete, valid jobs establish them.
 
     A job that is still queued or running (a non-lane job such as an alert that
@@ -249,6 +293,17 @@ def failed_jobs(repo, identity):
                 ("success", "failure", "timed_out", "cancelled", "skipped", "neutral",
                  "action_required", "startup_failure", "stale")):
             raise ValueError("previous-run lane evidence unavailable or invalid")
+        if failure_before_cancel(job):
+            run = api(f"repos/{repo}/actions/runs/{identity}")
+            if (not isinstance(run, dict) or run.get("id") != int(identity)
+                    or run.get("status") != "completed" or run.get("conclusion") != "cancelled"
+                    or producer_origin(run, repo, branch, workflow) != "eligible"
+                    or not authenticated_job(run, job, repo)):
+                raise ValueError("self-cancelled failure evidence unavailable or unauthenticated")
+            # Normalize only this proven failing job, not cancelled siblings.
+            # The hook and later cleanup can never supply a failing unit.
+            index = next(i for i, step in enumerate(job["steps"]) if step.get("name") == FAIL_FAST_STEP)
+            job = dict(job, conclusion="failure", steps=job["steps"][:index])
         if job["conclusion"] in ("failure", "timed_out"):
             # Only a joined name must survive the comma-separated list. A comma
             # in a lane that passed (or was skipped) cannot break the join, so
@@ -269,9 +324,9 @@ def lane_of(job):
     return job["name"].replace(",", ";")
 
 
-def failed_lanes(repo, identity):
+def failed_lanes(repo, identity, branch="main", workflow="verify.yml"):
     """Failing lanes of a completed run, comma-separated (see failed_jobs)."""
-    return ",".join(lane_of(job) for job in failed_jobs(repo, identity))
+    return ",".join(lane_of(job) for job in failed_jobs(repo, identity, branch, workflow))
 
 
 # Values that change from run to run inside an otherwise identical message: a
@@ -328,7 +383,7 @@ def check_annotations(repo, check_id):
     raise ValueError("failed-job annotations pagination exhausted")
 
 
-def failed_units(repo, identity):
+def failed_units(repo, identity, branch="main", workflow="verify.yml"):
     """`lane<TAB>signature` per failing job of a completed run (see lane_signature).
 
     The check run is the one the job links to; its annotations are read through
@@ -336,7 +391,7 @@ def failed_units(repo, identity):
     error: the caller escalates, it never compares a partial signature.
     """
     rows = []
-    for job in failed_jobs(repo, identity):
+    for job in failed_jobs(repo, identity, branch, workflow):
         check_id = linked_check_id(job, repo)
         if check_id is None:
             raise ValueError("previous-run lane evidence unavailable or invalid")
@@ -358,10 +413,12 @@ def main():
         # establish the predecessor from a partial set. Exhausted bounds fail.
         rows = branch_history(repo, branch, workflow)
         print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
+    elif command == "failed-jobs":
+        print(json.dumps(failed_jobs(repo, identity, branch, workflow)))
     elif command == "failed-lanes":
-        print(failed_lanes(repo, identity))
+        print(failed_lanes(repo, identity, branch, workflow))
     elif command == "failed-units":
-        print(failed_units(repo, identity))
+        print(failed_units(repo, identity, branch, workflow))
     elif command == "base":
         print(last_verified(repo, branch, workflow, identity, name))
     elif command == "remote-base":
