@@ -111,7 +111,11 @@ class TriggerTests(unittest.TestCase):
             for sql in [function + TRIGGER, TRIGGER + function]:
                 with self.subTest(sql=sql):
                     self.assertIn(reason, str(guard.check_sql(sql, "postgres")))
-                    self.assertEqual(guard.check_sql("-- contract: released-expand-42\n" + sql, "postgres"), [])
+                    marker = "-- contract: released-expand-42\n"
+                    annotated = marker + function + TRIGGER if sql.startswith(function) else TRIGGER + "\n" + marker + function
+                    self.assertEqual(guard.check_sql(annotated, "postgres"), [])
+                    if sql.startswith(TRIGGER):
+                        self.assertIn(reason, str(guard.check_sql(marker + sql, "postgres")))
         for function in [FUNCTION.replace("plpgsql", "plpython3u"),
                          "CREATE FUNCTION app.assign_id() RETURNS trigger AS 'file', 'symbol' LANGUAGE C;"]:
             self.assertIn("opaque procedural body", str(guard.check_sql(function + TRIGGER, "postgres")))

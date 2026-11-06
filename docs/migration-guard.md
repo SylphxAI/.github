@@ -82,7 +82,11 @@ New migrations are refused for:
 - Opaque dynamic SQL, such as `CALL`, `EXECUTE`, and `PREPARE`, and inline trigger or
   scheduled-event bodies whose effects cannot be established locally.
 - `SET` changes to `sql_mode` or `standard_conforming_strings`, including quoted
-  setting names. Changing quote rules can hide later SQL from inspection.
+  setting names. Such a change must be the final statement of its migration,
+  even with a contract marker: changing quote rules can hide later SQL from
+  inspection. Put subsequent SQL in a separate migration. An executed `DO`
+  changing these settings likewise cannot precede more migration SQL; a quoted
+  body in a `CREATE` definition is not executed by that definition.
 
 Comments and string literals cannot manufacture SQL keywords or a contract
 marker. PostgreSQL dollar strings/nested comments and MySQL executable version
@@ -169,10 +173,21 @@ the old contract, a **new** migration may name that released step on its own lin
 ALTER TABLE accounts DROP COLUMN old_region;
 ```
 
-The reference must be nonempty and contain a word character. The check preserves
-the existing expand/contract marker convention; reviewers verify that the named
-expand step was actually released. It never exempts edits to merged migrations
-or invalid ordering. Existing historical SQL is not retroactively linted.
+The reference must be nonempty and contain a word character. In a migration,
+it authorizes only the next top-level SQL statement, not the whole file. Each
+contracting sibling needs its own preceding marker; a safe intervening statement
+consumes the marker. A marker inside a statement or a routine body cannot
+backdate authorization. An empty `;` also consumes the marker. Whitespace and
+ordinary comments between the marker and its statement are allowed.
+
+A routine definition is one statement, including its body; quoted bodies remain
+recursively inspected and inline bodies remain opaque. Unbalanced or ambiguous
+inline routine boundaries fail inspection even with a marker. Marked statements
+still update safety facts used for later SQL. Reviewers verify that each named
+expand step was actually released. Markers never exempt lexical errors, edits
+to merged migrations, invalid ordering, or concurrent-index runtime requirements.
+Existing historical SQL is not retroactively linted. Schema snapshots retain the
+separate new-reference policy described below.
 
 ## Concurrent PostgreSQL indexes
 

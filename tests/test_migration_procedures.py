@@ -105,7 +105,10 @@ class ProcedureTests(unittest.TestCase):
                 sql = header + ' SELECT 1; ' + setup + ' END; ' + contraction
                 with self.subTest(dialect=dialect, setup=setup):
                     self.assertIn('opaque procedural body', str(guard.check_sql(sql, dialect)))
-                    self.assertEqual(guard.check_sql('-- contract: released-expand-42\n' + sql, dialect), [])
+                    marker = '-- contract: released-expand-42\n'
+                    self.assertIn('NOT NULL', str(guard.check_sql(marker + sql, dialect)))
+                    annotated = marker + header + ' SELECT 1; ' + setup + ' END;\n' + marker + contraction
+                    self.assertEqual(guard.check_sql(annotated, dialect), [])
 
     def test_unsupported_inline_bodies_fail_closed(self):
         for dialect, sql in [
