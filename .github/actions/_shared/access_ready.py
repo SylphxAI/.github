@@ -38,12 +38,14 @@ def refusal_excerpt(value, token):
     error = value.get("error") if isinstance(value.get("error"), dict) else value
     fields = {key: error[key] for key in ("code", "title", "detail", "message", "request_id")
               if isinstance(error.get(key), (str, int, bool))}
-    excerpt = json.dumps(fields, ensure_ascii=True)
-    excerpt = excerpt.replace(token, "[REDACTED]")
-    excerpt = re.sub(r"(?i)Bearer\s+[^\s\"\\]+", "Bearer [REDACTED]", excerpt)
-    excerpt = re.sub(r"sylphx_(?:sk|pk)_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+",
-                     "[REDACTED]", excerpt)
-    return excerpt[:512]
+    for key, field in fields.items():
+        if isinstance(field, str):
+            # Redact before JSON escaping, which can change the credential's bytes.
+            field = field.replace(token, "[REDACTED]")
+            field = re.sub(r"(?i)Bearer\s+[^\s\"\\]+", "Bearer [REDACTED]", field)
+            fields[key] = re.sub(r"sylphx_(?:sk|pk)_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+",
+                                 "[REDACTED]", field)
+    return json.dumps(fields, ensure_ascii=True)[:512]
 
 
 def wait_for_identity(read, token, active_after_ms, api_url):

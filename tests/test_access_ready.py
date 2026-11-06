@@ -45,6 +45,12 @@ class AccessReadyTests(unittest.TestCase):
         other_token = "gh" + "p_" + "x" * 32
         self.assertNotIn(other_token, ready.refusal_excerpt({"detail": other_token}, token))
 
+    def test_issued_credential_is_redacted_before_json_escaping(self):
+        token = 'synthetic"\\issued-key'
+        excerpt = ready.refusal_excerpt({"code": "DENIED", "detail": "refused " + token}, token)
+        self.assertNotIn(json.dumps(token)[1:-1], excerpt)
+        self.assertEqual(json.loads(excerpt)["detail"], "refused [REDACTED]")
+
     def test_cli_reports_safe_reason_and_keeps_failure_exit(self):
         for error, expected in ((ready.ReadinessError("Access readiness refused with HTTP 401; response={\"code\": \"UNAUTHENTICATED\"}"), "HTTP 401"),
                                 (ready.ReadinessError("ready identity differs from the issued key"), "ready identity differs"),
