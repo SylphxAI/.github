@@ -587,6 +587,56 @@ class HistoryTests(unittest.TestCase):
                 self.assertIn(expected, str(guard.violations(bad, "postgres")))
 
 
+
+    def test_paired_hot_table_resume_safe_concurrent_index_is_accepted_in_range(self):
+        self.write(
+            "db/20261106020001_owner_lookup_index.sql",
+            """-- atlas:txmode none
+SET lock_timeout = 0;
+SET statement_timeout = '600s';
+CREATE INDEX CONCURRENTLY IF NOT EXISTS child_resources_unfinished_owner_idx
+    ON public.child_resources (env_service_id)
+    WHERE lifecycle_state <> 'deleted';
+RESET statement_timeout;
+RESET lock_timeout;
+""",
+        )
+        self.write(
+            "db/20261106020002_owner_lookup_index_valid.sql",
+            """DO $validity$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_index
+                  WHERE indexrelid = to_regclass('public.child_resources_unfinished_owner_idx')
+                    AND indisvalid AND indisready) THEN
+    RAISE EXCEPTION 'child_resources_unfinished_owner_idx missing or invalid; repair concurrent build before resuming';
+  END IF;
+END
+$validity$;
+""",
+        )
+        self.commit()
+        errors, count = self.check()
+        self.assertEqual(count, 2)
+        self.assertEqual(errors, [])
+
+    def test_unpaired_concurrent_index_if_not_exists_is_rejected_in_range(self):
+        self.write(
+            "db/20261106020001_owner_lookup_index.sql",
+            """-- atlas:txmode none
+SET lock_timeout = 0;
+SET statement_timeout = '600s';
+CREATE INDEX CONCURRENTLY IF NOT EXISTS child_resources_unfinished_owner_idx
+    ON public.child_resources (env_service_id);
+RESET statement_timeout;
+RESET lock_timeout;
+""",
+        )
+        self.commit()
+        errors, count = self.check()
+        self.assertEqual(count, 1)
+        self.assertTrue(any("concurrent index:" in e for e in errors), errors)
+
+
 class EventAndManifestTests(unittest.TestCase):
     def test_pr_group_push_and_explicit_ranges(self):
         for event, expected in [
