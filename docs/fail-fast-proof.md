@@ -51,7 +51,12 @@ ordinary diagnostic dispatches and infrastructure classification (such as cache
 403s), without treating the cancellation message as the original failure.
 
 The ZIP is streamed to temporary disk with a 35-second deadline and a 32 MiB
-compressed-byte cap, enforced while receiving. Only unique failed-step files
+compressed-byte cap, enforced while receiving. The central directory's actual
+records are counted before `ZipFile` can allocate entry objects; an advertised
+EOCD count alone is not a bound. Selected members support only STORE and DEFLATE,
+with bounded decompression and verified stream termination, actual size and CRC,
+not the truncated output a false declared size can make `ZipExtFile` return.
+Only unique failed-step files
 before the marker are read, selected by the REST step number and provider job
 directory convention used in `gh` v2.99.0. Job-directory collisions, missing or
 ambiguous members, invalid step numbers, decoding/CRC errors, missing error
@@ -84,3 +89,10 @@ endpoint is documented in [Download workflow run attempt logs](https://docs.gith
 (read 2026-11-06 UTC). The directory and step-number mapping follows the primary
 [`gh` v2.99.0 implementation](https://github.com/cli/cli/blob/v2.99.0/pkg/cmd/run/view/logs.go),
 read in the same session. An unsupported naming/collision case fails closed.
+
+The ZIP layout follows [PKWARE APPNOTE sections 4.3.7 and 4.3.12](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
+(read 2026-11-06 at 21:18 UTC). Bounded DEFLATE uses the documented
+[`zlib.Decompress.decompress(max_length)` and `eof`](https://docs.python.org/3/library/zlib.html#decompression-objects)
+contract (read in the same session). Forged EOCD counts, unsupported BZIP2/LZMA,
+false expanded sizes and incomplete/trailing compressed streams are regressions,
+not trusted provider metadata.

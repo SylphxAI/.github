@@ -9,12 +9,14 @@ import importlib.util
 import io
 import json
 import os
+import struct
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -241,10 +243,58 @@ class FailFastTest(unittest.TestCase):
                 with patch.dict(os.environ, SLOW="yes"), patch.object(proof, "LOG_TIMEOUT", 0.05), self.assertRaisesRegex(ValueError, "timed out"):
                     with proof.attempt_logs(REPO, self.run):
                         self.fail("late producer admitted")
+                # A forged-small EOCD count must fail before ZipFile creates
+                # any entry objects, not merely after infolist allocation.
+                forged = bytearray(log_bytes(extra=[("extra.txt", b"ignored")]))
+                end = forged.rfind(b"PK\x05\x06")
+                struct.pack_into("<2H", forged, end + 8, 1, 1)
+                archive.write_bytes(forged)
+                with patch.object(proof, "LOG_MEMBER_COUNT", 1), patch.object(proof.zipfile, "ZipFile", side_effect=AssertionError("allocated directory")):
+                    with self.assertRaisesRegex(ValueError, "member limit"):
+                        with proof.attempt_logs(REPO, self.run):
+                            self.fail("forged directory admitted")
                 archive.write_bytes(log_bytes()[:-10])
                 with self.assertRaises((ValueError, zipfile.BadZipFile)):
                     with proof.attempt_logs(REPO, self.run):
                         self.fail("truncated archive admitted")
+
+    def test_selected_log_decoding_rejects_unsupported_codecs_and_forged_expansion(self):
+        prefix = b"2026-11-06T20:22:18Z ##[error]Process completed with exit code 1.\n"
+        for method in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w", compression=method) as archive:
+                archive.writestr("required/4_Synthetic required failure.txt", prefix + b"x" * (1024 * 1024))
+                archive.writestr("required/5_Cancel failed current run.txt", b"hook")
+            forged = bytearray(output.getvalue())
+            central = forged.index(b"PK\x01\x02")
+            # Both size and CRC lie consistently, which ZipExtFile accepts
+            # after truncating the real expansion to that advertised prefix.
+            struct.pack_into("<L", forged, 14, zlib.crc32(prefix))
+            struct.pack_into("<L", forged, 22, len(prefix))
+            struct.pack_into("<L", forged, central + 16, zlib.crc32(prefix))
+            struct.pack_into("<L", forged, central + 24, len(prefix))
+            with self.subTest(method=method), zipfile.ZipFile(io.BytesIO(forged)) as archive:
+                with patch.object(proof, "LOG_MEMBER_LIMIT", 1024), patch.object(proof, "LOG_SELECTED_LIMIT", 2048):
+                    if method in (zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
+                        with patch.object(archive, "open", side_effect=AssertionError("unsupported decoder created")):
+                            with self.assertRaisesRegex(ValueError, "compression unsupported"):
+                                proof.original_failure_notes(archive, [self.jobs[0]], self.jobs)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "byte limit"):
+                            proof.original_failure_notes(archive, [self.jobs[0]], self.jobs)
+                # Even within the output budget, the false size is refused.
+                if method in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                    with self.assertRaisesRegex(ValueError, "size inconsistent"):
+                        proof.original_failure_notes(archive, [self.jobs[0]], self.jobs)
+        for delta in (-1, 1):
+            forged = bytearray(log_bytes())
+            central = forged.index(b"PK\x01\x02")
+            size = struct.unpack_from("<L", forged, central + 20)[0]
+            struct.pack_into("<L", forged, 18, size + delta)
+            struct.pack_into("<L", forged, central + 20, size + delta)
+            with self.subTest(compressed_size_delta=delta), zipfile.ZipFile(io.BytesIO(forged)) as archive:
+                with self.assertRaises((ValueError, zipfile.BadZipFile)):
+                    proof.original_failure_notes(archive, [self.jobs[0]], self.jobs)
 
     def test_prev_selects_authenticated_cancelled_failure_and_skips_plain_cancel(self):
         with tempfile.TemporaryDirectory() as tmp:

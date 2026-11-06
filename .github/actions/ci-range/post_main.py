@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import zipfile
+import zlib
 from urllib.parse import urlencode
 
 ACTIONS_APP_ID = 15368
@@ -86,6 +87,23 @@ def attempt_logs(repo, run):
                     or count > LOG_MEMBER_COUNT or len(tail) - end != 22 + comment
                     or offset + directory_size != size - len(tail) + end):
                 raise ValueError("failed-step log archive exceeds member limit or invalid directory")
+            # ZipFile walks directory bytes, not the EOCD count. Count the
+            # actual fixed headers before it can allocate any ZipInfo objects.
+            output.seek(offset)
+            actual = 0
+            while output.tell() < offset + directory_size:
+                header = output.read(46)
+                if len(header) != 46 or header[:4] != b"PK\x01\x02":
+                    raise ValueError("failed-step log archive invalid directory")
+                name, extra, note, start_disk = struct.unpack("<4H", header[28:36])
+                actual += 1
+                following = output.tell() + name + extra + note
+                if (actual > count or actual > LOG_MEMBER_COUNT or start_disk
+                        or following > offset + directory_size):
+                    raise ValueError("failed-step log archive exceeds member limit or invalid directory")
+                output.seek(following)
+            if actual != count:
+                raise ValueError("failed-step log archive member count inconsistent")
             output.seek(0)
             with zipfile.ZipFile(output) as archive:
                 if len(archive.infolist()) > LOG_MEMBER_COUNT:
@@ -103,6 +121,49 @@ def log_job_name(name):
     # truncate at 90 UTF-16 units, trim. Collisions are refused, never guessed.
     name = name.replace("/", "").replace(":", "")
     return name.encode("utf-16-le")[:180].decode("utf-16-le", errors="replace").strip()
+
+
+def bounded_log_member(archive, entry):
+    """Decode selected STORE/DEFLATE bytes without trusting declared expansion.
+
+    ZipExtFile truncates output to the advertised file_size, and non-DEFLATE
+    codecs can allocate the full expansion before doing so. Use its local-header
+    validation, but decode the raw member with a bounded zlib output buffer.
+    """
+    if entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+        raise ValueError("failed-step log compression unsupported")
+    with archive.open(entry):  # validates local name, encryption and overlap
+        pass
+    source = archive.fp
+    source.seek(entry.header_offset)
+    header = source.read(30)
+    if len(header) != 30 or header[:4] != b"PK\x03\x04":
+        raise ValueError("failed-step log local header unavailable")
+    flags, method = struct.unpack("<2H", header[6:10])
+    if flags != entry.flag_bits or method != entry.compress_type:
+        raise ValueError("failed-step log local header inconsistent")
+    name, extra = struct.unpack("<2H", header[26:30])
+    source.seek(name + extra, 1)
+    decoder = zlib.decompressobj(-15) if method == zipfile.ZIP_DEFLATED else None
+    remaining, data = entry.compress_size, bytearray()
+    while remaining:
+        chunk = source.read(min(65536, remaining))
+        if not chunk:
+            raise ValueError("failed-step log compressed member incomplete")
+        remaining -= len(chunk)
+        part = decoder.decompress(chunk, LOG_MEMBER_LIMIT + 1 - len(data)) if decoder else chunk
+        data.extend(part)
+        if len(data) > LOG_MEMBER_LIMIT or (decoder and decoder.unconsumed_tail):
+            raise ValueError("failed-step log expansion exceeds byte limit")
+        if decoder and decoder.unused_data:
+            raise ValueError("failed-step log compressed member has trailing data")
+    if decoder and not decoder.eof:
+        raise ValueError("failed-step log compressed member incomplete")
+    if len(data) != entry.file_size:
+        raise ValueError("failed-step log member size inconsistent")
+    if zlib.crc32(data) != entry.CRC:
+        raise zipfile.BadZipFile("failed-step log member CRC mismatch")
+    return bytes(data)
 
 
 def original_failure_notes(archive, roots, jobs):
@@ -136,11 +197,8 @@ def original_failure_notes(archive, roots, jobs):
             or sum(entry.file_size for _, _, entry in selected) > LOG_SELECTED_LIMIT):
         raise ValueError("failed-step log expansion exceeds byte limit")
     for identity, is_failure, entry in selected:
-        with archive.open(entry) as stream:
-            data = stream.read(LOG_MEMBER_LIMIT + 1)
-            if len(data) != entry.file_size or len(data) > LOG_MEMBER_LIMIT or stream.read(1):
-                raise ValueError("failed-step log member incomplete or oversized")
-        text = data.decode("utf-8-sig")  # strict; complete read also checks the ZIP CRC
+        data = bounded_log_member(archive, entry)
+        text = data.decode("utf-8-sig")  # strict; complete decode also checks the ZIP CRC
         if is_failure:
             errors = re.findall(r"^\d{4}-\d\d-\d\dT[^\s]+Z ##\[error\](.*)$", text, re.M)
             if not errors:
