@@ -116,16 +116,35 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifi
                 return True
         return False
 
-    def required_names(document, context, location, candidates=None, ancestry=(), origin=None):
+    def required_names(document, context, location, candidates=None, ancestry=(), origin=None,
+                       identify_only=False):
         jobs = document.get("jobs", {})
         active = {key for key, job in jobs.items()
                   if any(runnable(job, expanded) for expanded in contexts(job, context))}
-        gate_roots = roots(jobs, context)
-        if candidates is None:
-            # A reusable call produces callee checks, not a check for the call
-            # job itself. Its strict aggregate is the completion boundary.
-            candidates = (active - closure(jobs, gate_roots)) | set(gate_roots) if gate_roots else active
-        selected = {key for key in candidates if healthy_unconditional(jobs[key], context)}
+        if identify_only:
+            # Census every producer before choosing required records. In
+            # particular, a covered success cannot alias an independent check.
+            candidates = selected = active
+        else:
+            if candidates is None:
+                # A reusable call produces callee checks. Collapse dependencies
+                # only across direct edges whose parent proves propagation;
+                # a ci-ok name or an always-running no-op proves nothing.
+                gate_roots = set(roots(jobs, context))
+                represented, pending = set(), list(gate_roots)
+                visited = set()
+                while pending:
+                    key = pending.pop()
+                    if key in visited or key not in active:
+                        continue
+                    visited.add(key)
+                    if not (healthy_unconditional(jobs[key], context) and boundary(jobs[key])):
+                        continue
+                    children = set(needs(jobs[key])) & active
+                    represented.update(children)
+                    pending.extend(children)
+                candidates = (active - represented) | gate_roots
+            selected = {key for key in candidates if healthy_unconditional(jobs[key], context)}
         for key in candidates - selected:
             aggregates = [other for other in selected
                           if boundary(jobs[other])
@@ -135,12 +154,19 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifi
         result = []
         # A static always-running completion boundary represents all matrix
         # legs; no fabricated per-leg name belongs in the runtime contract.
-        selected -= {key for key in selected if jobs[key].get("strategy") is not None and any(
+        selected -= {key for key in selected if not identify_only and jobs[key].get("strategy") is not None and any(
             other != key and boundary(jobs[other]) and
             key in needs(jobs[other]) for other in selected)}
         for key in sorted(selected):
             job = jobs[key]
-            name = literal_name(key, job, location)
+            if identify_only:
+                name = job.get("name", key)
+                # A dynamic producer has no literal identity to census.
+                # Required dynamic/matrix names still refuse during selection.
+                if not isinstance(name, str) or "${{" in name:
+                    continue
+            else:
+                name = literal_name(key, job, location)
             target = job.get("uses")
             if not target:
                 result.append(name)
@@ -171,8 +197,19 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifi
             for input_name, definition in definitions.items():
                 value = (job.get("with") or {}).get(input_name, definition.get("default", False if definition.get("type") == "boolean" else ""))
                 inherited["inputs." + input_name] = expression(value, context)
-            result.extend(name + " / " + child for child in required_names(called, inherited, target, ancestry=(*ancestry, target), origin=nested_origin))
+            result.extend(name + " / " + child for child in required_names(called, inherited, target,
+                ancestry=(*ancestry, target), origin=nested_origin, identify_only=identify_only))
         return result
+
+    producers = {(VERIFIER_NAME, event): 'organization-required workflow' for event in EVENTS} if require_verifier else {}
+    for file, document in sorted(decoded.items()):
+        for event in sorted(events(document) & EVENTS):
+            context = {"github.event_name": {event}, "github.event.repository.private": {True, False}}
+            for name in required_names(document, context, file, identify_only=True):
+                identity = name, event
+                if identity in producers:
+                    raise DeclarationError(f'ambiguous check name {name!r} on {event}: {producers[identity]} and {file}')
+                producers[identity] = file
 
     emitted = {(VERIFIER_NAME, event): 'organization-required workflow' for event in EVENTS} if require_verifier else {}
     for file, document in sorted(decoded.items()):

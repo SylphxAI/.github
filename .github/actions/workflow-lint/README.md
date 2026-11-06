@@ -105,11 +105,14 @@ cover GitHub's documented grammar, including ordered exclusion/reinclusion;
 Python `fnmatch` is not equivalent. Unsupported syntax is refused. Conditional
 or matrix children need a direct, always-running aggregate that executes the
 pinned shared `needs-pass`/`ci-ok` action over `toJSON(needs)`, without advisory
-exemptions. A no-op aggregate or transitive pass-through is not evidence of
-failure propagation. Required expression/matrix check names are refused;
-immutable reusable calls expand to `caller / callee` names. A local call nested
-inside a remote reusable stays in that remote repository at the same SHA.
-Duplicate names within an event cannot alias, even in one workflow.
+exemptions. Reusable `ci-ok` closures are pruned only across these proven direct
+edges; a no-op aggregate or transitive pass-through is not evidence of failure
+propagation. Required expression/matrix check names are refused; immutable
+reusable calls expand to `caller / callee` names. A local call nested inside a
+remote reusable stays in that remote repository at the same SHA. Literal
+producer names are checked before pruning covered jobs, including reusable
+children and advisory workflows: a covered success cannot stand in for an
+independent check with the same name.
 
 Consumers match the complete changed-file set: PR base...head from fully
 paginated PR files (GitHub's 3,000-file cap fails closed), or the whole merge

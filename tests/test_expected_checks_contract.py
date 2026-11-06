@@ -135,9 +135,41 @@ class ExpectedChecksContractTest(unittest.TestCase):
 
     def test_reusable_strict_gate_does_not_require_its_matrix_children(self):
         caller = 'on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n'
-        called = simple('${{ matrix.name }}', trigger='on: workflow_call', extra='  ci-ok:\n    if: always()\n    needs: test\n    steps: [{run: true}]\n')
+        called = simple('${{ matrix.name }}', trigger='on: workflow_call', extra=aggregate().replace('  verified:', '  ci-ok:').replace('    name: verified', '    name: ci-ok'))
         called = called.replace('    name:', '    strategy: {matrix: {name: [one, two]}}\n    name:', 1)
         self.assertEqual(self.compile({'caller.yml': caller, 'reusable.yml': called})['checks'][0]['name'], 'call / ci-ok')
+
+    def test_reusable_gate_name_cannot_hide_children_without_propagation(self):
+        caller = 'on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n'
+        gate = aggregate().replace('  verified:', '  ci-ok:').replace('    name: verified', '    name: ci-ok')
+        noop = '  ci-ok:\n    if: always()\n    needs: test\n    steps: [{run: true}]\n'
+        for child in [simple('${{ matrix.name }}', trigger='on: workflow_call').replace(
+                '    name:', '    strategy: {matrix: {name: [one, two]}}\n    name:', 1),
+                simple(trigger='on: workflow_call').replace('    name: test', '    if: inputs.selected\n    name: test')]:
+            for invalid in [noop, gate.replace('@' + 'a' * 40, '@main'),
+                            gate.replace('        with:', '        if: success()\n        with:'),
+                            gate.replace('toJSON(needs)', 'toJSON(inputs)'),
+                            gate.replace('    if: always()', '    continue-on-error: true\n    if: always()'),
+                            gate.replace('          needs:', '          advisory: test\n          needs:')]:
+                with self.subTest(child=child, gate=invalid), self.assertRaises(compiler.DeclarationError):
+                    self.compile({'caller.yml': caller, 'reusable.yml': child + invalid})
+
+    def test_reusable_pruning_stops_at_a_nonpropagating_middle_job(self):
+        caller = 'on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n'
+        child = simple(trigger='on: workflow_call').replace('    name: test', '    if: inputs.selected\n    name: test')
+        middle = '  middle:\n    needs: test\n    if: always()\n    steps: [{run: true}]\n'
+        gate = aggregate().replace('  verified:', '  ci-ok:').replace('    name: verified', '    name: ci-ok').replace('    needs: test', '    needs: middle')
+        with self.assertRaisesRegex(compiler.DeclarationError, 'always-running required aggregate'):
+            self.compile({'caller.yml': caller, 'reusable.yml': child + middle + gate})
+        strict_middle = aggregate().replace('  verified:', '  middle:').replace('    name: verified', '    name: middle')
+        self.assertEqual([r['name'] for r in self.compile({'caller.yml': caller,
+            'reusable.yml': child + strict_middle + gate})['checks']], ['call / ci-ok'])
+
+    def test_reusable_noop_does_not_prune_unconditional_children(self):
+        caller = 'on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n'
+        called = simple(trigger='on: workflow_call', extra='  ci-ok:\n    if: always()\n    needs: test\n    steps: [{run: true}]\n')
+        self.assertEqual([r['name'] for r in self.compile({'caller.yml': caller,
+            'reusable.yml': called})['checks']], ['call / ci-ok', 'call / test'])
 
     def test_remote_reusables_are_resolved_only_at_full_sha(self):
         pin = 'a' * 40
@@ -215,6 +247,32 @@ class ExpectedChecksContractTest(unittest.TestCase):
         text = simple(extra='  duplicate:\n    name: test\n    steps: [{run: true}]\n')
         with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):
             self.compile({'test.yml': text})
+
+    def test_covered_and_independent_literal_names_cannot_alias(self):
+        gate = '  ci-ok:\n    needs: test\n    if: always()\n    steps: [{run: true}]\n'
+        duplicate = '  independent:\n    name: test\n    steps: [{run: true}]\n'
+        with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):
+            self.compile({'ci.yml': simple(extra=gate + duplicate)})
+        # Disabled producers on this event do not create an alias.
+        disabled = duplicate.replace('    name: test', "    if: github.event_name == 'push'\n    name: test")
+        self.assertEqual(self.compile({'ci.yml': simple(extra=gate + disabled)})['checks'], [])
+        with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):
+            self.compile({'covered.yml': simple(extra=gate), 'independent.yml': simple()})
+        with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):
+            self.compile({'advisory.yml': '# optimistic-merge: advisory — diagnostics\n' + simple(),
+                          'independent.yml': simple()})
+
+    def test_covered_reusable_names_are_in_the_prepruning_census(self):
+        call = 'on: pull_request\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n  ci-ok:\n    needs: call\n    steps: [{run: true}]\n'
+        with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):
+            self.compile({'caller.yml': call, 'reusable.yml': simple(trigger='on: workflow_call'),
+                          'independent.yml': simple('call / test', trigger='on: pull_request')})
+        # The nested ci-ok closure is censused before its strict collapse too.
+        duplicate = '  other:\n    name: test\n    steps: [{run: true}]\n'
+        gate = aggregate().replace('  verified:', '  ci-ok:').replace('    name: verified', '    name: ci-ok')
+        with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):
+            self.compile({'caller.yml': call.replace('  ci-ok:\n    needs: call\n    steps: [{run: true}]\n', ''),
+                          'reusable.yml': simple(trigger='on: workflow_call', extra=gate + duplicate)})
 
     def test_noop_or_transitively_connected_aggregate_cannot_hide_child(self):
         selected = simple().replace('    name: test', "    if: inputs.selected\n    name: test")
