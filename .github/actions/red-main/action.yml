@@ -759,9 +759,7 @@ runs:
         exit 1
       fi
       short_sha=$(cut -c1-9 <<<"$head_sha")
-      if ! failed_lanes=$(gha api "repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" --paginate \
-        --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | .name | gsub(","; ";")' \
-        | paste -sd, -); then
+      if ! failed_lanes=$(python3 "$WORK_DIR/proof.py" failed-lanes "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$run_id"); then
         failed_lanes=""
         say "The failed lanes could not be listed; investigation or escalation must recover that evidence."
       fi
@@ -995,7 +993,7 @@ runs:
         exit 1
       fi
       if ! prev=$(python3 "$RUNNER_TEMP/red-main/proof.py" history "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$created" \
-        | python3 "$RUNNER_TEMP/red-main/prev.py" "$created"); then
+        | python3 "$RUNNER_TEMP/red-main/prev.py" "$created" "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$VERIFY_CHECK_NAME"); then
         say "**Unverified:** previous-run history is unavailable or invalid, not genuinely absent; escalating without confirmation."
         echo "::error::previous-run history unavailable"
         exit 1

@@ -7,14 +7,24 @@ mask a full post-main failure. Unknown or incomplete reads are never green.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 import re
+import selectors
+import struct
 import subprocess
 import sys
+import tempfile
+import time
+import zipfile
 from urllib.parse import urlencode
 
 ACTIONS_APP_ID = 15368
+# Opt-in required-job marker: callers put this successful self-cancel step only
+# after required work. A plain cancellation, including a cancelled sibling, is
+# not evidence of failure. Keep the caller's YAML anchor name byte-identical.
+FAIL_FAST_STEP = "Cancel failed current run"
 PAGE_LIMIT = 5
 RUN_PAGE_LIMIT = 50  # 5,000 retained runs of one workflow.
 WALK_LIMIT = 200
@@ -26,6 +36,117 @@ def api(path):
     result = subprocess.run(["gh", "api", path], env=env, check=True, capture_output=True,
                             text=True, timeout=35)
     return json.loads(result.stdout)
+
+
+# Limits apply while receiving bytes, before ZIP expansion. The archive is
+# staged on disk; only selected failed-step members enter diagnostic memory.
+LOG_ARCHIVE_LIMIT = 32 * 1024 * 1024
+LOG_MEMBER_LIMIT = 4 * 1024 * 1024
+LOG_SELECTED_LIMIT = 8 * 1024 * 1024
+LOG_MEMBER_COUNT = 10000
+LOG_TIMEOUT = 35
+
+
+@contextmanager
+def attempt_logs(repo, run):
+    """Bounded provider ZIP for the authenticated attempt, never a whole-body CLI."""
+    env = dict(os.environ)
+    env["GH_TOKEN"] = env.get("ACTIONS_TOKEN") or env.get("TOKEN") or env.get("GH_TOKEN", "")
+    path = f"repos/{repo}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/logs"
+    with tempfile.TemporaryFile() as output:
+        process = subprocess.Popen(["gh", "api", "--allow-escape-sequences", path],
+                                   env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        deadline, size = time.monotonic() + LOG_TIMEOUT, 0
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise ValueError("failed-step log download timed out")
+                    chunk = os.read(process.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > LOG_ARCHIVE_LIMIT:
+                        raise ValueError("failed-step log archive exceeds byte limit")
+                    output.write(chunk)
+            if process.wait(timeout=max(0.01, deadline - time.monotonic())) != 0:
+                raise ValueError("failed-step log archive unavailable")
+            # Check the classic ZIP directory count before ZipFile allocates
+            # one object per entry. ZIP64/multipart logs are outside our bounds.
+            output.seek(max(0, size - 65557))
+            tail = output.read(65557)
+            end = tail.rfind(b"PK\x05\x06")
+            if end < 0 or len(tail) - end < 22:
+                raise ValueError("failed-step log archive directory unavailable")
+            disk, directory_disk, on_disk, count, directory_size, offset, comment = struct.unpack(
+                "<4H2LH", tail[end + 4:end + 22])
+            if (disk or directory_disk or on_disk != count or count >= 65535
+                    or count > LOG_MEMBER_COUNT or len(tail) - end != 22 + comment
+                    or offset + directory_size != size - len(tail) + end):
+                raise ValueError("failed-step log archive exceeds member limit or invalid directory")
+            output.seek(0)
+            with zipfile.ZipFile(output) as archive:
+                if len(archive.infolist()) > LOG_MEMBER_COUNT:
+                    raise ValueError("failed-step log archive exceeds member limit")
+                yield archive
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+
+
+def log_job_name(name):
+    # Provider convention also used by gh v2.99.0 logs.go: remove / and :,
+    # truncate at 90 UTF-16 units, trim. Collisions are refused, never guessed.
+    name = name.replace("/", "").replace(":", "")
+    return name.encode("utf-16-le")[:180].decode("utf-16-le", errors="replace").strip()
+
+
+def original_failure_notes(archive, roots, jobs):
+    """Read only unique pre-hook failed step files, retaining provider errors.
+
+    Group headings contain shell commands, not reviewed step names, and REST
+    timestamps have only second precision. Neither can safely split raw logs.
+    """
+    selected = []
+    notes = {job["id"]: [] for job in roots}
+    for job in roots:
+        directory = log_job_name(job["name"])
+        if not directory or sum(log_job_name(j["name"]) == directory for j in jobs) != 1:
+            raise ValueError("failed-step log job directory ambiguous")
+        steps = job["steps"]
+        numbers = [step.get("number") for step in steps]
+        if (not all(positive_id(number) for number in numbers)
+                or numbers != sorted(set(numbers))):
+            raise ValueError("failed-step log step numbers unavailable or ambiguous")
+        hook = next(i for i, step in enumerate(steps) if step.get("name") == FAIL_FAST_STEP)
+        for step in steps[:hook + 1]:
+            is_failure = step.get("status") == "completed" and step.get("conclusion") == "failure"
+            if not is_failure and step.get("name") != FAIL_FAST_STEP:
+                continue
+            pattern = rf"{re.escape(directory)}/{step['number']}_.*\.txt"
+            matches = [entry for entry in archive.infolist() if re.fullmatch(pattern, entry.filename)]
+            if len(matches) != 1 or matches[0].is_dir():
+                raise ValueError("failed-step log member unavailable or ambiguous")
+            selected.append((job["id"], is_failure, matches[0]))
+    if (any(entry.file_size > LOG_MEMBER_LIMIT for _, _, entry in selected)
+            or sum(entry.file_size for _, _, entry in selected) > LOG_SELECTED_LIMIT):
+        raise ValueError("failed-step log expansion exceeds byte limit")
+    for identity, is_failure, entry in selected:
+        with archive.open(entry) as stream:
+            data = stream.read(LOG_MEMBER_LIMIT + 1)
+            if len(data) != entry.file_size or len(data) > LOG_MEMBER_LIMIT or stream.read(1):
+                raise ValueError("failed-step log member incomplete or oversized")
+        text = data.decode("utf-8-sig")  # strict; complete read also checks the ZIP CRC
+        if is_failure:
+            errors = re.findall(r"^\d{4}-\d\d-\d\dT[^\s]+Z ##\[error\](.*)$", text, re.M)
+            if not errors:
+                raise ValueError("failed-step original error annotations unavailable")
+            notes[identity].extend(dict(annotation_level="failure", message=message) for message in errors)
+    return notes
 
 
 def workflow_path(workflow):
@@ -109,36 +230,76 @@ def linked_check_id(job, repo):
     return int(match[1]) if match else None
 
 
+def failure_before_cancel(job):
+    """The successful opt-in hook and an earlier failure, never the hook itself.
+
+    GitHub force-cancel changes a failing job's conclusion to cancelled, but
+    preserves the earlier step's failure (cloud run 42287638550, 2026-11-06).
+    The fixed hook name declares required work in the reviewed main workflow.
+    """
+    if job.get("status") != "completed" or job.get("conclusion") != "cancelled":
+        return False
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
+        return False
+    hooks = [i for i, step in enumerate(steps) if step.get("name") == FAIL_FAST_STEP]
+    if len(hooks) != 1:
+        return False
+    index = hooks[0]
+    if steps[index].get("status") != "completed" or steps[index].get("conclusion") != "success":
+        return False
+    return any(step.get("status") == "completed" and step.get("conclusion") == "failure"
+               for step in steps[:index])
+
+
+def authenticated_job(run, job, repo):
+    """Bind a jobs-API row to this attempt's GitHub Actions check producer."""
+    name = job.get("name")
+    check_id = linked_check_id(job, repo)
+    if (not isinstance(name, str) or not name.strip()
+            or type(job.get("id")) is not int or job["id"] < 1 or check_id is None
+            or job.get("run_id") != run["id"] or job.get("run_attempt") != run.get("run_attempt")
+            or not positive_id(run.get("run_attempt")) or job.get("head_sha") != run["head_sha"]):
+        return False
+    check = api(f"repos/{repo}/check-runs/{check_id}")
+    return (check.get("id") == check_id and check.get("app", {}).get("id") == ACTIONS_APP_ID
+            and check.get("app", {}).get("slug") == "github-actions"
+            and check.get("head_sha") == run["head_sha"] and check.get("name") == name
+            and check.get("check_suite", {}).get("id") == run["check_suite_id"]
+            and check.get("details_url") == f"https://github.com/{repo}/actions/runs/{run['id']}/job/{job['id']}"
+            and check.get("status") == job.get("status")
+            and check.get("conclusion") == job.get("conclusion"))
+
+
 def checked_verdict(run, repo, branch, workflow, name="verified"):
-    """Read the latest attempt's aggregate job AND its authenticated check."""
+    """Authenticated aggregate, or required work failed before self-cancellation.
+
+    Failure fallback never admits a deploy or a baseline: success still requires
+    the original aggregate job/check. Cancellation alone is neither red nor green.
+    """
     origin = producer_origin(run, repo, branch, workflow)
     if origin != "eligible":
         return origin
     jobs = paged(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
-    jobs = [job for job in jobs if job.get("name") == name]
-    if len(jobs) != 1:
+    aggregates = [job for job in jobs if job.get("name") == name]
+    verdict = "unknown"
+    if len(aggregates) > 1:
         return "unknown"
-    job = jobs[0]
-    check_id = linked_check_id(job, repo)
-    if (type(job.get("id")) is not int or job["id"] < 1 or check_id is None
-            or job.get("run_id") != run["id"] or job.get("run_attempt") != run.get("run_attempt")
-            or not isinstance(run.get("run_attempt"), int) or run["run_attempt"] < 1
-            or job.get("head_sha") != run["head_sha"]):
-        return "unknown"
-    # Run, job and check ids are distinct identities. Fetch the locally built
-    # path for the linked check; its details URL must name this actual job.
-    check = api(f"repos/{repo}/check-runs/{check_id}")
-    if (check.get("id") != check_id or check.get("app", {}).get("id") != ACTIONS_APP_ID
-            or check.get("app", {}).get("slug") != "github-actions"
-            or check.get("head_sha") != run["head_sha"] or check.get("name") != name
-            or check.get("check_suite", {}).get("id") != run["check_suite_id"]
-            or check.get("details_url") != f"https://github.com/{repo}/actions/runs/{run['id']}/job/{job['id']}"
-            or check.get("status") != job.get("status")
-            or check.get("conclusion") != job.get("conclusion")):
-        return "unknown"
-    if check.get("status") != "completed":
-        return "pending"
-    return check.get("conclusion") or "unknown"
+    if len(aggregates) == 1:
+        job = aggregates[0]
+        if not authenticated_job(run, job, repo):
+            return "unknown"
+        verdict = (job.get("conclusion") or "unknown") if job.get("status") == "completed" else "pending"
+        # Optional work may be cancelled after verified succeeded. Preserve that
+        # authenticated aggregate and every existing non-cancellation verdict.
+        if verdict not in ("cancelled", "skipped", "pending"):
+            return verdict
+    if run.get("status") == "completed" and run.get("conclusion") == "cancelled":
+        marked = [job for job in jobs if failure_before_cancel(job)]
+        if marked:
+            return "failure" if all(authenticated_job(run, job, repo) for job in marked) else "unknown"
+        return "cancelled"
+    return verdict
 
 
 def branch_history(repo, branch, workflow, reader=None):
@@ -223,7 +384,7 @@ def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=F
 PENDING_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
-def failed_jobs(repo, identity):
+def failed_jobs(repo, identity, branch="main", workflow="verify.yml", with_annotations=False):
     """Failing jobs of a completed run. Complete, valid jobs establish them.
 
     A job that is still queued or running (a non-lane job such as an alert that
@@ -235,7 +396,8 @@ def failed_jobs(repo, identity):
     if not isinstance(identity, str) or re.fullmatch(r"[1-9][0-9]*", identity) is None:
         raise ValueError("invalid workflow run identity")
     jobs = paged(f"repos/{repo}/actions/runs/{identity}/jobs?filter=latest", "jobs")
-    failed, pending = [], []
+    failed, pending, roots = [], [], []
+    run = None
     for job in jobs:
         name = job.get("name")
         if (not isinstance(name, str) or not name.strip()
@@ -249,6 +411,18 @@ def failed_jobs(repo, identity):
                 ("success", "failure", "timed_out", "cancelled", "skipped", "neutral",
                  "action_required", "startup_failure", "stale")):
             raise ValueError("previous-run lane evidence unavailable or invalid")
+        if failure_before_cancel(job):
+            run = api(f"repos/{repo}/actions/runs/{identity}")
+            if (not isinstance(run, dict) or run.get("id") != int(identity)
+                    or run.get("status") != "completed" or run.get("conclusion") != "cancelled"
+                    or producer_origin(run, repo, branch, workflow) != "eligible"
+                    or not authenticated_job(run, job, repo)):
+                raise ValueError("self-cancelled failure evidence unavailable or unauthenticated")
+            # Normalize only this proven failing job, not cancelled siblings.
+            # The hook and later cleanup can never supply a failing unit.
+            roots.append(job)
+            index = next(i for i, step in enumerate(job["steps"]) if step.get("name") == FAIL_FAST_STEP)
+            job = dict(job, conclusion="failure", steps=job["steps"][:index])
         if job["conclusion"] in ("failure", "timed_out"):
             # Only a joined name must survive the comma-separated list. A comma
             # in a lane that passed (or was skipped) cannot break the join, so
@@ -262,6 +436,20 @@ def failed_jobs(repo, identity):
         if (not isinstance(run, dict) or run.get("id") != int(identity)
                 or run.get("status") != "completed"):
             raise ValueError("previous-run lane evidence incomplete: the run is still active")
+    if with_annotations:
+        failed = [dict(job) for job in failed]
+        recovered = {}
+        if roots:
+            with attempt_logs(repo, run) as archive:
+                recovered = original_failure_notes(archive, roots, jobs)
+        for job in failed:
+            if job["id"] in recovered:
+                job["annotations"] = recovered[job["id"]]
+            else:
+                check_id = linked_check_id(job, repo)
+                if check_id is None:
+                    raise ValueError("previous-run lane evidence unavailable or invalid")
+                job["annotations"] = check_annotations(repo, check_id)
     return failed
 
 
@@ -269,9 +457,9 @@ def lane_of(job):
     return job["name"].replace(",", ";")
 
 
-def failed_lanes(repo, identity):
+def failed_lanes(repo, identity, branch="main", workflow="verify.yml"):
     """Failing lanes of a completed run, comma-separated (see failed_jobs)."""
-    return ",".join(lane_of(job) for job in failed_jobs(repo, identity))
+    return ",".join(lane_of(job) for job in failed_jobs(repo, identity, branch, workflow))
 
 
 # Values that change from run to run inside an otherwise identical message: a
@@ -328,7 +516,7 @@ def check_annotations(repo, check_id):
     raise ValueError("failed-job annotations pagination exhausted")
 
 
-def failed_units(repo, identity):
+def failed_units(repo, identity, branch="main", workflow="verify.yml"):
     """`lane<TAB>signature` per failing job of a completed run (see lane_signature).
 
     The check run is the one the job links to; its annotations are read through
@@ -336,11 +524,8 @@ def failed_units(repo, identity):
     error: the caller escalates, it never compares a partial signature.
     """
     rows = []
-    for job in failed_jobs(repo, identity):
-        check_id = linked_check_id(job, repo)
-        if check_id is None:
-            raise ValueError("previous-run lane evidence unavailable or invalid")
-        rows.append(f"{lane_of(job)}\t{lane_signature(job, check_annotations(repo, check_id))}")
+    for job in failed_jobs(repo, identity, branch, workflow, with_annotations=True):
+        rows.append(f"{lane_of(job)}\t{lane_signature(job, job['annotations'])}")
     return "\n".join(rows)
 
 
@@ -358,10 +543,16 @@ def main():
         # establish the predecessor from a partial set. Exhausted bounds fail.
         rows = branch_history(repo, branch, workflow)
         print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
+    elif command == "failed-jobs":
+        print(json.dumps(failed_jobs(repo, identity, branch, workflow)))
+    elif command == "failed-evidence":
+        jobs = failed_jobs(repo, identity, branch, workflow, with_annotations=True)
+        print(json.dumps({"jobs": [dict(job, annotations=[note["message"] for note in job["annotations"]])
+                                  for job in jobs]}))
     elif command == "failed-lanes":
-        print(failed_lanes(repo, identity))
+        print(failed_lanes(repo, identity, branch, workflow))
     elif command == "failed-units":
-        print(failed_units(repo, identity))
+        print(failed_units(repo, identity, branch, workflow))
     elif command == "base":
         print(last_verified(repo, branch, workflow, identity, name))
     elif command == "remote-base":

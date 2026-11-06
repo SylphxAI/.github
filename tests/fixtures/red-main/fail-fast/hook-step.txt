@@ -1,0 +1,7 @@
+﻿2026-11-06T20:22:17.4945987Z ##[group]Run gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/force-cancel"
+2026-11-06T20:22:17.4946659Z [36;1mgh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/force-cancel"[0m
+2026-11-06T20:22:17.5091881Z shell: /usr/bin/bash -e {0}
+2026-11-06T20:22:17.5092163Z env:
+2026-11-06T20:22:17.5094606Z   GH_TOKEN: ***
+2026-11-06T20:22:17.5094825Z ##[endgroup]
+2026-11-06T20:22:18.2232616Z {}

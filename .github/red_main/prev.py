@@ -28,8 +28,22 @@ for row in rows:
             ("success", "failure", "timed_out", "cancelled", "skipped", "neutral", "action_required", "startup_failure", "stale")):
         raise ValueError("workflow history conclusion unavailable")
     if (row["status"] == "completed" and at < created
-            and row.get("conclusion") in ("success", "failure", "timed_out")):
+            and row.get("conclusion") in ("success", "failure", "timed_out", "cancelled")):
         runs.append(row)
 runs.sort(key=lambda row: timestamp(row["created_at"]), reverse=True)
-if runs:
-    print(f"{runs[0]['id']}\t{runs[0]['conclusion']}\t{runs[0].get('html_url', '')}")
+for row in runs:
+    conclusion = row["conclusion"]
+    if conclusion == "cancelled":
+        # Only the shipped handler supplies producer context. A cancelled
+        # predecessor can be the first genuine required failure, not a gap.
+        if len(sys.argv) != 6:
+            continue
+        import proof
+        repo, branch, workflow, name = sys.argv[2:]
+        conclusion = proof.checked_verdict(row, repo, branch, workflow, name)
+        if conclusion in ("cancelled", "ineligible"):
+            continue
+        if conclusion not in ("success", "failure", "timed_out"):
+            raise ValueError("cancelled predecessor proof unavailable")
+    print(f"{row['id']}\t{conclusion}\t{row.get('html_url', '')}")
+    break
