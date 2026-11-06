@@ -30,6 +30,7 @@ def issued_subject(issued):
 
 
 READINESS_MARGIN_SECONDS = 180
+PROPAGATION_CODES = ("key_not_yet_propagated", "NOT_YET_PROPAGATED")
 
 
 def wait_for_identity(read, token, active_after_ms, api_url):
@@ -45,7 +46,7 @@ def wait_for_identity(read, token, active_after_ms, api_url):
         identity = read(endpoint, token, allow_propagation=True, timeout=remaining)
         if time.monotonic() >= deadline:
             break
-        if identity.get("code") != "key_not_yet_propagated":
+        if identity.get("code") not in PROPAGATION_CODES:
             return identity
         time.sleep(min(2, max(0, deadline - time.monotonic())))
     raise ReadinessError(f"issued Access key did not become ready within {READINESS_MARGIN_SECONDS} seconds")
@@ -70,7 +71,7 @@ def read_identity(endpoint, token, *, allow_propagation, timeout):
         raise ReadinessError("Access readiness returned an invalid identity")
     if status == 200:
         return value
-    if allow_propagation and status == 401 and value.get("code") == "key_not_yet_propagated":
+    if allow_propagation and status == 401 and value.get("code") in PROPAGATION_CODES:
         return value
     raise ReadinessError("Access readiness refused with HTTP " + str(status))
 

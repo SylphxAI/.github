@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
-from access_ready import ReadinessError, issued_subject, wait_for_identity
+from access_ready import PROPAGATION_CODES, ReadinessError, issued_subject, wait_for_identity
 
 API = "https://api.sylphx.com"
 POLICY = re.compile(r"orgs/[A-Za-z0-9_-]+/trust_policies/[a-z][a-z0-9_-]{0,62}\Z")
@@ -120,7 +120,7 @@ class Receipts:
         self.save()
         print(json.dumps(receipt), flush=True)
         propagation = (allow_propagation and body is None and url == API + "/v1/whoami"
-                       and status == 401 and value.get("code") == "key_not_yet_propagated")
+                       and status == 401 and value.get("code") in PROPAGATION_CODES)
         if status != expected and not propagation:
             raise ProbeError("unexpected HTTP status for " + receipt["endpoint"])
         return value

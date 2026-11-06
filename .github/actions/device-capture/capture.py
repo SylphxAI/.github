@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
-from access_ready import ReadinessError, wait_for_identity
+from access_ready import PROPAGATION_CODES, ReadinessError, wait_for_identity
 
 API = "https://api.sylphx.com"
 SCOPES = {"sandboxes:read", "sandboxes:write", "sandboxes:exec"}
@@ -89,7 +89,7 @@ class Receipt:
         self.save()
         print(json.dumps(row), flush=True)
         propagation = (allow_propagation and body is None and endpoint == API + "/v1/whoami"
-                       and row["status"] == 401 and value.get("code") == "key_not_yet_propagated")
+                       and row["status"] == 401 and value.get("code") in PROPAGATION_CODES)
         if row["status"] != 200 and not propagation:
             raise CaptureError("identity request refused before leasing")
         return value

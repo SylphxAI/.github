@@ -44,13 +44,13 @@ class AccessReadyTests(unittest.TestCase):
             now[0] += seconds
         with patch.object(ready.time,"sleep",side_effect=sleep) as pause, \
              patch.object(ready.time,"monotonic",side_effect=lambda:now[0]):
-            read = unittest.mock.Mock(side_effect=[{"code":"key_not_yet_propagated"},{"principal":"prn_test"}])
+            read = unittest.mock.Mock(side_effect=[{"code":"key_not_yet_propagated"},{"code":"NOT_YET_PROPAGATED"},{"principal":"prn_test"}])
             self.assertEqual(ready.wait_for_identity(read,"same-key",3000,API),{"principal":"prn_test"})
-        self.assertEqual([call.args[0] for call in pause.call_args_list],[3,2])
+        self.assertEqual([call.args[0] for call in pause.call_args_list],[3,2,2])
         for call in read.call_args_list:
             self.assertEqual(call.args,(API+"/v1/whoami","same-key"))
             self.assertTrue(call.kwargs["allow_propagation"])
-        self.assertEqual([call.kwargs["timeout"] for call in read.call_args_list],[180,178])
+        self.assertEqual([call.kwargs["timeout"] for call in read.call_args_list],[180,178,176])
         now[0] = 0
         with patch.object(ready.time,"sleep",side_effect=sleep), \
              patch.object(ready.time,"monotonic",side_effect=lambda:now[0]), self.assertRaises(ready.ReadinessError):
@@ -60,8 +60,10 @@ class AccessReadyTests(unittest.TestCase):
     def test_curl_read_uses_total_timeout_and_stdin_credential_without_logging(self):
         cases = ((200,{"principal":"prn_test"},True),
                  (401,{"code":"key_not_yet_propagated"},True),
+                 (401,{"code":"NOT_YET_PROPAGATED"},True),
                  (401,{"code":"UNAUTHENTICATED"},False),
-                 (403,{"code":"key_not_yet_propagated"},False))
+                 (403,{"code":"key_not_yet_propagated"},False),
+                 (403,{"code":"NOT_YET_PROPAGATED"},False))
         for status,body,accepted in cases:
             with self.subTest(status=status,body=body):
                 def curl(args,**kwargs):
