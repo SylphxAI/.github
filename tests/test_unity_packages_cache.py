@@ -1,4 +1,5 @@
 import hashlib
+from email.message import Message
 import http.server
 import importlib.util
 import io
@@ -174,16 +175,156 @@ class UnityPackagesCache(unittest.TestCase):
             self.real_fetch(self.origin + "/redirect", Path(self.tmp.name) / "download")
         self.assertEqual(self.requests, ["/redirect"])
 
-    def test_maintenance_redirect_allows_only_the_observed_https_unity_cdn(self):
+    def add_registry_package(self, name="com.autodesk.fbx", version="5.1.3"):
+        self.registry[name] = {"version": version, "source": "registry", "depth": 0,
+                               "url": upm.REGISTRY, "dependencies": {"com.unity.transitive": "1.2.3"}}
+        self.manifest["dependencies"][name] = version
+        data = archive(name, version, self.registry[name]["dependencies"])
+        self.archives[name] = data
+        entry = {"version": version, "sha256": hashlib.sha256(data).hexdigest(), "archiveBytes": len(data)}
+        self.pins["packages"][name] = entry
+        self.pins["lockSha256"] = upm.canonical(self.registry)
+        self.pins["manifestSha256"] = upm.canonical({n: v for n, v in self.manifest["dependencies"].items() if n in self.archives})
+        self.write_json("manifest.json", self.manifest)
+        self.write_json("packages-lock.json", {"dependencies": self.registry})
+        self.write_json("unity-packages.json", self.pins)
+        self.responses[f"/upm/{entry['sha256']}/{name}/{version}"] = data
+
+    def test_outside_publisher_pin_then_hydrate_through_real_transport_and_redirect_handlers(self):
+        self.add_registry_package()
+        requests, routes = [], {}
+        for name, node in self.registry.items():
+            version, data = node["version"], self.archives[name]
+            download = f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz"
+            # Both layouts are observed upstream; neither is a publisher privilege.
+            directory = version if name == "com.autodesk.fbx" else f"{name}-{version}"
+            cdn = f"https://cdn.packages.unity.com/tarballs/{name}/{directory}/{hashlib.sha1(data).hexdigest()}.tgz"
+            metadata = {"versions": {version: {"dist": {"tarball": download, "shasum": hashlib.sha1(data).hexdigest()}}}}
+            routes[f"{upm.REGISTRY}/{name}"] = (200, {}, json.dumps(metadata).encode())
+            routes[download] = (302, {"Location": cdn}, b"")
+            routes[cdn] = (200, {}, data)
+            routes[f"{upm.MIRROR}/upm/{hashlib.sha256(data).hexdigest()}/{name}/{version}"] = (200, {}, data)
+
+        class HTTPSFixture(upm.urllib.request.HTTPSHandler):
+            def https_open(self, request):
+                requests.append(request.full_url)
+                code, headers, body = routes[request.full_url]
+                message = Message()
+                for key, value in headers.items():
+                    message[key] = value
+                response = upm.urllib.response.addinfourl(io.BytesIO(body), message, request.full_url, code)
+                response.msg = "Fixture response"
+                return response
+
+        build_opener = upm.urllib.request.build_opener
+        metadata_opener = build_opener(HTTPSFixture)
+        def opener(*handlers):
+            return build_opener(*handlers, HTTPSFixture)
+        with patch.object(upm.urllib.request, "build_opener", side_effect=opener), patch.object(
+                upm.urllib.request, "urlopen", side_effect=metadata_opener.open):
+            generated = json.loads(upm.pin(self.project).read_text())
+            self.assertEqual(generated, self.pins)
+            self.assertEqual(len(requests), 9)  # Metadata, download redirect and CDN body for each package.
+            requests.clear()
+            receipt = json.loads(upm.hydrate(self.project).read_text())
+        self.assertEqual(receipt["packages"], self.pins["packages"])
+        self.assertEqual(receipt["packageCount"], 3)
+        self.assertEqual(len(requests), 3)
+        self.assertTrue(all(url.startswith(upm.MIRROR + "/upm/") for url in requests))
+        for name, node in self.registry.items():
+            self.assertEqual(upm.load(self.project / "Packages" / name / "package.json"),
+                             {"name": name, "version": node["version"], "dependencies": node["dependencies"]})
+        self.assertEqual(upm.load(self.project / "Packages/packages-lock.json")["dependencies"], self.registry)
+        self.assertFalse(list((self.project / "Packages").glob(".unity-upm-*")))
+
+    def test_outside_publisher_manifest_drift_refused_before_network(self):
+        self.add_registry_package()
+        upm.validate(self.project)  # Positive control: a malformed plan cannot satisfy this negative.
+        for request in ("5.1.2", "file:../fbx.tgz", "https://example.com/fbx.git", None):
+            with self.subTest(request=request):
+                manifest = json.loads(json.dumps(self.manifest))
+                if request is None:
+                    del manifest["dependencies"]["com.autodesk.fbx"]
+                else:
+                    manifest["dependencies"]["com.autodesk.fbx"] = request
+                self.write_json("manifest.json", manifest)
+                with patch.object(upm, "fetch") as fetch, self.assertRaisesRegex(ValueError, "manifest/lock differs"):
+                    upm.hydrate(self.project)
+                fetch.assert_not_called()
+        self.assertEqual(self.requests, [])
+
+    def test_package_name_grammar_is_publisher_independent_and_path_safe(self):
+        for name in ("com.autodesk.fbx", "net.3company.tool_name-v2", "x." + "a" * 212):
+            with self.subTest(name=name):
+                self.add_registry_package(name)
+                upm.validate(self.project)
+        for name in ("com.Example.tool", "com.example/escape", "com.example\\escape", "com.example%2ftool",
+                     "com..example", ".com.example", "com.example.", "single", "com.example?tool",
+                     "com.example#tool", "com.example@tool", "com.example:tool", "com.example.é", "x." + "a" * 213):
+            with self.subTest(name=name):
+                registry = self.registry | {name: {"version": "1.2.3", "source": "registry", "url": upm.REGISTRY}}
+                self.write_json("packages-lock.json", {"dependencies": registry})
+                with patch.object(upm.urllib.request, "urlopen") as request, self.assertRaisesRegex(ValueError, "invalid exact"):
+                    upm.pin(self.project)
+                request.assert_not_called()
+        self.assertEqual(self.requests, [])
+
+    def test_official_origin_not_publisher_selects_closure_and_preserves_other_preparation(self):
+        self.add_registry_package()
+        for name, source, url in (("net.other.git", "git", "https://example.com/repo.git"),
+                                  ("net.other.local", "local", ""),
+                                  ("net.other.registry", "registry", "https://other.example")):
+            self.registry[name] = {"version": "1.0.0", "source": source, "url": url}
+            self.manifest["dependencies"][name] = "file:../prepared.tgz"
+        self.write_json("packages-lock.json", {"dependencies": self.registry})
+        self.write_json("manifest.json", self.manifest)
+        pins, selected = upm.validate(self.project)
+        self.assertEqual(set(selected), {"com.unity.first", "com.unity.transitive", "com.autodesk.fbx"})
+        self.assertEqual(pins, self.pins)
+        self.registry["com.autodesk.fbx"]["url"] = "https://other.example"
+        self.write_json("packages-lock.json", {"dependencies": self.registry})
+        with self.assertRaisesRegex(ValueError, "manifest/lock differs"):
+            upm.validate(self.project)
+        self.registry["com.unity.first"]["url"] = "https://other.example"
+        self.write_json("packages-lock.json", {"dependencies": self.registry})
+        with self.assertRaisesRegex(ValueError, "unexpected registry"):
+            upm.validate(self.project)
+
+    def test_maintenance_redirect_allows_only_canonical_identity_bound_unity_cdn_paths(self):
         handler = upm.UnityCDNRedirect()
-        request = upm.urllib.request.Request("https://download.packages.unity.com/com.unity.burst/-/com.unity.burst-1.4.8.tgz")
-        valid = "https://cdn.packages.unity.com/tarballs/com.unity.burst/com.unity.burst-1.4.8/abc.tgz"
-        self.assertEqual(handler.redirect_request(request, None, 302, "Found", {}, valid).full_url, valid)
-        for url in (valid.replace("https:", "http:"), valid.replace("com/tarballs/", "com/other/"),
-                    valid.replace("cdn.packages.unity.com", "evil.example"),
-                    valid.replace("cdn.packages.unity.com", "cdn.packages.unity.com:8443")):
-            with self.assertRaises(ValueError):
+        for name in ("com.autodesk.fbx", "com.unity.burst", "net.3company.tool_name-v2", "x." + "a" * 212):
+            for directory in ("5.1.3", f"{name}-5.1.3"):
+                with self.subTest(name=name, directory=directory):
+                    request = upm.urllib.request.Request(f"https://download.packages.unity.com/{name}/-/{name}-5.1.3.tgz")
+                    valid = f"https://cdn.packages.unity.com/tarballs/{name}/{directory}/" + "a" * 40 + ".tgz"
+                    self.assertEqual(handler.redirect_request(request, None, 302, "Found", {}, valid).full_url, valid)
+                    cdn_request = upm.urllib.request.Request(valid)
+                    self.assertEqual(handler.redirect_request(cdn_request, None, 302, "Found", {}, valid).full_url, valid)
+        request = upm.urllib.request.Request("https://download.packages.unity.com/com.unity.burst/-/com.unity.burst-5.1.3.tgz")
+        valid = "https://cdn.packages.unity.com/tarballs/com.unity.burst/5.1.3/" + "a" * 40 + ".tgz"
+        invalid = (valid.replace("https:", "http:"), valid.replace("com/tarballs/", "com/other/"),
+                   valid.replace("cdn.packages.unity.com", "evil.example"),
+                   valid.replace("cdn.packages.unity.com", "cdn.packages.unity.com:8443"),
+                   valid.replace("cdn.packages.unity.com", "user@cdn.packages.unity.com"),
+                   valid + "?download=1", valid + "#fragment", valid.replace("5.1.3", "5.1.2"),
+                   valid.replace("com.unity.burst", "com.unity.wrong"),
+                   valid.replace("/5.1.3/", "/com.unity.wrong-5.1.3/"),
+                   valid.replace("/5.1.3/", "/../5.1.3/"), valid.replace("/5.1.3/", "/%35.1.3/"),
+                   valid.replace("com.unity.burst", "com.autodesk%2ffbx"),
+                   valid.replace("a" * 40, "a" * 39), valid.replace("a" * 40, "A" * 40),
+                   valid.replace(".tgz", ".tgz/extra"), valid.replace(".tgz", ".zip"))
+        for url in invalid:
+            with self.subTest(target=url), self.assertRaisesRegex(ValueError, "unexpected Unity archive redirect"):
                 handler.redirect_request(request, None, 302, "Found", {}, url)
+        for source in (request.full_url.replace("https:", "http:"),
+                       request.full_url.replace("download.packages.unity.com", "evil.example"),
+                       request.full_url.replace("download.packages.unity.com", "user@download.packages.unity.com"),
+                       request.full_url.replace("download.packages.unity.com", "download.packages.unity.com:443"),
+                       request.full_url + "?q=1", request.full_url + "#fragment",
+                       request.full_url.replace("com.unity.burst-5.1.3", "com.unity.wrong-5.1.3"),
+                       valid.replace("5.1.3", "5.1.2")):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "unexpected Unity archive redirect"):
+                handler.redirect_request(upm.urllib.request.Request(source), None, 302, "Found", {}, valid)
 
     def test_size_bound_is_enforced_while_streaming(self):
         self.responses["/oversize"] = b"x" * 100

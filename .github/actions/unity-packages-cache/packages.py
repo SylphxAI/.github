@@ -18,7 +18,8 @@ MIRROR = "https://build-cache.sylphx.net"
 MAX_ARCHIVE = 754_624_107
 MAX_UNPACKED = 2 * 1024 * 1024 * 1024
 MAX_FILES = 100_000
-NAME = re.compile(r"com\.unity\.[a-z0-9]+(?:[.-][a-z0-9]+)*\Z")
+# Unity 2022.3 package naming: reverse domain, documented ASCII, at most 214 chars.
+NAME = re.compile(r"(?=.{1,214}\Z)[a-z0-9_-]+(?:\.[a-z0-9_-]+)+\Z")
 VERSION = re.compile(r"[0-9][A-Za-z0-9.-]{0,79}\Z")
 DIGEST = re.compile(r"[a-f0-9]{64}\Z")
 
@@ -49,7 +50,7 @@ def graph(project):
                 raise ValueError(f"Unity package uses an unexpected registry: {name}")
             continue
         version = node["version"]
-        if not NAME.fullmatch(name) or len(name) > 128 or not VERSION.fullmatch(version):
+        if not NAME.fullmatch(name) or not VERSION.fullmatch(version):
             raise ValueError(f"invalid exact Unity package identity: {name}@{version}")
         for dependency in node.get("dependencies", {}):
             if dependency not in locked:
@@ -57,6 +58,10 @@ def graph(project):
         registry[name] = node
     if not registry:
         raise ValueError("lock has no Unity registry packages; refusing an empty cache plan")
+    # Include every direct official-registry request, not just Unity's publisher.
+    # Keep the historical com.unity projection so existing pins remain valid;
+    # unrelated local/Git preparation must not change this hash.
+    direct.update({name: version for name, version in manifest.items() if name in registry})
     return registry, canonical(registry), canonical(direct)
 
 
@@ -86,10 +91,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class UnityCDNRedirect(urllib.request.HTTPRedirectHandler):
     """Only the explicit pin-maintenance operation may follow Unity's download CDN."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        previous, target = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
-        if (previous.hostname not in ("download.packages.unity.com", "cdn.packages.unity.com") or
-                target.scheme != "https" or target.netloc != "cdn.packages.unity.com" or
-                not target.path.startswith("/tarballs/com.unity.")):
+        target = urllib.parse.urlsplit(newurl)
+        parts = target.path.split("/")
+        if (target.scheme != "https" or target.netloc != "cdn.packages.unity.com" or
+                newurl != f"https://cdn.packages.unity.com{target.path}" or
+                len(parts) != 5 or parts[:2] != ["", "tarballs"]):
+            raise ValueError("unexpected Unity archive redirect")
+        name, directory, filename = parts[2:]
+        # Both directories are served upstream, independent of publisher name.
+        version = directory.removeprefix(name + "-")
+        if (not NAME.fullmatch(name) or not VERSION.fullmatch(version) or
+                not re.fullmatch(r"[a-f0-9]{40}\.tgz", filename)):
+            raise ValueError("unexpected Unity archive redirect")
+        download = f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz"
+        if req.full_url not in (download, newurl):
             raise ValueError("unexpected Unity archive redirect")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
