@@ -13,3 +13,9 @@ Positive unit tests adapt only `head_branch` to `main` and `path` to
 Run/job/check/attempt/SHA/suite linkage and the provider's rewritten conclusions,
 step order and annotation are retained. The temporary probe branch is deleted;
 these fixtures preserve the measured cancellation contract.
+
+`failed-step.txt` and `hook-step.txt` are the exact UTF-8/BOM per-step members
+from attempt 1's log ZIP, read at 20:50 UTC on the same day. The former retains
+the original exit-code annotation, while the check annotations do not. Tests
+construct bounded ZIPs from these text members and require an ordinary diagnostic
+candidate to match the original error, never the force-cancellation message.

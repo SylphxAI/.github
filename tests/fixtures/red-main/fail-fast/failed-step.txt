@@ -1,0 +1,5 @@
+﻿2026-11-06T20:22:17.4295031Z ##[group]Run exit 1
+2026-11-06T20:22:17.4295774Z [36;1mexit 1[0m
+2026-11-06T20:22:17.4472503Z shell: /usr/bin/bash -e {0}
+2026-11-06T20:22:17.4473314Z ##[endgroup]
+2026-11-06T20:22:17.4845213Z ##[error]Process completed with exit code 1.

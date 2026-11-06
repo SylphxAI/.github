@@ -7,11 +7,17 @@ mask a full post-main failure. Unknown or incomplete reads are never green.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 import re
+import selectors
+import struct
 import subprocess
 import sys
+import tempfile
+import time
+import zipfile
 from urllib.parse import urlencode
 
 ACTIONS_APP_ID = 15368
@@ -30,6 +36,117 @@ def api(path):
     result = subprocess.run(["gh", "api", path], env=env, check=True, capture_output=True,
                             text=True, timeout=35)
     return json.loads(result.stdout)
+
+
+# Limits apply while receiving bytes, before ZIP expansion. The archive is
+# staged on disk; only selected failed-step members enter diagnostic memory.
+LOG_ARCHIVE_LIMIT = 32 * 1024 * 1024
+LOG_MEMBER_LIMIT = 4 * 1024 * 1024
+LOG_SELECTED_LIMIT = 8 * 1024 * 1024
+LOG_MEMBER_COUNT = 10000
+LOG_TIMEOUT = 35
+
+
+@contextmanager
+def attempt_logs(repo, run):
+    """Bounded provider ZIP for the authenticated attempt, never a whole-body CLI."""
+    env = dict(os.environ)
+    env["GH_TOKEN"] = env.get("ACTIONS_TOKEN") or env.get("TOKEN") or env.get("GH_TOKEN", "")
+    path = f"repos/{repo}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/logs"
+    with tempfile.TemporaryFile() as output:
+        process = subprocess.Popen(["gh", "api", "--allow-escape-sequences", path],
+                                   env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        deadline, size = time.monotonic() + LOG_TIMEOUT, 0
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise ValueError("failed-step log download timed out")
+                    chunk = os.read(process.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > LOG_ARCHIVE_LIMIT:
+                        raise ValueError("failed-step log archive exceeds byte limit")
+                    output.write(chunk)
+            if process.wait(timeout=max(0.01, deadline - time.monotonic())) != 0:
+                raise ValueError("failed-step log archive unavailable")
+            # Check the classic ZIP directory count before ZipFile allocates
+            # one object per entry. ZIP64/multipart logs are outside our bounds.
+            output.seek(max(0, size - 65557))
+            tail = output.read(65557)
+            end = tail.rfind(b"PK\x05\x06")
+            if end < 0 or len(tail) - end < 22:
+                raise ValueError("failed-step log archive directory unavailable")
+            disk, directory_disk, on_disk, count, directory_size, offset, comment = struct.unpack(
+                "<4H2LH", tail[end + 4:end + 22])
+            if (disk or directory_disk or on_disk != count or count >= 65535
+                    or count > LOG_MEMBER_COUNT or len(tail) - end != 22 + comment
+                    or offset + directory_size != size - len(tail) + end):
+                raise ValueError("failed-step log archive exceeds member limit or invalid directory")
+            output.seek(0)
+            with zipfile.ZipFile(output) as archive:
+                if len(archive.infolist()) > LOG_MEMBER_COUNT:
+                    raise ValueError("failed-step log archive exceeds member limit")
+                yield archive
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+
+
+def log_job_name(name):
+    # Provider convention also used by gh v2.99.0 logs.go: remove / and :,
+    # truncate at 90 UTF-16 units, trim. Collisions are refused, never guessed.
+    name = name.replace("/", "").replace(":", "")
+    return name.encode("utf-16-le")[:180].decode("utf-16-le", errors="replace").strip()
+
+
+def original_failure_notes(archive, roots, jobs):
+    """Read only unique pre-hook failed step files, retaining provider errors.
+
+    Group headings contain shell commands, not reviewed step names, and REST
+    timestamps have only second precision. Neither can safely split raw logs.
+    """
+    selected = []
+    notes = {job["id"]: [] for job in roots}
+    for job in roots:
+        directory = log_job_name(job["name"])
+        if not directory or sum(log_job_name(j["name"]) == directory for j in jobs) != 1:
+            raise ValueError("failed-step log job directory ambiguous")
+        steps = job["steps"]
+        numbers = [step.get("number") for step in steps]
+        if (not all(positive_id(number) for number in numbers)
+                or numbers != sorted(set(numbers))):
+            raise ValueError("failed-step log step numbers unavailable or ambiguous")
+        hook = next(i for i, step in enumerate(steps) if step.get("name") == FAIL_FAST_STEP)
+        for step in steps[:hook + 1]:
+            is_failure = step.get("status") == "completed" and step.get("conclusion") == "failure"
+            if not is_failure and step.get("name") != FAIL_FAST_STEP:
+                continue
+            pattern = rf"{re.escape(directory)}/{step['number']}_.*\.txt"
+            matches = [entry for entry in archive.infolist() if re.fullmatch(pattern, entry.filename)]
+            if len(matches) != 1 or matches[0].is_dir():
+                raise ValueError("failed-step log member unavailable or ambiguous")
+            selected.append((job["id"], is_failure, matches[0]))
+    if (any(entry.file_size > LOG_MEMBER_LIMIT for _, _, entry in selected)
+            or sum(entry.file_size for _, _, entry in selected) > LOG_SELECTED_LIMIT):
+        raise ValueError("failed-step log expansion exceeds byte limit")
+    for identity, is_failure, entry in selected:
+        with archive.open(entry) as stream:
+            data = stream.read(LOG_MEMBER_LIMIT + 1)
+            if len(data) != entry.file_size or len(data) > LOG_MEMBER_LIMIT or stream.read(1):
+                raise ValueError("failed-step log member incomplete or oversized")
+        text = data.decode("utf-8-sig")  # strict; complete read also checks the ZIP CRC
+        if is_failure:
+            errors = re.findall(r"^\d{4}-\d\d-\d\dT[^\s]+Z ##\[error\](.*)$", text, re.M)
+            if not errors:
+                raise ValueError("failed-step original error annotations unavailable")
+            notes[identity].extend(dict(annotation_level="failure", message=message) for message in errors)
+    return notes
 
 
 def workflow_path(workflow):
@@ -267,7 +384,7 @@ def last_verified(repo, branch, workflow, head="HEAD", name="verified", remote=F
 PENDING_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
-def failed_jobs(repo, identity, branch="main", workflow="verify.yml"):
+def failed_jobs(repo, identity, branch="main", workflow="verify.yml", with_annotations=False):
     """Failing jobs of a completed run. Complete, valid jobs establish them.
 
     A job that is still queued or running (a non-lane job such as an alert that
@@ -279,7 +396,8 @@ def failed_jobs(repo, identity, branch="main", workflow="verify.yml"):
     if not isinstance(identity, str) or re.fullmatch(r"[1-9][0-9]*", identity) is None:
         raise ValueError("invalid workflow run identity")
     jobs = paged(f"repos/{repo}/actions/runs/{identity}/jobs?filter=latest", "jobs")
-    failed, pending = [], []
+    failed, pending, roots = [], [], []
+    run = None
     for job in jobs:
         name = job.get("name")
         if (not isinstance(name, str) or not name.strip()
@@ -302,6 +420,7 @@ def failed_jobs(repo, identity, branch="main", workflow="verify.yml"):
                 raise ValueError("self-cancelled failure evidence unavailable or unauthenticated")
             # Normalize only this proven failing job, not cancelled siblings.
             # The hook and later cleanup can never supply a failing unit.
+            roots.append(job)
             index = next(i for i, step in enumerate(job["steps"]) if step.get("name") == FAIL_FAST_STEP)
             job = dict(job, conclusion="failure", steps=job["steps"][:index])
         if job["conclusion"] in ("failure", "timed_out"):
@@ -317,6 +436,20 @@ def failed_jobs(repo, identity, branch="main", workflow="verify.yml"):
         if (not isinstance(run, dict) or run.get("id") != int(identity)
                 or run.get("status") != "completed"):
             raise ValueError("previous-run lane evidence incomplete: the run is still active")
+    if with_annotations:
+        failed = [dict(job) for job in failed]
+        recovered = {}
+        if roots:
+            with attempt_logs(repo, run) as archive:
+                recovered = original_failure_notes(archive, roots, jobs)
+        for job in failed:
+            if job["id"] in recovered:
+                job["annotations"] = recovered[job["id"]]
+            else:
+                check_id = linked_check_id(job, repo)
+                if check_id is None:
+                    raise ValueError("previous-run lane evidence unavailable or invalid")
+                job["annotations"] = check_annotations(repo, check_id)
     return failed
 
 
@@ -391,11 +524,8 @@ def failed_units(repo, identity, branch="main", workflow="verify.yml"):
     error: the caller escalates, it never compares a partial signature.
     """
     rows = []
-    for job in failed_jobs(repo, identity, branch, workflow):
-        check_id = linked_check_id(job, repo)
-        if check_id is None:
-            raise ValueError("previous-run lane evidence unavailable or invalid")
-        rows.append(f"{lane_of(job)}\t{lane_signature(job, check_annotations(repo, check_id))}")
+    for job in failed_jobs(repo, identity, branch, workflow, with_annotations=True):
+        rows.append(f"{lane_of(job)}\t{lane_signature(job, job['annotations'])}")
     return "\n".join(rows)
 
 
@@ -415,6 +545,10 @@ def main():
         print(json.dumps({"total_count": len(rows), "workflow_runs": rows}))
     elif command == "failed-jobs":
         print(json.dumps(failed_jobs(repo, identity, branch, workflow)))
+    elif command == "failed-evidence":
+        jobs = failed_jobs(repo, identity, branch, workflow, with_annotations=True)
+        print(json.dumps({"jobs": [dict(job, annotations=[note["message"] for note in job["annotations"]])
+                                  for job in jobs]}))
     elif command == "failed-lanes":
         print(failed_lanes(repo, identity, branch, workflow))
     elif command == "failed-units":

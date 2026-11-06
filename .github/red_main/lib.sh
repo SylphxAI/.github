@@ -126,18 +126,10 @@ gha() { GH_TOKEN="$ACTIONS_TOKEN" gh "$@"; }
 # NOT `none`: it returns non-zero, and the caller stops, so a
 # classifier error never falls into the revert path.
 classify_run() {
-  local run_id="$1" jobs_json enriched id check_id notes
-  jobs_json=$(python3 "$WORK_DIR/proof.py" failed-jobs "$REPO" "${TRUNK:-main}" \
-    "${VERIFY_WORKFLOW:-verify.yml}" "$run_id") || return 1
-  enriched='[]'
-  for id in $(jq -r '.[].id' <<<"$jobs_json"); do
-    check_id=$(jq -c --argjson id "$id" '.[] | select(.id == $id)' <<<"$jobs_json" \
-      | python3 "$WORK_DIR/proof.py" check-id "$REPO") || return 1
-    notes=$(gha api "repos/$REPO/check-runs/$check_id/annotations?per_page=100" --jq '[.[].message]') || return 1
-    enriched=$(jq -c --argjson id "$id" --argjson notes "$notes" --argjson jobs "$jobs_json" \
-      '. + [ ($jobs[] | select(.id == $id)) + {annotations: $notes} ]' <<<"$enriched")
-  done
-  jq -c '{jobs: .}' <<<"$enriched" | python3 "$WORK_DIR/infra.py"
+  local evidence
+  evidence=$(python3 "$WORK_DIR/proof.py" failed-evidence "$REPO" "${TRUNK:-main}" \
+    "${VERIFY_WORKFLOW:-verify.yml}" "$1") || return 1
+  printf '%s' "$evidence" | python3 "$WORK_DIR/infra.py"
 }
 
 # read_proof <run|sha> <args...>: unavailable is unverified, never

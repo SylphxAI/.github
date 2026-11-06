@@ -6,6 +6,7 @@ ran outside main. The hooks and job/check/attempt identities are unchanged.
 """
 import copy
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +23,20 @@ REPO = "SylphxAI/cloud"
 spec = importlib.util.spec_from_file_location("proof", ROOT / ".github/red_main/proof.py")
 proof = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proof)
+
+
+def log_bytes(failed=None, hook=None, extra=()):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("required/4_Synthetic required failure.txt", failed if failed is not None else (DATA / "failed-step.txt").read_bytes())
+        archive.writestr("required/5_Cancel failed current run.txt", hook if hook is not None else (DATA / "hook-step.txt").read_bytes())
+        for name, data in extra:
+            archive.writestr(name, data)
+    return output.getvalue()
+
+
+def logs(*args):
+    return zipfile.ZipFile(io.BytesIO(log_bytes()))
 
 
 class FailFastTest(unittest.TestCase):
@@ -128,21 +144,18 @@ class FailFastTest(unittest.TestCase):
         self.check["app"]["id"] = 1
         self.assertEqual(self.verdict(), "unknown")
 
-    def test_two_self_cancelled_failures_confirm_the_same_unit(self):
-        notes = json.loads((DATA / "annotations.json").read_text())
+    def test_original_step_errors_confirm_an_ordinary_diagnostic_candidate(self):
         normalized = self.normalized()[0]
-        # Force-cancel replaces annotations. Do not invent the ordinary run's
-        # missing error text or weaken the existing same-error requirement.
-        ordinary = dict(normalized, conclusion="failure")
-        self.assertNotEqual(proof.lane_signature(ordinary, [{"annotation_level": "failure", "message": "assertion x failed"}]),
-                            proof.lane_signature(normalized, notes))
-        with patch.object(proof, "api", side_effect=self.api):
+        ordinary_notes = [dict(annotation_level="failure", message="Process completed with exit code 1.")]
+        with patch.object(proof, "api", side_effect=self.api), patch.object(proof, "attempt_logs", side_effect=logs):
             units = proof.failed_units(REPO, self.identity)
             self.assertEqual(proof.failed_lanes(REPO, self.identity), self.jobs[0]["name"])
-        self.assertIn("failure at Synthetic required failure: The run was canceled forcefully by @github-actions[bot].", units)
+        ordinary = proof.lane_signature(normalized, ordinary_notes)
+        self.assertEqual(units, f"required\t{ordinary}")
+        self.assertNotIn("forcefully", units)
         with tempfile.TemporaryDirectory() as tmp:
             previous, current, confirmed = [Path(tmp) / x for x in ("prev", "cur", "confirmed")]
-            row = f"lane\t{units.split(chr(9))[1]}\t{self.jobs[0]['name']}\n"
+            row = f"lane\t{ordinary}\t{self.jobs[0]['name']}\n"
             previous.write_text(row)
             current.write_text(row)
             done = subprocess.run([sys.executable, str(ROOT / ".github/red_main/confirm.py"),
@@ -150,6 +163,88 @@ class FailFastTest(unittest.TestCase):
                                   capture_output=True, text=True, check=True)
             self.assertTrue(done.stdout.startswith("yes "), done.stdout)
             self.assertEqual(confirmed.read_text(), row)
+            current.write_text(row.replace("exit code 1", "exit code 2"))
+            done = subprocess.run([sys.executable, str(ROOT / ".github/red_main/confirm.py"),
+                                   "failure", str(previous), str(current), str(confirmed)],
+                                  capture_output=True, text=True, check=True)
+            self.assertTrue(done.stdout.startswith("no"), done.stdout)
+
+    def test_original_logs_are_mandatory_for_diagnostics_but_not_failure_or_success_proof(self):
+        with patch.object(proof, "api", side_effect=self.api), patch.object(proof, "attempt_logs", side_effect=ValueError("logs unavailable")):
+            self.assertEqual(proof.checked_verdict(self.run, REPO, "main", "verify.yml"), "failure")
+            with self.assertRaisesRegex(ValueError, "logs unavailable"):
+                proof.failed_units(REPO, self.identity)
+
+    def test_step_archive_mapping_is_unique_bounded_and_excludes_hook_and_cleanup_errors(self):
+        root = self.jobs[0]
+        def recovered(data):
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                return proof.original_failure_notes(archive, [root], self.jobs)
+        hook_error = b"2026-11-06T20:22:18Z ##[error]hook must not become a diagnostic\n"
+        cleanup = ("required/6_Complete job.txt", b"2026-11-06T20:22:18Z ##[error]cleanup must not become a diagnostic\n")
+        notes = recovered(log_bytes(hook=hook_error, extra=[cleanup]))[root["id"]]
+        self.assertEqual([n["message"] for n in notes], ["Process completed with exit code 1."])
+        cases = [log_bytes(failed=b"no error annotation"), log_bytes(failed=b"\xff"),
+                 log_bytes(extra=[("required/4_ambiguous.txt", b"other")])]
+        for data in cases:
+            with self.subTest(data=data[:20]), self.assertRaises((ValueError, UnicodeError)):
+                recovered(data)
+        for excluded in ["required/4_Synthetic required failure.txt", "required/5_Cancel failed current run.txt"]:
+            data = io.BytesIO()
+            with zipfile.ZipFile(io.BytesIO(log_bytes())) as source, zipfile.ZipFile(data, "w") as target:
+                for name in source.namelist():
+                    if name != excluded:
+                        target.writestr(name, source.read(name))
+            with self.subTest(missing=excluded), self.assertRaises(ValueError):
+                recovered(data.getvalue())
+        # A valid directory with damaged stored bytes must fail the CRC check.
+        damaged = io.BytesIO()
+        with zipfile.ZipFile(damaged, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("required/4_Synthetic required failure.txt", (DATA / "failed-step.txt").read_bytes())
+            archive.writestr("required/5_Cancel failed current run.txt", (DATA / "hook-step.txt").read_bytes())
+        payload = damaged.getvalue().replace(b"Process completed", b"Process corruptxx", 1)
+        with self.assertRaises(zipfile.BadZipFile):
+            recovered(payload)
+        for limit in ("LOG_MEMBER_LIMIT", "LOG_SELECTED_LIMIT"):
+            with patch.object(proof, limit, 100), self.assertRaisesRegex(ValueError, "byte limit"):
+                recovered(log_bytes())
+        self.jobs[1]["name"] = "re:quired/"  # collides after provider sanitization
+        with self.assertRaisesRegex(ValueError, "directory ambiguous"):
+            recovered(log_bytes())
+        self.jobs.pop()
+        root["steps"][3]["number"] = 5
+        with self.assertRaisesRegex(ValueError, "step numbers"):
+            recovered(log_bytes())
+
+    def test_log_download_caps_bytes_timeout_members_and_rejects_bad_archives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "logs.zip"
+            archive.write_bytes(log_bytes())
+            forge = root / "gh"
+            forge.write_text("#!/usr/bin/env python3\nimport os,sys,time\nfrom pathlib import Path\n"
+                             "assert sys.argv[1:3] == ['api', '--allow-escape-sequences']\n"
+                             f"assert sys.argv[3].endswith('/{self.identity}/attempts/1/logs')\n"
+                             "if os.environ.get('SLOW'): time.sleep(2)\n"
+                             "sys.stdout.buffer.write(Path(os.environ['LOG_ARCHIVE']).read_bytes())\n")
+            forge.chmod(0o755)
+            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", LOG_ARCHIVE=str(archive))
+            with patch.dict(os.environ, env):
+                with proof.attempt_logs(REPO, self.run) as received:
+                    self.assertEqual(received.namelist(), logs().namelist())
+                with patch.object(proof, "LOG_ARCHIVE_LIMIT", 100), self.assertRaisesRegex(ValueError, "byte limit"):
+                    with proof.attempt_logs(REPO, self.run):
+                        self.fail("oversized archive admitted")
+                with patch.object(proof, "LOG_MEMBER_COUNT", 1), self.assertRaisesRegex(ValueError, "member limit"):
+                    with proof.attempt_logs(REPO, self.run):
+                        self.fail("too many members admitted")
+                with patch.dict(os.environ, SLOW="yes"), patch.object(proof, "LOG_TIMEOUT", 0.05), self.assertRaisesRegex(ValueError, "timed out"):
+                    with proof.attempt_logs(REPO, self.run):
+                        self.fail("late producer admitted")
+                archive.write_bytes(log_bytes()[:-10])
+                with self.assertRaises((ValueError, zipfile.BadZipFile)):
+                    with proof.attempt_logs(REPO, self.run):
+                        self.fail("truncated archive admitted")
 
     def test_prev_selects_authenticated_cancelled_failure_and_skips_plain_cancel(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -214,9 +309,10 @@ class FailFastTest(unittest.TestCase):
                 (work / name).write_text((ROOT / ".github/red_main" / name).read_text())
             forge = root / "gh"
             forge.write_text("#!/usr/bin/env python3\nimport json,os,sys\n"
-                             "p=sys.argv[2]\n"
+                             "p=next(x for x in sys.argv if x.startswith('repos/'))\n"
                              "data=json.loads(os.environ['PROVIDER'])\n"
                              "if os.environ.get('UNAVAILABLE')=='yes': sys.exit(1)\n"
+                             "if p.endswith('/logs'): sys.stdout.buffer.write(open(os.environ['LOG_ARCHIVE'],'rb').read()); sys.exit(0)\n"
                              "key='jobs' if '/jobs?' in p else 'notes' if '/annotations?' in p else 'check' if '/check-runs/' in p else 'run'\n"
                              "v=data[key]\n"
                              "if '--jq' in sys.argv: v=[n['message'] for n in v]\n"
@@ -224,7 +320,10 @@ class FailFastTest(unittest.TestCase):
             forge.chmod(0o755)
             env = dict(os.environ, RUNNER_TEMP=tmp, REPO=REPO, ACTIONS_TOKEN="fixture",
                        PATH=f"{root}:{os.environ['PATH']}", ID=self.identity)
-            def classify(notes, unavailable=False):
+            archive = root / "logs.zip"
+            env["LOG_ARCHIVE"] = str(archive)
+            def classify(notes, unavailable=False, failed=None):
+                archive.write_bytes(log_bytes(failed=failed))
                 env['PROVIDER'] = json.dumps(dict(jobs=dict(total_count=len(self.jobs), jobs=self.jobs),
                                                   run=self.run, check=self.check, notes=notes))
                 env['UNAVAILABLE'] = 'yes' if unavailable else 'no'
@@ -235,9 +334,12 @@ class FailFastTest(unittest.TestCase):
             self.assertEqual(code.returncode, 0, code.stderr)
             self.assertEqual(code.stdout.strip(), "none")
             self.failure()["name"] = "Restore cache"
-            infra = classify([dict(annotation_level="failure", message="Failed to restore: 403 Forbidden")])
+            infra = classify(notes, failed=b"2026-11-06T20:22:17Z ##[error]Failed to restore: 403 Forbidden\n")
             self.assertEqual(infra.returncode, 0, infra.stderr)
             self.assertEqual(infra.stdout.strip(), "infra cache-403")
+            missing_logs = classify(notes, failed=b"no original error")
+            self.assertNotEqual(missing_logs.returncode, 0)
+            self.assertEqual(missing_logs.stdout, "")
             self.assertNotEqual(classify(notes, unavailable=True).returncode, 0)
 
 
