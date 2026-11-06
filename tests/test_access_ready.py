@@ -50,12 +50,12 @@ class AccessReadyTests(unittest.TestCase):
         for call in read.call_args_list:
             self.assertEqual(call.args,(API+"/v1/whoami","same-key"))
             self.assertTrue(call.kwargs["allow_propagation"])
-        self.assertEqual([call.kwargs["timeout"] for call in read.call_args_list],[30,28])
+        self.assertEqual([call.kwargs["timeout"] for call in read.call_args_list],[180,178])
         now[0] = 0
         with patch.object(ready.time,"sleep",side_effect=sleep), \
              patch.object(ready.time,"monotonic",side_effect=lambda:now[0]), self.assertRaises(ready.ReadinessError):
             ready.wait_for_identity(lambda *args,**kw:{"code":"key_not_yet_propagated"},"same-key",0,API)
-        self.assertEqual(now[0],30)
+        self.assertEqual(now[0],180)
 
     def test_curl_read_uses_total_timeout_and_stdin_credential_without_logging(self):
         cases = ((200,{"principal":"prn_test"},True),
