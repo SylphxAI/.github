@@ -34,7 +34,8 @@ export function contextBudget(metadata, model, maxOutputTokens) {
 // The environment's ordinary AI policy chooses eligible paid-account capacity.
 // This client never selects an area, changes model, retries, or falls back.
 export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.com',
-  maxOutputTokens, reasoningEffort, deadlineMs, fetcher = fetch, current }) {
+  maxOutputTokens, reasoningEffort, deadlineMs, fetcher = fetch, current,
+  identityLog = value => process.stderr.write(`${JSON.stringify({ review_identity: value })}\n`) }) {
   const origin = new URL(apiOrigin);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== '/') {
     throw new Error('Review gateway must be an ordinary HTTPS API origin.');
@@ -127,13 +128,15 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
       const fields = echoed && typeof echoed === 'object' && !Array.isArray(echoed) ? identityFields.filter(key => echoed[key] !== input[key]) : [];
       // Fixed field names and fingerprints retain each raw echo's identity
       // without retaining arbitrary model strings or echoed source/secrets.
-      identities.push({ input_digest: input.input_digest, scope: input.scope ?? null, attempt,
+      const identity = { input_digest: input.input_digest, scope: input.scope ?? null, attempt,
         expected: requestIdentity(input), returned: Object.fromEntries(identityFields.map(key => {
           const value = echoed?.[key], encoded = value === undefined ? null : JSON.stringify(value);
           return [key, { type: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
             value: value === input[key] ? input[key] : '[redacted]',
             bytes: encoded === null ? null : Buffer.byteLength(encoded), sha256: encoded === null ? null : digest(value) }];
-        })) });
+        })) };
+      identities.push(identity);
+      if (fields.length) identityLog(identity);
       let parsed = parseReviewResult(choice.message.content, input);
       const mayCorrect = retriesAllowed && attempt < 3 && Date.now() < deadlineMs;
       if (parsed.status === 'unavailable' && sourceValidationReasons.includes(parsed.reason) && !mayCorrect) {

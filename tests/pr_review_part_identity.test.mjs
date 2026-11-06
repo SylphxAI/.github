@@ -28,8 +28,8 @@ const wire = (input, changes = {}) => ({ schema_version: 1, repository_id: input
 const response = value => ({ ok: true, status: 200, json: async () => ({ object: 'chat.completion', model,
   choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(value) } }] }) });
 function engine(reply, byteLimit = byteBudget) {
-  const posts = [], attempts = new Map();
-  const review = gatewayReviewer({ token: 'fixture', ...configuration, deadlineMs: Date.now() + 10_000,
+  const posts = [], attempts = new Map(), logged = [];
+  const review = gatewayReviewer({ token: 'fixture', ...configuration, identityLog: record => logged.push(record), deadlineMs: Date.now() + 10_000,
     fetcher: async (url, request) => {
       if (request.method === 'GET') {
         assert.equal(new URL(url).pathname, '/v1/public/models/vendor/reviewer');
@@ -44,10 +44,10 @@ function engine(reply, byteLimit = byteBudget) {
       const value = reply(part, n, body);
       return value?.error ? { ok: false, status: 429, json: async () => value } : response(value);
     } });
-  return { review, posts };
+  return { review, posts, logged };
 }
 async function publish(reply, { current = () => true, sources = source, byteLimit = byteBudget } = {}) {
-  const { review, posts } = engine(reply, byteLimit), run = { id: 1, name: CHECK_NAME, head_sha: head, app: { id: APP_ID } };
+  const { review, posts, logged } = engine(reply, byteLimit), run = { id: 1, name: CHECK_NAME, head_sha: head, app: { id: APP_ID } };
   const reads = [], saved = [];
   const github = { repository: 'example/repo', current: async () => current(posts), begin: async () => run,
     finish: async (_run, conclusion, output) => Object.assign(run, { conclusion, output }),
@@ -63,7 +63,7 @@ async function publish(reply, { current = () => true, sources = source, byteLimi
     base_sha: base, head_sha: head, files: Object.keys(sources).map(filename => ({ filename, status: 'modified' })) },
     trigger: { kind: 'workflow_dispatch', id: '1', generation: '1' }, createReviewInput,
     engineVersion: 'fixture', engine: review, onResult: result => saved.push(result), deadlineMs: Date.now() + 10_000 });
-  return { receipt, run, posts, reads, saved };
+  return { receipt, run, posts, reads, saved, logged };
 }
 const second = part => part.scope?.kind === 'partition' && part.scope.index === '00000002';
 const needDependency = part => wire(part, { completion: 'incomplete', omitted_paths: part.files.map(f => f.path),
@@ -188,7 +188,7 @@ const partNumber = part => Number(part.scope?.index);
 
 for (const key of identityFields) test(`all request identities use the same bounded correction: ${key}`, async () => {
   const bad = 'PRIVATE_RETURNED_IDENTITY_CANARY';
-  const { receipt, posts, saved, run } = await publish((part, attempt, body) => {
+  const { receipt, posts, saved, run, logged } = await publish((part, attempt, body) => {
     if (!second(part)) return wire(part);
     if (attempt === 1) return wire(part, { [key]: bad });
     const correction = JSON.parse(body.messages.at(-1).content);
@@ -200,6 +200,7 @@ for (const key of identityFields) test(`all request identities use the same boun
   assert.equal(posts.filter(p => second(p.part)).length, 2);
   const badEcho = saved.at(-1).identity_diagnostics.find(d => d.returned[key].value === '[redacted]');
   assert.ok(badEcho); assert.equal(badEcho.returned[key].sha256, digest(bad));
+  assert.deepEqual(logged, [badEcho], 'redacted mismatch diagnostics survive in the workflow log without artifacts');
   assert.equal(Object.keys(badEcho.returned).length, 6);
   assert.ok(!JSON.stringify({ receipt, output: run.output, diagnostics: saved.at(-1).identity_diagnostics }).includes(bad));
 });
