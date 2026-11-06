@@ -85,7 +85,11 @@ If the symptom is in unchanged code, include exact evidence of the causative
 change so it can supply the anchor. An observation with no changed-line evidence
 will be retained as a non-blocking outside-the-change note, never an off-diff annotation.
 For deleted code with no suitable head anchor, use side=base and the old line.
-Evidence may cite supplied base, head or context. For complete physical lines,
+Evidence may cite supplied base, head or context. After bounded correction attempts,
+an item whose evidence cannot be grounded is discarded and counted visibly; no
+unsupported evidence or finding is published. This does not excuse incomplete
+source coverage, invalid identity or unresolved binary provenance.
+For complete physical lines,
 set start_byte=end_byte=null; quotes join lines with LF and omit the final line
 ending. For partial lines or literal fragments, copy exact start_byte/end_byte
 offsets (zero-based UTF8 bytes, end exclusive) and verbatim content, including
