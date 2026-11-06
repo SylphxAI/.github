@@ -36,8 +36,13 @@ class ParseLanesTest(unittest.TestCase):
     def test_parses_names_and_patterns(self) -> None:
         self.assertEqual(LANES, {"lint": [], "test": ["src/*", "tests/*"], "e2e": ["web/*"]})
 
-    def test_rejects_bad_or_duplicate_names_and_empty(self) -> None:
-        for text in ("bad name: x", "a:\na:", "", "# only a comment"):
+    def test_empty_lanes_support_base_only_callers(self) -> None:
+        for text in ("", " \n\t", "# only a comment"):
+            with self.subTest(text=text):
+                self.assertEqual(ci_range.parse_lanes(text), {})
+
+    def test_rejects_bad_or_duplicate_names(self) -> None:
+        for text in ("bad name: x", "a:\na:", ": src/*"):
             with self.assertRaises(ValueError, msg=text):
                 ci_range.parse_lanes(text)
 
@@ -120,7 +125,7 @@ print(json.dumps(body))
 class MainTest(unittest.TestCase):
     """End to end on a real repository, with a fake forge where a push needs one."""
 
-    def run_in_repo(self, event: str, payload_for, verified=None) -> dict[str, str]:
+    def run_in_repo(self, event: str, payload_for, verified=None, lanes="lint:\ntest: src/*\ne2e: web/*") -> dict[str, str]:
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as tools:
             git = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True, capture_output=True, text=True).stdout.strip()
             git("init", "-q", "-b", "main")
@@ -137,7 +142,7 @@ class MainTest(unittest.TestCase):
             event_path = pathlib.Path(tmp, "..", f"event-{os.getpid()}.json").resolve()
             event_path.write_text(json.dumps(payload_for(base)))
             out = pathlib.Path(tmp, "..", f"out-{os.getpid()}").resolve()
-            env = dict(os.environ, LANES="lint:\ntest: src/*\ne2e: web/*", GITHUB_EVENT_NAME=event,
+            env = dict(os.environ, LANES=lanes, GITHUB_EVENT_NAME=event,
                        GITHUB_EVENT_PATH=str(event_path), GITHUB_OUTPUT=str(out), GITHUB_REPOSITORY="o/r",
                        GITHUB_WORKFLOW_REF="o/r/.github/workflows/ci.yml@refs/heads/main", TOKEN="x")
             env.pop("GITHUB_STEP_SUMMARY", None)
@@ -155,6 +160,18 @@ class MainTest(unittest.TestCase):
             finally:
                 event_path.unlink(missing_ok=True)
                 out.unlink(missing_ok=True)
+
+    def test_base_only_push_preserves_range_outputs(self) -> None:
+        outputs, base = self.run_in_repo("push", lambda b: {}, verified="base", lanes="")
+        self.assertEqual(outputs, {"base": base, "run": "{}", "changed": "1"})
+
+    def test_base_only_without_verified_ancestor_keeps_range_unknown(self) -> None:
+        outputs, _ = self.run_in_repo("push", lambda b: {}, verified="0" * 40, lanes="")
+        self.assertEqual(outputs, {"base": "", "run": "{}", "changed": ""})
+
+    def test_base_only_merge_group_preserves_range_outputs(self) -> None:
+        outputs, base = self.run_in_repo("merge_group", lambda b: {"merge_group": {"base_sha": b}}, lanes="")
+        self.assertEqual(outputs, {"base": base, "run": "{}", "changed": "1"})
 
     def test_merge_group_selects_by_the_diff(self) -> None:
         outputs, base = self.run_in_repo("merge_group", lambda b: {"merge_group": {"base_sha": b}})
