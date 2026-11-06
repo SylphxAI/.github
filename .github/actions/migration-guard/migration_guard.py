@@ -203,32 +203,38 @@ def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
                     closing = False
                 substart = i + 1
         elif not blocks:
-            if depth == 0 and kw(token, "BEGIN"):
-                opener = inline_body_header(procedural_statement(tokens[start:i]), dialect) and (
-                    dialect == "mysql" or i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC"))
+            if depth == 0 and kw(token, "BEGIN") and not (i + 1 < len(tokens) and tokens[i + 1].value == ":"):
+                header = procedural_statement(tokens[start:i])
+                atomic = dialect == "postgres" and i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC")
+                opener = inline_body_header(header, dialect) and (dialect == "mysql" or atomic)
+                if atomic and routine_kind(header) in {"FUNCTION", "PROCEDURE"} and not opener:
+                    raise SqlError(f"line {token.line}: unsupported inline routine header")
                 if opener:
                     blocks.append("BEGIN")
                     substart = i + (2 if dialect == "postgres" else 1)
         elif kw(token, "CASE"):
             blocks.append("CASE")
-        elif kw(token, "BEGIN") and depth == 0:
+        elif kw(token, "BEGIN") and depth == 0 and not (i + 1 < len(tokens) and tokens[i + 1].value == ":"):
             prefix = tokens[substart:i]
             label = len(prefix) == 2 and prefix[0].kind in {"word", "identifier"} and prefix[1].value == ":"
             expression = any(t.kind == "word" and t.value in {
-                "SELECT", "RETURN", "SET", "CALL", "INSERT", "UPDATE", "DELETE"}
+                "SELECT", "RETURN", "SET", "CALL", "DO", "INSERT", "UPDATE", "DELETE"}
                 for t in top_level(prefix))
             control = not expression and prefix and prefix[0].kind == "word" and prefix[0].value in {
                 "IF", "ELSEIF", "ELSE", "WHILE", "LOOP", "REPEAT", "FOR", "CASE"}
             after_control = control and prefix[-1].kind == "word" and prefix[-1].value in {
                 "THEN", "ELSE", "DO", "LOOP", "REPEAT"}
-            handler = not expression and starts(prefix, "DECLARE") and has(prefix, "HANDLER")
+            handler = mysql_handler_header(prefix)
             if dialect == "mysql" and (not prefix or label or after_control or handler):
                 blocks.append("BEGIN")
                 substart = i + 1
-            elif (dialect == "postgres" and i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC")
-                  and inline_body_header(tokens[substart:i], dialect)):
-                blocks.append("BEGIN")
-                substart = i + 2
+            elif dialect == "postgres" and i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC"):
+                header = procedural_statement(tokens[substart:i])
+                if inline_body_header(header, dialect):
+                    blocks.append("BEGIN")
+                    substart = i + 2
+                elif routine_kind(header) in {"FUNCTION", "PROCEDURE"}:
+                    raise SqlError(f"line {token.line}: unsupported nested inline routine header")
         elif kw(token, "END") and (blocks[-1] == "CASE" or i == substart):
             following = tokens[i + 1] if i + 1 < len(tokens) else None
             if following and following.kind == "word" and following.value in {"IF", "LOOP", "WHILE", "REPEAT"}:
@@ -253,6 +259,35 @@ def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
     return parts
 
 
+def mysql_handler_header(prefix: list[Token]) -> bool:
+    """A compound handler starts immediately after its complete condition list."""
+    if (len(prefix) < 5 or not starts(prefix, "DECLARE")
+            or prefix[1].value not in {"CONTINUE", "EXIT", "UNDO"}
+            or not starts(prefix[2:], "HANDLER", "FOR")):
+        return False
+    at = 4
+    while at < len(prefix):
+        if starts(prefix[at:], "SQLSTATE"):
+            at += 1
+            if starts(prefix[at:], "VALUE"):
+                at += 1
+            if at >= len(prefix) or prefix[at].kind != "literal":
+                return False
+            at += 1
+        elif starts(prefix[at:], "NOT", "FOUND"):
+            at += 2
+        elif prefix[at].kind in {"word", "identifier"}:
+            at += 1  # numeric error code, named condition, or condition class
+        else:
+            return False
+        if at == len(prefix):
+            return True
+        if prefix[at].value != ",":
+            return False  # a handler statement has already started
+        at += 1
+    return False
+
+
 def inline_body_header(prefix: list[Token], dialect: str) -> bool:
     """Prove BEGIN follows a definition header, not a name or SQL expression."""
     kind = routine_kind(prefix)
@@ -273,6 +308,10 @@ def inline_body_header(prefix: list[Token], dialect: str) -> bool:
         if row is None:
             return False
         at = row + 3
+        if at < len(prefix) and prefix[at].value in {"FOLLOWS", "PRECEDES"}:
+            order_name, at = name(prefix, at + 1)
+            if not order_name:
+                return False
     elif kind == "EVENT":
         if dialect != "mysql":
             return False
@@ -282,10 +321,15 @@ def inline_body_header(prefix: list[Token], dialect: str) -> bool:
         at = do + 1
     # Header attributes are not executable body statements. Reject a BEGIN
     # identifier used by a single-statement body (SELECT begin, RETURN begin).
-    return not any(t.kind == "word" and t.value in {
-        "SELECT", "RETURN", "SET", "CALL", "INSERT", "UPDATE", "DELETE", "REPLACE",
+    body_verbs = {
+        "SELECT", "RETURN", "CALL", "DO", "INSERT", "UPDATE", "DELETE", "REPLACE",
         "WITH", "ALTER", "CREATE", "DROP", "TRUNCATE", "GRANT", "REVOKE",
-        "IF", "CASE", "LOOP", "WHILE", "REPEAT"} for t in top_level(prefix[at:]))
+        "IF", "CASE", "LOOP", "WHILE", "REPEAT"}
+    # PostgreSQL SET is a routine-local configuration attribute, not a body.
+    # MySQL SET instead begins a single-statement executable routine body.
+    if dialect != "postgres":
+        body_verbs.add("SET")
+    return not any(t.kind == "word" and t.value in body_verbs for t in top_level(prefix[at:]))
 
 
 def inline_routine(stmt: list[Token], dialect: str) -> bool:
@@ -299,7 +343,18 @@ def inline_routine(stmt: list[Token], dialect: str) -> bool:
 def executed_mode_change(stmt: list[Token], dialect: str, nesting: int = 0) -> bool:
     if lexical_mode_change(procedural_statement(stmt)):
         return True
-    if not starts(procedural_statement(stmt), "DO"):
+    stmt = procedural_statement(stmt)
+    if dialect != "postgres" or not starts(stmt, "DO"):
+        return False
+    # An explicit contract may authorize another language, but its strings are
+    # not SQL syntax. Leave it opaque rather than inventing SQL lexical errors.
+    language = "PLPGSQL"
+    flat = top_level(stmt)
+    for i, token in enumerate(flat[:-1]):
+        if kw(token, "LANGUAGE"):
+            value = flat[i + 1]
+            language = value.value.upper() if value.kind in {"word", "identifier"} else value.raw[1:-1].upper()
+    if language not in {"SQL", "PLPGSQL"}:
         return False
     if nesting > 64:
         raise SqlError("executed SQL nesting is too deep to inspect")

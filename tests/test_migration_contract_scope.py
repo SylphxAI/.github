@@ -73,6 +73,49 @@ class ContractScopeTests(unittest.TestCase):
                 self.assertEqual(guard.check_sql(MARKER + sql, dialect), [])
                 self.assertEqual(guard.check_sql(MARKER + sql + "\nDROP TABLE accounts;", dialect), [(3, "DROP TABLE")])
 
+    def test_handler_and_control_operands_do_not_open_blocks(self):
+        for body in [
+            "IF true THEN DO begin; END IF;",
+            "DECLARE CONTINUE HANDLER FOR SQLEXCEPTION DO begin;",
+            "DECLARE CONTINUE HANDLER FOR SQLEXCEPTION GET DIAGNOSTICS begin = NUMBER;",
+            "DECLARE begin CURSOR FOR SELECT 1; DECLARE CONTINUE HANDLER FOR SQLEXCEPTION OPEN begin;",
+        ]:
+            with self.subTest(body=body):
+                sql = "CREATE PROCEDURE p(begin INT) BEGIN " + body + " END;"
+                self.assertEqual(guard.check_sql(MARKER + sql, "mysql"), [])
+                self.assertIn("DROP TABLE", str(guard.check_sql(MARKER + sql + " DROP TABLE accounts; END;", "mysql")))
+        for conditions in ["1050", "SQLSTATE '45000'", "SQLSTATE VALUE '45000', NOT FOUND, SQLEXCEPTION", "named_condition"]:
+            with self.subTest(conditions=conditions):
+                sql = "CREATE PROCEDURE p() BEGIN DECLARE CONTINUE HANDLER FOR " + conditions + " BEGIN SELECT 1; END; END;"
+                self.assertEqual(guard.check_sql(MARKER + sql, "mysql"), [])
+                self.assertIn("DROP TABLE", str(guard.check_sql(MARKER + sql + " DROP TABLE accounts;", "mysql")))
+
+    def test_trigger_order_names_are_header_identifiers(self):
+        for order in ("FOLLOWS", "PRECEDES"):
+            with self.subTest(order=order):
+                sql = "CREATE TRIGGER t BEFORE INSERT ON source FOR EACH ROW " + order + " begin BEGIN SET NEW.id=1; END;"
+                self.assertEqual(guard.check_sql(MARKER + sql, "mysql"), [])
+                self.assertIn("DROP TABLE", str(guard.check_sql(MARKER + sql + " DROP TABLE accounts; END;", "mysql")))
+
+    def test_postgres_routine_set_attributes_keep_body_opaque(self):
+        for setting in ("SET search_path=pg_catalog", "SET search_path TO pg_catalog, public", "SET search_path FROM CURRENT"):
+            with self.subTest(setting=setting):
+                sql = "CREATE PROCEDURE p() LANGUAGE SQL " + setting + " BEGIN ATOMIC SELECT 1; DELETE FROM retired; ALTER TABLE accounts ALTER region SET DEFAULT ''; END;"
+                self.assertEqual(guard.check_sql(MARKER + sql, "postgres"), [])
+                self.assertIn("SET NOT NULL", str(guard.check_sql(MARKER + sql + " ALTER TABLE accounts ALTER region SET NOT NULL;", "postgres")))
+                self.assertIn("DROP TABLE", str(guard.check_sql(MARKER + sql + " DROP TABLE accounts;", "postgres")))
+
+    def test_opaque_do_languages_are_not_sql_lexed_for_mode_changes(self):
+        body = "$$print('it\\'s fine')$$"
+        for sql in ("DO LANGUAGE plpython3u " + body, "DO " + body + " LANGUAGE plpython3u"):
+            with self.subTest(sql=sql):
+                tokens, _ = guard.lex(sql + ";", "postgres")
+                self.assertFalse(guard.executed_mode_change(tokens, "postgres"))
+                # DROP disables historical declaration credit, isolating the new
+                # mode traversal from the pre-existing declaration scanner.
+                self.assertEqual(guard.check_sql(MARKER + sql + ";\n" + MARKER + "DROP TABLE retired;", "postgres"), [])
+                self.assertIn("DROP TABLE", str(guard.check_sql(MARKER + sql + "; DROP TABLE accounts;", "postgres")))
+
     def test_nonreserved_begin_cannot_swallow_a_sibling_drop(self):
         for dialect, header in [("postgres", "CREATE PROCEDURE p() LANGUAGE SQL BEGIN ATOMIC"),
                                 ("mysql", "CREATE PROCEDURE p() BEGIN")]:
