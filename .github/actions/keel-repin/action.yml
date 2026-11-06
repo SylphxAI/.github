@@ -148,7 +148,8 @@ runs:
       run: |
         set -euo pipefail
         : "${KEEL_TOKEN:?missing read token for the Keel repository}"
-        n=0
+        n="${GIT_CONFIG_COUNT:-0}"
+        [[ "$n" =~ ^[0-9]+$ ]] || { echo "::error::invalid existing Git configuration count" >&2; exit 1; }
         add() {  # $1 = https://github.com/OWNER/[REPO], $2 = token
           {
             echo "GIT_CONFIG_KEY_$n=url.https://x-access-token:$2@${1#https://}.insteadOf"
