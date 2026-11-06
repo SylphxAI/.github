@@ -273,6 +273,15 @@ class ExpectedChecksContractTest(unittest.TestCase):
         self.assertEqual([r['name'] for r in self.compile({'caller.yml': caller,
             'reusable.yml': called})['checks']], ['call / Tests', 'call / verified'])
 
+    def test_non_matrix_strategy_is_a_literal_producer_identity(self):
+        for option in ['fail-fast: false', 'max-parallel: 2']:
+            with self.subTest(option=option):
+                covered = simple('Tests', extra=aggregate()).replace(
+                    '    name: Tests', f'    strategy: {{{option}}}\n    name: Tests')
+                independent = '  separate:\n    name: Tests\n    steps: [{run: true}]\n'
+                with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):
+                    self.compile({'ci.yml': covered + independent})
+
     def test_same_workflow_duplicate_names_refuse_before_grouping(self):
         text = simple(extra='  duplicate:\n    name: test\n    steps: [{run: true}]\n')
         with self.assertRaisesRegex(compiler.DeclarationError, 'ambiguous check name'):

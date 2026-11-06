@@ -171,7 +171,8 @@ def compile_declaration(workflows, resolve_remote=fetch_reusable, require_verifi
                 # named Tests produces Tests (1), Tests (2), etc. Do not invent
                 # an unsuffixed alias. Required matrix/dynamic names still
                 # refuse unless represented by a proven completion boundary.
-                if job.get("strategy") is not None or not isinstance(name, str) or "${{" in name:
+                strategy = job.get("strategy")
+                if (isinstance(strategy, dict) and "matrix" in strategy) or not isinstance(name, str) or "${{" in name:
                     continue
             else:
                 name = literal_name(key, job, location)
