@@ -33,7 +33,7 @@ def job_env(tmp_path):
     return env
 
 
-@pytest.mark.parametrize("prior_count", [None, 0, 3])
+@pytest.mark.parametrize("prior_count", [None, 0, 3, "03", "08", "000"])
 @pytest.mark.parametrize("layer", ["keel", "kit", "engine"])
 def test_read_tokens_append_without_changing_existing_config(tmp_path, prior_count, layer):
     env = job_env(tmp_path)
@@ -42,7 +42,9 @@ def test_read_tokens_append_without_changing_existing_config(tmp_path, prior_cou
         ("credential.helper", ""),
         ("http.https://github.com/example/registry.git.extraheader", "test-registry-header"),
         ("test.preserved", "caller value"),
-    ] if prior_count else []
+    ] if int(prior_count or 0) else []
+    prior.extend((f"test.previous{index}", f"caller value {index}")
+                 for index in range(len(prior), int(prior_count or 0)))
     if prior_count is not None:
         env["GIT_CONFIG_COUNT"] = str(prior_count)
     for index, (key, value) in enumerate(prior):
