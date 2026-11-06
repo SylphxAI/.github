@@ -7,16 +7,24 @@ dependencies; that dependency graph is the target completion boundary.
 A completed failed, cancelled, timed-out, action-required, startup-failed or
 stale check fails immediately on the next successful poll, even while other
 checks remain queued or running. Failure does not wait for a stable inventory.
+Failed empty gating workflow suites and completed non-successful `required`
+checks also fail immediately.
 
-Success behavior is unchanged from the earlier cross-workflow action: every
-observed, nonignored check must complete, skipped and neutral checks pass, and
-two consecutive complete polls must report the same check names. Pending-only
-inventories keep waiting. The polling interval defaults to 20 seconds, after an
-initial 45-second registration delay.
+Success retains the last polling revision's protections: every observed,
+nonignored check must complete, skipped and neutral checks pass unless
+explicitly required, and two consecutive complete polls must report the same
+check names. Pending-only inventories keep waiting. Superseded workflow
+attempts do not count; startup rejections, missing required checks and an empty
+inventory fail closed. API budget exhaustion past the deadline fails closed,
+and a low budget slows polling. The default interval is 20 seconds (60 on a
+low budget), after an initial 45-second registration delay.
 
 ```yaml
 permissions:
+  actions: read
   checks: read
+  contents: read
+  pull-requests: read
 jobs:
   ci-ok:
     runs-on: sylphx-linux-control
@@ -27,14 +35,17 @@ jobs:
           ignore: advisory-lint
 ```
 
-Existing callers only change the action path and immutable SHA. `job-name`
-(default `ci-ok`) excludes the calling check, `ignore` lists advisory checks,
-and `all-apps` optionally includes check runs outside GitHub Actions.
+Existing polling callers change the action path and immutable SHA. Keep their
+existing inputs: `job-name` (default `ci-ok`) excludes the calling check,
+`ignore` lists advisory checks, `required` names checks that must succeed,
+`all-apps` includes check runs outside GitHub Actions, and
+`allow-none-on-pull-request` permits an empty inventory only on pull requests.
+Contribution metadata and added-commit secret scanning remain enabled.
 
 ## Completion boundary limitation
 
 A stable check inventory cannot prove that a workflow registered every required
-check. This action intentionally preserves the legacy success behavior; it
-does not repair that limitation. Use the strict dependency-based verdict when
-migrating a repository's completion boundary. Do not adopt this legacy action
-for new workflows.
+check. This action preserves the legacy completion boundary; it does not infer
+an absent check that the caller omitted from `required`. Use the strict
+dependency-based verdict when migrating a repository's completion boundary.
+Do not adopt this legacy action for new workflows.
