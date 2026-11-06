@@ -140,7 +140,7 @@ on:
         type: string
         default: "cloud,identity"
       runner-class:
-        description: "Ordinary (unprivileged) runner class for the compile job."
+        description: "Self-hosted sylphx-linux-* class for the compile job; other values use standard."
         required: false
         type: string
         default: "sylphx-linux-standard"
@@ -190,7 +190,7 @@ on:
 jobs:
   preflight:
     name: preflight
-    runs-on: ${{ inputs.runner-class }}
+    runs-on: ${{ startsWith(inputs.runner-class, 'sylphx-linux-') && inputs.runner-class || 'sylphx-linux-standard' }}
     timeout-minutes: 6
     permissions:
       contents: read
@@ -244,7 +244,7 @@ jobs:
   publish:
     name: publish
     needs: preflight
-    runs-on: ${{ inputs.runner-class }}
+    runs-on: ${{ startsWith(inputs.runner-class, 'sylphx-linux-') && inputs.runner-class || 'sylphx-linux-standard' }}
     timeout-minutes: 180
     permissions:
       contents: read

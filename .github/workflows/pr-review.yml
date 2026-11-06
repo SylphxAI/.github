@@ -24,7 +24,7 @@ concurrency:
 jobs:
   review:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'pull_request'
-    runs-on: sylphx-linux-standard
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

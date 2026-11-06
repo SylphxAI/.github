@@ -19,8 +19,9 @@ name: Rust CI
 # identity (`id-token: write`, granted to the job below and by the caller's
 # `rust` job in the starter); the organization secrets are the fallback.
 #
-# Spend: Sylphx runners only. `runner-class` picks a Sylphx label, and a merge
-# group runs on that class's -merge lane; no GitHub-hosted label is reachable.
+# Spend: self-hosted by default. `runner-class` picks a Sylphx label, and a
+# merge group runs on that class's -merge lane. Only an explicit `runs-on:
+# ubuntu-latest` on a public repository opts into free standard hosted capacity.
 #
 # Trust boundary: caller inputs never reach a shell body. They travel through
 # `env:` and are validated against a strict pattern before use.
@@ -56,6 +57,14 @@ on:
         required: false
         type: string
         default: rustc
+      runs-on:
+        description: >-
+          Optional ubuntu-latest for a public repository. Empty preserves the
+          existing runner-class and merge-lane selection. Ignored on private
+          repositories; no other hosted label is accepted.
+        required: false
+        type: string
+        default: ''
       runner-class:
         description: standard or xlarge (xlarge only after a measured need).
         required: false
@@ -142,7 +151,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on: ${{ format('sylphx-linux-{0}{1}', inputs.runner-class == 'xlarge' && 'xlarge' || 'standard', github.event_name == 'merge_group' && '-merge' || '') }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && inputs.runs-on == 'ubuntu-latest' && 'ubuntu-latest' || format('sylphx-linux-{0}{1}', inputs.runner-class == 'xlarge' && 'xlarge' || 'standard', github.event_name == 'merge_group' && '-merge' || '') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
       GIT_CONFIG_SYSTEM: /dev/null

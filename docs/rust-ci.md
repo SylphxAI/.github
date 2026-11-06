@@ -1,7 +1,7 @@
 # Rust CI on the shared compile cache
 
 [`rust-ci.yml`](../.github/workflows/rust-ci.yml) is the standard Rust gate:
-`cargo fmt --check`, `cargo clippy` and `cargo test` on one Sylphx runner,
+`cargo fmt --check`, `cargo clippy` and `cargo test` on one self-hosted runner by default,
 with every rustc call served from the organization's compile cache through
 [`actions/rust-sccache`](../.github/actions/rust-sccache/action.yml). The
 decision and its reasons are
@@ -47,6 +47,26 @@ to each job that uses the action, or to the workflow. Without it the job has
 no OIDC identity, BuildCache is skipped with one warning, and the action falls
 back to the static secrets with an explicit `s3-endpoint` (`static`), then the Actions cache (`gha`). Pull
 requests from forks never get `id-token: write` and take the same fallback.
+
+## Free hosted runners for public repositories
+
+`runs-on: ubuntu-latest` opts a public caller into GitHub's free standard
+hosted capacity. Private repositories ignore this override, and no other
+hosted label is accepted. This repository's own consumer passes:
+
+```yaml
+with:
+  runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
+```
+
+Omit `runs-on` to keep the existing `runner-class` selection, including its
+same-size `-merge` lane on merge groups. The input defaults to empty rather
+than a fixed label so both existing sizes and merge lanes stay unchanged.
+The guard requires `github.event.repository.visibility == 'public'` in the
+caller's context. Missing or unknown visibility stays self-hosted; an input
+cannot declare a caller public. It never reads a pull request fork or
+`workflow_run.head_repository`. See the [runner spend contract](runner-spend.md)
+for the GitHub source and enforced selector forms.
 
 ## The compile cache backend
 

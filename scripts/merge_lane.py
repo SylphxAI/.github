@@ -314,7 +314,7 @@ def runner_values(value, context, errors=None):
     return set()
 
 
-def runner_evaluations(workflows, *, private=None):
+def runner_evaluations(workflows, *, private=None, repository_present=True):
     """Evaluate each triggering event, inheriting it through local calls.
 
     Unknown payload fields and caller-supplied inputs explore every reachable
@@ -333,8 +333,10 @@ def runner_evaluations(workflows, *, private=None):
         if isinstance(jobs, yaml.MappingNode):
             marks[name] = {k.value: v.start_mark.line + 1 for k, v in jobs.value}
     evaluations, seen = [], set()
-    context = {'github.event.repository.private': {private} if private is not None else {True, False},
-               'github.repository_visibility': {'private' if private else 'public'} if private is not None else {'private', 'public'}}
+    visibility = {'private' if private else 'public'} if private is not None else {'private', 'public'}
+    context = {'github.event.repository.visibility': visibility if repository_present else {None},
+               'github.event.repository.private': ({private} if private is not None else {True, False}) if repository_present else {None},
+               'github.repository_visibility': visibility}
 
     def visit(name, inherited, ancestry):
         if name not in documents or name in ancestry:

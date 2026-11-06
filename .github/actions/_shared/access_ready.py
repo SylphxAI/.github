@@ -33,6 +33,21 @@ READINESS_MARGIN_SECONDS = 180
 PROPAGATION_CODES = ("key_not_yet_propagated", "NOT_YET_PROPAGATED")
 
 
+def refusal_excerpt(value, token):
+    """Only public error fields, with credential echoes removed before truncation."""
+    error = value.get("error") if isinstance(value.get("error"), dict) else value
+    fields = {key: error[key] for key in ("code", "title", "detail", "message", "request_id")
+              if isinstance(error.get(key), (str, int, bool))}
+    for key, field in fields.items():
+        if isinstance(field, str):
+            # Redact before JSON escaping, which can change the credential's bytes.
+            field = field.replace(token, "[REDACTED]")
+            field = re.sub(r"(?i)Bearer\s+[^\s\"\\]+", "Bearer [REDACTED]", field)
+            fields[key] = re.sub(r"sylphx_(?:sk|pk)_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+",
+                                 "[REDACTED]", field)
+    return json.dumps(fields, ensure_ascii=True)[:512]
+
+
 def wait_for_identity(read, token, active_after_ms, api_url):
     if type(active_after_ms) is not int or not 0 <= active_after_ms <= 60000:
         raise ReadinessError("invalid Access propagation interval")
@@ -60,7 +75,7 @@ def read_identity(endpoint, token, *, allow_propagation, timeout):
                              "--write-out", "\n%{http_code}"], input=config,
                             capture_output=True, text=True, timeout=timeout)
     if result.returncode:
-        raise ReadinessError("Access readiness read failed at the network")
+        raise ReadinessError("Access readiness read failed at the network (curl exit " + str(result.returncode) + ")")
     try:
         body, status = result.stdout.rsplit("\n", 1)
         value = json.loads(body)
@@ -73,7 +88,8 @@ def read_identity(endpoint, token, *, allow_propagation, timeout):
         return value
     if allow_propagation and status == 401 and value.get("code") in PROPAGATION_CODES:
         return value
-    raise ReadinessError("Access readiness refused with HTTP " + str(status))
+    raise ReadinessError("Access readiness refused with HTTP " + str(status)
+                         + "; response=" + refusal_excerpt(value, token))
 
 
 def main():
@@ -95,9 +111,19 @@ def main():
     print(json.dumps({"ready": True, "principal": identity.get("principal"), "org": identity.get("org")}))
 
 
-if __name__ == "__main__":
+def cli():
     try:
         main()
-    except (ReadinessError, KeyError, ValueError, TypeError, subprocess.TimeoutExpired):
-        print("Access readiness failed; no Broker request was sent", file=sys.stderr)
-        raise SystemExit(1)
+        return 0
+    except ReadinessError as error:
+        print("Access readiness failed: " + str(error) + "; no Broker request was sent", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print("Access readiness failed: identity read timed out; no Broker request was sent", file=sys.stderr)
+    except (KeyError, ValueError, TypeError):
+        # Parser exceptions can quote input; never print the issued credential.
+        print("Access readiness failed: malformed readiness input or identity; no Broker request was sent", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())

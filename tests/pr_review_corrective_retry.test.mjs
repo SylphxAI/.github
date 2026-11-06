@@ -55,6 +55,7 @@ for (const kind of ['partition', 'synthesis']) test(`${kind} corrects rejected e
   const input = inputFor(kind);
   const { result, posts } = await run(input, (part, n) => n === 1 ? invalid(part) : wire(part));
   assert.equal(result.status, 'complete'); assert.equal(posts.length, 2);
+  assert.equal(result.discarded_items, undefined);
   assert.deepEqual(posts[1].messages.slice(0, 2), posts[0].messages);
   assert.deepEqual(posts[1].messages[2], { role: 'assistant', content: JSON.stringify(invalid(input)) });
   assert.equal(posts[1].messages[3].role, 'user');
@@ -65,9 +66,12 @@ for (const kind of ['partition', 'synthesis']) test(`${kind} corrects rejected e
   for (const source of ['fabricated', 'after', finding.explanation]) assert.ok(!posts[1].messages[3].content.includes(source));
 });
 
-for (const reason of sourceValidationReasons) test(`three rejected attempts preserve ${reason}`, async () => {
+for (const reason of sourceValidationReasons) test(`three rejected attempts isolate ${reason}`, async () => {
   const { result, posts } = await run(inputFor(), part => invalid(part, reason));
-  assert.equal(result.status, 'unavailable'); assert.equal(result.reason, reason); assert.equal(posts.length, 3);
+  assert.equal(result.status, reason === 'finding outside supplied source' ? 'unavailable' : 'complete');
+  if (reason === 'finding outside supplied source') assert.equal(result.reason, reason);
+  else assert.equal(result.discarded_items.length, 1);
+  assert.equal(posts.length, 3);
   assert.equal(posts[2].messages.length, 4);
   assert.deepEqual(posts[2].messages.slice(0, 2), posts[0].messages);
 });
@@ -86,7 +90,8 @@ for (const retry of ['HTTP invalid JSON', 'review invalid JSON', 'supplied conte
       wire(part, { completion: 'incomplete', findings: [], omitted_paths: [evidence.path], reason: 'Need context.',
         context_requests: [{ path: evidence.path, side: 'head' }] }));
     assert.equal(posts.length, 1);
-    assert.equal(result.status, retry === 'supplied context' ? 'incomplete' : 'unavailable');
+    assert.equal(result.status, retry === 'supplied context' ? 'incomplete' : retry === 'source validation' ? 'complete' : 'unavailable');
+    if (retry === 'source validation') assert.equal(result.discarded_items.length, 1);
   });
 }
 
@@ -125,5 +130,5 @@ test('a validator rejection at the deadline is returned without another POST', a
     current = now + 10_000;
     return invalid(part);
   });
-  assert.equal(result.reason, 'evidence differs from supplied source'); assert.equal(posts.length, 1);
+  assert.equal(result.status, 'complete'); assert.equal(result.discarded_items.length, 1); assert.equal(posts.length, 1);
 });

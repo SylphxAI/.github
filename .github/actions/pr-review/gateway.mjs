@@ -107,7 +107,13 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
           choice.message.refusal || choice.message.tool_calls?.length || typeof choice.message.content !== 'string') {
         return unavailable(input, 'Review inference was refused, interrupted, or did not return the configured model result.');
       }
-      const parsed = parseReviewResult(choice.message.content, input);
+      let parsed = parseReviewResult(choice.message.content, input);
+      if (parsed.status === 'unavailable' && sourceValidationReasons.includes(parsed.reason) &&
+          !(retriesAllowed && attempt < 3 && Date.now() < deadlineMs)) {
+        // Correction opportunities are exhausted. Discard only unsupported
+        // claims; every item that survives still passes exact-source validation.
+        parsed = parseReviewResult(choice.message.content, input, { discardUngrounded: true });
+      }
       if (retriesAllowed && attempt < 3 && Date.now() < deadlineMs &&
           parsed.status === 'unavailable' && sourceValidationReasons.includes(parsed.reason)) {
         const failure = parsed.validation_failure;
