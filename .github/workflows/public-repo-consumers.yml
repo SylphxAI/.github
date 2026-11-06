@@ -22,8 +22,7 @@ concurrency:
 jobs:
   check:
     # GitHub-hosted standard runners are free only on a public repository.
-    if: github.event.repository.private == false
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
