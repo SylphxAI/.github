@@ -6,7 +6,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from merge_lane import merge_lane_findings, merge_lane_misses
+from merge_lane import UNKNOWN, expression, merge_lane_findings, merge_lane_misses, runner_evaluations
 
 P = 'sylphx-linux-standard'
 M = P + '-merge'
@@ -128,9 +128,43 @@ class MergeLane(unittest.TestCase):
         self.assertEqual(len(merge_lane_findings({'ci.yml': caller, 'reuse.yml': text})), 1)
 
     def test_other_events_control_hosted_and_unresolved_labels(self):
-        for runner in ('ubuntu-latest', 'sylphx-linux-control', '${{ inputs.runner }}', '${{ matrix.runner }}'):
+        for runner in ('ubuntu-latest', 'sylphx-linux-control'):
             self.assertEqual(merge_lane_misses(workflow(runner)), [])
         self.assertEqual(merge_lane_misses(workflow(trigger='[pull_request]')), [])
+
+    def test_cloud_guards_label_selector_in_each_triggering_event(self):
+        # Exact cloud ci.yml guards selector, read 2026-11-06 UTC.
+        selector = "${{ (github.event_name == 'merge_group' || contains(github.event.pull_request.labels.*.name, 'ci:priority') || contains(github.event.pull_request.labels.*.name, 'priority:revenue') || contains(github.event.pull_request.labels.*.name, 'priority:p0')) && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}"
+        text = workflow(selector, trigger='[pull_request, merge_group, workflow_run, push, workflow_dispatch]')
+        evaluated = {e.event: e.values for e in runner_evaluations({'ci.yml': text})}
+        self.assertEqual(evaluated['merge_group'], {M})
+        self.assertEqual(evaluated['pull_request'], {P, M})
+        for event in ('workflow_run', 'push', 'workflow_dispatch'):
+            self.assertEqual(evaluated[event], {P})
+        self.assertEqual(merge_lane_misses(text), [])
+        self.assertEqual(merge_lane_misses(workflow(P, trigger='merge_group')), ['build'])
+
+    def test_unknown_context_explores_both_label_outcomes(self):
+        selector = "${{ contains(github.event.merge_group.labels.*.name, 'priority') && 'sylphx-linux-standard' || 'sylphx-linux-standard-merge' }}"
+        self.assertEqual(merge_lane_misses(workflow(selector)), ['build'])
+        selector = "${{ inputs.priority && 'sylphx-linux-standard' || 'sylphx-linux-standard-merge' }}"
+        self.assertEqual(merge_lane_misses(workflow(selector)), ['build'])
+
+    def test_unknown_or_unsupported_selector_fails_closed_with_reason(self):
+        for selector, reason in (("${{ inputs.runner }}", 'inputs.runner'),
+                                 ("${{ mystery('pool') }}", 'mystery'),
+                                 ("${{ github.event_name > 1 }}", '>')):
+            found = merge_lane_findings({'ci.yml': workflow(selector)}, check_all_events=True)
+            self.assertEqual(len(found), 2)
+            self.assertTrue(all('cannot be evaluated' in f.problem and reason in f.problem for f in found))
+
+    def test_github_value_semantics_and_precedence(self):
+        for value, expected in (("'' && 'x'", {''}), ("0 && 'x'", {0}),
+                                ("null && 'x'", {None}), ("false || 'x'", {'x'}),
+                                ("!false && ('A' == 'a')", {True}),
+                                ("'it''s'", {"it's"}), ("'1e2' == 1e2", {True})):
+            self.assertEqual(expression('${{ ' + value + ' }}', {}), expected)
+        self.assertEqual(expression("${{ false && inputs.unknown || 'ok' }}", {}), {'ok'})
 
 
 if __name__ == '__main__':

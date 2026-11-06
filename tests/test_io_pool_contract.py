@@ -40,9 +40,16 @@ class IoPoolContractTest(unittest.TestCase):
                 self.assertIn("40-hex", self.scan(workflow("      - uses: " + target))[0].problem)
 
     def test_expression_and_list_runner_are_conservative(self):
-        for runner in ("${{ false && 'sylphx-linux-io' || 'sylphx-linux-standard' }}",
-                       "[self-hosted, sylphx-linux-io]", "{group: pool, labels: sylphx-linux-io}"):
+        for runner in ("[self-hosted, sylphx-linux-io]", "{group: pool, labels: sylphx-linux-io}"):
             self.assertTrue(self.scan(workflow("      - run: echo unsafe", runner=runner)))
+
+    def test_only_reachable_io_pool_requires_prerequisites(self):
+        selector = "${{ contains(github.event.pull_request.labels.*.name, 'io') && 'sylphx-linux-io' || 'sylphx-linux-standard' }}"
+        unsafe = workflow("      - run: echo unsafe", runner=selector)
+        self.assertTrue(self.scan(unsafe))
+        self.assertEqual(self.scan(unsafe.replace('on: pull_request', 'on: merge_group')), [])
+        self.assertEqual(self.scan(workflow("      - run: echo safe", runner="${{ false && 'sylphx-linux-io' || 'sylphx-linux-standard' }}")), [])
+        self.assertEqual(self.scan(workflow("      - run: echo safe", extra="    if: false\n")), [])
 
     def checkout(self, ref=SHA, repository="SylphxAI/.github", path="shared", extra=""):
         return (f"      - uses: actions/checkout@{SHA}\n" + extra +

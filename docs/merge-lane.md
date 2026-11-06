@@ -87,5 +87,6 @@ python3 -m unittest discover -s tests -p test_audit_optimistic_merge.py
 
 Tests cover executable regressions, per-organization unavailable twins,
 visibility, wrong event/size, fallback branches, local reusable calls,
-numeric/boolean expression semantics, immutable tree binding, dispatches,
+numeric/boolean expression semantics, wildcard PR label filters, every triggering
+event, unresolved selector refusals, immutable tree binding, dispatches,
 read failures and the required-action wiring.
