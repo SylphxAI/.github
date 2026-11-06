@@ -99,6 +99,11 @@ test('unchanged context is side-qualified and exact, including renamed base alia
   assert.equal(sourceQuote(input, 'src/caller.js', 'base', 1, 1), 'old caller');
   assert.equal(sourceQuote(input, 'src/caller.js', 'head', 1, 1), 'new caller');
   assert.equal(sourceQuote(input, 'src/caller.js', 'context', 1, 1), null);
+  const singleSide = inputFor([{ path: 'src/caller.js', side: 'head', commit_sha: head, content: 'new caller\n' }]);
+  assert.equal(sourceQuote(singleSide, 'src/caller.js', 'context', 1, 1), 'new caller');
+  assert.equal(sourceQuote(singleSide, 'src/caller.js', 'base', 1, 1), null);
+  assert.equal(parsed(singleSide, { related_evidence: [{ path: 'src/caller.js', side: 'context', start_line: 1, end_line: 1,
+    start_byte: null, end_byte: null, quote: 'new caller' }] }).status, 'complete');
   assert.throws(() => inputFor([{ path: 'src/caller.js', side: 'head', commit_sha: base, content: 'wrong pin' }]));
   const renamed = createReviewInput({ ...input, files: [bundleFile({ filename: 'new.js', previous_filename: 'old.js', status: 'renamed' }, 'old\n', 'new\n')] });
   assert.equal(sourceQuote(renamed, 'new.js', 'base', 1, 1), null);
@@ -194,6 +199,11 @@ test('context collection keeps base and head pins distinct, deduplicates request
     const late = await runRecovery({ deadlineMs: time + 1000, github: { current: async () => true,
       source: async () => { time += 2000; return 'caller\n'; } }, execute: async input => { lateCalls++; return missing(input); } });
     assert.equal(lateCalls, 1); assert.equal(late.result.recovery.stop, 'deadline');
+    let reserveCalls = 0;
+    const reserve = await runRecovery({ deadlineMs: time + 2500, github: { current: async () => true, source: async () => 'caller\n' },
+      execute: async input => { reserveCalls++; time += 1500; return missing(input); } });
+    assert.equal(reserveCalls, 1); assert.equal(reserve.result.recovery.stop, 'deadline');
+    assert.match(reserve.result.reason, /Insufficient review deadline remaining/);
   } finally { Date.now = now; }
 });
 

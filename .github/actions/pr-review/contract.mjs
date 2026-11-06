@@ -27,8 +27,13 @@ export function sourceQuote(input, path, side, start, end, startByte = null, end
 		if (quote !== null) return quote
 	}
 	{
-		for (const context of input.context.filter(f => f.path === path && (f.side ?? 'context') === side)) {
-			if (context.absent === true) continue
+		const exact = input.context.filter(f => f.absent !== true && f.path === path && (f.side ?? 'context') === side)
+		const samePath = input.context.filter(f => f.absent !== true && f.path === path)
+		const contexts = exact.length ? exact : (
+			(side === 'context' && new Set(samePath.map(f => f.side ?? 'context')).size === 1) ||
+			samePath.every(f => (f.side ?? 'context') === 'context') ? samePath : []
+		)
+		for (const context of contexts) {
 			if (context.segments) {
 				const quote = segmentQuote({ after: { bytes: context.bytes },
 					hunks: [{ rows: context.segments.map(after => ({ after })) }] }, 'after', start, end, startByte, endByte)
@@ -120,8 +125,11 @@ const diagnostic = (result, input) => ({ input_digest: input.input_digest, scope
 // Only machine-authored metadata crosses the public receipt boundary. Unknown
 // paths and all source/model prose stay out, even when the quote is a secret.
 function evidenceFailure(input, evidence, expected, kind, index, findingIndex) {
+	const samePath = (input.context ?? []).filter(c => c.absent !== true && c.path === evidence.path)
 	const known = (input.files ?? []).some(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path) ||
-		(input.context ?? []).some(c => c.absent !== true && c.path === evidence.path && (c.side ?? 'context') === evidence.side) ||
+		samePath.some(c => (c.side ?? 'context') === evidence.side ||
+			(evidence.side === 'context' && new Set(samePath.map(f => f.side ?? 'context')).size === 1) ||
+			samePath.every(f => (f.side ?? 'context') === 'context')) ||
 		(input.references ?? []).some(r => r.path === evidence.path && r.side === evidence.side)
 	const fingerprint = quote => quote === null ? null : ({ bytes: Buffer.byteLength(quote),
 		sha256: createHash('sha256').update(quote).digest('hex') })
@@ -152,10 +160,10 @@ export function parseReviewResult(text, input) {
 			let expected = sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte)
 			if (expected !== evidence.quote && evidence.start_byte === null && evidence.end_byte === null && evidence.end_line >= evidence.start_line) {
 				const matches = []
-				for (const startDelta of [-3, -2, -1, 0, 1, 2, 3]) {
+				for (const startDelta of [-6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6]) {
 					const start = evidence.start_line + startDelta
 					if (start < 1) continue
-					for (const endDelta of [-3, -2, -1, 0, 1, 2, 3]) {
+					for (const endDelta of [-6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6]) {
 						const end = evidence.end_line + endDelta
 						if (end < start || (startDelta === 0 && endDelta === 0)) continue
 						if (sourceQuote(input, evidence.path, evidence.side, start, end, null, null) === evidence.quote) matches.push([start, end])
