@@ -100,8 +100,24 @@ class SqlTests(unittest.TestCase):
         for dialect in ("postgres", "mysql"):
             for sql in common + extra[dialect]:
                 with self.subTest(dialect=dialect, sql=sql):
+                    marker = "-- contract: https://example.com/releases/expand-42\n"
+                    # These five inputs change quote rules before further SQL.
+                    # A marker cannot make default-mode tokenization reliable.
+                    mode_cases = extra[dialect][:2 if dialect == "postgres" else 3]
+                    if sql in mode_cases:
+                        for candidate in (sql, marker + sql):
+                            with self.assertRaisesRegex(guard.SqlError, "lexical mode change must be the final"):
+                                guard.check_sql(candidate, dialect)
+                        continue
                     self.assertTrue(guard.check_sql(sql, dialect))
-                    self.assertEqual(guard.check_sql("-- contract: https://example.com/releases/expand-42\n" + sql, dialect), [])
+                    annotated = marker + sql
+                    if sql.startswith("CREATE TABLE IF NOT EXISTS"):
+                        annotated = marker + sql.replace("; ALTER", ";\n" + marker + "ALTER")
+                    elif sql.startswith("DELETE FROM accounts WHERE"):
+                        annotated = marker + sql.replace("; UPDATE", ";\n" + marker + "UPDATE")
+                    elif dialect == "mysql" and sql.startswith(("SET @'", 'SET @"', "SELECT `", "SELECT 1--2")):
+                        annotated = marker + sql.replace("DROP TABLE accounts;", "\n" + marker + "DROP TABLE accounts;")
+                    self.assertEqual(guard.check_sql(annotated, dialect), [])
 
     def test_additive_and_scoped_data_changes_pass(self):
         safe = [

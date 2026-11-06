@@ -36,6 +36,11 @@ class Token(NamedTuple):
     offset: int = -1
 
 
+class ContractMarker(NamedTuple):
+    reference: str
+    next_token: int
+
+
 class SqlError(ValueError):
     pass
 
@@ -58,7 +63,7 @@ def quoted_end(sql: str, start: int, dialect: str, line: int) -> int:
     raise SqlError(f"line {line}: unterminated quoted token")
 
 
-def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
+def lex(sql: str, dialect: str) -> tuple[list[Token], list[ContractMarker]]:
     """Keep identifiers/literals distinct from keywords; comments cannot hide SQL.
 
     PostgreSQL supports nested block comments and dollar strings; MySQL supports
@@ -80,7 +85,7 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[str]]:
             prefix = sql[sql.rfind("\n", 0, i) + 1:i]
             match = re.fullmatch(r"--[ \t]*contract:[ \t]*(\S.*?)[ \t]*", comment, re.I)
             if not prefix.strip() and match and re.search(r"\w", match[1]):
-                markers.append(match[1])
+                markers.append(ContractMarker(match[1], len(tokens)))
             i = end
         elif sql.startswith("/*", i):
             start, depth = i, 1
@@ -164,6 +169,125 @@ def split(tokens: list[Token], separator: str) -> list[list[Token]]:
         raise SqlError("unclosed parenthesis")
     parts.append(tokens[start:])
     return [part for part in parts if part]
+
+
+
+def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
+    """Split top-level SQL, retaining opaque inline routine envelopes.
+
+    PostgreSQL SQL bodies use BEGIN ATOMIC, not PL/pgSQL block grammar.
+    MySQL blocks may nest (including in handlers). BEGIN is non-reserved
+    in both dialects: a SELECT column named BEGIN is never a block opener.
+    Unsupported or incomplete envelopes fail closed, even with a marker.
+    """
+    parts, start, depth, substart = [], 0, 0, 0
+    blocks: list[str] = []
+    closing = False
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if closing and not (token.kind == "symbol" and token.value == ";"):
+            # Only a MySQL end label may follow the outer END before ';'.
+            if dialect == "mysql" and i and kw(tokens[i - 1], "END") and token.kind in {"word", "identifier"}:
+                i += 1
+                continue
+            raise SqlError(f"line {token.line}: ambiguous inline routine boundary")
+        if token.kind == "symbol":
+            depth += (token.value == "(") - (token.value == ")")
+            if depth < 0:
+                raise SqlError(f"line {token.line}: unmatched closing parenthesis")
+            if token.value == ";" and depth == 0:
+                if not blocks:
+                    if i > start:
+                        parts.append(tokens[start:i])
+                    start = i + 1
+                    closing = False
+                substart = i + 1
+        elif not blocks:
+            if depth == 0 and kw(token, "BEGIN"):
+                kind = routine_kind(procedural_statement(tokens[start:i]))
+                header = top_level(procedural_statement(tokens[start:i]))
+                mysql_header = kind is not None and not any(
+                    t.kind == "word" and t.value in {"SELECT", "RETURN", "SET", "CALL"}
+                    for t in header)
+                opener = dialect == "mysql" and mysql_header or (
+                    dialect == "postgres" and kind in {"FUNCTION", "PROCEDURE"}
+                    and i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC"))
+                if opener:
+                    blocks.append("BEGIN")
+                    substart = i + (2 if dialect == "postgres" else 1)
+        elif kw(token, "CASE"):
+            blocks.append("CASE")
+        elif kw(token, "BEGIN") and depth == 0:
+            prefix = tokens[substart:i]
+            label = len(prefix) == 2 and prefix[0].kind in {"word", "identifier"} and prefix[1].value == ":"
+            control = prefix and prefix[0].kind == "word" and prefix[0].value in {
+                "IF", "ELSEIF", "ELSE", "WHILE", "LOOP", "REPEAT", "FOR", "CASE"}
+            after_control = control and prefix[-1].kind == "word" and prefix[-1].value in {
+                "THEN", "ELSE", "DO", "LOOP", "REPEAT"}
+            handler = starts(prefix, "DECLARE") and has(prefix, "HANDLER")
+            if dialect == "mysql" and (not prefix or label or after_control or handler):
+                blocks.append("BEGIN")
+                substart = i + 1
+            elif (i + 1 < len(tokens) and kw(tokens[i + 1], "ATOMIC")
+                  and routine_kind(tokens[substart:i]) in {"FUNCTION", "PROCEDURE"}):
+                blocks.append("BEGIN")
+                substart = i + 2
+        elif kw(token, "END") and (blocks[-1] == "CASE" or i == substart):
+            following = tokens[i + 1] if i + 1 < len(tokens) else None
+            if following and following.kind == "word" and following.value in {"IF", "LOOP", "WHILE", "REPEAT"}:
+                if dialect != "mysql":
+                    raise SqlError(f"line {token.line}: unsupported inline SQL control boundary")
+                i += 1
+            else:
+                if depth and blocks[-1] != "CASE":
+                    raise SqlError(f"line {token.line}: ambiguous inline routine END")
+                block = blocks.pop()
+                if following and kw(following, "CASE"):
+                    if block != "CASE":
+                        raise SqlError(f"line {token.line}: unmatched END CASE")
+                    i += 1
+                if not blocks:
+                    closing = True
+        i += 1
+    if depth or blocks:
+        raise SqlError("unclosed parenthesis or inline routine block")
+    if start < len(tokens):
+        parts.append(tokens[start:])
+    return parts
+
+
+def inline_routine(stmt: list[Token], dialect: str) -> bool:
+    if routine_kind(stmt) is None:
+        return False
+    flat = top_level(stmt)
+    return any(kw(t, "BEGIN") and (dialect == "mysql" or starts(flat[i:], "BEGIN", "ATOMIC"))
+               for i, t in enumerate(flat))
+
+
+def executed_mode_change(stmt: list[Token], dialect: str, nesting: int = 0) -> bool:
+    if lexical_mode_change(procedural_statement(stmt)):
+        return True
+    if not starts(procedural_statement(stmt), "DO"):
+        return False
+    if nesting > 64:
+        raise SqlError("executed SQL nesting is too deep to inspect")
+    # Only DO executes quoted bodies now. CREATE routines do not. Recursively
+    # inspect DO bodies; comments/value strings cannot manufacture mode changes.
+    for token in stmt:
+        source = unquote_postgres_literal(token)
+        if source is not None:
+            inner, _ = lex(source, dialect)
+            if any(executed_mode_change(part, dialect, nesting + 1) for part in split(inner, ";")):
+                return True
+    return False
+
+
+def lexical_mode_change(stmt: list[Token]) -> bool:
+    return starts(stmt, "SET") and any(
+        (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
+        or (t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I))
+        for t in stmt)
 
 
 def top_level(tokens: list[Token]) -> list[Token]:
@@ -325,6 +449,8 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
     if kind == "TRIGGER" and dialect == "postgres":
         return [] if postgres_trigger(stmt) is not None else opaque
     if kind == "EVENT" or dialect != "postgres":
+        return opaque
+    if inline_routine(stmt, dialect):
         return opaque
     flat = top_level(stmt)
     language = "PLPGSQL" if kind == "DO" else None
@@ -1161,21 +1287,25 @@ def finite_query_executes(tokens: list[Token], dialect: str, catalog_format: boo
 
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                      catalog_format: bool = False, finite_executes: set[int] | None = None,
-                     historical_tables: set[str] | None = None) -> list[tuple[int, str]]:
+                     historical_tables: set[str] | None = None,
+                     marked_tokens: set[int] | None = None) -> list[tuple[int, str]]:
     if nesting > 64:
         raise SqlError("procedural body nesting is too deep to inspect")
-    out: list[tuple[int, str]] = []
+    findings: list[tuple[int, str]] = []
     defaults: set[tuple[str, str]] = set()
     created: set[str] = set()
     timeouts: set[str] = set()
     dropped_concurrent_indexes: set[tuple[str, str]] = set()
-    statements = split(tokens, ";")
+    statements = sql_statements(tokens, dialect)
     # A drop/recreate file never earns the fresh-table exemption. Keep the
     # independent DROP finding too. Procedural bodies cannot establish freshness.
     fresh_ddl = not nesting and not any(kw(t, "DROP") for t in tokens)
     prior_tables = set(historical_tables or ())
     uncertain_flow = nesting and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
-    for stmt in statements:
+    for statement_index, stmt in enumerate(statements):
+        # Analyze marked SQL normally so state and lexical errors remain real;
+        # discard only this statement's policy findings, never its siblings'.
+        out = [] if id(stmt[0]) in (marked_tokens or set()) else findings
         if uncertain_flow:
             # A conditional/loop may not run, and an exception handler can
             # continue after failed DDL. Credit facts only within one SQL
@@ -1246,12 +1376,10 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                    and kw(token, "ON"))
         if fresh_ddl:
             prior_tables.update(declared_table_tokens(stmt, dialect))
-        if starts(control_stmt, "SET") and any(
-                (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
-                or (t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I))
-                for t in control_stmt):
-            # Changing quote semantics would invalidate subsequent lexical
-            # inspection; these statements need an explicit contract review.
+        if (not nesting and statement_index + 1 < len(statements)
+                and executed_mode_change(control_stmt, dialect)):
+            raise SqlError("SQL lexical mode change must be the final statement; use a separate migration")
+        if lexical_mode_change(control_stmt):
             out.append((stmt[0].line, "SQL lexical mode change requires a contract reference"))
         non_dml_on = starts(control_stmt, "GRANT") or starts(control_stmt, "REVOKE")
         grant_start = len(scan_stmt) - len(control_stmt) if non_dml_on and trigger_condition is None else 0
@@ -1379,7 +1507,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                     defaults.add((table, column))
                 if table not in created and has(rest, "NOT", "NULL") and not default:
                     out.append((first.line, "ADD COLUMN NOT NULL without a DEFAULT"))
-    return sorted(set(out))
+    return sorted(set(findings))
 
 
 CONCURRENT_INDEX_MARKER = "-- migration:concurrent-index-v1 "
@@ -1542,7 +1670,9 @@ def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "",
             and paired_concurrent_index_valid(sql, tokens, dialect, later_bodies)):
         return []
     # Lexical failures remain errors even when a marker is present.
-    errors = token_violations(tokens, dialect, historical_tables=historical_tables)
+    marked_tokens = {id(tokens[m.next_token]) for m in markers if m.next_token < len(tokens)}
+    errors = token_violations(tokens, dialect, historical_tables=historical_tables,
+                              marked_tokens=marked_tokens)
     # A released-expand reference does not prove resumability or effective
     # connection bounds. Operational findings are never marker exemptions.
     operational = concurrent_index_violations(sql, tokens, dialect, concurrent_index_runtime)
@@ -1555,7 +1685,7 @@ def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "",
         # SET/DROP heuristic contradicts that contract and must not re-admit
         # unconditional cleanup or connection-local SET statements.
         return []
-    return operational + ([] if markers else errors)
+    return operational + errors
 
 
 class Column(NamedTuple):
@@ -1757,7 +1887,7 @@ def snapshot(sql: str, dialect: str) -> tuple[dict[tuple[str, ...], Table], list
                 raise SqlError(f"primary key references undeclared column {column}")
             columns[column] = columns[column]._replace(required=True)
         tables[table] = Table(columns, signature(prefix) + table_options(stmt[end:]), foreign_actions, stmt[0].line)
-    return tables, statements, set(markers)
+    return tables, statements, {marker.reference for marker in markers}
 
 
 def check_schema(old_sql: str, new_sql: str, dialect: str) -> list[tuple[int, str]]:
