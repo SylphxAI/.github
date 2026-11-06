@@ -14,7 +14,6 @@ export const reviewerVersion = `sha256:${digest({ instructions, resultSchema })}
 export const reviewerInstructions = `${instructions}\nReviewer version: ${reviewerVersion}\nResult schema: ${canonical(resultSchema)}\n`
 export { resultSchema }
 export const sourceValidationReasons = Object.freeze([
-	'finding outside changed source',
 	'finding outside supplied source',
 	'evidence differs from supplied source',
 	'related evidence differs from supplied source',
@@ -259,24 +258,35 @@ export function parseReviewResult(text, input) {
 			}
 			if (review.status === 'source-reviewed') requireValue(review.source_evidence.length > 0 && review.derivation_evidence.length > 0, 'binary provenance requires source and derivation evidence')
 		}
-		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length && (input.scope?.kind === 'partition' || result.binary_reviews.every(r => r.status === 'source-reviewed')), 'binary provenance review incomplete')
+		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length, 'binary provenance review incomplete')
+		const outsideChange = []
+		const files = input.source_files ?? input.files
 		for (const [findingIndex, finding] of result.findings.entries()) {
 			requireValue(finding.end_line >= finding.start_line && (input.scope?.kind === 'synthesis' ? input.manifest : input.files).some(f => f.path === finding.path), 'finding outside supplied source')
 			for (const [index, evidence] of finding.evidence.entries()) requireEvidence(evidence, 'finding_evidence', index, findingIndex)
-			if (input.scope?.kind !== 'synthesis') {
-				const file = input.files.find(f => f.path === finding.path)
-				const inChanged = f => file && changedRanges(file).some(r => r.side === f.side && f.start_line >= r.start && f.end_line <= r.end)
-				if (!inChanged(finding) && file) {
-					const snap = snapped.find(s => s.kind === 'finding_evidence' && s.finding_index === findingIndex && s.path === finding.path && s.side === finding.side &&
-						inChanged({ side: finding.side, start_line: s.start_line, end_line: s.end_line }))
-					if (snap) {
-						finding.start_line = snap.start_line
-						finding.end_line = snap.end_line
-					}
+			const inChanged = files.some(file => file.path === finding.path && changedRanges(file).some(r =>
+				r.side === finding.side && finding.start_line >= r.start && finding.end_line <= r.end))
+			if (inChanged) continue
+			// Evidence has already passed exact-source validation. An unchanged
+			// symptom can be anchored to the change that causes it, even in another file.
+			let anchor
+			for (const evidence of finding.evidence) {
+				for (const file of files) {
+					if ((evidence.side === 'base' ? file.previous_path ?? file.path : file.path) !== evidence.path) continue
+					const range = changedRanges(file).find(r => r.side === evidence.side &&
+						evidence.start_line <= r.end && evidence.end_line >= r.start)
+					if (range) { anchor = { path: file.path, side: evidence.side,
+						start_line: Math.max(evidence.start_line, range.start), end_line: Math.min(evidence.end_line, range.end) }; break }
 				}
-				requireValue(inChanged(finding), 'finding outside changed source')
+				if (anchor) break
 			}
+			if (anchor) Object.assign(finding, anchor)
+			else outsideChange.push(finding)
 		}
+		result.findings = result.findings.filter(f => !outsideChange.includes(f))
+		// Keep the complete grounded observation in the visible summary, never an
+		// off-diff annotation or a blocking verdict. Do not silently discard it.
+		for (const f of outsideChange) result.context_notes.push(`Outside the change (non-blocking; ${f.severity}): ${f.title} (${f.path}, ${f.side} lines ${f.start_line}–${f.end_line}). ${f.explanation} Trigger: ${f.trigger} Consequence: ${f.consequence}`)
 		for (const [index, evidence] of result.related_evidence.entries()) requireEvidence(evidence, 'related_evidence', index)
 		if (incomplete.length) return { ...unavailable(input, `review incomplete (${incomplete.join(', ')})`),
 			status: result.completion, omitted_paths: result.omitted_paths.length ? result.omitted_paths : [...paths],

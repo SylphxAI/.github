@@ -44,7 +44,7 @@ export async function recoverContext({ input, github, target, execute, createRev
   const finalizeBudget = async (cause, reason, nextRoundEstimateMs) => {
     // One terminal inference, not another context collection cycle. Re-sealing
     // binds the instruction to the exact evidence and normal result validation.
-    if (deadlineMs - Date.now() <= 0 || deadlineMs - Date.now() < nextRoundEstimateMs) return stop(cause, reason);
+    if (deadlineMs - Date.now() <= 0 || deadlineMs - Date.now() < nextRoundEstimateMs) return stop('deadline', 'Insufficient review deadline remaining for the final verdict.');
     const originalReason = result.reason;
     input = createReviewInput({ ...input, context_recovery: 'exhausted' });
     result = await infer();
@@ -54,6 +54,9 @@ export async function recoverContext({ input, github, target, execute, createRev
       await record(`${cause}_finalized`);
       return { input, result };
     }
+    // A valid model assessment that still refuses a verdict is a terminal
+    // review failure, not infrastructure unavailability or a clean review.
+    if (result.status === 'incomplete') result = { ...result, terminal_incomplete: true };
     result = { ...result, reason: originalReason };
     return stop(cause, reason);
   };
@@ -81,7 +84,7 @@ export async function recoverContext({ input, github, target, execute, createRev
     const requests = result.context_requests ?? [];
     if (!requests.length) {
       if (/Review deadline expired|Review inference exceeded its deadline/i.test(result.reason ?? '')) return stop('deadline', '');
-      return stop('no_requests', 'No exact-source context was requested.');
+      return finalizeBudget('no_requests', 'No exact-source context was requested.', nextRoundEstimateMs);
     }
     if (nextRoundEstimateMs > 0 && deadlineMs - Date.now() < nextRoundEstimateMs) return stop('deadline', 'Insufficient review deadline remaining for another context recovery round.');
     if (requests.length > recoveryLimits.files || requests.some(r => !validPath(r.path) ||
@@ -89,7 +92,7 @@ export async function recoverContext({ input, github, target, execute, createRev
       return stop('invalid_request', 'Context recovery request is invalid.');
     }
     const fresh = [...new Map(requests.map(r => [`${r.side}:${r.path}`, r])).entries()].filter(([key]) => !seen.has(key));
-    if (!fresh.length) return stop('no_new_context', 'Requested exact-source context was already supplied.');
+    if (!fresh.length) return finalizeBudget('no_new_context', 'Requested exact-source context was already supplied.', nextRoundEstimateMs);
     if (partRounds >= recoveryLimits.rounds) return finalizeBudget('round_limit', 'Context recovery round limit reached.', nextRoundEstimateMs);
     if (added + fresh.length > recoveryLimits.files) return finalizeBudget('file_limit', 'Context recovery file limit reached.', nextRoundEstimateMs);
     const context = [];
