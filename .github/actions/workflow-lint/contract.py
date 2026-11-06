@@ -21,6 +21,7 @@ from typing import NamedTuple
 import yaml
 
 from perf_gate import delivered
+from expected_checks import DECLARATION, check_declaration
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "scripts"))
 from merge_lane import WorkflowLoader, contexts, events, merge_lane_findings, runnable, runner_evaluations
@@ -421,6 +422,7 @@ def scan_dir(root):
     for name, text in workflows.items():
         findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations))
     findings.extend(gate_coverage({'.github/workflows/' + name: text for name, text in workflows.items()}))
+    findings.extend(Finding(DECLARATION, 1, problem, True) for problem in check_declaration(root, workflows))
     if entry:
         return findings
     for finding in merge_lane_findings(workflows, private=private,

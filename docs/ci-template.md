@@ -83,7 +83,10 @@ workflows use a header declaration with a written reason:
 The metadata companion explicitly declares its separate code-verdict role;
 repositories still require its independent check. A missing coverage declaration
 fails even in legacy `contract-mode: report-only`; that setting only softens
-older timeout and failure-masking findings.
+older timeout and failure-masking findings. Repositories that retain independent
+required checks can commit the [resolved v2 expected-check declaration](../.github/actions/workflow-lint/README.md#resolved-expected-check-declaration).
+The lint compiles its names/events/filters from workflow source and blocks drift;
+verdict runtimes read only that immutable data.
 
 ## Which events run the heavy jobs
 

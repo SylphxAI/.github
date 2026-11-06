@@ -41,7 +41,7 @@ The contract scans `.github/workflows/*.yml` and `*.yaml` in the checkout:
   treats every job as required. Advisory jobs still need timeouts.
 
 `contract-mode: report-only` emits warnings and a count for legacy timeout
-and failure-propagation findings. Gate coverage, manual approval/maintenance booking and
+and failure-propagation findings. Gate coverage, enrolled declaration drift, manual approval/maintenance booking and
 [R8 merge-lane routing](../../../docs/merge-lane.md) remain blocking in either
 mode. R8 follows all workflows in the checkout and their local reusable calls,
 including matrices, input defaults and job conditions, using the same core as
@@ -73,6 +73,39 @@ CONTRACT_MODE=report-only python3 path/to/workflow-lint/contract.py
 `ignore` and `args` configure actionlint only; the contract always scans the
 checkout's workflows. Python tests are `python -m unittest discover -s tests
 -p test_workflow_contract.py` from the shared action repository.
+
+
+## Resolved expected-check declaration
+
+Repositories with independently triggered required checks can enroll by committing
+`.github/required-workflow-checks.json`. The [v2 schema](expected-checks.schema.json)
+is runtime data, not a second YAML interpreter. Generate it from a checkout with:
+
+```sh
+python3 path/to/workflow-lint/expected_checks.py --write
+```
+
+The compiler resolves exact check names, triggering events and path filters from
+that checkout. The contract check fails on any declaration drift, even in
+`report-only` mode. Repositories without the file are not enrolled automatically.
+Publishing a declaration alone does not activate a required verdict or a poller.
+
+Each record has `name`, `workflow`, `events`, `paths` and `paths_ignore`. A check
+whose events have different path filters gets separate records: a filtered PR
+run must not make an unconditional merge-group run optional. `paths: null` means
+always required; ignore-only triggers normalize to `paths: ["**"]` plus the
+original `paths_ignore`. Preserve GitHub's ordered negative/positive glob
+semantics. Conditional children are represented by an always-running required
+aggregate. Required matrix or expression-based names are refused; reusable calls
+expand to literal `caller / callee` check names from local or full-SHA sources.
+Ambiguous names across independently triggered workflows are refused.
+
+Consumers match the complete changed-file set: PR base...head from fully
+paginated PR files (GitHub's 3,000-file cap fails closed), or the whole merge
+group's event `base_sha`...`head_sha`, never only the current PR's files. An
+unknown/incomplete/empty diff cannot prove irrelevance. If an event's relevance
+cannot be represented, use `paths: null`; an expected-but-missing check refuses.
+A runtime consumes this JSON at the evaluated SHA and never parses workflow YAML.
 
 
 ## IO pool prerequisites
