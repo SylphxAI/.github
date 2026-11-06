@@ -105,6 +105,7 @@ def scan_workflow(file, text, evaluations=None):
         job = fields(node)
         routes = [e for e in evaluations if e.job == name and
                   e.file == file.removeprefix('.github/workflows/')]
+        scan_release_job(document, name, node, add, routes)
         scan_io_job(document, name, node, add, routes)
         if "uses" not in job and "timeout-minutes" not in job:
             add(node, f"job {name}: missing timeout-minutes")
@@ -141,6 +142,55 @@ def node_text(node):
     if isinstance(node, yaml.SequenceNode):
         return " ".join(node_text(n) for n in node.value)
     return " ".join(node_text(n) for n in fields(node).values())
+
+
+RELEASE_PREFIX = "sylphx-linux-release"
+RELEASE_LITERAL = re.compile(r"(?<![\w-])sylphx-linux-release")
+RELEASE_EVENTS = {"push", "workflow_dispatch", "merge_group"}
+
+
+def scan_release_job(document, name, node, add, routes):
+    """Reserve release labels for workflows declaring only release events.
+
+    A job-level guard does not exempt a workflow with pull_request triggers.
+    The existing selector evaluations cover matrix, format and input routes.
+    """
+    job = fields(node)
+    runner = job.get("runs-on")
+    selector = fields(runner).get("labels") if isinstance(runner, yaml.MappingNode) else runner
+    route = node_text(selector)
+    release = bool(RELEASE_LITERAL.search(route)) or any(
+        isinstance(value, str) and value.startswith(RELEASE_PREFIX)
+        for evaluation in routes for value in evaluation.values)
+    if not routes and "matrix." in route:
+        release |= bool(RELEASE_LITERAL.search(node_text(job.get("strategy"))))
+    triggers = fields(document).get("on")
+    trigger_fields = fields(triggers)
+    # A workflow_call-only file has no independent event evaluation. Its
+    # selector's input defaults still declare a route into the release pool.
+    for event in ("workflow_call", "workflow_dispatch"):
+        inputs = fields(fields(trigger_fields.get(event)).get("inputs"))
+        for key in re.findall(r"\binputs\.([\w-]+)", route):
+            release |= bool(RELEASE_LITERAL.search(node_text(fields(inputs.get(key)).get("default"))))
+    if not release:
+        return
+
+    event_names = set(trigger_fields) or {scalar(n) for n in sequence(triggers)} or {scalar(triggers)}
+    if not event_names or "" in event_names or event_names - RELEASE_EVENTS:
+        problem = "workflow triggers must be a nonempty subset of push to main, workflow_dispatch, merge_group; pull_request is never allowed"
+    else:
+        problem = ""
+        if "push" in event_names:
+            push = fields(trigger_fields.get("push"))
+            branches = [scalar(branch) for branch in sequence(push.get("branches"))]
+            # GitHub accepts branch and tag pushes when neither kind is
+            # filtered. branches:[main] alone excludes tag pushes.
+            # Primary source: GitHub workflow syntax, read 2026-11-06.
+            if (not branches or set(branches) != {"main"}
+                    or any(key in push for key in ("branches-ignore", "tags", "tags-ignore"))):
+                problem = "push must explicitly select only branches: [main], with no tag triggers"
+    if problem:
+        add(runner or node, f"job {name}: release pool: {problem}", blocking=True)
 
 
 def split_expression(value, operator):
