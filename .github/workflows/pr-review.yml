@@ -3,6 +3,8 @@ name: PR review
 on:
   workflow_run:
     workflows: [Project control]
+    # CI reruns on the same head do not re-review; re-run the review run or dispatch.
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run (read 2026-11-06 20:58:42 UTC).
     types: [requested]
   workflow_dispatch:
     inputs:

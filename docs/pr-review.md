@@ -6,9 +6,8 @@ Sylphx AI and publishes the `Sylphx PR Review` Check Run from `sylphx-ai`
 an approval requirement, or a merge-queue gate.
 
 The trusted wrapper listens to the repository's existing PR CI workflow using
-`workflow_run` with `requested` and `in_progress`. Requested starts promptly;
-in-progress covers reruns. Both deliveries converge on one result per exact
-base/head and reviewer version. Dispatch with a pull request number reviews its
+`workflow_run` with `requested` only. Each new CI run starts one review;
+rerunning CI on the same head retains that head's existing review. Dispatch with a pull request number reviews its
 current head again, including a previous unavailable review. Normal merge-queue
 checks continue independently; this advisory check does not claim a review of
 the queue's combined merge commit.
@@ -304,3 +303,21 @@ Context metadata read 2026-10-31 22:43 UTC:
 - [Configured review model catalog](https://api.sylphx.com/v1/public/models/openai/gpt-6.1-sol):
   `context_window=1050000`, `max_output_tokens=128000`. The implementation reads
   current metadata for the configured model, rather than hardcoding these values.
+
+## Re-review after an interrupted review
+
+CI reruns on the same head do not re-review; re-run the review run or dispatch.
+The review remains valid for that head because the diff has not changed. A new
+head starts a new review through `workflow_run: requested`.
+
+If the first review was cancelled, neutral, or unavailable, inspect its cause and
+confirm no review is already active for the current PR head. Re-run that review
+with `gh run rerun <review-run-id> --repo <owner/repo>`; this preserves the original
+`workflow_run` event. Alternatively, dispatch the review workflow with its
+`pull-request` input only where the repository's Access policy allows
+`workflow_dispatch`. Cubeage Platform permits `workflow_run` only, so recover
+its automatic reviews by re-running the review run rather than dispatching.
+Do not rerun CI solely to obtain another review.
+
+Source: [GitHub workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run),
+read 2026-11-06 at 20:58:42 UTC. GitHub does not emit `requested` for CI reruns.
