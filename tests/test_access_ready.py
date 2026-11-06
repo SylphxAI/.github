@@ -2,8 +2,11 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +18,71 @@ API = "https://api.example"
 
 
 class AccessReadyTests(unittest.TestCase):
+    def test_refusal_reports_status_public_body_and_redacts_credentials(self):
+        token = "same-issued-key"
+        body = {"code": "PERMISSION_DENIED", "detail": "refused Bearer " + token,
+                "request_id": "req_test", "api_key": "must-not-be-logged",
+                "token": "also-private", "other": "not-a-public-error-field"}
+        result = subprocess.CompletedProcess([], 0, json.dumps(body) + "\n403", "")
+        with patch.object(ready.subprocess, "run", return_value=result), \
+                self.assertRaises(ready.ReadinessError) as caught:
+            ready.read_identity(API + "/v1/whoami", token, allow_propagation=True, timeout=7)
+        message = str(caught.exception)
+        for expected in ("HTTP 403", "PERMISSION_DENIED", "req_test", "[REDACTED]"):
+            self.assertIn(expected, message)
+        for private in (token, "must-not-be-logged", "also-private", "not-a-public-error-field"):
+            self.assertNotIn(private, message)
+
+    def test_excerpt_is_bounded_single_line_and_redacts_before_truncating(self):
+        token = "same-issued-key"
+        body = {"error": {"code": "UNAUTHENTICATED", "message": "\\\"\n" + token + " " * 600 + token}}
+        excerpt = ready.refusal_excerpt(body, token)
+        self.assertLessEqual(len(excerpt), 512)
+        self.assertNotIn("\n", excerpt)
+        self.assertNotIn(token, excerpt)
+        self.assertIn("UNAUTHENTICATED", excerpt)
+        self.assertIn("[REDACTED]", excerpt)
+        other_token = "gh" + "p_" + "x" * 32
+        self.assertNotIn(other_token, ready.refusal_excerpt({"detail": other_token}, token))
+
+    def test_issued_credential_is_redacted_before_json_escaping(self):
+        token = 'synthetic"\\issued-key'
+        excerpt = ready.refusal_excerpt({"code": "DENIED", "detail": "refused " + token}, token)
+        self.assertNotIn(json.dumps(token)[1:-1], excerpt)
+        self.assertEqual(json.loads(excerpt)["detail"], "refused [REDACTED]")
+
+    def test_cli_reports_safe_reason_and_keeps_failure_exit(self):
+        for error, expected in ((ready.ReadinessError("Access readiness refused with HTTP 401; response={\"code\": \"UNAUTHENTICATED\"}"), "HTTP 401"),
+                                (ready.ReadinessError("ready identity differs from the issued key"), "ready identity differs"),
+                                (subprocess.TimeoutExpired(["curl", "private-input"], 1), "identity read timed out"),
+                                (ValueError("private-input"), "malformed readiness input or identity")):
+            with self.subTest(error=type(error).__name__), patch.object(ready, "main", side_effect=error), \
+                    contextlib.redirect_stderr(io.StringIO()) as output:
+                self.assertEqual(ready.cli(), 1)
+            self.assertIn(expected, output.getvalue())
+            self.assertIn("no Broker request was sent", output.getvalue())
+            self.assertNotIn("private-input", output.getvalue())
+
+    def test_shipped_entrypoint_prints_refusal_without_credential_echo(self):
+        issued = {"api_key": "same-issued-key", "active_after_ms": 0,
+                  "key": {"name": "orgs/org_test/api_keys/test",
+                          "status": {"principal": "orgs/org_test/principals/prn_test"}}}
+        with tempfile.TemporaryDirectory() as directory:
+            curl = Path(directory) / "curl"
+            curl.write_text("#!" + sys.executable + "\nimport json, sys\n"
+                            "sys.stdin.read()\n"
+                            "print(json.dumps({'code':'PERMISSION_DENIED', 'detail':'refused same-issued-key', 'request_id':'req_test'}))\n"
+                            "sys.stdout.write('403')\n")
+            curl.chmod(0o700)
+            result = subprocess.run([sys.executable, str(ROOT / ".github/actions/_shared/access_ready.py"),
+                                     "--api-url", API], input=json.dumps(issued), capture_output=True, text=True,
+                                    env={**os.environ, "PATH": directory + os.pathsep + os.environ.get("PATH", "")}, timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        for expected in ("HTTP 403", "PERMISSION_DENIED", "req_test", "no Broker request was sent"):
+            self.assertIn(expected, result.stderr)
+        self.assertNotIn("same-issued-key", result.stderr)
+
     def test_issued_subject_accepts_org_project_and_environment_key_parents(self):
         for parent in ("orgs/org_test", "orgs/org_test/projects/prj_test",
                        "orgs/org_test/projects/prj_test/envs/env_test"):
