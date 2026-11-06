@@ -58,9 +58,11 @@ New migrations are refused for:
   actions, which allow a future parent deletion to change child data. A `CASCADE`
   inside an explicit top-level `CREATE TABLE` definition passes only when that
   table has no declaration in earlier migration files or earlier statements in
-  the file. This includes `IF NOT EXISTS` only for genuinely new tables.
+  the file. Conditional `IF NOT EXISTS` and temporary/foreign table creation
+  do not establish freshness.
   Historical short names are compared conservatively across schemas and casing;
-  procedural bodies and files containing `DROP` cannot claim freshness. `ALTER`
+  historical procedural declarations and table-rename destinations count too.
+  Procedural bodies and files containing `DROP` cannot claim freshness. `ALTER`
   actions still require a contract reference, even for a newly created table.
   `RESTRICT`, `NO ACTION`, and references without delete actions pass.
   Refusals name the delete action and offending statement.

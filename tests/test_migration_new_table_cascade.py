@@ -11,7 +11,7 @@ from test_migration_guard import guard
 class FreshTableTests(unittest.TestCase):
     def test_new_table_cascades_only(self):
         for dialect, table in (("postgres", '"app"."Child"'), ("mysql", '`app`.`Child`')):
-            for conditional in ("", "IF NOT EXISTS "):
+            for conditional in ("",):
                 sql = f'''CREATE /* CASCADE */ TABLE {conditional}{table} (
                     id int, parent_id int REFERENCES parent(id) ON DELETE CASCADE,
                     other_id int, FOREIGN KEY (other_id) REFERENCES parent(id) ON DELETE CASCADE,
@@ -22,6 +22,20 @@ class FreshTableTests(unittest.TestCase):
                     self.assertTrue(guard.check_sql(sql, dialect, historical_tables={"child"}))
                     self.assertTrue(guard.check_sql(sql.replace('ON DELETE CASCADE,', 'ON DELETE SET NULL,'), dialect))
                     self.assertTrue(guard.check_sql(sql.replace('ON DELETE CASCADE,', 'ON DELETE SET DEFAULT,'), dialect))
+
+    def test_conditional_and_nonordinary_creates_stay_refused(self):
+        for dialect in ("postgres", "mysql"):
+            for prefix in ("CREATE TABLE IF NOT EXISTS", "CREATE TEMPORARY TABLE", "CREATE FOREIGN TABLE"):
+                with self.subTest(dialect=dialect, prefix=prefix):
+                    errors = guard.check_sql(f"{prefix} child (id int REFERENCES parent(id) ON DELETE CASCADE);", dialect)
+                    self.assertIn("ON DELETE CASCADE changes child data", str(errors))
+
+    def test_same_file_earlier_declarations_count(self):
+        for prior in ("CREATE TABLE child AS SELECT 1 AS id;",
+                      "DO $$ BEGIN CREATE TABLE child (id int); END $$;",
+                      "ALTER TABLE original RENAME TO child;"):
+            errors = guard.check_sql(prior + "CREATE TABLE child (id int REFERENCES parent(id) ON DELETE CASCADE);", "postgres")
+            self.assertIn("ON DELETE CASCADE changes child data", str(errors))
 
     def test_other_statement_on_same_line_is_not_exempt(self):
         for dialect, table in (("postgres", '"app"."child"'), ("mysql", '`app`.`child`')):
@@ -82,14 +96,41 @@ class HistoryCascadeTests(unittest.TestCase):
         return code, output.getvalue()
 
     def test_two_new_tables_four_cascades_pass_entrypoint(self):
+        sql = ""
         for table in ("first_child", "second_child"):
-            self.write(f"0002_{table}.sql" if table == "first_child" else "0003_second_child.sql", f'''CREATE TABLE {table} (
+            sql += f'''CREATE TABLE {table} (
                 id int,
                 parent_id int REFERENCES parent(id) ON DELETE CASCADE,
                 other_id int REFERENCES parent(id) ON DELETE CASCADE
-            );''')
+            );'''
+        self.write("0002_children.sql", sql)
         self.commit()
         self.assertEqual(self.run_guard()[0], 0)
+
+    def test_historical_procedural_declarations_and_rename_targets(self):
+        histories = [
+            ("postgres", "DO $$ BEGIN CREATE TABLE hidden (id int); END $$;"),
+            ("postgres", "DO 'BEGIN CREATE TABLE hidden (id int); END';"),
+            ("postgres", "DO $$ BEGIN EXECUTE 'CREATE TABLE hidden (id int)'; END $$;"),
+            ("postgres", 'ALTER TABLE "app"."child" RENAME TO "Hidden";'),
+            ("mysql", "RENAME TABLE child TO other, original TO `Hidden`;"),
+            ("mysql", "ALTER TABLE child RENAME AS hidden;"),
+            ("mysql", "ALTER TABLE child RENAME hidden;"),
+        ]
+        for dialect, historical in histories:
+            with self.subTest(dialect=dialect, historical=historical):
+                self.write("0001_initial.sql", historical)
+                self.base = self.commit()
+                self.write("0002_fk.sql", "CREATE TABLE hidden (id int REFERENCES parent(id) ON DELETE CASCADE);")
+                self.commit()
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = guard.main(["--dialect", dialect, "--directory", "db", "--base", self.base, "--head", "HEAD"], {"GITHUB_WORKSPACE": str(self.root)})
+                self.assertEqual(code, 1)
+                self.assertIn("ON DELETE CASCADE changes child data", output.getvalue())
+                self.git("reset", "--hard", self.base)
+                self.git("rm", "db/0001_initial.sql")
+                self.commit()
 
     def test_historical_names_and_conditional_create_refused(self):
         for table in ('child', 'app.child', '"app"."child"', '"other"."CHILD"'):

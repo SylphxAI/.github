@@ -213,11 +213,11 @@ def create_table_definition(stmt: list[Token], dialect: str) -> tuple[str, list[
     Compare short names conservatively across schemas/search paths and MySQL
     case-folding settings. Ambiguous historical identity must not grant an exemption.
     """
-    at = table_start(stmt)
-    if at is None:
+    # Conditional creation can retain an existing relation. Only unconditional,
+    # ordinary table creation proves this statement introduces the child table.
+    if not starts(stmt, "CREATE", "TABLE") or starts(stmt[2:], "IF", "NOT", "EXISTS"):
         return None
-    if starts(stmt[at:], "IF", "NOT", "EXISTS"):
-        at += 3
+    at = 2
     table, at = snapshot_name(stmt, at, dialect)
     if at >= len(stmt) or stmt[at].value != "(":
         return None
@@ -225,12 +225,17 @@ def create_table_definition(stmt: list[Token], dialect: str) -> tuple[str, list[
     return table[-1].casefold(), body
 
 
-def declared_tables(sql: str, dialect: str) -> set[str]:
-    tokens, _ = lex(sql, dialect)
+def declared_table_tokens(tokens: list[Token], dialect: str, nesting: int = 0) -> set[str]:
+    """Conservatively reserve historical CREATE and table-rename destinations.
+
+    Routine and dynamic SQL literals may contain earlier declarations too. They
+    can remove eligibility, never grant it; comments and ordinary value strings
+    without DDL stay inert. Unknown/overdeep SQL fails closed via SqlError.
+    """
+    if nesting > 64:
+        raise SqlError("historical declaration nesting is too deep to inspect")
     tables = set()
-    # Scan token boundaries as well as statement boundaries, so procedural
-    # prefixes cannot conceal historical declarations. Literals stay opaque.
-    for i in range(len(tokens)):
+    for i, token in enumerate(tokens):
         at = table_start(tokens[i:i + 3])
         if at is not None:
             stmt = tokens[i:]
@@ -238,7 +243,44 @@ def declared_tables(sql: str, dialect: str) -> set[str]:
                 at += 3
             table, _ = snapshot_name(stmt, at, dialect)
             tables.add(table[-1].casefold())
+        if starts(tokens[i:i + 2], "RENAME", "TABLE"):
+            stmt, at = tokens[i:], 2
+            while at < len(stmt):
+                _, at = snapshot_name(stmt, at, dialect)
+                if at >= len(stmt) or not kw(stmt[at], "TO"):
+                    break
+                target, at = snapshot_name(stmt, at + 1, dialect)
+                tables.add(target[-1].casefold())
+                if at >= len(stmt) or stmt[at].value != ",":
+                    break
+                at += 1
+        elif (starts(tokens[i:i + 2], "ALTER", "TABLE")
+              or starts(tokens[i:i + 3], "ALTER", "FOREIGN", "TABLE")):
+            # Stop at this statement's boundary; column/index renames never
+            # establish a table destination.
+            for j in range(i + 2, len(tokens)):
+                if tokens[j].value == ";":
+                    break
+                if not kw(tokens[j], "RENAME"):
+                    continue
+                stmt, at = tokens[j:], 1
+                if starts(stmt[at:], "TO") or starts(stmt[at:], "AS"):
+                    at += 1
+                elif dialect != "mysql" or any(starts(stmt[at:], w) for w in ("COLUMN", "INDEX", "KEY")):
+                    continue
+                target, _ = snapshot_name(stmt, at, dialect)
+                tables.add(target[-1].casefold())
+        if token.kind == "literal":
+            source = unquote_postgres_literal(token)
+            if source and re.search(r"\b(?:CREATE|RENAME|ALTER)\b", source, re.I):
+                inner, _ = lex(source, dialect)
+                tables.update(declared_table_tokens(inner, dialect, nesting + 1))
     return tables
+
+
+def declared_tables(sql: str, dialect: str) -> set[str]:
+    tokens, _ = lex(sql, dialect)
+    return declared_table_tokens(tokens, dialect)
 
 
 def procedural_statement(stmt: list[Token]) -> list[Token]:
@@ -1197,8 +1239,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                    for line, action in foreign_delete_actions(scan_stmt[i:i + 4])
                    if not (action == "CASCADE" and id(token) in allowed_tokens)
                    and kw(token, "ON"))
-        if definition:
-            prior_tables.add(definition[0])
+        if fresh_ddl:
+            prior_tables.update(declared_table_tokens(stmt, dialect))
         if starts(control_stmt, "SET") and any(
                 (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
                 or (t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I))
