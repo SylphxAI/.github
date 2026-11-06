@@ -194,6 +194,16 @@ An `invalid_json_schema` refusal remains unavailable; fix and publish the
 shared action, adopt its immutable pin, and inspect the new consumer result
 before claiming review acceptance. Do not retry an unchanged request.
 
+The Check Run is the canonical verdict. The review command and finalizer exit
+non-zero for a failure, cancellation, or unavailable/incomplete neutral result,
+and put the reason in the step summary. A successful review exits zero. The
+explicit `Review outside path policy` neutral is also a pass: the pinned policy
+requires no review, so its receipt carries `applicable: false`, including when
+reusing a completed canonical App Check Run. No other neutral title is exempt.
+If one workflow reviews several heads, any non-passing result fails the job;
+all Check Runs and receipts still publish before the command exits. A trusted
+trigger with no eligible open heads performs no review and exits zero.
+
 An inference refusal, timeout, unsupported source, invalid binary evidence or malformed
 output receives neutral with a bounded reason when no grounded blocking finding
 is already present. A model's valid incomplete assessment instead uses bounded

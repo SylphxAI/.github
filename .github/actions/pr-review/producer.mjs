@@ -142,6 +142,14 @@ function outputFor(result, input) {
   } };
 }
 
+// This title is authored only by this publisher after the pinned policy check.
+export function completedReviewReceipt(run) {
+  const outsidePolicy = run.conclusion === 'neutral' && run.output?.title === 'Review outside path policy';
+  return { check_run_id: run.id, head_sha: run.head_sha, conclusion: run.conclusion,
+    ...(outsidePolicy ? { applicable: false } : run.conclusion !== 'success' ?
+      { reason: run.output?.title || 'Review unavailable or incomplete.' } : {}) };
+}
+
 export async function produceReview({ github, target, trigger, detailsUrl, engine, createReviewInput, engineVersion, onBegin, onResult, deadlineMs }) {
   const started = Date.now();
   const externalId = `pr-review/v1/${digest(JSON.stringify([github.repository, target.kind, target.number ?? target.ref,
@@ -152,7 +160,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     throw new Unavailable('Publisher did not receive the canonical App Check Run.');
   }
   await onBegin?.(run);
-  if (run.status === 'completed') return { reused: true, check_run_id: run.id, head_sha: run.head_sha, conclusion: run.conclusion, started_at: run.started_at, observed_at: observedAt };
+  if (run.status === 'completed') return { ...completedReviewReceipt(run), reused: true, started_at: run.started_at, observed_at: observedAt };
   try {
     const { bundle, needs_review } = await collectBundle(github, target, trigger);
     if (!needs_review) {
