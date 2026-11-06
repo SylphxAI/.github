@@ -54,9 +54,16 @@ New migrations are refused for:
   `DROP SCHEMA`, `DROP DATABASE`, `DROP OWNED`, `DROP TYPE`, `DROP DOMAIN`, and
   `TRUNCATE`. Temporary tables and foreign-table column changes are included.
 - `DELETE` or `UPDATE` without a `WHERE` in that mutation's own scope.
-- New foreign-key `ON DELETE CASCADE` or `ON DELETE SET NULL` actions, which
-  allow a future parent deletion to change child data. `RESTRICT`, `NO ACTION`,
-  and references without delete actions pass.
+- Foreign-key `ON DELETE CASCADE`, `ON DELETE SET NULL`, or `ON DELETE SET DEFAULT`
+  actions, which allow a future parent deletion to change child data. A `CASCADE`
+  inside an explicit top-level `CREATE TABLE` definition passes only when that
+  table has no declaration in earlier migration files or earlier statements in
+  the file. This includes `IF NOT EXISTS` only for genuinely new tables.
+  Historical short names are compared conservatively across schemas and casing;
+  procedural bodies and files containing `DROP` cannot claim freshness. `ALTER`
+  actions still require a contract reference, even for a newly created table.
+  `RESTRICT`, `NO ACTION`, and references without delete actions pass.
+  Refusals name the delete action and offending statement.
 - Renames, PostgreSQL column type changes, and MySQL `MODIFY`/`CHANGE` columns.
   Type changes are conservative: without the old definition, widening cannot
   be established, so all require the contract marker.
