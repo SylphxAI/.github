@@ -242,9 +242,14 @@ def range_commits(base, head, repository, token):
             source.fetch(repo, server + '/' + repository + '.git', base, head, token, filter_spec='tree:0')
             data = source.git(repo, 'log', '-z', '--no-show-signature',
                               '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B', base + '..' + head)
+            commits = parse_commits(data)
+            if commits:
+                objects = source.command(['git', '-C', str(repo), 'cat-file', '--batch'],
+                                         input=''.join(item['sha'] + '\n' for item in commits).encode())
+                attach_commit_objects(commits, objects)
         except source.ScanError:
             raise PolicyError('immutable commit acquisition failed') from None
-    return parse_commits(data)
+    return commits
 
 
 def parse_commits(data):
@@ -259,6 +264,41 @@ def parse_commits(data):
     return result
 
 
+def attach_commit_objects(commits, data):
+    """Keep exact object bytes; pretty-printed log messages are not signed bytes."""
+    offset = 0
+    for item in commits:
+        end = data.find(b'\n', offset)
+        if end < 0:
+            raise PolicyError('immutable commit object is incomplete')
+        fields = data[offset:end].split()
+        if len(fields) != 3 or fields[:2] != [item['sha'].encode(), b'commit'] or not fields[2].isdigit():
+            raise PolicyError('immutable commit object is incomplete')
+        start, size = end + 1, int(fields[2])
+        raw = data[start:start + size]
+        if len(raw) != size or data[start + size:start + size + 1] != b'\n' or b'\n\n' not in raw:
+            raise PolicyError('immutable commit object is incomplete')
+        item['raw_commit'] = raw
+        item['commit']['message'] = raw.partition(b'\n\n')[2].decode('utf-8', errors='replace')
+        offset = start + size + 1
+    if offset != len(data):
+        raise PolicyError('immutable commit object response has extra data')
+
+
+def signing_payload(raw):
+    """Git signs the complete commit object with only its gpgsig header removed."""
+    if not isinstance(raw, bytes) or b'\n\n' not in raw:
+        raise PolicyError('immutable signed commit object is unavailable')
+    headers, separator, message = raw.partition(b'\n\n')
+    kept, signature_header = [], False
+    for line in headers.split(b'\n'):
+        if not line.startswith(b' '):
+            signature_header = line.startswith(b'gpgsig ')
+        if not signature_header:
+            kept.append(line)
+    return b'\n'.join(kept) + separator + message
+
+
 def verified_github_commits(api, commits, policy):
     """Bind GitHub's signature verdict and web-flow identity to immutable objects."""
     github = policy['github_generated']
@@ -270,7 +310,7 @@ def verified_github_commits(api, commits, policy):
             continue
         remote = api.get('commits/' + item['sha'])
         metadata = remote.get('commit') or {}
-        if remote.get('sha') != item['sha'] or metadata.get('message') != local.get('message') or any(
+        if remote.get('sha') != item['sha'] or any(
                 (metadata.get(role) or {}).get(key) != (local.get(role) or {}).get(key)
                 for role in ('author', 'committer') for key in ('name', 'email')):
             raise PolicyError('GitHub provenance does not match immutable commit metadata')
@@ -279,6 +319,10 @@ def verified_github_commits(api, commits, policy):
                 signature.get('verified') is True and signature.get('reason') == 'valid' and \
                 isinstance(signature.get('signature'), str) and signature['signature'].strip() and \
                 isinstance(signature.get('payload'), str) and signature['payload'].strip():
+            # REST's display message can omit a terminal LF. The signed payload
+            # preserves every byte, including the complete headers and message.
+            if signing_payload(item.get('raw_commit')) != signature['payload'].encode('utf-8'):
+                raise PolicyError('GitHub provenance does not match immutable commit metadata')
             verified.add(item['sha'])
     return verified
 
