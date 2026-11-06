@@ -151,12 +151,18 @@ export function parseReviewResult(text, input) {
 		const requireEvidence = (evidence, kind, index, findingIndex = null) => {
 			let expected = sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte)
 			if (expected !== evidence.quote && evidence.start_byte === null && evidence.end_byte === null && evidence.end_line >= evidence.start_line) {
-				const span = evidence.end_line - evidence.start_line
-				const matches = [-3, -2, -1, 1, 2, 3].filter(delta => evidence.start_line + delta >= 1 &&
-					sourceQuote(input, evidence.path, evidence.side, evidence.start_line + delta, evidence.start_line + delta + span, null, null) === evidence.quote)
+				const matches = []
+				for (const startDelta of [-3, -2, -1, 0, 1, 2, 3]) {
+					const start = evidence.start_line + startDelta
+					if (start < 1) continue
+					for (const endDelta of [-3, -2, -1, 0, 1, 2, 3]) {
+						const end = evidence.end_line + endDelta
+						if (end < start || (startDelta === 0 && endDelta === 0)) continue
+						if (sourceQuote(input, evidence.path, evidence.side, start, end, null, null) === evidence.quote) matches.push([start, end])
+					}
+				}
 				if (matches.length === 1) {
-					evidence.start_line += matches[0]
-					evidence.end_line += matches[0]
+					;[evidence.start_line, evidence.end_line] = matches[0]
 					expected = evidence.quote
 				}
 			}
