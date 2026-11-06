@@ -108,6 +108,15 @@ test('quota and transport failures are explicit, secret-safe and never retried',
   const failed = gatewayReviewer({ token: 'private-value', model: 'vendor/reviewer', deadlineMs: Date.now() + 5000,
     fetcher: async () => { throw new Error('private-value'); } });
   assert.equal((await failed(input)).reason, 'Review inference failed at the network.');
+  const streamDeadline = Date.now() + 1000;
+  const now = Date.now;
+  try {
+    let fakeNow = streamDeadline - 500;
+    Date.now = () => fakeNow;
+    const abortedStream = gatewayReviewer({ token: 'private-value', model: 'vendor/reviewer', deadlineMs: streamDeadline,
+      fetcher: async () => ({ ok: true, status: 200, json: async () => { fakeNow = streamDeadline + 10; throw new Error('TimeoutError: The operation was aborted due to timeout'); } }) });
+    assert.equal((await abortedStream(input)).reason, 'Review inference exceeded its deadline.');
+  } finally { Date.now = now; }
 });
 
 test('schema rejects source/version drift, fabricated quotes, omissions and extra fields', () => {
@@ -366,10 +375,10 @@ test('line-qualified evidence recovers unique verbatim nearby lines and refuses 
   const head = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'duplicate', 'duplicate', 'omega'].join('\n') + '\n';
   const input = inputFor('old\n', head);
   const shifted = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
-    start_line: 2, end_line: 3, start_byte: null, end_byte: null, quote: 'delta\nepsilon' }] }), input);
+    start_line: 1, end_line: 2, start_byte: null, end_byte: null, quote: 'epsilon\nduplicate' }] }), input);
   assert.equal(shifted.status, 'complete');
-  assert.equal(shifted.related_evidence[0].start_line, 4);
-  assert.equal(shifted.related_evidence[0].end_line, 5);
+  assert.equal(shifted.related_evidence[0].start_line, 5);
+  assert.equal(shifted.related_evidence[0].end_line, 6);
   const halfOpen = parseReviewResult(JSON.stringify({ ...wire(input), related_evidence: [{ path: 'src/value.js', side: 'head',
     start_line: 4, end_line: 6, start_byte: null, end_byte: null, quote: 'delta\nepsilon' }] }), input);
   assert.equal(halfOpen.status, 'complete');

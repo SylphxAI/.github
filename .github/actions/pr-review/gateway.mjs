@@ -81,7 +81,9 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
       return unavailable(input, Date.now() >= deadlineMs ? 'Review inference exceeded its deadline.' : 'Review inference failed at the network.');
     }
     let body;
-    try { body = await response.json(); } catch { return unavailable(input, `Review gateway returned invalid JSON (HTTP ${response.status}).`); }
+    try { body = await response.json(); } catch {
+      return unavailable(input, Date.now() >= deadlineMs ? 'Review inference exceeded its deadline.' : `Review gateway returned invalid JSON (HTTP ${response.status}).`);
+    }
     if (!response.ok) {
       // Only a bounded machine code is safe to publish. Provider prose may echo
       // source or credentials and therefore never crosses this boundary.
