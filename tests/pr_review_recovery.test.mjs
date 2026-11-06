@@ -301,7 +301,7 @@ for (const mode of ['recovery', 'absence', 'anchor']) test(`CLI ${mode} persists
     });
     assert.equal(process.status, 0, process.stderr);
     const receipt = JSON.parse(process.stdout).reviews[0];
-    assert.equal(receipt.conclusion, mode === 'anchor' ? 'neutral' : 'success');
+    assert.equal(receipt.conclusion, 'success');
     const results = JSON.parse(readFileSync(join(directory, 'pr-review-results.json')));
     if (mode !== 'anchor') {
       assert.equal(results[0].recovery_diagnostics[0].reason, 'PRIVATE_CLI_DIAGNOSTIC');
@@ -309,10 +309,13 @@ for (const mode of ['recovery', 'absence', 'anchor']) test(`CLI ${mode} persists
       assert.deepEqual(receipt.recovery_sources, results[0].recovery_sources);
     }
     else {
-      assert.equal(receipt.validation_failure.code, 'quote_mismatch');
-      assert.deepEqual(receipt.validation_failure, results[0].validation_failure);
-      assert.deepEqual(receipt.validation_failure, JSON.parse(readFileSync(join(directory, 'pr-review-receipts.json')))[0].validation_failure);
+      assert.equal(receipt.validation_failure, undefined);
+      assert.equal(receipt.discarded_items, 1);
+      assert.equal(results[0].discarded_items.length, 1);
+      assert.equal(JSON.parse(readFileSync(join(directory, 'pr-review-receipts.json')))[0].discarded_items, 1);
+      // request_bytes records qualified review executions, not corrective POSTs.
       assert.equal(receipt.request_bytes.length, 1);
+      assert.match(JSON.parse(readFileSync(join(directory, 'public-check.json'))).output.summary, /1 items discarded: evidence not in source/);
     }
     assert.equal(statSync(join(directory, 'pr-review-results.json')).mode & 0o777, 0o600);
     for (const output of [process.stdout, process.stderr, readFileSync(join(directory, 'pr-review-receipts.json'), 'utf8'),
