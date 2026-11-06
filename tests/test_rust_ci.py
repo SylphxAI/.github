@@ -67,7 +67,7 @@ class RustCiWorkflow(unittest.TestCase):
         self.assertIn("sylphx-linux-{0}{1}", runs_on)
         self.assertIn("inputs.runner-class == 'xlarge' && 'xlarge' || 'standard'", runs_on)
         self.assertIn("github.event_name == 'merge_group' && '-merge' || ''", runs_on)
-        self.assertIn("!github.event.repository.private && inputs.runs-on == 'ubuntu-latest' && 'ubuntu-latest'", runs_on)
+        self.assertIn("github.event.repository.visibility == 'public' && inputs.runs-on == 'ubuntu-latest' && 'ubuntu-latest'", runs_on)
         spec = yaml.safe_load(self.text)[True]["workflow_call"]["inputs"]
         self.assertEqual(spec["runs-on"]["default"], "")
         self.assertNotRegex(self.text, r"(macos|windows)-(latest|\d)")

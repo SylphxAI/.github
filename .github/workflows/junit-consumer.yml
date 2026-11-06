@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   consume:
-    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
     timeout-minutes: 10
     steps:
       # Same source binding as red-main: never execute a producer commit.

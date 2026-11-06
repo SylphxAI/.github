@@ -56,14 +56,17 @@ hosted label is accepted. This repository's own consumer passes:
 
 ```yaml
 with:
-  runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+  runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
 ```
 
 Omit `runs-on` to keep the existing `runner-class` selection, including its
 same-size `-merge` lane on merge groups. The input defaults to empty rather
 than a fixed label so both existing sizes and merge lanes stay unchanged.
-The guard reads the executing repository's top-level event object, not a
-pull request fork or `workflow_run.head_repository`.
+The guard requires `github.event.repository.visibility == 'public'` in the
+caller's context. Missing or unknown visibility stays self-hosted; an input
+cannot declare a caller public. It never reads a pull request fork or
+`workflow_run.head_repository`. See the [runner spend contract](runner-spend.md)
+for the GitHub source and enforced selector forms.
 
 ## The compile cache backend
 

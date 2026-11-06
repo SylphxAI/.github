@@ -151,7 +151,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on: ${{ !github.event.repository.private && inputs.runs-on == 'ubuntu-latest' && 'ubuntu-latest' || format('sylphx-linux-{0}{1}', inputs.runner-class == 'xlarge' && 'xlarge' || 'standard', github.event_name == 'merge_group' && '-merge' || '') }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && inputs.runs-on == 'ubuntu-latest' && 'ubuntu-latest' || format('sylphx-linux-{0}{1}', inputs.runner-class == 'xlarge' && 'xlarge' || 'standard', github.event_name == 'merge_group' && '-merge' || '') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
       GIT_CONFIG_SYSTEM: /dev/null
