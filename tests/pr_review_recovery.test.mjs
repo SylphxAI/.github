@@ -73,7 +73,7 @@ test('absent, already supplied, repeated, invalid, deadline and head-change requ
         return missing(input, [{ path: failure === 'invalid' ? '../outside' : failure === 'already-supplied' ? 'src/change.js' : 'src/caller.js', side: 'head' }]);
       } });
     assert.notEqual(result.result.status, 'complete', failure);
-    assert.equal(calls, failure === 'deadline' ? 0 : ['absent', 'repeated'].includes(failure) ? 2 : 1, failure);
+    assert.equal(calls, failure === 'deadline' ? 0 : ['absent', 'repeated', 'byte-limit'].includes(failure) ? 2 : 1, failure);
     if (['head', 'deadline', 'already-supplied', 'invalid'].includes(failure)) assert.equal(reads, 0, failure);
     assert.ok(!result.result.reason.includes('private error'));
   }
@@ -82,15 +82,18 @@ test('absent, already supplied, repeated, invalid, deadline and head-change requ
 test('bounded new dependencies stop honestly at the original round and file budgets', async () => {
   let calls = 0;
   const result = await runRecovery({ execute: async input => missing(input, [{ path: `src/dependency-${calls++}.js`, side: 'base' }]) });
-  assert.equal(calls, recoveryLimits.rounds + 1);
+  assert.equal(calls, recoveryLimits.rounds + 2);
   assert.equal(result.result.recovery.stop, 'round_limit');
   assert.equal(result.result.status, 'incomplete');
-  let first = true;
+  let first = true, limitedCalls = 0;
   const limited = await runRecovery({ execute: async input => {
+    limitedCalls++;
     const requests = Array.from({ length: first ? recoveryLimits.files : 1 }, (_, n) => ({ path: `src/dep-${first ? n : recoveryLimits.files + 1}.js`, side: 'head' }));
     first = false; return missing(input, requests);
   } });
   assert.equal(limited.result.recovery.stop, 'file_limit');
+  assert.equal(limitedCalls, 3);
+  assert.equal(limited.result.status, 'incomplete');
 });
 
 test('unchanged context is side-qualified and exact, including renamed base aliases and partition fragments', () => {
