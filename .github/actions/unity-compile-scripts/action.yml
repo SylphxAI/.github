@@ -18,6 +18,9 @@ inputs:
   target:
     description: Android or iOS player C# compilation target.
     default: Android
+  block-package-registry:
+    description: Block Unity registry and archive hosts in the editor container after pinned-package hydration.
+    default: 'false'
   output-path:
     description: Output directory relative to the Unity project.
     default: Builds/sylphx-player-scripts
@@ -39,4 +42,5 @@ runs:
         LICENSE_HOME: ${{ inputs.license-home }}
         COMPILE_TARGET: ${{ inputs.target }}
         COMPILE_OUTPUT: ${{ inputs.output-path }}
+        BLOCK_PACKAGE_REGISTRY: ${{ inputs.block-package-registry }}
       run: bash "$GITHUB_ACTION_PATH/compile.sh"
