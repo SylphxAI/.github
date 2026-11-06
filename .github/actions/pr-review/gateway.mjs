@@ -41,6 +41,7 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
     throw new Error('Invalid review output budget.');
   }
   const configuration = { model, maxOutputTokens, reasoningEffort };
+  const completedParts = new Map();
   return async input => {
     let budget;
     try {
@@ -63,7 +64,7 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
       sizes.push(bytes);
       return infer(value, body);
     };
-    const result = await reviewPartitions(input, { execute, requestBytes, byteBudget: budget.request_byte_limit, current });
+    const result = await reviewPartitions(input, { execute, requestBytes, byteBudget: budget.request_byte_limit, current, completedParts });
     return { ...result, budget, request_bytes: sizes };
   };
 

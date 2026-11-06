@@ -402,3 +402,53 @@ test('source unavailability is not absence, and collected outcomes do not imply 
   assert.deepEqual(result.result.recovery_sources.map(s => s.status), ['present', 'unavailable']);
   assert.ok(!JSON.stringify(result.result.recovery_sources).includes('PRIVATE_SOURCE'));
 });
+
+test('multi-part recovery memoizes completed partitions and attributes partition deadline expiry to deadline', async () => {
+  const files = ['src/a.js', 'src/b.js'].map(filename =>
+    bundleFile({ filename, status: 'modified' }, 'export const v = 1;\n'.repeat(200), 'export const v = 2;\n'.repeat(200)));
+  const multiInput = createReviewInput({ schema_version: 2, repository: 'example/repo', repository_id: '1',
+    base_sha: base, head_sha: head, policy_version: '1', trigger: { kind: 'workflow_run', id: '42', generation: '1' }, files, context: [] });
+  const completedParts = new Map(), executedScopes = [];
+  const recovered = await runRecovery({
+    input: multiInput,
+    github: { current: async () => true, source: async path => `// ${path}\n` },
+    execute: async currentInput => reviewPartitions(currentInput, {
+      byteBudget: 14_000,
+      requestBytes: value => Buffer.byteLength(JSON.stringify(value)),
+      completedParts,
+      execute: async part => {
+        executedScopes.push(`${part.scope.kind}:${part.scope.index ?? 'all'}`);
+        if (part.scope.kind === 'partition' && part.scope.index === '00000002' && !currentInput.context.some(c => c.path === 'src/helper.js')) {
+          return parseReviewResult(JSON.stringify({
+            ...wire(part),
+            completion: 'incomplete',
+            omitted_paths: part.files.map(f => f.path),
+            context_requests: [{ path: 'src/helper.js', side: 'head' }],
+            reason: 'need helper',
+          }), part);
+        }
+        return parsed(part);
+      },
+    }),
+  });
+  assert.equal(recovered.result.status, 'complete');
+  assert.deepEqual(executedScopes, ['partition:00000001', 'partition:00000002', 'partition:00000002', 'synthesis:all']);
+
+  const timedOut = await runRecovery({
+    input: multiInput,
+    execute: async currentInput => ({
+      status: 'incomplete',
+      head_sha: currentInput.head_sha,
+      base_sha: currentInput.base_sha,
+      input_digest: currentInput.input_digest,
+      reviewer_version: currentInput.reviewer_version,
+      findings: [],
+      omitted_paths: ['src/b.js'],
+      context_requests: [],
+      parts: { planned: 9, completed: 1 },
+      reason: 'Part 2/9: Review deadline expired before inference.',
+    }),
+  });
+  assert.equal(timedOut.result.recovery.stop, 'deadline');
+  assert.equal(timedOut.result.reason, 'Part 2/9: Review deadline expired before inference.');
+});

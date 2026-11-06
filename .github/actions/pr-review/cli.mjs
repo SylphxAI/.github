@@ -33,15 +33,16 @@ async function main() {
   }
   if (command !== 'review') throw new Unavailable('Unknown review command.');
   const started = Date.now();
-  const deadlineMs = started + 10 * 60_000;
+  const deadlineMs = started + 35 * 60_000;
   const targets = await eventTargets(github, env.GITHUB_EVENT_NAME, read(env.GITHUB_EVENT_PATH), `${env.GITHUB_RUN_ID}/${env.GITHUB_RUN_ATTEMPT}`);
   const states = [], receipts = [], results = [];
   for (const { target, trigger } of targets) {
     // Configure inside produceReview's fault boundary so configuration failure
     // still publishes an honest neutral result on the exact head.
-    const engine = input => gatewayReviewer({ token: read(authPath).inferenceToken,
+    let reviewer;
+    const engine = input => (reviewer ??= gatewayReviewer({ token: read(authPath).inferenceToken,
       model: env.REVIEW_MODEL, maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
-      reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs, current: () => github.current(target) })(input);
+      reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs, current: () => github.current(target) }))(input);
     const receipt = await produceReview({ github, target, trigger, engine, createReviewInput, engineVersion: reviewerVersion, deadlineMs,
       detailsUrl: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
       onResult: result => {

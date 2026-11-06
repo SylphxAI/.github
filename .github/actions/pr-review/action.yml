@@ -39,7 +39,7 @@ runs:
         REVIEW_MODEL: ${{ inputs.model }}
         REVIEW_REASONING_EFFORT: ${{ inputs.reasoning-effort }}
         REVIEW_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
-      run: timeout --signal=INT 13m node "$GITHUB_ACTION_PATH/cli.mjs" review
+      run: timeout --signal=INT 38m node "$GITHUB_ACTION_PATH/cli.mjs" review
     - name: Settle an interrupted review
       if: always() && steps.auth.outcome == 'success'
       shell: bash

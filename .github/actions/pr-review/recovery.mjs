@@ -22,7 +22,7 @@ export async function recoverContext({ input, github, target, execute, createRev
     }
   }
   const diagnostics = [], sizes = [], sources = [];
-  let rounds = 0, added = 0, bytes = 0, result;
+  let rounds = 0, partRounds = 0, lastCompletedParts = 0, added = 0, bytes = 0, result;
   const record = async stop => {
     result = { ...result, recovery: { rounds, added_files: added, added_bytes: bytes, stop },
       recovery_diagnostics: diagnostics, recovery_sources: [...sources], request_bytes: [...sizes] };
@@ -48,14 +48,24 @@ export async function recoverContext({ input, github, target, execute, createRev
         findings: [], omitted_paths: input.files.map(f => f.path), reason: 'Review engine could not return a valid pinned result.' };
     }
     const roundElapsedMs = Math.max(0, Date.now() - roundStart);
+    const completedPartsCount = result.parts?.completed ?? 0;
+    const executedPartsInRound = Math.max(1, completedPartsCount - lastCompletedParts + 1);
+    const nextRoundEstimateMs = (result.parts?.planned ?? 1) > 1 ? Math.floor(roundElapsedMs / executedPartsInRound) : roundElapsedMs;
+    if (completedPartsCount > lastCompletedParts) {
+      partRounds = 0;
+      lastCompletedParts = completedPartsCount;
+    }
     sizes.push(...(result.request_bytes ?? []));
     if (result.diagnostics) diagnostics.push(result.diagnostics);
     await record(result.status === 'incomplete' ? 'pending' : result.status);
     if (result.status !== 'incomplete') return { input, result };
     const requests = result.context_requests ?? [];
-    if (!requests.length) return stop('no_requests', 'No exact-source context was requested.');
-    if (rounds >= recoveryLimits.rounds) return stop('round_limit', 'Context recovery round limit reached.');
-    if (roundElapsedMs > 0 && deadlineMs - Date.now() < roundElapsedMs) return stop('deadline', 'Insufficient review deadline remaining for another context recovery round.');
+    if (!requests.length) {
+      if (/Review deadline expired|Review inference exceeded its deadline/i.test(result.reason ?? '')) return stop('deadline', '');
+      return stop('no_requests', 'No exact-source context was requested.');
+    }
+    if (partRounds >= recoveryLimits.rounds) return stop('round_limit', 'Context recovery round limit reached.');
+    if (nextRoundEstimateMs > 0 && deadlineMs - Date.now() < nextRoundEstimateMs) return stop('deadline', 'Insufficient review deadline remaining for another context recovery round.');
     if (requests.length > recoveryLimits.files || requests.some(r => !validPath(r.path) ||
         r.path.length > 1024 || !['base', 'head'].includes(r.side))) {
       return stop('invalid_request', 'Context recovery request is invalid.');
@@ -91,11 +101,12 @@ export async function recoverContext({ input, github, target, execute, createRev
     try { current = await github.current(target, { deadlineMs }); } catch { current = null; }
     if (current !== true) return stop('head_unverified', 'Current head changed or could not be verified after context recovery.');
     if (Date.now() >= deadlineMs) return stop('deadline', 'Review deadline expired during context recovery.');
-    if (roundElapsedMs > 0 && deadlineMs - Date.now() < roundElapsedMs) return stop('deadline', 'Insufficient review deadline remaining for another context recovery round.');
+    if (nextRoundEstimateMs > 0 && deadlineMs - Date.now() < nextRoundEstimateMs) return stop('deadline', 'Insufficient review deadline remaining for another context recovery round.');
     const next = createReviewInput({ ...input, context: [...input.context.filter(c => !context.some(n => n.path === c.path && n.side === c.side)), ...context] });
     if (next.input_digest === input.input_digest) return stop('no_new_context', 'Context recovery did not change the pinned evidence.');
     input = next;
     added += context.length;
     rounds++;
+    partRounds++;
   }
 }
