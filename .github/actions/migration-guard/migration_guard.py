@@ -1257,6 +1257,10 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
         grant_start = len(scan_stmt) - len(control_stmt) if non_dml_on and trigger_condition is None else 0
         on_index = next((j for j in range(grant_start, len(scan_stmt)) if kw(scan_stmt[j], "ON")), len(scan_stmt)) if non_dml_on else 0
         for i, token in enumerate(scan_stmt):
+            # GRANT/REVOKE privilege names are not executable SQL verbs. Keep
+            # procedural prefixes and every following statement inspected.
+            if non_dml_on and grant_start <= i < on_index:
+                continue
             tail = scan_stmt[i:]
             if any(starts(tail, "DROP", obj) for obj in ("TABLE", "COLUMN", "SCHEMA", "DATABASE")):
                 out.append((token.line, "DROP " + tail[1].value))
@@ -1270,7 +1274,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 out.append((token.line, "RENAME"))
             # Each mutation needs its own top-level WHERE. A WHERE in a nested
             # SELECT, quoted string, or a second statement does not qualify.
-            if (kw(token, "DELETE") or kw(token, "UPDATE")) and not (non_dml_on and grant_start <= i < on_index) and not (i and kw(scan_stmt[i - 1], "ON")):
+            if (kw(token, "DELETE") or kw(token, "UPDATE")) and not (i and kw(scan_stmt[i - 1], "ON")):
                 # Stop at the enclosing CTE/subquery boundary as well as the
                 # statement end. A later CTE's WHERE cannot qualify this one.
                 suffix, depth = [], 0
