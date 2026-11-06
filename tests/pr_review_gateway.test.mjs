@@ -136,7 +136,7 @@ test('incomplete diagnostics retain bounded model detail privately and whitelist
   const result = parseReviewResult(JSON.stringify({ ...wire(input, [finding]), ...changes }), input);
   assert.equal(result.status, 'incomplete');
   assert.equal(result.reason, 'review incomplete (completion=incomplete, omitted_paths=1, reason=nonempty)');
-  assert.deepEqual(result.findings, []);
+  assert.deepEqual(result.findings, [finding]);
   assert.deepEqual(result.omitted_paths, ['src/value.js']);
   assert.deepEqual(result.context_requests, changes.context_requests);
   assert.equal(result.context_notes, undefined);

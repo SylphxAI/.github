@@ -16,6 +16,7 @@ Use one from another repository with
 | [brand](.github/actions/brand/README.md) | Builds brand assets or checks provenance hashes and surface copies, with caller-owned masters and data |
 | [ci-policy](docs/ci-policy.md) | Short contribution metadata and added-commit secret checks, without a CI aggregate verdict or polling |
 | [ci-ok](.github/actions/ci-ok/action.yml) | Requires named job dependencies to succeed, with contribution metadata and added-commit secret checks; [caller migration](docs/ci-ok.md) |
+| [ci-ok-polling](.github/actions/ci-ok-polling/README.md) | Legacy cross-workflow verdict that fails immediately on concluded failures; prefer explicit job dependencies |
 | [native-bridge-check](docs/native-bridge-check.md) | Checks Lua and Unity Android dispatch names against the exact pinned SDK release artifact |
 | [contribution-policy](docs/contribution-policy.md) | Checks commit identities and public pull request metadata; included in both shared verdict actions |
 | [migration-guard](docs/migration-guard.md) | Refuses destructive PostgreSQL/MySQL migrations, edits to merged SQL migrations, and unsafe changes to schema snapshots |

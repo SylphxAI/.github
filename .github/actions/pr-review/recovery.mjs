@@ -1,4 +1,5 @@
 import { contextRequestLimit } from './schema.mjs';
+import { canonical } from './contract.mjs';
 import { validPath, digest } from './github.mjs';
 import { fileSegments, segmentWindows } from './source.mjs';
 
@@ -34,17 +35,20 @@ export async function recoverContext({ input, github, target, execute, createRev
     return { input, result };
   };
   const infer = async () => {
-    try { return validateResult(await execute(input), input); }
+    let next;
+    try { next = validateResult(await execute(input), input); }
     catch {
-      return { status: 'unavailable', head_sha: input.head_sha, base_sha: input.base_sha,
+      next = { status: 'unavailable', head_sha: input.head_sha, base_sha: input.base_sha,
         input_digest: input.input_digest, reviewer_version: input.reviewer_version,
         findings: [], omitted_paths: input.files.map(f => f.path), reason: 'Review engine could not return a valid pinned result.' };
     }
+    return next;
   };
   const finalizeBudget = async (cause, reason, nextRoundEstimateMs) => {
     // One terminal inference, not another context collection cycle. Re-sealing
     // binds the instruction to the exact evidence and normal result validation.
-    if (deadlineMs - Date.now() <= 0 || deadlineMs - Date.now() < nextRoundEstimateMs) return stop(cause, reason);
+    if (deadlineMs - Date.now() <= 0 || deadlineMs - Date.now() < nextRoundEstimateMs) return stop('deadline', 'Insufficient review deadline remaining for the final verdict.');
+    const previous = result;
     const originalReason = result.reason;
     input = createReviewInput({ ...input, context_recovery: 'exhausted' });
     result = await infer();
@@ -54,6 +58,12 @@ export async function recoverContext({ input, github, target, execute, createRev
       await record(`${cause}_finalized`);
       return { input, result };
     }
+    result = { ...result, findings: [...new Map([...previous.findings, ...result.findings]
+      .map(finding => [canonical(finding), finding])).values()] };
+    // A valid model assessment that still refuses a verdict is a terminal
+    // review failure, not infrastructure unavailability or a clean review.
+    if (result.status === 'incomplete') result = { ...result, terminal_incomplete: true };
+    else return stop(cause, `Final verdict unavailable. ${reason}`);
     result = { ...result, reason: originalReason };
     return stop(cause, reason);
   };
@@ -81,7 +91,7 @@ export async function recoverContext({ input, github, target, execute, createRev
     const requests = result.context_requests ?? [];
     if (!requests.length) {
       if (/Review deadline expired|Review inference exceeded its deadline/i.test(result.reason ?? '')) return stop('deadline', '');
-      return stop('no_requests', 'No exact-source context was requested.');
+      return finalizeBudget('no_requests', 'No exact-source context was requested.', nextRoundEstimateMs);
     }
     if (nextRoundEstimateMs > 0 && deadlineMs - Date.now() < nextRoundEstimateMs) return stop('deadline', 'Insufficient review deadline remaining for another context recovery round.');
     if (requests.length > recoveryLimits.files || requests.some(r => !validPath(r.path) ||
@@ -89,7 +99,7 @@ export async function recoverContext({ input, github, target, execute, createRev
       return stop('invalid_request', 'Context recovery request is invalid.');
     }
     const fresh = [...new Map(requests.map(r => [`${r.side}:${r.path}`, r])).entries()].filter(([key]) => !seen.has(key));
-    if (!fresh.length) return stop('no_new_context', 'Requested exact-source context was already supplied.');
+    if (!fresh.length) return finalizeBudget('no_new_context', 'Requested exact-source context was already supplied.', nextRoundEstimateMs);
     if (partRounds >= recoveryLimits.rounds) return finalizeBudget('round_limit', 'Context recovery round limit reached.', nextRoundEstimateMs);
     if (added + fresh.length > recoveryLimits.files) return finalizeBudget('file_limit', 'Context recovery file limit reached.', nextRoundEstimateMs);
     const context = [];

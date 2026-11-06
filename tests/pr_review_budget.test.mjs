@@ -128,7 +128,7 @@ test('late refusal retains validated findings, marks partially covered paths inc
       return response(part, [findingFor(file, row)]);
     } });
   const result = await review(input);
-  assert.equal(result.status, 'incomplete'); assert.equal(posts, 2);
+  assert.equal(result.status, 'unavailable'); assert.equal(posts, 2);
   assert.equal(result.findings.length, 1); assert.deepEqual(result.omitted_paths, ['long-line.rs']);
   assert.ok(result.parts.completed < result.parts.planned); assert.match(result.reason, /HTTP 429/);
 });
@@ -145,7 +145,7 @@ test('head-read and synthesis exceptions retain findings and cannot turn incompl
         return { ...wire(part, [findingFor(file, row, part.scope.index)],
           failure === 'synthesis-size' ? { review_summary: 'x'.repeat(budget) } : {}), status: 'complete' };
       } });
-    assert.equal(result.status, 'incomplete'); assert.ok(result.findings.length > 0);
+    assert.equal(result.status, failure === 'synthesis-size' ? 'incomplete' : 'unavailable'); assert.ok(result.findings.length > 0);
     assert.ok(!JSON.stringify(result).includes('private provider text'));
     if (failure !== 'head') assert.equal(result.parts.completed, result.parts.planned);
   }
@@ -192,7 +192,7 @@ test('failed-anchor receipts survive partition and synthesis boundaries with the
       return parseReviewResult(JSON.stringify(wire(part, [], { related_evidence: [{ ...evidence,
         ...(fail ? { quote: 'PRIVATE_FAILED_ANCHOR' } : {}) }] })), part);
     } });
-    assert.equal(result.status, 'incomplete');
+    assert.equal(result.status, 'unavailable');
     assert.equal(result.validation_failure.code, 'quote_mismatch');
     assert.equal(result.validation_failure.input_digest, posts.at(-1).input_digest);
     assert.notEqual(result.validation_failure.input_digest, input.input_digest);
