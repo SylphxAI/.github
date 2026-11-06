@@ -19,6 +19,20 @@ the pieces it lacks.
 | [`actions/needs-pass`](../.github/actions/needs-pass/action.yml) | The `ci-ok` verdict: skipped passes, failed or cancelled fails. |
 | `docker/build-push-action` with `cache-from/to: type=gha` | Image builds. |
 
+## Release runners
+
+Labels beginning with `sylphx-linux-release` reserve capacity for release and
+deployment chains. The shared workflow checker permits them only when the
+workflow declares a nonempty subset of push to `main`, `workflow_dispatch` and
+`merge_group`. A push must explicitly use `branches: [main]` and no tag filter.
+`pull_request` is always forbidden, including when a job condition skips PRs.
+Schedules, tag releases and `workflow_call` need a separate eligible workflow
+before they can select this pool. Other runner pools keep their existing rules.
+
+Provision and verify the dedicated capacity floor before changing any workflow
+selector to a release label. Worker count and memory size must cover the full
+delivery chain, including artwork, build and verification prerequisites.
+
 ## Concurrency
 
 Put this at the workflow level. A new push supersedes the pull request's run; a
