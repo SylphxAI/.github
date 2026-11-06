@@ -150,13 +150,12 @@ test('re-synthesis validates unrequested bundle context and refuses quotes absen
         start_byte: null, end_byte: null, quote: mode === 'forged' ? 'fabricated source' : '  return "bundle source";' }] };
     });
     // Source validation has its own three-attempt corrective bound after the
-    // requested-source synthesis; it must still reject a persistently false quote.
+    // requested-source synthesis; it must discard a persistently false quote.
     assert.equal(synthesis.length, mode === 'forged' ? 4 : 2);
     if (mode === 'forged') {
-      assert.equal(result.status, 'unavailable');
-      assert.equal(result.validation_failure.code, 'quote_mismatch');
-      assert.equal(result.validation_failure.path, unrequested.path);
-      assert.equal(result.validation_failure.input_digest, synthesis[1].input_digest);
+      assert.equal(result.status, 'complete');
+      assert.equal(result.discarded_items.length, 1);
+      assert.deepEqual(result.related_evidence, []);
     } else {
       assert.equal(result.status, 'complete');
       if (mode === 'snap') assert.equal(result.snapped_evidence.at(-1).start_line, 2);

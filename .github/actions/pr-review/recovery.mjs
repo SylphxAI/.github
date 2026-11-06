@@ -1,5 +1,5 @@
 import { contextRequestLimit } from './schema.mjs';
-import { canonical } from './contract.mjs';
+import { canonical, discardedItems } from './contract.mjs';
 import { validPath, digest } from './github.mjs';
 import { fileSegments, segmentWindows } from './source.mjs';
 
@@ -58,7 +58,7 @@ export async function recoverContext({ input, github, target, execute, createRev
       await record(`${cause}_finalized`);
       return { input, result };
     }
-    result = { ...result, findings: [...new Map([...previous.findings, ...result.findings]
+    result = { ...result, discarded_items: discardedItems([previous, result]), findings: [...new Map([...previous.findings, ...result.findings]
       .map(finding => [canonical(finding), finding])).values()] };
     // A valid model assessment that still refuses a verdict is a terminal
     // review failure, not infrastructure unavailability or a clean review.

@@ -40,7 +40,7 @@ permissions:
 jobs:
   stack:
     # The shared check participates in this repository's real required verdict.
-    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -53,7 +53,7 @@ jobs:
           base: ${{ github.event.inputs.code-base || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
 
   project-control:
-    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -78,7 +78,7 @@ jobs:
         run: node --check .github/actions/setup-changesets-publisher/changesets-publish.mjs
 
   tests:
-    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -244,7 +244,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run
     name: JUnit fixture (${{ matrix.shard }})
     # Standard hosted runners are free only while this repository is public.
-    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -289,7 +289,7 @@ jobs:
     # repository never publishes; pull requests and merge groups diff their
     # own base.
     if: github.event_name != 'push'
-    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
     timeout-minutes: 10
     outputs:
       run: ${{ steps.range.outputs.run }}
@@ -348,7 +348,7 @@ jobs:
   template-verdict:
     needs: template-plan
     if: always() && !cancelled() && github.event_name != 'push'
-    runs-on: ${{ github.event.repository.private && 'sylphx-linux-control' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -367,7 +367,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/rust-ci.yml
     with:
-      runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+      runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
       workspace: tests/fixtures/rust-node-consumer
       node-version: '22'
       npm-ci: true
@@ -376,7 +376,7 @@ jobs:
   ci-ok:
     needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer, rust-node-consumer]
     if: always()
-    runs-on: ${{ github.event.repository.private && 'sylphx-linux-control' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

@@ -124,6 +124,7 @@ function outputFor(result, input) {
     `Source digest: \`${input.input_digest}\``, `${result.findings.length} findings; ${blocking.length} blocking.`];
   if (input.files.some(f => f.source_mode === 'binary-metadata')) summary.push('Binary content is represented by verified byte counts and hashes, not decoded bytes. Source/derivation review does not prove regeneration or binary semantic equivalence.');
   for (const review of result.binary_reviews ?? []) summary.push(`Binary provenance: ${review.path} — ${review.status}. Source: ${review.source_evidence.map(e => e.path).join(', ')}. Derivation: ${review.derivation_evidence.map(e => e.path).join(', ')}. Limitation: ${review.limitation}`);
+  if (result.discarded_items?.length) summary.push(`${result.discarded_items.length} items discarded: evidence not in source.`);
   if (result.parts) summary.push(`Source parts: ${result.parts.completed}/${result.parts.planned} complete.`);
   if (result.recovery_sources?.length) summary.push(`Pinned context outcomes (path fingerprints, not source):\n\n\`\`\`json\n${JSON.stringify(result.recovery_sources)}\n\`\`\``);
   if (result.snapped_evidence?.length) summary.push(`Snapped evidence ranges:\n\n\`\`\`json\n${JSON.stringify(result.snapped_evidence)}\n\`\`\``);
@@ -141,6 +142,14 @@ function outputFor(result, input) {
   } };
 }
 
+// This title is authored only by this publisher after the pinned policy check.
+export function completedReviewReceipt(run) {
+  const outsidePolicy = run.conclusion === 'neutral' && run.output?.title === 'Review outside path policy';
+  return { check_run_id: run.id, head_sha: run.head_sha, conclusion: run.conclusion,
+    ...(outsidePolicy ? { applicable: false } : run.conclusion !== 'success' ?
+      { reason: run.output?.title || 'Review unavailable or incomplete.' } : {}) };
+}
+
 export async function produceReview({ github, target, trigger, detailsUrl, engine, createReviewInput, engineVersion, onBegin, onResult, deadlineMs }) {
   const started = Date.now();
   const externalId = `pr-review/v1/${digest(JSON.stringify([github.repository, target.kind, target.number ?? target.ref,
@@ -151,7 +160,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     throw new Unavailable('Publisher did not receive the canonical App Check Run.');
   }
   await onBegin?.(run);
-  if (run.status === 'completed') return { reused: true, check_run_id: run.id, head_sha: run.head_sha, conclusion: run.conclusion, started_at: run.started_at, observed_at: observedAt };
+  if (run.status === 'completed') return { ...completedReviewReceipt(run), reused: true, started_at: run.started_at, observed_at: observedAt };
   try {
     const { bundle, needs_review } = await collectBundle(github, target, trigger);
     if (!needs_review) {
@@ -185,6 +194,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     const receipt = await github.finish(run, conclusion, output);
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, findings: result.findings.length,
       ...(result.status === 'complete' ? {} : { unavailable: true, reason: result.reason }),
+      ...(result.discarded_items?.length ? { discarded_items: result.discarded_items.length } : {}),
       parts: result.parts, budget: result.budget, request_bytes: result.request_bytes, recovery: result.recovery,
       recovery_sources: result.recovery_sources,
       ...(result.snapped_evidence?.length ? { snapped_evidence: result.snapped_evidence } : {}),

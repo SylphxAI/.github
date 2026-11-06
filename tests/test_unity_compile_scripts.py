@@ -91,6 +91,33 @@ class UnityCompileScripts(unittest.TestCase):
             self.assertEqual(result.returncode, 42)
             self.assertFalse(receipt.exists())
 
+    def test_registry_block_requires_hydration_and_maps_every_unity_package_host(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = self.fixture(root)
+            license_home = root / "license"
+            license_home.mkdir()
+            fake = root / "bin"
+            fake.mkdir()
+            args = root / "docker-args"
+            (fake / "docker").write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\nexit 42\n")
+            (fake / "docker").chmod(0o755)
+            env = os.environ | {"PATH": str(fake) + os.pathsep + os.environ["PATH"], "GITHUB_WORKSPACE": str(root), "GITHUB_ACTION_PATH": str(ACTION), "PROJECT_PATH": project.name, "COMPILE_OUTPUT": "Builds/compile", "COMPILE_TARGET": "Android", "LICENSE_HOME": str(license_home), "UNITY_IMAGE": "consumer/unity:pin", "GITHUB_OUTPUT": str(root / "out"), "BLOCK_PACKAGE_REGISTRY": "true", "CAPTURE_ARGS": str(args)}
+            result = subprocess.run(["bash", str(ACTION / "compile.sh")], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("hydration receipt is required", result.stdout)
+            self.assertFalse(args.exists())
+            (project / ".unity-packages-cache-receipt.json").write_text('{"packageCount":2}')
+            result = subprocess.run(["bash", str(ACTION / "compile.sh")], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 42)
+            captured = args.read_text().splitlines()
+            self.assertIn("UPM_CACHE_ROOT=/tmp/sylphx-upm-cold", captured)
+            self.assertIn("UPM_CACHE_PATH=/tmp/sylphx-upm-cold/packages", captured)
+            self.assertIn("UPM_NPM_CACHE_PATH=/tmp/sylphx-upm-cold/npm", captured)
+            for host in ("packages.unity.com", "download.packages.unity.com", "cdn.packages.unity.com"):
+                index = captured.index(host + ":127.0.0.1")
+                self.assertEqual(captured[index - 1], "--add-host")
+
     def test_success_uses_absolute_project_output_and_validates_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

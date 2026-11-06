@@ -19,7 +19,7 @@ on:
         type: string
         default: '["**", "!**/*.md", "!LICENSE*", "!.github/ISSUE_TEMPLATE/**", "!.github/workflows/**", "!.github/actions/**"]'
       runner:
-        description: Runner label for the job. Keep the cheap standard one.
+        description: Self-hosted sylphx-linux-* label; other values use standard.
         type: string
         default: sylphx-linux-standard
     outputs:
@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   changes:
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ startsWith(inputs.runner, 'sylphx-linux-') && inputs.runner || 'sylphx-linux-standard' }}
     timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code || steps.all.outputs.value }}

@@ -202,7 +202,90 @@ def foreign_delete_actions(tokens: list[Token]) -> list[tuple[int, str]]:
             actions.append((token.line, "CASCADE"))
         elif starts(tail, "ON", "DELETE", "SET", "NULL"):
             actions.append((token.line, "SET NULL"))
+        elif starts(tail, "ON", "DELETE", "SET", "DEFAULT"):
+            actions.append((token.line, "SET DEFAULT"))
     return actions
+
+
+def create_table_definition(stmt: list[Token], dialect: str) -> tuple[str, list[Token]] | None:
+    """Identify an explicit CREATE TABLE body, never an ALTER or query body.
+
+    Compare short names conservatively across schemas/search paths and MySQL
+    case-folding settings. Ambiguous historical identity must not grant an exemption.
+    """
+    # Conditional creation can retain an existing relation. Only unconditional,
+    # ordinary table creation proves this statement introduces the child table.
+    if not starts(stmt, "CREATE", "TABLE") or starts(stmt[2:], "IF", "NOT", "EXISTS"):
+        return None
+    at = 2
+    table, at = snapshot_name(stmt, at, dialect)
+    if at >= len(stmt) or stmt[at].value != "(":
+        return None
+    body, _ = group(stmt, at)
+    return table[-1].casefold(), body
+
+
+def declared_table_tokens(tokens: list[Token], dialect: str, nesting: int = 0) -> set[str]:
+    """Conservatively reserve historical CREATE and table-rename destinations.
+
+    Routine bodies and literal EXECUTE SQL may contain declarations too. They
+    can remove eligibility, never grant it; comments and ordinary value strings
+    stay inert. Uninspectable/overdeep SQL fails closed via SqlError.
+    """
+    if nesting > 64:
+        raise SqlError("historical declaration nesting is too deep to inspect")
+    tables = set()
+    for i, token in enumerate(tokens):
+        at = table_start(tokens[i:i + 3])
+        if at is not None:
+            stmt = tokens[i:]
+            if starts(stmt[at:], "IF", "NOT", "EXISTS"):
+                at += 3
+            table, _ = snapshot_name(stmt, at, dialect)
+            tables.add(table[-1].casefold())
+        if starts(tokens[i:i + 2], "RENAME", "TABLE"):
+            stmt, at = tokens[i:], 2
+            while at < len(stmt):
+                _, at = snapshot_name(stmt, at, dialect)
+                if at >= len(stmt) or not kw(stmt[at], "TO"):
+                    break
+                target, at = snapshot_name(stmt, at + 1, dialect)
+                tables.add(target[-1].casefold())
+                if at >= len(stmt) or stmt[at].value != ",":
+                    break
+                at += 1
+        elif (starts(tokens[i:i + 2], "ALTER", "TABLE")
+              or starts(tokens[i:i + 3], "ALTER", "FOREIGN", "TABLE")):
+            # Stop at this statement's boundary; column/index renames never
+            # establish a table destination.
+            for j in range(i + 2, len(tokens)):
+                if tokens[j].value == ";":
+                    break
+                if not kw(tokens[j], "RENAME"):
+                    continue
+                stmt, at = tokens[j:], 1
+                if starts(stmt[at:], "TO") or starts(stmt[at:], "AS"):
+                    at += 1
+                elif dialect != "mysql" or any(starts(stmt[at:], w) for w in ("COLUMN", "INDEX", "KEY")):
+                    continue
+                target, _ = snapshot_name(stmt, at, dialect)
+                tables.add(target[-1].casefold())
+        # Only SQL bodies/EXECUTE text are declarations, never a column default
+        # or SELECT value which happens to contain SQL-looking text.
+        body_at = i - 1 if i and kw(tokens[i - 1], "E") else i
+        sql_literal = body_at and any(kw(tokens[body_at - 1], w) for w in ("DO", "AS", "EXECUTE"))
+        sql_literal = sql_literal or body_at >= 3 and starts(tokens[body_at - 3:body_at - 1], "DO", "LANGUAGE")
+        if token.kind == "literal" and sql_literal:
+            source = unquote_postgres_literal(token)
+            if source:
+                inner, _ = lex(source, dialect)
+                tables.update(declared_table_tokens(inner, dialect, nesting + 1))
+    return tables
+
+
+def declared_tables(sql: str, dialect: str) -> set[str]:
+    tokens, _ = lex(sql, dialect)
+    return declared_table_tokens(tokens, dialect)
 
 
 def procedural_statement(stmt: list[Token]) -> list[Token]:
@@ -1077,7 +1160,8 @@ def finite_query_executes(tokens: list[Token], dialect: str, catalog_format: boo
 
 
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
-                     catalog_format: bool = False, finite_executes: set[int] | None = None) -> list[tuple[int, str]]:
+                     catalog_format: bool = False, finite_executes: set[int] | None = None,
+                     historical_tables: set[str] | None = None) -> list[tuple[int, str]]:
     if nesting > 64:
         raise SqlError("procedural body nesting is too deep to inspect")
     out: list[tuple[int, str]] = []
@@ -1086,6 +1170,10 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
     timeouts: set[str] = set()
     dropped_concurrent_indexes: set[tuple[str, str]] = set()
     statements = split(tokens, ";")
+    # A drop/recreate file never earns the fresh-table exemption. Keep the
+    # independent DROP finding too. Procedural bodies cannot establish freshness.
+    fresh_ddl = not nesting and not any(kw(t, "DROP") for t in tokens)
+    prior_tables = set(historical_tables or ())
     uncertain_flow = nesting and any(t.kind == "word" and t.value in {"IF", "CASE", "LOOP", "EXCEPTION", "HANDLER", "ROLLBACK", "DO"} for t in tokens)
     for stmt in statements:
         if uncertain_flow:
@@ -1147,7 +1235,17 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                         control_stmt[0].line,
                         "CREATE INDEX CONCURRENTLY requires a preceding DROP INDEX CONCURRENTLY IF EXISTS for the same index",
                     ))
-        out.extend((line, f"ON DELETE {action} changes child data") for line, action in foreign_delete_actions(scan_stmt))
+        definition = create_table_definition(stmt, dialect) if fresh_ddl else None
+        fresh_body = definition[1] if definition and definition[0] not in prior_tables else []
+        allowed_tokens = {id(t) for t in fresh_body}
+        statement = " ".join(t.raw or t.value for t in stmt)
+        out.extend((line, f"ON DELETE {action} changes child data; statement: {statement}")
+                   for i, token in enumerate(scan_stmt)
+                   for line, action in foreign_delete_actions(scan_stmt[i:i + 4])
+                   if not (action == "CASCADE" and id(token) in allowed_tokens)
+                   and kw(token, "ON"))
+        if fresh_ddl:
+            prior_tables.update(declared_table_tokens(stmt, dialect))
         if starts(control_stmt, "SET") and any(
                 (t.kind in {"word", "identifier"} and t.value.upper() in {"SQL_MODE", "STANDARD_CONFORMING_STRINGS"})
                 or (t.value.startswith("@@") and re.search(r"\bsql_mode\b", t.value, re.I))
@@ -1433,13 +1531,14 @@ def paired_concurrent_index_valid(sql: str, tokens: list[Token], dialect: str,
 
 
 def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "",
-              later_bodies: tuple[str, ...] | list[str] = ()) -> list[tuple[int, str]]:
+              later_bodies: tuple[str, ...] | list[str] = (), *,
+              historical_tables: set[str] | None = None) -> list[tuple[int, str]]:
     tokens, markers = lex(sql, dialect)
     if (concurrent_index_runtime != CONCURRENT_INDEX_RUNTIME
             and paired_concurrent_index_valid(sql, tokens, dialect, later_bodies)):
         return []
     # Lexical failures remain errors even when a marker is present.
-    errors = token_violations(tokens, dialect)
+    errors = token_violations(tokens, dialect, historical_tables=historical_tables)
     # A released-expand reference does not prove resumability or effective
     # connection bounds. Operational findings are never marker exemptions.
     operational = concurrent_index_violations(sql, tokens, dialect, concurrent_index_runtime)
@@ -1926,8 +2025,18 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
                             and PurePosixPath(other_path).name > cur_name
                             and new[other_path][0] in {"100644", "100755"}):
                         later_bodies.append(git(root, "cat-file", "blob", new[other_path][1]))
+            historical_tables: set[str] = set()
+            # Include earlier files added in the same range, and base-side
+            # history when the PR is behind main. Never trust working-tree SQL.
+            history = {**base_migrations, **{p: b for p, b in new.items()
+                       if p < path and p != path}}
+            if any(action == "CASCADE" for _, action in foreign_delete_actions(lex(sql, dialect)[0])):
+                for historical_path, historical_blob in history.items():
+                    historical_tables.update(declared_tables(
+                        git(root, "cat-file", "blob", historical_blob[1]), dialect))
             errors.extend(f"{path}:{line}: {reason}" for line, reason in check_sql(
-                sql, dialect, concurrent_index_runtime, later_bodies=later_bodies))
+                sql, dialect, concurrent_index_runtime, later_bodies=later_bodies,
+                historical_tables=historical_tables))
         except (SqlError, UnicodeError) as exc:
             errors.append(f"{path}: cannot inspect SQL: {exc}")
     for path in schemas or []:
@@ -2004,7 +2113,7 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
             count = max(count, target_count)
         if errors:
             print("\n".join(errors))
-            print("::error::Migration safety check failed. Merged migrations are immutable. Ship an expand step before contracting; add `-- contract: <reference>` naming that released step in the new migration or changed schema snapshot.")
+            print("::error::Migration safety check failed:\n" + "\n".join(errors))
             return 1
         print(f"Migration safety check passed ({count} new SQL migration file(s), {len(schemas)} schema snapshot(s) inspected; merged migrations unchanged).")
         return 0
