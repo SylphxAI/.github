@@ -94,3 +94,36 @@ test('non-source validator failures do not trigger corrective retries', async ()
   const { result, posts } = await run(inputFor(), part => wire(part, { head_sha: part.base_sha }));
   assert.equal(result.reason, 'mismatched head_sha'); assert.equal(posts.length, 1);
 });
+
+test('real partitioned synthesis keeps local validation source out of corrective requests', async () => {
+  const input = seal({ ...inputFor(), scope: undefined,
+    files: Array.from({ length: 3 }, (_, i) => bundleFile({ filename: `src/change${i}.js`, status: 'modified' },
+      `before-${i}-${'x'.repeat(12_000)}\n`, `after-${i}-${'y'.repeat(12_000)}\n`)) });
+  const file = input.files[0], row = file.hunks.flatMap(h => h.rows).find(r => r.kind === 'add');
+  const validated = { ...finding, path: file.path, evidence: [{ ...evidence, path: file.path,
+    start_byte: row.after.start_byte, end_byte: row.after.end_byte, quote: row.after.content }] };
+  let synthesisCalls = 0;
+  const { result, posts } = await run(input, part => {
+    if (part.scope?.kind !== 'synthesis') return wire(part, { findings: [] });
+    synthesisCalls++;
+    assert.deepEqual(part.references, []);
+    assert.deepEqual(part.files, []);
+    return wire(part, { findings: [{ ...validated, evidence: synthesisCalls === 1
+      ? [{ ...validated.evidence[0], quote: 'fabricated' }] : validated.evidence }] });
+  }, 70_000);
+  assert.equal(result.status, 'complete', result.reason); assert.ok(result.parts.planned > 1); assert.equal(synthesisCalls, 2);
+  const [first, second] = posts.slice(-2);
+  assert.deepEqual(second.messages.slice(0, 2), first.messages);
+  assert.ok(!second.messages[3].content.includes(row.after.content.trimEnd()));
+  assert.equal(second.messages.length, 4);
+});
+
+test('a validator rejection at the deadline is returned without another POST', async t => {
+  const now = Date.now(); let current = now;
+  t.mock.method(Date, 'now', () => current);
+  const { result, posts } = await run(inputFor(), part => {
+    current = now + 10_000;
+    return invalid(part);
+  });
+  assert.equal(result.reason, 'evidence differs from supplied source'); assert.equal(posts.length, 1);
+});
