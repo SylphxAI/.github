@@ -23,9 +23,9 @@ const response = (input, extra = {}) => ({ ok: true, status: 200, json: async ()
     review_summary: 'Reviewed assigned source.', related_evidence: [], binary_reviews: [], ...extra,
   }) } }] }) });
 const incomplete = requests => ({ completion: 'incomplete', reason: 'Need exact dependency source.', context_requests: requests });
-async function run(input, synthesize) {
+async function run(input, synthesize, current) {
   const posts = [], synthesis = [];
-  const review = gatewayReviewer({ token: 'test-token', ...configuration, deadlineMs: Date.now() + 10_000,
+  const review = gatewayReviewer({ token: 'test-token', ...configuration, deadlineMs: Date.now() + 10_000, current,
     fetcher: async (_url, request) => {
       if (request.method === 'GET') return { ok: true, json: async () => metadata };
       assert.ok(Buffer.byteLength(request.body) <= budget);
@@ -95,6 +95,32 @@ test('repeated in-bundle requests stop after the existing recovery round limit',
   assert.equal(synthesis.length, 1 + recoveryLimits.rounds);
   for (const part of synthesis.slice(1)) {
     assert.deepEqual(part.context.map(c => [c.path, c.side]), [['src/file0.js', 'base']]);
-    assert.equal(part.context[0].segments[0].content, 'const old0 = 0;\r\n');
+    assert.equal(part.context[0].segments.map(s => s.content).join(''),
+      Array.from({ length: 80 }, (_, i) => `const old${i} = 0;\r\n`).join(''));
+  }
+});
+
+test('successive synthesis requests include only the latest requested source and retain verified absence', async () => {
+  const absent = { path: 'src/absent.js', side: 'head', commit_sha: 'b'.repeat(40), absent: true };
+  const { result, synthesis } = await run(inputFor([absent]), (part, attempt) => {
+    assert.deepEqual(part.context[0], absent);
+    if (attempt < 3) return incomplete([{ path: `src/file${attempt - 1}.js`, side: 'head' }]);
+    assert.deepEqual(part.context.map(c => c.path), [absent.path, 'src/file1.js']);
+    return {};
+  });
+  assert.equal(result.status, 'complete');
+  assert.equal(synthesis.length, 3);
+});
+
+test('head changes and unverified heads stop before the additional synthesis POST', async () => {
+  for (const head of [false, null]) {
+    let requested = false;
+    const { result, synthesis } = await run(inputFor(), () => {
+      requested = true;
+      return incomplete([{ path: 'src/file0.js', side: 'head' }]);
+    }, async () => requested ? head : true);
+    assert.equal(result.status, 'incomplete');
+    assert.equal(synthesis.length, 1);
+    assert.match(result.reason, head === false ? /superseded/ : /could not be verified/);
   }
 });
