@@ -176,11 +176,13 @@ export function parseReviewResult(text, input) {
 			let expected = sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte)
 			if (expected !== evidence.quote && evidence.start_byte === null && evidence.end_byte === null && evidence.end_line >= evidence.start_line && nonempty(evidence.quote)) {
 				const from = { start_line: evidence.start_line, end_line: evidence.end_line }
-				const quoteLines = lines(evidence.quote), span = quoteLines.length, firstLine = quoteLines[0]
+				const quoteLines = lines(evidence.quote).map(line => line.trim()), span = quoteLines.length, firstLine = quoteLines[0]
+				const matchesQuote = quote => quote !== null && lines(quote).length === span &&
+					lines(quote).every((line, i) => line.trim() === quoteLines[i])
 				const seen = new Set(), matches = []
 				const addMatch = (start, end) => {
 					const key = `${start}:${end}`
-					if (!seen.has(key) && sourceQuote(input, evidence.path, evidence.side, start, end, null, null) === evidence.quote) {
+					if (!seen.has(key) && end - start + 1 === span && matchesQuote(sourceQuote(input, evidence.path, evidence.side, start, end, null, null))) {
 						seen.add(key)
 						matches.push([start, end])
 					}
@@ -189,38 +191,45 @@ export function parseReviewResult(text, input) {
 					for (const w of windows) {
 						const wLines = lines(w.content)
 						for (let i = 0; i + span <= wLines.length; i++) {
-							if (wLines[i] === firstLine) addMatch(w.start_line + i, w.start_line + i + span - 1)
+							if (wLines[i].trim() === firstLine) addMatch(w.start_line + i, w.start_line + i + span - 1)
 						}
 					}
 				}
-				for (const e of input.references ?? []) {
-					if (e.path === evidence.path && e.side === evidence.side) {
-						if (e.quote === evidence.quote) addMatch(e.start_line, e.end_line)
-						const eLines = lines(e.quote)
-						if (eLines.length === e.end_line - e.start_line + 1) {
-							for (let i = 0; i + span <= eLines.length; i++) {
-								if (eLines[i] === firstLine) addMatch(e.start_line + i, e.start_line + i + span - 1)
+				// Prefer the stated window; relocation requires a unique whole-window match.
+				addMatch(evidence.start_line, evidence.end_line)
+				if (!matches.length) {
+					for (const e of input.references ?? []) {
+						if (e.path === evidence.path && e.side === evidence.side) {
+							if (matchesQuote(e.quote)) addMatch(e.start_line, e.end_line)
+							const eLines = lines(e.quote)
+							if (eLines.length === e.end_line - e.start_line + 1) {
+								for (let i = 0; i + span <= eLines.length; i++) {
+									if (eLines[i].trim() === firstLine) addMatch(e.start_line + i, e.start_line + i + span - 1)
+								}
 							}
 						}
 					}
-				}
-				const sourceFiles = input.files.length ? input.files : (input.source_files ?? [])
-				const sourceContext = input.context.some(f => f.absent !== true) ? input.context : (input.source_context ?? input.context)
-				const file = sourceFiles.find(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path)
-				if (evidence.side !== 'context' && file) scanWindows(segmentWindows(fileSegments(file, evidence.side === 'base' ? 'before' : 'after')))
-				for (const c of sourceContext.filter(f => f.absent !== true && f.path === evidence.path)) {
-					if (c.segments) scanWindows(segmentWindows(c.segments))
-					else if (typeof c.content === 'string') {
-						const cLines = lines(c.content)
-						for (let i = 0; i + span <= cLines.length; i++) {
-							if (cLines[i] === firstLine) addMatch(i + 1, i + span)
+					const sourceFiles = input.files.length ? input.files : (input.source_files ?? [])
+					const sourceContext = input.context.some(f => f.absent !== true) ? input.context : (input.source_context ?? input.context)
+					const file = sourceFiles.find(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path)
+					if (evidence.side !== 'context' && file) scanWindows(segmentWindows(fileSegments(file, evidence.side === 'base' ? 'before' : 'after')))
+					for (const c of sourceContext.filter(f => f.absent !== true && f.path === evidence.path)) {
+						if (c.segments) scanWindows(segmentWindows(c.segments))
+						else if (typeof c.content === 'string') {
+							const cLines = lines(c.content)
+							for (let i = 0; i + span <= cLines.length; i++) {
+								if (cLines[i].trim() === firstLine) addMatch(i + 1, i + span)
+							}
 						}
 					}
 				}
 				if (matches.length === 1) {
 					;[evidence.start_line, evidence.end_line] = matches[0]
-					expected = evidence.quote
+					expected = sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, null, null)
+					const whitespace = expected !== evidence.quote
+					evidence.quote = expected
 					snapped.push({ kind, evidence_index: index, finding_index: findingIndex, path: evidence.path, side: evidence.side,
+						...(whitespace ? { reason: 'whitespace' } : {}),
 						from_start_line: from.start_line, from_end_line: from.end_line, start_line: evidence.start_line, end_line: evidence.end_line })
 				}
 			}
