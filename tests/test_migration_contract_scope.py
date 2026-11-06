@@ -97,6 +97,31 @@ class ContractScopeTests(unittest.TestCase):
                 self.assertEqual(guard.check_sql(MARKER + sql, "mysql"), [])
                 self.assertIn("DROP TABLE", str(guard.check_sql(MARKER + sql + " DROP TABLE accounts; END;", "mysql")))
 
+    def test_case_control_conditions_fail_before_operand_delimiters(self):
+        for condition in (
+            "CASE WHEN true THEN begin ELSE 1 END",
+            "CASE WHEN true THEN 1 ELSE begin END",
+            "CASE WHEN true THEN end ELSE begin + 1 END",
+            "(CASE WHEN true THEN end ELSE begin END)",
+        ):
+            for control in ("IF " + condition + " THEN SELECT 1; END IF;",
+                            "IF true THEN SELECT 1; ELSEIF " + condition + " THEN SELECT 2; END IF;",
+                            "WHILE " + condition + " DO SELECT 1; END WHILE;",
+                            "REPEAT SELECT 1; UNTIL " + condition + " END REPEAT;",
+                            "CASE WHEN " + condition + " THEN SELECT 1; END CASE;"):
+                with self.subTest(control=control):
+                    sql = "CREATE PROCEDURE p(begin INT, end INT) BEGIN " + control + " END; DROP TABLE accounts; END; END;"
+                    with self.assertRaisesRegex(guard.SqlError, "unsupported CASE expression in inline routine control"):
+                        guard.check_sql(MARKER + sql, "mysql")
+        for body in (
+            "IF true THEN CASE WHEN true THEN SELECT 1; END CASE; END IF;",
+            "IF true THEN SELECT CASE WHEN true THEN begin ELSE 1 END; END IF;",
+        ):
+            with self.subTest(supported_body=body):
+                sql = "CREATE PROCEDURE p(begin INT) BEGIN " + body + " END;"
+                self.assertEqual(guard.check_sql(MARKER + sql, "mysql"), [])
+                self.assertIn("DROP TABLE", str(guard.check_sql(MARKER + sql + " DROP TABLE accounts;", "mysql")))
+
     def test_postgres_routine_set_attributes_keep_body_opaque(self):
         for setting in ("SET search_path=pg_catalog", "SET search_path TO pg_catalog, public", "SET search_path FROM CURRENT"):
             with self.subTest(setting=setting):

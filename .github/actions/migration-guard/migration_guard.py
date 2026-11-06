@@ -181,6 +181,7 @@ def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
     """
     parts, start, depth, substart = [], 0, 0, 0
     blocks: list[str] = []
+    expression_verbs = {"SELECT", "RETURN", "SET", "CALL", "DO", "INSERT", "UPDATE", "DELETE"}
     closing = False
     i = 0
     while i < len(tokens):
@@ -213,13 +214,21 @@ def sql_statements(tokens: list[Token], dialect: str) -> list[list[Token]]:
                     blocks.append("BEGIN")
                     substart = i + (2 if dialect == "postgres" else 1)
         elif kw(token, "CASE"):
+            prefix = tokens[substart:i]
+            # CASE conditions can contain nonreserved BEGIN/END operands.
+            # Refuse unmodeled control expressions before either operand can
+            # corrupt the block stack, not after looking at its current top.
+            control = prefix and prefix[0].kind == "word" and prefix[0].value in {
+                "IF", "ELSEIF", "WHILE", "UNTIL", "FOR", "REPEAT", "CASE"}
+            expression = any(t.kind == "word" and t.value in expression_verbs for t in top_level(prefix))
+            body_boundary = prefix and prefix[-1].kind == "word" and prefix[-1].value in {"THEN", "ELSE", "DO"}
+            if dialect == "mysql" and control and not expression and not body_boundary:
+                raise SqlError(f"line {token.line}: unsupported CASE expression in inline routine control")
             blocks.append("CASE")
         elif kw(token, "BEGIN") and depth == 0 and not (i + 1 < len(tokens) and tokens[i + 1].value == ":"):
             prefix = tokens[substart:i]
             label = len(prefix) == 2 and prefix[0].kind in {"word", "identifier"} and prefix[1].value == ":"
-            expression = any(t.kind == "word" and t.value in {
-                "SELECT", "RETURN", "SET", "CALL", "DO", "INSERT", "UPDATE", "DELETE"}
-                for t in top_level(prefix))
+            expression = any(t.kind == "word" and t.value in expression_verbs for t in top_level(prefix))
             control = not expression and prefix and prefix[0].kind == "word" and prefix[0].value in {
                 "IF", "ELSEIF", "ELSE", "WHILE", "LOOP", "REPEAT", "FOR", "CASE"}
             after_control = control and prefix[-1].kind == "word" and prefix[-1].value in {
