@@ -136,8 +136,8 @@ function outputFor(result, input) {
   const annotations = result.findings.filter(f => f.side === 'head').map(f => ({ path: f.path, start_line: f.start_line, end_line: f.end_line,
     annotation_level: ['critical', 'high', 'medium'].includes(f.severity) ? 'failure' : 'notice',
     title: f.title.slice(0, 255), message: `${f.explanation}\nTrigger: ${f.trigger}\nConsequence: ${f.consequence}`.slice(0, 65535) }));
-  return { conclusion: blocking.length || result.terminal_incomplete ? 'failure' : result.status === 'complete' ? 'success' : 'neutral', output: {
-    title: blocking.length ? `${blocking.length} defects require a change${result.status === 'complete' ? '' : '; review incomplete'}` : result.status === 'complete' ? 'Review complete' : result.terminal_incomplete ? 'Review incomplete' : 'Review unavailable',
+  return { conclusion: blocking.length || result.terminal_incomplete || result.terminal_invalid ? 'failure' : result.status === 'complete' ? 'success' : 'neutral', output: {
+    title: blocking.length ? `${blocking.length} defects require a change${result.status === 'complete' ? '' : '; review incomplete'}` : result.status === 'complete' ? 'Review complete' : result.terminal_invalid ? 'Review invalid' : result.terminal_incomplete ? 'Review incomplete' : 'Review unavailable',
     summary: summary.join('\n\n'), annotations,
   } };
 }
@@ -176,7 +176,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     let current;
     try { current = await github.current(target); }
     catch {
-      result = { ...result, status: 'incomplete', terminal_incomplete: false, reason: 'Current head could not be verified after source review.' };
+      result = { ...result, status: 'incomplete', terminal_incomplete: false, terminal_invalid: false, reason: 'Current head could not be verified after source review.' };
       await onResult?.(result);
     }
     if (current === false) {
