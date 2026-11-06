@@ -38,7 +38,7 @@ inputs:
       One lane per line, `name: pattern pattern ...`. Patterns are fnmatch
       globs over repository paths where `*` also crosses `/`. A lane with no
       pattern, or with `*`, always runs. A change under `.github/` selects
-      every lane.
+      every lane. Omit lanes for range outputs only; `run` is then `{}`.
     required: false
     default: ""
   only:

@@ -21,7 +21,8 @@ verify workflow agree on what "changed" means:
 Lanes come from the caller as `name: pattern pattern ...` lines. A pattern is
 an fnmatch glob over repository paths in which `*` also crosses `/`
 (`crates/*` is everything under crates/); a lone `*` always selects. A lane
-with no patterns always runs. No base, or a change under `.github/`, selects
+with no patterns always runs. Empty lanes request only the range (run = {}).
+No base, or a change under `.github/`, selects
 every lane: a workflow change can affect any of them.
 
 `only` (a dispatch of the verify workflow, by a person or by the red-main
@@ -69,8 +70,6 @@ def parse_lanes(text: str) -> dict[str, list[str]]:
         if name in lanes:
             raise ValueError(f"lane {name!r} is declared twice")
         lanes[name] = patterns.split()
-    if not lanes:
-        raise ValueError("no lanes declared")
     return lanes
 
 
