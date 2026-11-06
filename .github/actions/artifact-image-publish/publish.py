@@ -55,11 +55,25 @@ SAFE_ERROR_CODES = frozenset({
 })
 
 
+# Labels are source-owned constants, never URLs, bodies or caller input.
+HTTP_STEPS = frozenset({
+    "github-oidc", "access-exchange", "access-readiness", "artifact-api",
+    "artifact-prepare-upload", "artifact-register", "artifact-readback",
+    "registry-manifest-head", "registry-manifest-get",
+})
+
+
 class HttpFailure(Exception):
-    def __init__(self, status: int, code: str):
+    def __init__(self, status: int, code: str, step: str = "artifact-api"):
+        step = step if step in HTTP_STEPS else "artifact-api"
         detail = f"; code={code}" if code in SAFE_ERROR_CODES else ""
-        super().__init__(f"public Artifact request refused (HTTP {status}{detail})")
-        self.status, self.code = status, code
+        super().__init__(f"Artifact image publication step={step} refused (HTTP {status}{detail})")
+        self.status, self.code, self.step = status, code, step
+
+
+class ReadinessFailure(ReadinessError):
+    def __init__(self):
+        super().__init__("Artifact image publication step=access-readiness failed validation or transport")
 
 
 def error_code(body):
@@ -78,7 +92,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request(url: str, *, method: str = "GET", headers=None, document=None):
+def request(url: str, *, method: str = "GET", headers=None, document=None, step="artifact-api"):
     data = None if document is None else json.dumps(document).encode()
     supplied = {"Content-Type": "application/json", **(headers or {})}
     req = urllib.request.Request(url, data=data, headers=supplied, method=method)
@@ -96,7 +110,7 @@ def request(url: str, *, method: str = "GET", headers=None, document=None):
             code = error_code(body)
         except (ValueError, AttributeError, TypeError):
             code = ""
-        raise HttpFailure(error.code, code) from None
+        raise HttpFailure(error.code, code, step) from None
 
 
 def json_request(url, **kwargs):
@@ -241,6 +255,7 @@ class Access:
         )
         oidc = json_request(
             url,
+            step="github-oidc",
             headers={
                 "Authorization": "Bearer "
                 + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
@@ -251,6 +266,7 @@ class Access:
             raise ValueError("GitHub OIDC response has no token")
         answer = json_request(
             API + "/v1/access/github/token",
+            step="access-exchange",
             method="POST",
             document={"name": ci_name, "token": token},
         )
@@ -263,16 +279,22 @@ class Access:
         expiry = datetime.fromisoformat(answer["expires_at"].replace("Z", "+00:00"))
         if expiry.tzinfo is None or expiry.timestamp() <= time.time() + wait / 1000:
             raise ValueError("Access returned an expired key")
-        org, principal = issued_subject(answer)
-        identity = wait_for_identity(read_identity, key, wait, API)
-        if (identity.get("org") != org
-                or principal != org + "/principals/" + identity.get("principal", "")
-                or identity.get("api_key") != answer["key"]["name"]):
-            raise ReadinessError("ready identity differs from the issued key")
+        try:
+            org, principal = issued_subject(answer)
+            identity = wait_for_identity(read_identity, key, wait, API)
+            if (identity.get("org") != org
+                    or principal != org + "/principals/" + identity.get("principal", "")
+                    or identity.get("api_key") != answer["key"]["name"]):
+                raise ReadinessError("ready identity differs from the issued key")
+        except ReadinessError as error:
+            if error.status is not None:
+                raise HttpFailure(error.status, error_code({"code": error.code}),
+                                  "access-readiness") from None
+            raise ReadinessFailure() from None
         self.key = key
         self.expiry = expiry.timestamp()
 
-    def call(self, path, *, document=None, idempotency=None):
+    def call(self, path, *, document=None, idempotency=None, step="artifact-api"):
         headers = {"Authorization": "Bearer " + self.key}
         if idempotency:
             headers["Idempotency-Key"] = idempotency
@@ -280,6 +302,7 @@ class Access:
             try:
                 return json_request(
                     API + path,
+                    step=step,
                     method="GET" if document is None else "POST",
                     headers=headers,
                     document=document,
@@ -296,7 +319,8 @@ class Access:
 
     def prepare(self, parent):
         return validate_upload(
-            self.call(f"/v1/{parent}/artifacts:prepareUpload", document={}), parent
+            self.call(f"/v1/{parent}/artifacts:prepareUpload", document={},
+                      step="artifact-prepare-upload"), parent
         )
 
 
@@ -366,12 +390,12 @@ def local_manifest(directory):
 def readback(image, tag, token, descriptor, local_body, output):
     base = f"https://{REGISTRY}/v2/{image.split('/', 1)[1]}/manifests/"
     headers = {"Authorization": "Bearer " + token, "Accept": ",".join(MANIFEST_TYPES)}
-    head, _ = request(base + tag, method="HEAD", headers=headers)
+    head, _ = request(base + tag, method="HEAD", headers=headers, step="registry-manifest-head")
     digest = head.get("Docker-Content-Digest", "")
     media = head.get("Content-Type", "").split(";", 1)[0].strip()
     if not DIGEST.fullmatch(digest) or media not in MANIFEST_TYPES:
         raise ValueError("manifest HEAD did not select a supported digest/media type")
-    response, body = request(base + digest, headers=headers)
+    response, body = request(base + digest, headers=headers, step="registry-manifest-get")
     if (
         len(body) > 8 * 1024 * 1024
         or response.get("Docker-Content-Digest") != digest
@@ -436,13 +460,14 @@ def register(access, parent, image, descriptor, subject=""):
                 f"/v1/{parent}/artifacts?managed_upload=true",
                 document=body,
                 idempotency=key,
+                step="artifact-register",
             )
         )
     except HttpFailure as error:
         if error.status != 409 or error.code != "RESOURCE_ALREADY_EXISTS":
             raise
     # Always read the durable record, including after an idempotent POST.
-    record = access.call(f"/v1/{name}")
+    record = access.call(f"/v1/{name}", step="artifact-readback")
     validate(record)
     return name
 
@@ -658,7 +683,7 @@ def main():
         signal.signal(number, lambda signum, frame: sys.exit(128 + signum))
     try:
         run()
-    except HttpFailure as error:
+    except (HttpFailure, ReadinessFailure) as error:
         print(str(error), file=sys.stderr)
         return 1
     except (

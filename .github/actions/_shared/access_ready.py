@@ -10,7 +10,11 @@ from urllib.parse import urlsplit
 
 
 class ReadinessError(Exception):
-    pass
+    def __init__(self, message, *, status=None, code=""):
+        super().__init__(message)
+        # Structured HTTP metadata lets callers diagnose the step without
+        # parsing or printing the provider's diagnostic text.
+        self.status, self.code = status, code
 
 
 def issued_subject(issued):
@@ -89,7 +93,8 @@ def read_identity(endpoint, token, *, allow_propagation, timeout):
     if allow_propagation and status == 401 and value.get("code") in PROPAGATION_CODES:
         return value
     raise ReadinessError("Access readiness refused with HTTP " + str(status)
-                         + "; response=" + refusal_excerpt(value, token))
+                         + "; response=" + refusal_excerpt(value, token),
+                         status=status, code=value.get("code", ""))
 
 
 def main():

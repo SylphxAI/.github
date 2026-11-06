@@ -305,9 +305,10 @@ def test_readiness_permanent_and_transport_refusals_are_not_retried(monkeypatch,
             {"value": "job-oidc"}, issued_key(),
         ]) as request,
         mock.patch.object(lane, "read_identity", side_effect=failure) as identity,
-        pytest.raises(lane.ReadinessError),
+        pytest.raises(lane.ReadinessError) as caught,
     ):
         lane.Access("declared-publisher")
+    assert "step=access-readiness" in str(caught.value)
     assert request.call_count == 2
     assert identity.call_count == 1
 
@@ -352,6 +353,70 @@ def test_http_refusals_retain_only_known_codes_for_both_public_error_shapes(body
     assert "private-provider-token" not in str(caught.value)
     if code:
         assert "code=" + code in str(caught.value)
+
+
+@pytest.mark.parametrize("step,status,code", [
+    ("github-oidc", 401, "UNAUTHENTICATED"),
+    ("access-exchange", 403, "PERMISSION_DENIED"),
+    ("access-readiness", 401, "UNAUTHENTICATED"),
+    ("artifact-prepare-upload", 401, "UNAUTHENTICATED"),
+    ("artifact-prepare-upload", 503, "UNAVAILABLE"),
+    ("artifact-prepare-upload", 401, "private-provider-token"),
+])
+def test_prepare_http_refusal_names_the_exact_step_status_and_only_safe_code(
+    monkeypatch, capsys, step, status, code,
+):
+    access_environment(monkeypatch)
+    body = {"code": code, "detail": "private-provider-token request-secret job-oidc ci-key"}
+
+    def open_request(req, timeout):
+        if req.full_url.startswith("https://github-oidc.example/"):
+            current, answer = "github-oidc", {"value": "job-oidc"}
+        elif req.full_url == lane.API + "/v1/access/github/token":
+            current, answer = "access-exchange", issued_key()
+        else:
+            assert req.full_url == lane.API + f"/v1/{PARENT}/artifacts:prepareUpload"
+            current, answer = "artifact-prepare-upload", upload()
+        if current == step:
+            raise lane.urllib.error.HTTPError(req.full_url, status, "private-provider-token", {},
+                                             io.BytesIO(json.dumps(body).encode()))
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.geturl.return_value = req.full_url
+        response.headers = {}
+        response.read.return_value = json.dumps(answer).encode()
+        return response
+
+    identity = (subprocess.CompletedProcess([], 0, json.dumps(body) + "\n" + str(status), "")
+                if step == "access-readiness" else
+                subprocess.CompletedProcess([], 0, json.dumps(ready_key()) + "\n200", ""))
+    with (
+        mock.patch.object(lane.urllib.request, "build_opener") as opener,
+        mock.patch.object(lane.subprocess, "run", return_value=identity),
+        mock.patch.object(lane.time, "sleep"),
+        pytest.raises(lane.HttpFailure) as caught,
+    ):
+        opener.return_value.open.side_effect = open_request
+        access = lane.Access("declared-publisher")
+        access.prepare(PARENT)
+    failure = caught.value
+    assert (failure.step, failure.status) == (step, status)
+    assert failure.code == (code if code in lane.SAFE_ERROR_CODES else "")
+    with mock.patch.object(lane, "run", side_effect=failure), mock.patch("sys.argv", ["publish.py"]):
+        assert lane.main() == 1
+    diagnostic = capsys.readouterr().err
+    assert f"step={step}" in diagnostic
+    assert f"HTTP {status}" in diagnostic
+    if failure.code:
+        assert "code=" + code in diagnostic
+    for private in ("private-provider-token", "request-secret", "job-oidc", "ci-key", "https://"):
+        assert private not in diagnostic
+
+
+def test_http_step_labels_never_echo_caller_supplied_text():
+    failure = lane.HttpFailure(401, "private-provider-token", "https://private-provider-token")
+    assert "step=artifact-api" in str(failure)
+    assert "private-provider-token" not in str(failure)
 
 
 @pytest.mark.parametrize("code", ["NOT_YET_PROPAGATED", "key_not_yet_propagated"])

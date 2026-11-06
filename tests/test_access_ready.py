@@ -27,6 +27,8 @@ class AccessReadyTests(unittest.TestCase):
         with patch.object(ready.subprocess, "run", return_value=result), \
                 self.assertRaises(ready.ReadinessError) as caught:
             ready.read_identity(API + "/v1/whoami", token, allow_propagation=True, timeout=7)
+        self.assertEqual(caught.exception.status, 403)
+        self.assertEqual(caught.exception.code, "PERMISSION_DENIED")
         message = str(caught.exception)
         for expected in ("HTTP 403", "PERMISSION_DENIED", "req_test", "[REDACTED]"):
             self.assertIn(expected, message)
