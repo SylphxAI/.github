@@ -92,7 +92,7 @@ permissions:
 jobs:
   publish:
     name: Publish
-    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

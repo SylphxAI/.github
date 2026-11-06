@@ -43,6 +43,7 @@ class PublicHostedRunners(unittest.TestCase):
                     context = {
                         'github.event_name': {event},
                         'github.event.repository.private': {private},
+                        'github.event.repository.visibility': {'private' if private else 'public'},
                         'github.event.workflow_run.head_repository.private': {head_private},
                         'github.event.pull_request.head.repo.private': {head_private},
                     }
