@@ -156,15 +156,15 @@ class DeviceCaptureTests(unittest.TestCase):
                 self.assertEqual(args.args,(capture.API+"/v1/whoami","same-issued-key"))
                 self.assertTrue(args.kwargs["allow_propagation"])
                 self.assertGreater(args.kwargs["timeout"],0)
-                self.assertLessEqual(args.kwargs["timeout"],30)
+                self.assertLessEqual(args.kwargs["timeout"],180)
         now[0] = 0.0
         with patch.object(receipt,"request",return_value={"code":"key_not_yet_propagated"}) as read, \
              patch.object(capture.time,"sleep",side_effect=sleep_for) as sleep, \
              patch.object(capture.time,"monotonic",side_effect=lambda:now[0]), self.assertRaises(capture.ReadinessError):
             capture.wait_for_identity(receipt.request,"same-issued-key",0,capture.API)
-        self.assertEqual(now[0],30)
-        self.assertEqual(read.call_count,15)
-        self.assertEqual(sleep.call_count,16)
+        self.assertEqual(now[0],180)
+        self.assertEqual(read.call_count,90)
+        self.assertEqual(sleep.call_count,91)
         with patch.object(receipt,"request",side_effect=capture.CaptureError("other refusal")) as read, \
              patch.object(capture.time,"sleep") as sleep, self.assertRaises(capture.CaptureError):
             capture.wait_for_identity(receipt.request,"same-issued-key",0,capture.API)
@@ -197,8 +197,8 @@ class DeviceCaptureTests(unittest.TestCase):
         now = [0.0]
         receipt = FakeReceipt()
         def slow_read(*args,**kwargs):
-            self.assertEqual(kwargs["timeout"],30)
-            now[0] += 31
+            self.assertEqual(kwargs["timeout"],180)
+            now[0] += 181
             return IDENTITY
         with patch.object(receipt,"request",side_effect=slow_read) as read, \
              patch.object(capture.time,"monotonic",side_effect=lambda:now[0]), \

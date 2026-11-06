@@ -29,12 +29,15 @@ def issued_subject(issued):
     return match[1], principal
 
 
+READINESS_MARGIN_SECONDS = 180
+
+
 def wait_for_identity(read, token, active_after_ms, api_url):
     if type(active_after_ms) is not int or not 0 <= active_after_ms <= 60000:
         raise ReadinessError("invalid Access propagation interval")
     time.sleep(active_after_ms / 1000)
     endpoint = api_url.rstrip("/") + "/v1/whoami"
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + READINESS_MARGIN_SECONDS
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -45,7 +48,7 @@ def wait_for_identity(read, token, active_after_ms, api_url):
         if identity.get("code") != "key_not_yet_propagated":
             return identity
         time.sleep(min(2, max(0, deadline - time.monotonic())))
-    raise ReadinessError("issued Access key did not become ready within 30 seconds")
+    raise ReadinessError(f"issued Access key did not become ready within {READINESS_MARGIN_SECONDS} seconds")
 
 
 def read_identity(endpoint, token, *, allow_propagation, timeout):

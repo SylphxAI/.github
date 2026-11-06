@@ -1,6 +1,15 @@
 import { spawnSync } from 'node:child_process';
 import { Unavailable } from './github.mjs';
 
+const PropagationMarginMs = 180_000;
+const PropagationRetryMs = 2_000;
+
+function activeAfterMs(issued) {
+  return Number.isInteger(issued?.active_after_ms) && issued.active_after_ms >= 0 && issued.active_after_ms <= 60_000
+    ? issued.active_after_ms
+    : 0;
+}
+
 async function json(fetcher, url, options, label) {
   let reply;
   try { reply = await fetcher(url, { redirect: 'error', signal: AbortSignal.timeout(30_000), ...options }); }
@@ -9,10 +18,46 @@ async function json(fetcher, url, options, label) {
   try { return await reply.json(); } catch { throw new Unavailable(`${label} returned invalid JSON.`); }
 }
 
+async function exchangeBrokerToken(fetcher, url, apiKey, body, issued, { sleep, now }) {
+  const deadline = now() + activeAfterMs(issued) + PropagationMarginMs;
+  while (true) {
+    const timeoutMs = Math.min(30_000, Math.max(1, deadline - now()));
+    let reply;
+    try {
+      reply = await fetcher(url, {
+        redirect: 'error',
+        signal: AbortSignal.timeout(timeoutMs),
+        method: 'POST',
+        headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+        body,
+      });
+    } catch {
+      throw new Unavailable('Broker check-token exchange failed at the network.');
+    }
+    let payload;
+    try {
+      payload = await reply.json();
+    } catch {
+      if (!reply.ok) throw new Unavailable(`Broker check-token exchange returned HTTP ${reply.status}.`);
+      throw new Unavailable('Broker check-token exchange returned invalid JSON.');
+    }
+    if (reply.ok) return payload;
+    if (reply.status === 401 && payload && typeof payload === 'object' &&
+        payload.code === 'key_not_yet_propagated' && now() < deadline) {
+      const waitMs = Math.min(PropagationRetryMs, Math.max(0, deadline - now()));
+      if (waitMs > 0) await sleep(waitMs);
+      if (now() < deadline) continue;
+    }
+    throw new Unavailable(`Broker check-token exchange returned HTTP ${reply.status}.`);
+  }
+}
+
 export async function credentials({ ciName, trustPolicy, repository, env = process.env, fetcher = fetch,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => Date.now(),
   ready = issued => {
+    const timeout = activeAfterMs(issued) + PropagationMarginMs + 15_000;
     const result = spawnSync('python3', [new URL('../_shared/access_ready.py', import.meta.url).pathname,
-      '--api-url', 'https://api.sylphx.com'], { input: JSON.stringify(issued), encoding: 'utf8', timeout: 95_000 });
+      '--api-url', 'https://api.sylphx.com'], { input: JSON.stringify(issued), encoding: 'utf8', timeout });
     if (result.status !== 0) throw new Unavailable('Issued Access key is not ready; no Broker request was sent.');
   }, mask = value => process.stdout.write(`::add-mask::${value}\n`) }) {
   if (!ciName || !/^orgs\/[A-Za-z0-9_-]+\/trust_policies\/[A-Za-z0-9_-]+$/.test(trustPolicy ?? '')) {
@@ -33,10 +78,14 @@ export async function credentials({ ciName, trustPolicy, repository, env = proce
   if (typeof issued.api_key !== 'string' || !issued.api_key || /[\r\n]/.test(issued.api_key)) throw new Unavailable('Access returned no valid inference key.');
   mask(issued.api_key);
   await ready(issued);
-  const broker = await json(fetcher, `https://api.sylphx.com/v1/${trustPolicy}:exchangeToken`, {
-    method: 'POST', headers: { authorization: `Bearer ${issued.api_key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ repositories: [repository], permissions: { checks: 'write' } }),
-  }, 'Broker check-token exchange');
+  const broker = await exchangeBrokerToken(
+    fetcher,
+    `https://api.sylphx.com/v1/${trustPolicy}:exchangeToken`,
+    issued.api_key,
+    JSON.stringify({ repositories: [repository], permissions: { checks: 'write' } }),
+    issued,
+    { sleep, now },
+  );
   if (typeof broker.token !== 'string' || !broker.token || /[\r\n]/.test(broker.token) ||
       broker.issuer !== 'github-apps/1299545' || broker.credential_kind !== 'access_token' ||
       broker.repositories?.length !== 1 || broker.repositories[0] !== repository ||

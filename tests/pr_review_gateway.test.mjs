@@ -197,6 +197,68 @@ test('readiness refusal never submits a Broker request', async () => {
   assert.equal(calls, 2);
 });
 
+test('Broker exchange retries only key_not_yet_propagated within the propagation deadline', async () => {
+  let nowMs = 1_000, brokerCalls = 0;
+  const sleeps = [];
+  const auth = await credentials({
+    ciName: 'review', trustPolicy: 'orgs/example/trust_policies/review', repository: 'example/repo',
+    env: { ACTIONS_ID_TOKEN_REQUEST_URL: 'https://example.com/oidc', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'authority' },
+    mask: () => {}, ready: () => {}, now: () => nowMs,
+    sleep: async ms => { sleeps.push(ms); nowMs += ms; },
+    fetcher: async url => {
+      const path = new URL(url).pathname;
+      if (path === '/oidc') return { ok: true, status: 200, json: async () => ({ value: 'identity' }) };
+      if (path === '/v1/access/github/token') return { ok: true, status: 200, json: async () => ({ api_key: 'inference', active_after_ms: 3000 }) };
+      brokerCalls++;
+      if (brokerCalls < 3) {
+        return { ok: false, status: 401, json: async () => ({ code: 'key_not_yet_propagated', error: 'API key not yet active' }) };
+      }
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          token: 'checks', issuer: 'github-apps/1299545', credential_kind: 'access_token',
+          repositories: ['example/repo'], permissions: { checks: 'write' },
+        }),
+      };
+    },
+  });
+  assert.deepEqual(auth, { inferenceToken: 'inference', checkToken: 'checks' });
+  assert.equal(brokerCalls, 3);
+  assert.deepEqual(sleeps, [2000, 2000]);
+
+  let unauthCalls = 0;
+  await assert.rejects(() => credentials({
+    ciName: 'review', trustPolicy: 'orgs/example/trust_policies/review', repository: 'example/repo',
+    env: { ACTIONS_ID_TOKEN_REQUEST_URL: 'https://example.com/oidc', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'authority' },
+    mask: () => {}, ready: () => {}, now: () => 0, sleep: async () => { throw new Error('must not sleep'); },
+    fetcher: async url => {
+      const path = new URL(url).pathname;
+      if (path === '/oidc') return { ok: true, status: 200, json: async () => ({ value: 'identity' }) };
+      if (path === '/v1/access/github/token') return { ok: true, status: 200, json: async () => ({ api_key: 'inference', active_after_ms: 3000 }) };
+      unauthCalls++;
+      return { ok: false, status: 401, json: async () => ({ code: 'UNAUTHENTICATED' }) };
+    },
+  }), /Broker check-token exchange returned HTTP 401/);
+  assert.equal(unauthCalls, 1);
+
+  let expiredNow = 0, expiredCalls = 0;
+  await assert.rejects(() => credentials({
+    ciName: 'review', trustPolicy: 'orgs/example/trust_policies/review', repository: 'example/repo',
+    env: { ACTIONS_ID_TOKEN_REQUEST_URL: 'https://example.com/oidc', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'authority' },
+    mask: () => {}, ready: () => {}, now: () => expiredNow,
+    sleep: async ms => { expiredNow += ms; },
+    fetcher: async url => {
+      const path = new URL(url).pathname;
+      if (path === '/oidc') return { ok: true, status: 200, json: async () => ({ value: 'identity' }) };
+      if (path === '/v1/access/github/token') return { ok: true, status: 200, json: async () => ({ api_key: 'inference', active_after_ms: 4000 }) };
+      expiredCalls++;
+      return { ok: false, status: 401, json: async () => ({ code: 'key_not_yet_propagated' }) };
+    },
+  }), /Broker check-token exchange returned HTTP 401/);
+  assert.equal(expiredNow, 184_000);
+  assert.equal(expiredCalls, 92);
+});
+
 test('trusted event resolves fork-safe API associations and ignores unrelated runs', async () => {
   const head = 'b'.repeat(40), base = 'a'.repeat(40);
   const github = { repository: 'example/repo', current: async () => true,
