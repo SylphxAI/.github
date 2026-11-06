@@ -20,15 +20,27 @@ const validPath = (p) => nonempty(p) && !p.startsWith('/') && !p.split('/').some
 const lines = (content) => content === '' ? [] : content.replace(/\r?\n$/, '').split(/\r?\n/)
 
 export function sourceQuote(input, path, side, start, end, startByte = null, endByte = null) {
-	for (const e of input.references ?? []) if (e.path === path && e.side === side && e.start_line === start && e.end_line === end && e.start_byte === startByte && e.end_byte === endByte) return e.quote
-	const file = input.files.find(f => (side === 'base' ? f.previous_path ?? f.path : f.path) === path)
+	for (const e of input.references ?? []) {
+		if (e.path === path && e.side === side && e.start_line === start && e.end_line === end && e.start_byte === startByte && e.end_byte === endByte) return e.quote
+	}
+	if (startByte === null && endByte === null && start >= 1 && end >= start) {
+		for (const e of input.references ?? []) {
+			if (e.path === path && e.side === side && start >= e.start_line && end <= e.end_line) {
+				const eLines = lines(e.quote)
+				if (eLines.length === e.end_line - e.start_line + 1) return eLines.slice(start - e.start_line, end - e.start_line + 1).join('\n')
+			}
+		}
+	}
+	const sourceFiles = input.files.length ? input.files : (input.source_files ?? [])
+	const sourceContext = input.context.some(f => f.absent !== true) ? input.context : (input.source_context ?? input.context)
+	const file = sourceFiles.find(f => (side === 'base' ? f.previous_path ?? f.path : f.path) === path)
 	if (side !== 'context' && file) {
 		const quote = segmentQuote(file, side === 'base' ? 'before' : 'after', start, end, startByte, endByte)
 		if (quote !== null) return quote
 	}
 	{
-		const exact = input.context.filter(f => f.absent !== true && f.path === path && (f.side ?? 'context') === side)
-		const samePath = input.context.filter(f => f.absent !== true && f.path === path)
+		const exact = sourceContext.filter(f => f.absent !== true && f.path === path && (f.side ?? 'context') === side)
+		const samePath = sourceContext.filter(f => f.absent !== true && f.path === path)
 		const contexts = exact.length ? exact : (
 			(side === 'context' && new Set(samePath.map(f => f.side ?? 'context')).size === 1) ||
 			samePath.every(f => (f.side ?? 'context') === 'context') ? samePath : []
@@ -125,8 +137,11 @@ const diagnostic = (result, input) => ({ input_digest: input.input_digest, scope
 // Only machine-authored metadata crosses the public receipt boundary. Unknown
 // paths and all source/model prose stay out, even when the quote is a secret.
 function evidenceFailure(input, evidence, expected, kind, index, findingIndex) {
-	const samePath = (input.context ?? []).filter(c => c.absent !== true && c.path === evidence.path)
-	const known = (input.files ?? []).some(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path) ||
+	const sourceFiles = input.files?.length ? input.files : (input.source_files ?? [])
+	const sourceContext = (input.context ?? []).some(c => c.absent !== true) ? input.context : (input.source_context ?? input.context ?? [])
+	const samePath = sourceContext.filter(c => c.absent !== true && c.path === evidence.path)
+	const known = sourceFiles.some(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path) ||
+		(input.manifest ?? []).some(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path) ||
 		samePath.some(c => (c.side ?? 'context') === evidence.side ||
 			(evidence.side === 'context' && new Set(samePath.map(f => f.side ?? 'context')).size === 1) ||
 			samePath.every(f => (f.side ?? 'context') === 'context')) ||
@@ -179,13 +194,21 @@ export function parseReviewResult(text, input) {
 					}
 				}
 				for (const e of input.references ?? []) {
-					if (e.path === evidence.path && e.side === evidence.side && e.start_byte === null && e.end_byte === null && e.quote === evidence.quote) {
-						addMatch(e.start_line, e.end_line)
+					if (e.path === evidence.path && e.side === evidence.side) {
+						if (e.quote === evidence.quote) addMatch(e.start_line, e.end_line)
+						const eLines = lines(e.quote)
+						if (eLines.length === e.end_line - e.start_line + 1) {
+							for (let i = 0; i + span <= eLines.length; i++) {
+								if (eLines[i] === firstLine) addMatch(e.start_line + i, e.start_line + i + span - 1)
+							}
+						}
 					}
 				}
-				const file = input.files.find(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path)
+				const sourceFiles = input.files.length ? input.files : (input.source_files ?? [])
+				const sourceContext = input.context.some(f => f.absent !== true) ? input.context : (input.source_context ?? input.context)
+				const file = sourceFiles.find(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path)
 				if (evidence.side !== 'context' && file) scanWindows(segmentWindows(fileSegments(file, evidence.side === 'base' ? 'before' : 'after')))
-				for (const c of input.context.filter(f => f.absent !== true && f.path === evidence.path)) {
+				for (const c of sourceContext.filter(f => f.absent !== true && f.path === evidence.path)) {
 					if (c.segments) scanWindows(segmentWindows(c.segments))
 					else if (typeof c.content === 'string') {
 						const cLines = lines(c.content)

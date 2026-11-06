@@ -58,11 +58,11 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
     } catch { return unavailable(input, 'Review model context metadata is unavailable or invalid.'); }
     const requestBytes = value => Buffer.byteLength(reviewRequest(value, configuration));
     const sizes = [];
-    const execute = async value => {
+    const execute = async (value, sourceScope) => {
       const body = reviewRequest(value, configuration), bytes = Buffer.byteLength(body);
       if (bytes > budget.request_byte_limit) return unavailable(value, 'Review request exceeds the qualified model context.');
       sizes.push(bytes);
-      return infer(value, body);
+      return infer(sourceScope ? { ...value, source_files: sourceScope.files, source_context: sourceScope.context } : value, body);
     };
     const result = await reviewPartitions(input, { execute, requestBytes, byteBudget: budget.request_byte_limit, current, completedParts });
     return { ...result, budget, request_bytes: sizes };
