@@ -10,6 +10,10 @@ inputs:
     description: Read-only token for contribution metadata and added-commit secret scanning.
     default: ${{ github.token }}
 
+  contribution-scope:
+    description: all, or commits when a separate required PR metadata workflow handles title/body edits.
+    default: all
+
 runs:
   using: composite
   steps:
@@ -17,7 +21,8 @@ runs:
       shell: bash
       env:
         CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
-      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py"
+        CONTRIBUTION_POLICY_SCOPE: ${{ inputs.contribution-scope }}
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE"
     - name: Scan added commits for secrets
       shell: bash
       env:

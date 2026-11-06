@@ -38,6 +38,15 @@ caller. Do not remove an old verdict until its replacement is observed and
 required on the exact PR and merge-group heads. This action adds a separate
 policy building block; it changes no existing shared action or caller pin.
 
-The repository's Project control workflow invokes the local action on PRs,
-merge groups and main pushes. Its required tests job supplies the live consumer
-receipt in addition to the focused shell-contract tests.
+The `contribution-scope` input defaults to `all`. If a caller already has a
+separately required PR metadata workflow that runs on title/body edits, set
+`contribution-scope: commits` in the code job. This uses the contribution
+validator's existing commits-only mode; commit identity and secret scanning
+remain required. Otherwise keep `all` and ensure metadata edits rerun the policy
+job. A text correction must not require a new code commit to recover CI.
+
+The repository's Project control workflow invokes the local action with
+`contribution-scope: commits` on PRs, merge groups and main pushes. The separate
+required PR metadata workflow handles mutable text, including edited events.
+The required tests job supplies the live consumer receipt in addition to the
+focused shell-contract tests.
