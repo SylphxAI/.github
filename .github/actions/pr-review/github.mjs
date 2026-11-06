@@ -116,11 +116,11 @@ export class GitHub {
     return this.pages(`/commits/${sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=all`, 'check_runs');
   }
 
-  async begin(target, externalId, detailsUrl) {
+  async begin(target, externalId, detailsUrl, { restartCompleted = false } = {}) {
     const runs = await this.checkRuns(target.head_sha);
     const existing = runs.filter(r => r.app?.id === APP_ID && r.name === CHECK_NAME &&
       r.head_sha === target.head_sha && r.external_id === externalId).sort((a, b) => b.id - a.id)[0];
-    if (existing) return existing;
+    if (existing && !(restartCompleted && existing.status === 'completed')) return existing;
     // POST has no retry. After an ambiguous transport result the next delivery
     // finds this stable external_id before attempting another creation.
     const created = await this.request('/check-runs', { method: 'POST', checks: true, body: {

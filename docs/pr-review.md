@@ -207,8 +207,9 @@ The Check Run is the canonical verdict. The review command and finalizer exit
 non-zero for a failure, cancellation, or unavailable/incomplete neutral result,
 and put the reason in the step summary. A successful review exits zero. The
 explicit `Review outside path policy` neutral is also a pass: the pinned policy
-requires no review, so its receipt carries `applicable: false`, including when
-reusing a completed canonical App Check Run. No other neutral title is exempt.
+requires no review, so its receipt carries `applicable: false`. That decision is
+recomputed from the current pinned policy rather than reused from a neutral
+Check Run. No other neutral title is exempt.
 If one workflow reviews several heads, any non-passing result fails the job;
 all Check Runs and receipts still publish before the command exits. A trusted
 trigger with no eligible open heads performs no review and exits zero.
@@ -220,6 +221,18 @@ recovery and its final verdict pass; persistent incompleteness is failure, not
 neutral or success. A superseded head is cancelled. A new head has a distinct
 check identity and cannot inherit an old result. One workflow serializes duplicate
 deliveries; creation looks up the stable external ID before its single POST.
+Completed-check reuse is narrower than delivery reconciliation: only a canonical
+App `success` or `failure` at the exact head whose published reviewer and source
+digest match the freshly collected input can replace another assessment. Neutral,
+cancelled, timed-out, action-required, stale, skipped, missing-identity and
+mismatched-input results start a fresh check and review. Rejected terminal checks
+remain immutable and are not registered for the new attempt's finalizer. An
+accepted in-progress creation is still reconciled without another POST.
+
+Recovery can enrich an input and change its final digest. Such a result does not
+match a later initial input merely because the head is unchanged; it receives a
+fresh assessment. If fresh source collection is unavailable, a new check records
+that outage instead of reusing or overwriting an older result.
 
 A complete result requires `completion="complete"`, `omitted_paths=[]`,
 `context_requests=[]` and `reason=""`. Explanations and non-blocking scope notes
@@ -273,8 +286,9 @@ without App authority.
 ## Acceptance and evidence
 
 The lightweight Node suite runs in the existing Python unittest discovery and
-tests exact-head isolation, real source diffs/windows, defect/clean result
-publication, malformed/refused/incomplete responses, quota failures, strict
+tests exact-head/digest reuse isolation and recovery from a capacity-neutral
+attempt through the real Check Run adapter, real source diffs/windows, defect/clean
+result publication, malformed/refused/incomplete responses, quota failures, strict
 evidence and the narrowed credential exchange. These are contract tests with
 fake network responses, not a live model quality claim.
 

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { produceReview } from '../.github/actions/pr-review/producer.mjs';
+import { completedReviewReceipt } from '../.github/actions/pr-review/producer.mjs';
 import { APP_ID, CHECK_NAME } from '../.github/actions/pr-review/github.mjs';
 
 const head = 'b'.repeat(40);
@@ -17,13 +17,11 @@ const outcomes = [
   { conclusion: 'neutral', title: 'Review outside path policy', exit: 0, applicable: false },
   { conclusion: 'cancelled', title: 'Head superseded', exit: 1 },
 ];
-for (const outcome of outcomes) test(`completed-check reuse retains ${outcome.title} applicability without reinference`, async () => {
+for (const outcome of outcomes) test(`completed-check receipt retains ${outcome.title} applicability for exit evaluation`, () => {
   const run = { id: 1, head_sha: head, app: { id: APP_ID }, name: CHECK_NAME, status: 'completed',
     conclusion: outcome.conclusion, output: { title: outcome.title } };
-  const result = await produceReview({ github: { repository: 'example/repo', begin: async () => run },
-    target: { head_sha: head }, trigger: {}, engineVersion: 'fixture',
-    engine: () => { throw new Error('Completed checks must not run inference'); } });
-  assert.equal(result.reused, true); assert.equal(result.conclusion, outcome.conclusion);
+  const result = completedReviewReceipt(run);
+  assert.equal(result.conclusion, outcome.conclusion);
   assert.equal(result.applicable, outcome.applicable);
   assert.equal(result.reason, outcome.exit ? outcome.title : undefined);
 });

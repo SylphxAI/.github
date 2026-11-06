@@ -154,22 +154,45 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
   const started = Date.now();
   const externalId = `pr-review/v1/${digest(JSON.stringify([github.repository, target.kind, target.number ?? target.ref,
     target.base_sha, target.policy_sha, target.head_sha, target.review_requested, trigger, engineVersion]))}`;
-  const run = await github.begin(target, externalId, detailsUrl);
+  const begin = async (restartCompleted = false) => {
+    const run = await github.begin(target, externalId, detailsUrl, { restartCompleted });
+    if (run.app?.id !== APP_ID || run.head_sha !== target.head_sha || run.name !== CHECK_NAME ||
+        (restartCompleted && run.status === 'completed')) {
+      throw new Unavailable('Publisher did not receive the canonical App Check Run in an active state.');
+    }
+    if (run.status !== 'completed') await onBegin?.(run);
+    return run;
+  };
+  let run = await begin();
   const observedAt = new Date().toISOString();
-  if (run.app?.id !== APP_ID || run.head_sha !== target.head_sha || run.name !== CHECK_NAME) {
-    throw new Unavailable('Publisher did not receive the canonical App Check Run.');
-  }
-  await onBegin?.(run);
-  if (run.status === 'completed') return { ...completedReviewReceipt(run), reused: true, started_at: run.started_at, observed_at: observedAt };
+  let collected, initialInput, collectionError;
   try {
-    const { bundle, needs_review } = await collectBundle(github, target, trigger);
-    if (!needs_review) {
+    collected = await collectBundle(github, target, trigger);
+    if (collected.needs_review) initialInput = createReviewInput(collected.bundle);
+  } catch (error) { collectionError = error; }
+  if (run.status === 'completed') {
+    // Completion alone includes unavailable/cancelled attempts. Only a verdict
+    // bound to this freshly collected input can replace another assessment.
+    const identity = initialInput && `Head: \`${initialInput.head_sha}\`\n\nReviewer: \`${initialInput.reviewer_version}\`\n\nSource digest: \`${initialInput.input_digest}\`\n\n`;
+    if (!collectionError && identity && ['success', 'failure'].includes(run.conclusion) &&
+        typeof run.output?.summary === 'string' && run.output.summary.startsWith(identity)) {
+      await onBegin?.(run);
+      return { ...completedReviewReceipt(run), reused: true, input_digest: initialInput.input_digest,
+        started_at: run.started_at, observed_at: observedAt };
+    }
+    // Keep rejected history immutable and register only the new check with the
+    // finalizer. begin() reconciles an accepted in-progress create before POST.
+    run = await begin(true);
+  }
+  try {
+    if (collectionError) throw collectionError;
+    if (!collected.needs_review) {
       const receipt = await github.finish(run, 'neutral', { title: 'Review outside path policy',
         summary: `Head: \`${target.head_sha}\`\n\nThe base branch policy classifies every changed path as tier0 or generated; no [review] marker requests a review.` });
       return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion: 'neutral', applicable: false,
         started_at: run.started_at, observed_at: observedAt, elapsed_ms: Date.now() - started };
     }
-    const reviewed = await recoverContext({ input: createReviewInput(bundle), github, target,
+    const reviewed = await recoverContext({ input: initialInput, github, target,
       execute: input => engine(input, externalId), createReviewInput, validateResult, onResult, deadlineMs });
     const input = reviewed.input;
     let result = reviewed.result;

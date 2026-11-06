@@ -33,8 +33,11 @@ class Publisher {
     assert.equal(path, 'src/caller.js'); assert.equal(sha, head); assert.equal(optional, true);
     return 'caller\n';
   }
-  async begin(t, external_id) {
-    return this.run ??= { id: 1, app: { id: APP_ID }, name: CHECK_NAME, head_sha: t.head_sha, external_id, status: 'in_progress' };
+  async begin(t, external_id, _detailsUrl, { restartCompleted = false } = {}) {
+    if (!this.run || (restartCompleted && this.run.status === 'completed')) {
+      this.run = { id: (this.run?.id ?? 0) + 1, app: { id: APP_ID }, name: CHECK_NAME, head_sha: t.head_sha, external_id, status: 'in_progress' };
+    }
+    return this.run;
   }
   async finish(run, conclusion, output) { Object.assign(run, { conclusion, output, status: 'completed' }); return run; }
 }
@@ -44,7 +47,7 @@ test('normal publisher recovers exact-head context, binds final digest and keeps
   const options = { github, target, trigger: inputFor().trigger, createReviewInput, engineVersion: reviewerVersion,
     onResult: result => saved.push(structuredClone(result)), engine: async input => {
       seen.push(input);
-      if (seen.length === 1) return missing(input);
+      if (!input.context.some(c => c.path === 'src/caller.js')) return missing(input);
       assert.deepEqual(input.context.at(-1), { path: 'src/caller.js', side: 'head', commit_sha: head, content: 'caller\n' });
       return parsed(input, { related_evidence: [{ path: 'src/caller.js', side: 'head', start_line: 1, end_line: 1,
         start_byte: null, end_byte: null, quote: 'caller' }] });
@@ -57,7 +60,11 @@ test('normal publisher recovers exact-head context, binds final digest and keeps
   assert.equal(saved.at(-1).recovery_diagnostics[0].reason, 'private reason ::warning::source');
   assert.equal(saved.at(-1).input_digest, seen[1].input_digest);
   assert.ok(!JSON.stringify({ receipt, check: github.run }).includes('private reason'));
-  assert.equal((await produceReview(options)).reused, true); assert.equal(seen.length, 2);
+  // The enriched final seal differs from a newly collected initial input. It
+  // cannot be reused merely because both assessments started at the same head.
+  const next = await produceReview(options);
+  assert.equal(next.reused, undefined); assert.equal(next.check_run_id, 2); assert.equal(seen.length, 4);
+  assert.equal(next.input_digest, receipt.input_digest);
 });
 
 test('absent, already supplied, repeated, invalid, deadline and head-change requests never retry unchanged evidence', async () => {
