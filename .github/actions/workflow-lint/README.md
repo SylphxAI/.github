@@ -37,6 +37,13 @@ and failure-propagation findings. Manual approval/maintenance booking and
 mode. R8 follows all workflows in the checkout and their local reusable calls,
 including matrices, input defaults and job conditions, using the same core as
 the immutable-source required verdict and fleet audit.
+Runner selectors are evaluated separately for each declared triggering event;
+local reusable workflows inherit the caller's event. PR labels and supplied
+inputs remain unknown until bound, so every reachable pool is checked. A PR
+label filter is absent on merge groups. Unsupported or unresolved runner
+selectors fail closed with the construct or context named in the finding.
+R8 applies only to merge groups; IO prerequisites apply whenever any event can
+reach the IO pool. An unreachable IO literal does not allocate an IO runner.
 It is the initial default so callers can inventory and repair violations before
 switching their gate to `enforce`. The org-wide rollout must pin the new action,
 repair the inventory, require its gate, and then change the shared default to
@@ -61,8 +68,8 @@ checkout's workflows. Python tests are `python -m unittest discover -s tests
 
 ## IO pool prerequisites
 
-Jobs whose `runs-on` contains `sylphx-linux-io` (including expressions, lists,
-label mappings and literal matrix choices) must meet these blocking rules even
+Jobs whose evaluated `runs-on` can select `sylphx-linux-io` (including expressions,
+lists, label mappings and literal matrix choices) must meet these blocking rules even
 in report-only mode. Publishing the checker does not activate this runner pool.
 
 1. No inline `run:` steps.

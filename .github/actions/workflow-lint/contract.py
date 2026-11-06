@@ -23,7 +23,7 @@ import yaml
 from perf_gate import delivered
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "scripts"))
-from merge_lane import merge_lane_findings
+from merge_lane import merge_lane_findings, runner_evaluations
 from merge_lane_gate import exempt
 
 
@@ -87,18 +87,25 @@ def required_jobs(jobs):
     return required
 
 
-def scan_workflow(file, text):
+def scan_workflow(file, text, evaluations=None):
     document = yaml.compose(text, Loader=yaml.BaseLoader)
     jobs = fields(fields(document).get("jobs"))
     required = required_jobs(jobs)
     findings = []
+    if evaluations is None:
+        evaluations = runner_evaluations({file: text})
+        for finding in merge_lane_findings({}, evaluations=evaluations, check_all_events=True):
+            findings.append(Finding(file, finding.line,
+                f"job {finding.job}: {finding.problem}", True))
 
     def add(node, problem, *, blocking=False):
         findings.append(Finding(file, node.start_mark.line + 1, problem, blocking))
 
     for name, node in jobs.items():
         job = fields(node)
-        scan_io_job(document, name, node, add)
+        routes = [e for e in evaluations if e.job == name and
+                  e.file == file.removeprefix('.github/workflows/')]
+        scan_io_job(document, name, node, add, routes)
         if "uses" not in job and "timeout-minutes" not in job:
             add(node, f"job {name}: missing timeout-minutes")
         # Manual gates are forbidden even outside the required needs graph.
@@ -204,12 +211,19 @@ def guarded_io_route(value, guarded=False):
     return IO_LABEL not in value or guarded
 
 
-def scan_io_job(document, name, node, add):
+def scan_io_job(document, name, node, add, routes):
     job = fields(node)
     runner = job.get("runs-on")
     route = node_text(runner)
     matrix_io = "matrix." in route and IO_LABEL in node_text(job.get("strategy"))
-    if IO_LABEL not in route and not matrix_io:
+    io_events = {e.event for e in routes if IO_LABEL in e.values}
+    triggers = fields(document).get("on")
+    event_names = set(fields(triggers)) or {scalar(n) for n in sequence(triggers)} or {scalar(triggers)}
+    if not routes and event_names - {'workflow_call', ''}:
+        return
+    if routes and not io_events:
+        return
+    if not routes and IO_LABEL not in route and not matrix_io:
         return
 
     def fail(where, problem):
@@ -253,11 +267,10 @@ def scan_io_job(document, name, node, add):
                          if base != "." and p != base and not p.startswith(base + "/")]
             checkouts.append((base, trusted))
 
-    triggers = fields(document).get("on")
     workflow_run = ("workflow_run" in fields(triggers)
                     or scalar(triggers) == "workflow_run"
                     or any(scalar(n) == "workflow_run" for n in sequence(triggers)))
-    if workflow_run and not requires_same_repository(scalar(job.get("if"))):
+    if workflow_run and (not routes or 'workflow_run' in io_events) and not requires_same_repository(scalar(job.get("if"))):
         if matrix_io or not guarded_io_route(route):
             fail(runner, "workflow_run io routing requires head_repository.full_name == github.repository")
 
@@ -304,7 +317,6 @@ def scan_dir(root):
             if path.is_file() and path.suffix in (".yml", ".yaml"):
                 text = path.read_text(encoding="utf-8")
                 workflows[path.name] = text
-                findings.extend(scan_workflow(str(path.relative_to(root)), text))
     # The required verdict repeats R8 against immutable source without relying
     # on checkout. Here it also fails early for workflow-lint consumers, even
     # when unrelated legacy contract findings are report-only.
@@ -316,12 +328,16 @@ def scan_dir(root):
     except (KeyError, OSError, ValueError):
         pass
     notes = []
+    evaluations = runner_evaluations(workflows, private=private)
+    for name, text in workflows.items():
+        findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations))
     if entry:
         return findings
     for finding in merge_lane_findings(workflows, private=private,
-            org=repository.split("/")[0] if repository else None, notes=notes):
+            org=repository.split("/")[0] if repository else None, notes=notes,
+            evaluations=evaluations, check_all_events=True):
         findings.append(Finding(".github/workflows/" + finding.file, finding.line,
-            f"job {finding.job}: {finding.problem}; use the same-size -merge twin", True))
+            f"job {finding.job}: {finding.problem}", True))
     for note in notes:
         print(f"::notice file=.github/workflows/{note.file},line={note.line}::job {note.job}: {note.problem}")
     return findings

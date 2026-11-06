@@ -58,6 +58,13 @@ class ContractTest(unittest.TestCase):
     def test_valid(self):
         self.assertEqual(self.scan(workflow()), [])
 
+    def test_unknown_runner_blocks_even_report_only(self):
+        found = self.scan(workflow().replace('runs-on: ubuntu-latest', 'runs-on: ${{ inputs.runner }}', 1))
+        self.assertEqual(len(found), 1)
+        self.assertIn('pull_request runs-on cannot be evaluated', found[0].problem)
+        self.assertIn('inputs.runner', found[0].problem)
+        self.assertEqual(contract.exit_code(found, 'report-only'), 1)
+
     def test_repository_workflows_have_no_manual_gates(self):
         # Existing timeout/failure-mask findings have a report-only rollout.
         self.assertEqual([f for f in contract.scan_dir(ROOT) if ": manual " in f.problem], [])

@@ -319,6 +319,11 @@ class RowFailureTest(unittest.TestCase):
             "call.yml": "on:\n  merge_group:\njobs:\n  c:\n    uses: ./.github/workflows/x.yml\n",
         })
         rows = run_rows(facts)
+        self.assertIn("R8", failing(rows))
+        self.assertIn("matrix.yml", rows["R8"]["detail"])
+        self.assertIn("cannot be evaluated", rows["R8"]["detail"])
+        del facts["all_workflows"]["matrix.yml"]
+        rows = run_rows(facts)
         self.assertNotIn("R8", failing(rows))
 
     def test_r8_block_list_runs_on(self) -> None:
