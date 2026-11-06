@@ -271,7 +271,7 @@ def test_delayed_key_uses_shared_readiness_and_never_reissues_or_retries_writes(
     for call in identity.call_args_list:
         assert call.args == (lane.API + "/v1/whoami", "ci-key")
         assert call.kwargs["allow_propagation"] is True
-    assert [call.kwargs["timeout"] for call in identity.call_args_list] == [30, 28]
+    assert [call.kwargs["timeout"] for call in identity.call_args_list] == [180, 178]
 
 
 def test_never_ready_key_expires_one_read_budget_without_artifact_calls(monkeypatch):
@@ -287,7 +287,7 @@ def test_never_ready_key_expires_one_read_budget_without_artifact_calls(monkeypa
         pytest.raises(lane.ReadinessError),
     ):
         lane.Access("declared-publisher")
-    assert now[0] == 33
+    assert now[0] == 183
     assert request.call_count == 2
 
 
