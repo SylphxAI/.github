@@ -1,0 +1,30 @@
+name: CI policy
+description: >
+  Checks contribution metadata and scans added commits for secrets on pull_request
+  and merge_group. This short policy check does not aggregate job results, poll
+  check inventories, or replace a required CI verdict. Requires contents and
+  pull-requests read. See docs/ci-policy.md.
+
+inputs:
+  token:
+    description: Read-only token for contribution metadata and added-commit secret scanning.
+    default: ${{ github.token }}
+
+  contribution-scope:
+    description: all, or commits when a separate required PR metadata workflow handles title/body edits.
+    default: all
+
+runs:
+  using: composite
+  steps:
+    - name: Check contribution metadata
+      shell: bash
+      env:
+        CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
+        CONTRIBUTION_POLICY_SCOPE: ${{ inputs.contribution-scope }}
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE"
+    - name: Scan added commits for secrets
+      shell: bash
+      env:
+        SECRET_SCAN_TOKEN: ${{ inputs.token }}
+      run: python3 "$GITHUB_ACTION_PATH/../secret-scan/secret_scan.py" --fetch --pre-merge-only
