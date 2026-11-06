@@ -10,7 +10,7 @@ import tarfile
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTION = ROOT / ".github/actions/unity-packages-cache"
@@ -50,7 +50,8 @@ class UnityPackagesCache(unittest.TestCase):
         self.archives = {name: archive(name, dependencies=node["dependencies"]) for name, node in self.registry.items()}
         self.pins = {"schemaVersion": 1, "lockSha256": upm.canonical(self.registry),
                      "manifestSha256": upm.canonical({"com.unity.first": "1.2.3"}),
-                     "packages": {name: {"version": "1.2.3", "sha256": hashlib.sha256(data).hexdigest()}
+                     "packages": {name: {"version": "1.2.3", "sha256": hashlib.sha256(data).hexdigest(),
+                                         "archiveBytes": len(data)}
                                   for name, data in self.archives.items()}}
         self.write_json("unity-packages.json", self.pins)
         self.requests = []
@@ -89,9 +90,9 @@ class UnityPackagesCache(unittest.TestCase):
         (self.project / "Packages" / name).write_text(json.dumps(data))
 
     def hydrate(self):
-        def local_fetch(url, path, expected=None):
+        def local_fetch(url, path, expected=None, *, expected_size=None):
             self.assertTrue(url.startswith(upm.MIRROR + "/upm/"), url)
-            return self.real_fetch(url.replace(upm.MIRROR, self.origin), path, expected)
+            return self.real_fetch(url.replace(upm.MIRROR, self.origin), path, expected, expected_size=expected_size)
         with patch.object(upm, "fetch", side_effect=local_fetch):
             return upm.hydrate(self.project)
 
@@ -106,7 +107,8 @@ class UnityPackagesCache(unittest.TestCase):
         self.assertFalse(list((self.project / "Packages").glob(".unity-upm-*")))
 
     def test_manifest_lock_and_pin_drift_fail_before_network(self):
-        for change in ("manifest", "lock", "missing transitive", "version", "digest"):
+        for change in ("manifest", "lock", "missing transitive", "version", "digest", "missing size",
+                       "oversize", "zero size", "boolean size", "noninteger size"):
             with self.subTest(change=change):
                 manifest = json.loads(json.dumps(self.manifest))
                 registry = json.loads(json.dumps(self.registry))
@@ -121,6 +123,16 @@ class UnityPackagesCache(unittest.TestCase):
                     pins["packages"]["com.unity.first"]["version"] = "9.0.0"
                 if change == "digest":
                     pins["packages"]["com.unity.first"]["sha256"] = "A" * 64
+                if change == "missing size":
+                    del pins["packages"]["com.unity.first"]["archiveBytes"]
+                if change == "oversize":
+                    pins["packages"]["com.unity.first"]["archiveBytes"] = upm.MAX_ARCHIVE + 1
+                if change == "zero size":
+                    pins["packages"]["com.unity.first"]["archiveBytes"] = 0
+                if change == "boolean size":
+                    pins["packages"]["com.unity.first"]["archiveBytes"] = True
+                if change == "noninteger size":
+                    pins["packages"]["com.unity.first"]["archiveBytes"] = 12.5
                 self.write_json("manifest.json", manifest)
                 self.write_json("packages-lock.json", {"dependencies": registry})
                 self.write_json("unity-packages.json", pins)
@@ -177,6 +189,66 @@ class UnityPackagesCache(unittest.TestCase):
         self.responses["/oversize"] = b"x" * 100
         with patch.object(upm, "MAX_ARCHIVE", 50), self.assertRaisesRegex(ValueError, "size limit"):
             self.real_fetch(self.origin + "/oversize", Path(self.tmp.name) / "download")
+
+    def test_measured_archive_ceiling_accepts_exactly_cap_and_refuses_cap_plus_one(self):
+        self.assertEqual(upm.MAX_ARCHIVE, (603_699_285 * 5 + 3) // 4)
+        chunk = b"x" * (1024 * 1024)
+
+        class Stream:
+            def __init__(self, size):
+                self.remaining = size
+                self.received = 0
+
+            def read(self, size):
+                data = chunk[:min(size, self.remaining)]
+                self.remaining -= len(data)
+                self.received += len(data)
+                return data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        class Sink:
+            def __init__(self):
+                self.written = 0
+
+            def open(self, mode):
+                assert mode == "xb"
+                return self
+
+            def write(self, data):
+                self.written += len(data)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        for size in (upm.MAX_ARCHIVE, upm.MAX_ARCHIVE + 1):
+            with self.subTest(archiveBytes=size):
+                response, sink = Stream(size), Sink()
+                opener = Mock()
+                opener.open.return_value = response
+                with patch.object(upm.urllib.request, "build_opener", return_value=opener):
+                    if size == upm.MAX_ARCHIVE:
+                        self.assertEqual(self.real_fetch(upm.MIRROR, sink)[2], size)
+                        self.assertEqual(sink.written, size)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "size limit"):
+                            self.real_fetch(upm.MIRROR, sink)
+                        self.assertLessEqual(sink.written, upm.MAX_ARCHIVE)
+                self.assertEqual(response.received, size)
+
+    def test_pinned_byte_count_is_checked_even_when_sha256_matches(self):
+        data = b"verified archive bytes"
+        self.responses["/size-mismatch"] = data
+        with self.assertRaisesRegex(ValueError, "byte count differs"):
+            self.real_fetch(self.origin + "/size-mismatch", Path(self.tmp.name) / "download",
+                            hashlib.sha256(data).hexdigest(), expected_size=len(data) + 1)
 
     def test_existing_embedded_package_is_never_overwritten(self):
         existing = self.project / "Packages/com.unity.first"

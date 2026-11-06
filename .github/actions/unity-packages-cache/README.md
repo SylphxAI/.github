@@ -20,6 +20,9 @@ Commit `Packages/packages-lock.json` from the actual editor and
 Unity registry entries, including transitive dependencies. Built-in packages
 remain supplied by the selected editor. Other package registries, local archives
 and Git dependencies keep their existing preparation steps.
+Every pin records an exact positive `archiveBytes` count as well as its version
+and SHA256. Graph admission refuses missing or oversized counts before network
+access, so a newly captured editor graph cannot silently exceed the archive cap.
 
 ```yaml
 - name: Hydrate pinned Unity packages
@@ -45,6 +48,10 @@ overwritten. Hydration stages and verifies the whole closure before installing
 any package. Executable tools retain their executable bit. Unsafe paths, links,
 special files, oversized archives and archive identity/dependency mismatches fail
 closed. An existing Library is not required.
+Downloads and extraction stream in 1 MiB chunks. The archive cap is 754,624,107
+bytes: the largest of 71 measured consumer archives on 2026-11-06
+(603,699,285 bytes), plus 25%. Extraction retains separate 2 GiB/100,000-entry
+bounds. A download must match both the pinned SHA256 and byte count.
 
 The action returns a `receipt` path containing every package version and SHA256.
 A changed Unity manifest request, changed registry lock entry, missing transitive
@@ -77,7 +84,8 @@ version. Keep existing licence activation separate from this project check.
 
    Only this explicit maintenance command reads Unity registry metadata. It checks
    each archive against the registry's SHA1, validates its package identity and
-   dependency map, and records a SHA256. The runtime action never calls `pin`.
+   dependency map, and records its SHA256 and actual byte count. The runtime action
+   never calls `pin`.
 3. Hydrate a clean project copy through Build Cache to warm and verify every pin.
    Commit the manifest, editor lock and pins together. Prove cold-Library
    resolution with the Unity package hosts blocked before adopting the update.

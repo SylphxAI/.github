@@ -14,7 +14,8 @@ import urllib.request
 
 REGISTRY = "https://packages.unity.com"
 MIRROR = "https://build-cache.sylphx.net"
-MAX_ARCHIVE = 512 * 1024 * 1024
+# 2026-11-06: 71 measured consumer archives, max 603,699,285 bytes, plus 25%.
+MAX_ARCHIVE = 754_624_107
 MAX_UNPACKED = 2 * 1024 * 1024 * 1024
 MAX_FILES = 100_000
 NAME = re.compile(r"com\.unity\.[a-z0-9]+(?:[.-][a-z0-9]+)*\Z")
@@ -71,6 +72,9 @@ def validate(project):
         pin = entries[name]
         if pin.get("version") != node["version"] or not DIGEST.fullmatch(pin.get("sha256", "")):
             raise ValueError(f"invalid or mismatched pin: {name}")
+        size = pin.get("archiveBytes")
+        if type(size) is not int or not 0 < size <= MAX_ARCHIVE:
+            raise ValueError(f"pinned archiveBytes must be positive and at most {MAX_ARCHIVE}: {name}")
     return pins, registry
 
 
@@ -90,7 +94,7 @@ class UnityCDNRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetch(url, destination, expected=None, *, allow_unity_cdn=False):
+def fetch(url, destination, expected=None, *, expected_size=None, allow_unity_cdn=False):
     """Bounded disk streaming; transport and integrity errors never select another host."""
     sha256, sha1, size = hashlib.sha256(), hashlib.sha1(), 0
     opener = urllib.request.build_opener(UnityCDNRedirect if allow_unity_cdn else NoRedirect)
@@ -107,6 +111,8 @@ def fetch(url, destination, expected=None, *, allow_unity_cdn=False):
             sha1.update(chunk)
     if expected is not None and sha256.hexdigest() != expected:
         raise ValueError("Unity package SHA256 mismatch; refusing archive")
+    if expected_size is not None and size != expected_size:
+        raise ValueError("Unity package archive byte count differs from pins; refusing archive")
     return sha256.hexdigest(), sha1.hexdigest(), size
 
 
@@ -155,7 +161,8 @@ def hydrate(project, mirror=MIRROR):
         for name, node in sorted(registry.items()):
             pin = pins["packages"][name]
             archive = stage / f"{name}.tgz"
-            fetch(f"{mirror.rstrip('/')}/upm/{pin['sha256']}/{name}/{pin['version']}", archive, pin["sha256"])
+            fetch(f"{mirror.rstrip('/')}/upm/{pin['sha256']}/{name}/{pin['version']}", archive,
+                  pin["sha256"], expected_size=pin["archiveBytes"])
             unpack(archive, stage / name, name, node)
             archive.unlink()
         try:
@@ -188,11 +195,11 @@ def pin(project):
             if dist["tarball"] != expected_url or not re.fullmatch(r"[a-f0-9]{40}", dist["shasum"]):
                 raise ValueError(f"unexpected Unity distribution metadata: {name}")
             archive = Path(temporary) / f"{name}.tgz"
-            sha256, sha1, _ = fetch(expected_url, archive, allow_unity_cdn=True)
+            sha256, sha1, size = fetch(expected_url, archive, allow_unity_cdn=True)
             if sha1 != dist["shasum"]:
                 raise ValueError(f"Unity registry SHA1 mismatch: {name}")
             unpack(archive, Path(temporary) / name, name, node)
-            entries[name] = {"version": version, "sha256": sha256}
+            entries[name] = {"version": version, "sha256": sha256, "archiveBytes": size}
     result = {"schemaVersion": 1, "lockSha256": lock_hash, "manifestSha256": manifest_hash, "packages": entries}
     target = project / "Packages/unity-packages.json"
     target.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
