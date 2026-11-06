@@ -451,4 +451,9 @@ test('multi-part recovery memoizes completed partitions and attributes partition
   });
   assert.equal(timedOut.result.recovery.stop, 'deadline');
   assert.equal(timedOut.result.reason, 'Part 2/9: Review deadline expired before inference.');
+
+  const hugeContextInput = inputFor([{ path: 'src/caller.js', side: 'head', commit_sha: head, content: 'caller\n'.repeat(2000) }]);
+  const partitioned = planReview(hugeContextInput, value => Buffer.byteLength(JSON.stringify(value)), 12_000);
+  assert.ok(partitioned.length > 1);
+  assert.deepEqual(partitioned[0].scope.partitioned_context, [{ path: 'src/caller.js', side: 'head', commit_sha: head, bytes: Buffer.byteLength('caller\n'.repeat(2000)) }]);
 });

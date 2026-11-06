@@ -45,6 +45,14 @@ export function planReview(input, requestBytes, byteBudget) {
     return !largest || requestBytes(make([{ ...f, hunks: [{ ...largest.h, rows: [largest.row], first_row: 0, total_rows: largest.h.rows.length }] }], context)) <= byteBudget;
   }) ? context : [];
   const pending = input.files.map(file => ({ file }));
+  if (!repeated.length && context.length) {
+    common.scope = { ...common.scope,
+      partitioned_context: context.map(c => ({ path: c.path, side: c.side ?? 'context',
+        ...(c.commit_sha ? { commit_sha: c.commit_sha } : {}),
+        ...(c.absent === true ? { absent: true } : { bytes: c.bytes ?? Buffer.byteLength(c.content) }) })),
+      note: 'Context paths in partitioned_context are already supplied in other partitions of this review scope and will be joined in cross-file synthesis; do not request them in context_requests or mark this partition incomplete for their absence here.' };
+    if (requestBytes(make([], [])) > byteBudget) throw new Error('The complete changed-path manifest exceeds the configured model context.');
+  }
   if (!repeated.length) for (const c of context) {
     const { content, ...identity } = c;
     pending.push({ context: c.absent === true || c.segments ? c : { ...identity,
@@ -114,8 +122,10 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     completed.push(result);
     completedIndexes.add(i);
   }
+  const snappedFromParts = completed.flatMap(r => r.snapped_evidence ?? []);
   const base = { ...unavailable(input, ''), status: 'incomplete', findings: unionFindings(completed),
     context_notes: completed.flatMap(r => r.context_notes ?? []),
+    ...(snappedFromParts.length ? { snapped_evidence: snappedFromParts } : {}),
     parts: { planned: parts.length, completed: completed.length },
     omitted_paths: input.files.filter(f => parts.some((p, i) => p.files.some(pf => pf.path === f.path) && !completedIndexes.has(i))).map(f => f.path) };
   if (failures.length) return { ...base, reason: failures.join(' ').slice(0, 2000),
@@ -145,7 +155,9 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     .some(r => r.side === f.side && f.start_line >= r.start && f.end_line <= r.end)))) {
     return { ...base, reason: 'Cross-file synthesis contains an invalid changed-source anchor.' };
   }
+  const snappedAll = [...snappedFromParts, ...(result.snapped_evidence ?? [])];
   return { ...result, status: 'complete', head_sha: input.head_sha, base_sha: input.base_sha,
     input_digest: input.input_digest, reviewer_version: input.reviewer_version, findings,
-    context_notes: [...base.context_notes, ...result.context_notes], parts: base.parts };
+    context_notes: [...base.context_notes, ...result.context_notes], parts: base.parts,
+    ...(snappedAll.length ? { snapped_evidence: snappedAll } : {}) };
 }

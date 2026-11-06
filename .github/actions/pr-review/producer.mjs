@@ -126,6 +126,7 @@ function outputFor(result, input) {
   for (const review of result.binary_reviews ?? []) summary.push(`Binary provenance: ${review.path} — ${review.status}. Source: ${review.source_evidence.map(e => e.path).join(', ')}. Derivation: ${review.derivation_evidence.map(e => e.path).join(', ')}. Limitation: ${review.limitation}`);
   if (result.parts) summary.push(`Source parts: ${result.parts.completed}/${result.parts.planned} complete.`);
   if (result.recovery_sources?.length) summary.push(`Pinned context outcomes (path fingerprints, not source):\n\n\`\`\`json\n${JSON.stringify(result.recovery_sources)}\n\`\`\``);
+  if (result.snapped_evidence?.length) summary.push(`Snapped evidence ranges:\n\n\`\`\`json\n${JSON.stringify(result.snapped_evidence)}\n\`\`\``);
   if (result.status !== 'complete') summary.push(`Review incomplete: ${result.reason}\nUnreviewed changed paths: ${result.omitted_paths.length}.`);
   for (const note of result.context_notes ?? []) summary.push(`Context: ${note}`);
   for (const finding of result.findings.filter(f => f.side === 'base')) {
@@ -186,6 +187,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
       ...(result.status === 'complete' ? {} : { unavailable: true, reason: result.reason }),
       parts: result.parts, budget: result.budget, request_bytes: result.request_bytes, recovery: result.recovery,
       recovery_sources: result.recovery_sources,
+      ...(result.snapped_evidence?.length ? { snapped_evidence: result.snapped_evidence } : {}),
       ...(result.validation_failure ? { validation_failure: result.validation_failure } : {}),
       started_at: run.started_at, observed_at: observedAt,
       session_name: result.session_name, input_digest: input.input_digest, reviewer_version: input.reviewer_version,
