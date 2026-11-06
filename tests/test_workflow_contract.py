@@ -273,6 +273,12 @@ class GateCoverageTest(unittest.TestCase):
             text = workflow().replace("  ci-ok:", "  verdict:").replace("      - run: echo ok", "      - uses: " + action)
             self.assertEqual(self.scan(text), [])
 
+    def test_disabled_shared_action_alias_is_not_a_gate(self):
+        text = workflow().replace("  ci-ok:", "  verdict:").replace("      - run: echo ok",
+            "      - if: github.event_name == 'merge_group'\n        uses: ./.github/actions/ci-ok")
+        self.assertEqual(len(self.scan(text)), 2)
+        self.assertEqual(self.scan(text.replace("on: pull_request", "on: merge_group")), [])
+
     def test_polling_observes_cross_workflow_jobs_but_not_ignored_checks(self):
         for event in ("pull_request", "merge_group"):
             gate = f"on: {event}\njobs:\n  ci-ok:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: SylphxAI/.github/.github/actions/ci-ok-polling@{'a' * 40}\n"

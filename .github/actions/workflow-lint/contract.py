@@ -129,11 +129,11 @@ def gate_coverage(workflows):
             for name in sorted(running):
                 job = fields(jobs[name])
                 steps = [fields(step) for step in sequence(job.get("steps"))]
-                pollers = [step for step, value in zip(steps, decoded[file]["jobs"][name].get("steps", []))
-                           if aggregate_action(scalar(step.get("uses"))) == "ci-ok-polling"
-                           and runnable(value, context)]
-                if (name == "ci-ok" or scalar(job.get("name")) == "ci-ok" or pollers
-                        or any(aggregate_action(scalar(step.get("uses"))) == "ci-ok" for step in steps)):
+                aggregates = [step for step, value in zip(steps, decoded[file]["jobs"][name].get("steps", []))
+                              if aggregate_action(scalar(step.get("uses"))) and runnable(value, context)]
+                pollers = [step for step in aggregates
+                           if aggregate_action(scalar(step.get("uses"))) == "ci-ok-polling"]
+                if (name == "ci-ok" or scalar(job.get("name")) == "ci-ok" or aggregates):
                     gates.setdefault(event, []).append((file, name, pollers))
     for (file, event), running in active.items():
         jobs = fields(fields(documents[file]).get("jobs"))
