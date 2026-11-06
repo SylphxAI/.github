@@ -250,7 +250,7 @@ class GateCoverageTest(unittest.TestCase):
     def test_reasoned_advisory_and_missing_reason(self):
         for event in ("pull_request", "merge_group"):
             independent = f"on: {event}\njobs: {{report: {{runs-on: ubuntu-latest}}}}\n"
-            self.assertEqual(self.scan(workflow(), report=independent).__len__(), 1)
+            self.assertEqual(len(self.scan(workflow(), report=independent)), 1)
             self.assertEqual(self.scan(workflow(), report="# optimistic-merge: advisory — Nonblocking diagnostic report.\n" + independent), [])
             found = self.scan(workflow(), report="# optimistic-merge: advisory\n" + independent)
             self.assertTrue(any("must include a reason" in f.problem for f in found))
@@ -283,10 +283,45 @@ class GateCoverageTest(unittest.TestCase):
             self.assertIn("job test:", found[0].problem)
             self.assertEqual(self.scan(gate + "        with: {ignore: Tests}\n", test="# optimistic-merge: advisory — Optional report.\n" + check), [])
 
+    def test_poller_exclusions_include_matrix_and_interpolated_check_names(self):
+        gate = "on: pull_request\njobs:\n  ci-ok:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.github/actions/ci-ok-polling\n        with: {ignore: 'Tests (1)'}\n"
+        for name in ("", "    name: Tests (${{ matrix.shard }})\n"):
+            check = "on: pull_request\njobs:\n  Tests:\n" + name + "    strategy: {matrix: {shard: [1, 2]}}\n    runs-on: ubuntu-latest\n"
+            found = self.scan(gate, check=check)
+            self.assertEqual(len(found), 1)
+            self.assertIn("job Tests:", found[0].problem)
+            self.assertEqual(self.scan(gate.replace("Tests (1)", "unrelated"), check=check), [])
+
+    def test_poller_and_gate_must_apply_to_the_same_event(self):
+        check = "on: [pull_request, merge_group]\njobs: {test: {runs-on: ubuntu-latest}}"
+        gate = "on: [pull_request, merge_group]\njobs:\n  ci-ok:\n    runs-on: ubuntu-latest\n    steps:\n      - if: github.event_name == 'pull_request'\n        uses: ./.github/actions/ci-ok-polling\n"
+        found = self.scan(gate, check=check)
+        self.assertEqual(len(found), 1)
+        self.assertIn("merge_group job is outside", found[0].problem)
+
     def test_independent_trigger_is_not_awaited_by_a_reusable_call(self):
         gate = workflow().replace("    steps:\n      - run: pytest", "    uses: ./.github/workflows/test.yml")
         self.assertEqual(self.scan(gate, test="on: workflow_call\njobs: {test: {runs-on: ubuntu-latest}}"), [])
         self.assertEqual(len(self.scan(gate, test="on: [pull_request, workflow_call]\njobs: {test: {runs-on: ubuntu-latest}}")), 1)
+
+    def test_code_starters_and_metadata_companion_cover_their_jobs(self):
+        metadata = (ROOT / "workflow-templates/pr-metadata.yml").read_text()
+        for starter in ("ci-fast-path.yml", "optimistic-gate.yml"):
+            with self.subTest(starter=starter):
+                text = (ROOT / "workflow-templates" / starter).read_text()
+                self.assertEqual(self.scan(text, metadata=metadata), [])
+                added = text + "\n  forgotten: {runs-on: ubuntu-latest, steps: [{run: pytest}]}\n"
+                found = self.scan(added, metadata=metadata)
+                self.assertEqual(len(found), 2)
+                self.assertTrue(all("job forgotten:" in f.problem for f in found))
+                document = contract.yaml.load(text, Loader=contract.WorkflowLoader)
+                lint_jobs = [job for job, value in document["jobs"].items()
+                             if any(step.get("uses", "").startswith("SylphxAI/.github/.github/actions/workflow-lint@")
+                                    for step in value.get("steps", []))]
+                self.assertEqual(len(lint_jobs), 1)
+                # Dropping the lint job from the gate is itself refused.
+                mutant = text.replace("needs: [changes, gate, heavy]", "needs: [changes, heavy]").replace("needs: [changes, gate]", "needs: changes") if starter == "ci-fast-path.yml" else text.replace("plan, lint, test", "plan, test")
+                self.assertTrue(any(f"job {lint_jobs[0]}:" in f.problem for f in self.scan(mutant, metadata=metadata)))
 
     def test_repository_scan_wires_the_rule(self):
         with tempfile.TemporaryDirectory() as tmp:

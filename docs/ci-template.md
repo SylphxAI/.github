@@ -69,6 +69,22 @@ workflow never reports, which blocks the merge; a skipped job does report.
    whenever the verdict runs. List `changes` as `required` so a broken filter
    never reads as green.
 
+Every PR- or merge-group-triggered job belongs to the `ci-ok` transitive
+`needs` graph. Run the shared [`workflow-lint`](../.github/actions/workflow-lint/README.md)
+action in a gate dependency, as both code starters do. It rejects independent
+test workflows that the verdict cannot await. Expose required work through
+`workflow_call` and include the caller in the gate. Intentionally nonblocking
+workflows use a header declaration with a written reason:
+
+```yaml
+# optimistic-merge: advisory — Nonblocking diagnostic report.
+```
+
+The metadata companion explicitly declares its separate code-verdict role;
+repositories still require its independent check. A missing coverage declaration
+fails even in legacy `contract-mode: report-only`; that setting only softens
+older timeout and failure-masking findings.
+
 ## Which events run the heavy jobs
 
 Follow [optimistic-merge.md](optimistic-merge.md): the merge group runs the

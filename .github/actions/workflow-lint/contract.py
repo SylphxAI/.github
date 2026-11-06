@@ -121,15 +121,17 @@ def gate_coverage(workflows):
         if declaration and not reason:
             findings.append(Finding(file, header[:declaration.start()].count("\n") + 1,
                 "advisory declaration must include a reason", True))
-        for event in events(decoded[file]) & GATING_EVENTS:
+        for event in sorted(events(decoded[file]) & GATING_EVENTS):
             context = {"github.event_name": {event}, "github.event.repository.private": {True, False}}
             running = {name for name, job in (decoded[file].get("jobs") or {}).items()
                        if any(runnable(job, c) for c in contexts(job, context))}
             active[file, event] = running
-            for name in running:
+            for name in sorted(running):
                 job = fields(jobs[name])
                 steps = [fields(step) for step in sequence(job.get("steps"))]
-                pollers = [step for step in steps if aggregate_action(scalar(step.get("uses"))) == "ci-ok-polling"]
+                pollers = [step for step, value in zip(steps, decoded[file]["jobs"][name].get("steps", []))
+                           if aggregate_action(scalar(step.get("uses"))) == "ci-ok-polling"
+                           and runnable(value, context)]
                 if (name == "ci-ok" or scalar(job.get("name")) == "ci-ok" or pollers
                         or any(aggregate_action(scalar(step.get("uses"))) == "ci-ok" for step in steps)):
                     gates.setdefault(event, []).append((file, name, pollers))
@@ -146,16 +148,24 @@ def gate_coverage(workflows):
                     self_name = scalar(inputs.get("job-name")) or "ci-ok"
                     for name in running:
                         check = scalar(fields(jobs[name]).get("name")) or name
-                        if ("${{" not in ignored + self_name + check
-                                and check not in {n.strip() for n in ignored.split(",")} | {self_name}):
+                        # Check names may include matrix suffixes or interpolated
+                        # values. Prove they cannot match an ignored name rather
+                        # than guessing an unexpanded name will be observed.
+                        parts = re.split(r"(\$\{\{.*?\}\})", check)
+                        pattern = "".join(".*" if part.startswith("${{") else re.escape(part) for part in parts)
+                        if "strategy" in fields(jobs[name]):
+                            pattern += r"(?: \(.*\))?"
+                        excluded = {n.strip() for n in ignored.split(",")} | {self_name}
+                        if "${{" not in ignored + self_name and not any(re.fullmatch(pattern, n) for n in excluded):
                             covered.add(name)
             if file != gate_file:
                 continue
-            pending = [root]
+            pending, visited = [root], set()
             while pending:
                 name = pending.pop()
-                if name in covered or name not in jobs:
+                if name in visited or name not in jobs:
                     continue
+                visited.add(name)
                 covered.add(name)
                 pending.extend(dependencies(jobs[name]))
         for name in sorted(running - covered):
