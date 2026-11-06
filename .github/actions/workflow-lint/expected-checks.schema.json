@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SylphxAI/.github/blob/main/.github/actions/workflow-lint/expected-checks.schema.json",
+  "title": "Resolved expected workflow checks v2",
+  "description": "Generated from immutable workflow YAML by workflow-lint; runtimes read this data, never reinterpret YAML. For pull_request, match the complete PR base...head changed-file set from the paginated PR files API. Reaching GitHub's 3,000-file cap or otherwise failing to prove completeness fails closed. For merge_group, match the whole event base_sha...head_sha changed-file set, not the current PR's files. An event whose relevance cannot be represented must use paths:null (always required). Expected-but-missing names fail closed. Two independent gates apply: the runtime requires present schema-valid JSON at the evaluated SHA; an organization ruleset separately requires the pinned source verifier, whose identity GitHub enforces at enqueue/merge. Ordinary REST check/run metadata cannot authenticate that source. The reserved expected-checks / verify record is unfiltered for both events. The verifier compares canonical declaration bytes with workflow source read from the exact evaluated Git tree. PR-head completeness does not claim to cover later base changes; mandatory merge-group verification covers the final tree.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "checks"
+  ],
+  "properties": {
+    "version": {
+      "const": 2
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "workflow",
+          "events",
+          "paths",
+          "paths_ignore"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact literal GitHub check-run name. Required matrix/dynamic names are refused at generation. Reusable calls expand as caller / callee (and nested literal prefixes). Conditional children are represented by a required always-running aggregate."
+          },
+          "workflow": {
+            "type": "string",
+            "pattern": "^[^/]+\\.ya?ml$"
+          },
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "pull_request",
+                "merge_group"
+              ]
+            },
+            "description": "Split a check into separate records when the events have different filters. Never apply a PR-only paths filter to an unconditional merge-group run."
+          },
+          "paths": {
+            "$ref": "#/$defs/patterns",
+            "description": "null means always required. Otherwise apply GitHub's ordered workflow paths patterns, including negative exclusions and later positive re-inclusion, to the complete changed-file set."
+          },
+          "paths_ignore": {
+            "$ref": "#/$defs/patterns",
+            "description": "null means no ignore filter. Otherwise require the check when at least one changed file is not ignored. An ignore-only YAML trigger is normalized to paths:[\"**\"] plus paths_ignore, preserving paths:null as always required. An unknown or empty diff cannot establish irrelevance; fail closed or require the check."
+          }
+        },
+        "if": {
+          "properties": {
+            "paths": {
+              "type": "null"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "paths_ignore": {
+              "type": "null"
+            }
+          }
+        }
+      },
+      "contains": {
+        "type": "object",
+        "required": [
+          "name",
+          "workflow",
+          "events",
+          "paths",
+          "paths_ignore"
+        ],
+        "properties": {
+          "name": {
+            "const": "expected-checks / verify"
+          },
+          "workflow": {
+            "const": "expected-checks.yml"
+          },
+          "events": {
+            "minItems": 2
+          },
+          "paths": {
+            "type": "null"
+          },
+          "paths_ignore": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "patterns": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ]
+    }
+  }
+}

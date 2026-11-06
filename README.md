@@ -8,7 +8,7 @@ templates), and reusable GitHub Actions.
 ## Shared actions
 
 Use one from another repository with
-`uses: SylphxAI/.github/.github/actions/<name>@<commit>` (or `@main`).
+`uses: SylphxAI/.github/.github/actions/<name>@<full-commit-SHA> # main`.
 
 | Action | What it does |
 | --- | --- |
@@ -24,6 +24,7 @@ Use one from another repository with
 | [needs-pass](.github/actions/needs-pass/action.yml) | The aggregate verdict of a workflow, including [added-commit secret scanning](docs/secret-scan.md) on PRs and merge groups. A skipped job never counts as passing a required check outside `merge_group`: list PR-time jobs in `required-unless-merge-group` so a `workflow_dispatch` run cannot post a green check over a red one |
 | [merge-lane](docs/merge-lane.md) | Required R8 verdict over immutable workflow source; included in ci-ok and needs-pass, with served same-size merge pools and local reusable call-graph checks |
 | [workflow-lint](.github/actions/workflow-lint/README.md) | Actionlint syntax/reference checks, pre-merge performance rules, and job timeout/required-path failure contracts (report-only inventory or enforce) |
+| [expected-checks](.github/actions/workflow-lint/README.md#resolved-expected-check-declaration) | Verifies canonical, evaluated-SHA expected-check JSON through a SHA-pinned organization-required workflow |
 | [secret-scan](.github/actions/secret-scan/action.yml) | Runs gitleaks over added commits; reports locations without values and accepts exact reasoned exceptions |
 | [literal-address-guard](.github/actions/literal-address-guard/README.md) | Rejects newly added infrastructure-owned IP literals from a freshly generated inventory, with exact declaration-scalar authorizations |
 | [plain-language](.github/actions/plain-language/action.yml) | Warns about coined terms on the lines a pull request adds |

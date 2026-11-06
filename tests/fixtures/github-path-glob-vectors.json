@@ -1,0 +1,909 @@
+{
+  "version": 1,
+  "source": {
+    "url": "https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#filter-pattern-cheat-sheet",
+    "read_utc": "2026-11-06T19:53:14Z",
+    "scope": "All documented cheat-sheet operator, branch/tag and file-path examples, with negative/disambiguating edge cases. Paths are repo-relative; matcher-only trailing-slash case is not a Git diff input."
+  },
+  "vectors": [
+    {
+      "patterns": [
+        "Octo*"
+      ],
+      "path": "Octocat",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "Octo*"
+      ],
+      "path": "Octo/cat",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "[CB]at"
+      ],
+      "path": "Cat",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "[CB]at"
+      ],
+      "path": "Bat",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "[CB]at"
+      ],
+      "path": "cat",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "[CB]at"
+      ],
+      "path": "CBat",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "[1-2]00"
+      ],
+      "path": "100",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "[1-2]00"
+      ],
+      "path": "200",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "[1-2]00"
+      ],
+      "path": "300",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "feature/*"
+      ],
+      "path": "feature/my-branch",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "feature/*"
+      ],
+      "path": "feature/your-branch",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "feature/*"
+      ],
+      "path": "feature/beta-a/my-branch",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "feature/**"
+      ],
+      "path": "feature/beta-a/my-branch",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "feature/**"
+      ],
+      "path": "feature/your-branch",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "feature/**"
+      ],
+      "path": "feature/mona/the/octocat",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "main"
+      ],
+      "path": "main",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "main"
+      ],
+      "path": "not-main",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "releases/mona-the-octocat"
+      ],
+      "path": "releases/mona-the-octocat",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*"
+      ],
+      "path": "main",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*"
+      ],
+      "path": "releases",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*"
+      ],
+      "path": "README.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*"
+      ],
+      "path": "server.rb",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*"
+      ],
+      "path": "js/index.js",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**"
+      ],
+      "path": "all/the/branches",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**"
+      ],
+      "path": "every/tag",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**"
+      ],
+      "path": "all/the/files.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*feature"
+      ],
+      "path": "mona-feature",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*feature"
+      ],
+      "path": "feature",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*feature"
+      ],
+      "path": "ver-10-feature",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "v2*"
+      ],
+      "path": "v2",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "v2*"
+      ],
+      "path": "v2.0",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "v2*"
+      ],
+      "path": "v2.9",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "v2*"
+      ],
+      "path": "v1.0",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "v[12].[0-9]+.[0-9]+"
+      ],
+      "path": "v1.10.1",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "v[12].[0-9]+.[0-9]+"
+      ],
+      "path": "v2.0.0",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "v[12].[0-9]+.[0-9]+"
+      ],
+      "path": "v3.0.0",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "v[12].[0-9]+.[0-9]+"
+      ],
+      "path": "v2..0",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "v[12].[0-9]+.[0-9]+"
+      ],
+      "path": "v2.a.0",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.jsx?"
+      ],
+      "path": "page.js",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.jsx?"
+      ],
+      "path": "page.jsx",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.jsx?"
+      ],
+      "path": "page.jsxq",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.jsx?"
+      ],
+      "path": "page.jsxx",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.jsx?"
+      ],
+      "path": "src/page.js",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.jsx?"
+      ],
+      "path": "page.j",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.js"
+      ],
+      "path": "app.js",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.js"
+      ],
+      "path": "index.js",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.js"
+      ],
+      "path": "js/index.js",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**.js"
+      ],
+      "path": "index.js",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**.js"
+      ],
+      "path": "js/index.js",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**.js"
+      ],
+      "path": "src/js/app.js",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**.js"
+      ],
+      "path": "app.jsx",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/*"
+      ],
+      "path": "docs/README.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/*"
+      ],
+      "path": "docs/file.txt",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/*"
+      ],
+      "path": "docs/a/README.md",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/*"
+      ],
+      "path": "other/docs/file.txt",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/**"
+      ],
+      "path": "docs/README.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/**"
+      ],
+      "path": "docs/mona/octocat.txt",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/**"
+      ],
+      "path": "other/docs/README.md",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/**/*.md"
+      ],
+      "path": "docs/README.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/**/*.md"
+      ],
+      "path": "docs/mona/hello-world.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/**/*.md"
+      ],
+      "path": "docs/a/markdown/file.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "docs/**/*.md"
+      ],
+      "path": "docs/file.txt",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/docs/**"
+      ],
+      "path": "docs/hello.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/docs/**"
+      ],
+      "path": "dir/docs/my-file.txt",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/docs/**"
+      ],
+      "path": "space/docs/plan/space.doc",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/README.md"
+      ],
+      "path": "README.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/README.md"
+      ],
+      "path": "js/README.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/README.md"
+      ],
+      "path": "README.md.bak",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/README.md"
+      ],
+      "path": "notREADME.md",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/*src/**"
+      ],
+      "path": "a/src/app.js",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/*src/**"
+      ],
+      "path": "my-src/code/js/app.js",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/*src/**"
+      ],
+      "path": "srcx/app.js",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/*-post.md"
+      ],
+      "path": "my-post.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/*-post.md"
+      ],
+      "path": "path/their-post.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/*-post.md"
+      ],
+      "path": "post.md",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/migrate-*.sql"
+      ],
+      "path": "migrate-10909.sql",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/migrate-*.sql"
+      ],
+      "path": "db/migrate-v1.0.sql",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/migrate-*.sql"
+      ],
+      "path": "db/sept/migrate-v1.sql",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "**/migrate-*.sql"
+      ],
+      "path": "db/not-migrate.sql",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.md",
+        "!README.md"
+      ],
+      "path": "hello.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.md",
+        "!README.md"
+      ],
+      "path": "README.md",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.md",
+        "!README.md"
+      ],
+      "path": "docs/hello.md",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.md",
+        "!README.md",
+        "README*"
+      ],
+      "path": "hello.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.md",
+        "!README.md",
+        "README*"
+      ],
+      "path": "README.md",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.md",
+        "!README.md",
+        "README*"
+      ],
+      "path": "README.doc",
+      "expected": true,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "*.md",
+        "!README.md",
+        "README*"
+      ],
+      "path": "docs/README.md",
+      "expected": false,
+      "case": "documented"
+    },
+    {
+      "patterns": [
+        "src/**",
+        "!src/generated/**",
+        "src/generated/kept.ts"
+      ],
+      "path": "src/main.ts",
+      "expected": true,
+      "case": "ordered reinclusion"
+    },
+    {
+      "patterns": [
+        "src/**",
+        "!src/generated/**",
+        "src/generated/kept.ts"
+      ],
+      "path": "src/generated/kept.ts",
+      "expected": true,
+      "case": "ordered reinclusion"
+    },
+    {
+      "patterns": [
+        "src/**",
+        "!src/generated/**",
+        "src/generated/kept.ts"
+      ],
+      "path": "src/generated/drop.ts",
+      "expected": false,
+      "case": "ordered reinclusion"
+    },
+    {
+      "patterns": [
+        "src/**",
+        "!src/generated/**",
+        "src/generated/kept.ts"
+      ],
+      "path": "docs/readme.md",
+      "expected": false,
+      "case": "ordered reinclusion"
+    },
+    {
+      "patterns": [
+        "*"
+      ],
+      "path": ".gitignore",
+      "expected": true,
+      "case": "dotfiles are ordinary characters"
+    },
+    {
+      "patterns": [
+        "*"
+      ],
+      "path": ".env",
+      "expected": true,
+      "case": "dotfiles are ordinary characters"
+    },
+    {
+      "patterns": [
+        "*"
+      ],
+      "path": ".github/workflows/ci.yml",
+      "expected": false,
+      "case": "dotfiles are ordinary characters"
+    },
+    {
+      "patterns": [
+        "**"
+      ],
+      "path": ".github/workflows/ci.yml",
+      "expected": true,
+      "case": "dotfiles under directories"
+    },
+    {
+      "patterns": [
+        "**"
+      ],
+      "path": ".gitignore",
+      "expected": true,
+      "case": "dotfiles under directories"
+    },
+    {
+      "patterns": [
+        "docs/**"
+      ],
+      "path": "docs/",
+      "expected": true,
+      "case": "trailing slash; matcher only, Git diff paths are files"
+    },
+    {
+      "patterns": [
+        "docs/**"
+      ],
+      "path": "docs",
+      "expected": false,
+      "case": "trailing slash; matcher only, Git diff paths are files"
+    },
+    {
+      "patterns": [
+        "**/README.md"
+      ],
+      "path": "a/b/README.md",
+      "expected": true,
+      "case": "whole repo-relative path; no leading slash normalization"
+    },
+    {
+      "patterns": [
+        "**/README.md"
+      ],
+      "path": "a/README.md/",
+      "expected": false,
+      "case": "whole repo-relative path; no leading slash normalization"
+    },
+    {
+      "patterns": [
+        "/README.md"
+      ],
+      "path": "README.md",
+      "expected": false,
+      "case": "leading slash is not stripped"
+    },
+    {
+      "patterns": [
+        "file+"
+      ],
+      "path": "file",
+      "expected": true,
+      "case": "plus repeats the preceding character"
+    },
+    {
+      "patterns": [
+        "file+"
+      ],
+      "path": "filee",
+      "expected": true,
+      "case": "plus repeats the preceding character"
+    },
+    {
+      "patterns": [
+        "file+"
+      ],
+      "path": "fil",
+      "expected": false,
+      "case": "plus repeats the preceding character"
+    },
+    {
+      "patterns": [
+        "file+"
+      ],
+      "path": "fileee/child",
+      "expected": false,
+      "case": "plus repeats the preceding character"
+    },
+    {
+      "patterns": [
+        "a?.md"
+      ],
+      "path": ".md",
+      "expected": true,
+      "case": "question mark repeats the preceding character zero or once"
+    },
+    {
+      "patterns": [
+        "a?.md"
+      ],
+      "path": "a.md",
+      "expected": true,
+      "case": "question mark repeats the preceding character zero or once"
+    },
+    {
+      "patterns": [
+        "a?.md"
+      ],
+      "path": "b.md",
+      "expected": false,
+      "case": "question mark repeats the preceding character zero or once"
+    },
+    {
+      "patterns": [
+        "a?.md"
+      ],
+      "path": "aa.md",
+      "expected": false,
+      "case": "question mark repeats the preceding character zero or once"
+    },
+    {
+      "patterns": [
+        "file!.md"
+      ],
+      "path": "file!.md",
+      "expected": true,
+      "case": "non-leading exclamation is literal"
+    },
+    {
+      "patterns": [
+        "file!.md"
+      ],
+      "path": "file.md",
+      "expected": false,
+      "case": "non-leading exclamation is literal"
+    }
+  ]
+}

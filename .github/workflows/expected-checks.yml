@@ -1,0 +1,38 @@
+# optimistic-merge: advisory — Organization-required verifier source; targeted repositories require its SHA-pinned run, while this source repository is not yet enrolled.
+name: Expected workflow checks
+
+on:
+  pull_request:
+  merge_group:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: expected-checks / verify
+    # The organization rule initially enrolls infra, not the source repository.
+    # This condition is constant true for every enrolled target; target PRs
+    # cannot replace this workflow or the implementation checked out below.
+    if: github.repository != 'SylphxAI/.github'
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
+    timeout-minutes: 5
+    steps:
+      - name: Read the evaluated consumer commit without running consumer code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: consumer
+          sparse-checkout: .github
+      - name: Read the pinned verifier implementation from its own source commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          path: verifier
+      - uses: ./verifier/.github/actions/expected-checks
+        with:
+          root: ${{ github.workspace }}/consumer

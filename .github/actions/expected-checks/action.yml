@@ -1,0 +1,21 @@
+name: Verify expected workflow checks
+description: Require canonical complete workflow-check declarations bound to the evaluated SHA.
+inputs:
+  root:
+    description: Checkout containing the immutable evaluated commit.
+    default: ${{ github.workspace }}
+runs:
+  using: composite
+  steps:
+    - name: Verify complete declaration at the evaluated SHA
+      shell: bash
+      env:
+        EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        GITHUB_TOKEN: ${{ github.token }}
+        DECLARATION_ROOT: ${{ inputs.root }}
+      run: |
+        set -euo pipefail
+        deps="$RUNNER_TEMP/expected-checks-pyyaml-6.0.3"
+        python3 -m pip install --quiet --disable-pip-version-check --no-input \
+          --only-binary=:all: --target "$deps" PyYAML==6.0.3
+        PYTHONPATH="$deps" python3 "$GITHUB_ACTION_PATH/../workflow-lint/expected_checks.py" --verify --root "$DECLARATION_ROOT"

@@ -1,3 +1,4 @@
+# optimistic-merge: advisory — Mutable contribution metadata is checked separately from the code verdict.
 # optimistic-merge: gate-external
 name: PR metadata
 

@@ -69,6 +69,25 @@ workflow never reports, which blocks the merge; a skipped job does report.
    whenever the verdict runs. List `changes` as `required` so a broken filter
    never reads as green.
 
+Every PR- or merge-group-triggered job belongs to the `ci-ok` transitive
+`needs` graph. Run the shared [`workflow-lint`](../.github/actions/workflow-lint/README.md)
+action in a gate dependency, as both code starters do. It rejects independent
+test workflows that the verdict cannot await. Expose required work through
+`workflow_call` and include the caller in the gate. Intentionally nonblocking
+workflows use a header declaration with a written reason:
+
+```yaml
+# optimistic-merge: advisory — Nonblocking diagnostic report.
+```
+
+The metadata companion explicitly declares its separate code-verdict role;
+repositories still require its independent check. A missing coverage declaration
+fails even in legacy `contract-mode: report-only`; that setting only softens
+older timeout and failure-masking findings. Repositories that retain independent
+required checks can commit the [resolved v2 expected-check declaration](../.github/actions/workflow-lint/README.md#resolved-expected-check-declaration).
+The lint compiles its names/events/filters from workflow source and blocks drift;
+verdict runtimes read only that immutable data.
+
 ## Which events run the heavy jobs
 
 Follow [optimistic-merge.md](optimistic-merge.md): the merge group runs the
@@ -131,3 +150,22 @@ When a shared release introduces rules, update caller pins and adopt only
 base-existing findings for those new rules in the same pull request. Use the
 [offline adoption helper](stack-conformance.md#adopting-new-rules-with-a-pin-bump);
 existing rule ratchets may only shrink. There is no separate pin updater.
+
+## Resolved check completeness
+
+Repositories adopting the resolved v2 declaration commit the generated JSON and
+are enrolled in an organization ruleset requiring the
+[trusted verifier workflow](../.github/workflows/expected-checks.yml) from
+`SylphxAI/.github` at a full SHA. Do not copy the verifier into a consumer repo:
+its PR could otherwise replace that check with a same-name no-op.
+
+Generate canonical data with `expected_checks.py --write`. The trusted verifier
+compares it with source from the exact evaluated Git tree, independently on PRs
+and merge groups. The runnerless verdict requires present, schema-valid JSON at
+the evaluated SHA. Independently, the org rule requires success from the pinned verifier
+source; GitHub enforces its identity at enqueue/merge. Ordinary REST check
+metadata cannot authenticate that source, so the runtime must not guess from
+check names, Actions app identity or `referenced_workflows`. Final merge safety
+uses the merge-group tree; PR-head declarations do not claim to cover later base changes.
+Consistent workflow/JSON policy edits still require high-risk CI-config review.
+See [the declaration contract](../.github/actions/workflow-lint/README.md#resolved-expected-check-declaration).

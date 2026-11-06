@@ -12,7 +12,7 @@ description: >
   launched products audit the default branch on a separate schedule, and
   unlaunched products defer audits to launch. Delivered customer repositories
   skip these rules. Also requires job timeouts, forbids manual approval and
-  maintenance-window booking gates, and forbids failure masking on required needs paths. Needs a checkout and
+  maintenance-window booking gates, and forbids failure masking on required needs paths. Every PR and merge-group job must reach ci-ok or declare a reasoned advisory workflow. Needs a checkout and
   python3 with pip (the scalar scanner supplies pinned PyYAML). Linux x86_64.
 
 inputs:
@@ -25,7 +25,7 @@ inputs:
     description: >
       enforce fails all contract violations; report-only warns on legacy
       timeout and failure-masking findings. Manual approval and maintenance-window
-      booking gates always fail. Actionlint always fails syntax/reference errors.
+      booking gates, missing ci-ok coverage and enrolled expected-check declaration drift always fail. Actionlint always fails syntax/reference errors.
     default: report-only
   ignore:
     description: >

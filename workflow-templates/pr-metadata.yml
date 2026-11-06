@@ -1,3 +1,4 @@
+# optimistic-merge: advisory — Mutable contribution metadata is checked separately from the code verdict.
 # Install beside ci.yml and pin the shared action to the release you adopt.
 # Require pr-metadata separately from ci-ok after observing both PR and
 # merge-group checks. A metadata verdict never supplies code-test evidence.
