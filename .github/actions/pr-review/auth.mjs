@@ -3,6 +3,7 @@ import { Unavailable } from './github.mjs';
 
 const PropagationMarginMs = 180_000;
 const PropagationRetryMs = 2_000;
+const PropagationCodes = new Set(['key_not_yet_propagated', 'NOT_YET_PROPAGATED']);
 
 function activeAfterMs(issued) {
   return Number.isInteger(issued?.active_after_ms) && issued.active_after_ms >= 0 && issued.active_after_ms <= 60_000
@@ -43,7 +44,7 @@ async function exchangeBrokerToken(fetcher, url, apiKey, body, issued, { sleep, 
     }
     if (reply.ok) return payload;
     if (reply.status === 401 && payload && typeof payload === 'object' &&
-        payload.code === 'key_not_yet_propagated' && now() < deadline) {
+        PropagationCodes.has(payload.code) && now() < deadline) {
       const waitMs = Math.min(PropagationRetryMs, Math.max(0, deadline - now()));
       if (waitMs > 0) await sleep(waitMs);
       if (now() < deadline) continue;

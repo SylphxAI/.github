@@ -9,6 +9,7 @@ import time
 from urllib.parse import urlsplit
 
 from access_ready import (
+    PROPAGATION_CODES,
     READINESS_MARGIN_SECONDS,
     ReadinessError,
     issued_subject,
@@ -63,7 +64,7 @@ def request(url, *, token=None, body=None, allow_propagation=False):
         if status_code == 200:
             return data
         if (allow_propagation and status_code == 401
-                and data.get('code') == 'key_not_yet_propagated'
+                and data.get('code') in PROPAGATION_CODES
                 and time.monotonic() < deadline):
             wait_seconds = min(PROPAGATION_RETRY_SECONDS, max(0, deadline - time.monotonic()))
             if wait_seconds > 0:

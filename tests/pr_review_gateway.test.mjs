@@ -220,7 +220,8 @@ test('Broker exchange retries only key_not_yet_propagated within the propagation
       if (path === '/v1/access/github/token') return { ok: true, status: 200, json: async () => ({ api_key: 'inference', active_after_ms: 3000 }) };
       brokerCalls++;
       if (brokerCalls < 3) {
-        return { ok: false, status: 401, json: async () => ({ code: 'key_not_yet_propagated', error: 'API key not yet active' }) };
+        const code = brokerCalls === 1 ? 'key_not_yet_propagated' : 'NOT_YET_PROPAGATED';
+        return { ok: false, status: 401, json: async () => ({ code, error: 'API key not yet active' }) };
       }
       return {
         ok: true, status: 200,

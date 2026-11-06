@@ -179,23 +179,24 @@ class ExchangeTests(unittest.TestCase):
                     self.assertIn('token=\nfailure=', output)
 
     def test_broker_exchange_retries_only_key_not_yet_propagated_within_margin(self):
-        lagging = {'_http': 401, 'code': 'key_not_yet_propagated', 'detail': 'private-propagation-detail'}
-        code, log, output, wire = run_script(
-            replies(**{':exchangeToken': [lagging, grant()]}),
-            env(),
-        )
-        self.assertEqual(code, 0, log)
-        self.assertIn('token=ghs_install\n', output)
-        self.assertEqual(len(wire), 5)
-        self.assertNotIn('private-propagation-detail', log + output)
-        code, log, output, wire = run_script(
-            replies(**{':exchangeReadToken': [lagging, grant()]}),
-            env(READ_ONLY='true', PERMISSIONS=json.dumps(PERMISSIONS)),
-        )
-        self.assertEqual(code, 0, log)
-        self.assertIn('token=ghs_install\n', output)
-        self.assertEqual(len(wire), 5)
-        self.assertNotIn('private-propagation-detail', log + output)
+        for prop_code in ('key_not_yet_propagated', 'NOT_YET_PROPAGATED'):
+            lagging = {'_http': 401, 'code': prop_code, 'detail': 'private-propagation-detail'}
+            code, log, output, wire = run_script(
+                replies(**{':exchangeToken': [lagging, grant()]}),
+                env(),
+            )
+            self.assertEqual(code, 0, log)
+            self.assertIn('token=ghs_install\n', output)
+            self.assertEqual(len(wire), 5)
+            self.assertNotIn('private-propagation-detail', log + output)
+            code, log, output, wire = run_script(
+                replies(**{':exchangeReadToken': [lagging, grant()]}),
+                env(READ_ONLY='true', PERMISSIONS=json.dumps(PERMISSIONS)),
+            )
+            self.assertEqual(code, 0, log)
+            self.assertIn('token=ghs_install\n', output)
+            self.assertEqual(len(wire), 5)
+            self.assertNotIn('private-propagation-detail', log + output)
 
 
 if __name__ == '__main__':
