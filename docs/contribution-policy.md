@@ -18,9 +18,12 @@ GitHub can use Kyle's account email (`shtse8@gmail.com`) when it creates queue
 squashes, branch-update merges, and web edits. The `github_generated` policy
 permits Kyle's default or account email only with `GitHub <noreply@github.com>`
 as committer and a verified GitHub signature. The checker reads the immutable
-commit's REST metadata, matches its SHA, identities, and message to the fetched
-Git object, and requires the `web-flow` committer account and a valid signature
-with its signed payload. An unsigned look-alike fails even with Kyle's default
+commit's REST metadata, matches its SHA and identities, and compares the fetched
+Git object's signing payload byte for byte with the verified payload. Only the
+embedded `gpgsig` header is excluded; message bytes, tree, parents, timestamps,
+and other headers must match exactly. REST's display message can omit a final
+newline and is not the signature authority. The `web-flow` committer account
+and a valid signature are still required. An unsigned look-alike fails even with Kyle's default
 email. Kyle's pushed commits continue to use `Kyle Tse <hi@kylet.se>`; Gmail
 with an ordinary committer fails. The exception never waives commit-message or
 PR-text checks, and merge-group membership must still resolve completely.

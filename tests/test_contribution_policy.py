@@ -37,11 +37,25 @@ def pull():
             'base': {'sha': BASE, 'ref': 'main', 'repo': {'updated_at': 'before'}}}
 
 
+def signed_object(payload, signature):
+    headers, separator, message = payload.partition('\n\n')
+    return (headers + '\ngpgsig ' + signature.replace('\n', '\n ') + separator + message).encode()
+
+
 def signed_github(item):
+    """Pair an immutable local object with the provider's signature response."""
     remote = copy.deepcopy(item)
+    remote.pop('raw_commit', None)
+    metadata = item['commit']
+    payload = (f'tree {BASE}\nparent {BASE}\n'
+               f'author {metadata["author"]["name"]} <{metadata["author"]["email"]}> 1000000000 +0000\n'
+               f'committer {metadata["committer"]["name"]} <{metadata["committer"]["email"]}> 1000000000 +0000\n'
+               f'\n{metadata["message"]}')
+    signature = '-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----'
+    item['raw_commit'] = signed_object(payload, signature)
     remote['committer'] = {'login': 'web-flow'}
     remote['commit']['verification'] = {'verified': True, 'reason': 'valid',
-                                         'signature': 'test signature', 'payload': 'test payload'}
+                                         'signature': signature, 'payload': payload}
     return remote
 
 
@@ -307,6 +321,8 @@ class ContributionPolicy(unittest.TestCase):
         self.assertEqual(remote['sha'], '26dfb76cdb88cedecd598cf18ab4a438b6cb0902')
         original = {'sha': remote['sha'], 'commit': {key: remote['commit'][key]
                     for key in ('author', 'committer', 'message')}}
+        verification = remote['commit']['verification']
+        original['raw_commit'] = signed_object(verification['payload'], verification['signature'])
         api = mock.Mock(repository='example/repo', token='read-token')
         api.get.return_value = remote
         pr = pull()
@@ -349,13 +365,56 @@ class ContributionPolicy(unittest.TestCase):
                 if key == 'sha':
                     remote[key] = 'd' * 40
                 elif key == 'message':
-                    remote['commit'][key] = 'Different commit'
+                    remote['commit']['verification']['payload'] += 'Different commit'
                 else:
                     remote['commit'][key]['email'] = 'other@example.com'
                 api = mock.Mock(repository='example/repo', token='read-token')
                 api.get.return_value = remote
                 with self.assertRaisesRegex(checker.PolicyError, 'does not match immutable'):
                     checker.verified_github_commits(api, [original], POLICY)
+
+    def test_signed_payload_preserves_terminal_lf_omitted_from_display_message(self):
+        item = commit(message='Merge pull request #1\n\nImprove parser\n')
+        item['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+        remote = signed_github(item)
+        remote['commit']['message'] = 'Merge pull request #1\n\nImprove parser'
+        api = mock.Mock()
+        api.get.return_value = remote
+        self.assertEqual(checker.verified_github_commits(api, [item], POLICY), {HEAD})
+
+    def test_signed_payload_rejects_every_other_message_byte_change(self):
+        payload_message = 'Improve parser\n'
+        cases = ['Improve parser', 'Improve parser\n\n', 'Improve parser\r\n',
+                 'Improve parser \n', 'Different parser\n', 'Improve parser\n\nBody\n']
+        for message in cases:
+            with self.subTest(message=repr(message)):
+                item = commit(message=payload_message)
+                item['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+                remote = signed_github(item)
+                item['raw_commit'] = item['raw_commit'].removesuffix(payload_message.encode()) + message.encode()
+                api = mock.Mock()
+                api.get.return_value = remote
+                with self.assertRaisesRegex(checker.PolicyError, 'does not match immutable'):
+                    checker.verified_github_commits(api, [item], POLICY)
+
+    def test_signed_payload_binds_all_headers_not_only_projected_identities(self):
+        item = commit()
+        item['commit']['committer'] = {'name': 'GitHub', 'email': 'noreply@github.com'}
+        remote = signed_github(item)
+        for before, after in [(b'tree ' + BASE.encode(), b'tree ' + HEAD.encode()),
+                              (b'parent ' + BASE.encode(), b'parent ' + HEAD.encode()),
+                              (b'1000000000 +0000', b'1000000001 +0000'),
+                              (b'author Kyle Tse', b'author Example'),
+                              (b'committer GitHub', b'committer Example'),
+                              (b'hi@kylet.se', b'other@example.com'),
+                              (b'noreply@github.com', b'other@example.com')]:
+            with self.subTest(field=before):
+                changed = copy.deepcopy(item)
+                changed['raw_commit'] = changed['raw_commit'].replace(before, after)
+                api = mock.Mock()
+                api.get.return_value = remote
+                with self.assertRaisesRegex(checker.PolicyError, 'does not match immutable'):
+                    checker.verified_github_commits(api, [changed], POLICY)
 
     def test_verified_web_edit_still_rejects_attribution_and_unapproved_author(self):
         for author, message, rule in [
@@ -487,9 +546,38 @@ class ContributionPolicy(unittest.TestCase):
             with mock.patch.dict(os.environ, {'GITHUB_SERVER_URL': root.as_uri()}):
                 commits = checker.range_commits(shas[0], shas[-1], 'example/repo', '')
             self.assertEqual(len(commits), 301)
+            self.assertEqual(commits[0]['commit']['message'], 'Change')
+            self.assertTrue(commits[0]['raw_commit'].endswith(b'\n\nChange'))
             findings = checker.evaluate(None, commits, POLICY)
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0]['location'], shas[150])
+
+    def test_batch_object_acquisition_preserves_exact_messages(self):
+        items = [commit(HEAD), commit(BASE)]
+        raws = [b'tree ' + BASE.encode() + b'\n\nChange',
+                b'tree ' + HEAD.encode() + '\n\nRésumé\n\n'.encode()]
+        data = b''.join(item['sha'].encode() + b' commit ' + str(len(raw)).encode() + b'\n' + raw + b'\n'
+                        for item, raw in zip(items, raws))
+        checker.attach_commit_objects(items, data)
+        self.assertEqual([item['raw_commit'] for item in items], raws)
+        self.assertEqual([item['commit']['message'] for item in items], ['Change', 'Résumé\n\n'])
+
+    def test_batch_object_acquisition_rejects_missing_or_misbound_bytes(self):
+        raw = b'tree ' + BASE.encode() + b'\n\nChange'
+        valid = HEAD.encode() + b' commit ' + str(len(raw)).encode() + b'\n' + raw + b'\n'
+        for data in (b'', valid[:-1], valid + b'extra', valid.replace(HEAD.encode(), BASE.encode(), 1),
+                     valid.replace(b' commit ', b' blob ', 1), valid.replace(b' commit ', b' commit -', 1)):
+            with self.subTest(data=data), self.assertRaisesRegex(checker.PolicyError, 'commit object'):
+                checker.attach_commit_objects([commit()], data)
+
+    def test_signing_payload_removes_only_the_signature_header(self):
+        raw = (b'tree ' + BASE.encode() + b'\ngpgsig signature\n continuation\n'
+               b'encoding UTF-8\n\nMessage\ngpgsig body text\n continuation\n\n')
+        expected = b'tree ' + BASE.encode() + b'\nencoding UTF-8\n\nMessage\ngpgsig body text\n continuation\n\n'
+        self.assertEqual(checker.signing_payload(raw), expected)
+        for missing in (None, '', b''):
+            with self.subTest(missing=missing), self.assertRaisesRegex(checker.PolicyError, 'unavailable'):
+                checker.signing_payload(missing)
 
     def test_both_verdicts_run_policy_without_waiver(self):
         for action in ('needs-pass', 'ci-ok'):
@@ -763,7 +851,7 @@ class MetadataTransport(unittest.TestCase):
                 elif label == 'wrong-sha':
                     remote['sha'] = 'c' * 40
                 else:
-                    remote['commit']['message'] = 'Different commit'
+                    remote['commit']['verification']['payload'] += 'Different commit'
                 status, report, opened = self.main([self.response(pull()), self.response(pull()),
                                                    self.failure(), self.response(remote)], [item])
                 self.assertEqual(status, 1 if label == 'unsigned' else 2)
