@@ -19,6 +19,15 @@ const nonempty = (s) => typeof s === 'string' && s.trim().length > 0
 const validPath = (p) => nonempty(p) && !p.startsWith('/') && !p.split('/').some((s) => s === '..' || s === '.' || !s) && !/[\0\r\n\\]/.test(p)
 const lines = (content) => content === '' ? [] : content.replace(/\r?\n$/, '').split(/\r?\n/)
 
+function sourceScope(input, side) {
+	const union = (wire, source, identity) => [...new Map([...(source ?? []), ...(wire ?? [])]
+		.map(entry => [identity(entry), entry])).values()]
+	return {
+		files: union(input.files, input.source_files, f => side === 'base' ? f.previous_path ?? f.path : f.path),
+		context: union(input.context, input.source_context, c => canonical([c.path, c.side ?? 'context'])),
+	}
+}
+
 export function sourceQuote(input, path, side, start, end, startByte = null, endByte = null) {
 	for (const e of input.references ?? []) {
 		if (e.path === path && e.side === side && e.start_line === start && e.end_line === end && e.start_byte === startByte && e.end_byte === endByte) return e.quote
@@ -31,8 +40,7 @@ export function sourceQuote(input, path, side, start, end, startByte = null, end
 			}
 		}
 	}
-	const sourceFiles = input.files.length ? input.files : (input.source_files ?? [])
-	const sourceContext = input.context.some(f => f.absent !== true) ? input.context : (input.source_context ?? input.context)
+	const { files: sourceFiles, context: sourceContext } = sourceScope(input, side)
 	const file = sourceFiles.find(f => (side === 'base' ? f.previous_path ?? f.path : f.path) === path)
 	if (side !== 'context' && file) {
 		const quote = segmentQuote(file, side === 'base' ? 'before' : 'after', start, end, startByte, endByte)
@@ -137,8 +145,7 @@ const diagnostic = (result, input) => ({ input_digest: input.input_digest, scope
 // Only machine-authored metadata crosses the public receipt boundary. Unknown
 // paths and all source/model prose stay out, even when the quote is a secret.
 function evidenceFailure(input, evidence, expected, kind, index, findingIndex) {
-	const sourceFiles = input.files?.length ? input.files : (input.source_files ?? [])
-	const sourceContext = (input.context ?? []).some(c => c.absent !== true) ? input.context : (input.source_context ?? input.context ?? [])
+	const { files: sourceFiles, context: sourceContext } = sourceScope(input, evidence.side)
 	const samePath = sourceContext.filter(c => c.absent !== true && c.path === evidence.path)
 	const known = sourceFiles.some(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path) ||
 		(input.manifest ?? []).some(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path) ||
@@ -209,8 +216,7 @@ export function parseReviewResult(text, input) {
 							}
 						}
 					}
-					const sourceFiles = input.files.length ? input.files : (input.source_files ?? [])
-					const sourceContext = input.context.some(f => f.absent !== true) ? input.context : (input.source_context ?? input.context)
+					const { files: sourceFiles, context: sourceContext } = sourceScope(input, evidence.side)
 					const file = sourceFiles.find(f => (evidence.side === 'base' ? f.previous_path ?? f.path : f.path) === evidence.path)
 					if (evidence.side !== 'context' && file) scanWindows(segmentWindows(fileSegments(file, evidence.side === 'base' ? 'before' : 'after')))
 					for (const c of sourceContext.filter(f => f.absent !== true && f.path === evidence.path)) {
