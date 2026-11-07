@@ -25,7 +25,13 @@ hyphens or underscores, up to Unity's 214-character limit
 ([Unity 2022.3 naming rules](https://docs.unity3d.com/2022.3/Documentation/Manual/cus-naming.html),
 read 2026-11-06). Built-in packages
 remain supplied by the selected editor. Other package registries, local archives
-and Git dependencies keep their existing preparation steps.
+and Git dependencies keep their existing preparation steps. Every direct version
+request must have a resolved `registry` or `builtin` lock entry, or a genuine
+`embedded` override. Embedded overrides use the lock's relative `file:` path
+inside `Packages` and require a package directory with a `package.json` whose
+name matches the dependency. Missing entries, stale Git/local/tarball sources
+and non-string manifest requests stop before network access or mutation.
+Unselected explicit local/Git requests remain unaffected.
 Every pin records an exact positive `archiveBytes` count as well as its version
 and SHA256. Graph admission refuses missing or oversized counts before network
 access, so a newly captured editor graph cannot silently exceed the archive cap.

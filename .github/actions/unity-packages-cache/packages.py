@@ -38,9 +38,33 @@ def graph(project):
     manifest = load(packages / "manifest.json")["dependencies"]
     locked = load(packages / "packages-lock.json")["dependencies"]
     direct = {name: version for name, version in manifest.items() if name.startswith("com.unity.")}
-    for name in direct:
-        if name not in locked:
+    for name, request in manifest.items():
+        if not isinstance(request, str):
+            raise ValueError(f"invalid Unity manifest request: {name}")
+        # Registry version requests need a lock entry regardless of publisher.
+        # Unselected file/Git preparation uses a URI or SCP-style colon.
+        if name not in locked and (name in direct or ":" not in request):
             raise ValueError(f"manifest package missing from lock: {name}")
+        if ":" not in request:
+            node = locked[name]
+            if node.get("source") == "embedded":
+                # Embedded packages override version requests. The lock's file:
+                # path is relative to Packages; the folder need not match name.
+                location = node.get("version", "")
+                if not isinstance(location, str) or not location.startswith("file:"):
+                    raise ValueError(f"invalid embedded package override: {name}")
+                relative = PurePosixPath(location[5:])
+                embedded = packages.joinpath(*relative.parts)
+                metadata_path = embedded / "package.json"
+                if (relative.is_absolute() or not relative.parts or ".." in relative.parts or "\\" in location or
+                        not embedded.resolve().is_relative_to(packages.resolve()) or not embedded.is_dir() or
+                        not metadata_path.resolve().is_relative_to(packages.resolve()) or not metadata_path.is_file()):
+                    raise ValueError(f"invalid embedded package override: {name}")
+                metadata = load(metadata_path)
+                if not isinstance(metadata, dict) or metadata.get("name") != name:
+                    raise ValueError(f"invalid embedded package override: {name}")
+            elif node.get("source") not in ("registry", "builtin"):
+                raise ValueError(f"registry manifest request has a non-registry lock source: {name}")
     registry = {}
     for name, node in locked.items():
         if node.get("source") != "registry":

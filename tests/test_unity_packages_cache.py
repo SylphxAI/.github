@@ -141,6 +141,176 @@ class UnityPackagesCache(unittest.TestCase):
                     self.hydrate()
         self.assertEqual(self.requests, [])
 
+    def test_missing_direct_registry_requests_fail_before_network_or_mutation(self):
+        upm.validate(self.project)  # Positive control: the existing pins are valid.
+        receipt = self.project / ".unity-packages-cache-receipt.json"
+        receipt.write_text("existing receipt must not be removed")
+        for name, request in (("com.autodesk.fbx", "5.1.3"), ("1.2.3", "4.5.6"),
+                              ("net.example.tool_kit", "1.0.0"), ("com.unity.prepared", "file:../prepared")):
+            with self.subTest(name=name, request=request):
+                manifest = json.loads(json.dumps(self.manifest))
+                manifest["dependencies"][name] = request
+                self.write_json("manifest.json", manifest)
+                before = {p.relative_to(self.project): p.read_bytes() for p in self.project.rglob("*") if p.is_file()}
+                with patch.object(upm, "fetch") as fetch, patch.object(upm.urllib.request, "urlopen") as metadata, patch.object(
+                        upm.tempfile, "TemporaryDirectory") as staging:
+                    for operation in (upm.validate, upm.hydrate, upm.pin):
+                        with self.assertRaisesRegex(ValueError, f"manifest package missing from lock: {name}"):
+                            operation(self.project)
+                    fetch.assert_not_called()
+                    metadata.assert_not_called()
+                    staging.assert_not_called()
+                after = {p.relative_to(self.project): p.read_bytes() for p in self.project.rglob("*") if p.is_file()}
+                self.assertEqual(after, before)
+        self.assertEqual(self.requests, [])
+
+    def test_unselected_local_git_and_locked_foreign_registry_requests_preserve_pins(self):
+        upm.validate(self.project)
+        for request in ("file:../prepared", "file:../prepared.tgz", "http://example.com/repo.git",
+                        "https://example.com/repo.git#v1.2.3", "ssh://git@example.com/repo.git",
+                        "git://example.com/repo", "git+https://example.com/repo", "git+ssh://git@example.com/repo",
+                        "git+file:///tmp/repo", "git@example.com:owner/repo.git"):
+            with self.subTest(request=request):
+                manifest = json.loads(json.dumps(self.manifest))
+                manifest["dependencies"]["net.example.prepared"] = request
+                self.write_json("manifest.json", manifest)
+                pins, selected = upm.validate(self.project)
+                self.assertEqual(pins, self.pins)
+                self.assertEqual(selected, self.registry)
+                self.assertEqual(upm.graph(self.project)[1:], (self.pins["lockSha256"], self.pins["manifestSha256"]))
+        self.registry["net.other.registry"] = {"version": "1.0.0", "source": "registry", "url": "https://other.example"}
+        self.write_json("packages-lock.json", {"dependencies": self.registry})
+        for request in ("1.0.0", "2.0.0"):
+            with self.subTest(foreign_request=request):
+                manifest = json.loads(json.dumps(self.manifest))
+                manifest["dependencies"]["net.other.registry"] = request
+                self.write_json("manifest.json", manifest)
+                pins, selected = upm.validate(self.project)
+                self.assertEqual(pins, self.pins)
+                self.assertNotIn("net.other.registry", selected)
+        builtin = "com.unity.modules.audio"
+        self.registry[builtin] = {"version": "1.0.0", "source": "builtin", "dependencies": {}}
+        manifest["dependencies"][builtin] = "1.0.0"
+        self.pins["manifestSha256"] = upm.canonical({"com.unity.first": "1.2.3", builtin: "1.0.0"})
+        self.write_json("manifest.json", manifest)
+        self.write_json("packages-lock.json", {"dependencies": self.registry})
+        self.write_json("unity-packages.json", self.pins)
+        pins, selected = upm.validate(self.project)
+        self.assertEqual(pins, self.pins)
+        self.assertNotIn(builtin, selected)
+        self.assertEqual(upm.graph(self.project)[1:], (self.pins["lockSha256"], self.pins["manifestSha256"]))
+        self.assertEqual(self.requests, [])
+
+    def test_stale_uri_lock_sources_cannot_satisfy_direct_registry_requests(self):
+        for name in ("com.autodesk.fbx", "1.2.3", "net.example.tool_kit"):
+            for source in ("git", "local", "local-tarball", "tarball", "unknown"):
+                with self.subTest(name=name, source=source):
+                    registry = json.loads(json.dumps(self.registry))
+                    registry[name] = {"version": "file:../prepared", "source": source, "dependencies": {}}
+                    manifest = json.loads(json.dumps(self.manifest))
+                    manifest["dependencies"][name] = "file:../prepared" if source != "git" else "https://example.com/repo.git"
+                    self.write_json("packages-lock.json", {"dependencies": registry})
+                    self.write_json("manifest.json", manifest)
+                    self.assertEqual(upm.validate(self.project)[0], self.pins)  # URI preparation is a valid control.
+                    manifest["dependencies"][name] = "5.1.3"
+                    self.write_json("manifest.json", manifest)
+                    before = {p.relative_to(self.project): p.read_bytes() for p in self.project.rglob("*") if p.is_file()}
+                    with patch.object(upm, "fetch") as fetch, patch.object(upm.urllib.request, "urlopen") as metadata, patch.object(
+                            upm.tempfile, "TemporaryDirectory") as staging:
+                        for operation in (upm.validate, upm.hydrate, upm.pin):
+                            with self.assertRaisesRegex(ValueError, "registry manifest request has a non-registry lock source"):
+                                operation(self.project)
+                        fetch.assert_not_called()
+                        metadata.assert_not_called()
+                        staging.assert_not_called()
+                    after = {p.relative_to(self.project): p.read_bytes() for p in self.project.rglob("*") if p.is_file()}
+                    self.assertEqual(after, before)
+        self.assertEqual(self.requests, [])
+
+    def test_embedded_version_overrides_require_genuine_contained_package_identity(self):
+        name, folder = "net.example.embedded", "prepared-embedded"
+        packages = self.project / "Packages"
+        embedded = packages / folder
+        embedded.mkdir()
+        good = json.dumps({"name": name, "version": "1.0.0"})
+        (embedded / "package.json").write_text(good)
+        self.manifest["dependencies"][name] = "9.9.9"  # Embedded identity overrides the requested version.
+        self.registry[name] = {"version": f"file:{folder}", "source": "embedded", "dependencies": {}}
+        self.write_json("manifest.json", self.manifest)
+        self.write_json("packages-lock.json", {"dependencies": self.registry})
+        self.assertEqual(upm.validate(self.project)[0], self.pins)
+        receipt = self.project / ".unity-packages-cache-receipt.json"
+        receipt.write_text("previous receipt must survive admission failures")
+        outside = self.project / "outside-embedded"
+        outside.mkdir()
+        (outside / "package.json").write_text(good)
+        (packages / "linked-embedded").symlink_to(outside, target_is_directory=True)
+        for case in ("missing directory", "missing package.json", "wrong name", "traversal", "absolute path",
+                     "non-file location", "nonstring location", "outside directory symlink", "outside metadata symlink"):
+            with self.subTest(case=case):
+                embedded.mkdir(exist_ok=True)
+                metadata = embedded / "package.json"
+                metadata.unlink(missing_ok=True)
+                metadata.write_text(good)
+                self.registry[name]["version"] = f"file:{folder}"
+                if case in ("missing directory", "missing package.json"):
+                    metadata.unlink()
+                if case == "missing directory":
+                    embedded.rmdir()
+                if case == "wrong name":
+                    metadata.write_text(json.dumps({"name": "net.other.package", "version": "1.0.0"}))
+                if case == "traversal":
+                    self.registry[name]["version"] = "file:../outside-embedded"
+                if case == "absolute path":
+                    self.registry[name]["version"] = f"file:{outside}"
+                if case == "non-file location":
+                    self.registry[name]["version"] = "1.0.0"
+                if case == "nonstring location":
+                    self.registry[name]["version"] = None
+                if case == "outside directory symlink":
+                    self.registry[name]["version"] = "file:linked-embedded"
+                if case == "outside metadata symlink":
+                    metadata.unlink()
+                    metadata.symlink_to(outside / "package.json")
+                self.write_json("packages-lock.json", {"dependencies": self.registry})
+                with patch.object(upm, "fetch") as fetch, patch.object(upm.urllib.request, "urlopen") as request, patch.object(
+                        upm.tempfile, "TemporaryDirectory") as staging:
+                    for operation in (upm.validate, upm.hydrate, upm.pin):
+                        with self.assertRaisesRegex(ValueError, "invalid embedded package override"):
+                            operation(self.project)
+                    fetch.assert_not_called()
+                    request.assert_not_called()
+                    staging.assert_not_called()
+                self.assertEqual(receipt.read_text(), "previous receipt must survive admission failures")
+        (embedded / "package.json").unlink()
+        (embedded / "package.json").write_text(good)
+        self.registry[name]["version"] = f"file:{folder}"
+        self.write_json("packages-lock.json", {"dependencies": self.registry})
+        (packages / "linked-embedded").unlink()
+        receipt = json.loads(self.hydrate().read_text())
+        self.assertEqual(receipt["packages"], self.pins["packages"])
+        self.assertEqual(receipt["packageCount"], 2)
+        self.assertEqual((embedded / "package.json").read_text(), good)
+        self.assertEqual(len(self.requests), 2)
+
+    def test_nonstring_manifest_requests_fail_closed(self):
+        upm.validate(self.project)
+        for name in ("com.autodesk.fbx", "com.unity.first", "com.other.local"):
+            for request in (None, False, 7, 1.2, [], {}):
+                with self.subTest(name=name, request=request):
+                    manifest = json.loads(json.dumps(self.manifest))
+                    manifest["dependencies"][name] = request
+                    self.write_json("manifest.json", manifest)
+                    with patch.object(upm, "fetch") as fetch, patch.object(upm.urllib.request, "urlopen") as metadata, patch.object(
+                            upm.tempfile, "TemporaryDirectory") as staging:
+                        for operation in (upm.validate, upm.hydrate, upm.pin):
+                            with self.assertRaisesRegex(ValueError, f"invalid Unity manifest request: {name}"):
+                                operation(self.project)
+                        fetch.assert_not_called()
+                        metadata.assert_not_called()
+                        staging.assert_not_called()
+        self.assertEqual(self.requests, [])
+
     def test_missing_lock_and_incomplete_graph_fail_closed(self):
         target = self.project / "Packages/packages-lock.json"
         target.unlink()
