@@ -2,7 +2,7 @@
 """Compare native name-dispatch call sites with the pinned release's JVM bytes.
 
 No SDK source declarations or maintained export lists are used as evidence of
-availability. Python's standard library is sufficient; no JVM is started.
+availability. Python and curl are required; no JVM is started.
 """
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ import tarfile
 import urllib.request
 import urllib.parse
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
+import curl_retry
 
 
 class ContractError(ValueError):
@@ -265,8 +268,14 @@ def api(path, binary=False):
     token = os.environ.get("GH_TOKEN", "")
     if token:
         headers["Authorization"] = "Bearer " + token
-    request = urllib.request.Request("https://api.github.com/repos/Cubeage/cubeage-native-sdk/" + path,
-                                     headers=headers)
+    url = "https://api.github.com/repos/Cubeage/cubeage-native-sdk/" + path
+    if binary:
+        # Curl's ordinary --location policy strips Authorization on a change
+        # of host, scheme or port. Never use --location-trusted for assets.
+        return curl_retry.read(url, label="native-bridge-asset",
+                               headers=tuple(f"{key}: {value}" for key, value in headers.items()),
+                               curl_args=curl_retry.HTTP_REDIRECTS)
+    request = urllib.request.Request(url, headers=headers)
     class AssetRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, url):
             redirected = super().redirect_request(req, fp, code, msg, headers, url)
@@ -274,8 +283,7 @@ def api(path, binary=False):
                 redirected.remove_header("Authorization")
             return redirected
     with urllib.request.build_opener(AssetRedirect()).open(request, timeout=60) as response:
-        data = response.read()
-    return data if binary else json.loads(data)
+        return json.load(response)
 
 
 def released_asset(ref, name):

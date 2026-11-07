@@ -49,6 +49,9 @@ import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
+import curl_retry
+
 CFT_BASE = "https://storage.googleapis.com/chrome-for-testing-public/%s/linux64"
 SAFE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 LIBS = (
@@ -213,8 +216,8 @@ def install_chrome(version: str, dest: str) -> str:
         for name in ("chromedriver-linux64", "chrome-headless-shell-linux64"):
             url = "%s/%s.zip" % (CFT_BASE % version, name)
             archive = os.path.join(root, name + ".zip")
-            with urllib.request.urlopen(url, timeout=180) as r, open(archive, "wb") as f:
-                shutil.copyfileobj(r, f)
+            curl_retry.request(url, archive, label="chrome-download",
+                               curl_args=curl_retry.HTTP_REDIRECTS).require_success("chrome-download")
             with zipfile.ZipFile(archive) as z:
                 z.extractall(root)
             os.unlink(archive)
