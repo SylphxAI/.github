@@ -13,6 +13,7 @@ without --apply.
   scripts/apply_merge_queue.py                     # dry-run diff of every repository
   scripts/apply_merge_queue.py --dry-run --json    # the same, machine-readable
   scripts/apply_merge_queue.py --repo SylphxAI/.github
+  scripts/apply_merge_queue.py --repo SylphxAI/.github --only-check ops-security/review
   scripts/apply_merge_queue.py --apply --backup-dir DIR [--repo ORG/NAME ...]
   scripts/apply_merge_queue.py --rollback DIR      # put the saved merge_queue parameters back
   scripts/apply_merge_queue.py --check             # exit 1 when any ruleset drifts
@@ -195,12 +196,12 @@ def expected_gate(policy: dict, repo: str, ruleset: str) -> str:
     return policy["fast_gate"]["context"]
 
 
-def desired_checks(policy: dict, repo: str, rid: int, name: str) -> list[dict]:
+def desired_checks(policy: dict, repo: str, rid: int, name: str, context: str | None = None) -> list[dict]:
     for entry in policy.get("required_checks", []):
         if repo in repository_names(entry) and entry["ruleset_id"] == rid:
             if entry["ruleset"] != name:
                 raise ValueError(f"{repo} ruleset {rid} name differs from policy")
-            return entry["checks"]
+            return [check for check in entry["checks"] if context is None or check["context"] == context]
     return []
 
 
@@ -332,7 +333,8 @@ def enrich_extra_approval(gh, fleet: list[dict], skip: dict[str, str], only: set
             skip[item["repo"]] = f"ruleset detail unreadable: {exc}"
 
 
-def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] | None = None) -> list[dict]:
+def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] | None = None,
+         check_context: str | None = None) -> list[dict]:
     rows = []
     for item in sorted(fleet, key=lambda i: (i["repo"], i["ruleset"])):
         if only and item["repo"] not in only:
@@ -346,6 +348,16 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
             # An inherited (organization or enterprise) ruleset has no repository path to write, so it is
             # reported and never converged here.
             row.update(status="INHERITED", reason="organization or enterprise ruleset: read-only here", changes={})
+            rows.append(row)
+            continue
+        if check_context is not None:
+            checks = desired_checks(policy, item["repo"], item["id"], item["ruleset"], check_context)
+            if not checks:
+                continue
+            current = item.get("required_checks") or []
+            wanted = merge_checks(current, checks)
+            changes = {"required_status_checks": [current, wanted]} if current != wanted else {}
+            row.update(status="DRIFT" if changes else "OK", changes=changes, notes=[])
             rows.append(row)
             continue
         changes = {}
@@ -383,6 +395,8 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
         rows.append(row)
     found = {(item["repo"], item["id"]) for item in fleet}
     for target in policy.get("required_checks", []):
+        if check_context is not None and not any(check["context"] == check_context for check in target["checks"]):
+            continue
         names = repository_names(target)
         if names & skip.keys() or (only and not names & only):
             continue
@@ -424,6 +438,18 @@ def with_queue(ruleset: dict, settings: dict) -> dict:
     body = put_body(ruleset)
     body["rules"] = [{**rule, "parameters": {**rule.get("parameters", {}), **settings}}
                      if rule["type"] == "merge_queue" else rule for rule in body["rules"]]
+    return body
+
+
+def with_checks_only(ruleset: dict, checks: list[dict]) -> dict:
+    """Change only the selected binding in one existing required-check rule."""
+    body = put_body(ruleset)
+    existing = [rule for rule in body["rules"] if rule["type"] == "required_status_checks"]
+    if len(existing) != 1 or not checks:
+        raise ValueError("check-only adoption requires one existing required-check rule and a declared check")
+    body["rules"] = [{**rule, "parameters": {**rule["parameters"], "required_status_checks":
+        merge_checks(rule["parameters"]["required_status_checks"], checks)}}
+        if rule["type"] == "required_status_checks" else rule for rule in body["rules"]]
     return body
 
 
@@ -480,7 +506,8 @@ def backup_path(backup_dir: Path, row: dict) -> Path:
     return backup_dir / f"{row['repo'].replace('/', '__')}__{row['id']}.json"
 
 
-def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | None = None) -> list[dict]:
+def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | None = None,
+          check_context: str | None = None) -> list[dict]:
     """Write every DRIFT row; the pre-change ruleset is saved first and the write is read back."""
     drifted = [r for r in rows if r["status"] == "DRIFT"]
     taken = [backup_path(backup_dir, r).name for r in drifted if backup_path(backup_dir, r).exists()]
@@ -500,18 +527,23 @@ def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | N
         outcome = {"repo": row["repo"], "id": row["id"], "ruleset": row["ruleset"]}
         try:
             before = gh.rest(path)
-            (backup_dir / f"{row['repo'].replace('/', '__')}__{row['id']}.json").write_text(json.dumps(before, indent=2) + "\n")
             settings = desired_settings(policy, row["repo"], row["ruleset"])
             count = policy["review"][REVIEW_KEY]
             extra = policy["review"][EXTRA_APPROVAL_KEY]
-            checks = desired_checks(policy, row["repo"], row["id"], before["name"])
+            checks = desired_checks(policy, row["repo"], row["id"], before["name"], check_context)
             strict = policy["queue_required_status_checks"][STRICT_KEY] if queue_params(before) is not None else None
-            body = with_rules(before, settings, count, extra, checks, strict)
-            want = managed(body)
+            body = (with_checks_only(before, checks) if check_context is not None else
+                    with_rules(before, settings, count, extra, checks, strict))
+            # Narrow adoption verifies all fields, not just the usual managed subset.
+            projection = put_body if check_context is not None else managed
+            want = projection(body)
+            # A backup marks a possible PUT attempt, not a rejected plan. Complete
+            # local validation first so a no-write refusal leaves the directory reusable.
+            backup_path(backup_dir, row).write_text(json.dumps(before, indent=2) + "\n")
             after = gh.rest(path, "PUT", body)
-            if managed(after) != want:
+            if projection(after) != want:
                 after = gh.rest(path)
-            if managed(after) != want:
+            if projection(after) != want:
                 outcome["result"] = "FAILED: read back differs"
             else:
                 outcome["result"] = "APPLIED"
@@ -559,6 +591,7 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--policy", default=str(DEFAULT_POLICY))
     ap.add_argument("--repo", action="append", default=[], help="limit to ORG/NAME (repeatable)")
+    ap.add_argument("--only-check", help="adopt only this declared check; requires exactly one --repo; preserves all other fields")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="print the diff, write nothing (the default)")
     mode.add_argument("--apply", action="store_true", help="write the drifted rulesets")
@@ -567,6 +600,8 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     ap.add_argument("--check", action="store_true", help="exit 1 when any ruleset drifts")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
+    if args.only_check is not None and (len(args.repo) != 1 or args.rollback):
+        ap.error("--only-check requires exactly one --repo and cannot be used with --rollback")
     gh = gh or Gh()
     try:
         if args.rollback:
@@ -574,6 +609,10 @@ def main(argv: list[str] | None = None, gh=None) -> int:
             print(json.dumps(results, indent=2) if args.json else "\n".join(f"{r['result']:<9} {r['repo']} / {r['ruleset']} (#{r['id']})" for r in results))
             return 1 if any(not r["result"].startswith("RESTORED") for r in results) or not results else 0
         policy = load_policy(Path(args.policy))
+        if args.only_check is not None and not any(args.repo[0] in repository_names(entry) and
+                any(check["context"] == args.only_check for check in entry["checks"])
+                for entry in policy.get("required_checks", [])):
+            raise ValueError("--only-check must name a declared check for the selected repository")
         skip = excluded(policy, hands_off_repos())
         fleet = [item for org in policy["orgs"] for item in read_org(gh, org)]
         only = set(args.repo)
@@ -590,11 +629,11 @@ def main(argv: list[str] | None = None, gh=None) -> int:
             except (RuntimeError, ValueError, OSError) as exc:
                 skip[repo] = f"delivery properties unreadable: {exc}"
         enrich_extra_approval(gh, fleet, skip, only)
-        rows = plan(fleet, policy, skip, only or None)
+        rows = plan(fleet, policy, skip, only or None, args.only_check)
         if args.apply:
             if not args.backup_dir:
                 ap.error("--apply needs --backup-dir")
-            results = apply(gh, rows, policy, Path(args.backup_dir))
+            results = apply(gh, rows, policy, Path(args.backup_dir), check_context=args.only_check)
             print(json.dumps({"plan": rows, "results": results}, indent=2) if args.json else render(rows) + "\n" + "\n".join(
                 f"{r['result']:<9} {r['repo']} / {r['ruleset']} (#{r['id']})" for r in results))
             return 1 if any(not r["result"].startswith("APPLIED") for r in results) else 0

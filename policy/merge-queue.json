@@ -113,9 +113,10 @@
       "checks": [
         { "context": "ci-ok", "integration_id": 15368 },
         { "context": "review-ok", "integration_id": 5155317 },
-        { "context": "pr-metadata", "integration_id": 15368 }
+        { "context": "pr-metadata", "integration_id": 15368 },
+        { "context": "ops-security/review", "integration_id": 1299545 }
       ],
-      "reason": "Preserve CI and independent review. Require the separate metadata producer only after observing its PR-head and merge-group checks; title/body edits and ready events never replace ci-ok code evidence."
+      "reason": "Preserve CI and independent review. Metadata never replaces code evidence. Require the canonical sylphx-ai App (1299545) operator Check Run on exact PR heads and trusted-main merge-group projections. Activate only after the producer is observed; do not converge unrelated existing check drift."
     },
     {
       "repo": "SylphxAI/owner",
