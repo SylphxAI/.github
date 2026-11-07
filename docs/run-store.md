@@ -271,3 +271,11 @@ records its HTTP status, transmitted request bytes and only a validated
 Cloudflare ray or hexadecimal request identifier. Response bodies, arbitrary
 headers, URLs and credentials are never printed. These diagnostics do not
 attribute an earlier 413 whose response metadata was not retained.
+
+Network requests have a [shared bounded retry policy](../.github/actions/_shared/network.md):
+at most five attempts within 120 seconds per logical request, with exponential
+backoff and jitter for transient transport errors, HTTP 429 and HTTP 5xx.
+HTTP 401, 403 and 404 are never retried. Failed attempts record DNS, TCP, TLS,
+first-byte and total times plus remote IP and status, never URLs or bodies.
+Accepted uploads are only read back; an uncertain PUT reuses the original key
+and payload and preserves the gateway's immutable-entry behavior.

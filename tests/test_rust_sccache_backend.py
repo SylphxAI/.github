@@ -56,6 +56,8 @@ class Fake:
     def __init__(self) -> None:
         self.requests: list[dict] = []
         self.mode = "ok"
+        self.oidc_replies = []
+        self.mint_replies = []
         self.endpoint = "http://127.0.0.1:9/webdav"
         owner = self
 
@@ -90,6 +92,9 @@ class Fake:
 
             def do_GET(self) -> None:  # the OIDC issuer
                 self._record()
+                if owner.oidc_replies:
+                    self._reply(owner.oidc_replies.pop(0), '{"message":"leaky-body"}')
+                    return
                 if owner.mode == "oidc-401":
                     self._reply(401, '{"message":"nope"}')
                 else:
@@ -98,6 +103,9 @@ class Fake:
             def do_POST(self) -> None:  # the gateway
                 self._record()
                 m = owner.mode
+                if owner.mint_replies:
+                    self._reply(owner.mint_replies.pop(0), '{"message":"leaky-body"}')
+                    return
                 if m == "ok":
                     self._reply(
                         200,
@@ -160,6 +168,7 @@ def base_env() -> dict[str, str]:
     return {
         "PATH": os.environ["PATH"],
         "KEY_PREFIX": "org-a/repo-a",
+        "BUILD_CACHE_RETRY_DELAY": "0",
         "GITHUB_REPOSITORY_OWNER": "Org-A",
         # A job's own AWS_* must not leak into the static backend's server.
         "AWS_SESSION_TOKEN": "",
@@ -223,6 +232,20 @@ class RustSccacheBackend(unittest.TestCase):
         self.assertNotIn("leaky-body", text)
 
     # --- BuildCache first ---------------------------------------------------
+
+    def test_oidc_and_mint_retry_independently_with_safe_diagnostics(self) -> None:
+        self.fake.oidc_replies = [503, 429]
+        self.fake.mint_replies = [503, 429]
+        script = f'. "{BACKEND}"\nprintf "backend=%s\\n" "$backend"'
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", script],
+                                env={**base_env(), **self.fake.oidc_env()}, capture_output=True, text=True, check=True)
+        self.assertIn("backend=buildcache", result.stdout)
+        self.assertEqual(sum(r["method"] == "GET" for r in self.fake.requests), 3)
+        self.assertEqual(len(self.fake.gateway_calls()), 3)
+        self.assertEqual(result.stderr.count("stop=retry"), 4)
+        self.assertNoSecrets(result.stdout + result.stderr)
+        self.assertNotIn("api-version=", result.stderr)
+        self.assertNotIn("/oidc", result.stderr)
 
     def test_buildcache_comes_first(self) -> None:
         got, out = choose({**self.fake.oidc_env(), **STATIC})

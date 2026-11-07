@@ -1,5 +1,5 @@
 import hashlib
-from email.message import Message
+from contextlib import contextmanager
 import http.server
 import importlib.util
 import io
@@ -65,7 +65,15 @@ class UnityPackagesCache(unittest.TestCase):
             def do_GET(self):
                 outer.requests.append(self.path)
                 value = outer.responses.get(self.path)
-                if value == "redirect":
+                if isinstance(value, tuple):
+                    code, headers, body = value
+                    self.send_response(code)
+                    for key, entry in headers.items():
+                        self.send_header(key, entry)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif value == "redirect":
                     self.send_response(302)
                     self.send_header("Location", "/must-not-follow")
                     self.end_headers()
@@ -98,6 +106,27 @@ class UnityPackagesCache(unittest.TestCase):
             return self.real_fetch(url.replace(upm.MIRROR, self.origin), path, expected, expected_size=expected_size)
         with patch.object(upm, "fetch", side_effect=local_fetch):
             return upm.hydrate(self.project)
+
+    @contextmanager
+    def transport_routes(self, routes, requests):
+        # Replace only provider addressing. Real curl still reads each archive
+        # and redirect header; download() validates the original HTTPS hop
+        # before request() can route it to this loopback HTTP fixture.
+        paths = {url: f"/fixture/{index}" for index, url in enumerate(routes)}
+        self.responses.update({paths[url]: response for url, response in routes.items()})
+        request, urlopen = upm.curl_retry.request, upm.urllib.request.urlopen
+
+        def routed_request(url, destination, **kwargs):
+            requests.append(url)
+            return request(self.origin + paths[url], destination, **kwargs)
+
+        def routed_metadata(url, **kwargs):
+            requests.append(url)
+            return urlopen(self.origin + paths[url], **kwargs)
+
+        with patch.object(upm.curl_retry, "request", side_effect=routed_request), patch.object(
+                upm.urllib.request, "urlopen", side_effect=routed_metadata):
+            yield
 
     def test_embeds_full_transitive_closure_and_receipt_without_registry_requests(self):
         receipt = json.loads(self.hydrate().read_text())
@@ -770,6 +799,7 @@ class UnityPackagesCache(unittest.TestCase):
         self.write_json("manifest.json", self.manifest)
         upm.validate(self.project)
 
+    @patch.object(upm.curl_retry.time, "sleep", new=lambda _: None)
     def test_hash_mismatch_and_missing_mirror_never_fallback_or_partially_embed(self):
         for response in (b"corrupt", None):
             with self.subTest(response=response):
@@ -818,23 +848,7 @@ class UnityPackagesCache(unittest.TestCase):
             routes[cdn] = (200, {}, data)
             routes[f"{upm.MIRROR}/upm/{hashlib.sha256(data).hexdigest()}/{name}/{version}"] = (200, {}, data)
 
-        class HTTPSFixture(upm.urllib.request.HTTPSHandler):
-            def https_open(self, request):
-                requests.append(request.full_url)
-                code, headers, body = routes[request.full_url]
-                message = Message()
-                for key, value in headers.items():
-                    message[key] = value
-                response = upm.urllib.response.addinfourl(io.BytesIO(body), message, request.full_url, code)
-                response.msg = "Fixture response"
-                return response
-
-        build_opener = upm.urllib.request.build_opener
-        metadata_opener = build_opener(HTTPSFixture)
-        def opener(*handlers):
-            return build_opener(*handlers, HTTPSFixture)
-        with patch.object(upm.urllib.request, "build_opener", side_effect=opener), patch.object(
-                upm.urllib.request, "urlopen", side_effect=metadata_opener.open):
+        with self.transport_routes(routes, requests):
             generated = json.loads(upm.pin(self.project).read_text())
             self.assertEqual(generated, self.pins)
             self.assertEqual(len(requests), 9)  # Metadata, download redirect and CDN body for each package.
@@ -854,7 +868,6 @@ class UnityPackagesCache(unittest.TestCase):
         name, directory = "1.2.3", "1.2.3-4.5.6"
         metadata_url = f"{upm.REGISTRY}/{name}"
         cdn = f"https://cdn.packages.unity.com/tarballs/{name}/{directory}/" + "a" * 40 + ".tgz"
-        build_opener = upm.urllib.request.build_opener
         for version in ("4.5.6", "1.2.3-4.5.6"):
             source = f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz"
             for case in ("valid", "wrong version", "SHA1 mismatch", "wrong name"):
@@ -878,22 +891,7 @@ class UnityPackagesCache(unittest.TestCase):
                               source: (302, {"Location": cdn}, b""), cdn: (200, {}, body)}
                     requests = []
 
-                    class HTTPSFixture(upm.urllib.request.HTTPSHandler):
-                        def https_open(self, request):
-                            requests.append(request.full_url)
-                            code, headers, data = routes[request.full_url]
-                            message = Message()
-                            for key, value in headers.items():
-                                message[key] = value
-                            response = upm.urllib.response.addinfourl(io.BytesIO(data), message, request.full_url, code)
-                            response.msg = "Fixture response"
-                            return response
-
-                    metadata_opener = build_opener(HTTPSFixture)
-                    def opener(*handlers):
-                        return build_opener(*handlers, HTTPSFixture)
-                    with patch.object(upm.urllib.request, "build_opener", side_effect=opener), patch.object(
-                            upm.urllib.request, "urlopen", side_effect=metadata_opener.open), patch.object(
+                    with self.transport_routes(routes, requests), patch.object(
                             upm, "unpack", wraps=upm.unpack) as unpack:
                         if case == "valid":
                             generated = json.loads(upm.pin(project).read_text())
@@ -1050,9 +1048,7 @@ class UnityPackagesCache(unittest.TestCase):
         for size in (upm.MAX_ARCHIVE, upm.MAX_ARCHIVE + 1):
             with self.subTest(archiveBytes=size):
                 response, sink = Stream(size), Sink()
-                opener = Mock()
-                opener.open.return_value = response
-                with patch.object(upm.urllib.request, "build_opener", return_value=opener):
+                with patch.object(upm.curl_retry, "download", return_value=response):
                     if size == upm.MAX_ARCHIVE:
                         self.assertEqual(self.real_fetch(upm.MIRROR, sink)[2], size)
                         self.assertEqual(sink.written, size)

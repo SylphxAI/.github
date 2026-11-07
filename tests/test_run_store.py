@@ -12,6 +12,7 @@ import io
 import json
 import os
 import pathlib
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -73,6 +74,11 @@ class Fake:
         self.token_requests: list[dict] = []
         self.read_misses = 0  # answer this many GETs 404 before serving
         self.head_statuses: list[int] = []
+        self.oidc_replies = []
+        self.mint_replies = []
+        self.get_replies = []
+        self.lose_put_reply = False
+        self.committed_puts = 0
         self.minted = MINTED  # the run token the exchange answers with
         owner = self
 
@@ -89,6 +95,16 @@ class Fake:
                 if self.command != "HEAD":
                     self.wfile.write(body)
 
+            def _fault(self, replies) -> bool:
+                if not replies:
+                    return False
+                reply = replies.pop(0)
+                if reply == "timeout":
+                    time.sleep(1.2)
+                else:
+                    self._reply(reply, b"private response body: " + OIDC_REQUEST_TOKEN.encode())
+                return True
+
             def _key(self) -> str:
                 if self.path.startswith("/v1/retained/"):
                     return "retained:" + self.path.split("/v1/retained/", 1)[1].split("?", 1)[0]
@@ -98,12 +114,16 @@ class Fake:
                 owner.requests.append(("GET", self.path, self.headers.get("Authorization")))
                 if self.path.startswith("/oidc"):
                     assert "audience=sylphx-build-cache" in self.path
+                    if self._fault(owner.oidc_replies):
+                        return
                     self._reply(200, json.dumps({"value": OIDC_JWT}).encode())
                     return
                 if self.headers.get("Authorization") != f"Bearer {MINTED}":
                     self._reply(401)
                     return
                 key = self._key()
+                if self._fault(owner.get_replies):
+                    return
                 if owner.read_misses > 0:
                     owner.read_misses -= 1
                     self._reply(404)
@@ -135,6 +155,8 @@ class Fake:
                     assert body["cache"] == "ci" and body["access"] == "read"
                 else:
                     assert self.headers.get("Authorization") == f"Bearer {OIDC_JWT}"
+                if self._fault(owner.mint_replies):
+                    return
                 base = f"http://127.0.0.1:{owner.port}"
                 self._reply(
                     200,
@@ -174,6 +196,13 @@ class Fake:
                         self._reply(400)
                         return
                     owner.store[key] = body
+                    owner.committed_puts += 1
+                    if owner.lose_put_reply:
+                        owner.lose_put_reply = False
+                        self.close_connection = True
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                        self.connection.close()
+                        return
                     if self.headers.get("x-build-cache-retention-days"):
                         days = int(self.headers["x-build-cache-retention-days"])
                         seconds = (owner.part_retention_seconds if ".parts-" in key
@@ -233,6 +262,68 @@ class RunStoreTest(unittest.TestCase):
                     self.assertTrue(line.startswith("::add-mask::"), line)
         outputs = dict(line.split("=", 1) for line in output.read_text().splitlines() if "=" in line)
         return p.returncode, log, outputs
+
+    def test_oidc_timeouts_twice_then_succeeds_without_reminting(self) -> None:
+        self.fake.oidc_replies = ["timeout", "timeout"]
+        source = self.dir / "upload.txt"
+        source.write_text("payload")
+        rc, log, _ = self.run_store("put", "retry-oidc", source, BUILD_CACHE_MAX_TIME="1")
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(sum(path.startswith("/oidc") for _, path, _ in self.fake.requests), 3)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.fake.requests), 1)
+        self.assertEqual(log.count("curl_exit=28"), 2)
+        for field in ("time_namelookup", "time_connect", "time_appconnect", "time_starttransfer", "time_total", "remote_ip", "http_code"):
+            self.assertIn(field + "=", log)
+        self.assertNotIn("/oidc", log)
+        self.assertNotIn("?x=1", log)
+
+    def test_mint_retries_without_requesting_another_oidc_token(self) -> None:
+        self.fake.mint_replies = [503, 429]
+        source = self.dir / "upload.txt"
+        source.write_text("payload")
+        rc, log, _ = self.run_store("put", "retry-mint", source)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(sum(path.startswith("/oidc") for _, path, _ in self.fake.requests), 1)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.fake.requests), 3)
+        self.assertNotIn("private response body", log)
+
+    def test_oidc_403_is_not_retried_or_exchanged(self) -> None:
+        self.fake.oidc_replies = [403]
+        rc, log, _ = self.run_store("get", "forbidden", self.dir / "dest")
+        self.assertEqual(rc, 1, log)
+        self.assertEqual(len(self.fake.requests), 1)
+        self.assertIn("http_code=403", log)
+        self.assertIn("stop=permanent", log)
+        self.assertNotIn("private response body", log)
+        self.assertNotIn("?x=1", log)
+
+    def test_oidc_budget_exhaustion_fails_with_safe_diagnostics(self) -> None:
+        self.fake.oidc_replies = ["timeout"]
+        start = time.monotonic()
+        rc, log, _ = self.run_store("get", "budget", self.dir / "dest", RUN_STORE_REQUEST_BUDGET="0.15")
+        self.assertEqual(rc, 1, log)
+        self.assertLess(time.monotonic() - start, 3)
+        self.assertEqual(len(self.fake.requests), 1)
+        self.assertIn("stop=budget-exhausted", log)
+        self.assertIn("curl exit 28", log)
+        self.assertIn("time_total=", log)
+        self.assertNotIn("/oidc", log)
+        self.assertNotIn("?x=1", log)
+
+    def test_lost_immutable_put_acknowledgement_keeps_one_committed_entry(self) -> None:
+        self.fake.protected = True
+        self.fake.lose_put_reply = True
+        source = self.dir / "upload.txt"
+        source.write_text("first immutable payload")
+        rc, log, _ = self.run_store("put", "uncertain", source)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(sum(method == "PUT" for method, _, _ in self.fake.requests), 2)
+        self.assertEqual(self.fake.committed_puts, 1)
+        self.assertIn("curl_exit=52", log)
+        self.assertIn("entry exists", log)
+        members = tarfile.open(fileobj=io.BytesIO(next(iter(self.fake.store.values()))), mode="r:gz")
+        with members:
+            self.assertEqual(members.extractfile(source.name).read(), source.read_bytes())
 
     def test_refused_upload_records_bytes_and_only_safe_response_id(self) -> None:
         src = self.dir / "upload.bin"
@@ -347,13 +438,16 @@ class RunStoreTest(unittest.TestCase):
         self.assertIn("HTTP 400", log)
         self.assertNotIn("retained:run-store.v1.77.4242.short", self.fake.store)
 
-    def test_transient_retained_miss_retries_the_retained_namespace(self) -> None:
-        self.fake.store["retained:run-store.v1.77.4242.transient"] = bundle([regular("inner.txt", b"fixture")])
-        self.fake.read_misses = 2  # retained miss, then compatibility-door miss
-        dest = self.dir / "transient-retained"
-        rc, log, _ = self.run_store("get", "transient", dest)
-        self.assertEqual(rc, 0, log)
-        self.assertEqual((dest / "inner.txt").read_bytes(), b"fixture")
+    def test_retained_miss_uses_each_namespace_once(self) -> None:
+        self.fake.read_misses = 2
+        rc, log, out = self.run_store("get", "missing", self.dir / "dest")
+        self.assertEqual(rc, 1, log)
+        self.assertIn("no entry", log)
+        self.assertEqual(out["found"], "false")
+        reads = [path for method, path, _ in self.fake.requests if method == "GET" and not path.startswith("/oidc")]
+        self.assertEqual(len(reads), 2)
+        self.assertTrue(reads[0].startswith("/v1/retained/"))
+        self.assertTrue(reads[1].startswith("/v8/artifacts/"))
 
     def test_retention_requires_a_server_receipt_and_rejects_invalid_inputs(self) -> None:
         src = self.dir / "archive.zip"
@@ -567,14 +661,16 @@ class RunStoreTest(unittest.TestCase):
         self.assertEqual(out["found"], "false")
         self.assertIn("::warning::", log)
 
-    def test_transient_miss_is_retried(self) -> None:
+    def test_transient_server_errors_are_retried(self) -> None:
         src = self.dir / "f.txt"
         src.write_text("x")
         self.assertEqual(self.run_store("put", "f", src)[0], 0)
-        self.fake.read_misses = 2
+        self.fake.get_replies = [503, 429]
         rc, log, out = self.run_store("get", "f", self.dir / "d")
         self.assertEqual(rc, 0, log)
         self.assertEqual(out["found"], "true")
+        self.assertIn("http_code=503", log)
+        self.assertIn("http_code=429", log)
 
     def test_accepted_put_survives_transient_head_503_without_resending_upload(self) -> None:
         src = self.dir / "f.txt"
@@ -588,13 +684,13 @@ class RunStoreTest(unittest.TestCase):
     def test_persistent_head_503_fails_after_bounded_reads(self) -> None:
         src = self.dir / "f.txt"
         src.write_text("x")
-        self.fake.head_statuses = [503, 503, 503]
+        self.fake.head_statuses = [503] * 5
         rc, log, out = self.run_store("put", "f", src)
         self.assertEqual(rc, 1, log)
         self.assertIn("store unavailable", log)
         self.assertEqual(out["unavailable"], "true")
         self.assertEqual(sum(r[0] == "PUT" for r in self.fake.requests), 1)
-        self.assertEqual(sum(r[0] == "HEAD" for r in self.fake.requests), 3)
+        self.assertEqual(sum(r[0] == "HEAD" for r in self.fake.requests), 5)
 
     def test_head_auth_failure_is_not_retried(self) -> None:
         src = self.dir / "f.txt"
@@ -613,7 +709,7 @@ class RunStoreTest(unittest.TestCase):
         rc, log, _ = self.run_store("put", "f", src)
         self.assertEqual(rc, 1)
         self.assertIn("dropped the write", log)
-        self.assertEqual(sum(1 for r in self.fake.requests if r[0] == "PUT"), 3)
+        self.assertEqual(sum(1 for r in self.fake.requests if r[0] == "PUT"), 1)
 
     def test_best_effort_put_only_warns(self) -> None:
         src = self.dir / "f.txt"
@@ -622,7 +718,7 @@ class RunStoreTest(unittest.TestCase):
         rc, log, _ = self.run_store("put", "f", src, REQUIRED="false")
         self.assertEqual(rc, 0, log)
         self.assertIn("::warning::run-store put f: could not store the bundle (HTTP 507 ", log)
-        self.assertEqual(sum(1 for r in self.fake.requests if r[0] == "PUT"), 1)
+        self.assertEqual(sum(1 for r in self.fake.requests if r[0] == "PUT"), 5)
 
     def test_protected_rerun_keeps_the_first_entry(self) -> None:
         src = self.dir / "f.txt"

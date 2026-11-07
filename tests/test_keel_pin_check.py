@@ -487,7 +487,7 @@ class PublicRegistryIdentityTest(unittest.TestCase):
 
     def resolve(self, **options):
         responses = self.responses(**options)
-        with unittest.mock.patch.object(kpc.urllib.request, 'urlopen', side_effect=lambda req, **kw: io.BytesIO(responses[req.full_url])):
+        with unittest.mock.patch.object(kpc.curl_retry, 'read', side_effect=lambda url, **kw: responses[url]):
             return kpc.registry_commit('0.1.5938')
 
     def test_checksum_verified_facade_and_cli_share_the_published_source(self):
