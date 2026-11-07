@@ -372,10 +372,16 @@ an unavailable operation into a neutral review:
 
 Diagnostics retain method, a validated endpoint without query values, HTTP status,
 classification and machine code. The only retained response headers are numeric
-rate counts/reset/Retry-After, a known rate resource and a validated GitHub request
-ID. Arbitrary endpoints are redacted; response bodies, authorization headers,
-credentials and provider prose never enter diagnostics. JSON classification reads
-at most 8192 response bytes.
+rate counts/reset/Retry-After, a known rate resource, a validated GitHub request
+ID and `x-accepted-github-permissions` (for example, `checks=read`). The permissions
+header names the access an endpoint requires; it does not change refusal
+classification. Its entire value must be at most 512 characters and contain only
+comma- or semicolon-separated `name=level` pairs, with names matching
+`[a-z_]{1,64}` and levels `read`, `write` or `admin`. Spaces and tabs are allowed
+around separators. Malformed or oversized values are dropped entirely, never
+truncated. Arbitrary endpoints are redacted; response bodies, authorization
+headers, credentials and provider prose never enter diagnostics. JSON
+classification reads at most 8192 response bytes.
 
 A proven rate refusal can retry **that request once**, with the same method,
 endpoint, body and credential. It honors the longer of any announced wait and
@@ -405,6 +411,8 @@ inference, jobs or workflows, switches identities, or bypasses provider quota.
 Primary sources read 2026-11-07 at 02:50:44 UTC and rechecked at 03:24 UTC:
 [GitHub REST troubleshooting](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#rate-limit-errors)
 and [GitHub API best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+The accepted-permissions header format was checked against the REST troubleshooting
+source on 2026-11-07 at 08:46 UTC.
 The earlier observed Check Run discovery 403 did not retain response headers/body;
 its actual rate-versus-permission cause is unknown. The regression fixtures below
 are explicitly synthetic, not reconstructed live responses.

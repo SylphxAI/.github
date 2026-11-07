@@ -75,6 +75,61 @@ test('safe diagnostics retain only validated endpoint/status/header facts, never
   await assert.rejects(unsafe.github.request('/private-token'), error => error.details.endpoint === '/<redacted>' && !error.message.includes('private-token'));
 });
 
+const permissionsAtLimit = [...Array(7).fill(`${'a'.repeat(64)}=admin`), `${'b'.repeat(10)}=read`].join(',');
+assert.equal(permissionsAtLimit.length, 512);
+for (const [name, value] of [
+  ['single permission', 'checks=read'],
+  ['comma and semicolon permission sets', 'pull_requests=write,contents=read;checks=admin'],
+  ['horizontal separator whitespace', 'checks=read , contents=write;\tissues=admin'],
+  ['one-character permission name', 'a=read'],
+  ['64-character permission name', `${'a'.repeat(64)}=read`],
+  ['512-character value', permissionsAtLimit],
+]) test(`accepted permissions retain ${name} without changing permission denial`, async () => {
+  const f = fixture([refuse(403, { 'x-accepted-github-permissions': value }, 'Resource not accessible by integration')]);
+  await assert.rejects(f.github.request(path), error => {
+    assert.ok(error instanceof GitHubHTTPError);
+    assert.equal(error.code, 'permission_denied');
+    assert.equal(error.classification, 'permission');
+    assert.deepEqual(error.details.headers, { 'x-accepted-github-permissions': value });
+    assert.equal(f.diagnostics[0].headers['x-accepted-github-permissions'], value);
+    return true;
+  });
+  assert.equal(f.calls.length, 1); assert.deepEqual(f.waits, []);
+});
+
+for (const [name, value] of [
+  ['empty value', ''],
+  ['unsupported level', 'checks=owner'],
+  ['uppercase name', 'Checks=read'],
+  ['hyphenated name', 'pull-requests=read'],
+  ['numeric name', 'checks2=read'],
+  ['missing name', '=read'],
+  ['65-character name', `${'a'.repeat(65)}=read`],
+  ['missing level', 'checks='],
+  ['whitespace inside pair', 'checks =read'],
+  ['missing separator', 'checks=read contents=write'],
+  ['trailing separator', 'checks=read;'],
+  ['empty permission set', 'checks=read,,contents=write'],
+  ['513-character valid value', permissionsAtLimit.replace('bbbbbbbbbb=', 'bbbbbbbbbbb=')],
+  ['oversized value with valid prefix', permissionsAtLimit + ';private-token'],
+  ['token-like value', 'github_pat_' + 'not_a_real_token'.repeat(4)],
+  ['token-like permission level', 'checks=github_pat_' + 'not_a_real_token'.repeat(4)],
+  ['arbitrary prose', 'Contact an administrator for access'],
+  ['valid prefix followed by prose', 'checks=read; private-source private-token'],
+]) test(`accepted permissions drop the entire ${name} from diagnostics`, async () => {
+  const f = fixture([refuse(403, { 'x-accepted-github-permissions': value }, 'Resource not accessible by integration')]);
+  await assert.rejects(f.github.request(path), error => {
+    assert.ok(error instanceof GitHubHTTPError);
+    assert.equal(error.code, 'permission_denied');
+    assert.equal(error.classification, 'permission');
+    assert.deepEqual(error.details.headers, {});
+    assert.deepEqual(f.diagnostics[0].headers, {});
+    if (value) assert.equal((error.message + JSON.stringify(f.diagnostics)).includes(value), false);
+    return true;
+  });
+  assert.equal(f.calls.length, 1); assert.deepEqual(f.waits, []);
+});
+
 for (const message of ['Resource not accessible by integration', 'Resource not accessible by personal access token', 'Forbidden by organization policy', '', 'API rate limit exceeded']) {
   test(`403 ${message || 'without body proof'} fails immediately with honest classification`, async () => {
     const f = fixture([refuse(403, {}, message)]);

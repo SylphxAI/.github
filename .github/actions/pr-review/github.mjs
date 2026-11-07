@@ -57,6 +57,11 @@ function safeHeaders(response) {
   const resource = get('x-ratelimit-resource'), id = get('x-github-request-id');
   if (['core', 'search', 'code_search', 'graphql', 'integration_manifest'].includes(resource)) headers['x-ratelimit-resource'] = resource;
   if (typeof id === 'string' && /^[A-Fa-f0-9:]{1,128}$/.test(id)) headers['x-github-request-id'] = id;
+  const permissions = get('x-accepted-github-permissions');
+  if (typeof permissions === 'string' && permissions.length <= 512 && !/[\r\n]/.test(permissions) &&
+      /^[a-z_]{1,64}=(?:read|write|admin)(?:[ \t]*[,;][ \t]*[a-z_]{1,64}=(?:read|write|admin))*$/.test(permissions)) {
+    headers['x-accepted-github-permissions'] = permissions;
+  }
   return headers;
 }
 
