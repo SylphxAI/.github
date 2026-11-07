@@ -68,14 +68,20 @@ async function main() {
         save(`${env.RUNNER_TEMP}/pr-review-results.json`, results);
       },
       onBegin: run => { states.push({ id: run.id, head_sha: run.head_sha }); save(statePath, states); } });
-    receipts.push({ ...receipt, pull_request: target.number, event_to_check_ms: eventLatency(read(env.GITHUB_EVENT_PATH), Date.parse(receipt.observed_at)) });
+    receipts.push({ ...receipt, review_passed: passed(receipt), pull_request: target.number, event_to_check_ms: eventLatency(read(env.GITHUB_EVENT_PATH), Date.parse(receipt.observed_at)) });
   }
   save(`${env.RUNNER_TEMP}/pr-review-receipts.json`, receipts);
   process.stdout.write(`${JSON.stringify({ reviews: receipts })}\n`);
   for (const receipt of receipts) {
     summarize(`PR #${receipt.pull_request}: ${receipt.head_sha}, ${receipt.conclusion}, check ${receipt.check_run_id}, ${receipt.elapsed_ms ?? 0} ms — ${reasonFor(receipt)}`);
   }
-  if (receipts.some(receipt => !passed(receipt))) process.exitCode = 1;
+  const failed = receipts.some(receipt => !receipt.deferred && !passed(receipt));
+  const outcome = failed ? 'failed' : receipts.some(receipt => receipt.deferred) ? 'deferred' : 'passed';
+  if (env.GITHUB_OUTPUT) writeFileSync(env.GITHUB_OUTPUT,
+    `outcome=${outcome}\nreview_passed=${outcome === 'passed'}\n`, { flag: 'a' });
+  // A deferred delivery did no assessment: its explicit false verdict output
+  // cannot replace the still-pending canonical check owned by another workflow.
+  if (failed) process.exitCode = 1;
 }
 
 function eventLatency(event, now) {

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { produceReview } from '../.github/actions/pr-review/producer.mjs';
+import { completedReviewReceipt } from '../.github/actions/pr-review/producer.mjs';
 import { APP_ID, CHECK_NAME } from '../.github/actions/pr-review/github.mjs';
 
 const head = 'b'.repeat(40);
@@ -17,13 +17,11 @@ const outcomes = [
   { conclusion: 'neutral', title: 'Review outside path policy', exit: 0, applicable: false },
   { conclusion: 'cancelled', title: 'Head superseded', exit: 1 },
 ];
-for (const outcome of outcomes) test(`completed-check reuse retains ${outcome.title} applicability without reinference`, async () => {
+for (const outcome of outcomes) test(`completed-check receipt retains ${outcome.title} applicability for exit evaluation`, () => {
   const run = { id: 1, head_sha: head, app: { id: APP_ID }, name: CHECK_NAME, status: 'completed',
     conclusion: outcome.conclusion, output: { title: outcome.title } };
-  const result = await produceReview({ github: { repository: 'example/repo', begin: async () => run },
-    target: { head_sha: head }, trigger: {}, engineVersion: 'fixture',
-    engine: () => { throw new Error('Completed checks must not run inference'); } });
-  assert.equal(result.reused, true); assert.equal(result.conclusion, outcome.conclusion);
+  const result = completedReviewReceipt(run);
+  assert.equal(result.conclusion, outcome.conclusion);
   assert.equal(result.applicable, outcome.applicable);
   assert.equal(result.reason, outcome.exit ? outcome.title : undefined);
 });
@@ -63,3 +61,33 @@ for (const entries of [...outcomes.map(o => [o]), [{ status: 'in_progress', titl
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 }
+
+test('CLI deferral exports a nonpassing deferred verdict without failing or finalizing its live owner', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'review-deferred-cli-'));
+  try {
+    writeFileSync(join(directory, 'pr-review-auth.json'), JSON.stringify({ checkToken: 'fixture' }), { mode: 0o600 });
+    writeFileSync(join(directory, 'event.json'), JSON.stringify({ repository: { full_name: 'example/repo', id: 1 }, inputs: { 'pull-request': '7' } }));
+    const moduleUrl = new URL('../.github/actions/pr-review/github.mjs', import.meta.url).href;
+    writeFileSync(join(directory, 'preload.mjs'), `import { GitHub, APP_ID, CHECK_NAME } from ${JSON.stringify(moduleUrl)};
+      globalThis.fetch = async () => { throw new Error('Deferral must not infer or mutate a check'); };
+      GitHub.prototype.current = async () => true;
+      GitHub.prototype.pages = async () => [{ filename: 'src/change.js', status: 'modified' }];
+      GitHub.prototype.request = async path => path.includes('/compare/') ? { merge_base_commit: { sha: '${'a'.repeat(40)}' } } :
+        { state: 'open', changed_files: 1, title: 'Review source', head: { sha: '${head}' }, base: { sha: '${'a'.repeat(40)}', ref: 'main', repo: { id: 1 } } };
+      GitHub.prototype.begin = async () => ({ id: 9, app: { id: APP_ID }, name: CHECK_NAME, head_sha: '${head}',
+        status: 'in_progress', conclusion: null, deferred: true, owner_run_id: '99' });
+      GitHub.prototype.source = async (path, sha) => path === 'src/change.js' ? (sha === '${'a'.repeat(40)}' ? 'before\\n' : 'after\\n') : null;`);
+    const env = { ...process.env, RUNNER_TEMP: directory, GITHUB_REPOSITORY: 'example/repo', GITHUB_EVENT_NAME: 'workflow_dispatch',
+      GITHUB_EVENT_PATH: join(directory, 'event.json'), GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1', GITHUB_TOKEN: 'fixture',
+      GITHUB_STEP_SUMMARY: join(directory, 'summary.md'), GITHUB_OUTPUT: join(directory, 'outputs') };
+    const execute = command => spawnSync('node', ['--import', join(directory, 'preload.mjs'), '.github/actions/pr-review/cli.mjs', command], {
+      cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10_000, env });
+    const result = execute('review'); assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(result.stdout).reviews[0];
+    assert.equal(receipt.deferred, true); assert.equal(receipt.review_passed, false); assert.equal(receipt.conclusion, null); assert.equal(receipt.owner_run_id, '99');
+    assert.equal(readFileSync(join(directory, 'outputs'), 'utf8'), 'outcome=deferred\nreview_passed=false\n');
+    assert.equal(existsSync(join(directory, 'pr-review-state.json')), false);
+    assert.match(readFileSync(join(directory, 'summary.md'), 'utf8'), /live workflow already owns the same-input/);
+    assert.equal(execute('finalize').status, 0); assert.equal(existsSync(join(directory, 'pr-review-auth.json')), false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

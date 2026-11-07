@@ -207,8 +207,9 @@ The Check Run is the canonical verdict. The review command and finalizer exit
 non-zero for a failure, cancellation, or unavailable/incomplete neutral result,
 and put the reason in the step summary. A successful review exits zero. The
 explicit `Review outside path policy` neutral is also a pass: the pinned policy
-requires no review, so its receipt carries `applicable: false`, including when
-reusing a completed canonical App Check Run. No other neutral title is exempt.
+requires no review, so its receipt carries `applicable: false`. That decision is
+recomputed from the current pinned policy rather than reused from a neutral
+Check Run. No other neutral title is exempt.
 If one workflow reviews several heads, any non-passing result fails the job;
 all Check Runs and receipts still publish before the command exits. A trusted
 trigger with no eligible open heads performs no review and exits zero.
@@ -220,6 +221,34 @@ recovery and its final verdict pass; persistent incompleteness is failure, not
 neutral or success. A superseded head is cancelled. A new head has a distinct
 check identity and cannot inherit an old result. One workflow serializes duplicate
 deliveries; creation looks up the stable external ID before its single POST.
+Completed-check reuse is narrower than delivery reconciliation: select the newest
+canonical App Check Run at the exact head across every delivery ID, then reuse
+only a `success` or `failure` whose published reviewer and source digest match the
+freshly collected input. A newer active or non-reusable result blocks every older
+success. Source and policy collection precede every reuse or deferral decision;
+the initial check output carries the engine-owned head, reviewer and input digest
+before inference. Only an active check with that same input identity can delegate
+to a live owner, resolved with one workflow read. Deferral creates no new check or
+inference, and the finalizer never touches the other workflow's check. A base or
+policy/input change, unreadable identity, completed owner, unresolvable owner or
+owner-read error instead starts a fresh review, preserving the old check. The
+current workflow can reconcile its own accepted create.
+
+Deferral exits zero as an operational handoff, with explicit `outcome=deferred`
+and `review-passed=false` action outputs and `review_passed: false` in the receipt.
+It is not a passing review verdict: the canonical App check remains pending until
+the owner publishes. Callers use that check, or explicitly require the passing
+output; workflow-job success alone cannot establish review completion.
+Neutral,
+cancelled, timed-out, action-required, stale, skipped, missing-identity and
+mismatched-input results start a fresh check and review. Rejected terminal checks
+remain immutable and are not registered for the new attempt's finalizer. An
+accepted in-progress creation is still reconciled without another POST.
+
+Recovery can enrich an input and change its final digest. Such a result does not
+match a later initial input merely because the head is unchanged; it receives a
+fresh assessment. If fresh source collection is unavailable, a new check records
+that outage instead of reusing or overwriting an older result.
 
 A complete result requires `completion="complete"`, `omitted_paths=[]`,
 `context_requests=[]` and `reason=""`. Explanations and non-blocking scope notes
@@ -273,8 +302,9 @@ without App authority.
 ## Acceptance and evidence
 
 The lightweight Node suite runs in the existing Python unittest discovery and
-tests exact-head isolation, real source diffs/windows, defect/clean result
-publication, malformed/refused/incomplete responses, quota failures, strict
+tests exact-head/digest reuse isolation and recovery from a capacity-neutral
+attempt through the real Check Run adapter, real source diffs/windows, defect/clean
+result publication, malformed/refused/incomplete responses, quota failures, strict
 evidence and the narrowed credential exchange. These are contract tests with
 fake network responses, not a live model quality claim.
 
