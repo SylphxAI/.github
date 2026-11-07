@@ -2,9 +2,11 @@
 """Stop the line: while the trunk is red and its way back is in motion, the merge queue admits only the revert or the fix.
 
 Andon for the merge queue (docs/optimistic-merge.md). It runs in a merge group
-only. The trunk is red when the newest conclusive push run of the verify
-workflow on the trunk failed; a later success clears it. A cancelled, skipped
-or superseded run is not an answer and is passed over (owner standards/dx.md:
+only. The trunk is judged at the merge group's base SHA: the newest conclusive
+Verify verdict on that commit or an ancestor decides. With `verdict-check`,
+that exact workflow job decides even before trailing jobs finish; otherwise
+the run conclusion decides. A later success clears an earlier failure. A
+cancelled, skipped or superseded run is not an answer and is passed over (owner standards/dx.md:
 a red trunk counts only a completed failure of the verifying run).
 
 While red, a merge group is admitted when its pull request is the way back to
@@ -13,9 +15,11 @@ red-main handler's `auto-revert` / `queue-jump:red-main` labels), a live-outage
 fix (`queue-jump:outage`, which the handler never reverts either) or a pull
 request labelled as the fix.
 
-Any other pull request is refused only while the way back is in motion: a newer
-run of the verify workflow on the trunk is still running, or a revert or fix
-pull request is open. Otherwise it is admitted with a warning. The red-main
+An ordinary merge group waits for a newer pending verdict instead of failing
+immediately: poll every 60 seconds for up to `hold-minutes` (default 20). A
+green verdict admits, a newer red verdict or an expired hold refuses. With
+no pending verdict, an open revert or fix holds the line; otherwise the group
+is admitted with a warning. Observe mode never waits or refuses. The red-main
 handler reverts only after the same failure repeats on a second completed run,
 and never reverts an infrastructure failure, a timed-out run or a run that did
 not start; a queue that stayed shut on the first red would wait for a run that
@@ -40,9 +44,12 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
 import re
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -51,6 +58,8 @@ REVERT_LABELS = {"auto-revert", "queue-jump:red-main"}
 OUTAGE_LABEL = "queue-jump:outage"
 WATCH_LABEL = "red-main-red-watchdog"
 MERGE_GROUP_PR = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/[^/].*?/pr-(\d+)-[0-9a-f]{7,40}$")
+RUNS_PAGE_SIZE = 100
+HISTORY_PAGE_LIMIT = 10
 
 
 def trunk_state(runs: list[dict], branch: str) -> tuple[str, dict | None]:
@@ -75,6 +84,51 @@ def newer_unfinished_run(runs: list[dict], branch: str, deciding: dict | None) -
         if run.get("event") == "push" and run.get("head_branch") == branch and run.get("status") != "completed":
             return run
     return None
+
+
+def gate_runs(runs: list[dict], branch: str, base_sha: str, verdict_check: str,
+              api: str, token: str, ancestry: dict[str, bool], deadline: float | None = None) -> list[dict]:
+    """Project push runs onto verdict jobs, limited to ancestors of the group's base.
+
+    Workflow jobs are scoped to this run's latest attempt, not checks on a SHA
+    (which can also contain unrelated workflows). Read only through the newest
+    conclusive verdict; older history cannot change the admission decision.
+    """
+    selected = []
+    for run in runs:
+        if run.get("event") != "push" or run.get("head_branch") != branch:
+            continue
+        sha = run.get("head_sha")
+        if base_sha:
+            if sha not in ancestry:
+                try:
+                    comparison = {} if sha == base_sha else _read(f"{api}/compare/{sha}...{base_sha}", token, deadline)
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 403:
+                        warn_ancestry_permission()
+                    raise
+                ancestry[sha] = sha == base_sha or comparison.get("status") in {"ahead", "identical"}
+            if not ancestry[sha]:
+                continue
+        projected = run
+        if verdict_check:
+            page = 1
+            verdict = None
+            while True:
+                data = _read(f"{api}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100&page={page}", token, deadline)
+                jobs = data.get("jobs", [])
+                verdict = next((job for job in jobs if job.get("name") == verdict_check), None)
+                if verdict is not None or len(jobs) < 100:
+                    break
+                page += 1
+            # A missing verdict never borrows success from a different job or
+            # the enclosing run. While the run is alive it is still in motion.
+            projected = {**run, "status": verdict.get("status") if verdict else run.get("status"),
+                         "conclusion": verdict.get("conclusion") if verdict else None}
+        selected.append(projected)
+        if projected.get("status") == "completed" and projected.get("conclusion") in FAILED | {"success"}:
+            break
+    return selected
 
 
 def pr_number(head_ref: str) -> int | None:
@@ -128,10 +182,64 @@ def decide(state: str, pull: dict | None, mode: str, fix_label: str, motion: str
     return False, f"::error::{message}"
 
 
-def _get(url: str, token: str) -> dict | list:
+def _get(url: str, token: str, timeout: float = 30) -> dict | list:
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
-    return json.load(urllib.request.urlopen(req, timeout=30))
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
+
+
+class HoldExpired(Exception):
+    """The admission hold deadline elapsed, including refresh I/O."""
+
+
+class HistoryIncomplete(Exception):
+    """The history read budget ended before a conclusive baseline or history end."""
+
+
+def _read(url: str, token: str, deadline: float | None = None) -> dict | list:
+    if deadline is None:
+        return _get(url, token)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise HoldExpired
+    # urllib's timeout limits each socket operation, not the whole response.
+    # A peer that trickles one byte before every socket timeout could therefore
+    # keep this call alive past the hold. Run the blocking read separately and
+    # bound the join, so the monotonic deadline covers connect and body reads.
+    result: list[tuple[bool, object]] = []
+
+    def read() -> None:
+        try:
+            result.append((True, _get(url, token, timeout=min(30, remaining))))
+        except BaseException as exc:
+            result.append((False, exc))
+
+    worker = threading.Thread(target=read, daemon=True)
+    worker.start()
+    worker.join(remaining)
+    if worker.is_alive() or time.monotonic() >= deadline:
+        raise HoldExpired
+    succeeded, value = result[0]
+    if not succeeded:
+        raise value
+    data = value
+    assert isinstance(data, (dict, list))
+    return data
+
+
+def warn_ancestry_permission() -> None:
+    message = ("Commit ancestry read denied (HTTP 403). main-red-gate requires `contents: read` "
+               "on the invoking job/token, alongside `actions: read` and `pull-requests: read`. "
+               "Grant the missing permission in the caller; if already granted, check token repository access. "
+               "This group is admitted with a warning (fail-open), not protected by the red-main gate.")
+    print(f"::warning::{message}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as stream:
+                stream.write(f"\n### main-red-gate: `contents: read` required\n\n{message}\n")
+        except OSError as exc:
+            print(f"::warning::cannot write ancestry permission warning to job summary ({exc})")
 
 
 def _post(url: str, token: str, payload: dict) -> dict:
@@ -226,10 +334,53 @@ def main() -> int:
         print("not a merge group: nothing to gate")
         return 0
     try:
-        data = _get(f"{api}/actions/workflows/{env['VERIFY_WORKFLOW']}/runs"
-                    f"?event=push&branch={branch}&per_page=30", token)
-        runs = data.get("workflow_runs", [])
+        hold_minutes = float(env.get("HOLD_MINUTES", "20") or 20)
+        if not math.isfinite(hold_minutes) or hold_minutes < 0:
+            raise ValueError("must be a finite non-negative number")
+    except ValueError as exc:
+        print(f"::error::invalid hold-minutes: {exc}")
+        return 1
+    # Both the merge group's base and ancestry answers are immutable during a hold.
+    ancestry: dict[str, bool] = {}
+
+    def read_runs(deadline: float | None = None) -> list[dict]:
+        selected = []
+        for page in range(1, HISTORY_PAGE_LIMIT + 1):
+            data = _read(f"{api}/actions/workflows/{env['VERIFY_WORKFLOW']}/runs"
+                         f"?event=push&branch={branch}&per_page={RUNS_PAGE_SIZE}&page={page}", token, deadline)
+            history = data.get("workflow_runs", [])
+            projected = gate_runs(history, branch, env.get("BASE_SHA", ""),
+                                  env.get("VERDICT_CHECK", ""), api, token, ancestry, deadline)
+            selected.extend(projected)
+            if trunk_state(projected, branch)[0] != "unknown" or len(history) < RUNS_PAGE_SIZE:
+                return selected
+        raise HistoryIncomplete(f"workflow history read budget exhausted after {HISTORY_PAGE_LIMIT} pages "
+                                f"({HISTORY_PAGE_LIMIT * RUNS_PAGE_SIZE} runs) without a conclusive base verdict")
+
+    def incomplete_history(exc: HistoryIncomplete, deadline: float | None = None) -> int:
+        if mode != "enforce":
+            print(f"::warning::observe mode, would have refused: {exc}: admitted")
+            return 0
+        # Exhaustion is not evidence of green, but it must not block the way
+        # back either. A failed/late eligibility read cannot turn the exhausted
+        # history budget into an ordinary-group admission.
+        number = pr_number(env.get("MERGE_GROUP_REF", ""))
+        if number is not None:
+            try:
+                why = is_way_back(_read(f"{api}/pulls/{number}", token, deadline), fix_label)
+                if why:
+                    print(f"::warning::{exc}; this pull request is a way back to green ({why}): admitted")
+                    return 0
+            except Exception as error:
+                print(f"::warning::cannot establish recovery eligibility ({error})")
+        print(f"::error::{exc}: refused; re-enqueue after Verify establishes the base verdict")
+        return 1
+
+    try:
+        runs = read_runs()
         state, run = trunk_state(runs, branch)
+    except HistoryIncomplete as exc:
+        return incomplete_history(exc)
     except Exception as exc:
         print(f"::warning::cannot read {env['VERIFY_WORKFLOW']} runs ({exc}): admitted")
         return 0
@@ -247,6 +398,55 @@ def main() -> int:
     motion = None
     if pull is not None and not is_way_back(pull, fix_label):
         running = newer_unfinished_run(runs, branch, run)
+        if running and mode == "enforce":
+            deadline = time.monotonic() + hold_minutes * 60
+            initial_red = run.get("id")
+            def expired() -> int:
+                print(f"::error::hold expired after {hold_minutes:g} minutes: newer "
+                      f"{env['VERIFY_WORKFLOW']} verdict is still pending ({running.get('html_url')}); "
+                      "re-enqueue once the trunk is green or label its fix")
+                return 1
+
+            while running:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return expired()
+                print(f"Holding merge group: newer {env['VERIFY_WORKFLOW']} verdict is pending "
+                      f"({running.get('html_url')}); checking again in {min(60, remaining):g} seconds", flush=True)
+                time.sleep(min(60, remaining))
+                try:
+                    runs = read_runs(deadline)
+                    state, run = trunk_state(runs, branch)
+                except HoldExpired:
+                    return expired()
+                except HistoryIncomplete as exc:
+                    return incomplete_history(exc, deadline)
+                except Exception as exc:
+                    print(f"::warning::cannot refresh {env['VERIFY_WORKFLOW']} verdict ({exc}): admitted")
+                    return 0
+                if state != "red":
+                    print(f"trunk is {state}: admitted after hold")
+                    return 0
+                # Labels and titles can change while the group waits. Re-read
+                # the complete PR under the same deadline so a newly admitted
+                # way back is never left waiting for a re-enqueue, even when
+                # the refreshed verdict is red rather than merely pending.
+                try:
+                    pull = _read(f"{api}/pulls/{number}", token, deadline)
+                except HoldExpired:
+                    return expired()
+                except Exception as exc:
+                    print(f"::warning::cannot refresh pull request {number} ({exc}): admitted")
+                    return 0
+                if is_way_back(pull, fix_label):
+                    why = is_way_back(pull, fix_label)
+                    print(f"trunk is red; this pull request became a way back to green ({why}): admitted during hold")
+                    return 0
+                if run.get("id") != initial_red:
+                    print(f"::error::newer {env['VERIFY_WORKFLOW']} verdict is red "
+                          f"({run.get('html_url')}): refused after hold")
+                    return 1
+                running = newer_unfinished_run(runs, branch, run)
         if running:
             motion = f"a newer {env['VERIFY_WORKFLOW']} run is still running ({running.get('html_url')})"
         else:

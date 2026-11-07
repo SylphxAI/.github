@@ -9,8 +9,13 @@ import importlib.util
 import io
 import os
 import pathlib
+import tempfile
+import threading
+import time
 import unittest
 import urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location(
@@ -159,12 +164,12 @@ class MainTest(unittest.TestCase):
 
     ENV = {"EVENT_NAME": "merge_group", "REPO": "o/r", "TOKEN": "t", "BASE_BRANCH": "refs/heads/main",
            "VERIFY_WORKFLOW": "verify.yml", "MODE": "enforce", "FIX_LABEL": "main-red-fix",
-           "MERGE_GROUP_REF": "gh-readonly-queue/main/pr-77-" + "a" * 40}
+           "MERGE_GROUP_REF": "gh-readonly-queue/main/pr-77-" + "a" * 40, "HOLD_MINUTES": "0"}
 
     def go(self, runs, this_pr=None, open_pulls=(), env=None, list_error=False):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             if "/actions/workflows/verify.yml/runs" in url:
                 return {"workflow_runs": runs}
@@ -205,7 +210,7 @@ class MainTest(unittest.TestCase):
     def test_a_newer_verify_run_still_going_holds_the_line(self) -> None:
         code, out, calls = self.go([running(), run("failure"), run("success")])
         self.assertEqual(code, 1)
-        self.assertIn("::error::trunk is red and a newer verify.yml run is still running (u)", out)
+        self.assertIn("::error::hold expired after 0 minutes", out)
         self.assertFalse([c for c in calls if "/pulls?state=open" in c], "no need to list pull requests")
 
     def test_an_open_revert_or_fix_pull_request_holds_the_line(self) -> None:
@@ -236,6 +241,354 @@ class MainTest(unittest.TestCase):
         self.assertIn("would have refused", out)
 
 
+class VerdictHoldTest(unittest.TestCase):
+    """Exercise the assembled entrypoint with run-scoped jobs and a controlled clock."""
+
+    def go(self, snapshots, env=None, comparisons=None, this_pr=None, api_error=False, older_verdict="failure", ancestry_error=False, refresh_seconds=0, refreshed_pr=None, later_runs=0, refresh_later_runs=None, page_seconds=0):
+        calls = []
+        pull_reads = [0]
+        sleeps = []
+        clock = [0.0]
+        snapshot = [-1]
+        base = "b" * 40
+        newer = {**running(), "id": 2, "head_sha": base, "html_url": "new"}
+        older = {**run("failure"), "id": 1, "html_url": "old"}
+
+        def fake_get(url, token, **kwargs):
+            calls.append(url)
+            if "/actions/workflows/verify.yml/runs" in url:
+                query = parse_qs(urlsplit(url).query)
+                page = int(query.get("page", [1])[0])
+                if page == 1:
+                    if snapshot[0] >= 0:
+                        clock[0] += refresh_seconds
+                    snapshot[0] = min(snapshot[0] + 1, len(snapshots) - 1)
+                elif snapshot[0] > 0:
+                    clock[0] += page_seconds
+                count = refresh_later_runs if snapshot[0] > 0 and refresh_later_runs is not None else later_runs
+                history = [{**run("success"), "id": 1000 + i, "head_sha": "c" * 40} for i in range(count)]
+                history.extend([newer, older])
+                size = int(query.get("per_page", [30])[0])
+                start = (page - 1) * size
+                return {"workflow_runs": history[start:start + size]}
+            if "/compare/" in url:
+                if ancestry_error:
+                    raise urllib.error.HTTPError(url, 403, "Resource not accessible by integration", {}, None)
+                sha = url.split("/compare/")[1].split("...")[0]
+                return {"status": (comparisons or {}).get(sha, "ahead")}
+            if "/actions/runs/" in url:
+                if api_error:
+                    raise urllib.error.URLError("jobs unavailable")
+                current = snapshots[snapshot[0]] if "/runs/2/" in url else older_verdict
+                jobs = [] if current == "missing" else [
+                    {"name": "full-suite / suite-ok", "status": "in_progress" if current is None else "completed",
+                     "conclusion": current}]
+                return {"jobs": jobs}
+            if url.endswith("/pulls/77"):
+                current_pull = this_pr or pull(number=77)
+                if pull_reads[0] and refreshed_pr is not None:
+                    current_pull = refreshed_pr
+                pull_reads[0] += 1
+                return current_pull
+            if "/pulls?state=open" in url:
+                return []
+            raise AssertionError(url)
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        out = io.StringIO()
+        config = {**MainTest.ENV, "HOLD_MINUTES": "20", "BASE_SHA": base,
+                  "VERDICT_CHECK": "full-suite / suite-ok", **(env or {})}
+        with mock.patch.dict(os.environ, config, clear=True), mock.patch.object(gate, "_get", fake_get), \
+                mock.patch.object(gate.time, "sleep", sleep), \
+                mock.patch.object(gate.time, "monotonic", lambda: clock[0]), contextlib.redirect_stdout(out):
+            code = gate.main()
+        return code, out.getvalue(), calls, sleeps
+
+    def test_success_verdict_admits_while_run_and_trailing_jobs_are_in_progress(self):
+        code, out, calls, sleeps = self.go(["success"])
+        self.assertEqual(code, 0)
+        self.assertIn("trunk is green", out)
+        self.assertEqual(sleeps, [])
+        self.assertFalse(any("/pulls" in url for url in calls))
+
+    def test_pending_verdict_turns_green_within_default_twenty_minute_hold(self):
+        code, out, calls, sleeps = self.go([None, None, "success"])
+        self.assertEqual(code, 0)
+        self.assertIn("green: admitted after hold", out)
+        self.assertEqual(sleeps, [60, 60])
+        self.assertEqual(sum("/compare/" in url for url in calls), 1, "ancestry is immutable and cached")
+
+    def test_pending_verdict_turns_red_and_refuses_even_without_an_open_fix(self):
+        code, out, _, sleeps = self.go([None, "failure"])
+        self.assertEqual(code, 1)
+        self.assertIn("newer verify.yml verdict is red", out)
+        self.assertEqual(sleeps, [60])
+
+    def test_newly_labelled_fix_is_admitted_during_pending_verdict_hold(self):
+        code, out, calls, sleeps = self.go([None], refreshed_pr=pull(labels=("main-red-fix",)))
+        self.assertEqual(code, 0)
+        self.assertIn("became a way back to green", out)
+        self.assertIn("labelled main-red-fix", out)
+        self.assertEqual(sleeps, [60])
+        self.assertGreaterEqual(sum(url.endswith("/pulls/77") for url in calls), 2)
+
+    def test_newly_labelled_fix_is_admitted_when_refreshed_verdict_turns_red(self):
+        code, out, calls, sleeps = self.go([None, "failure"],
+                                           refreshed_pr=pull(labels=("main-red-fix",)))
+        self.assertEqual(code, 0)
+        self.assertIn("became a way back to green", out)
+        self.assertIn("labelled main-red-fix", out)
+        self.assertNotIn("newer verify.yml verdict is red", out)
+        self.assertEqual(sleeps, [60])
+        self.assertGreaterEqual(sum(url.endswith("/pulls/77") for url in calls), 2)
+
+    def test_default_hold_expires_after_twenty_minutes_not_sixty_seconds(self):
+        code, out, calls, sleeps = self.go([None])
+        self.assertEqual(code, 1)
+        self.assertIn("hold expired after 20 minutes", out)
+        self.assertIn("verdict is still pending (new)", out)
+        self.assertEqual(sleeps, [60] * 20)
+        self.assertEqual(len(calls), 81)
+        self.assertEqual(sum("/actions/workflows/" in url for url in calls), 20)
+        self.assertEqual(sum("/jobs?" in url for url in calls), 40)
+        self.assertEqual(sum("/pulls/77" in url for url in calls), 20)
+        self.assertEqual(sum("/compare/" in url for url in calls), 1)
+
+    def test_paginated_history_refresh_can_turn_green_during_hold(self):
+        code, out, calls, sleeps = self.go([None, "success"], later_runs=100,
+                                           comparisons={"c" * 40: "behind"})
+        self.assertEqual(code, 0)
+        self.assertIn("green: admitted after hold", out)
+        self.assertEqual(sleeps, [60])
+        self.assertEqual(sum("/actions/workflows/" in url for url in calls), 4)
+
+    def test_later_history_page_cannot_read_past_hold_deadline(self):
+        code, out, _, sleeps = self.go([None, "success"], later_runs=100,
+                                       comparisons={"c" * 40: "behind"}, page_seconds=31,
+                                       env={"HOLD_MINUTES": "1.5"})
+        self.assertEqual(code, 1)
+        self.assertIn("hold expired", out)
+        self.assertNotIn("admitted", out)
+        self.assertEqual(sleeps, [60])
+
+    def test_exhausted_history_budget_during_hold_refuses(self):
+        with mock.patch.object(gate, "HISTORY_PAGE_LIMIT", 1):
+            code, out, _, sleeps = self.go([None, None], refresh_later_runs=100,
+                                           comparisons={"c" * 40: "behind"})
+        self.assertEqual(code, 1)
+        self.assertIn("history read budget exhausted", out)
+        self.assertNotIn("admitted", out)
+        self.assertEqual(sleeps, [60])
+
+    def test_fractional_hold_never_sleeps_past_deadline(self):
+        code, out, _, sleeps = self.go([None], env={"HOLD_MINUTES": "1.5"})
+        self.assertEqual(code, 1)
+        self.assertEqual(sleeps, [60, 30])
+        self.assertIn("after 1.5 minutes", out)
+
+    def test_later_red_run_is_excluded_at_merge_groups_green_base(self):
+        code, out, calls, sleeps = self.go(["failure"], env={"BASE_SHA": "a" * 40},
+                                          comparisons={"b" * 40: "behind"}, older_verdict="success")
+        self.assertEqual(code, 0)
+        self.assertIn("trunk is green", out)
+        self.assertFalse(any("/runs/2/jobs" in url for url in calls))
+        self.assertEqual(sleeps, [])
+
+    def test_observe_mode_does_not_hold_or_refuse(self):
+        code, out, _, sleeps = self.go([None], env={"MODE": "observe"})
+        self.assertEqual(code, 0)
+        self.assertIn("would have refused", out)
+        self.assertEqual(sleeps, [])
+
+    def test_way_back_does_not_wait_for_pending_verdict(self):
+        for p in (pull(title="Revert x"), pull(labels=("main-red-fix",)), pull(labels=("queue-jump:outage",))):
+            code, out, _, sleeps = self.go([None], this_pr=p)
+            self.assertEqual(code, 0)
+            self.assertIn("way back to green", out)
+            self.assertEqual(sleeps, [])
+
+    def test_jobs_api_error_preserves_fail_open_contract(self):
+        code, out, _, sleeps = self.go([None], api_error=True)
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::cannot read", out)
+        self.assertEqual(sleeps, [])
+
+    def test_missing_verdict_cannot_borrow_success_from_the_run(self):
+        code, out, _, sleeps = self.go(["missing"], env={"HOLD_MINUTES": "1"})
+        self.assertEqual(code, 1)
+        self.assertIn("hold expired", out)
+        self.assertEqual(sleeps, [60])
+
+    def test_invalid_hold_is_rejected_without_api_calls(self):
+        for hold in ("-1", "inf", "nan", "bad"):
+            code, out, calls, sleeps = self.go([None], env={"HOLD_MINUTES": hold})
+            self.assertEqual(code, 1)
+            self.assertIn("invalid hold-minutes", out)
+            self.assertEqual(calls, [])
+
+    def test_missing_contents_permission_warns_in_log_and_summary_and_admits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = pathlib.Path(tmp) / "summary.md"
+            code, out, _, sleeps = self.go([None], ancestry_error=True,
+                                          env={"GITHUB_STEP_SUMMARY": str(summary)})
+            self.assertIn("contents: read", summary.read_text())
+            self.assertIn("HTTP 403", summary.read_text())
+            self.assertIn("not protected by the red-main gate", summary.read_text())
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::Commit ancestry read denied", out)
+        self.assertIn("contents: read", out)
+        self.assertIn("admitted", out)
+        self.assertEqual(sleeps, [])
+
+    def test_slow_refresh_expiring_hold_refuses_even_if_it_returns_green(self):
+        code, out, _, sleeps = self.go([None, "success"], env={"HOLD_MINUTES": "1.5"}, refresh_seconds=31)
+        self.assertEqual(code, 1)
+        self.assertIn("hold expired after 1.5 minutes", out)
+        self.assertNotIn("admitted after hold", out)
+        self.assertEqual(sleeps, [60])
+
+    def test_reads_use_remaining_hold_budget_and_translate_timeout_to_expiry(self):
+        clock = [0.0]
+
+        def get(url, token, timeout):
+            self.assertEqual(timeout, 5)
+            clock[0] = 5.0
+            raise urllib.error.URLError("socket timed out")
+
+        with mock.patch.object(gate.time, "monotonic", lambda: clock[0]), mock.patch.object(gate, "_get", get):
+            with self.assertRaises(gate.HoldExpired):
+                gate._read("u", "t", 5)
+
+    def test_read_deadline_covers_a_trickling_http_response(self):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                data = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                for byte in data:
+                    try:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                        time.sleep(0.04)
+                    except BrokenPipeError:
+                        break
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        started = time.monotonic()
+        try:
+            with self.assertRaises(gate.HoldExpired):
+                gate._read(f"http://127.0.0.1:{server.server_port}/", "fixture", started + 0.1)
+            elapsed = time.monotonic() - started
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertLess(elapsed, 0.3)
+
+    def test_jobs_pagination_and_run_scoping(self):
+        newer = {**running(), "id": 2}
+        pages = [{"jobs": [{"name": "other", "status": "completed", "conclusion": "failure"}] * 100},
+                 {"jobs": [{"name": "full-suite / suite-ok", "status": "completed", "conclusion": "success"}]}]
+        with mock.patch.object(gate, "_get", side_effect=pages) as get:
+            projected = gate.gate_runs([newer, run("failure")], "main", "", "full-suite / suite-ok", "api", "t", {})
+        self.assertEqual(gate.trunk_state(projected, "main")[0], "green")
+        self.assertEqual([c.args[0] for c in get.call_args_list], [
+            "api/actions/runs/2/jobs?filter=latest&per_page=100&page=1",
+            "api/actions/runs/2/jobs?filter=latest&per_page=100&page=2"])
+
+
+class WorkflowHistoryTest(unittest.TestCase):
+    """Pagination must happen before a base-relative verdict is declared unknown."""
+
+    def go(self, conclusion, verdict_check="suite-ok", later_count=100, env=None, this_pr=None):
+        base = "b" * 40
+        later = "c" * 40
+        calls = []
+        later_runs = [{**run("success"), "id": number, "head_sha": later} for number in range(later_count)]
+        baseline = {**run(conclusion), "id": 1000, "head_sha": base}
+        history = later_runs + [baseline]
+
+        def get(url, token, **kwargs):
+            calls.append(url)
+            if "/actions/workflows/verify.yml/runs" in url:
+                query = parse_qs(urlsplit(url).query)
+                size = int(query.get("per_page", [30])[0])
+                page = int(query.get("page", [1])[0])
+                start = (page - 1) * size
+                return {"workflow_runs": history[start:start + size]}
+            if "/compare/" in url:
+                self.assertIn(f"/compare/{later}...{base}", url)
+                return {"status": "behind"}
+            if "/actions/runs/1000/jobs" in url:
+                return {"jobs": [{"name": "suite-ok", "status": "completed", "conclusion": conclusion}]}
+            if url.endswith("/pulls/77"):
+                return this_pr or pull(number=77)
+            if "/pulls?state=open" in url:
+                return [pull(number=88, labels=("main-red-fix",))]
+            raise AssertionError(url)
+
+        out = io.StringIO()
+        config = {**MainTest.ENV, "BASE_SHA": base, "VERDICT_CHECK": verdict_check, **(env or {})}
+        with mock.patch.dict(os.environ, config, clear=True), mock.patch.object(gate, "_get", get), \
+                contextlib.redirect_stdout(out):
+            code = gate.main()
+        return code, out.getvalue(), calls
+
+    def test_red_base_beyond_first_page_refuses_instead_of_unknown_admission(self):
+        for verdict_check in ("suite-ok", ""):
+            for later_count in (31, 100):
+                with self.subTest(verdict_check=verdict_check, later_count=later_count):
+                    code, out, calls = self.go("failure", verdict_check, later_count)
+                    self.assertEqual(code, 1)
+                    self.assertIn("trunk is red", out)
+                    self.assertIn("pull request #88", out)
+                    self.assertNotIn("trunk is unknown", out)
+                    self.assertEqual(sum("/actions/workflows/" in url for url in calls), 2 if later_count == 100 else 1)
+                    self.assertFalse(any("/actions/runs/" in url and "/1000/" not in url for url in calls))
+
+    def test_green_base_beyond_first_page_admits(self):
+        code, out, calls = self.go("success")
+        self.assertEqual(code, 0)
+        self.assertIn("trunk is green", out)
+        self.assertEqual(sum("/actions/workflows/" in url for url in calls), 2)
+        self.assertFalse(any("/pulls" in url for url in calls))
+
+    def test_exhausted_history_budget_keeps_observe_mode_non_blocking(self):
+        with mock.patch.object(gate, "HISTORY_PAGE_LIMIT", 1):
+            code, out, _ = self.go("failure", env={"MODE": "observe"})
+        self.assertEqual(code, 0)
+        self.assertIn("observe mode, would have refused", out)
+
+    def test_exhausted_history_budget_still_admits_the_way_back(self):
+        with mock.patch.object(gate, "HISTORY_PAGE_LIMIT", 1):
+            code, out, _ = self.go("failure", this_pr=pull(labels=("main-red-fix",)))
+        self.assertEqual(code, 0)
+        self.assertIn("way back to green", out)
+
+    def test_conclusive_first_page_never_reads_older_pages(self):
+        code, out, calls = self.go("success", later_count=0)
+        self.assertEqual(code, 0)
+        self.assertIn("trunk is green", out)
+        self.assertEqual(sum("/actions/workflows/" in url for url in calls), 1)
+
+    def test_exhausted_history_budget_refuses_instead_of_unknown_admission(self):
+        code, out, calls = self.go("failure", later_count=1000)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::workflow history read budget exhausted after 10 pages (1000 runs)", out)
+        self.assertIn("refused", out)
+        self.assertNotIn("admitted", out)
+        self.assertEqual(sum("/actions/workflows/" in url for url in calls), 10)
+
+
 def stamped(minutes_ago: float, **kwargs) -> dict:
     at = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes_ago)
     return {**run(**kwargs), "created_at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
@@ -252,7 +605,7 @@ class WatchTest(unittest.TestCase):
         calls: list[str] = []
         posts: list[tuple[str, dict]] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             if "/actions/workflows/verify.yml/runs" in url:
                 return {"workflow_runs": runs}

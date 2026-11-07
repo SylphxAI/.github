@@ -187,9 +187,21 @@ true` (the revert, or the fix that reopens the tree) lands meanwhile.
 
 The starter gate has a `main-state` job (merge groups only) that runs
 [`main-red-gate`](../.github/actions/main-red-gate/action.yml). The trunk is
-red when its newest conclusive push run of the verify workflow failed
-(cancelled, skipped and superseded runs are passed over, as in owner
-standards/dx.md); a later success clears it. While red, a merge group is
+red when its newest conclusive push Verify verdict at or before the merge
+group's `base_sha` failed (commit ancestry, not timestamps). Later trunk
+commits cannot change that group's baseline. Set `verdict-check` to the exact
+workflow job name, for example `full-suite / suite-ok`: a completed successful
+verdict clears an older red even while trailing jobs keep its run in progress.
+The action reads jobs from the run's latest attempt, not unrelated checks on
+the same SHA. With no `verdict-check`, the run conclusion remains authoritative.
+History is paginated in 100-run pages until a conclusive ancestor verdict or
+the end, with a budget of 10 pages per snapshot. If that 1,000-run window is
+still inconclusive, the gate refuses with a history-budget error rather than
+admitting an unknown baseline. Refresh pagination shares the remaining hold
+deadline. Observe mode still only warns, and a readable revert or labelled fix
+still passes when the history budget is exhausted.
+Cancelled, skipped and superseded answers are passed over; a later success
+clears the failure. While red, a merge group is
 admitted when it is the way back to green:
 
 - a revert: branch `auto-revert/*` (the red-main handler's), a title starting
@@ -198,11 +210,21 @@ admitted when it is the way back to green:
   one either);
 - the fix, when a person labels the pull request `main-red-fix`.
 
-Any other pull request fails `main-state`, so `ci-ok` fails, and it leaves the
-queue, but only while the way back is in motion: a newer run of the verify
-workflow on the trunk is still running, or a revert or fix pull request (not a
-draft) is open. When nothing is in motion the group is admitted with a
-warning. The red-main handler reverts only after the same failure repeats on a
+An ordinary group with a newer pending Verify verdict **holds**, polling every
+60 seconds for up to `hold-minutes` (default **20 minutes**). Green admits it
+without manual re-enqueue; a newer red verdict or hold expiry fails with a
+clear message. Configure the hold **below the repository's merge-queue check
+timeout**, leaving margin for API calls and the other gate steps. Zero disables
+waiting. Reverts, outage fixes and labelled fixes never wait; the complete PR is
+re-read during each hold refresh so a change becoming one of these way-back
+categories is admitted without re-enqueue. Observe mode
+prints the decision without waiting; watch mode keeps its existing
+run-conclusion alert behaviour.
+
+With no newer pending verdict, an open non-draft revert or fix still fails
+`main-state`, so `ci-ok` fails and the ordinary change leaves the queue. When
+nothing is in motion the group is admitted with a warning. The red-main
+handler reverts only after the same failure repeats on a
 second completed run, and never reverts an infrastructure failure, a
 `timed_out` run or one that did not start; a queue that stayed shut on the
 first red would wait for a run nothing can start, and the next change landing
@@ -212,14 +234,17 @@ The gate fails open: a verify history, pull request or pull request list it
 cannot read admits with a warning, so it never jams the queue on its own
 fault. The starter ships `mode: observe` (prints what it would refuse and
 refuses nothing): read a few merge groups, including one on a red trunk, then
-set `enforce`. The job needs `pull-requests: read` beside the gate's other
-read permissions. A check on the trunk that is not the verify workflow (a
+set `enforce`. The job needs `contents: read` (commit ancestry), `actions:
+read` (runs and jobs) and `pull-requests: read`. An unreadable ancestry
+comparison, including a token without `contents: read`, warns and admits
+instead of ejecting the group. HTTP 403 also writes a job-summary warning
+naming the required caller permission; fail-open is not gate protection. A check on the trunk that is not the verify workflow (a
 benchmark or nightly) never makes the trunk red here.
 
 ## The shared pieces
 
 - [`main-red-gate`](../.github/actions/main-red-gate/action.yml): the red-trunk
-  admission rule above; `mode`, `verify-workflow` and `fix-label` inputs. Its
+  admission rule above; `mode`, `verify-workflow`, `verdict-check`, `hold-minutes` and `fix-label` inputs. Its
   `mode: watch` is the scheduled half of the andon (see
   [the red-main handler](#the-red-main-handler)): it files one issue labelled
   `red-main-red-watchdog` when the trunk has stayed red past

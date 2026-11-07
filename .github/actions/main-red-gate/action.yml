@@ -1,23 +1,36 @@
 name: main-red-gate
 description: >
-  Stop the line on a red trunk. Run it in the merge-queue gate (merge_group
-  only): while the trunk's newest conclusive Verify run is a failure and its
-  way back is in motion (a newer Verify run is still running, or a revert or
-  fix pull request is open), only a revert, a live-outage fix or a pull
-  request labelled as the fix is admitted; anything else fails the gate and
-  leaves the queue, so the revert (or fix) is the next thing to land and the
-  trunk returns to green before more changes pile onto it. A red trunk with
-  nothing in motion admits with a warning, so the run the red-main handler
-  waits for can happen. Green, or a state it cannot read, admits: a broken
-  read never jams the queue. Needs `actions: read` and `pull-requests: read`.
+  Judge trunk Verify at the merge group's base SHA. An optional verdict-check
+  job decides before trailing jobs finish. On red, ordinary groups wait up to
+  hold-minutes for a newer pending verdict instead of leaving the queue
+  immediately; green admits, red or expiry refuses. Reverts, outage fixes and
+  labelled fixes pass immediately; hold refreshes re-read the complete PR so a
+  change becoming a way back is admitted without re-enqueue. An open fix holds
+  the line; nothing in
+  motion or an unreadable state admits with a warning. Needs actions: read,
+  contents: read and pull-requests: read.
 
 inputs:
   token:
-    description: Token that can read workflow runs and pull requests.
+    description: Token that can read workflow runs/jobs, commit ancestry and pull requests.
     default: ${{ github.token }}
   verify-workflow:
     description: File name of the post-merge verify workflow, e.g. verify.yml.
     default: verify.yml
+  verdict-check:
+    description: >
+      Exact workflow job name of the authoritative Verify verdict, e.g.
+      full-suite / suite-ok. Its completed verdict decides even when trailing
+      jobs keep the run alive. Empty preserves run-conclusion behaviour.
+      Ignored in watch mode.
+    default: ""
+  hold-minutes:
+    description: >
+      Maximum time to hold an ordinary merge group while a newer Verify
+      verdict is pending. Polls every 60 seconds; defaults to 20 minutes.
+      Must stay below the repository's merge-queue check timeout, allowing
+      margin for API calls and other gate steps. Zero disables waiting.
+    default: "20"
   mode:
     description: >
       `enforce` fails the gate while the trunk is red, its way back is in
@@ -49,6 +62,9 @@ runs:
         TOKEN: ${{ inputs.token }}
         EVENT_NAME: ${{ github.event_name }}
         MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+        BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        VERDICT_CHECK: ${{ inputs.verdict-check }}
+        HOLD_MINUTES: ${{ inputs.hold-minutes }}
         BASE_BRANCH: ${{ github.event.merge_group.base_ref || github.event.repository.default_branch }}
         VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
         MODE: ${{ inputs.mode }}
