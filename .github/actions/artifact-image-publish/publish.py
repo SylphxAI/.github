@@ -531,7 +531,10 @@ def build_and_evidence(commands, env, root):
     shell(commands[0], env)
     print("artifact_publish stage=package-evidence", flush=True)
     shell(commands[1], env)
-    if not any((root / "evidence").iterdir()):
+    evidence_dir = root / "evidence"
+    if evidence_dir.is_symlink() or not evidence_dir.is_dir():
+        raise ValueError("evidence-command must produce a regular evidence directory")
+    if not any(evidence_dir.iterdir()):
         raise ValueError("evidence-command produced no evidence bundle")
     return local_manifest(root / "image-oci"), local_manifest(root / "evidence-oci")
 

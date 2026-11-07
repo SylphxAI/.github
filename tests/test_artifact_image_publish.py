@@ -960,9 +960,9 @@ def test_dry_run_reuses_build_and_evidence_with_zero_writes_and_exact_manifest(
                ("private-oidc-request", "private-github-token", "private-existing-api-key"))
 
 
-@pytest.mark.parametrize("evidence_exit", [0, 17])
+@pytest.mark.parametrize("evidence_case", ["success", "exit17", "root-symlink"])
 def test_dry_run_shipped_entrypoint_executes_real_local_commands_without_oidc(
-    tmp_path, monkeypatch, evidence_exit,
+    tmp_path, monkeypatch, evidence_case,
 ):
     dry_run_environment(tmp_path, monkeypatch)
     fixture = tmp_path / "fixture"
@@ -989,17 +989,29 @@ def test_dry_run_shipped_entrypoint_executes_real_local_commands_without_oidc(
         "INPUT_BASELINE_DIGEST": lane.local_manifest(fixture / "runtime")[0]["digest"],
         "INPUT_BASELINE_RECEIPT": str(baseline_path),
     }
-    if evidence_exit:
-        env["INPUT_EVIDENCE_COMMAND"] = "exit " + str(evidence_exit)
+    if evidence_case == "exit17":
+        env["INPUT_EVIDENCE_COMMAND"] = "exit 17"
+    elif evidence_case == "root-symlink":
+        env["INPUT_EVIDENCE_COMMAND"] = (
+            'cp -a "$PREVIEW_FIXTURE/evidence-oci/." "$BUILD_EVIDENCE_OCI_DIR/"; '
+            'rmdir "$BUILD_EVIDENCE_DIR"; '
+            'ln -s "$PREVIEW_FIXTURE/evidence" "$BUILD_EVIDENCE_DIR"'
+        )
     result = subprocess.run([lane.sys.executable, str(ACTION / "publish.py")], cwd=ROOT,
                             env=env, capture_output=True, text=True, timeout=10)
-    if evidence_exit:
+    if evidence_case != "success":
         assert result.returncode != 0
+        assert "failed validation, command execution or transport" in result.stderr
         assert "stage=package-evidence" in result.stdout
         assert "stage=dry-run-complete" not in result.stdout
         outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
         assert set(outputs) == {"_root"}
-        assert not (Path(outputs["_root"]) / "dry-run-manifest.json").exists()
+        root = Path(outputs["_root"])
+        if evidence_case == "root-symlink":
+            assert (root / "evidence").is_symlink()
+            assert (root / "evidence").resolve() == fixture / "evidence"
+            assert (fixture / "evidence/proof.json").read_bytes() == b"real fixture\n"
+        assert not (root / "dry-run-manifest.json").exists()
         return
     assert result.returncode == 0, result.stderr
     assert "access_check=skipped" in result.stdout
@@ -1016,7 +1028,7 @@ def test_dry_run_shipped_entrypoint_executes_real_local_commands_without_oidc(
     assert manifest["evidence"]["files"]["proof.json"]["digest"] == lane.sha256(b"real fixture\n")
 
 
-@pytest.mark.parametrize("failure", ["build", "evidence", "changed-blob", "symlink", "oversized-manifest", "changed-baseline"])
+@pytest.mark.parametrize("failure", ["build", "evidence", "changed-blob", "symlink", "root-symlink", "oversized-manifest", "changed-baseline"])
 def test_dry_run_failure_emits_no_manifest_or_promotion_output(tmp_path, monkeypatch, failure):
     dry_run_environment(tmp_path, monkeypatch)
     if failure == "oversized-manifest":
@@ -1037,7 +1049,13 @@ def test_dry_run_failure_emits_no_manifest_or_promotion_output(tmp_path, monkeyp
                 next((layout / "blobs/sha256").iterdir()).write_bytes(b"changed")
         else:
             evidence = Path(env["BUILD_EVIDENCE_DIR"])
-            if failure == "symlink":
+            if failure == "root-symlink":
+                foreign = tmp_path / "foreign-evidence"
+                foreign.mkdir()
+                (foreign / "proof.json").write_text("{}")
+                evidence.rmdir()
+                evidence.symlink_to(foreign, target_is_directory=True)
+            elif failure == "symlink":
                 (evidence / "foreign-proof").symlink_to(tmp_path / "private-file")
             else:
                 (evidence / "proof.json").write_text("{}")
@@ -1051,9 +1069,11 @@ def test_dry_run_failure_emits_no_manifest_or_promotion_output(tmp_path, monkeyp
         mock.patch.object(lane.platform, "machine", return_value="x86_64"),
         mock.patch.object(lane.shutil, "which", return_value="/fixture/tool"),
         mock.patch.object(lane.subprocess, "check_output", return_value="a" * 40),
-        pytest.raises((RuntimeError, ValueError)),
+        pytest.raises((RuntimeError, ValueError)) as caught,
     ):
         lane.run()
+    if failure == "root-symlink":
+        assert "regular evidence directory" in str(caught.value)
     outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
     assert set(outputs) == {"_root"}
     assert not (next(tmp_path.glob("artifact-image-*")) / "dry-run-manifest.json").exists()
