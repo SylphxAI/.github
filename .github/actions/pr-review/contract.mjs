@@ -170,12 +170,33 @@ function evidenceFailure(input, evidence, expected, kind, index, findingIndex) {
 		expected: fingerprint(expected), returned: fingerprint(evidence.quote) }
 }
 
+// Citation structure is machine-checkable; authority, relevance and version
+// applicability are reviewer judgments, never a vendor-specific fact table.
+function citedSemantics(claim) {
+	try {
+		const url = new URL(claim.documentation_url), date = claim.documentation_read_date
+		return url.protocol === 'https:' && !url.username && !url.password && !/\s/.test(claim.documentation_url) &&
+			nonempty(claim.documentation_quote) && /^\d{4}-\d{2}-\d{2}$/.test(date) &&
+			new Date(date).toISOString().slice(0, 10) === date
+	} catch { return false }
+}
+
 export const discardedItems = results => [...new Set(results.flatMap(r => r.discarded_items ?? []))]
 
 export function parseReviewResult(text, input, { discardUngrounded = false } = {}) {
 	let diagnostics, validationFailure
 	try {
-		const result = validateSchema(JSON.parse(text), resultSchema)
+		const decoded = JSON.parse(text)
+		// Missing citation components mean unavailable documentation, not an
+		// invalid review. Absence of semantic_claims leaves legacy findings intact.
+		for (const finding of Array.isArray(decoded?.findings) ? decoded.findings : []) {
+			for (const claim of Array.isArray(finding?.semantic_claims) ? finding.semantic_claims : []) {
+				if (claim && typeof claim === 'object' && !Array.isArray(claim)) {
+					for (const key of ['documentation_url', 'documentation_quote', 'documentation_read_date']) claim[key] ??= ''
+				}
+			}
+		}
+		const result = validateSchema(decoded, resultSchema)
 		for (const key of identityFields) requireValue(result[key] === input[key], `mismatched ${key}`)
 		const incomplete = [
 			result.completion !== 'complete' && `completion=${result.completion}`,
@@ -275,13 +296,17 @@ export function parseReviewResult(text, input, { discardUngrounded = false } = {
 			if (review.status === 'source-reviewed') requireValue(review.source_evidence.length > 0 && review.derivation_evidence.length > 0, 'binary provenance requires source and derivation evidence')
 		}
 		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length && (input.scope?.kind === 'partition' || result.binary_reviews.every(r => r.status === 'source-reviewed')), 'binary provenance review incomplete')
-		const outsideChange = [], ungroundedFindings = []
+		const outsideChange = [], ungroundedFindings = [], uncitedSemantics = []
 		const files = input.source_files ?? input.files
 		for (const [findingIndex, finding] of result.findings.entries()) {
 			requireValue(finding.end_line >= finding.start_line && (input.scope?.kind === 'synthesis' ? input.manifest : input.files).some(f => f.path === finding.path), 'finding outside supplied source')
 			if (!groundedItem(finding, 'finding', findingIndex, () => {
 				for (const [index, evidence] of finding.evidence.entries()) requireEvidence(evidence, 'finding_evidence', index, findingIndex)
 			})) { ungroundedFindings.push(finding); continue }
+			if ((finding.semantic_claims ?? []).some(claim => !citedSemantics(claim))) {
+				uncitedSemantics.push(finding)
+				continue
+			}
 			const inChanged = files.some(file => file.path === finding.path && changedRanges(file).some(r =>
 				r.side === finding.side && finding.start_line >= r.start && finding.end_line <= r.end))
 			if (inChanged) continue
@@ -301,10 +326,11 @@ export function parseReviewResult(text, input, { discardUngrounded = false } = {
 			if (anchor) Object.assign(finding, anchor)
 			else outsideChange.push(finding)
 		}
-		result.findings = result.findings.filter(f => !outsideChange.includes(f) && !ungroundedFindings.includes(f))
+		result.findings = result.findings.filter(f => !outsideChange.includes(f) && !ungroundedFindings.includes(f) && !uncitedSemantics.includes(f))
 		// Keep the complete grounded observation in the visible summary, never an
 		// off-diff annotation or a blocking verdict. Do not silently discard it.
 		for (const f of outsideChange) result.context_notes.push(`Outside the change (non-blocking; ${f.severity}): ${f.title} (${f.path}, ${f.side} lines ${f.start_line}–${f.end_line}). ${f.explanation} Trigger: ${f.trigger} Consequence: ${f.consequence}`)
+		for (const f of uncitedSemantics) result.context_notes.push(`Unverified tool semantics (non-blocking question): Can authoritative documentation confirm this claim? ${f.title} (${f.path}, ${f.side} lines ${f.start_line}–${f.end_line}). Claimed behavior: ${f.explanation} Trigger: ${f.trigger} Consequence: ${f.consequence}`)
 		result.related_evidence = result.related_evidence.filter((evidence, index) =>
 			groundedItem(evidence, 'related_evidence', index, () => requireEvidence(evidence, 'related_evidence', index)))
 		if (discarded.length) result.discarded_items = discarded

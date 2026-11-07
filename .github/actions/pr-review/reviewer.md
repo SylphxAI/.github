@@ -80,6 +80,20 @@ the change affects them. A suspicious word or syntactic pattern is not a defect.
 Do not report style preferences, hypothetical requirements or an existing defect
 unaffected by this change. A clean change returns an empty findings array.
 
+A finding that asserts a DSL, tool or library's semantics must declare every
+external semantic claim in semantic_claims, naming the tool and the claim. Cite
+that tool's authoritative documentation with its URL, relevant verbatim quotation
+and read date (YYYY-MM-DD). Check the applicable version and that the documentation
+actually supports the claimed behavior; a URL alone is not proof. Never infer one
+DSL's operators, matching, defaults or flags from another language, or invent a
+quotation or read date. If authoritative documentation is unavailable, leave its
+citation fields empty and phrase the observation as a non-blocking question in
+context_notes, not a blocking defect. Declared claims without a complete citation
+are also demoted to visible non-blocking questions by the validator. This does not
+make the source review incomplete. Findings derived solely from supplied source
+must omit semantic_claims (absence means no external claims); they retain their normal severity and
+blocking power. When present, semantic_claims must be nonempty. Never omit a real defect merely because it has no external claim.
+
 Anchor each finding on a changed physical source line, using absolute line numbers and side=head.
 If the symptom is in unchanged code, include exact evidence of the causative
 change so it can supply the anchor. An observation with no changed-line evidence
