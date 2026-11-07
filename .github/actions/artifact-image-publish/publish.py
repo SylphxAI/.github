@@ -55,11 +55,25 @@ SAFE_ERROR_CODES = frozenset({
 })
 
 
+# Labels are source-owned constants, never URLs, bodies or caller input.
+HTTP_STEPS = frozenset({
+    "github-oidc", "access-exchange", "access-readiness", "artifact-api",
+    "artifact-prepare-upload", "artifact-register", "artifact-readback",
+    "registry-manifest-head", "registry-manifest-get",
+})
+
+
 class HttpFailure(Exception):
-    def __init__(self, status: int, code: str):
+    def __init__(self, status: int, code: str, step: str = "artifact-api"):
+        step = step if step in HTTP_STEPS else "artifact-api"
         detail = f"; code={code}" if code in SAFE_ERROR_CODES else ""
-        super().__init__(f"public Artifact request refused (HTTP {status}{detail})")
-        self.status, self.code = status, code
+        super().__init__(f"Artifact image publication step={step} refused (HTTP {status}{detail})")
+        self.status, self.code, self.step = status, code, step
+
+
+class ReadinessFailure(ReadinessError):
+    def __init__(self):
+        super().__init__("Artifact image publication step=access-readiness failed validation or transport")
 
 
 def error_code(body):
@@ -78,7 +92,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request(url: str, *, method: str = "GET", headers=None, document=None):
+def request(url: str, *, method: str = "GET", headers=None, document=None, step="artifact-api"):
     data = None if document is None else json.dumps(document).encode()
     supplied = {"Content-Type": "application/json", **(headers or {})}
     req = urllib.request.Request(url, data=data, headers=supplied, method=method)
@@ -96,7 +110,7 @@ def request(url: str, *, method: str = "GET", headers=None, document=None):
             code = error_code(body)
         except (ValueError, AttributeError, TypeError):
             code = ""
-        raise HttpFailure(error.code, code) from None
+        raise HttpFailure(error.code, code, step) from None
 
 
 def json_request(url, **kwargs):
@@ -241,6 +255,7 @@ class Access:
         )
         oidc = json_request(
             url,
+            step="github-oidc",
             headers={
                 "Authorization": "Bearer "
                 + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
@@ -251,6 +266,7 @@ class Access:
             raise ValueError("GitHub OIDC response has no token")
         answer = json_request(
             API + "/v1/access/github/token",
+            step="access-exchange",
             method="POST",
             document={"name": ci_name, "token": token},
         )
@@ -263,16 +279,22 @@ class Access:
         expiry = datetime.fromisoformat(answer["expires_at"].replace("Z", "+00:00"))
         if expiry.tzinfo is None or expiry.timestamp() <= time.time() + wait / 1000:
             raise ValueError("Access returned an expired key")
-        org, principal = issued_subject(answer)
-        identity = wait_for_identity(read_identity, key, wait, API)
-        if (identity.get("org") != org
-                or principal != org + "/principals/" + identity.get("principal", "")
-                or identity.get("api_key") != answer["key"]["name"]):
-            raise ReadinessError("ready identity differs from the issued key")
+        try:
+            org, principal = issued_subject(answer)
+            identity = wait_for_identity(read_identity, key, wait, API)
+            if (identity.get("org") != org
+                    or principal != org + "/principals/" + identity.get("principal", "")
+                    or identity.get("api_key") != answer["key"]["name"]):
+                raise ReadinessError("ready identity differs from the issued key")
+        except ReadinessError as error:
+            if error.status is not None:
+                raise HttpFailure(error.status, error_code({"code": error.code}),
+                                  "access-readiness") from None
+            raise ReadinessFailure() from None
         self.key = key
         self.expiry = expiry.timestamp()
 
-    def call(self, path, *, document=None, idempotency=None):
+    def call(self, path, *, document=None, idempotency=None, step="artifact-api"):
         headers = {"Authorization": "Bearer " + self.key}
         if idempotency:
             headers["Idempotency-Key"] = idempotency
@@ -280,6 +302,7 @@ class Access:
             try:
                 return json_request(
                     API + path,
+                    step=step,
                     method="GET" if document is None else "POST",
                     headers=headers,
                     document=document,
@@ -296,7 +319,8 @@ class Access:
 
     def prepare(self, parent):
         return validate_upload(
-            self.call(f"/v1/{parent}/artifacts:prepareUpload", document={}), parent
+            self.call(f"/v1/{parent}/artifacts:prepareUpload", document={},
+                      step="artifact-prepare-upload"), parent
         )
 
 
@@ -366,12 +390,12 @@ def local_manifest(directory):
 def readback(image, tag, token, descriptor, local_body, output):
     base = f"https://{REGISTRY}/v2/{image.split('/', 1)[1]}/manifests/"
     headers = {"Authorization": "Bearer " + token, "Accept": ",".join(MANIFEST_TYPES)}
-    head, _ = request(base + tag, method="HEAD", headers=headers)
+    head, _ = request(base + tag, method="HEAD", headers=headers, step="registry-manifest-head")
     digest = head.get("Docker-Content-Digest", "")
     media = head.get("Content-Type", "").split(";", 1)[0].strip()
     if not DIGEST.fullmatch(digest) or media not in MANIFEST_TYPES:
         raise ValueError("manifest HEAD did not select a supported digest/media type")
-    response, body = request(base + digest, headers=headers)
+    response, body = request(base + digest, headers=headers, step="registry-manifest-get")
     if (
         len(body) > 8 * 1024 * 1024
         or response.get("Docker-Content-Digest") != digest
@@ -436,13 +460,14 @@ def register(access, parent, image, descriptor, subject=""):
                 f"/v1/{parent}/artifacts?managed_upload=true",
                 document=body,
                 idempotency=key,
+                step="artifact-register",
             )
         )
     except HttpFailure as error:
         if error.status != 409 or error.code != "RESOURCE_ALREADY_EXISTS":
             raise
     # Always read the durable record, including after an idempotent POST.
-    record = access.call(f"/v1/{name}")
+    record = access.call(f"/v1/{name}", step="artifact-readback")
     validate(record)
     return name
 
@@ -500,9 +525,115 @@ def cleanup(root):
     shutil.rmtree(path / "registry-auth", ignore_errors=True)
 
 
+def build_and_evidence(commands, env, root):
+    """Both modes execute exactly one shared build and evidence path."""
+    print("artifact_publish stage=build", flush=True)
+    shell(commands[0], env)
+    print("artifact_publish stage=package-evidence", flush=True)
+    shell(commands[1], env)
+    evidence_dir = root / "evidence"
+    if evidence_dir.is_symlink() or not evidence_dir.is_dir():
+        raise ValueError("evidence-command must produce a regular evidence directory")
+    if not any(evidence_dir.iterdir()):
+        raise ValueError("evidence-command produced no evidence bundle")
+    return local_manifest(root / "image-oci"), local_manifest(root / "evidence-oci")
+
+
+def baseline_receipt(path):
+    """Read only explicitly supplied local bytes; never fetch or print the body."""
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("baseline-receipt must be a regular local file")
+    with path.open("rb") as stream:
+        digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+        size = os.fstat(stream.fileno()).st_size
+    return {"path": str(path), "digest": digest, "sizeBytes": str(size)}
+
+
+def read_baseline(dry_run):
+    digest = os.environ.get("INPUT_BASELINE_DIGEST", "")
+    receipt_path = os.environ.get("INPUT_BASELINE_RECEIPT", "")
+    if not digest and not receipt_path:
+        return None
+    if not dry_run:
+        raise ValueError("baseline inputs are only supported with dry-run")
+    if not DIGEST.fullmatch(digest) or not receipt_path:
+        raise ValueError("baseline-digest and baseline-receipt must be supplied together")
+    path = Path(receipt_path).absolute()
+    return {"imageDigest": digest, "receipt": baseline_receipt(path)}
+
+
+def preview_manifest(parent, image, runtime, evidence, env, root, baseline=None):
+    """Describe verified local bytes, never a reservation or publication receipt."""
+    files = {}
+    for path in sorted((root / "evidence").rglob("*")):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise ValueError("dry-run evidence must contain only regular files and directories")
+        if path.is_file():
+            with path.open("rb") as stream:
+                digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+            files[path.relative_to(root / "evidence").as_posix()] = {
+                "digest": digest, "sizeBytes": str(path.stat().st_size),
+            }
+    if not files:
+        raise ValueError("evidence-command produced no evidence files")
+
+    def artifact(value):
+        descriptor, _ = value
+        return {
+            "artifactName": artifact_name(parent, descriptor["digest"]),
+            "imageReference": image + "@" + descriptor["digest"],
+            "digest": descriptor["digest"], "mediaType": descriptor["mediaType"],
+            "sizeBytes": str(descriptor["size"]), "kind": "image",
+        }
+
+    runtime_record, evidence_record = artifact(runtime), artifact(evidence)
+    evidence_record.update(subject=runtime_record["artifactName"], files=files)
+    value = {
+        "schemaVersion": 1, "dryRun": True, "published": False,
+        "uploadTagsReserved": False, "artifactsRegistered": False,
+        "authenticatedManifestReadback": False, "promotionAuthorized": False,
+        "access": {
+            "checked": False,
+            "reason": "skipped: no existing read credential; OIDC exchange would issue a credential",
+        },
+        "remoteVerification": "skipped: verify-command requires published registry readback",
+        "target": {
+            "project": parent, "image": image, "ciName": env["INPUT_CI_NAME"],
+            "sourceSha": env["SOURCE_SHA"], "platforms": env["PLATFORMS"],
+            "repository": env["GITHUB_REPOSITORY"],
+            "repositoryID": env["GITHUB_REPOSITORY_ID"],
+            "workflow": env["SOURCE_WORKFLOW"], "event": env["GITHUB_EVENT_NAME"],
+            "ref": env["GITHUB_REF"],
+            "runID": env["SOURCE_RUN_ID"], "runAttempt": env["SOURCE_RUN_ATTEMPT"],
+        },
+        "runtime": runtime_record, "evidence": evidence_record,
+    }
+    value["baseline"] = None
+    if baseline is not None:
+        if baseline_receipt(Path(baseline["receipt"]["path"])) != baseline["receipt"]:
+            raise ValueError("baseline receipt bytes changed during build or evidence commands")
+        value["baseline"] = {
+            **baseline,
+            "runtimeDigestMatches": runtime_record["digest"] == baseline["imageDigest"],
+            "receiptBytesUnchanged": True,
+            "liveStateVerified": False,
+        }
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode()) > 524288:
+        raise ValueError("dry-run manifest exceeds 524288 bytes")
+    (root / "dry-run-manifest.json").write_text(encoded + "\n")
+    print("artifact_publish stage=dry-run-complete access_check=skipped "
+          "remote_verification=skipped published=false", flush=True)
+    output({"dry_run": "true", "dry_run_manifest": encoded})
+
+
 def run():
-    # Refuse PRs before reading an OIDC endpoint or creating any credential.
-    if os.environ.get("GITHUB_EVENT_NAME") != "push":
+    dry_run = os.environ.get("INPUT_DRY_RUN", "false")
+    if dry_run not in ("true", "false"):
+        raise ValueError("dry-run must be true or false")
+    dry_run = dry_run == "true"
+    # Real publication still refuses PRs before creating any credential.
+    if not dry_run and os.environ.get("GITHUB_EVENT_NAME") != "push":
         raise ValueError("artifact-image-publish admits push events only")
     parent = os.environ["INPUT_PROJECT"]
     image = expected_image(parent)
@@ -529,10 +660,12 @@ def run():
         os.environ.get("INPUT_EVIDENCE_COMMAND", ""),
         os.environ.get("INPUT_VERIFY_COMMAND", ""),
     ]
-    if not all(command.strip() for command in commands):
+    required = commands[:2] if dry_run else commands
+    if not all(command.strip() for command in required):
         raise ValueError(
-            "build-command, evidence-command and verify-command are required"
+            "build-command and evidence-command are required; publication also requires verify-command"
         )
+    baseline = read_baseline(dry_run)
     root = Path(
         tempfile.mkdtemp(prefix="artifact-image-", dir=os.environ["RUNNER_TEMP"])
     )
@@ -548,6 +681,7 @@ def run():
             "SOURCE_WORKFLOW": os.environ["GITHUB_WORKFLOW_REF"],
             "SOURCE_RUN_ID": os.environ["GITHUB_RUN_ID"],
             "SOURCE_RUN_ATTEMPT": os.environ["GITHUB_RUN_ATTEMPT"],
+            "ARTIFACT_DRY_RUN": "true" if dry_run else "false",
             "OCI_DIR": str(root / "image-oci"),
             "BUILD_EVIDENCE_DIR": str(root / "evidence"),
             "EVIDENCE_DIR": str(root / "evidence"),
@@ -557,33 +691,48 @@ def run():
             "ARTIFACT_REGISTRY_AUTH_FILE": str(auth_dir / "skopeo-auth.json"),
         }
     )
+    # Only validated explicit inputs become the commands' baseline context.
+    env.pop("ARTIFACT_BASELINE_DIGEST", None)
+    env.pop("ARTIFACT_BASELINE_RECEIPT", None)
+    if baseline is not None:
+        env.update(ARTIFACT_BASELINE_DIGEST=baseline["imageDigest"],
+                   ARTIFACT_BASELINE_RECEIPT=baseline["receipt"]["path"])
     for directory in ("image-oci", "evidence", "evidence-oci", "readback", "verify"):
         (root / directory).mkdir()
     access = None
     try:
         print("artifact_publish stage=prepare-build", flush=True)
-        access = Access(os.environ["INPUT_CI_NAME"])
-        image_ref, token, auth = access.prepare(parent)
-        evidence_ref, evidence_token, evidence_auth = access.prepare(parent)
-        if evidence_ref == image_ref:
-            raise ValueError("runtime and evidence upload references must be distinct")
-        env.update(
-            {
-                "IMAGE_TAG": image_ref.rsplit(":", 1)[1],
-                "BUILD_EVIDENCE_TAG": evidence_ref.rsplit(":", 1)[1],
-            }
-        )
-        write_auth(auth_dir, evidence_token, evidence_auth)
-        token = ""
-        auth = None
-        print("artifact_publish stage=build", flush=True)
-        shell(commands[0], env)
-        print("artifact_publish stage=package-evidence", flush=True)
-        shell(commands[1], env)
-        if not any((root / "evidence").iterdir()):
-            raise ValueError("evidence-command produced no evidence bundle")
-        runtime = local_manifest(root / "image-oci")
-        evidence = local_manifest(root / "evidence-oci")
+        if dry_run:
+            # No issuance, reservation, registry request or caller API credential.
+            # Tags are local placeholders, not claimed server upload targets.
+            for name in ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+                         "GH_TOKEN", "GITHUB_TOKEN", "SYLPHX_API_KEY",
+                         "ARTIFACT_REGISTRY_AUTH_FILE"):
+                env.pop(name, None)
+            env.update(IMAGE_TAG="dry-run-" + source[:12] + "-runtime",
+                       BUILD_EVIDENCE_TAG="dry-run-" + source[:12] + "-evidence",
+                       DOCKER_CONFIG=str(root / "dry-run-docker"))
+            (root / "dry-run-docker").mkdir()
+            print("artifact_publish dry_run=true access_check=skipped", flush=True)
+        else:
+            access = Access(os.environ["INPUT_CI_NAME"])
+            image_ref, token, auth = access.prepare(parent)
+            evidence_ref, evidence_token, evidence_auth = access.prepare(parent)
+            if evidence_ref == image_ref:
+                raise ValueError("runtime and evidence upload references must be distinct")
+            env.update(
+                {
+                    "IMAGE_TAG": image_ref.rsplit(":", 1)[1],
+                    "BUILD_EVIDENCE_TAG": evidence_ref.rsplit(":", 1)[1],
+                }
+            )
+            write_auth(auth_dir, evidence_token, evidence_auth)
+            token = ""
+            auth = None
+        runtime, evidence = build_and_evidence(commands, env, root)
+        if dry_run:
+            preview_manifest(parent, image, runtime, evidence, env, root, baseline)
+            return
         # Reuse the prepared Access key and upload credentials when > 300s of
         # Access key lifetime remain; otherwise mint fresh credentials after a
         # long build while keeping the original unique upload references.
@@ -658,7 +807,7 @@ def main():
         signal.signal(number, lambda signum, frame: sys.exit(128 + signum))
     try:
         run()
-    except HttpFailure as error:
+    except (HttpFailure, ReadinessFailure) as error:
         print(str(error), file=sys.stderr)
         return 1
     except (

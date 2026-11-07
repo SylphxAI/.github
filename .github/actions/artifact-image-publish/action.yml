@@ -2,6 +2,18 @@ name: Publish managed Artifact image
 description: Build runtime and evidence OCI layouts, register managed Artifacts, and return the caller verification receipt.
 
 inputs:
+  dry-run:
+    description: Build and package evidence locally without Access, reservations, pushes, registration or remote verification.
+    required: false
+    default: 'false'
+  baseline-digest:
+    description: Optional current serving image sha256 digest for dry-run comparison; requires baseline-receipt. Never fetched or asserted live by this action.
+    required: false
+    default: ''
+  baseline-receipt:
+    description: Optional regular local image-set receipt path for dry-run comparison; requires baseline-digest. Read and hashed without modification.
+    required: false
+    default: ''
   project:
     description: Canonical project resource name, orgs/{org-id}/projects/{project-id}.
     required: true
@@ -23,10 +35,17 @@ inputs:
     description: Caller shell command producing BUILD_EVIDENCE_DIR and BUILD_EVIDENCE_OCI_DIR.
     required: true
   verify-command:
-    description: Caller promotion verifier; writes receipt files into LANE_ROOT/verify after credential cleanup.
-    required: true
+    description: Required for publication; writes promotion receipt files into LANE_ROOT/verify after credential cleanup. Skipped for dry-run.
+    required: false
+    default: ''
 
 outputs:
+  dry_run:
+    description: True only for a completed local dry run; no publication or promotion is authorized.
+    value: ${{ steps.publish.outputs.dry_run }}
+  dry_run_manifest:
+    description: Dry-run-only JSON manifest of local runtime/evidence digests, evidence file hashes and target identity.
+    value: ${{ steps.publish.outputs.dry_run_manifest }}
   image:
     description: Server-selected managed image repository shared by runtime and evidence.
     value: ${{ steps.publish.outputs.image }}
@@ -65,6 +84,9 @@ runs:
       id: publish
       shell: bash
       env:
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_BASELINE_DIGEST: ${{ inputs.baseline-digest }}
+        INPUT_BASELINE_RECEIPT: ${{ inputs.baseline-receipt }}
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_CI_NAME: ${{ inputs.ci-name }}
         INPUT_SOURCE_SHA: ${{ inputs.source-sha }}

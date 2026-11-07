@@ -3,8 +3,10 @@
 `artifact-image-publish` builds a runtime OCI image and an evidence OCI image,
 publishes both through the public Sylphx Artifact API, and returns the caller's
 promotion verification receipt. The composite runs in the caller's job, so
-Access admits the source workflow's GitHub OIDC identity. Call it only from a
-push job declared in Access. Other events fail before requesting credentials.
+Access admits the source workflow's GitHub OIDC identity. Real publication runs
+only from a push job declared in Access; other events fail before requesting
+credentials. `dry-run: 'true'` also supports PR and merge-group checks without
+contacting Access or publishing anything.
 
 The only destination input is the canonical `project` resource name. The
 action exchanges the job's GitHub OIDC token, with audience `sylphx-access`, at
@@ -16,8 +18,9 @@ accepted as an input.
 
 After each exchange, the action uses the shared Access readiness helper to
 read `GET /v1/whoami` with that same key. It honors the issuer's delay, then
-waits at most 30 seconds for the exact issued key, organization and principal.
-Only an explicit `401 key_not_yet_propagated` repeats that read. Other denials
+waits at most 180 seconds for the exact issued key, organization and principal.
+Only an explicit `401 NOT_YET_PROPAGATED` (or the legacy
+`key_not_yet_propagated`) repeats that read. Other denials
 and transport failures stop immediately. Because `whoami` readiness on one API
 replica does not guarantee every replica has finished compiling its active key
 shard, `Access.call` also retries `401 NOT_YET_PROPAGATED` (and
@@ -25,8 +28,11 @@ shard, `Access.call` also retries `401 NOT_YET_PROPAGATED` (and
 if the `stage=prepare-build` Access key still has more than 300 seconds before
 expiry, the action reuses that key and its prepared registry credentials
 directly; it mints a fresh key and upload credential only when 300 seconds or
-less remain. Known API error codes are retained in diagnostics; provider
-messages and unknown codes remain private.
+less remain. HTTP refusals name the failing step (`github-oidc`, `access-exchange`,
+`access-readiness`, `artifact-prepare-upload`, registration or readback), status,
+and known API error code. URLs, credentials, provider messages and unknown
+codes remain private. A readiness validation or transport failure names that
+step without printing the provider's diagnostic text.
 
 The action checks the returned credential's repository, exact pull/push grant,
 audience and bounded expiry before use. These checks do not verify a JWT
@@ -50,6 +56,76 @@ It does not claim signature or provenance verification. The required
 cosign/provenance checks. It runs once, after publisher credential cleanup,
 against the authenticated registry manifests. The action emits promotion
 outputs only after that command writes its receipt.
+
+## Dry run
+
+Set `dry-run: 'true'` to execute the **same build-command and evidence-command**
+without publishing. It defaults to `'false'`; ambiguous values are refused.
+The checkout/source-SHA and native-platform checks still apply, but a dry run
+may run on a pull request or merge group. The action passes
+`ARTIFACT_DRY_RUN=true` to both commands and preserves the actual event, ref,
+source workflow and run identity. It never rewrites a PR identity into a main
+push.
+
+No GitHub OIDC or Access credential is issued, no `prepareUpload` reference is
+reserved, no registry request or push is made, and no Artifact is registered.
+Access authorization is explicitly **skipped**: the action accepts no existing
+read credential, and its normal OIDC exchange would issue one. Publisher API,
+GitHub and OIDC credential environment variables are removed from the command
+environment, registry auth is absent, and Docker points at a separate empty
+configuration. Caller commands must perform only local build/evidence work;
+this option does not sandbox arbitrary shell commands. Any build dependencies
+must already be available or use the caller's normal read-only build path.
+
+`IMAGE_TAG` and `BUILD_EVIDENCE_TAG` are explicitly local, unreserved
+`dry-run-<source-prefix>-runtime` and `dry-run-<source-prefix>-evidence` tags.
+Both complete OCI descriptor graphs are validated against their local bytes.
+Every staged evidence file is hashed, with symlinks and non-regular entries
+refused. The resulting `dry_run_manifest` JSON contains:
+
+- source commit, repository ID/name, workflow, actual event/ref, run/attempt,
+  platform, CI declaration and canonical target project/repository;
+- runtime and evidence manifest digests, media types, sizes, proposed immutable
+  references and Artifact names, and the evidence subject;
+- the digest and size of every staged evidence file;
+- explicit false publication, reservation, registration, authenticated-readback
+  and promotion flags, plus the skipped Access and remote-verification reasons.
+
+The manifest is also retained in `LANE_ROOT/dry-run-manifest.json` and is capped
+at 524288 bytes without truncation. Only `dry_run=true` and `dry_run_manifest`
+are emitted as public outputs. A failed build, evidence command or local-byte
+validation emits neither. Normal Artifact and promotion outputs, including
+`verify_receipt`, remain absent. `verify-command` is skipped because its
+contract requires authenticated registry readback; local bytes are never
+presented as a remote verification. It is optional for a dry run, but remains
+required before real publication can request a credential.
+
+### Explicit serving baseline
+
+A guard may supply `baseline-digest` and `baseline-receipt` together for a dry
+run. The digest is the canonical `sha256:…` of its current serving image; the
+receipt is a regular local image-set receipt file. A previous read-only step
+may capture them, or the guard may use an already captured baseline. The
+publisher does not fetch either input or claim that supplied bytes establish
+live state. Missing pairs, malformed digests, symlinks, directories, and baseline
+inputs on a real publication are refused before Access is called.
+
+The same commands receive `ARTIFACT_BASELINE_DIGEST` and
+`ARTIFACT_BASELINE_RECEIPT` only from these validated explicit inputs. The
+publisher reads the receipt without changing it, hashes it before and after
+the commands, and refuses changed baseline bytes. The manifest's `baseline`
+object reports the supplied image digest; receipt path, digest and size;
+`runtimeDigestMatches`; `receiptBytesUnchanged`; and `liveStateVerified=false`.
+A different candidate runtime digest is reported, not automatically refused:
+the caller's guard owns which release changes are allowed and how its image-set
+receipt is interpreted. Receipt bodies are not included in outputs. Without
+explicit baseline inputs, `baseline` is `null`; there is no inferred serving
+baseline.
+
+A dry-run manifest describes these local candidate bytes, not a reservation
+or a promise that a future rebuild will produce the same bytes. Every build or
+evidence command must complete successfully; any command or validation failure
+exits non-zero and emits no dry-run manifest or promotion outputs.
 
 ## Caller setup
 
