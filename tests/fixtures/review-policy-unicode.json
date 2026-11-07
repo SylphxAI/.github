@@ -1,0 +1,194 @@
+[
+  {
+    "id": "two-wildcards-do-not-split-one-surrogate-pair",
+    "pattern": "generated/??.json",
+    "path": "generated/\ud83d\ude00.json",
+    "generated": false,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "one-wildcard-matches-one-surrogate-pair",
+    "pattern": "generated/?.json",
+    "path": "generated/\ud83d\ude00.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "two-wildcards-match-astral-plus-ascii",
+    "pattern": "generated/??.json",
+    "path": "generated/\ud83d\ude00a.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "one-wildcard-does-not-match-astral-plus-ascii",
+    "pattern": "generated/?.json",
+    "path": "generated/\ud83d\ude00a.json",
+    "generated": false,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "two-wildcards-match-two-astral-codepoints",
+    "pattern": "generated/??.json",
+    "path": "generated/\ud83d\ude00\ud83e\uddea.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "one-wildcard-does-not-match-two-astral-codepoints",
+    "pattern": "generated/?.json",
+    "path": "generated/\ud83d\ude00\ud83e\uddea.json",
+    "generated": false,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "two-wildcards-match-base-plus-combining-mark",
+    "pattern": "generated/??.json",
+    "path": "generated/e\u0301.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "one-wildcard-does-not-normalize-combining-sequence",
+    "pattern": "generated/?.json",
+    "path": "generated/e\u0301.json",
+    "generated": false,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "one-wildcard-matches-precomposed-codepoint",
+    "pattern": "generated/?.json",
+    "path": "generated/\u00e9.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "two-wildcards-do-not-expand-precomposed-codepoint",
+    "pattern": "generated/??.json",
+    "path": "generated/\u00e9.json",
+    "generated": false,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "two-wildcards-match-emoji-and-skin-tone",
+    "pattern": "generated/??.json",
+    "path": "generated/\ud83d\udc4d\ud83c\udffd.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "one-wildcard-does-not-match-emoji-and-skin-tone",
+    "pattern": "generated/?.json",
+    "path": "generated/\ud83d\udc4d\ud83c\udffd.json",
+    "generated": false,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "three-wildcards-match-zwj-sequence-codepoints",
+    "pattern": "generated/???.json",
+    "path": "generated/\ud83d\udc69\u200d\ud83d\udcbb.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "two-wildcards-do-not-collapse-zwj-sequence",
+    "pattern": "generated/??.json",
+    "path": "generated/\ud83d\udc69\u200d\ud83d\udcbb.json",
+    "generated": false,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "literal-astral-plus-wildcard",
+    "pattern": "generated/\ud83d\ude00?.json",
+    "path": "generated/\ud83d\ude00a.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "literal-astral-still-requires-wildcard-codepoint",
+    "pattern": "generated/\ud83d\ude00?.json",
+    "path": "generated/\ud83d\ude00.json",
+    "generated": false,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "escaped-regexp-brackets-around-astral-wildcard",
+    "pattern": "generated/a+[?].json",
+    "path": "generated/a+[\ud83d\ude00].json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "star-matches-astral-and-combining-codepoints",
+    "pattern": "generated/*.json",
+    "path": "generated/\ud83d\ude00e\u0301.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "star-does-not-cross-directory-boundary",
+    "pattern": "generated/*.json",
+    "path": "generated/nested/\ud83d\ude00.json",
+    "generated": false,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "globstar-crosses-directory-boundary",
+    "pattern": "generated/**",
+    "path": "generated/nested/\ud83d\ude00.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "globstar-includes-valid-unicode-line-separator",
+    "pattern": "generated/**",
+    "path": "generated/a\u2028b.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "globstar-includes-valid-unicode-paragraph-separator",
+    "pattern": "generated/**",
+    "path": "generated/a\u2029b.json",
+    "generated": true,
+    "review_pattern": null,
+    "reviewed": false
+  },
+  {
+    "id": "review-wildcard-preserves-astral-explicit-review",
+    "pattern": "generated/**",
+    "path": "generated/\ud83d\ude00.json",
+    "generated": true,
+    "review_pattern": "generated/?.json",
+    "reviewed": true
+  },
+  {
+    "id": "review-two-wildcards-do-not-split-astral-codepoint",
+    "pattern": "generated/**",
+    "path": "generated/\ud83d\ude00.json",
+    "generated": true,
+    "review_pattern": "generated/??.json",
+    "reviewed": false
+  }
+]

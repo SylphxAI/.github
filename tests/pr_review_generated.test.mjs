@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { APP_ID, CHECK_NAME } from '../.github/actions/pr-review/github.mjs';
 import { createReviewInput } from '../.github/actions/pr-review/contract.mjs';
 import { planReview } from '../.github/actions/pr-review/partition.mjs';
-import { collectBundle, produceReview } from '../.github/actions/pr-review/producer.mjs';
+import { collectBundle, produceReview, parsePolicy, generatedSource, needsReview } from '../.github/actions/pr-review/producer.mjs';
 
 const base = 'a'.repeat(40), head = 'b'.repeat(40), policySha = 'c'.repeat(40);
 const policy = (review = []) => `version=1\n[tier0]\npaths=[]\n[review]\npaths=${JSON.stringify(review)}\n[generated]\npaths=["generated/**"]\n[[generated.provenance]]\npaths=["generated/**"]\njobs=["regenerate"]\n`;
@@ -126,4 +129,44 @@ test('mixed recovery still collects requested handwritten context, not generated
   assert.equal(receipt.conclusion, 'success'); assert.equal(executions, 2);
   assert.ok(github.reads.some(r => r.path === 'src/helper.js' && r.sha === head));
   assert.ok(!github.reads.some(r => ['generated/capture.json', 'generated/AGENTS.md'].includes(r.path)));
+});
+
+test('Node collection and Python provenance agree on Unicode codepoints for every shared policy vector', async () => {
+  const vectors = JSON.parse(readFileSync(new URL('./fixtures/review-policy-unicode.json', import.meta.url), 'utf8'));
+  const inputs = vectors.map(vector => ({ ...vector, policy: `version=1\n[tier0]\npaths=[]\n[review]\npaths=${JSON.stringify(vector.review_pattern ? [vector.review_pattern] : [])}\n[generated]\npaths=${JSON.stringify([vector.pattern])}\n[[generated.provenance]]\npaths=${JSON.stringify([vector.pattern])}\njobs=["regenerate"]\n` }));
+  const python = spawnSync('python3', ['-c', `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('unicode_gate', sys.argv[1])
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+from review_policy import matches
+results = []
+for vector in json.load(sys.stdin):
+    parsed = gate.parse_policy(vector['policy'])
+    jobs, missing = gate.provenance_jobs(parsed, [vector['path']])
+    results.append({'generated': matches(parsed, 'generated', vector['path']),
+                    'reviewed': matches(parsed, 'review', vector['path']),
+                    'jobs': sorted(jobs), 'missing': missing,
+                    'requires_proof': bool(gate.evaluate(parsed, [vector['path']], {}, set())),
+                    'proved': not gate.evaluate(parsed, [vector['path']], {'regenerate': {'result': 'success'}}, {'regenerate'})})
+print(json.dumps(results))
+`, fileURLToPath(new URL('../.github/actions/ci-ok/generated.py', import.meta.url))],
+  { input: JSON.stringify(inputs), encoding: 'utf8', timeout: 10_000 });
+  assert.equal(python.status, 0, python.stderr);
+  const provenance = JSON.parse(python.stdout);
+  assert.equal(provenance.length, vectors.length);
+  for (const [index, vector] of inputs.entries()) {
+    const expected = { generated: vector.generated, reviewed: vector.reviewed,
+      jobs: vector.generated ? ['regenerate'] : [], missing: [], requires_proof: vector.generated, proved: true };
+    assert.deepEqual(provenance[index], expected, `${vector.id}: Python provenance`);
+    const parsed = parsePolicy(vector.policy), excluded = vector.generated && !vector.reviewed;
+    assert.equal(generatedSource(parsed, vector.path), excluded, `${vector.id}: Node exclusion vs Python classification`);
+    assert.equal(needsReview(parsed, [vector.path]), !excluded, `${vector.id}: review routing`);
+    const github = provider(vector.policy, { [vector.path]: 'synthetic Unicode source\n' });
+    const collected = await collectBundle(github, target([modified(vector.path), modified('src/manual.js')]), trigger);
+    assert.deepEqual(collected.bundle.files.map(file => file.path),
+      excluded ? ['src/manual.js'] : [vector.path, 'src/manual.js'], `${vector.id}: actual source collection`);
+    assert.equal(github.reads.filter(read => read.path === vector.path).length, excluded ? 0 : 2, vector.id);
+    assert.equal(collected.allowContext(vector.path), !excluded, `${vector.id}: recovery routing`);
+  }
 });

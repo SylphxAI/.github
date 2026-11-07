@@ -12,7 +12,8 @@ export function parsePolicy(content) {
   return JSON.parse(parsed.stdout);
 }
 
-const matches = (policy, section, path) => policy._patterns[section].some(p => new RegExp(p).test(path));
+// Match Python's codepoints, including valid Unicode line/paragraph separators.
+const matches = (policy, section, path) => policy._patterns[section].some(p => new RegExp(p, 'us').test(path));
 export const generatedSource = (policy, path) => path !== '.github/review-policy.toml' &&
   matches(policy, 'generated', path) && !matches(policy, 'review', path);
 

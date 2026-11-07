@@ -264,6 +264,26 @@ with Path(os.environ['FAKE_GIT_LOG']).open('a') as log:
                     self.assertEqual(actual, [line for previous in stages[:index]
                                      for line in (previous + ':started', previous + ':completed')] + [stage + ':started'])
 
+    def test_unicode_policy_vectors_require_proof_through_immutable_git_acquisition(self):
+        vectors = json.loads((ROOT / 'tests/fixtures/review-policy-unicode.json').read_text())
+        for vector in vectors:
+            with self.subTest(vector=vector['id']):
+                encoded = lambda value: json.dumps(value, ensure_ascii=False)
+                text = ('version=1\n[tier0]\npaths=[]\n[review]\npaths=' +
+                        encoded([vector['review_pattern']] if vector['review_pattern'] else []) +
+                        '\n[generated]\npaths=' + encoded([vector['pattern']]) +
+                        '\n[[generated.provenance]]\npaths=' + encoded([vector['pattern']]) + '\njobs=["regenerate"]\n')
+                self.put('.github/review-policy.toml', text)
+                self.put(vector['path'], 'before ' + vector['id'] + '\n')
+                base = self.commit()
+                self.put(vector['path'], 'after ' + vector['id'] + '\n')
+                head = self.commit()
+                bad = self.enforce(base, head, needs={}, required=set(), workspace=self.repo)
+                self.assertEqual(bool(bad), vector['generated'], vector['id'])
+                if bad:
+                    self.assertTrue(all('regenerate: generated provenance job must' in reason for reason in bad), bad)
+                self.assertEqual(self.enforce(base, head, workspace=self.repo), [])
+
     def test_actual_cli_refuses_missing_failed_skipped_and_omitted_required_proof_jobs(self):
         base, head = self.fixture()
         event = Path(self.directory.name) / 'event.json'
