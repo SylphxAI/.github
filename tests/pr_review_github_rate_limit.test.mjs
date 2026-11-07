@@ -37,6 +37,7 @@ for (const entry of [
   { name: 'secondary body', status: 403, message: 'You have exceeded a secondary rate limit. private-source', classification: 'secondary_rate_limit', wait: 60_000 },
   { name: '429 without headers', status: 429, classification: 'secondary_rate_limit', wait: 60_000 },
   { name: '429 primary', status: 429, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1002' }, classification: 'primary_rate_limit', wait: 3000 },
+  { name: 'Retry-After longer than valid primary reset', status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1003', 'retry-after': '12' }, classification: 'primary_rate_limit', wait: 12000 },
   { name: 'both provider waits', status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1008', 'retry-after': '3' }, classification: 'primary_rate_limit', wait: 9000 },
 ]) test(`${entry.name} retries only the refused request once after its provider wait`, async () => {
   const f = fixture([refuse(entry.status, entry.headers, entry.message), ok({ check_runs: [] })]);
@@ -380,5 +381,24 @@ for (const completed of [false, true]) for (const kind of ['rate_limited', 'perm
       assert.equal(existsSync(join(directory, 'pr-review-auth.json')), false);
       assert.equal((first.stderr + second.stderr).includes('private-source'), false);
     } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+}
+
+for (const message of ['This is not a secondary rate limit', 'secondary rate limiter policy denied access',
+  'Preflight reported: You have exceeded a secondary rate limit.', 'You have exceeded a secondary rate limiter policy.']) {
+  test(`403 body mention is not affirmative quota evidence: ${message}`, async () => {
+    const f = fixture([refuse(403, {}, message), ok({ check_runs: [] })]);
+    await assert.rejects(f.github.checkRuns(head), error => error.code === 'unknown_forbidden' && error.classification === 'unknown_forbidden');
+    assert.equal(f.calls.length, 1); assert.deepEqual(f.waits, []);
+  });
+}
+for (const reset of [undefined, 'private-token', '-1', '1.5']) for (const retry of ['0', '1', '15']) {
+  test(`primary reset ${String(reset)} cannot be replaced by Retry-After ${retry}`, async () => {
+    const f = fixture([refuse(403, { 'x-ratelimit-remaining': '0', 'retry-after': retry,
+      ...(reset === undefined ? {} : { 'x-ratelimit-reset': reset }) }), ok({ check_runs: [] })]);
+    await assert.rejects(f.github.checkRuns(head), error => error.code === 'rate_limited' &&
+      error.classification === 'primary_rate_limit' && error.details.retry_at_ms === null);
+    assert.equal(f.calls.length, 1); assert.deepEqual(f.waits, []);
+    assert.equal(JSON.stringify(f.diagnostics).includes('private-token'), false);
   });
 }

@@ -341,10 +341,13 @@ without App authority.
 The Node GitHub adapter classifies every HTTP 403/429 before its caller can turn
 an unavailable operation into a neutral review:
 
-- `primary_rate_limit`: `x-ratelimit-remaining: 0`; reset time is retained when
-  valid. Missing or invalid wait evidence fails closed without guessing.
-- `secondary_rate_limit`: HTTP 429, a `Retry-After` header, or an explicit secondary
-  rate-limit JSON message. A body marker is used internally, never published.
+- `primary_rate_limit`: `x-ratelimit-remaining: 0`; a valid reset time is
+  mandatory even when `Retry-After` is also present. A missing or invalid reset
+  fails closed without guessing or retrying.
+- `secondary_rate_limit`: HTTP 429, a `Retry-After` header, or a JSON message
+  starting with the affirmative sentence `You have exceeded a secondary rate limit.`
+  Other mentions, negations and policy-denial prose are not quota evidence. The
+  body marker is used internally, never published.
 - `permission`: the exact `Resource not accessible by integration` or personal
   access token message. It fails immediately, without a retry or identity change.
 - `unknown_forbidden`: a 403 without those proofs. It is not called a quota or
@@ -382,7 +385,7 @@ response has `outcome_unknown` and is never resent. This terminal unknown write
 also bypasses neutral cleanup and is retained for the finalizer. No transport recovery reruns
 inference, jobs or workflows, switches identities, or bypasses provider quota.
 
-Primary sources read 2026-11-07 at 02:50:44 UTC:
+Primary sources read 2026-11-07 at 02:50:44 UTC and rechecked at 03:24 UTC:
 [GitHub REST troubleshooting](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#rate-limit-errors)
 and [GitHub API best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
 The earlier observed Check Run discovery 403 did not retain response headers/body;

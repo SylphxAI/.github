@@ -87,13 +87,14 @@ async function classify(response, method, path, now) {
     classification = 'permission';
   } else if ([403, 429].includes(status)) {
     if (headers['x-ratelimit-remaining'] === 0) classification = 'primary_rate_limit';
-    else if (status === 429 || response.headers?.has?.('retry-after') || /secondary rate limit/i.test(message)) classification = 'secondary_rate_limit';
+    else if (status === 429 || response.headers?.has?.('retry-after') || message.startsWith('You have exceeded a secondary rate limit.')) classification = 'secondary_rate_limit';
     else classification = 'unknown_forbidden';
     if (classification.endsWith('_rate_limit')) {
       const retry = headers['retry-after'], reset = headers['x-ratelimit-reset'];
-      // Do not guess a shorter wait when an announced value is malformed.
+      // A primary exhaustion always requires its own valid reset, independently
+      // of Retry-After. Neither header can shorten the other provider wait.
       if (response.headers?.has?.('retry-after') && retry === undefined) retryAtMs = null;
-      else if (classification === 'primary_rate_limit' && reset === undefined && retry === undefined) retryAtMs = null;
+      else if (classification === 'primary_rate_limit' && reset === undefined) retryAtMs = null;
       else retryAtMs = Math.max(now + (retry ?? 0) * 1000,
         headers['x-ratelimit-remaining'] === 0 && reset !== undefined ? reset * 1000 + 1000 : 0,
         classification === 'secondary_rate_limit' && retry === undefined ? now + 60_000 : 0);
