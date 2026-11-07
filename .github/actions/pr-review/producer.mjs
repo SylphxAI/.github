@@ -1,4 +1,4 @@
-import { APP_ID, CHECK_NAME, Unavailable, digest, validSha, validPath, bundleFile } from './github.mjs';
+import { APP_ID, CHECK_NAME, Unavailable, PublishUnverified, digest, validSha, validPath, bundleFile } from './github.mjs';
 import { changedRanges } from './source.mjs';
 import { spawnSync } from 'node:child_process';
 import { posix } from 'node:path';
@@ -139,7 +139,7 @@ export function completedReviewReceipt(run) {
       { reason: run.output?.title || 'Review unavailable or incomplete.' } : {}) };
 }
 
-export async function produceReview({ github, target, trigger, detailsUrl, engine, createReviewInput, engineVersion, onBegin, onResult, deadlineMs }) {
+export async function produceReview({ github, target, trigger, detailsUrl, engine, createReviewInput, engineVersion, onBegin, onPublish, onResult, deadlineMs }) {
   const started = Date.now();
   const externalId = `pr-review/v1/${digest(JSON.stringify([github.repository, target.kind, target.number ?? target.ref,
     target.base_sha, target.policy_sha, target.head_sha, target.review_requested, trigger, engineVersion]))}`;
@@ -152,12 +152,19 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
   } catch (error) { collectionError = error; }
   const identity = initialInput && `Head: \`${initialInput.head_sha}\`\n\nReviewer: \`${initialInput.reviewer_version}\`\n\nSource digest: \`${initialInput.input_digest}\`\n\n`;
   const begin = async (restartCompleted = false) => {
-    const run = await github.begin(target, externalId, detailsUrl, { restartCompleted, inputIdentity: identity });
+    let recorded = false;
+    const register = async run => {
+      if (run.app?.id !== APP_ID || run.head_sha !== target.head_sha || run.name !== CHECK_NAME) {
+        throw new Unavailable('Publisher did not receive the canonical App Check Run.');
+      }
+      await onBegin?.(run); recorded = true;
+    };
+    const run = await github.begin(target, externalId, detailsUrl, { restartCompleted, inputIdentity: identity, onCreated: register });
     if (run.app?.id !== APP_ID || run.head_sha !== target.head_sha || run.name !== CHECK_NAME ||
         (restartCompleted && run.status === 'completed')) {
       throw new Unavailable('Publisher did not receive the canonical App Check Run in an active state.');
     }
-    if (run.status !== 'completed' && !run.deferred) await onBegin?.(run);
+    if (!recorded && run.status !== 'completed' && !run.deferred) await register(run);
     return run;
   };
   let run = await begin();
@@ -180,10 +187,11 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     run = await begin(true);
     if (run.deferred) return deferredReceipt(run);
   }
+  const finish = (conclusion, output) => github.finish(run, conclusion, output, { onPublish });
   try {
     if (collectionError) throw collectionError;
     if (!collected.needs_review) {
-      const receipt = await github.finish(run, 'neutral', { title: 'Review outside path policy',
+      const receipt = await finish('neutral', { title: 'Review outside path policy',
         summary: `Head: \`${target.head_sha}\`\n\n${collected.reason ?? 'The base branch policy classifies every changed path as tier0 or generated; no [review] marker requests a review.'}` });
       return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion: 'neutral', applicable: false,
         started_at: run.started_at, observed_at: observedAt, elapsed_ms: Date.now() - started };
@@ -199,7 +207,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
       await onResult?.(result);
     }
     if (current === false) {
-      const receipt = await github.finish(run, 'cancelled', { title: 'Head superseded', summary: `Old head \`${target.head_sha}\` was superseded. The new head needs its own review.` });
+      const receipt = await finish('cancelled', { title: 'Head superseded', summary: `Old head \`${target.head_sha}\` was superseded. The new head needs its own review.` });
       return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion: 'cancelled', elapsed_ms: Date.now() - started };
     }
     const { conclusion, output } = outputFor(result, input);
@@ -210,7 +218,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
         output: { ...output, annotations: output.annotations.splice(0, 50) },
       } });
     }
-    const receipt = await github.finish(run, conclusion, output);
+    const receipt = await finish(conclusion, output);
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, findings: result.findings.length,
       ...(result.status === 'complete' ? {} : { unavailable: true, reason: result.reason }),
       ...(result.discarded_items?.length ? { discarded_items: result.discarded_items.length } : {}),
@@ -222,13 +230,16 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
       session_name: result.session_name, input_digest: input.input_digest, reviewer_version: input.reviewer_version,
       elapsed_ms: Date.now() - started };
   } catch (error) {
+    // A terminal write may already be visible to GitHub. Never replace its
+    // verdict because its read projection is stale or unavailable.
+    if (error instanceof PublishUnverified) throw error;
     // Operational unavailability is distinct from a code finding. Keep the
     // advisory check terminal even after collection
     // or inference fails. Provider failures remain visible to the caller.
     const reason = error instanceof Unavailable ? error.message : 'The review engine or source collection failed.';
     const current = await github.current(target);
     const conclusion = current ? 'neutral' : 'cancelled';
-    const receipt = await github.finish(run, conclusion, { title: current ? 'Review unavailable' : 'Head superseded',
+    const receipt = await finish(conclusion, { title: current ? 'Review unavailable' : 'Head superseded',
       summary: `Head: \`${target.head_sha}\`\n\n${reason}` });
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, unavailable: true, reason,
       started_at: run.started_at, observed_at: observedAt,

@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { segmentBundleFile } from './source.mjs';
 
 export const CHECK_NAME = 'Sylphx PR Review';
@@ -15,14 +16,50 @@ export const validPath = value => typeof value === 'string' && value.length > 0 
 
 export class Unavailable extends Error {}
 
+class GitHubHTTPError extends Unavailable {
+  constructor(message, status) { super(message); this.status = status; }
+}
+
+export class PublishUnverified extends Unavailable {
+  constructor(details) {
+    super(`Check Run publication unverified (publish_unverified): ${JSON.stringify(details)}`);
+    this.code = 'publish_unverified';
+    this.details = details;
+  }
+}
+
+// A direct Check Run GET exposes these written fields, but not annotation
+// contents. Fingerprint arbitrary strings: neither source nor provider prose
+// may cross the diagnostic or durable finalizer-state boundary.
+const fingerprint = value => typeof value === 'string' ? { bytes: Buffer.byteLength(value), sha256: digest(value) } : null;
+const checkProjection = (run, fields) => Object.fromEntries(fields.map(field => {
+  const value = field.split('.').reduce((object, key) => object?.[key], run);
+  return [field, ['id', 'app.id'].includes(field) ? (Number.isSafeInteger(value) ? value : null) :
+    field === 'head_sha' ? (validSha(value) ? value : null) :
+    field === 'status' ? (['queued', 'in_progress', 'completed', 'waiting', 'pending', 'requested'].includes(value) ? value : null) :
+    field === 'conclusion' ? (['success', 'failure', 'neutral', 'cancelled', 'timed_out', 'action_required', 'stale', 'skipped', 'startup_failure'].includes(value) ? value : null) :
+    field.endsWith('_at') ? (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null) : fingerprint(value)];
+}));
+const identityFields = ['id', 'app.id', 'name', 'head_sha'];
+const timestamp = () => new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+// A reused terminal observation has the same no-overwrite authority as our own
+// attempted terminal write. Retain its verdict, completion time and output
+// fingerprints across the review/finalize process boundary.
+export const terminalCheckReceipt = (run, phase = 'reuse') => ({ phase, expected: checkProjection(run,
+  [...identityFields, 'status', 'conclusion', 'completed_at', 'output.title', 'output.summary']) });
+
 export class GitHub {
-  constructor({ repository, readToken, checkToken, apiOrigin = 'https://api.github.com', fetcher = fetch }) {
+  constructor({ repository, readToken, checkToken, apiOrigin = 'https://api.github.com', fetcher = fetch,
+    now = Date.now, wait = sleep }) {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Unavailable('Invalid repository.');
     this.repository = repository;
     this.readToken = readToken;
     this.checkToken = checkToken;
     this.apiOrigin = apiOrigin.replace(/\/$/, '');
     this.fetcher = fetcher;
+    this.now = now;
+    this.wait = wait;
     this.sourceTrees = new Map();
   }
 
@@ -36,7 +73,7 @@ export class GitHub {
   async request(path, { method = 'GET', body, checks = false, deadlineMs = Infinity } = {}) {
     const token = checks ? this.checkToken : this.readToken;
     if (!token) throw new Unavailable(`Missing ${checks ? 'checks' : 'source'} credential.`);
-    const remaining = Math.min(30_000, deadlineMs - Date.now());
+    const remaining = Math.min(30_000, deadlineMs - this.now());
     if (!(remaining > 0)) throw new Unavailable('Pinned source deadline expired.');
     const response = await this.fetcher(`${this.apiOrigin}/repos/${this.repository}${path}`, {
       method, redirect: 'error', signal: AbortSignal.timeout(remaining),
@@ -46,7 +83,7 @@ export class GitHub {
     });
     if (!response.ok) {
       // Never log a response body: a provider can echo a credential or source.
-      throw new Unavailable(`GitHub ${method} ${path.split('?')[0]} returned HTTP ${response.status}.`);
+      throw new GitHubHTTPError(`GitHub ${method} ${path.split('?')[0]} returned HTTP ${response.status}.`, response.status);
     }
     return response.json();
   }
@@ -116,7 +153,7 @@ export class GitHub {
     return this.pages(`/commits/${sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=all`, 'check_runs');
   }
 
-  async begin(target, externalId, detailsUrl, { restartCompleted = false, inputIdentity } = {}) {
+  async begin(target, externalId, detailsUrl, { restartCompleted = false, inputIdentity, onCreated } = {}) {
     const runs = await this.checkRuns(target.head_sha);
     const existing = runs.filter(r => r.app?.id === APP_ID && r.name === CHECK_NAME &&
       r.head_sha === target.head_sha).sort((a, b) => b.id - a.id)[0];
@@ -144,24 +181,59 @@ export class GitHub {
     }
     // POST has no retry. After an ambiguous transport result the next delivery
     // finds this stable external_id before attempting another creation.
-    const created = await this.request('/check-runs', { method: 'POST', checks: true, body: {
+    const body = {
       name: CHECK_NAME, head_sha: target.head_sha, external_id: externalId,
-      details_url: detailsUrl, status: 'in_progress', started_at: new Date().toISOString(),
+      details_url: detailsUrl, status: 'in_progress', started_at: timestamp(),
       output: { title: 'Review running', summary: `${inputIdentity ?? ''}Reviewing exact head \`${target.head_sha}\`.` },
-    } });
-    return this.request(`/check-runs/${created.id}`, { checks: true });
+    };
+    const created = await this.request('/check-runs', { method: 'POST', checks: true, body });
+    // The accepted POST response is the created resource's authoritative receipt.
+    // Persist its identity before an eventually consistent GET can fail.
+    await onCreated?.(created);
+    const expected = checkProjection({ ...body, id: created.id, app: { id: APP_ID } },
+      [...identityFields, 'external_id', 'details_url', 'status', 'started_at', 'output.title', 'output.summary']);
+    return this.reconcile({ phase: 'create', expected });
   }
 
-  async finish(run, conclusion, output) {
-    await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, body: {
-      status: 'completed', conclusion, completed_at: new Date().toISOString(), output,
-    } });
-    const readback = await this.request(`/check-runs/${run.id}`, { checks: true });
-    if (readback.app?.id !== APP_ID || readback.head_sha !== run.head_sha ||
-        readback.conclusion !== conclusion || readback.status !== 'completed') {
-      throw new Unavailable('Check Run readback did not match the published result.');
+  async reconcile(publication) {
+    const { phase, expected } = publication, deadlineMs = this.now() + 10_000;
+    let observed = null, failure = 'deadline', httpStatus = null, attempts = 0;
+    const fields = Object.keys(expected);
+    for (; attempts < 3 && this.now() < deadlineMs;) {
+      attempts++;
+      try {
+        const readback = await this.request(`/check-runs/${expected.id}`, { checks: true, deadlineMs });
+        observed = checkProjection(readback, fields);
+        if (fields.every(field => JSON.stringify(observed[field]) === JSON.stringify(expected[field]))) return readback;
+        failure = 'mismatch'; httpStatus = null;
+      } catch (error) {
+        failure = error instanceof GitHubHTTPError ? 'http' : 'read_failed';
+        httpStatus = error instanceof GitHubHTTPError ? error.status : null;
+        if (httpStatus !== null && httpStatus !== 404 && httpStatus < 500) break;
+      }
+      const remaining = deadlineMs - this.now();
+      if (attempts < 3 && remaining > 0) await this.wait(Math.min(1000, remaining));
     }
-    return readback;
+    throw new PublishUnverified({ phase, check_run_id: expected.id, attempts, failure, http_status: httpStatus,
+      expected, observed, mismatched_fields: observed === null ? [] : fields.filter(field =>
+        JSON.stringify(observed[field]) !== JSON.stringify(expected[field])) });
+  }
+
+  async finish(run, conclusion, output, { onPublish } = {}) {
+    const body = { status: 'completed', conclusion, completed_at: timestamp(), output };
+    const publication = terminalCheckReceipt({ ...body,
+      id: run.id, head_sha: run.head_sha, name: CHECK_NAME, app: { id: APP_ID } }, 'finish');
+    // Save the intended result before the only terminal PATCH. The always-run
+    // finalizer can reconcile it read-only even after a crash or stale GET.
+    await onPublish?.(publication);
+    try {
+      await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, body });
+    } catch (error) {
+      throw new PublishUnverified({ phase: 'finish', check_run_id: run.id, attempts: 0,
+        failure: 'write_unverified', http_status: error instanceof GitHubHTTPError ? error.status : null,
+        expected: publication.expected, observed: null, mismatched_fields: [] });
+    }
+    return this.reconcile(publication);
   }
 }
 

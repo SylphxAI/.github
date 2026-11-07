@@ -222,3 +222,42 @@ test('initial created check carries the authoritative input before inference beg
     return complete(input);
   } });
 });
+
+
+test('simultaneous same-input reviews select the newest verdict despite late older/stale completions', async () => {
+  const { github, runs, options } = boundary();
+  const hold = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+  const staleEntered = hold(), staleRelease = hold();
+  let calls = 0;
+  const stale = produceReview({ ...options, target: { ...target, base_sha: 'c'.repeat(40) }, detailsUrl: ownerUrl(99),
+    engine: async input => { calls++; staleEntered.resolve(); await staleRelease.promise; return complete(input); } });
+  await staleEntered.promise;
+  // Both deliveries observe the same population before either creates a check.
+  const checkRuns = github.checkRuns.bind(github), discovered = hold(); let discoveries = 0;
+  github.checkRuns = async sha => {
+    const snapshot = structuredClone(await checkRuns(sha));
+    if (++discoveries === 2) discovered.resolve();
+    await discovered.promise;
+    return snapshot;
+  };
+  const entered = [hold(), hold()], release = [hold(), hold()], inputs = [];
+  const work = [0, 1].map(i => produceReview({ ...options, detailsUrl: ownerUrl(i + 1),
+    engine: async input => {
+      calls++; inputs[i] = input; entered[i].resolve(); await release[i].promise; return complete(input, i === 1);
+    } }));
+  await Promise.all(entered.map(x => x.promise));
+  assert.equal(runs.length, 3); assert.equal(calls, 3);
+  assert.equal(inputs[0].input_digest, inputs[1].input_digest);
+  assert.notEqual(inputs[0].input_digest, runs[0].output.summary.match(/Source digest: `([^`]+)`/)[1]);
+  release[1].resolve(); const newest = await work[1];
+  release[0].resolve(); const older = await work[0];
+  staleRelease.resolve(); const oldInput = await stale;
+  assert.equal(newest.check_run_id, 3); assert.equal(newest.conclusion, 'failure');
+  assert.equal(older.check_run_id, 2); assert.equal(older.conclusion, 'success');
+  assert.equal(oldInput.check_run_id, 1); assert.equal(oldInput.conclusion, 'success');
+  assert.ok(runs.every(run => run.status === 'completed'));
+  const selected = await produceReview({ ...options, engine: async () => { throw new Error('Must reuse newest canonical same-input verdict'); } });
+  assert.equal(selected.reused, true); assert.equal(selected.check_run_id, newest.check_run_id);
+  assert.equal(selected.conclusion, 'failure'); assert.equal(selected.input_digest, inputs[1].input_digest);
+  assert.equal(runs.length, 3); assert.equal(calls, 3);
+});
