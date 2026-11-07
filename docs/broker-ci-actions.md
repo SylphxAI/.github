@@ -37,7 +37,10 @@ can repeat, during readiness reads or the Broker exchange, at two-second
 intervals within a 180-second deadline for each stage. Other 401 responses fail
 immediately; Access issuance is never retried. No opt-in input is required.
 Broker response bodies are not echoed; readiness refusals expose only bounded,
-credential-redacted public error fields.
+credential-redacted public error fields. The red-main workflow callers allow
+10 minutes: 60 seconds native delay + two 180-second stages + two 65-second
+OIDC/issuance calls + six seconds exchange overrun = 556 seconds, leaving
+44 seconds for startup and output handling.
 
 Outputs include `token`, `issuer`, `connection`, `expire-time`,
 `token-exchange`, `permissions`, `app-slug` and `failure`. Returned repository,

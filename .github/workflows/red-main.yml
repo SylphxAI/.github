@@ -865,7 +865,8 @@ jobs:
         id: broker-token
         if: steps.gate.outputs.proceed == 'true' && steps.key.outputs.path == 'broker'
         continue-on-error: true
-        timeout-minutes: 5
+        # 60s native + 2*180s stages + 2*65s OIDC/issuance + 6s exchange overrun = 556s; allow 600s.
+        timeout-minutes: 10
         uses: SylphxAI/.github/.github/actions/broker-write-token@7f697098177e2c4d4b2ca0c4ec94df2c7ac843f6 # main
         with:
           trust-policy: ${{ inputs.broker-trust-policy }}
@@ -1669,7 +1670,8 @@ jobs:
           always() && steps.gate.outputs.proceed == 'true'
           && steps.broker-token.outputs.token != ''
           && steps.broker-token.outputs.token != null
-        timeout-minutes: 5
+        # 60s native + 2*180s stages + 2*65s OIDC/issuance + 6s exchange overrun = 556s; allow 600s.
+        timeout-minutes: 10
         uses: SylphxAI/.github/.github/actions/broker-write-token@7f697098177e2c4d4b2ca0c4ec94df2c7ac843f6 # main
         with:
           trust-policy: ${{ inputs.broker-trust-policy }}
