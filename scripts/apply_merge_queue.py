@@ -132,9 +132,8 @@ def load_policy(path: Path) -> dict:
             integration = check.get("integration_id")
             if not isinstance(context, str) or not context.strip() or context != context.strip():
                 raise ValueError("required check context must be a non-empty trimmed string")
-            if 'integration_id' not in check or integration is not None and (
-                    not isinstance(integration, int) or isinstance(integration, bool) or integration <= 0):
-                raise ValueError("required check integration_id must be null or a positive integer")
+            if not isinstance(integration, int) or isinstance(integration, bool) or integration <= 0:
+                raise ValueError("required check integration_id must be a positive integer")
             if context in contexts:
                 raise ValueError(f"duplicate required check context {context}")
             contexts.add(context)

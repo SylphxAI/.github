@@ -152,6 +152,10 @@ class PolicyTests(unittest.TestCase):
                      lambda p: p["required_checks"][0].update(checks=["bad"]),
                      lambda p: p["required_checks"][0].update(ruleset_id=True),
                      lambda p: p["required_checks"][0]["checks"][0].update(integration_id=True),
+                     lambda p: p["required_checks"][0]["checks"][0].update(integration_id=None),
+                     lambda p: p["required_checks"][0]["checks"][0].update(integration_id=0),
+                     lambda p: p["required_checks"][0]["checks"][0].update(integration_id=-1),
+                     lambda p: p["required_checks"][0]["checks"][0].update(integration_id="1299545"),
                      lambda p: p["required_checks"][0]["checks"][0].update(context=" ci-ok"),
                      lambda p: p["required_checks"].append(copy.deepcopy(p["required_checks"][0]))):
             p = copy.deepcopy(json.loads((ROOT / "policy" / "merge-queue.json").read_text()))
@@ -484,7 +488,7 @@ class RequiredCheckTests(unittest.TestCase):
                     {"context": "always-loaded", "integration_id": 15368}]
             if entry["repo"] == "SylphxAI/.github":
                 expected.append({"context": "pr-metadata", "integration_id": 15368})
-                expected.append({"context": "ops-security/review", "integration_id": None})
+                expected.append({"context": "ops-security/review", "integration_id": 1299545})
             self.assertEqual(entry["checks"], expected)
 
     def test_scoped_missing_review_check_is_reported_with_exact_issuer(self):
