@@ -207,7 +207,8 @@ def fetch(url, destination, expected=None, *, expected_size=None, allow_unity_cd
 
 def unpack(archive, destination, name, node):
     total, count = 0, 0
-    with tarfile.open(archive, "r:gz") as tar:
+    fileobj = archive if hasattr(archive, "read") else None
+    with tarfile.open(None if fileobj is not None else archive, "r:gz", fileobj=fileobj) as tar:
         for member in tar:
             count += 1
             path = PurePosixPath(member.name)
@@ -288,8 +289,13 @@ def hydrate(project, mirror=MIRROR):
                 fetch(f"{mirror.rstrip('/')}/upm/{pin['sha256']}/{name}/{pin['version']}", archive,
                       pin["sha256"], expected_size=pin["archiveBytes"])
                 check_stage(packages, stage.name, stage_identity)
-                unpack(archive, stage / name, name, node)
-                archive.unlink()
+                fd = os.open(archive.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=stage_fd)
+                with os.fdopen(fd, "rb") as source:
+                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                        raise ValueError("invalid Unity package staging archive")
+                    unpack(source, Path(f"/proc/self/fd/{stage_fd}") / name, name, node)
+                os.unlink(archive.name, dir_fd=stage_fd)
+                check_stage(packages, stage.name, stage_identity)
             try:
                 for name in sorted(registry):
                     check_stage(packages, stage.name, stage_identity)

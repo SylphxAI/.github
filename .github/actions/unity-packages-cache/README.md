@@ -39,7 +39,10 @@ installation and pins output, so replacing `Packages` after admission cannot
 redirect writes either. Private staging records the opened directory's device
 and inode, rejects changed or linked staging paths immediately before extraction
 and each installation move, and moves relative to the anchored staging descriptor.
-Cleanup preserves uncertain replacements instead of following them. These checks
+Hydration opens each archive once with a no-follow, fd-relative open, extracts from
+that same file descriptor under the opened staging directory, and removes archives
+relative to that directory descriptor. Cleanup preserves uncertain replacements
+instead of following them. These checks
 refuse static/committed links for input reads and writes; they are not an isolation
 boundary against a concurrently running, fully privileged process in the same job
 replacing private staging contents between checks. Missing entries,

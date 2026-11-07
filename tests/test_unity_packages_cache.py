@@ -619,7 +619,7 @@ class UnityPackagesCache(unittest.TestCase):
                     (outside / name / "keep.txt").write_text("unrelated outside file")
                 before = {p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}
                 original = Path(temporary) / "original-stage"
-                real_unlink, swaps = Path.unlink, []
+                real_unlink, swaps = os.unlink, []
 
                 def swap(stage):
                     stage.rename(original)
@@ -634,11 +634,11 @@ class UnityPackagesCache(unittest.TestCase):
 
                 def unlink_and_swap(path, *args, **kwargs):
                     real_unlink(path, *args, **kwargs)
-                    if boundary == "install" and path.name == "com.unity.transitive.tgz":
-                        swap(path.parent)
+                    if boundary == "install" and Path(path).name == "com.unity.transitive.tgz":
+                        swap(next(packages.glob(".unity-upm-*")))
 
                 refusal = None
-                with patch.object(upm, "fetch", side_effect=local_fetch), patch.object(Path, "unlink", unlink_and_swap):
+                with patch.object(upm, "fetch", side_effect=local_fetch), patch.object(upm.os, "unlink", unlink_and_swap):
                     try:
                         upm.hydrate(project)
                     except Exception as error:
@@ -650,6 +650,48 @@ class UnityPackagesCache(unittest.TestCase):
                 self.assertIsInstance(refusal, ValueError)
                 self.assertIn("staging directory changed", str(refusal))
                 self.assertFalse((project / ".unity-packages-cache-receipt.json").exists())
+
+    def test_stage_swap_at_real_unpack_keeps_outside_bytes_and_archive_untouched(self):
+        with tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+            project, packages, outside = self.package_input_fixture(temporary)
+            for name, data in self.archives.items():
+                (outside / f"{name}.tgz").write_bytes(data)
+                (outside / name).mkdir()
+                (outside / name / "keep.txt").write_text("unrelated outside file")
+            before = {p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}
+            directories = {p.relative_to(outside) for p in outside.rglob("*") if p.is_dir()}
+            original = Path(temporary) / "original-stage"
+            real_unpack, swaps = upm.unpack, []
+
+            def unpack_and_swap(source, destination, name, node):
+                if not swaps:
+                    stage = next(packages.glob(".unity-upm-*"))
+                    stage.rename(original)
+                    stage.symlink_to(outside, target_is_directory=True)
+                    swaps.append(name)
+                return real_unpack(source, destination, name, node)
+
+            def local_fetch(url, destination, expected=None, *, expected_size=None):
+                return self.real_fetch(url.replace(upm.MIRROR, self.origin), destination,
+                                       expected, expected_size=expected_size)
+
+            refusal = None
+            with patch.object(upm, "fetch", side_effect=local_fetch), patch.object(upm, "unpack", side_effect=unpack_and_swap):
+                try:
+                    upm.hydrate(project)
+                except Exception as error:
+                    refusal = error
+            self.assertEqual(swaps, ["com.unity.first"], "swap must occur inside the real extraction call")
+            self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, before)
+            self.assertEqual({p.relative_to(outside) for p in outside.rglob("*") if p.is_dir()}, directories)
+            for name in self.registry:
+                self.assertFalse(os.path.lexists(packages / name), "stage replacement must install nothing")
+            self.assertIsInstance(refusal, ValueError)
+            self.assertIn("staging directory changed", str(refusal))
+            self.assertFalse((project / ".unity-packages-cache-receipt.json").exists())
+            self.assertEqual(json.loads((original / "com.unity.first/package.json").read_text())["name"], "com.unity.first")
+            self.assertFalse((original / "com.unity.first.tgz").exists(), "archive removal must stay on the opened stage")
+        self.assertEqual(len(self.requests), 1)
 
     def test_nonstring_manifest_requests_fail_closed(self):
         upm.validate(self.project)
