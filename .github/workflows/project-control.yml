@@ -351,6 +351,10 @@ jobs:
             ${{ runner.temp }}/starter/.github/workflows/pages-publish.yml
 
   template-verdict:
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
     needs: template-plan
     if: always() && !cancelled() && github.event_name != 'push'
     runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
@@ -379,6 +383,10 @@ jobs:
 
   # Every required job must run and succeed before the merge gate can pass.
   ci-ok:
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
     needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer, rust-node-consumer]
     if: always()
     runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}

@@ -6,7 +6,8 @@ description: >
   pass toJSON(needs) plus the required YAML job IDs. An absent, skipped,
   cancelled, failed or unfinished required job fails. Optional dependencies
   may skip but may not fail or be cancelled. No check-inventory polling.
-  Requires contents and pull-requests read. See docs/ci-ok.md.
+  On merge_group, [review] PRs also require exact-head review success.
+  Requires contents, pull-requests and checks read. See docs/ci-ok.md.
 
 inputs:
   separate-pr-metadata:
@@ -21,7 +22,7 @@ inputs:
     description: Comma-separated YAML job IDs that must be present and have succeeded.
     required: true
   token:
-    description: Token for contribution metadata and added-commit secret scanning.
+    description: Token with contents, pull-requests and checks read for metadata, review and secret scanning.
     default: ${{ github.token }}
 
 runs:
@@ -37,7 +38,7 @@ runs:
       env:
         CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
         CONTRIBUTION_POLICY_SCOPE: ${{ inputs.separate-pr-metadata == 'true' && 'commits' || 'all' }}
-      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE"
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE" --require-merge-group-review
     - name: Scan added commits for secrets
       shell: bash
       env:
