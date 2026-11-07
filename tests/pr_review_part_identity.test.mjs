@@ -183,7 +183,10 @@ test('a head-read outage supersedes terminal invalidity rather than declaring a 
 const largeSources = Object.fromEntries(Array.from({ length: 81 }, (_, i) => [`src/change${String(i).padStart(3, '0')}.js`, [
   `before-${i}-${'x'.repeat(i < 12 ? 12_000 : 50)}\n`, `after-${i}-${'y'.repeat(i < 12 ? 12_000 : 50)}\n`,
 ]]));
-const largeOptions = { sources: largeSources, byteLimit: 100_000 };
+// Preserve this fifteen-part witness when the prompt/schema envelope grows.
+// The source allowance is fixed; every full encoded request is still bounded.
+const largeOptions = { sources: largeSources, byteLimit: 80_000 +
+  Buffer.byteLength(reviewRequest({ ...inputFor(), files: [], context: [] }, configuration)) };
 const partNumber = part => Number(part.scope?.index);
 
 for (const key of identityFields) test(`all request identities use the same bounded correction: ${key}`, async () => {
