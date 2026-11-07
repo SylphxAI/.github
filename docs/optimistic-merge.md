@@ -209,7 +209,9 @@ An ordinary group with a newer pending Verify verdict **holds**, polling every
 without manual re-enqueue; a newer red verdict or hold expiry fails with a
 clear message. Configure the hold **below the repository's merge-queue check
 timeout**, leaving margin for API calls and the other gate steps. Zero disables
-waiting. Reverts, outage fixes and labelled fixes never wait. Observe mode
+waiting. Reverts, outage fixes and labelled fixes never wait; the complete PR is
+re-read during each hold refresh so a change becoming one of these way-back
+categories is admitted without re-enqueue. Observe mode
 prints the decision without waiting; watch mode keeps its existing
 run-conclusion alert behaviour.
 

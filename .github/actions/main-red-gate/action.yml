@@ -4,7 +4,9 @@ description: >
   job decides before trailing jobs finish. On red, ordinary groups wait up to
   hold-minutes for a newer pending verdict instead of leaving the queue
   immediately; green admits, red or expiry refuses. Reverts, outage fixes and
-  labelled fixes pass immediately. An open fix holds the line; nothing in
+  labelled fixes pass immediately; hold refreshes re-read the complete PR so a
+  change becoming a way back is admitted without re-enqueue. An open fix holds
+  the line; nothing in
   motion or an unreadable state admits with a warning. Needs actions: read,
   contents: read and pull-requests: read.
 
