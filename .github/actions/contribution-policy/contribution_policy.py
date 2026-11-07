@@ -179,7 +179,8 @@ class GitHub:
                 raise PolicyError('GitHub metadata read failed') from None
 
     def get(self, path):
-        return self.read(self.root + '/repos/' + self.repository + '/' + path)
+        repository_url = self.root + '/repos/' + self.repository
+        return self.read(repository_url + ('/' + path if path else ''))
 
     def pages(self, path):
         result = []

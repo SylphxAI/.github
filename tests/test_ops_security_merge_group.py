@@ -9,6 +9,7 @@ from pathlib import Path
 import unittest
 import tempfile
 from unittest import mock
+import urllib.error
 
 import yaml
 
@@ -212,6 +213,31 @@ class TrustedSourceTest(unittest.TestCase):
         self.assertEqual(event['merge_group']['base_sha'], BASE)
         self.assertEqual(event['merge_group']['head_sha'], GROUP2)
         self.assertEqual(gate.trusted_group(self.api, 'workflow_dispatch', {}, '42')[0], event)
+
+    def test_trusted_group_uses_canonical_repository_route_through_real_transport(self):
+        root = 'https://api.github.com/repos/SylphxAI/.github'
+        for visibility in ('public', 'private'):
+            repository = {**self.repository, 'visibility': visibility, 'private': visibility != 'public'}
+            routes = {root: repository, root + '/actions/runs/42': self.run,
+                      root + '/actions/workflows/project-control.yml': {'id': 7}}
+            def respond(request, **_):
+                if request.full_url not in routes:
+                    raise urllib.error.HTTPError(request.full_url, 404, 'Not Found', {}, io.BytesIO(b'{}'))
+                return io.BytesIO(json.dumps(routes[request.full_url]).encode())
+            api = gate.GitHub('SylphxAI/.github', 'read-token')
+            with self.subTest(visibility=visibility), \
+                    mock.patch.object(policy.urllib.request, 'urlopen', side_effect=respond) as opened, \
+                    mock.patch.object(api, 'queue_entries', return_value=self.api.queue_entries.return_value):
+                if visibility == 'public':
+                    event, source_run = gate.trusted_group(api, 'workflow_run', {'workflow_run': {'id': 42}})
+                    self.assertEqual(source_run, 42)
+                    self.assertEqual(event['merge_group']['head_sha'], GROUP2)
+                    self.assertEqual([call.args[0].full_url for call in opened.call_args_list], list(routes))
+                else:
+                    with self.assertRaisesRegex(policy.PolicyError, 'not the public .github/main repository'):
+                        gate.trusted_group(api, 'workflow_run', {'workflow_run': {'id': 42}})
+                    self.assertEqual(opened.call_count, 1)
+                self.assertEqual(opened.call_args_list[0].args[0].full_url, root)
 
     def test_non_native_source_run_cannot_approve_a_pr_head(self):
         for key, value in (('event', 'pull_request'), ('head_sha', HEAD1), ('workflow_id', 9),
