@@ -12,6 +12,14 @@ current head again, including a previous unavailable review. Normal merge-queue
 checks continue independently; this advisory check does not claim a review of
 the queue's combined merge commit.
 
+Same-input deduplication applies when an active check is observable; truly
+simultaneous first deliveries may both review. Callers must use a per-PR
+concurrency group with `cancel-in-progress: true`, as the supplied wrapper does.
+This is not a global exactly-once guarantee. Canonical selection uses the highest
+Check Run ID on the current head, not completion order; late completion of an
+older check cannot shadow a newer verdict. Completed verdict reuse still requires
+the exact input identity, and a different-input active check cannot defer it.
+
 ## Credentials and configuration
 
 Declare the exact wrapper `.github/workflows/pr-review.yml`, default branch,
@@ -213,6 +221,31 @@ Check Run. No other neutral title is exempt.
 If one workflow reviews several heads, any non-passing result fails the job;
 all Check Runs and receipts still publish before the command exits. A trusted
 trigger with no eligible open heads performs no review and exits zero.
+
+Accepted Check Run writes use read-only reconciliation: at most three GETs,
+with one-second gaps and a ten-second total read deadline. Neither POST nor a
+terminal PATCH is replayed. The accepted creation response is saved for the
+always-run finalizer before the first GET, so a temporarily missing or unavailable
+read projection cannot orphan a newly created check. A created check whose
+readback stays unavailable is finalized as interrupted from that saved identity.
+Before the terminal PATCH, the runner saves its intended result; finalization of
+that publication is read-only, including when a stale GET still says in progress.
+Reusing a completed success or failure saves the observed terminal receipt with
+its conclusion, completion time and output fingerprints. The finalizer reconciles
+that receipt read-only too; a later stale or unavailable GET cannot authorize a
+neutral overwrite of the reused verdict.
+
+Readback verifies canonical App/check/head identity and the fields actually
+written that a direct Check Run GET exposes, including status, conclusion,
+timestamps, output title and summary. Timestamps use the API's second precision;
+annotation contents are not exposed by that GET and are not replayed. Persistent
+mismatch, HTTP or network failure raises typed `publish_unverified` and fails the
+workflow without replacing the original verdict with neutral. Safe diagnostics
+retain expected and observed metadata and differing field names; arbitrary text
+is represented only by byte counts and SHA256 fingerprints, never source,
+credentials or provider error prose. The Check Run API's creation/update response
+and timestamp contracts were read on 2026-11-07 at 00:58:45 UTC
+([GitHub REST API 2022-11-28](https://docs.github.com/en/rest/checks/runs?apiVersion=2022-11-28)).
 
 An inference refusal, timeout, unsupported source, invalid binary evidence or malformed
 output receives neutral with a bounded reason when no grounded blocking finding
