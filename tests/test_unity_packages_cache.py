@@ -680,6 +680,48 @@ class UnityPackagesCache(unittest.TestCase):
                 self.assertIn("staging directory changed", str(refusal))
                 self.assertFalse((project / ".unity-packages-cache-receipt.json").exists())
 
+    def test_stage_open_failure_removes_only_empty_stage_and_preserves_original_error(self):
+        for replacement in ("empty", "nonempty", "symlink"):
+            with self.subTest(replacement=replacement), tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+                project, packages, outside = self.package_input_fixture(temporary)
+                (outside / "keep.txt").write_text("outside bytes must survive")
+                before = {p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}
+                real_open, created = os.open, []
+                failure = PermissionError("injected staging descriptor open failure")
+
+                def open_or_fail(path, flags, *args, **kwargs):
+                    if str(path).startswith(".unity-upm-"):
+                        stage = packages / path
+                        self.assertTrue(stage.is_dir(), "mkdtemp must succeed before the injected open failure")
+                        self.assertIsNotNone(kwargs.get("dir_fd"))
+                        created.append(stage)
+                        if replacement == "nonempty":
+                            (stage / "keep.txt").write_text("uncertain staging content must survive")
+                        elif replacement == "symlink":
+                            stage.rmdir()
+                            stage.symlink_to(outside, target_is_directory=True)
+                        raise failure
+                    return real_open(path, flags, *args, **kwargs)
+
+                with patch.object(upm.os, "open", side_effect=open_or_fail), patch.object(upm, "fetch") as fetch:
+                    with self.assertRaises(PermissionError) as refused:
+                        upm.hydrate(project)
+                    self.assertIs(refused.exception, failure, "cleanup must not mask the original open error")
+                    fetch.assert_not_called()
+                self.assertEqual(len(created), 1)
+                stage = created[0]
+                if replacement == "empty":
+                    self.assertFalse(os.path.lexists(stage), "empty stage must not leak after descriptor open failure")
+                elif replacement == "nonempty":
+                    self.assertEqual((stage / "keep.txt").read_text(), "uncertain staging content must survive")
+                else:
+                    self.assertTrue(stage.is_symlink(), "cleanup must not follow or remove a replacement link")
+                self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, before)
+                for name in self.registry:
+                    self.assertFalse(os.path.lexists(packages / name))
+                self.assertFalse((project / ".unity-packages-cache-receipt.json").exists())
+        self.assertEqual(self.requests, [])
+
     def test_stage_swap_at_real_unpack_keeps_outside_bytes_and_archive_untouched(self):
         with tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
             project, packages, outside = self.package_input_fixture(temporary)
