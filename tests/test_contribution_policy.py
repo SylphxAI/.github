@@ -690,6 +690,24 @@ class MetadataTransport(unittest.TestCase):
         for forbidden in ('read-token', 'untrusted-body', '::error::injected', 'https://', 'Retry-After'):
             self.assertNotIn(forbidden, text)
 
+    def test_repository_root_and_resource_routes_preserve_the_provider_contract(self):
+        routes = (
+            ('', 'https://api.github.com/repos/example/repo'),
+            ('pulls/1', 'https://api.github.com/repos/example/repo/pulls/1'),
+            ('commits/abc/check-runs?filter=all&page=2',
+             'https://api.github.com/repos/example/repo/commits/abc/check-runs?filter=all&page=2'),
+        )
+        for path, expected_url in routes:
+            with self.subTest(path=path), mock.patch.object(
+                    checker.urllib.request, 'urlopen', return_value=self.response({'id': 1})) as opened:
+                self.assertEqual(self.api.get(path), {'id': 1})
+                request = opened.call_args.args[0]
+                self.assertEqual(request.full_url, expected_url)
+                self.assertEqual(request.get_method(), 'GET')
+                self.assertEqual(request.get_header('Authorization'), 'Bearer read-token')
+                self.assertIsNone(request.data)
+        self.sleep.assert_not_called()
+
     def test_503_get_recovers_with_identical_request_and_closes_before_wait(self):
         error = self.failure()
         self.sleep.side_effect = lambda delay: self.assertTrue(error.closed)
