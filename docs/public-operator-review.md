@@ -104,10 +104,13 @@ Adopt in this order:
    create once with `POST /repos/SylphxAI/skills/rulesets`, recording its ID.
    On an uncertain response, reconcile the list instead of repeating creation.
 4. Read both complete repository-owned rulesets and effective main rules back.
-   Use disposable same-tree PRs to prove refusal without approval and with a
-   same-name status/Actions lookalike, then successful normal merge after the
+   Use disposable documentation-only PRs with no production behavior change to
+   prove refusal without approval and with a same-name status/Actions lookalike,
+   then successful normal merge after the
    canonical exact-head App success. Verify `.github` also receives the trusted
    projection on its actual combined SHA. Close negative probes unarmed.
+   A zero-file, same-tree PR is not a valid fixture for the current required
+   review producer: it refuses an empty changed-file population before review.
 
 Use one writer, fresh before/after reads and an exclusive write marker. Stop on
 intervening settings changes or API errors. Recovery uses the saved before
