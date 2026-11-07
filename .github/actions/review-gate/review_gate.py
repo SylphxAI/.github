@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'contribution-policy'))
-from contribution_policy import GitHub, PolicyError, merge_group_snapshot, review_findings
+from contribution_policy import GitHub, PolicyError, merge_group_snapshot, review_findings, recheck_merge_group
 
 
 def main(argv=None):
@@ -23,8 +23,9 @@ def main(argv=None):
             raise PolicyError('read-only review metadata token is unavailable')
         event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
         api = GitHub(os.environ['GITHUB_REPOSITORY'], token)
-        _, snapshots = merge_group_snapshot(api, event['merge_group'])
+        commits, snapshots, queued = merge_group_snapshot(api, event['merge_group'])
         findings = [finding for pr, commits in snapshots for finding in review_findings(api, pr, commits)]
+        findings.extend(recheck_merge_group(api, event['merge_group'], commits, snapshots, queued))
         for finding in findings:
             print('::error::Review gate: {rule} at {location}'.format(**finding))
         print(f'Review gate: {len(findings)} finding(s).')

@@ -193,7 +193,8 @@ class MergeGroupAdmissionTest(unittest.TestCase):
         self.assertIsNone(self.prs[1]['autoMergeRequest'])
         self.api.check_runs.return_value = []
         self.assertIn('missing', self.check()[0]['rule'])
-        self.api.queue_entries.assert_called_once_with('main')
+        self.assertEqual(self.api.queue_entries.call_count, 2)
+        self.api.queue_entries.assert_called_with('main')
 
     def test_exact_head_success_and_non_review_control(self):
         self.assertEqual(self.check(), [])
@@ -240,6 +241,11 @@ class MergeGroupAdmissionTest(unittest.TestCase):
         self.assertEqual(findings, [])
         self.api.check_runs.assert_not_called()
 
+    def test_duplicate_membership_cannot_hide_a_pagination_gap(self):
+        self.api.queue_entries.return_value *= 2
+        with self.assertRaisesRegex(policy.PolicyError, 'membership is duplicated'):
+            self.check()
+
     def test_queue_head_movement_or_incomplete_membership_refuses(self):
         self.prs[1]['head']['sha'] = OLD
         with self.assertRaisesRegex(policy.PolicyError, 'head changed'):
@@ -247,6 +253,49 @@ class MergeGroupAdmissionTest(unittest.TestCase):
         self.api.queue_entries.return_value = []
         with self.assertRaisesRegex(policy.PolicyError, 'membership is incomplete'):
             self.check()
+
+    def test_head_member_removal_member_addition_and_title_churn_refuse(self):
+        before = [self.entry(1, GROUP, HEAD)]
+        second_group = 'e' * 40
+        cases = [
+            [self.entry(1, GROUP, OLD)],
+            [],
+            [self.entry(1, GROUP, HEAD), self.entry(2, second_group, OLD)],
+        ]
+        for after in cases:
+            with self.subTest(after=after):
+                self.api.queue_entries.side_effect = [before, after]
+                with mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_:
+                                       [commit(GROUP), commit(second_group)] if head == GROUP else [commit(HEAD), commit(second_group)]):
+                    findings = policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
+                                                  require_merge_group_review=True)
+                self.assertTrue(any('membership/head changed during evaluation' in f['rule'] for f in findings))
+        self.api.queue_entries.side_effect = None
+        reads = 0
+        def changing_title(path):
+            nonlocal reads
+            reads += 1
+            return pull(title='Different title') if reads >= 4 else pull()
+        self.api.get.side_effect = changing_title
+        self.assertIn('membership/head changed during evaluation', self.check()[0]['rule'])
+
+    def test_merge_commit_parent_pins_original_head_even_before_first_queue_read(self):
+        synthetic = commit(GROUP)
+        synthetic['raw_commit'] = f'tree {BASE}\nparent {BASE}\nparent {OLD}\n\nMerge PR'.encode()
+        with mock.patch.object(policy, 'range_commits', return_value=[synthetic]):
+            with self.assertRaisesRegex(policy.PolicyError, f'PR #1 head {HEAD}.*parent pins {OLD}'):
+                policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
+                                   require_merge_group_review=True)
+        self.api.check_runs.assert_not_called()
+
+    def test_unchanged_merge_commit_parent_and_membership_pass(self):
+        synthetic = commit(GROUP)
+        synthetic['raw_commit'] = f'tree {BASE}\nparent {BASE}\nparent {HEAD}\n\nMerge PR'.encode()
+        with mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_:
+                               [synthetic] if head == GROUP else [commit(HEAD)]):
+            self.assertEqual(policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
+                                               require_merge_group_review=True), [])
+        self.assertEqual(self.api.queue_entries.call_count, 2)
 
     def test_ci_ok_manifest_calls_gate_and_cli_exits_nonzero_with_named_offender(self):
         action = yaml.safe_load((ROOT / '.github/actions/ci-ok/action.yml').read_text())
@@ -300,7 +349,8 @@ class StandaloneReviewGateTest(unittest.TestCase):
         status, output = self.invoke()
         self.assertEqual(status, 1)
         self.assertIn('exact-head-review: missing at PR #1 head ' + HEAD, output)
-        self.api.queue_entries.assert_called_once_with('main')
+        self.assertEqual(self.api.queue_entries.call_count, 2)
+        self.api.queue_entries.assert_called_with('main')
 
     def test_standalone_controls(self):
         self.api.check_runs.return_value = [run()]

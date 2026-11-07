@@ -101,8 +101,11 @@ and intersects their synthetic commits with the immutable group commit range.
 It checks original PR heads and refuses incomplete membership. Entries that
 merged while a later group builds are resolved through commit/PR associations.
 It does not depend on `autoMergeRequest` or infer membership from the queue ref.
-Read errors, incomplete Check Run pagination, and head or title movement fail
-closed. Failures name the PR number, full head SHA and observed review state.
+The gate compares group members, their heads and titles again after reading
+review inventories. Membership, head or title movement fails closed. Merge-commit
+queues additionally bind the PR head to the synthetic commit’s second parent;
+squash/rebase commits have no original-head parent and use the queue snapshots.
+Read errors and incomplete Check Run pagination also fail closed. Failures name the PR number, full head SHA and observed review state.
 The caller's token now also needs `checks: read`.
 
 Pull-request-event CI is unchanged: review remains asynchronous there. Non-

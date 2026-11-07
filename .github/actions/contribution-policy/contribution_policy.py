@@ -459,12 +459,19 @@ def merge_group_snapshot(api, group, *, check_pull_text=True):
     if not group_shas:
         raise PolicyError('merge group membership is incomplete: empty commit range')
     branch = group['base_ref'].removeprefix('refs/heads/')
-    for entry in api.queue_entries(branch):
-        synthetic = (entry.get('headCommit') or {}).get('oid')
-        if synthetic in group_shas:
-            pr = entry['pullRequest']
-            pulls[pr['number']] = pr['headRefOid']
-            covered.add(synthetic)
+    queued = group_queue_members(api, branch, group_shas)
+    for number, (head, synthetic) in queued.items():
+        # Merge-commit queues preserve the original PR head as parent two.
+        # Squash/rebase queues have one parent and need the queue API snapshot.
+        raw = next(commit for commit in commits if commit['sha'] == synthetic).get('raw_commit')
+        if isinstance(raw, bytes):
+            parents = [line[7:].decode('ascii') for line in raw.partition(b'\n\n')[0].splitlines()
+                       if line.startswith(b'parent ')]
+            if len(parents) == 2 and parents[1] != head:
+                raise PolicyError(f'PR #{number} head {head}: membership/head changed during evaluation; '
+                                  f'merge-group parent pins {parents[1]}')
+        pulls[number] = head
+        covered.add(synthetic)
     for number, expected_head in pulls.items():
         pr, original = snapshot(number, expected_head)
         covered.update(commit['sha'] for commit in original)
@@ -482,7 +489,41 @@ def merge_group_snapshot(api, group, *, check_pull_text=True):
                 snapshots.append((current, original))
     if group_shas - covered:
         raise PolicyError('merge group membership is incomplete')
-    return commits, snapshots
+    return commits, snapshots, queued
+
+
+def group_queue_members(api, branch, group_shas):
+    members = {}
+    synthetic_heads = set()
+    for entry in api.queue_entries(branch):
+        synthetic = (entry.get('headCommit') or {}).get('oid')
+        if synthetic not in group_shas:
+            continue
+        pr = entry['pullRequest']
+        number, head = pr['number'], pr['headRefOid']
+        if type(number) is not int or number <= 0 or not isinstance(head, str) or not SHA.fullmatch(head):
+            raise PolicyError('merge group member identity is incomplete')
+        if number in members or synthetic in synthetic_heads:
+            raise PolicyError('merge group membership is duplicated')
+        members[number] = (head, synthetic)
+        synthetic_heads.add(synthetic)
+    return members
+
+
+def recheck_merge_group(api, group, commits, snapshots, queued):
+    """Refuse membership, head or title churn across the review inventory reads."""
+    branch = group['base_ref'].removeprefix('refs/heads/')
+    after = group_queue_members(api, branch, {commit['sha'] for commit in commits})
+    changed = {number for number in queued.keys() | after.keys() if queued.get(number) != after.get(number)}
+    expected = {pr['number']: pr for pr, _ in snapshots}
+    for number, pr in expected.items():
+        current = api.get(f'pulls/{number}')
+        if current['head']['sha'] != pr['head']['sha'] or current['title'] != pr['title'] or \
+                current['base']['ref'] != pr['base']['ref']:
+            changed.add(number)
+    return [{'rule': 'exact-head-review: membership/head changed during evaluation',
+             'location': f"PR #{number} head " + (expected[number]['head']['sha'] if number in expected else after[number][0]),
+             'line': 0} for number in sorted(changed)]
 
 
 def check_event(api, event_name, event, sha, policy, *, check_pull_text=True,
@@ -502,13 +543,15 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True,
         pr = event.get('pull_request', {})
         return verdict(*snapshot(event.get('number') or pr['number'], pr['head']['sha']))
     if event_name == 'merge_group':
-        commits, snapshots = merge_group_snapshot(api, event['merge_group'], check_pull_text=check_pull_text)
+        commits, snapshots, queued = merge_group_snapshot(api, event['merge_group'], check_pull_text=check_pull_text)
         findings = []
         for pr, original in snapshots:
             findings.extend(verdict(pr if check_pull_text else None, original))
             if require_merge_group_review:
                 findings.extend(review_findings(api, pr, original))
         findings.extend(verdict(None, commits))
+        if require_merge_group_review:
+            findings.extend(recheck_merge_group(api, event['merge_group'], commits, snapshots, queued))
         return findings
     if event_name == 'workflow_dispatch':
         inputs = event.get('inputs') or {}
@@ -562,7 +605,7 @@ def main(argv=None):
                   'reopen this branch as an approved account.')
         print(f'Contribution policy: {len(findings)} finding(s).')
         return int(bool(findings))
-    except (PolicyError, KeyError, ValueError, OSError) as error:
+    except (PolicyError, KeyError, ValueError, OSError, TypeError) as error:
         message = str(error) if isinstance(error, PolicyError) else 'metadata or policy could not be read'
         if args.report:
             args.report.write_text(json.dumps({'passed': False, 'findings': [], 'error': message}) + '\n')
