@@ -3,6 +3,7 @@ import copy
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import unittest
@@ -163,6 +164,20 @@ class ProducerContractTest(unittest.TestCase):
         self.assertIn({'context': 'ops-security/review', 'integration_id': None}, checks)
         self.assertIn({'context': 'ops-security/review', 'integration_id': None},
                       queue.merge_checks([], checks))
+
+    def test_projection_keeps_the_initial_pr_head_requirement(self):
+        # GitHub couples the same context across PR and merge-group admission.
+        # Candidate execution is not an alternative PR-head stamp producer.
+        declared = json.loads((ROOT / 'policy/merge-queue.json').read_text())
+        scoped = [row for row in declared['required_checks'] if row['repo'] == 'SylphxAI/.github']
+        self.assertEqual(len(scoped), 1)
+        self.assertEqual(scoped[0]['ruleset_id'], 20321046)
+        self.assertIn({'context': 'ops-security/review', 'integration_id': None}, scoped[0]['checks'])
+        skills = json.loads((ROOT / 'policy/public-skills-operator-review.json').read_text())
+        self.assertEqual(skills['conditions']['ref_name'], {'include': ['refs/heads/main'], 'exclude': []})
+        checks = skills['rules'][0]['parameters']['required_status_checks']
+        self.assertIn({'context': 'ops-security/review', 'integration_id': None}, checks)
+        self.assertEqual(skills['bypass_actors'], [])
 
 
 if __name__ == '__main__':

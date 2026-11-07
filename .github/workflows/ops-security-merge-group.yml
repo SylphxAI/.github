@@ -14,10 +14,16 @@ permissions:
 jobs:
   stamps:
     name: ops-security/review
+    # This is a projection, not the initial authorization boundary. The main
+    # ruleset requires the operator's success on each exact PR head BEFORE it
+    # can enter this queue, including PRs editing this workflow or its scripts.
+    # GitHub couples required PR and merge-group checks; retain both stages.
     if: github.repository == 'SylphxAI/.github' && github.event.repository.visibility == 'public'
     runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     timeout-minutes: 10
     steps:
+      # Candidate code here has already passed exact-head operator approval.
+      # No workflow in this change can issue that PR-head approval itself.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false

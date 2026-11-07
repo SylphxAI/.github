@@ -26,6 +26,22 @@ rechecked after the status reads. The token has read-only contents,
 pull-requests and statuses permissions; the workflow never posts a PR status or
 changes queue ownership.
 
+There are two separate admission boundaries. First, GitHub's `main` ruleset
+requires the PR-head status before the PR can enter the merge queue. Second,
+this workflow projects the already-authorized member stamps onto the different
+combined SHA. The workflow is not a substitute for the first boundary. A PR
+that edits the workflow, its script or the imported membership resolver still
+needs the operator's success on that exact edited head before enqueue. Merely
+changing candidate code to return success cannot satisfy the missing PR-head
+status: this workflow has no PR event or status-write permission. Its execution
+of candidate code therefore follows operator approval, not precedes it.
+
+For initial adoption, the producer PR must receive that exact-head operator
+stamp before it is armed, even though its new repository requirement is not
+active yet. Observe the producer before activating the requirement, then use a
+fresh unstamped no-op PR to prove GitHub's first boundary refuses enqueue. Do
+not treat a successful merge-group projection alone as proof of head admission.
+
 Skills has no repository merge queue at adoption. If a queue is introduced
 later, install and prove an equivalent merge-group projection before enabling
 it; the requirement must not be relaxed to accommodate a missing producer.
