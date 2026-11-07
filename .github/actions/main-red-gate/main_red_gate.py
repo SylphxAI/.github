@@ -375,6 +375,21 @@ def main() -> int:
                 if state != "red":
                     print(f"trunk is {state}: admitted after hold")
                     return 0
+                # Labels and titles can change while the group waits. Re-read
+                # the complete PR under the same deadline so a newly admitted
+                # way back is never left waiting for a re-enqueue, even when
+                # the refreshed verdict is red rather than merely pending.
+                try:
+                    pull = _read(f"{api}/pulls/{number}", token, deadline)
+                except HoldExpired:
+                    return expired()
+                except Exception as exc:
+                    print(f"::warning::cannot refresh pull request {number} ({exc}): admitted")
+                    return 0
+                if is_way_back(pull, fix_label):
+                    why = is_way_back(pull, fix_label)
+                    print(f"trunk is red; this pull request became a way back to green ({why}): admitted during hold")
+                    return 0
                 if run.get("id") != initial_red:
                     print(f"::error::newer {env['VERIFY_WORKFLOW']} verdict is red "
                           f"({run.get('html_url')}): refused after hold")

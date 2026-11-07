@@ -240,8 +240,9 @@ class MainTest(unittest.TestCase):
 class VerdictHoldTest(unittest.TestCase):
     """Exercise the assembled entrypoint with run-scoped jobs and a controlled clock."""
 
-    def go(self, snapshots, env=None, comparisons=None, this_pr=None, api_error=False, older_verdict="failure", ancestry_error=False, refresh_seconds=0):
+    def go(self, snapshots, env=None, comparisons=None, this_pr=None, api_error=False, older_verdict="failure", ancestry_error=False, refresh_seconds=0, refreshed_pr=None):
         calls = []
+        pull_reads = [0]
         sleeps = []
         clock = [0.0]
         snapshot = [-1]
@@ -270,7 +271,11 @@ class VerdictHoldTest(unittest.TestCase):
                      "conclusion": current}]
                 return {"jobs": jobs}
             if url.endswith("/pulls/77"):
-                return this_pr or pull(number=77)
+                current_pull = this_pr or pull(number=77)
+                if pull_reads[0] and refreshed_pr is not None:
+                    current_pull = refreshed_pr
+                pull_reads[0] += 1
+                return current_pull
             if "/pulls?state=open" in url:
                 return []
             raise AssertionError(url)
@@ -307,6 +312,24 @@ class VerdictHoldTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("newer verify.yml verdict is red", out)
         self.assertEqual(sleeps, [60])
+
+    def test_newly_labelled_fix_is_admitted_during_pending_verdict_hold(self):
+        code, out, calls, sleeps = self.go([None], refreshed_pr=pull(labels=("main-red-fix",)))
+        self.assertEqual(code, 0)
+        self.assertIn("became a way back to green", out)
+        self.assertIn("labelled main-red-fix", out)
+        self.assertEqual(sleeps, [60])
+        self.assertGreaterEqual(sum(url.endswith("/pulls/77") for url in calls), 2)
+
+    def test_newly_labelled_fix_is_admitted_when_refreshed_verdict_turns_red(self):
+        code, out, calls, sleeps = self.go([None, "failure"],
+                                           refreshed_pr=pull(labels=("main-red-fix",)))
+        self.assertEqual(code, 0)
+        self.assertIn("became a way back to green", out)
+        self.assertIn("labelled main-red-fix", out)
+        self.assertNotIn("newer verify.yml verdict is red", out)
+        self.assertEqual(sleeps, [60])
+        self.assertGreaterEqual(sum(url.endswith("/pulls/77") for url in calls), 2)
 
     def test_default_hold_expires_after_twenty_minutes_not_sixty_seconds(self):
         code, out, _, sleeps = self.go([None])
