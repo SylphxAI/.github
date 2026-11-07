@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pin once from Unity's registry; hydrate only SHA256-pinned Build Cache archives."""
 import argparse
+from contextlib import contextmanager, ExitStack
 import hashlib
 import json
 import os
@@ -34,10 +35,46 @@ def load(path):
         return json.load(stream)
 
 
+@contextmanager
+def package_inputs(project):
+    """Anchor admission to an opened workspace and its non-symlink Packages."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with ExitStack() as stack:
+        try:
+            root = os.open(project, flags)
+            stack.callback(os.close, root)
+            packages = os.open("Packages", flags, dir_fd=root)
+            stack.callback(os.close, packages)
+        except OSError as error:
+            raise ValueError("invalid Unity package inputs") from error
+        yield root, packages
+
+
+def load_package(packages, *parts):
+    """Walk from the anchored Packages fd; validate and read the same file fd."""
+    try:
+        with ExitStack() as stack:
+            parent = packages
+            for part in parts[:-1]:
+                parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                stack.callback(os.close, parent)
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            with os.fdopen(fd, encoding="utf-8") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("invalid Unity package input file")
+                return json.load(stream)
+    except OSError as error:
+        raise ValueError("invalid Unity package input path") from error
+
+
 def graph(project):
-    packages = project / "Packages"
-    manifest = load(packages / "manifest.json")["dependencies"]
-    locked = load(packages / "packages-lock.json")["dependencies"]
+    with package_inputs(project) as (_, packages):
+        return package_graph(packages)
+
+
+def package_graph(packages):
+    manifest = load_package(packages, "manifest.json")["dependencies"]
+    locked = load_package(packages, "packages-lock.json")["dependencies"]
     direct = {name: version for name, version in manifest.items() if name.startswith("com.unity.")}
     for name, request in manifest.items():
         if not isinstance(request, str):
@@ -57,22 +94,10 @@ def graph(project):
                 relative = PurePosixPath(location[5:])
                 if relative.is_absolute() or not relative.parts or ".." in relative.parts or "\\" in location:
                     raise ValueError(f"invalid embedded package override: {name}")
-                # Reject every symlink below Packages before following a child
-                # or reading package.json, even when its target is contained.
-                current = packages
                 try:
-                    for part in (*relative.parts, "package.json"):
-                        current /= part
-                        if stat.S_ISLNK(current.lstat().st_mode):
-                            raise ValueError(f"invalid embedded package override: {name}")
-                except OSError as error:
+                    metadata = load_package(packages, *relative.parts, "package.json")
+                except ValueError as error:
                     raise ValueError(f"invalid embedded package override: {name}") from error
-                embedded = packages.joinpath(*relative.parts)
-                metadata_path = embedded / "package.json"
-                if (not embedded.resolve().is_relative_to(packages.resolve()) or not embedded.is_dir() or
-                        not metadata_path.resolve().is_relative_to(packages.resolve()) or not metadata_path.is_file()):
-                    raise ValueError(f"invalid embedded package override: {name}")
-                metadata = load(metadata_path)
                 if not isinstance(metadata, dict) or metadata.get("name") != name:
                     raise ValueError(f"invalid embedded package override: {name}")
             elif node.get("source") not in ("registry", "builtin"):
@@ -102,8 +127,13 @@ def graph(project):
 
 
 def validate(project):
-    registry, lock_hash, manifest_hash = graph(project)
-    pins = load(project / "Packages/unity-packages.json")
+    with package_inputs(project) as (_, packages):
+        return validate_inputs(packages)
+
+
+def validate_inputs(packages):
+    registry, lock_hash, manifest_hash = package_graph(packages)
+    pins = load_package(packages, "unity-packages.json")
     if pins.get("schemaVersion") != 1 or pins.get("lockSha256") != lock_hash or pins.get("manifestSha256") != manifest_hash:
         raise ValueError("Unity manifest/lock differs from committed pins; resolve and regenerate pins explicitly")
     entries = pins["packages"]
@@ -198,66 +228,83 @@ def unpack(archive, destination, name, node):
 
 
 def hydrate(project, mirror=MIRROR):
-    pins, registry = validate(project)  # Validate all drift before any network or mutation.
-    url = urllib.parse.urlsplit(mirror)
-    if url.scheme != "https" or not url.netloc or url.query or url.fragment or url.username or url.path not in ("", "/"):
-        raise ValueError("mirror must be an HTTPS origin")
-    packages = project / "Packages"
-    receipt_path = project / ".unity-packages-cache-receipt.json"
-    receipt_path.unlink(missing_ok=True)
-    for name in registry:
-        if os.path.lexists(packages / name):
-            raise ValueError(f"refusing to overwrite an existing embedded package: {name}")
-    moved = []
-    with tempfile.TemporaryDirectory(prefix=".unity-upm-", dir=packages) as temporary:
-        stage = Path(temporary)
-        for name, node in sorted(registry.items()):
-            pin = pins["packages"][name]
-            archive = stage / f"{name}.tgz"
-            fetch(f"{mirror.rstrip('/')}/upm/{pin['sha256']}/{name}/{pin['version']}", archive,
-                  pin["sha256"], expected_size=pin["archiveBytes"])
-            unpack(archive, stage / name, name, node)
-            archive.unlink()
+    with package_inputs(project) as (root, packages):
+        pins, registry = validate_inputs(packages)  # All drift before network or mutation.
+        url = urllib.parse.urlsplit(mirror)
+        if url.scheme != "https" or not url.netloc or url.query or url.fragment or url.username or url.path not in ("", "/"):
+            raise ValueError("mirror must be an HTTPS origin")
+        receipt_name = ".unity-packages-cache-receipt.json"
         try:
-            for name in sorted(registry):
-                (stage / name).rename(packages / name)
-                moved.append(packages / name)
-            receipt = {"schemaVersion": 1, "lockSha256": pins["lockSha256"],
-                       "manifestSha256": pins["manifestSha256"], "mirror": mirror,
-                       "packages": pins["packages"], "packageCount": len(registry)}
-            receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        except BaseException:
-            for path in moved:
-                shutil.rmtree(path)
-            raise
-    print(f"Embedded {len(registry)} SHA256-verified Unity packages; registry fallback disabled")
-    return receipt_path
+            os.unlink(receipt_name, dir_fd=root)
+        except FileNotFoundError:
+            pass
+        # The Linux action's fd alias stays on the opened directory if Packages
+        # is renamed/replaced. Only our private staging tree uses path-based I/O.
+        packages_path = Path(f"/proc/self/fd/{packages}")
+        for name in registry:
+            if os.path.lexists(packages_path / name):
+                raise ValueError(f"refusing to overwrite an existing embedded package: {name}")
+        moved = []
+        with tempfile.TemporaryDirectory(prefix=".unity-upm-", dir=packages_path) as temporary:
+            stage = Path(temporary)
+            for name, node in sorted(registry.items()):
+                pin = pins["packages"][name]
+                archive = stage / f"{name}.tgz"
+                fetch(f"{mirror.rstrip('/')}/upm/{pin['sha256']}/{name}/{pin['version']}", archive,
+                      pin["sha256"], expected_size=pin["archiveBytes"])
+                unpack(archive, stage / name, name, node)
+                archive.unlink()
+            try:
+                for name in sorted(registry):
+                    os.rename(stage / name, name, dst_dir_fd=packages)
+                    moved.append(name)
+                receipt = {"schemaVersion": 1, "lockSha256": pins["lockSha256"],
+                           "manifestSha256": pins["manifestSha256"], "mirror": mirror,
+                           "packages": pins["packages"], "packageCount": len(registry)}
+                fd = os.open(receipt_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666, dir_fd=root)
+                with os.fdopen(fd, "w", encoding="utf-8") as output:
+                    output.write(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+            except BaseException:
+                for name in moved:
+                    shutil.rmtree(name, dir_fd=packages)
+                raise
+        print(f"Embedded {len(registry)} SHA256-verified Unity packages; registry fallback disabled")
+        return project / receipt_name
 
 
 def pin(project):
     """Explicit maintenance operation only, never called by the CI hydration action."""
-    registry, lock_hash, manifest_hash = graph(project)
-    entries = {}
-    with tempfile.TemporaryDirectory(prefix="unity-upm-pin-") as temporary:
-        for name, node in sorted(registry.items()):
-            version = node["version"]
-            with urllib.request.urlopen(f"{REGISTRY}/{name}", timeout=60) as response:
-                metadata = json.load(response)["versions"][version]
-            dist = metadata["dist"]
-            expected_url = f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz"
-            if dist["tarball"] != expected_url or not re.fullmatch(r"[a-f0-9]{40}", dist["shasum"]):
-                raise ValueError(f"unexpected Unity distribution metadata: {name}")
-            archive = Path(temporary) / f"{name}.tgz"
-            sha256, sha1, size = fetch(expected_url, archive, allow_unity_cdn=True)
-            if sha1 != dist["shasum"]:
-                raise ValueError(f"Unity registry SHA1 mismatch: {name}")
-            unpack(archive, Path(temporary) / name, name, node)
-            entries[name] = {"version": version, "sha256": sha256, "archiveBytes": size}
-    result = {"schemaVersion": 1, "lockSha256": lock_hash, "manifestSha256": manifest_hash, "packages": entries}
-    target = project / "Packages/unity-packages.json"
-    target.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"Pinned {len(entries)} Unity packages in {target}")
-    return target
+    with package_inputs(project) as (_, packages):
+        registry, lock_hash, manifest_hash = package_graph(packages)
+        entries = {}
+        with tempfile.TemporaryDirectory(prefix="unity-upm-pin-") as temporary:
+            for name, node in sorted(registry.items()):
+                version = node["version"]
+                with urllib.request.urlopen(f"{REGISTRY}/{name}", timeout=60) as response:
+                    metadata = json.load(response)["versions"][version]
+                dist = metadata["dist"]
+                expected_url = f"https://download.packages.unity.com/{name}/-/{name}-{version}.tgz"
+                if dist["tarball"] != expected_url or not re.fullmatch(r"[a-f0-9]{40}", dist["shasum"]):
+                    raise ValueError(f"unexpected Unity distribution metadata: {name}")
+                archive = Path(temporary) / f"{name}.tgz"
+                sha256, sha1, size = fetch(expected_url, archive, allow_unity_cdn=True)
+                if sha1 != dist["shasum"]:
+                    raise ValueError(f"Unity registry SHA1 mismatch: {name}")
+                unpack(archive, Path(temporary) / name, name, node)
+                entries[name] = {"version": version, "sha256": sha256, "archiveBytes": size}
+        result = {"schemaVersion": 1, "lockSha256": lock_hash, "manifestSha256": manifest_hash, "packages": entries}
+        target = project / "Packages/unity-packages.json"
+        try:
+            fd = os.open("unity-packages.json", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o666, dir_fd=packages)
+        except OSError as error:
+            raise ValueError("invalid Unity pins output file") from error
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            if not stat.S_ISREG(os.fstat(output.fileno()).st_mode):
+                raise ValueError("invalid Unity pins output file")
+            output.truncate(0)
+            output.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+        print(f"Pinned {len(entries)} Unity packages in {target}")
+        return target
 
 
 def main():

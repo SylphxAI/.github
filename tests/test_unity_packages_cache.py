@@ -5,7 +5,9 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 import tarfile
 import tempfile
@@ -332,18 +334,234 @@ class UnityPackagesCache(unittest.TestCase):
                 receipt = project / ".unity-packages-cache-receipt.json"
                 receipt.write_text("unchanged receipt")
                 before_pins = pins.read_bytes()
-                with patch.object(upm, "load", wraps=upm.load) as load, patch.object(upm, "fetch") as fetch, patch.object(
+                reads = []
+                real_load = upm.json.load
+
+                def record_load(stream):
+                    reads.append(os.fstat(stream.fileno()).st_ino)
+                    return real_load(stream)
+
+                with patch.object(upm.json, "load", side_effect=record_load), patch.object(upm, "fetch") as fetch, patch.object(
                         upm.urllib.request, "urlopen") as request, patch.object(upm.tempfile, "TemporaryDirectory") as staging:
                     for operation in (upm.validate, upm.hydrate, upm.pin):
                         with self.assertRaisesRegex(ValueError, "invalid embedded package override"):
                             operation(project)
-                    self.assertEqual([call.args[0] for call in load.call_args_list],
-                                     [packages / "manifest.json", packages / "packages-lock.json"] * 3)
+                    self.assertEqual(reads, [(packages / "manifest.json").stat().st_ino,
+                                             (packages / "packages-lock.json").stat().st_ino] * 3)
                     fetch.assert_not_called()
                     request.assert_not_called()
                     staging.assert_not_called()
                 self.assertEqual(receipt.read_text(), "unchanged receipt")
                 self.assertEqual(pins.read_bytes(), before_pins)
+        self.assertEqual(self.requests, [])
+
+    def package_input_fixture(self, temporary):
+        project = Path(temporary) / "project"
+        packages = project / "Packages"
+        pkg = packages / "ancestor" / "pkg"
+        pkg.mkdir(parents=True)
+        name = "net.example.embedded"
+        (pkg / "package.json").write_text(json.dumps({"name": name, "version": "1.0.0"}))
+        registry = json.loads(json.dumps(self.registry))
+        registry[name] = {"version": "file:ancestor/pkg", "source": "embedded", "dependencies": {}}
+        manifest = json.loads(json.dumps(self.manifest))
+        manifest["dependencies"][name] = "9.9.9"
+        (packages / "manifest.json").write_text(json.dumps(manifest))
+        (packages / "packages-lock.json").write_text(json.dumps({"dependencies": registry}))
+        (packages / "unity-packages.json").write_text(json.dumps(self.pins))
+        self.assertEqual(upm.validate(project)[0], self.pins)  # Genuine nested-path positive control.
+        outside = Path(temporary) / "outside"
+        shutil.copytree(packages, outside)
+        return project, packages, outside
+
+    def test_packages_admission_rejects_symlinks_at_every_input_component(self):
+        for relative in (".", "manifest.json", "packages-lock.json", "unity-packages.json",
+                         "ancestor", "ancestor/pkg", "ancestor/pkg/package.json"):
+            with self.subTest(component=relative), tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+                project, packages, outside = self.package_input_fixture(temporary)
+                target = packages / relative
+                target.rename(Path(temporary) / "original")
+                replacement = outside / relative
+                target.symlink_to(replacement, target_is_directory=replacement.is_dir())
+                receipt = project / ".unity-packages-cache-receipt.json"
+                receipt.write_text("unchanged receipt")
+                outside_before = {p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}
+                reads = []
+                real_load = upm.json.load
+
+                def record_load(stream):
+                    reads.append(os.fstat(stream.fileno()).st_ino)
+                    return real_load(stream)
+
+                with patch.object(upm.json, "load", side_effect=record_load), patch.object(upm, "fetch") as fetch, patch.object(
+                        upm.urllib.request, "urlopen") as request, patch.object(upm.tempfile, "TemporaryDirectory") as staging:
+                    operations = (upm.validate, upm.hydrate) if relative == "unity-packages.json" else (
+                        upm.graph, upm.validate, upm.hydrate, upm.pin)
+                    for operation in operations:
+                        with self.assertRaises(ValueError):
+                            operation(project)
+                    fetch.assert_not_called()
+                    request.assert_not_called()
+                    staging.assert_not_called()
+                self.assertTrue(set(reads).isdisjoint(p.stat().st_ino for p in outside.rglob("*") if p.is_file()))
+                self.assertEqual(receipt.read_text(), "unchanged receipt")
+                self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, outside_before)
+        self.assertEqual(self.requests, [])
+
+    def test_packages_input_swaps_never_read_replacement_paths(self):
+        for timing in ("before open", "after open"):
+            for relative in (".", "manifest.json", "packages-lock.json", "unity-packages.json",
+                             "ancestor", "ancestor/pkg", "ancestor/pkg/package.json"):
+                with self.subTest(timing=timing, component=relative), tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+                    project, packages, outside = self.package_input_fixture(temporary)
+                    target = packages / relative
+                    replacement = outside / relative
+                    outside_inodes = {p.stat().st_ino for p in outside.rglob("*") if p.is_file()}
+                    outside_reads, swaps = [], []
+                    real_open, real_path_open, real_load = os.open, Path.open, upm.json.load
+
+                    def swap():
+                        target.rename(Path(temporary) / "original")
+                        target.symlink_to(replacement, target_is_directory=replacement.is_dir())
+                        swaps.append(relative)
+
+                    def open_fd(path, flags, *args, **kwargs):
+                        selected = not swaps and kwargs.get("dir_fd") is not None and os.fspath(path) == target.name
+                        if selected and timing == "before open":
+                            swap()
+                        fd = real_open(path, flags, *args, **kwargs)
+                        if selected and timing == "after open":
+                            swap()
+                        return fd
+
+                    def open_path(path, *args, **kwargs):
+                        # The old pathname reader uses this boundary; the fixed
+                        # reader instead exercises the real dir_fd os.open above.
+                        selected = not swaps and (path == target or target in path.parents)
+                        if selected and timing == "before open":
+                            swap()
+                        stream = real_path_open(path, *args, **kwargs)
+                        if selected and timing == "after open":
+                            swap()
+                        return stream
+
+                    def record_load(stream):
+                        if os.fstat(stream.fileno()).st_ino in outside_inodes:
+                            outside_reads.append(relative)
+                        return real_load(stream)
+
+                    with patch.object(upm.os, "open", side_effect=open_fd), patch.object(Path, "open", open_path), patch.object(
+                            upm.json, "load", side_effect=record_load), patch.object(upm, "fetch") as fetch:
+                        if timing == "before open":
+                            with self.assertRaises(ValueError):
+                                upm.validate(project)
+                        else:
+                            self.assertEqual(upm.validate(project)[0], self.pins)
+                        fetch.assert_not_called()
+                    self.assertEqual(swaps, [relative])  # Prove that the intended race actually occurred.
+                    self.assertEqual(outside_reads, [])  # An opened original inode is allowed; replacements are not.
+        self.assertEqual(self.requests, [])
+
+    def test_cli_rejects_packages_root_symlink_without_deleting_receipt_or_writing_outside(self):
+        with tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+            project, packages, outside = self.package_input_fixture(temporary)
+            for name in ("Assets", "ProjectSettings"):
+                (project / name).mkdir()
+            receipt = project / ".unity-packages-cache-receipt.json"
+            receipt.write_text("previous receipt")
+            packages.rename(Path(temporary) / "original")
+            packages.symlink_to(outside, target_is_directory=True)
+            before = {p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}
+            result = subprocess.run([sys.executable, upm.__file__, "hydrate", "--project", str(project),
+                                     "--mirror", "https://127.0.0.1:9"], capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("invalid Unity package inputs", result.stderr)
+            self.assertEqual(receipt.read_text(), "previous receipt")
+            self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, before)
+            self.assertFalse(list(outside.glob(".unity-upm-*")))
+        self.assertEqual(self.requests, [])
+
+    def test_hydration_writes_stay_on_opened_directories_after_path_replacement(self):
+        for component in ("Packages", "project"):
+            with self.subTest(component=component), tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+                project, packages, outside = self.package_input_fixture(temporary)
+                receipt = project / ".unity-packages-cache-receipt.json"
+                receipt.write_text("original receipt")
+                if component == "project":
+                    outside_project = Path(temporary) / "outside-project"
+                    outside_project.mkdir()
+                    outside.rename(outside_project / "Packages")
+                    outside = outside_project
+                    (outside / receipt.name).write_text("outside receipt must survive")
+                before = {p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}
+                pins_inode = (packages / "unity-packages.json").stat().st_ino
+                real_load, swaps = upm.json.load, []
+                saved = Path(temporary) / "original"
+
+                def load_and_swap(stream):
+                    value = real_load(stream)
+                    if os.fstat(stream.fileno()).st_ino == pins_inode:
+                        target = packages if component == "Packages" else project
+                        target.rename(saved)
+                        target.symlink_to(outside, target_is_directory=True)
+                        swaps.append(component)
+                    return value
+
+                def local_fetch(url, destination, expected=None, *, expected_size=None):
+                    return self.real_fetch(url.replace(upm.MIRROR, self.origin), destination, expected, expected_size=expected_size)
+
+                with patch.object(upm.json, "load", side_effect=load_and_swap), patch.object(upm, "fetch", side_effect=local_fetch):
+                    upm.hydrate(project)
+                self.assertEqual(swaps, [component])
+                self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, before)
+                installed = saved if component == "Packages" else saved / "Packages"
+                for name in self.registry:
+                    metadata = installed / name / "package.json"
+                    self.assertTrue(metadata.is_file(), f"package must be installed in original directory: {name}")
+                    self.assertEqual(json.loads(metadata.read_text())["name"], name)
+                original_receipt = receipt if component == "Packages" else saved / receipt.name
+                self.assertEqual(json.loads(original_receipt.read_text())["packages"], self.pins["packages"])
+                self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, before)
+                self.assertFalse(list(installed.glob(".unity-upm-*")))
+        self.assertEqual(len(self.requests), 4)
+
+    def test_pin_output_uses_opened_packages_and_never_follows_output_symlink(self):
+        for component in ("Packages", "pins"):
+            with self.subTest(component=component), tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+                project, packages, outside = self.package_input_fixture(temporary)
+                (packages / "unity-packages.json").write_text('{"old": true}')
+                (outside / "unity-packages.json").write_text("outside pins must not be overwritten")
+                before = {p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}
+                saved, swaps = Path(temporary) / "original", []
+
+                def metadata(url, **kwargs):
+                    if not swaps:
+                        target = packages if component == "Packages" else packages / "unity-packages.json"
+                        target.rename(saved)
+                        target.symlink_to(outside if component == "Packages" else outside / "unity-packages.json",
+                                          target_is_directory=component == "Packages")
+                        swaps.append(component)
+                    name = url.rsplit("/", 1)[-1]
+                    data = self.archives[name]
+                    dist = {"tarball": f"https://download.packages.unity.com/{name}/-/{name}-1.2.3.tgz",
+                            "shasum": hashlib.sha1(data).hexdigest()}
+                    return io.BytesIO(json.dumps({"versions": {"1.2.3": {"dist": dist}}}).encode())
+
+                def download(url, destination, **kwargs):
+                    name = url.split("/")[3]
+                    data = self.archives[name]
+                    destination.write_bytes(data)
+                    return hashlib.sha256(data).hexdigest(), hashlib.sha1(data).hexdigest(), len(data)
+
+                with patch.object(upm.urllib.request, "urlopen", side_effect=metadata), patch.object(upm, "fetch", side_effect=download):
+                    if component == "Packages":
+                        upm.pin(project)
+                        self.assertEqual(json.loads((saved / "unity-packages.json").read_text()), self.pins)
+                    else:
+                        with self.assertRaises(ValueError):
+                            upm.pin(project)
+                self.assertEqual(swaps, [component])
+                self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, before)
         self.assertEqual(self.requests, [])
 
     def test_nonstring_manifest_requests_fail_closed(self):
@@ -367,8 +585,9 @@ class UnityPackagesCache(unittest.TestCase):
     def test_missing_lock_and_incomplete_graph_fail_closed(self):
         target = self.project / "Packages/packages-lock.json"
         target.unlink()
-        with self.assertRaises(FileNotFoundError):
+        with self.assertRaisesRegex(ValueError, "invalid Unity package input path") as refusal:
             self.hydrate()
+        self.assertIsInstance(refusal.exception.__cause__, FileNotFoundError)
         del self.registry["com.unity.transitive"]
         self.write_json("packages-lock.json", {"dependencies": self.registry})
         with self.assertRaisesRegex(ValueError, "incomplete lock closure"):

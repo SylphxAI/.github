@@ -29,8 +29,14 @@ and Git dependencies keep their existing preparation steps. Every direct version
 request must have a resolved `registry` or `builtin` lock entry, or a genuine
 `embedded` override. Embedded overrides use the lock's relative `file:` path
 inside `Packages` and require a package directory with a `package.json` whose
-name matches the dependency. Directory components and `package.json` must not
-be symlinks, even when their targets are inside `Packages`. Missing entries,
+name matches the dependency. Admission anchors an opened project directory and
+walks `Packages`, all embedded directory components and every input file with
+fd-relative, no-follow opens. Manifest, lock, pins and embedded metadata are read
+from those same opened file descriptors; symlinks and pathname replacement cannot
+redirect these reads, even to another location inside `Packages`. The Linux action
+retains these directory descriptors through receipt cleanup, staging, package
+installation and pins output, so replacing `Packages` after admission cannot
+redirect writes either. Missing entries,
 stale Git/local/tarball sources and non-string manifest requests stop before
 network access or mutation.
 Unselected explicit local/Git requests remain unaffected.
