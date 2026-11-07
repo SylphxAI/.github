@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -209,11 +210,59 @@ class GeneratedSourceTests(unittest.TestCase):
         with mock.patch.object(gate.scan, 'command', return_value=b'') as command:
             gate.scan.fetch(self.repo, 'https://github.com/example/synthetic.git', '', 'a' * 40,
                             'synthetic-token-sentinel', depth=1, timeout=10, max_bytes=gate.MAX_FETCH_BYTES)
+        self.assertEqual([call.kwargs['timeout'] for call in command.call_args_list], [180, 180, 10])
         args, kwargs = command.call_args
         self.assertNotIn('synthetic-token-sentinel', str(args))
         self.assertIn('--depth=1', args[0])
         self.assertEqual(kwargs['max_bytes'], gate.MAX_FETCH_BYTES)
         self.assertEqual(kwargs['env']['GIT_CONFIG_KEY_0'], 'http.https://github.com/.extraheader')
+        with mock.patch.object(gate.scan, 'command') as command:
+            with self.assertRaisesRegex(gate.scan.ScanError, 'acquisition deadline expired'):
+                gate.scan.fetch(self.repo, 'https://github.com/example/synthetic.git', '', 'a' * 40, '',
+                                deadline=time.monotonic() - 1, max_bytes=gate.MAX_FETCH_BYTES)
+            command.assert_not_called()
+
+    def test_actual_git_setup_and_fetch_share_the_acquisition_deadline(self):
+        tools = Path(self.directory.name) / 'tools'
+        tools.mkdir()
+        executable = tools / 'git'
+        executable.write_text(f'#!{sys.executable}\n' + """
+import os
+from pathlib import Path
+import sys
+import time
+stage = sys.argv[3]
+with Path(os.environ['FAKE_GIT_LOG']).open('a') as log:
+    log.write(stage + ':started\\n')
+if os.environ['FAKE_GIT_SLOW_STAGE'] == 'each':
+    time.sleep(0.25)
+elif stage == os.environ['FAKE_GIT_SLOW_STAGE']:
+    time.sleep(3)
+with Path(os.environ['FAKE_GIT_LOG']).open('a') as log:
+    log.write(stage + ':completed\\n')
+""")
+        executable.chmod(0o700)
+        stages = ('init', 'remote', 'fetch')
+        for index, stage in enumerate((*stages, 'each')):
+            with self.subTest(stage=stage):
+                log = tools / (stage + '.log')
+                env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
+                           FAKE_GIT_LOG=str(log), FAKE_GIT_SLOW_STAGE=stage)
+                started = time.monotonic()
+                budget = 0.6 if stage == 'each' else 0.25
+                with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(gate, 'ACQUISITION_SECONDS', budget):
+                    refusal = 'bounded Git (command timed out|acquisition deadline expired)' if stage == 'each' else 'bounded Git command timed out'
+                    with self.assertRaisesRegex(gate.scan.ScanError, refusal):
+                        self.enforce('a' * 40, 'b' * 40, remote='https://github.com/example/synthetic.git')
+                self.assertLess(time.monotonic() - started, 2)
+                actual = log.read_text().splitlines()
+                if stage == 'each':
+                    # Individually short commands still share one total budget.
+                    self.assertIn('init:completed', actual)
+                    self.assertNotIn('fetch:completed', actual)
+                else:
+                    self.assertEqual(actual, [line for previous in stages[:index]
+                                     for line in (previous + ':started', previous + ':completed')] + [stage + ':started'])
 
     def test_actual_cli_refuses_missing_failed_skipped_and_omitted_required_proof_jobs(self):
         base, head = self.fixture()

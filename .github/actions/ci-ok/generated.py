@@ -153,7 +153,7 @@ def enforce(base, head, parents, needs, required, *, repository, token, workspac
         remote = server + '/' + repository + '.git'
     with tempfile.TemporaryDirectory(prefix='generated-provenance-') as directory:
         repo = Path(directory)
-        env = scan.fetch(repo, remote, '', base, token, depth=1, timeout=max(0.001, deadline - time.monotonic()), max_bytes=MAX_FETCH_BYTES)
+        env = scan.fetch(repo, remote, '', base, token, depth=1, deadline=deadline, max_bytes=MAX_FETCH_BYTES)
         snapshot = Snapshot(repo, deadline, env)
         policy = snapshot.policy(base)
         if not policy['generated']['paths']:

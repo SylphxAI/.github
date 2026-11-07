@@ -134,9 +134,20 @@ def revisions(event_name, event, sha):
     return base, head
 
 
-def fetch(repo, remote, base, head, token, *, filter_spec='blob:none', depth=None, timeout=METADATA_TIMEOUT, max_bytes=None):
-    git(repo, 'init', '--bare', '-q')
-    git(repo, 'remote', 'add', 'origin', remote)
+def fetch(repo, remote, base, head, token, *, filter_spec='blob:none', depth=None, timeout=METADATA_TIMEOUT,
+          max_bytes=None, deadline=None):
+    def run(*args, env=None, timeout=METADATA_TIMEOUT):
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ScanError('bounded Git acquisition deadline expired; raw diagnostics withheld')
+            timeout = min(timeout, remaining)
+        return command(['git', '-C', str(repo), *args], env=env, timeout=timeout, max_bytes=max_bytes)
+
+    # A tree-only caller can bound the whole acquisition, including local setup.
+    # Without a deadline the scanner retains its existing per-command timeouts.
+    run('init', '--bare', '-q')
+    run('remote', 'add', 'origin', remote)
     env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
     if token:
         # Scope authentication to this GitHub server, never a URL from PR code.
@@ -146,9 +157,9 @@ def fetch(repo, remote, base, head, token, *, filter_spec='blob:none', depth=Non
     # By default fetch complete ancestry; tree-only consumers can request depth=1.
     # Defer unrelated blobs. The same
     # environment authenticates lazy blob reads during detection and allowlisting.
-    command(['git', '-C', str(repo), 'fetch', '--quiet', '--no-tags', '--filter=' + filter_spec,
-             *(['--depth=' + str(depth)] if depth is not None else []),
-             'origin', *([base] if base and base != head else []), head], env=env, timeout=timeout, max_bytes=max_bytes)
+    run('fetch', '--quiet', '--no-tags', '--filter=' + filter_spec,
+        *(['--depth=' + str(depth)] if depth is not None else []),
+        'origin', *([base] if base and base != head else []), head, env=env, timeout=timeout)
     return env
 
 
