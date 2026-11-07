@@ -45,7 +45,9 @@ boundary against a concurrently running, fully privileged process in the same jo
 replacing private staging contents between checks. Missing entries,
 stale Git/local/tarball sources and non-string manifest requests stop before
 network access or mutation.
-Unselected explicit local/Git requests remain unaffected.
+Unselected explicit local/Git requests remain unaffected. A direct local/Git
+request with a stale same-name official-registry lock entry is refused, not
+silently hydrated from that registry or removed from the required closure.
 Every pin records an exact positive `archiveBytes` count as well as its version
 and SHA256. Graph admission refuses missing or oversized counts before network
 access, so a newly captured editor graph cannot silently exceed the archive cap.

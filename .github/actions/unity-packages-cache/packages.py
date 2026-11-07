@@ -83,6 +83,12 @@ def package_graph(packages):
         # Unselected file/Git preparation uses a URI or SCP-style colon.
         if name not in locked and (name in direct or ":" not in request):
             raise ValueError(f"manifest package missing from lock: {name}")
+        if ":" in request and name in locked:
+            node = locked[name]
+            # Unity 2022.3 manifest: local/Git requests select a different source,
+            # not the same-name registry node (primary docs read 2026-11-07).
+            if node.get("source") == "registry" and node.get("url", "").rstrip("/") == REGISTRY:
+                raise ValueError(f"URI manifest request has an official registry lock source: {name}")
         if ":" not in request:
             node = locked[name]
             if node.get("source") == "embedded":

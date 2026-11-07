@@ -203,6 +203,51 @@ class UnityPackagesCache(unittest.TestCase):
         self.assertEqual(upm.graph(self.project)[1:], (self.pins["lockSha256"], self.pins["manifestSha256"]))
         self.assertEqual(self.requests, [])
 
+    def test_uri_requests_cannot_select_stale_official_registry_locks(self):
+        receipt = self.project / ".unity-packages-cache-receipt.json"
+        receipt.write_text("previous receipt must survive")
+        for name in ("com.unity.first", "com.autodesk.fbx"):
+            for request in ("file:../prepared", "file:../prepared.tgz", "https://example.com/repo.git#v1.2.3",
+                            "ssh://git@example.com/repo.git", "git+https://example.com/repo", "git@example.com:owner/repo.git"):
+                registry = json.loads(json.dumps(self.registry))
+                if name not in registry:
+                    registry[name] = {"version": "5.1.3", "source": "registry", "url": upm.REGISTRY, "dependencies": {}}
+                manifest = json.loads(json.dumps(self.manifest))
+                manifest["dependencies"][name] = registry[name]["version"]
+                pins = json.loads(json.dumps(self.pins))
+                pins["lockSha256"] = upm.canonical(registry)
+                pins["packages"][name] = {"version": registry[name]["version"], "sha256": "a" * 64, "archiveBytes": 1}
+                pins["manifestSha256"] = upm.canonical({n: v for n, v in manifest["dependencies"].items()
+                                                       if n.startswith("com.unity.") or n in registry})
+                self.write_json("manifest.json", manifest)
+                self.write_json("packages-lock.json", {"dependencies": registry})
+                self.write_json("unity-packages.json", pins)
+                self.assertEqual(upm.validate(self.project)[0], pins)  # Registry-version positive control.
+                manifest["dependencies"][name] = request
+                # Matching hashes cannot authorize a conflicting source choice.
+                pins["manifestSha256"] = upm.canonical({n: v for n, v in manifest["dependencies"].items()
+                                                       if n.startswith("com.unity.") or n in registry})
+                self.write_json("manifest.json", manifest)
+                self.write_json("unity-packages.json", pins)
+                before = {p.relative_to(self.project): p.read_bytes() for p in self.project.rglob("*") if p.is_file()}
+                for operation in (upm.graph, upm.validate, upm.hydrate, upm.pin):
+                    with self.subTest(name=name, request=request, operation=operation.__name__):
+                        refusal = None
+                        with patch.object(upm, "fetch", side_effect=AssertionError("fetch reached")) as fetch, patch.object(
+                                upm.urllib.request, "urlopen", side_effect=AssertionError("metadata reached")) as metadata:
+                            try:
+                                operation(self.project)
+                            except Exception as error:
+                                refusal = error
+                            self.assertIsInstance(refusal, ValueError)
+                            self.assertIn("URI manifest request has an official registry lock source", str(refusal))
+                            fetch.assert_not_called()
+                            metadata.assert_not_called()
+                        self.assertEqual({p.relative_to(self.project): p.read_bytes()
+                                          for p in self.project.rglob("*") if p.is_file()}, before)
+                        self.assertFalse(list((self.project / "Packages").glob(".unity-upm-*")))
+        self.assertEqual(self.requests, [])
+
     def test_stale_uri_lock_sources_cannot_satisfy_direct_registry_requests(self):
         for name in ("com.autodesk.fbx", "1.2.3", "net.example.tool_kit"):
             for source in ("git", "local", "local-tarball", "tarball", "unknown"):
@@ -793,7 +838,9 @@ class UnityPackagesCache(unittest.TestCase):
                 else:
                     manifest["dependencies"]["com.autodesk.fbx"] = request
                 self.write_json("manifest.json", manifest)
-                with patch.object(upm, "fetch") as fetch, self.assertRaisesRegex(ValueError, "manifest/lock differs"):
+                reason = ("URI manifest request has an official registry lock source"
+                          if request is not None and ":" in request else "manifest/lock differs")
+                with patch.object(upm, "fetch") as fetch, self.assertRaisesRegex(ValueError, reason):
                     upm.hydrate(self.project)
                 fetch.assert_not_called()
         self.assertEqual(self.requests, [])
