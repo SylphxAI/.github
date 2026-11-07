@@ -7,6 +7,17 @@ schema snapshot files, or both. At least one scope is required.
 Migration directories are inspected recursively, including hidden directories.
 A configured directory may be absent until its first migration.
 
+For a directory containing both engines, opt in with `dialect-from-suffix: true`.
+Migration filenames ending in `.mysql.sql` use MySQL; `.postgresql.sql` uses
+PostgreSQL (case-insensitive). All other SQL filenames and every schema snapshot
+use the configured `dialect`. With the input omitted or `false`, every file uses
+`dialect`, exactly as before. This selects the parser, not files: all SQL files
+remain inspected, and merged-file immutability and directory-wide version rules
+are unchanged. Historical table declarations and later concurrent-index support
+files are considered only within the same effective SQL dialect.
+The CLI accepts `--dialect-from-suffix` / `--no-dialect-from-suffix`; the action
+passes the input through `MIGRATION_DIALECT_FROM_SUFFIX` (`true` or `false`).
+
 ```yaml
 on:
   pull_request:
