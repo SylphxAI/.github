@@ -416,7 +416,7 @@ def scan_dir(root, rules="all"):
     if rules == "pr-concurrency":
         return [Finding('.github/workflows/' + name, line, problem, True)
                 for name, text in workflows.items()
-                for line, problem in pr_concurrency_problems(text)]
+                for line, problem in pr_concurrency_problems(text, workflows=workflows)]
     # The required verdict repeats R8 against immutable source without relying
     # on checkout. Here it also fails early for workflow-lint consumers, even
     # when unrelated legacy contract findings are report-only.
@@ -432,7 +432,7 @@ def scan_dir(root, rules="all"):
     for name, text in workflows.items():
         findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations))
         findings.extend(Finding('.github/workflows/' + name, line, problem, True)
-                        for line, problem in pr_concurrency_problems(text))
+                        for line, problem in pr_concurrency_problems(text, workflows=workflows))
     findings.extend(gate_coverage({'.github/workflows/' + name: text for name, text in workflows.items()}))
     findings.extend(Finding(DECLARATION, 1, problem, True) for problem in check_declaration(root, workflows))
     if entry:
