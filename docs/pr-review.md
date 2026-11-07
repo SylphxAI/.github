@@ -225,13 +225,20 @@ Completed-check reuse is narrower than delivery reconciliation: select the newes
 canonical App Check Run at the exact head across every delivery ID, then reuse
 only a `success` or `failure` whose published reviewer and source digest match the
 freshly collected input. A newer active or non-reusable result blocks every older
-success. For an active check, the engine resolves its workflow owner once. Another
-live owner defers the delivery without source collection, a new check or inference;
-its existing check remains the pending authority. Deferral exits zero but is not
-a completed review, and the finalizer never touches the other workflow's check.
-The current workflow can reconcile its own accepted create. A completed owner,
-unresolvable owner or owner-read error instead starts a fresh review, preserving
-the old check. No caller-level concurrency setting is required for this deferral.
+success. Source and policy collection precede every reuse or deferral decision;
+the initial check output carries the engine-owned head, reviewer and input digest
+before inference. Only an active check with that same input identity can delegate
+to a live owner, resolved with one workflow read. Deferral creates no new check or
+inference, and the finalizer never touches the other workflow's check. A base or
+policy/input change, unreadable identity, completed owner, unresolvable owner or
+owner-read error instead starts a fresh review, preserving the old check. The
+current workflow can reconcile its own accepted create.
+
+Deferral exits zero as an operational handoff, with explicit `outcome=deferred`
+and `review-passed=false` action outputs and `review_passed: false` in the receipt.
+It is not a passing review verdict: the canonical App check remains pending until
+the owner publishes. Callers use that check, or explicitly require the passing
+output; workflow-job success alone cannot establish review completion.
 Neutral,
 cancelled, timed-out, action-required, stale, skipped, missing-identity and
 mismatched-input results start a fresh check and review. Rejected terminal checks

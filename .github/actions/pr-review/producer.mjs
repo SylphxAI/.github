@@ -154,8 +154,16 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
   const started = Date.now();
   const externalId = `pr-review/v1/${digest(JSON.stringify([github.repository, target.kind, target.number ?? target.ref,
     target.base_sha, target.policy_sha, target.head_sha, target.review_requested, trigger, engineVersion]))}`;
+  // Resolve the exact source/policy input before choosing any prior work. The
+  // same head alone does not prove the base, instructions or policy are equal.
+  let collected, initialInput, collectionError;
+  try {
+    collected = await collectBundle(github, target, trigger);
+    if (collected.needs_review) initialInput = createReviewInput(collected.bundle);
+  } catch (error) { collectionError = error; }
+  const identity = initialInput && `Head: \`${initialInput.head_sha}\`\n\nReviewer: \`${initialInput.reviewer_version}\`\n\nSource digest: \`${initialInput.input_digest}\`\n\n`;
   const begin = async (restartCompleted = false) => {
-    const run = await github.begin(target, externalId, detailsUrl, { restartCompleted });
+    const run = await github.begin(target, externalId, detailsUrl, { restartCompleted, inputIdentity: identity });
     if (run.app?.id !== APP_ID || run.head_sha !== target.head_sha || run.name !== CHECK_NAME ||
         (restartCompleted && run.status === 'completed')) {
       throw new Unavailable('Publisher did not receive the canonical App Check Run in an active state.');
@@ -165,17 +173,13 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
   };
   let run = await begin();
   const observedAt = new Date().toISOString();
-  if (run.deferred) return { check_run_id: run.id, head_sha: run.head_sha, conclusion: null, deferred: true,
-    owner_run_id: run.owner_run_id, reason: 'A live workflow already owns the current-head review.', observed_at: observedAt };
-  let collected, initialInput, collectionError;
-  try {
-    collected = await collectBundle(github, target, trigger);
-    if (collected.needs_review) initialInput = createReviewInput(collected.bundle);
-  } catch (error) { collectionError = error; }
+  const deferredReceipt = run => ({ check_run_id: run.id, head_sha: run.head_sha, conclusion: null, deferred: true,
+    owner_run_id: run.owner_run_id, input_digest: initialInput?.input_digest,
+    reason: 'A live workflow already owns the same-input review; no verdict is available from this delivery.', observed_at: observedAt });
+  if (run.deferred) return deferredReceipt(run);
   if (run.status === 'completed') {
     // Completion alone includes unavailable/cancelled attempts. Only a verdict
     // bound to this freshly collected input can replace another assessment.
-    const identity = initialInput && `Head: \`${initialInput.head_sha}\`\n\nReviewer: \`${initialInput.reviewer_version}\`\n\nSource digest: \`${initialInput.input_digest}\`\n\n`;
     if (!collectionError && identity && ['success', 'failure'].includes(run.conclusion) &&
         typeof run.output?.summary === 'string' && run.output.summary.startsWith(identity)) {
       await onBegin?.(run);
@@ -185,8 +189,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     // Keep rejected history immutable and register only the new check with the
     // finalizer. begin() reconciles an accepted in-progress create before POST.
     run = await begin(true);
-    if (run.deferred) return { check_run_id: run.id, head_sha: run.head_sha, conclusion: null, deferred: true,
-      owner_run_id: run.owner_run_id, reason: 'A live workflow already owns the current-head review.', observed_at: observedAt };
+    if (run.deferred) return deferredReceipt(run);
   }
   try {
     if (collectionError) throw collectionError;

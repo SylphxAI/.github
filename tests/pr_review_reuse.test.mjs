@@ -119,7 +119,8 @@ test('an in-progress check is reconciled without a second create when creation w
   const { github, runs, options } = boundary();
   await produceReview({ ...options, engine: async input => complete(input) });
   Object.assign(runs[0], { status: 'in_progress', conclusion: null });
-  const next = await github.begin(target, runs[0].external_id, options.detailsUrl, { restartCompleted: true });
+  const inputIdentity = runs[0].output.summary.split('\n\n').slice(0, 3).join('\n\n') + '\n\n';
+  const next = await github.begin(target, runs[0].external_id, options.detailsUrl, { restartCompleted: true, inputIdentity });
   assert.equal(next.id, runs[0].id); assert.equal(runs.length, 1);
 });
 
@@ -163,7 +164,7 @@ test('overlapping deliveries defer to one live owner and execute inference exact
   const first = produceReview({ ...options, engine: async input => { calls++; started(); await held; return complete(input); } });
   await entered;
   const observed = [];
-  const second = await produceReview({ ...options, detailsUrl: ownerUrl(2), trigger: { ...trigger, generation: '2' },
+  const second = await produceReview({ ...options, detailsUrl: ownerUrl(2),
     onBegin: run => observed.push(run.id), engine: async input => { calls++; return complete(input); } });
   assert.equal(second.deferred, true); assert.equal(second.owner_run_id, '1');
   assert.equal(second.conclusion, null); assert.equal(runs.length, 1); assert.equal(calls, 1); assert.deepEqual(observed, []);
@@ -183,14 +184,41 @@ for (const ownerState of ['completed', 'read-error', 'unknown', 'malformed', 'di
   assert.equal(next.conclusion, 'success'); assert.equal(calls, 2); assert.deepEqual(runs[0], previous);
 });
 
-test('newest live active check defers without creating, collecting source or invoking inference', async () => {
+test('newest same-input live check defers after collection without creating or invoking inference', async () => {
   const { runs, options, github, writes } = boundary();
   await produceReview({ ...options, engine: async input => complete(input) });
   runs.push({ ...structuredClone(runs[0]), id: 2, external_id: 'pr-review/v1/another-delivery',
     status: 'in_progress', conclusion: null, details_url: ownerUrl(99) });
   const previous = structuredClone(runs), count = writes.length;
-  github.source = async () => { throw new Error('Deferral must not collect source'); };
+  const source = github.source.bind(github); let reads = 0;
+  github.source = async (...args) => { reads++; return source(...args); };
   const next = await produceReview({ ...options, engine: async () => { throw new Error('Deferral must not infer'); } });
   assert.equal(next.deferred, true); assert.equal(next.check_run_id, 2); assert.equal(next.owner_run_id, '99');
-  assert.equal(writes.length, count); assert.deepEqual(runs, previous);
+  assert.equal(writes.length, count); assert.deepEqual(runs, previous); assert.ok(reads > 0);
+});
+
+
+for (const change of ['base', 'policy', 'unreadable-identity']) test(`same-head active owner cannot defer a ${change} input`, async () => {
+  const { runs, options, github, ownerReads } = boundary(); let calls = 0;
+  const opts = { ...options, engine: async input => { calls++; return complete(input); } };
+  await produceReview(opts);
+  Object.assign(runs[0], { status: 'in_progress', conclusion: null, details_url: ownerUrl(99) });
+  if (change === 'unreadable-identity') runs[0].output.summary = 'Legacy check without input identity';
+  const original = github.source.bind(github);
+  if (change === 'policy') github.source = async (path, ...args) => path === '.github/review-policy.toml'
+    ? 'version=2\n[tier0]\npaths=[]\n[review]\npaths=["src/**"]\n[generated]\npaths=[]\n' : original(path, ...args);
+  const previous = structuredClone(runs[0]);
+  const next = await produceReview({ ...opts, target: change === 'base' ? { ...target, base_sha: 'c'.repeat(40) } : target });
+  assert.equal(next.deferred, undefined); assert.equal(next.reused, undefined); assert.equal(next.check_run_id, 2);
+  assert.equal(next.conclusion, 'success'); assert.equal(calls, 2); assert.deepEqual(runs[0], previous);
+  assert.deepEqual(ownerReads, [], 'different or unreadable input cannot delegate before ownership lookup');
+});
+
+test('initial created check carries the authoritative input before inference begins', async () => {
+  const { runs, options } = boundary();
+  await produceReview({ ...options, engine: async input => {
+    assert.equal(runs[0].status, 'in_progress');
+    assert.ok(runs[0].output.summary.startsWith(`Head: \`${input.head_sha}\`\n\nReviewer: \`${input.reviewer_version}\`\n\nSource digest: \`${input.input_digest}\`\n\n`));
+    return complete(input);
+  } });
 });

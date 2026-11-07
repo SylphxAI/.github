@@ -116,12 +116,13 @@ export class GitHub {
     return this.pages(`/commits/${sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=all`, 'check_runs');
   }
 
-  async begin(target, externalId, detailsUrl, { restartCompleted = false } = {}) {
+  async begin(target, externalId, detailsUrl, { restartCompleted = false, inputIdentity } = {}) {
     const runs = await this.checkRuns(target.head_sha);
     const existing = runs.filter(r => r.app?.id === APP_ID && r.name === CHECK_NAME &&
       r.head_sha === target.head_sha).sort((a, b) => b.id - a.id)[0];
     if (existing?.status === 'completed' && !restartCompleted) return existing;
-    if (existing && existing.status !== 'completed') {
+    if (existing && existing.status !== 'completed' && typeof inputIdentity === 'string' &&
+        typeof existing.output?.summary === 'string' && existing.output.summary.startsWith(inputIdentity)) {
       const runId = value => {
         try {
           const url = new URL(value), match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/actions\/runs\/([1-9][0-9]*)(?:\/attempts\/[1-9][0-9]*)?\/?$/);
@@ -146,7 +147,7 @@ export class GitHub {
     const created = await this.request('/check-runs', { method: 'POST', checks: true, body: {
       name: CHECK_NAME, head_sha: target.head_sha, external_id: externalId,
       details_url: detailsUrl, status: 'in_progress', started_at: new Date().toISOString(),
-      output: { title: 'Review running', summary: `Reviewing exact head \`${target.head_sha}\`.` },
+      output: { title: 'Review running', summary: `${inputIdentity ?? ''}Reviewing exact head \`${target.head_sha}\`.` },
     } });
     return this.request(`/check-runs/${created.id}`, { checks: true });
   }

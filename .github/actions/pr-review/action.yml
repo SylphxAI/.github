@@ -21,6 +21,13 @@ inputs:
   github-token:
     description: Read-only caller token for source and PR metadata.
     required: true
+outputs:
+  outcome:
+    description: passed, failed, or deferred to a live workflow reviewing the same input.
+    value: ${{ steps.review.outputs.outcome }}
+  review-passed:
+    description: True only for a passing canonical verdict or current policy exemption; false for deferral.
+    value: ${{ steps.review.outputs.review_passed }}
 runs:
   using: composite
   steps:
