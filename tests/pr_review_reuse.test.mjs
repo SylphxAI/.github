@@ -115,3 +115,34 @@ test('an in-progress check is reconciled without a second create when creation w
   const next = await github.begin(target, runs[0].external_id, options.detailsUrl, { restartCompleted: true });
   assert.equal(next.id, runs[0].id); assert.equal(runs.length, 1);
 });
+
+for (const state of ['active', 'neutral']) test(`newer ${state} delivery shadows an older matching success and forces a fresh review`, async () => {
+  const { runs, options } = boundary(); let calls = 0;
+  const opts = { ...options, engine: async input => { calls++; return complete(input); } };
+  await produceReview(opts);
+  const later = { ...structuredClone(runs[0]), id: 2, external_id: 'pr-review/v1/different-delivery',
+    status: state === 'active' ? 'in_progress' : 'completed', conclusion: state === 'active' ? null : 'neutral' };
+  runs.push(later); const previous = structuredClone(runs), observed = [];
+  const next = await produceReview({ ...opts, onBegin: run => observed.push(run.id) });
+  assert.equal(next.reused, undefined); assert.equal(next.check_run_id, 3); assert.equal(calls, 2);
+  assert.equal(next.conclusion, 'success'); assert.deepEqual(runs.slice(0, 2), previous);
+  assert.deepEqual(observed, [3]);
+});
+
+test('newest valid completed result may reuse across delivery IDs only with matching input identity', async () => {
+  const { runs, options } = boundary(); let calls = 0;
+  const opts = { ...options, engine: async input => { calls++; return complete(input); } };
+  await produceReview(opts);
+  runs.push({ ...structuredClone(runs[0]), id: 2, external_id: 'pr-review/v1/different-delivery' });
+  const next = await produceReview(opts);
+  assert.equal(next.reused, true); assert.equal(next.check_run_id, 2); assert.equal(calls, 1); assert.equal(runs.length, 2);
+});
+
+test('check-discovery errors fail without creating a check, inference, or an older fallback', async () => {
+  let calls = 0, writes = 0;
+  const github = new GitHub({ repository: 'example/repo', readToken: 'source', checkToken: 'checks',
+    fetcher: async (_url, request) => { if (request.method !== 'GET') writes++; return { ok: false, status: 403 }; } });
+  await assert.rejects(() => produceReview({ github, target, trigger, createReviewInput, engineVersion: reviewerVersion,
+    engine: async input => { calls++; return complete(input); } }), /HTTP 403/);
+  assert.equal(calls, 0); assert.equal(writes, 0);
+});

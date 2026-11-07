@@ -221,9 +221,11 @@ recovery and its final verdict pass; persistent incompleteness is failure, not
 neutral or success. A superseded head is cancelled. A new head has a distinct
 check identity and cannot inherit an old result. One workflow serializes duplicate
 deliveries; creation looks up the stable external ID before its single POST.
-Completed-check reuse is narrower than delivery reconciliation: only a canonical
-App `success` or `failure` at the exact head whose published reviewer and source
-digest match the freshly collected input can replace another assessment. Neutral,
+Completed-check reuse is narrower than delivery reconciliation: select the newest
+canonical App Check Run at the exact head across every delivery ID, then reuse
+only a `success` or `failure` whose published reviewer and source digest match the
+freshly collected input. A newer active or non-reusable result blocks every older
+success; another delivery's active check is preserved while a fresh review starts. Neutral,
 cancelled, timed-out, action-required, stale, skipped, missing-identity and
 mismatched-input results start a fresh check and review. Rejected terminal checks
 remain immutable and are not registered for the new attempt's finalizer. An

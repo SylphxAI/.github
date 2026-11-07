@@ -119,8 +119,11 @@ export class GitHub {
   async begin(target, externalId, detailsUrl, { restartCompleted = false } = {}) {
     const runs = await this.checkRuns(target.head_sha);
     const existing = runs.filter(r => r.app?.id === APP_ID && r.name === CHECK_NAME &&
-      r.head_sha === target.head_sha && r.external_id === externalId).sort((a, b) => b.id - a.id)[0];
-    if (existing && !(restartCompleted && existing.status === 'completed')) return existing;
+      r.head_sha === target.head_sha).sort((a, b) => b.id - a.id)[0];
+    // A newer delivery supersedes every older result, not only checks sharing
+    // this delivery's external ID. Reconcile an active create only for its own
+    // ID; another active delivery requires a fresh check, never an old success.
+    if (existing && (existing.status === 'completed' ? !restartCompleted : existing.external_id === externalId)) return existing;
     // POST has no retry. After an ambiguous transport result the next delivery
     // finds this stable external_id before attempting another creation.
     const created = await this.request('/check-runs', { method: 'POST', checks: true, body: {
