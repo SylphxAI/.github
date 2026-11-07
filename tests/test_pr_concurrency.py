@@ -85,6 +85,14 @@ class PRConcurrencyTest(unittest.TestCase):
             self.assertEqual(problems(workflow(None, trigger=trigger)), [])
         self.assertTrue(problems(workflow(None, trigger='[pull_request, workflow_call]')))
 
+    def test_mixed_reusable_inherits_all_caller_event_partitions(self):
+        trigger = '[pull_request, workflow_call]'
+        self.assertEqual(problems(workflow(trigger=trigger)), [])
+        self.assertTrue(problems(workflow(cancel='true', trigger=trigger)))
+        self.assertTrue(problems(workflow(cancel=CANCEL[:-3] + " || github.event_name == 'schedule' }}", trigger=trigger)))
+        self.assertTrue(problems(workflow(cancel="${{ github.event_name != 'merge_group' }}", trigger=trigger)))
+        self.assertTrue(problems(workflow(cancel="${{ 'release' == github.event_name || " + GUARD + ' }}', trigger=trigger)))
+
     def test_real_contract_scan_blocks_report_only_and_reads_yaml_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

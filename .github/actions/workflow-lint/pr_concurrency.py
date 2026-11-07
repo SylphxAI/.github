@@ -81,7 +81,26 @@ def problems(text):
     if not isinstance(concurrency, dict):
         return [(line, error)]
     try:
-        for event in triggered - {"workflow_call"}:
+        checked_events = triggered - {"workflow_call"}
+        if "workflow_call" in triggered:
+            # A reusable call inherits its caller's event, not workflow_call.
+            # Supported predicates compare only event-name string constants;
+            # each constant plus one other name exhausts those partitions.
+            for value in concurrency.values():
+                for source in re.findall(r"\$\{\{(.*?)\}\}", str(value), re.S):
+                    tokens = Expression(source, {}).tokens
+                    for i, token in enumerate(tokens):
+                        if token in ("==", "!=") and i and i + 1 < len(tokens):
+                            left, right = tokens[i - 1], tokens[i + 1]
+                            literal = right if left == "github.event_name" else left if right == "github.event_name" else ""
+                            if literal.startswith("'"):
+                                checked_events.add(literal[1:-1].replace("''", "'"))
+            other = "__other_caller_event__"
+            while other in checked_events:
+                other += "_"
+            checked_events.add(other)
+            checked_events.update(PR_EVENTS)
+        for event in checked_events:
             group = evaluate(concurrency.get("group"), event)
             cancel = evaluate(concurrency.get("cancel-in-progress"), event)
             if cancel in ("true", "false"):
