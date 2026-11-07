@@ -100,8 +100,32 @@ contract requires authenticated registry readback; local bytes are never
 presented as a remote verification. It is optional for a dry run, but remains
 required before real publication can request a credential.
 
+### Explicit serving baseline
+
+A guard may supply `baseline-digest` and `baseline-receipt` together for a dry
+run. The digest is the canonical `sha256:…` of its current serving image; the
+receipt is a regular local image-set receipt file. A previous read-only step
+may capture them, or the guard may use an already captured baseline. The
+publisher does not fetch either input or claim that supplied bytes establish
+live state. Missing pairs, malformed digests, symlinks, directories, and baseline
+inputs on a real publication are refused before Access is called.
+
+The same commands receive `ARTIFACT_BASELINE_DIGEST` and
+`ARTIFACT_BASELINE_RECEIPT` only from these validated explicit inputs. The
+publisher reads the receipt without changing it, hashes it before and after
+the commands, and refuses changed baseline bytes. The manifest's `baseline`
+object reports the supplied image digest; receipt path, digest and size;
+`runtimeDigestMatches`; `receiptBytesUnchanged`; and `liveStateVerified=false`.
+A different candidate runtime digest is reported, not automatically refused:
+the caller's guard owns which release changes are allowed and how its image-set
+receipt is interpreted. Receipt bodies are not included in outputs. Without
+explicit baseline inputs, `baseline` is `null`; there is no inferred serving
+baseline.
+
 A dry-run manifest describes these local candidate bytes, not a reservation
-or a promise that a future rebuild will produce the same bytes.
+or a promise that a future rebuild will produce the same bytes. Every build or
+evidence command must complete successfully; any command or validation failure
+exits non-zero and emits no dry-run manifest or promotion outputs.
 
 ## Caller setup
 

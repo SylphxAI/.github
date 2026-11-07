@@ -6,6 +6,14 @@ inputs:
     description: Build and package evidence locally without Access, reservations, pushes, registration or remote verification.
     required: false
     default: 'false'
+  baseline-digest:
+    description: Optional current serving image sha256 digest for dry-run comparison; requires baseline-receipt. Never fetched or asserted live by this action.
+    required: false
+    default: ''
+  baseline-receipt:
+    description: Optional regular local image-set receipt path for dry-run comparison; requires baseline-digest. Read and hashed without modification.
+    required: false
+    default: ''
   project:
     description: Canonical project resource name, orgs/{org-id}/projects/{project-id}.
     required: true
@@ -77,6 +85,8 @@ runs:
       shell: bash
       env:
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_BASELINE_DIGEST: ${{ inputs.baseline-digest }}
+        INPUT_BASELINE_RECEIPT: ${{ inputs.baseline-receipt }}
         INPUT_PROJECT: ${{ inputs.project }}
         INPUT_CI_NAME: ${{ inputs.ci-name }}
         INPUT_SOURCE_SHA: ${{ inputs.source-sha }}

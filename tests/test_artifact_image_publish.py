@@ -823,6 +823,10 @@ def test_pipeline_cleans_credentials_and_emits_receipt_only_after_full_success(
 
 
 def dry_run_environment(tmp_path, monkeypatch, event="pull_request"):
+    monkeypatch.delenv("INPUT_BASELINE_DIGEST", raising=False)
+    monkeypatch.delenv("INPUT_BASELINE_RECEIPT", raising=False)
+    monkeypatch.setenv("ARTIFACT_BASELINE_DIGEST", "unvalidated-inherited-value")
+    monkeypatch.setenv("ARTIFACT_BASELINE_RECEIPT", "unvalidated-inherited-path")
     values = {
         "INPUT_DRY_RUN": "true", "GITHUB_EVENT_NAME": event,
         "INPUT_PROJECT": PARENT, "INPUT_SOURCE_SHA": "a" * 40,
@@ -845,10 +849,20 @@ def dry_run_environment(tmp_path, monkeypatch, event="pull_request"):
 
 
 @pytest.mark.parametrize("event", ["pull_request", "merge_group", "push"])
+@pytest.mark.parametrize("baseline_kind", [None, "same", "different"])
 def test_dry_run_reuses_build_and_evidence_with_zero_writes_and_exact_manifest(
-    tmp_path, monkeypatch, event,
+    tmp_path, monkeypatch, event, baseline_kind,
 ):
     source = dry_run_environment(tmp_path, monkeypatch, event)
+    baseline_bytes = b"explicit current image-set receipt; never print this body\n"
+    baseline_path = tmp_path / "serving-image-set.json"
+    if baseline_kind is not None:
+        make_layout(tmp_path / "expected-runtime")
+        expected_digest = lane.local_manifest(tmp_path / "expected-runtime")[0]["digest"]
+        baseline_digest = expected_digest if baseline_kind == "same" else "sha256:" + "b" * 64
+        baseline_path.write_bytes(baseline_bytes)
+        monkeypatch.setenv("INPUT_BASELINE_DIGEST", baseline_digest)
+        monkeypatch.setenv("INPUT_BASELINE_RECEIPT", str(baseline_path))
     observed = []
 
     class ReadOnlyAccess:
@@ -863,6 +877,13 @@ def test_dry_run_reuses_build_and_evidence_with_zero_writes_and_exact_manifest(
     def command(command, env):
         observed.append(command)
         assert env["ARTIFACT_DRY_RUN"] == "true"
+        if baseline_kind is None:
+            assert "ARTIFACT_BASELINE_DIGEST" not in env
+            assert "ARTIFACT_BASELINE_RECEIPT" not in env
+        else:
+            assert env["ARTIFACT_BASELINE_DIGEST"] == baseline_digest
+            assert env["ARTIFACT_BASELINE_RECEIPT"] == str(baseline_path)
+            assert baseline_path.read_bytes() == baseline_bytes
         assert env["GITHUB_EVENT_NAME"] == event
         assert env["GITHUB_REF"] == source["GITHUB_REF"]
         assert env["SOURCE_WORKFLOW"] == source["GITHUB_WORKFLOW_REF"]
@@ -908,6 +929,18 @@ def test_dry_run_reuses_build_and_evidence_with_zero_writes_and_exact_manifest(
     assert manifest["authenticatedManifestReadback"] is False and manifest["promotionAuthorized"] is False
     assert manifest["access"]["checked"] is False
     assert manifest["remoteVerification"].startswith("skipped:")
+    if baseline_kind is None:
+        assert manifest["baseline"] is None
+    else:
+        assert manifest["baseline"] == {
+            "imageDigest": baseline_digest,
+            "receipt": {"path": str(baseline_path), "digest": lane.sha256(baseline_bytes),
+                        "sizeBytes": str(len(baseline_bytes))},
+            "runtimeDigestMatches": baseline_kind == "same",
+            "receiptBytesUnchanged": True, "liveStateVerified": False,
+        }
+        assert baseline_path.read_bytes() == baseline_bytes
+        assert baseline_bytes.decode().strip() not in outputs["dry_run_manifest"]
     assert manifest["target"] == {
         "project": PARENT, "image": IMAGE, "ciName": "test-ci", "sourceSha": "a" * 40,
         "platforms": "linux/amd64", "repository": "owner/source", "repositoryID": "42",
@@ -927,13 +960,18 @@ def test_dry_run_reuses_build_and_evidence_with_zero_writes_and_exact_manifest(
                ("private-oidc-request", "private-github-token", "private-existing-api-key"))
 
 
-def test_dry_run_shipped_entrypoint_executes_real_local_commands_without_oidc(tmp_path, monkeypatch):
+@pytest.mark.parametrize("evidence_exit", [0, 17])
+def test_dry_run_shipped_entrypoint_executes_real_local_commands_without_oidc(
+    tmp_path, monkeypatch, evidence_exit,
+):
     dry_run_environment(tmp_path, monkeypatch)
     fixture = tmp_path / "fixture"
     make_layout(fixture / "runtime")
     make_layout(fixture / "evidence-oci", "evidence")
     (fixture / "evidence").mkdir()
     (fixture / "evidence/proof.json").write_bytes(b"real fixture\n")
+    baseline_path = fixture / "serving-receipt.json"
+    baseline_path.write_text('{"callerOwnedBaseline":true}\n')
     tools = tmp_path / "tools"
     tools.mkdir()
     (tools / "skopeo").write_text("#!/bin/sh\nexit 91\n")
@@ -948,9 +986,21 @@ def test_dry_run_shipped_entrypoint_executes_real_local_commands_without_oidc(tm
         "INPUT_EVIDENCE_COMMAND": 'cp -a "$PREVIEW_FIXTURE/evidence-oci/." "$BUILD_EVIDENCE_OCI_DIR/"; '
                                   'cp -a "$PREVIEW_FIXTURE/evidence/." "$BUILD_EVIDENCE_DIR/"',
         "INPUT_VERIFY_COMMAND": "",
+        "INPUT_BASELINE_DIGEST": lane.local_manifest(fixture / "runtime")[0]["digest"],
+        "INPUT_BASELINE_RECEIPT": str(baseline_path),
     }
+    if evidence_exit:
+        env["INPUT_EVIDENCE_COMMAND"] = "exit " + str(evidence_exit)
     result = subprocess.run([lane.sys.executable, str(ACTION / "publish.py")], cwd=ROOT,
                             env=env, capture_output=True, text=True, timeout=10)
+    if evidence_exit:
+        assert result.returncode != 0
+        assert "stage=package-evidence" in result.stdout
+        assert "stage=dry-run-complete" not in result.stdout
+        outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
+        assert set(outputs) == {"_root"}
+        assert not (Path(outputs["_root"]) / "dry-run-manifest.json").exists()
+        return
     assert result.returncode == 0, result.stderr
     assert "access_check=skipped" in result.stdout
     assert "remote_verification=skipped published=false" in result.stdout
@@ -960,15 +1010,22 @@ def test_dry_run_shipped_entrypoint_executes_real_local_commands_without_oidc(tm
     manifest = json.loads(outputs["dry_run_manifest"])
     assert manifest["target"]["event"] == "pull_request"
     assert manifest["target"]["sourceSha"] == source
+    assert manifest["baseline"]["runtimeDigestMatches"] is True
+    assert manifest["baseline"]["receipt"]["digest"] == lane.sha256(baseline_path.read_bytes())
     assert manifest["runtime"]["digest"] == lane.local_manifest(fixture / "runtime")[0]["digest"]
     assert manifest["evidence"]["files"]["proof.json"]["digest"] == lane.sha256(b"real fixture\n")
 
 
-@pytest.mark.parametrize("failure", ["build", "evidence", "changed-blob", "symlink", "oversized-manifest"])
+@pytest.mark.parametrize("failure", ["build", "evidence", "changed-blob", "symlink", "oversized-manifest", "changed-baseline"])
 def test_dry_run_failure_emits_no_manifest_or_promotion_output(tmp_path, monkeypatch, failure):
     dry_run_environment(tmp_path, monkeypatch)
     if failure == "oversized-manifest":
         monkeypatch.setenv("GITHUB_WORKFLOW_REF", "w" * 524289)
+    if failure == "changed-baseline":
+        baseline = tmp_path / "serving-receipt.json"
+        baseline.write_text("original serving receipt")
+        monkeypatch.setenv("INPUT_BASELINE_DIGEST", "sha256:" + "b" * 64)
+        monkeypatch.setenv("INPUT_BASELINE_RECEIPT", str(baseline))
 
     def command(command, env):
         if failure == {"same-build": "build", "same-evidence": "evidence"}[command]:
@@ -985,6 +1042,8 @@ def test_dry_run_failure_emits_no_manifest_or_promotion_output(tmp_path, monkeyp
             else:
                 (evidence / "proof.json").write_text("{}")
             make_layout(Path(env["BUILD_EVIDENCE_OCI_DIR"]), "evidence")
+            if failure == "changed-baseline":
+                baseline.write_text("changed serving receipt")
 
     with (
         mock.patch.object(lane, "Access", side_effect=AssertionError("Access attempted")),
@@ -998,6 +1057,41 @@ def test_dry_run_failure_emits_no_manifest_or_promotion_output(tmp_path, monkeyp
     outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
     assert set(outputs) == {"_root"}
     assert not (next(tmp_path.glob("artifact-image-*")) / "dry-run-manifest.json").exists()
+
+
+@pytest.mark.parametrize("case", ["digest-only", "receipt-only", "bad-digest", "directory", "symlink", "real-publication"])
+def test_invalid_or_non_dry_baseline_fails_before_access(tmp_path, monkeypatch, case):
+    dry_run_environment(tmp_path, monkeypatch, "push")
+    receipt = tmp_path / "baseline.json"
+    receipt.write_text("explicit serving image-set receipt")
+    digest = "sha256:" + "b" * 64
+    if case == "digest-only":
+        monkeypatch.setenv("INPUT_BASELINE_DIGEST", digest)
+    elif case == "receipt-only":
+        monkeypatch.setenv("INPUT_BASELINE_RECEIPT", str(receipt))
+    else:
+        if case == "bad-digest":
+            digest = "not-a-canonical-digest"
+        elif case == "directory":
+            receipt = tmp_path
+        elif case == "symlink":
+            link = tmp_path / "baseline-link"
+            link.symlink_to(receipt)
+            receipt = link
+        elif case == "real-publication":
+            monkeypatch.setenv("INPUT_DRY_RUN", "false")
+        monkeypatch.setenv("INPUT_BASELINE_DIGEST", digest)
+        monkeypatch.setenv("INPUT_BASELINE_RECEIPT", str(receipt))
+    with (
+        mock.patch.object(lane, "Access") as access,
+        mock.patch.object(lane.platform, "machine", return_value="x86_64"),
+        mock.patch.object(lane.shutil, "which", return_value="/fixture/tool"),
+        mock.patch.object(lane.subprocess, "check_output", return_value="a" * 40),
+        pytest.raises(ValueError, match="baseline"),
+    ):
+        lane.run()
+    access.assert_not_called()
+    assert not (tmp_path / "output").exists()
 
 
 @pytest.mark.parametrize("value", ["TRUE", "true ", "1", "yes", ""])
@@ -1080,6 +1174,10 @@ def test_composite_keeps_caller_identity_and_always_cleans_up():
     assert action["inputs"]["dry-run"]["default"] == "false"
     assert action["inputs"]["verify-command"]["required"] is False
     assert action["runs"]["steps"][0]["env"]["INPUT_DRY_RUN"] == "${{ inputs.dry-run }}"
+    assert action["inputs"]["baseline-digest"]["default"] == ""
+    assert action["inputs"]["baseline-receipt"]["default"] == ""
+    assert action["runs"]["steps"][0]["env"]["INPUT_BASELINE_DIGEST"] == "${{ inputs.baseline-digest }}"
+    assert action["runs"]["steps"][0]["env"]["INPUT_BASELINE_RECEIPT"] == "${{ inputs.baseline-receipt }}"
     assert {"dry_run", "dry_run_manifest"} <= set(action["outputs"])
     assert not {"image", "repository", "token", "registry", "api-url"} & set(
         action["inputs"]

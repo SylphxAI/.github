@@ -536,7 +536,30 @@ def build_and_evidence(commands, env, root):
     return local_manifest(root / "image-oci"), local_manifest(root / "evidence-oci")
 
 
-def preview_manifest(parent, image, runtime, evidence, env, root):
+def baseline_receipt(path):
+    """Read only explicitly supplied local bytes; never fetch or print the body."""
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("baseline-receipt must be a regular local file")
+    with path.open("rb") as stream:
+        digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+        size = os.fstat(stream.fileno()).st_size
+    return {"path": str(path), "digest": digest, "sizeBytes": str(size)}
+
+
+def read_baseline(dry_run):
+    digest = os.environ.get("INPUT_BASELINE_DIGEST", "")
+    receipt_path = os.environ.get("INPUT_BASELINE_RECEIPT", "")
+    if not digest and not receipt_path:
+        return None
+    if not dry_run:
+        raise ValueError("baseline inputs are only supported with dry-run")
+    if not DIGEST.fullmatch(digest) or not receipt_path:
+        raise ValueError("baseline-digest and baseline-receipt must be supplied together")
+    path = Path(receipt_path).absolute()
+    return {"imageDigest": digest, "receipt": baseline_receipt(path)}
+
+
+def preview_manifest(parent, image, runtime, evidence, env, root, baseline=None):
     """Describe verified local bytes, never a reservation or publication receipt."""
     files = {}
     for path in sorted((root / "evidence").rglob("*")):
@@ -582,6 +605,16 @@ def preview_manifest(parent, image, runtime, evidence, env, root):
         },
         "runtime": runtime_record, "evidence": evidence_record,
     }
+    value["baseline"] = None
+    if baseline is not None:
+        if baseline_receipt(Path(baseline["receipt"]["path"])) != baseline["receipt"]:
+            raise ValueError("baseline receipt bytes changed during build or evidence commands")
+        value["baseline"] = {
+            **baseline,
+            "runtimeDigestMatches": runtime_record["digest"] == baseline["imageDigest"],
+            "receiptBytesUnchanged": True,
+            "liveStateVerified": False,
+        }
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
     if len(encoded.encode()) > 524288:
         raise ValueError("dry-run manifest exceeds 524288 bytes")
@@ -629,6 +662,7 @@ def run():
         raise ValueError(
             "build-command and evidence-command are required; publication also requires verify-command"
         )
+    baseline = read_baseline(dry_run)
     root = Path(
         tempfile.mkdtemp(prefix="artifact-image-", dir=os.environ["RUNNER_TEMP"])
     )
@@ -654,6 +688,12 @@ def run():
             "ARTIFACT_REGISTRY_AUTH_FILE": str(auth_dir / "skopeo-auth.json"),
         }
     )
+    # Only validated explicit inputs become the commands' baseline context.
+    env.pop("ARTIFACT_BASELINE_DIGEST", None)
+    env.pop("ARTIFACT_BASELINE_RECEIPT", None)
+    if baseline is not None:
+        env.update(ARTIFACT_BASELINE_DIGEST=baseline["imageDigest"],
+                   ARTIFACT_BASELINE_RECEIPT=baseline["receipt"]["path"])
     for directory in ("image-oci", "evidence", "evidence-oci", "readback", "verify"):
         (root / directory).mkdir()
     access = None
@@ -688,7 +728,7 @@ def run():
             auth = None
         runtime, evidence = build_and_evidence(commands, env, root)
         if dry_run:
-            preview_manifest(parent, image, runtime, evidence, env, root)
+            preview_manifest(parent, image, runtime, evidence, env, root, baseline)
             return
         # Reuse the prepared Access key and upload credentials when > 300s of
         # Access key lifetime remain; otherwise mint fresh credentials after a
