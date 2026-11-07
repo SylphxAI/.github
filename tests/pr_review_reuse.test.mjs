@@ -21,12 +21,19 @@ const complete = (input, bad = false) => parseReviewResult(JSON.stringify({ sche
 // Exercise the shipped check discovery/create/readback adapter, not a fake
 // begin() that decides independently which completed results can be reused.
 function boundary() {
-  const runs = [], writes = [];
+  const runs = [], writes = [], owners = new Map(), ownerReads = [];
   const github = new GitHub({ repository: 'example/repo', readToken: 'source', checkToken: 'checks',
     fetcher: async (url, request = {}) => {
-      assert.equal(request.headers.authorization, 'Bearer checks');
       const path = new URL(url).pathname, body = request.body && JSON.parse(request.body);
       let data;
+      if (path.includes('/actions/runs/')) {
+        assert.equal(request.headers.authorization, 'Bearer source');
+        const id = path.split('/').at(-1); ownerReads.push(id);
+        const value = owners.get(id);
+        if (value instanceof Error) throw value;
+        return { ok: true, status: 200, json: async () => ({ id: Number(id), ...(value ?? { status: 'in_progress' }) }) };
+      }
+      assert.equal(request.headers.authorization, 'Bearer checks');
       if (path.includes('/commits/') && path.endsWith('/check-runs')) data = { check_runs: runs };
       else if (path.endsWith('/check-runs') && request.method === 'POST') {
         data = { ...body, id: runs.length + 1, app: { id: APP_ID } }; runs.push(data); writes.push({ method: 'POST', id: data.id });
@@ -41,8 +48,8 @@ function boundary() {
     assert.equal(optional, true); return null;
   };
   github.current = async () => true;
-  return { github, runs, writes, options: { github, target, trigger, createReviewInput, engineVersion: reviewerVersion,
-    detailsUrl: 'https://example.com/runs/1' } };
+  return { github, runs, writes, owners, ownerReads, options: { github, target, trigger, createReviewInput, engineVersion: reviewerVersion,
+    detailsUrl: 'https://github.com/example/repo/actions/runs/1' } };
 }
 
 for (const conclusion of ['success', 'failure']) test(`same-head same-input completed ${conclusion} reuses the receipt without inference`, async () => {
@@ -145,4 +152,45 @@ test('check-discovery errors fail without creating a check, inference, or an old
   await assert.rejects(() => produceReview({ github, target, trigger, createReviewInput, engineVersion: reviewerVersion,
     engine: async input => { calls++; return complete(input); } }), /HTTP 403/);
   assert.equal(calls, 0); assert.equal(writes, 0);
+});
+
+
+const ownerUrl = id => `https://github.com/example/repo/actions/runs/${id}`;
+test('overlapping deliveries defer to one live owner and execute inference exactly once', async () => {
+  const { runs, options, ownerReads } = boundary(); let release, started, calls = 0;
+  const entered = new Promise(resolve => { started = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  const first = produceReview({ ...options, engine: async input => { calls++; started(); await held; return complete(input); } });
+  await entered;
+  const observed = [];
+  const second = await produceReview({ ...options, detailsUrl: ownerUrl(2), trigger: { ...trigger, generation: '2' },
+    onBegin: run => observed.push(run.id), engine: async input => { calls++; return complete(input); } });
+  assert.equal(second.deferred, true); assert.equal(second.owner_run_id, '1');
+  assert.equal(second.conclusion, null); assert.equal(runs.length, 1); assert.equal(calls, 1); assert.deepEqual(observed, []);
+  assert.deepEqual(ownerReads, ['1']); release(); assert.equal((await first).conclusion, 'success');
+});
+
+for (const ownerState of ['completed', 'read-error', 'unknown', 'malformed', 'different-run']) test(`active check with ${ownerState} owner starts a fresh review`, async () => {
+  const { runs, options, owners } = boundary(); let calls = 0;
+  const opts = { ...options, engine: async input => { calls++; return complete(input); } };
+  await produceReview(opts);
+  Object.assign(runs[0], { status: 'in_progress', conclusion: null,
+    details_url: ownerState === 'unknown' ? 'https://example.com/unknown' : ownerUrl(99) });
+  owners.set('99', ownerState === 'read-error' ? new Error('owner read unavailable') :
+    ownerState === 'malformed' ? {} : ownerState === 'different-run' ? { id: 98, status: 'in_progress' } : { status: 'completed', conclusion: 'failure' });
+  const previous = structuredClone(runs[0]), next = await produceReview(opts);
+  assert.equal(next.deferred, undefined); assert.equal(next.reused, undefined); assert.equal(next.check_run_id, 2);
+  assert.equal(next.conclusion, 'success'); assert.equal(calls, 2); assert.deepEqual(runs[0], previous);
+});
+
+test('newest live active check defers without creating, collecting source or invoking inference', async () => {
+  const { runs, options, github, writes } = boundary();
+  await produceReview({ ...options, engine: async input => complete(input) });
+  runs.push({ ...structuredClone(runs[0]), id: 2, external_id: 'pr-review/v1/another-delivery',
+    status: 'in_progress', conclusion: null, details_url: ownerUrl(99) });
+  const previous = structuredClone(runs), count = writes.length;
+  github.source = async () => { throw new Error('Deferral must not collect source'); };
+  const next = await produceReview({ ...options, engine: async () => { throw new Error('Deferral must not infer'); } });
+  assert.equal(next.deferred, true); assert.equal(next.check_run_id, 2); assert.equal(next.owner_run_id, '99');
+  assert.equal(writes.length, count); assert.deepEqual(runs, previous);
 });

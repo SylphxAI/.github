@@ -120,10 +120,27 @@ export class GitHub {
     const runs = await this.checkRuns(target.head_sha);
     const existing = runs.filter(r => r.app?.id === APP_ID && r.name === CHECK_NAME &&
       r.head_sha === target.head_sha).sort((a, b) => b.id - a.id)[0];
-    // A newer delivery supersedes every older result, not only checks sharing
-    // this delivery's external ID. Reconcile an active create only for its own
-    // ID; another active delivery requires a fresh check, never an old success.
-    if (existing && (existing.status === 'completed' ? !restartCompleted : existing.external_id === externalId)) return existing;
+    if (existing?.status === 'completed' && !restartCompleted) return existing;
+    if (existing && existing.status !== 'completed') {
+      const runId = value => {
+        try {
+          const url = new URL(value), match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/actions\/runs\/([1-9][0-9]*)(?:\/attempts\/[1-9][0-9]*)?\/?$/);
+          return url.origin === 'https://github.com' && match && `${match[1]}/${match[2]}` === this.repository ? match[3] : null;
+        } catch { return null; }
+      };
+      const owner = runId(existing.details_url), current = runId(detailsUrl);
+      let live = false;
+      if (owner) {
+        try {
+          const workflow = await this.request(`/actions/runs/${owner}`);
+          live = String(workflow.id) === owner && ['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(workflow.status);
+        } catch {}
+      }
+      if (live && owner !== current) return { ...existing, deferred: true, owner_run_id: owner };
+      // A delivery may reconcile its own accepted creation. Completed owners,
+      // missing/unknown ownership and read errors instead need a fresh attempt.
+      if (live && owner === current && existing.external_id === externalId) return existing;
+    }
     // POST has no retry. After an ambiguous transport result the next delivery
     // finds this stable external_id before attempting another creation.
     const created = await this.request('/check-runs', { method: 'POST', checks: true, body: {

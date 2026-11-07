@@ -11,8 +11,8 @@ const statePath = `${env.RUNNER_TEMP}/pr-review-state.json`;
 const authPath = `${env.RUNNER_TEMP}/pr-review-auth.json`;
 const read = path => JSON.parse(readFileSync(path, 'utf8'));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
-const passed = receipt => !receipt.unavailable && (receipt.conclusion === 'success' ||
-  (receipt.conclusion === 'neutral' && receipt.applicable === false));
+const passed = receipt => receipt.deferred === true || (!receipt.unavailable && (receipt.conclusion === 'success' ||
+  (receipt.conclusion === 'neutral' && receipt.applicable === false)));
 const reasonFor = receipt => receipt.reason || (receipt.applicable === false ? 'Review not required by path policy.' :
   receipt.conclusion === 'failure' ? 'Review found blocking defects.' :
   receipt.conclusion === 'cancelled' ? 'Head superseded.' :

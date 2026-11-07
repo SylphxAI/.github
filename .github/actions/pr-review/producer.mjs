@@ -160,11 +160,13 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
         (restartCompleted && run.status === 'completed')) {
       throw new Unavailable('Publisher did not receive the canonical App Check Run in an active state.');
     }
-    if (run.status !== 'completed') await onBegin?.(run);
+    if (run.status !== 'completed' && !run.deferred) await onBegin?.(run);
     return run;
   };
   let run = await begin();
   const observedAt = new Date().toISOString();
+  if (run.deferred) return { check_run_id: run.id, head_sha: run.head_sha, conclusion: null, deferred: true,
+    owner_run_id: run.owner_run_id, reason: 'A live workflow already owns the current-head review.', observed_at: observedAt };
   let collected, initialInput, collectionError;
   try {
     collected = await collectBundle(github, target, trigger);
@@ -183,6 +185,8 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     // Keep rejected history immutable and register only the new check with the
     // finalizer. begin() reconciles an accepted in-progress create before POST.
     run = await begin(true);
+    if (run.deferred) return { check_run_id: run.id, head_sha: run.head_sha, conclusion: null, deferred: true,
+      owner_run_id: run.owner_run_id, reason: 'A live workflow already owns the current-head review.', observed_at: observedAt };
   }
   try {
     if (collectionError) throw collectionError;

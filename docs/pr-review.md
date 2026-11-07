@@ -225,7 +225,14 @@ Completed-check reuse is narrower than delivery reconciliation: select the newes
 canonical App Check Run at the exact head across every delivery ID, then reuse
 only a `success` or `failure` whose published reviewer and source digest match the
 freshly collected input. A newer active or non-reusable result blocks every older
-success; another delivery's active check is preserved while a fresh review starts. Neutral,
+success. For an active check, the engine resolves its workflow owner once. Another
+live owner defers the delivery without source collection, a new check or inference;
+its existing check remains the pending authority. Deferral exits zero but is not
+a completed review, and the finalizer never touches the other workflow's check.
+The current workflow can reconcile its own accepted create. A completed owner,
+unresolvable owner or owner-read error instead starts a fresh review, preserving
+the old check. No caller-level concurrency setting is required for this deferral.
+Neutral,
 cancelled, timed-out, action-required, stale, skipped, missing-identity and
 mismatched-input results start a fresh check and review. Rejected terminal checks
 remain immutable and are not registered for the new attempt's finalizer. An

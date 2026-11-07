@@ -61,3 +61,32 @@ for (const entries of [...outcomes.map(o => [o]), [{ status: 'in_progress', titl
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 }
+
+test('CLI deferral exits successfully without registering or finalizing another live workflow check', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'review-deferred-cli-'));
+  try {
+    writeFileSync(join(directory, 'pr-review-auth.json'), JSON.stringify({ checkToken: 'fixture' }), { mode: 0o600 });
+    writeFileSync(join(directory, 'event.json'), JSON.stringify({ repository: { full_name: 'example/repo', id: 1 }, inputs: { 'pull-request': '7' } }));
+    const moduleUrl = new URL('../.github/actions/pr-review/github.mjs', import.meta.url).href;
+    writeFileSync(join(directory, 'preload.mjs'), `import { GitHub, APP_ID, CHECK_NAME } from ${JSON.stringify(moduleUrl)};
+      globalThis.fetch = async () => { throw new Error('Deferral must not infer or mutate a check'); };
+      GitHub.prototype.current = async () => true;
+      GitHub.prototype.pages = async () => [{ filename: 'src/change.js', status: 'modified' }];
+      GitHub.prototype.request = async path => path.includes('/compare/') ? { merge_base_commit: { sha: '${'a'.repeat(40)}' } } :
+        { state: 'open', changed_files: 1, title: 'Review source', head: { sha: '${head}' }, base: { sha: '${'a'.repeat(40)}', ref: 'main', repo: { id: 1 } } };
+      GitHub.prototype.begin = async () => ({ id: 9, app: { id: APP_ID }, name: CHECK_NAME, head_sha: '${head}',
+        status: 'in_progress', conclusion: null, deferred: true, owner_run_id: '99' });
+      GitHub.prototype.source = async () => { throw new Error('Deferral must not collect source'); };`);
+    const env = { ...process.env, RUNNER_TEMP: directory, GITHUB_REPOSITORY: 'example/repo', GITHUB_EVENT_NAME: 'workflow_dispatch',
+      GITHUB_EVENT_PATH: join(directory, 'event.json'), GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1', GITHUB_TOKEN: 'fixture',
+      GITHUB_STEP_SUMMARY: join(directory, 'summary.md') };
+    const execute = command => spawnSync('node', ['--import', join(directory, 'preload.mjs'), '.github/actions/pr-review/cli.mjs', command], {
+      cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10_000, env });
+    const result = execute('review'); assert.equal(result.status, 0, result.stderr);
+    const receipt = JSON.parse(result.stdout).reviews[0];
+    assert.equal(receipt.deferred, true); assert.equal(receipt.conclusion, null); assert.equal(receipt.owner_run_id, '99');
+    assert.equal(existsSync(join(directory, 'pr-review-state.json')), false);
+    assert.match(readFileSync(join(directory, 'summary.md'), 'utf8'), /live workflow already owns/);
+    assert.equal(execute('finalize').status, 0); assert.equal(existsSync(join(directory, 'pr-review-auth.json')), false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
