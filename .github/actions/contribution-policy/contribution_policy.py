@@ -217,6 +217,28 @@ class GitHub:
                 raise PolicyError('review Check Run pagination is incomplete')
             page += 1
 
+    def statuses(self, head):
+        """Read the complete commit-status history for an immutable head.
+
+        The stamp gate deliberately uses commit statuses rather than a workflow
+        check on pull-request heads.  Fetch every page so a later non-success
+        status cannot be hidden behind an earlier success, and reject malformed
+        or incomplete responses instead of making an admission decision from a
+        partial inventory.
+        """
+        statuses, page = [], 1
+        while True:
+            rows = self.get(f'commits/{head}/statuses?per_page=100&page={page}')
+            if not isinstance(rows, list) or len(rows) > 100 or any(not isinstance(row, dict) for row in rows):
+                raise PolicyError('commit status response is invalid')
+            statuses.extend(rows)
+            ids = [row.get('id') for row in statuses]
+            if any(type(value) is not int or value <= 0 for value in ids) or len(set(ids)) != len(ids):
+                raise PolicyError('commit status pagination is incomplete or changed')
+            if len(rows) < 100:
+                return statuses
+            page += 1
+
     def queue_entries(self, branch):
         query = '''query($owner:String!, $name:String!, $branch:String!, $cursor:String) {
           repository(owner:$owner, name:$name) { mergeQueue(branch:$branch) {
@@ -479,11 +501,11 @@ def squash_merge_tree(repository, token, parent, head):
         return tree
 
 
-def bind_review_head(api, pr, synthetic, base, group_shas):
+def bind_review_head(api, pr, synthetic, base, group_shas, *, force=False):
     """Bind the reviewed content to its immutable position, not live queue state."""
     if not isinstance(pr.get('title'), str):
         raise PolicyError('pull request review identity is incomplete')
-    if not pr['title'].startswith('[review]'):
+    if not force and not pr['title'].startswith('[review]'):
         return
     head = pr['head']['sha']
     location = f"PR #{pr['number']} head {head}"
@@ -508,12 +530,15 @@ def bind_review_head(api, pr, synthetic, base, group_shas):
         raise PolicyError(location + f": squash tree mismatch at merge-group commit {synthetic['sha']}")
 
 
-def merge_group_snapshot(api, group, *, check_pull_text=True, require_head_binding=False):
+def merge_group_snapshot(api, group, *, check_pull_text=True, require_head_binding=False,
+                         bind_all_heads=False):
     """Resolve every group PR once; bind review heads only on the opted-in path."""
     def snapshot(number, head, synthetic):
         pr, original = (pull_snapshot(api, number, head) if check_pull_text else
                         pull_snapshot(api, number, head, check_text=False))
-        if require_head_binding:
+        if bind_all_heads:
+            bind_review_head(api, pr, by_sha[synthetic], group['base_sha'], group_shas, force=True)
+        elif require_head_binding:
             bind_review_head(api, pr, by_sha[synthetic], group['base_sha'], group_shas)
         return pr, original
 
@@ -544,6 +569,39 @@ def merge_group_snapshot(api, group, *, check_pull_text=True, require_head_bindi
     if group_shas - covered:
         raise PolicyError('merge group membership is incomplete')
     return commits, snapshots, queued
+
+
+def ops_security_review_findings(api, pr):
+    """Require the latest exact-head ``ops-security/review`` stamp to pass.
+
+    This is intentionally independent of the contribution-policy review title
+    and App identity.  The operator's exact-head commit status is the only
+    admission stamp; the merge-group workflow emits the same context only on
+    the synthetic merge-group commit after checking every member.
+    """
+    number = pr.get('number') if isinstance(pr, dict) else None
+    head = (pr.get('head') or {}).get('sha') if isinstance(pr, dict) else None
+    location = f'PR #{number} head {head}'
+    if type(number) is not int or number <= 0 or not isinstance(head, str) or not SHA.fullmatch(head):
+        raise PolicyError('merge-group PR identity is incomplete')
+    try:
+        rows = api.statuses(head)
+        matching = [row for row in rows if row.get('context') == 'ops-security/review']
+        if not matching:
+            state = 'missing'
+        else:
+            identities = [row.get('id') for row in matching]
+            if any(type(value) is not int or value <= 0 for value in identities) or len(set(identities)) != len(identities):
+                raise PolicyError('commit status identity is incomplete')
+            latest = max(matching, key=lambda row: row['id'])
+            state = latest.get('state')
+            if not isinstance(state, str) or not state:
+                state = 'missing state'
+        if state == 'success':
+            return []
+    except (PolicyError, KeyError, TypeError, ValueError) as error:
+        state = 'API read error: ' + (str(error) if isinstance(error, PolicyError) else 'incomplete commit status metadata')
+    return [{'rule': 'ops-security/review: ' + state, 'location': location, 'line': 0}]
 
 
 def group_queue_members(api, branch, group_shas):

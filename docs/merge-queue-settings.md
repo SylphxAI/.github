@@ -86,7 +86,9 @@ item in read_org(gh, org)]`, one GraphQL page per organization.
 
 The tool manages merge-queue parameters, approving review counts, the
 extra-approval flag and explicitly scoped required-check bindings. `required_checks` names the exact repository,
-ruleset ID and name, a reason, and `{context, integration_id}` checks. It adds
+ruleset ID and name, a reason, and `{context, integration_id}` checks. An explicit
+`integration_id: null` leaves a check unbound when PR and merge-group publishers
+differ; see [public operator review](public-operator-review.md). It adds
 missing checks or corrects their publisher bindings without deleting unrelated
 checks or altering conditions or bypass actors. Independently,
 `queue_required_status_checks.strict_required_status_checks_policy: false`

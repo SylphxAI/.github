@@ -1,0 +1,27 @@
+# optimistic-merge: advisory — Operator stamps are a separate required repository check, not a CI aggregate member.
+# optimistic-merge: gate-external
+name: Operator review stamps
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  stamps:
+    name: ops-security/review
+    if: github.repository == 'SylphxAI/.github' && github.event.repository.visibility == 'public'
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Require every exact-head PR stamp in the combined candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ops_security_merge_group.py

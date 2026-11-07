@@ -113,9 +113,10 @@
       "checks": [
         { "context": "ci-ok", "integration_id": 15368 },
         { "context": "review-ok", "integration_id": 5155317 },
-        { "context": "pr-metadata", "integration_id": 15368 }
+        { "context": "pr-metadata", "integration_id": 15368 },
+        { "context": "ops-security/review", "integration_id": null }
       ],
-      "reason": "Preserve CI and independent review. Require the separate metadata producer only after observing its PR-head and merge-group checks; title/body edits and ready events never replace ci-ok code evidence."
+      "reason": "Preserve CI and independent review. Metadata never replaces code evidence. ops-security/review requires the exact-head operator commit status; its merge-group-only workflow validates every member before projecting the context onto the combined commit. The binding is null because the PR stamp is operator-published while the group check is Actions-published. Activate only after the producer is landed and observed; this rollout must not converge unrelated existing check drift."
     },
     {
       "repo": "SylphxAI/owner",
