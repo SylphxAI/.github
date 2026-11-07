@@ -46,6 +46,70 @@ it report failure after a dependency failed or skipped. A cancelled required
 dependency never passes. If the verdict itself is cancelled, it does not publish
 success. The required check must be this verdict job.
 
+## Generated and captured source
+
+The immutable base `.github/review-policy.toml` declares generated paths and the
+YAML job IDs that prove deterministic regeneration or captured-source provenance:
+
+```toml
+version = 2
+[tier0]
+paths = ["docs/**"]
+[review]
+paths = ["src/**", ".github/**"]
+[generated]
+paths = ["generated/**", "captures/**"]
+
+[[generated.provenance]]
+paths = ["generated/**"]
+jobs = ["regenerate"]
+
+[[generated.provenance]]
+paths = ["captures/**"]
+jobs = ["verify-captures"]
+```
+
+For each changed generated path, at least one provenance entry must match. Every
+job from every matching entry must be explicitly listed in both `required` and
+the verdict job's direct `needs`, with `result: success`. Missing declarations,
+omitted required IDs, absent dependencies and skipped, failed, cancelled or
+unfinished jobs fail the verdict. This obligation remains when an explicit
+review path also matches. A successful job must actually validate deterministic
+output against the selected source; the gate verifies its dependency result,
+not the correctness of the job's implementation.
+
+Use the same case-sensitive globs as review: `*` stays inside a path segment,
+`**/` matches zero or more directories, and `?` matches one non-slash character.
+Additions, modifications and deletions count; rename transitions include both
+old and new path identities. The comparison uses full Git tree inventories, not
+the truncated REST compare-files population. The PR's new or edited policy
+cannot remove its base obligation. A missing base policy supplies no generated
+exemption and no generated-proof obligation; an invalid or unreadable base policy
+fails closed.
+
+Native PRs compare the base with the tested merge tree (or tested head), checking
+merge parents against the event's base/head. Merge groups compare their supplied
+base/head; pushes compare `before` with the tested commit. PR-code dispatches
+reuse the contribution check's current-PR/merge binding. Branch creation and
+events without a selected code range have no base declaration to enforce.
+
+No checkout or fetch-depth setting is required. Available local objects are used
+without replacement objects or lazy fetches; otherwise an isolated bare Git
+acquisition reuses the secret scanner's environment-only scoped authentication.
+Only the requested depth-one tips, their trees and the base policy blob are
+needed; full commit ancestry and changed source blobs are unnecessary. The
+acquisition has a 90-second deadline, a 64-MiB per-file Git output/object/pack
+limit, a 16-MiB path-inventory limit and a 128-KiB policy limit. Oversized or
+unreadable populations fail, never truncate. With no generated declarations,
+head acquisition and changed-path enumeration are skipped. Raw Git/API errors,
+credential arguments and source contents never enter public failure diagnostics.
+
+Adopt this rule in the **same immutable shared-pin update** as the caller's
+provenance policy and deterministic-job dependencies. An existing generated
+classification without proof jobs will fail when such files change; a proof job
+that runs only on merge groups cannot establish PR success. No existing action
+inputs are removed or renamed by this rule.
+
 ## Several workflows
 
 Expose each required workflow through `workflow_call` and call it as a job in

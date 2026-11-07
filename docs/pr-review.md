@@ -128,9 +128,24 @@ review. There is no quota fallback, model change or manual verdict.
 
 Explicit review paths take precedence over tier0/generated paths; unknown paths
 default to review. A `[review]` title also requests a review. Known tier0-only
-changes without the marker receive neutral with their classification. The model
-receives source as data with no tools, credentials, repository execution, or
-GitHub publishing authority.
+changes without the marker receive neutral with their classification.
+
+Base-declared generated paths outside explicit review paths are excluded before
+source reads, instruction discovery, bundle construction and partitioning, even
+when another file or a `[review]` title triggers review. Related-context recovery
+cannot reintroduce them. A generated-only `[review]` change receives an explicit
+non-applicable neutral receipt; the model never completes an empty source scope.
+For renamed or copied files, both identities must be generated to exclude the
+transition. If either identity is handwritten or explicitly reviewed, both literal
+sides remain in review. No synthetic added/deleted projection replaces the change.
+
+Generated/captured source is covered independently by the base policy's
+`[[generated.provenance]]` declarations and required deterministic jobs in
+[`ci-ok`](ci-ok.md#generated-and-captured-source). An explicit review path still
+needs that provenance when it also matches a generated declaration. Adding or
+weakening a policy in the PR does not exempt that PR. The model receives source
+as data with no tools, credentials, repository execution, or GitHub publishing
+authority.
 
 Calls use the ordinary `/v1/chat/completions` gateway with strict JSON
 schema output. The parser checks repository, base/head, source digest, reviewer
@@ -214,9 +229,11 @@ If one workflow reviews several heads, any non-passing result fails the job;
 all Check Runs and receipts still publish before the command exits. A trusted
 trigger with no eligible open heads performs no review and exits zero.
 
-An inference refusal, timeout, unsupported source, invalid binary evidence or malformed
-output receives neutral with a bounded reason when no grounded blocking finding
-is already present. A model's valid incomplete assessment instead uses bounded
+An inference refusal, timeout, unsupported source or invalid binary evidence
+receives neutral with a bounded reason when no grounded blocking finding is
+already present. Persistent malformed assessments after bounded correction fail
+as `Review invalid`; real transport or capacity unavailability remains neutral.
+A model's valid incomplete assessment instead uses bounded
 recovery and its final verdict pass; persistent incompleteness is failure, not
 neutral or success. A superseded head is cancelled. A new head has a distinct
 check identity and cannot inherit an old result. One workflow serializes duplicate
