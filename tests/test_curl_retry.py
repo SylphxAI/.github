@@ -24,6 +24,7 @@ class Endpoint:
     def __init__(self, replies):
         self.replies = list(replies)
         self.requests = []
+        self.redirect_to = None
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -36,8 +37,11 @@ class Endpoint:
                 if reply == "timeout":
                     time.sleep(0.3)
                     reply = 200
-                self.send_response(403 if reply == "403-timeout" else reply)
-                self.send_header("Content-Length", str(len(BODY)))
+                self.send_response(200 if reply == "unknown-length" else 403 if reply == "403-timeout" else reply)
+                if reply == 302:
+                    self.send_header("Location", owner.redirect_to)
+                if reply != "unknown-length":
+                    self.send_header("Content-Length", str(len(BODY)))
                 self.end_headers()
                 if reply == "403-timeout":
                     time.sleep(0.3)
@@ -168,6 +172,46 @@ class CurlRetryTest(unittest.TestCase):
         sleep.assert_not_called()
         self.assertIn("stop=budget-exhausted", log.getvalue())
 
+    def test_archive_transport_retries_real_timeouts_and_bounds_unknown_length_bytes(self):
+        endpoint = Endpoint(["timeout", "timeout", 200])
+        self.addCleanup(endpoint.close)
+        with redirect_stderr(io.StringIO()) as log:
+            with net.download(endpoint.url, label="test-archive", max_bytes=1024,
+                              redirect=net.urllib.request.HTTPRedirectHandler(),
+                              policy=net.Policy(budget=2, attempt_time=0.06, base_delay=0.005)) as body:
+                self.assertEqual(body.read(), BODY)
+        self.assertEqual(len(endpoint.requests), 3)
+        self.assertEqual(log.getvalue().count("curl_exit=28"), 2)
+        self.assert_safe_diagnostic(log.getvalue())
+        endpoint.replies = ["unknown-length"]
+        with tempfile.TemporaryDirectory() as work, redirect_stderr(io.StringIO()):
+            path = Path(work) / "bounded"
+            result = net.request(endpoint.url, path, label="test-archive", max_bytes=4,
+                                 policy=net.Policy(base_delay=0))
+            self.assertEqual(result.returncode, 63)
+            self.assertLessEqual(path.stat().st_size, 4)
+        self.assertEqual(len(endpoint.requests), 4)
+
+    def test_archive_redirect_policy_runs_before_the_destination_is_contacted(self):
+        origin, target = Endpoint([302]), Endpoint([200])
+        self.addCleanup(origin.close)
+        self.addCleanup(target.close)
+        origin.redirect_to = target.url
+
+        class Deny:
+            def redirect_request(self, *args):
+                raise ValueError("archive redirect refused")
+
+        with self.assertRaisesRegex(ValueError, "redirect refused"):
+            with net.download(origin.url, label="test-archive", max_bytes=1024, redirect=Deny()):
+                self.fail("must not expose a refused archive")
+        self.assertEqual(target.requests, [])
+        with net.download(origin.url, label="test-archive", max_bytes=1024,
+                          redirect=net.urllib.request.HTTPRedirectHandler()) as body:
+            self.assertEqual(body.read(), BODY)
+        self.assertEqual(len(origin.requests), 2)
+        self.assertEqual(len(target.requests), 1)
+
     def test_malformed_metrics_cannot_become_a_log_channel(self):
         bad = (SECRET + "\t" + QUERY + "\t0.0\t0.0\t0.0\t" + BODY.decode() + "\t403").encode()
         with patch.object(net.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, bad)), \
@@ -175,6 +219,8 @@ class CurlRetryTest(unittest.TestCase):
             result = net.run(["-o", "/unused"], label="test-read")
         self.assertEqual(result.code, "403")
         self.assert_safe_diagnostic(log.getvalue())
+        zoned = b"0.0\t0.0\t0.0\t0.0\t0.0\t::1%" + SECRET.encode() + b"\t403"
+        self.assertEqual(net.metrics(zoned)["remote_ip"], "unavailable")
 
 
 if __name__ == "__main__":

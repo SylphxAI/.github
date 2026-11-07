@@ -66,7 +66,8 @@ def metrics(raw):
         if re.fullmatch(r"[0-9]{1,12}\.[0-9]{1,9}", value):
             result[field] = value
     try:
-        result["remote_ip"] = str(ipaddress.ip_address(values[5]))
+        if "%" not in values[5]:  # A zone identifier is not an IP address.
+            result["remote_ip"] = str(ipaddress.ip_address(values[5]))
     except ValueError:
         pass
     if re.fullmatch(r"[0-9]{3}", values[6]):
