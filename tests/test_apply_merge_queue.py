@@ -863,7 +863,16 @@ class CheckOnlyAdoptionTests(unittest.TestCase):
         gh = FakeGh({self.repo: before})
         with tempfile.TemporaryDirectory() as directory:
             rc, _ = self.run_main(gh, directory)
-        self.assertEqual((rc, gh.puts), (1, []))
+            self.assertEqual((rc, gh.puts), (1, []))
+            self.assertEqual(list(pathlib.Path(directory).iterdir()), [])
+            # Repair only the witnessed missing rule and reuse the same directory:
+            # the failed plan must not be mistaken for an uncertain prior write.
+            gh.rulesets[self.repo]['rules'].insert(1, self.before()['rules'][1])
+            rc, out = self.run_main(gh, directory)
+            self.assertEqual((rc, json.loads(out)['results'][0]['result']), (0, 'APPLIED'))
+            self.assertEqual(len(gh.puts), 1)
+            saved = pathlib.Path(directory) / 'SylphxAI__.github__20321046.json'
+            self.assertTrue(saved.exists())
 
     def test_full_field_readback_rejects_changed_conditions(self):
         gh = FakeGh({self.repo: self.before()})

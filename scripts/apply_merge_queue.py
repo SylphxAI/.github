@@ -527,7 +527,6 @@ def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | N
         outcome = {"repo": row["repo"], "id": row["id"], "ruleset": row["ruleset"]}
         try:
             before = gh.rest(path)
-            (backup_dir / f"{row['repo'].replace('/', '__')}__{row['id']}.json").write_text(json.dumps(before, indent=2) + "\n")
             settings = desired_settings(policy, row["repo"], row["ruleset"])
             count = policy["review"][REVIEW_KEY]
             extra = policy["review"][EXTRA_APPROVAL_KEY]
@@ -538,6 +537,9 @@ def apply(gh, rows: list[dict], policy: dict, backup_dir: Path, pause: float | N
             # Narrow adoption verifies all fields, not just the usual managed subset.
             projection = put_body if check_context is not None else managed
             want = projection(body)
+            # A backup marks a possible PUT attempt, not a rejected plan. Complete
+            # local validation first so a no-write refusal leaves the directory reusable.
+            backup_path(backup_dir, row).write_text(json.dumps(before, indent=2) + "\n")
             after = gh.rest(path, "PUT", body)
             if projection(after) != want:
                 after = gh.rest(path)
