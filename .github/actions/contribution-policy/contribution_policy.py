@@ -401,16 +401,18 @@ def pull_snapshot(api, number, expected_head=None, *, check_text=True, expected_
 def review_findings(api, pr, commits):
     """Only an exact-head, completed success by the review App admits [review]."""
     number, head = pr['number'], pr['head']['sha']
-    if not isinstance(pr.get('title'), str) or not SHA.fullmatch(head):
+    if not isinstance(pr.get('title'), str) or not isinstance(head, str) or not SHA.fullmatch(head):
         raise PolicyError('pull request review identity is incomplete')
     if not pr['title'].startswith('[review]'):
         return []
     location = f'PR #{number} head {head}'
 
     def canonical(sha):
-        return sorted((run for run in api.check_runs(sha)
-                       if run.get('name') == 'Sylphx PR Review' and
-                       (run.get('app') or {}).get('id') == 1299545),
+        runs = api.check_runs(sha)
+        if any(not isinstance(run.get('app'), dict) for run in runs):
+            raise PolicyError('review Check Run App identity is incomplete')
+        return sorted((run for run in runs
+                       if run.get('name') == 'Sylphx PR Review' and run['app'].get('id') == 1299545),
                       key=lambda run: run['id'], reverse=True)
 
     try:
@@ -419,7 +421,8 @@ def review_findings(api, pr, commits):
         if runs:
             latest = runs[0]
             if latest.get('head_sha') != head:
-                state = 'success on an older head ' + str(latest.get('head_sha')) if latest.get('conclusion') == 'success' else 'wrong head'
+                state = ('success on an older head ' + str(latest.get('head_sha'))
+                         if latest.get('conclusion') == 'success' else 'wrong head')
             elif latest.get('status') != 'completed':
                 state = 'pending'
             else:
@@ -428,7 +431,8 @@ def review_findings(api, pr, commits):
             # Diagnostic only: an older success can never authorize this head.
             for sha in reversed([item['sha'] for item in commits if item['sha'] != head]):
                 older = canonical(sha)
-                if older and older[0].get('head_sha') == sha and older[0].get('status') == 'completed' and older[0].get('conclusion') == 'success':
+                if older and older[0].get('head_sha') == sha and \
+                        older[0].get('status') == 'completed' and older[0].get('conclusion') == 'success':
                     state = 'success on an older head ' + sha
                     break
         after = api.get(f'pulls/{number}')
