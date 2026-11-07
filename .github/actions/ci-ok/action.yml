@@ -21,10 +21,6 @@ inputs:
   required:
     description: Comma-separated YAML job IDs that must be present and have succeeded.
     required: true
-  require-merge-group-review:
-    description: Require exact-head review success for every [review] PR in merge groups.
-    default: "false"
-
   token:
     description: Token with contents, pull-requests and checks read for metadata, review and secret scanning.
     default: ${{ github.token }}
@@ -40,15 +36,9 @@ runs:
     - name: Check contribution metadata
       shell: bash
       env:
-        REQUIRE_MERGE_GROUP_REVIEW: ${{ inputs.require-merge-group-review }}
         CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
         CONTRIBUTION_POLICY_SCOPE: ${{ inputs.separate-pr-metadata == 'true' && 'commits' || 'all' }}
-      run: |
-        args=(--scope "$CONTRIBUTION_POLICY_SCOPE")
-        if [[ "$REQUIRE_MERGE_GROUP_REVIEW" == true ]]; then
-          args+=(--require-merge-group-review)
-        fi
-        python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" "${args[@]}"
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE" --require-merge-group-review
     - name: Scan added commits for secrets
       shell: bash
       env:
