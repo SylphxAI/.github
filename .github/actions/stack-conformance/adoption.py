@@ -519,6 +519,8 @@ def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, basel
     introduced, profiles = introduced_rules(base_tree, original, shared_repo=shared_repo, head_tree=head_tree)
     base_arch = sc.architecture.evaluate(base_tree, repository, None, today, ignore_expired=True)
     head_arch = sc.architecture.evaluate(head_tree, repository, None, today)
+    if head_arch["decision_errors"]:
+        raise ValueError("; ".join(row["reason"] for row in head_arch["decision_errors"]))
     base_models = sc.model_pins.scan(base_tree, repository, None, sc.architecture.source_views)
     head_models = sc.model_pins.scan(head_tree, repository, None, sc.architecture.source_views)
     base_force = sc.no_force_push.scan(base_tree)

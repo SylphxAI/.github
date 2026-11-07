@@ -7,6 +7,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ACTION = ROOT / '.github/actions/stack-conformance'
@@ -256,7 +257,7 @@ class StructuralBoundaryTests(unittest.TestCase):
                 files['.github/architecture-decisions.json'] = json.dumps({'version': 1, 'decisions': [decision | mutation]})
                 try:
                     result = self.evaluate(files)
-                    self.assertTrue(result['unreadable'])
+                    self.assertTrue(result['unreadable'] or result['decision_errors'])
                 except ValueError:
                     pass
         files['.github/architecture-decisions.json'] = json.dumps({'version': 1, 'decisions': [decision, decision]})
@@ -445,8 +446,10 @@ class HistoricalDecisionTests(unittest.TestCase):
                 self.assertEqual(bool(report['decisions']), exempt)
                 row = next(row for row in report['findings'] if row['class'] == 'C5')
                 self.assertEqual(bool(row['decision']), exempt)
-        with self.assertRaisesRegex(ValueError, 'architecture decision expired:'):
-            a.evaluate(sc.DictTree(files), 'SylphxAI/spiron', None, self.TODAY)
+        report = a.evaluate(sc.DictTree(files), 'SylphxAI/spiron', None, self.TODAY)
+        self.assertEqual(len(report['decision_errors']), 1)
+        self.assertEqual(len(report['findings']), len(expected))
+        self.assertEqual(report['unreadable'], [])
 
     def test_historical_expiry_does_not_skip_schema_or_duplicate_validation(self):
         files, _ = self.files()
@@ -475,19 +478,20 @@ class HistoricalDecisionTests(unittest.TestCase):
                 f.commit()
                 result, report = f.check(base=base, today=self.TODAY)
                 self.assertEqual(result.returncode, int(change != 'remove'), result.stdout + result.stderr)
+                self.assertEqual(report['unreadable'], [])
+                self.assertEqual(len(report['decision_errors']), int(change == 'retain'))
                 if change == 'retain':
-                    self.assertIn('architecture decision expired:', result.stdout)
-                else:
-                    self.assertEqual(report['unreadable'], [])
-                    inherited = [row for row in report['findings'] if row['disposition'] == 'inherited']
-                    self.assertEqual({a.baseline_key(row) for row in inherited},
-                                     {a.baseline_key(row) for row in expected})
-                    self.assertTrue(all(row['decision'] is None for row in inherited))
-                    self.assertTrue(all(row['baseline_recorded'] for row in inherited))
-                    if change == 'new-violation':
-                        self.assertEqual([(row['path'], row['rule']) for row in report['findings']
-                                          if row['disposition'] == 'regression'],
-                                         [('src/new.rs', 'unexplained-suppression')])
+                    self.assertEqual(result.stdout.count('architecture decision expired:'), 1)
+                    self.assertEqual(report['legacy_errors'], [])
+                inherited = [row for row in report['findings'] if row['disposition'] == 'inherited']
+                self.assertEqual({a.baseline_key(row) for row in inherited},
+                                 {a.baseline_key(row) for row in expected})
+                self.assertTrue(all(row['decision'] is None for row in inherited))
+                self.assertTrue(all(row['baseline_recorded'] for row in inherited))
+                if change == 'new-violation':
+                    self.assertEqual([(row['path'], row['rule']) for row in report['findings']
+                                      if row['disposition'] == 'regression'],
+                                     [('src/new.rs', 'unexplained-suppression')])
 
     def test_offline_adoption_ignores_only_the_base_expiry(self):
         files, expected = self.files()
@@ -522,9 +526,12 @@ class HistoricalDecisionTests(unittest.TestCase):
         self.assertEqual(report['unreadable'], [])
         self.assertEqual(len(report['findings']), len(expected))
         self.assertTrue(all(not row['changed'] and row['decision'] is None for row in report['findings']))
-        with self.assertRaisesRegex(ValueError, 'architecture decision expired:'):
-            sc.source_provenance.architecture_report(base, base, records,
-                sc.BASELINE, None, self.TODAY, a, sc.parse_baseline)
+        report, errors = sc.source_provenance.architecture_report(base, base, records,
+            sc.BASELINE, None, self.TODAY, a, sc.parse_baseline)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(report['findings']), len(expected))
+        self.assertEqual(len(report['decision_errors']), 1)
+        self.assertEqual(report['decision_errors'][0]['path'], prefix + '/' + VIOLATIONS['C5'][0])
 
     def test_non_expiry_base_error_still_reports_unreadable_during_adoption(self):
         with tempfile.TemporaryDirectory() as d:
@@ -543,6 +550,87 @@ class HistoricalDecisionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertTrue(any(row['path'] == 'base architecture configuration' and
                                 'Expecting property name' in row['reason'] for row in report['unreadable']), report)
+
+    def test_expired_head_preserves_475_records_and_reports_a_real_stale_record(self):
+        case = json.loads((ROOT / 'tests/fixtures/architecture-expired-decision/case.json').read_text())
+        files = {case['path']: '// context\n' * case['prefix_lines'] + case['source'],
+                 'src/settings.py': 'import os\n' + ''.join(
+                     f'value_{n} = os.getenv("SETTING_{n}")\n' for n in range(case['inherited_settings']))}
+        rows = a.evaluate(sc.DictTree(files), 'example/product', None, self.TODAY)['findings']
+        self.assertEqual(len(rows), 475)
+        polling = next(row for row in rows if row['rule'] == 'polling-loop')
+        self.assertEqual(polling['line'], 411)
+        decision = self.decision(polling) | {'repository': 'example/product',
+            'expires': case['expires'], 'authority': case['authority']}
+        files[self.DECISIONS] = json.dumps({'version': 1, 'decisions': [decision]})
+        files[sc.BASELINE] = (a.BASELINE_MARKER + '\n' + sc.adoption.RULE_MARKER +
+            'architecture/C5/polling-loop\n' + sc.adoption.RULE_MARKER +
+            'architecture/C4/undeclared-setting\n' + '\n'.join(map(a.baseline_key, rows)) + '\n')
+        with tempfile.TemporaryDirectory() as d:
+            f = GitFixture(d)
+            f.write(files)
+            f.commit()
+            base = f.git('rev-parse', 'HEAD').strip()
+            for stale in (False, True):
+                with self.subTest(stale=stale):
+                    if stale:
+                        f.write({'src/settings.py': files['src/settings.py'].replace(
+                            'value_473 = os.getenv("SETTING_473")\n', '')})
+                        f.commit()
+                    result, report = f.check(base=base, repository='example/product', today=self.TODAY)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertFalse(report['passed'])
+                    self.assertEqual(len(report['findings']), 475 - int(stale))
+                    self.assertEqual(report['unreadable'], [])
+                    self.assertTrue(all(row['disposition'] == 'inherited' and row['decision'] is None
+                                        for row in report['findings']))
+                    self.assertEqual(len(report['decision_errors']), 1)
+                    error = report['decision_errors'][0]
+                    self.assertRegex(error['decision_id'], r'^[a-f0-9]{64}$')
+                    self.assertEqual({k: error[k] for k in ('path', 'line', 'expires', 'authority')},
+                                     {'path': case['path'], 'line': 411, 'expires': case['expires'],
+                                      'authority': case['authority']})
+                    for detail in (error['decision_id'], case['path'] + ':411', case['expires'], case['authority']):
+                        self.assertIn(detail, error['reason'])
+                        self.assertIn(detail, result.stdout)
+                    self.assertEqual(result.stdout.count('architecture decision expired:'), 1)
+                    self.assertEqual(len(report['legacy_errors']), int(stale), report['legacy_errors'])
+                    if stale:
+                        self.assertIn('stale architecture baseline record:', report['legacy_errors'][0])
+
+    def test_multiple_expired_decisions_each_report_once_and_ids_survive_date_changes(self):
+        files, rows = self.files()
+        decisions = [self.decision(row) | {'expires': '2026-11-06'} for row in rows]
+        files[self.DECISIONS] = json.dumps({'version': 1, 'decisions': decisions})
+        reports = [a.evaluate(sc.DictTree(files), 'SylphxAI/spiron', None, day)
+                   for day in (self.TODAY, self.TODAY + datetime.timedelta(days=1))]
+        for report in reports:
+            self.assertEqual(len(report['decision_errors']), len(decisions))
+            self.assertEqual(len(report['findings']), len(rows))
+            self.assertEqual(report['decisions'], [])
+            self.assertEqual(report['unreadable'], [])
+            self.assertTrue(all(row['decision'] is None for row in report['findings']))
+        self.assertEqual([row['decision_id'] for row in reports[0]['decision_errors']],
+                         [row['decision_id'] for row in reports[1]['decision_errors']])
+        self.assertEqual(len({row['decision_id'] for row in reports[0]['decision_errors']}), len(decisions))
+
+    def test_scan_refuses_expired_decision_after_discovery(self):
+        import contextlib
+        import io
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            f = GitFixture(d)
+            files, expected = self.files()
+            f.write(files)
+            f.commit()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), mock.patch.object(
+                    sc.datetime, 'datetime') as clock:
+                clock.now.return_value.date.return_value = self.TODAY
+                with self.assertRaisesRegex(SystemExit, 'architecture decision expired:'):
+                    sc.cmd_scan(SimpleNamespace(repo=str(f.root), rev='HEAD', repository='SylphxAI/spiron'))
+            for row in expected:
+                self.assertIn(a.baseline_key(row), output.getvalue())
 
 
 class DistributionTests(unittest.TestCase):

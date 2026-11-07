@@ -17,9 +17,40 @@ URL and its HTTPS tarball-CDN redirect; a warm mirror hit needs neither host.
 
 Commit `Packages/packages-lock.json` from the actual editor and
 `Packages/unity-packages.json` generated from that lock. The pins cover **all**
-Unity registry entries, including transitive dependencies. Built-in packages
+entries with `source: registry` and `url: https://packages.unity.com`, including
+transitive dependencies and publishers such as `com.autodesk.fbx`. Selection
+depends on the registry, not a `com.unity` name prefix. Package names use two or
+more nonempty dot-separated segments containing lowercase ASCII letters, digits,
+hyphens or underscores, up to Unity's 214-character limit
+([Unity 2022.3 naming rules](https://docs.unity3d.com/2022.3/Documentation/Manual/cus-naming.html),
+read 2026-11-06). Built-in packages
 remain supplied by the selected editor. Other package registries, local archives
-and Git dependencies keep their existing preparation steps.
+and Git dependencies keep their existing preparation steps. Every direct version
+request must have a resolved `registry` or `builtin` lock entry, or a genuine
+`embedded` override. Embedded overrides use the lock's relative `file:` path
+inside `Packages` and require a package directory with a `package.json` whose
+name matches the dependency. Admission anchors an opened project directory and
+walks `Packages`, all embedded directory components and every input file with
+fd-relative, no-follow opens. Manifest, lock, pins and embedded metadata are read
+from those same opened file descriptors; symlinks and pathname replacement cannot
+redirect these reads, even to another location inside `Packages`. The Linux action
+retains these directory descriptors through receipt cleanup, staging, package
+installation and pins output, so replacing `Packages` after admission cannot
+redirect writes either. Private staging records the opened directory's device
+and inode, rejects changed or linked staging paths immediately before extraction
+and each installation move, and moves relative to the anchored staging descriptor.
+Hydration opens each archive once with a no-follow, fd-relative open, extracts from
+that same file descriptor under the opened staging directory, and removes archives
+relative to that directory descriptor. Cleanup preserves uncertain replacements
+instead of following them. These checks
+refuse static/committed links for input reads and writes; they are not an isolation
+boundary against a concurrently running, fully privileged process in the same job
+replacing private staging contents between checks. Missing entries,
+stale Git/local/tarball sources and non-string manifest requests stop before
+network access or mutation.
+Unselected explicit local/Git requests remain unaffected. A direct local/Git
+request with a stale same-name official-registry lock entry is refused, not
+silently hydrated from that registry or removed from the required closure.
 Every pin records an exact positive `archiveBytes` count as well as its version
 and SHA256. Graph admission refuses missing or oversized counts before network
 access, so a newly captured editor graph cannot silently exceed the archive cap.
@@ -56,8 +87,10 @@ bounds. A download must match both the pinned SHA256 and byte count.
 The action returns a `receipt` path containing every package version and SHA256.
 A changed Unity manifest request, changed registry lock entry, missing transitive
 pin, invalid digest, failed download or hash mismatch stops before Unity starts.
-Non-Unity manifest changes made by existing Firebase/Git preparation do not
-invalidate the Unity pins.
+Changes to direct requests for any selected official-registry package invalidate
+the pins, including requests outside `com.unity`. Unrelated manifest changes made
+by existing local/Git preparation do not invalidate them. Existing `com.unity`-only
+manifest hashes remain compatible.
 
 `block-package-registry: 'true'` maps `packages.unity.com`,
 `download.packages.unity.com` and `cdn.packages.unity.com` to loopback in the
@@ -85,7 +118,12 @@ version. Keep existing licence activation separate from this project check.
    Only this explicit maintenance command reads Unity registry metadata. It checks
    each archive against the registry's SHA1, validates its package identity and
    dependency map, and records its SHA256 and actual byte count. The runtime action
-   never calls `pin`.
+   never calls `pin`. Maintenance redirects allow only the exact HTTPS Unity CDN
+   origin and `/tarballs/<name>/<version>/<sha1>.tgz` or
+   `/tarballs/<name>/<name>-<version>/<sha1>.tgz`, bound to the requested package
+   and version. Query strings, fragments, credentials, ports and unsafe paths
+   are rejected. Both layouts were observed on 2026-11-06; for example,
+   `com.autodesk.fbx@5.1.3` uses the version-only directory.
 3. Hydrate a clean project copy through Build Cache to warm and verify every pin.
    Commit the manifest, editor lock and pins together. Prove cold-Library
    resolution with the Unity package hosts blocked before adopting the update.

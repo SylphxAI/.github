@@ -204,7 +204,7 @@ def legacy_errors(head, base, records, baseline, departures, parse_baseline, dec
 
 
 def architecture_report(head, base, records, baseline, changed, today, architecture, parse_baseline):
-    combined = {'findings': [], 'unreadable': [], 'reviewed_paths': [], 'excluded_paths': []}
+    combined = {'findings': [], 'unreadable': [], 'reviewed_paths': [], 'excluded_paths': [], 'decision_errors': []}
     errors = []
     for record in records:
         prefix = record['prefix']
@@ -230,6 +230,8 @@ def architecture_report(head, base, records, baseline, changed, today, architect
             row['source_provenance'] = {k: record[k] for k in ('prefix', 'source_repository', 'source_commit', 'source_tree', 'proof')}
             row['path'] = prefix + '/' + row['path']
             combined['findings'].append(row)
+        combined['decision_errors'] += [{**row, 'path': prefix + '/' + row['path']}
+                                        for row in report['decision_errors']]
         for row in [*report['unreadable'], *previous['unreadable']]:
             combined['unreadable'].append({**row, 'path': prefix + '/' + row['path']})
         combined['reviewed_paths'] += [prefix + '/' + p for p in report['reviewed_paths']]
