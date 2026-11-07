@@ -4,8 +4,10 @@
 Check Run from the canonical `sylphx-ai` App (`1299545`) with conclusion
 `success` on the exact PR head before merging to `main`. This policy applies
 only to these two public repositories. Existing CI, protections and queue
-settings stay intact. Commit statuses and GitHub Actions checks (`15368`)
-cannot satisfy this App-bound requirement.
+settings stay intact. Commit statuses from other publishers and GitHub Actions
+checks (`15368`) cannot satisfy this App-bound requirement; the native rule binds
+the App, not the result type. The operator interface and queue projection use
+Check Runs only.
 
 ## Operator approvals
 
@@ -93,8 +95,10 @@ Adopt in this order:
 2. Save a fresh full before object for `.github` ruleset `20321046`. Append only
    `{context: "ops-security/review", integration_id: 1299545}` to its existing
    `required_status_checks` through the repository ruleset API, preserving every
-   other field. Do not run full policy convergence: unrelated `review-ok`/`ci-ok`
-   drift is outside this rollout.
+   other field. Use the supported scoped command after a dry-run:
+   `python3 scripts/apply_merge_queue.py --repo SylphxAI/.github --only-check ops-security/review --apply --backup-dir <new-directory>`.
+   Omit `--apply --backup-dir ...` for its dry-run. Do not run full policy
+   convergence: unrelated `review-ok`/`ci-ok` drift is outside this rollout.
 3. Read skills visibility/default branch and its complete repository-owned
    ruleset population. Confirm public/main and no existing rule of this name;
    create once with `POST /repos/SylphxAI/skills/rulesets`, recording its ID.

@@ -86,9 +86,8 @@ item in read_org(gh, org)]`, one GraphQL page per organization.
 
 The tool manages merge-queue parameters, approving review counts, the
 extra-approval flag and explicitly scoped required-check bindings. `required_checks` names the exact repository,
-ruleset ID and name, a reason, and `{context, integration_id}` checks. An explicit
-`integration_id: null` leaves a check unbound when PR and merge-group publishers
-differ; see [public operator review](public-operator-review.md). It adds
+ruleset ID and name, a reason, and `{context, integration_id}` checks. Publisher
+IDs must be positive integers; null and unbound publishers are refused. It adds
 missing checks or corrects their publisher bindings without deleting unrelated
 checks or altering conditions or bypass actors. Independently,
 `queue_required_status_checks.strict_required_status_checks_policy: false`
@@ -104,6 +103,14 @@ target or a changed ruleset name refuses apply rather than silently missing a
 repository. Dry-run reports required-check drift and App IDs; apply reads back
 the resulting bindings. The saved before object is the recovery source; see the
 queue-only rollback limitation below.
+
+For adoption of one observed producer, use `--repo ORG/NAME --only-check CONTEXT`
+with dry-run first, then `--apply --backup-dir DIR`. This mode requires a
+policy-declared context and an existing required-check rule; it changes only
+that binding and verifies the full resulting object. It preserves all queue,
+review, strictness, bypass and condition fields, including unrelated check drift.
+The unfiltered apply remains full policy convergence, not a narrow adoption
+command. [Public operator review](public-operator-review.md) uses this scoped mode.
 
 A ruleset inherited from an organization or enterprise ruleset (GraphQL `source`
 not `Repository`) is reported `INHERITED` and never written: REST has no path to
