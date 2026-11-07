@@ -790,7 +790,14 @@ or all Kubernetes aliases; these remain census and owning-writer review work.
 
 ### Recorded decisions
 
-Head scans reject expired decisions. Historical base scans still validate every
+Head scans reject expired decisions without aborting source discovery or baseline
+comparison. Each expired decision emits one `decision_errors` diagnostic with a
+stable id derived from its repository and exact finding scope, covered path and
+line, expiry date and authority link. It is a policy failure, not unreadable
+source or a baselineable finding; expired decisions never exempt source findings.
+Genuinely stale baseline records still fail independently.
+
+Historical base scans still validate every
 record, but discard expired decisions from exemptions and retain the actual
 findings. Removing an expired decision therefore preserves unchanged inherited
 debt; it neither clears the base census nor exempts new violations. The required
