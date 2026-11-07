@@ -25,6 +25,7 @@ import urllib.parse
 import urllib.request
 
 TRANSIENT = {6, 7, 28, 35, 52, 56}
+HTTP_REDIRECTS = ("--location", "--max-redirs", "5", "--proto-redir", "=http,https")
 FIELDS = ("time_namelookup", "time_connect", "time_appconnect",
           "time_starttransfer", "time_total", "remote_ip", "http_code")
 WRITE_OUT = "\t".join("%{" + field + "}" for field in FIELDS)
@@ -181,10 +182,10 @@ def request(url, destination, *, label, headers=(), curl_args=(), policy=Policy(
                policy=policy, destination=destination, max_bytes=max_bytes)
 
 
-def read(url, *, label, headers=(), policy=Policy()):
+def read(url, *, label, headers=(), curl_args=(), policy=Policy()):
     with tempfile.TemporaryDirectory(prefix="network-read-") as work:
         path = Path(work) / "body"
-        result = request(url, path, label=label, headers=headers, policy=policy)
+        result = request(url, path, label=label, headers=headers, curl_args=curl_args, policy=policy)
         result.require_success(label)
         return path.read_bytes()
 

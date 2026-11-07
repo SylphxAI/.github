@@ -29,12 +29,18 @@ Consumers:
 - unity-packages-cache: archive reads, retaining the existing per-hop redirect
   restrictions, exclusive destination creation, size and integrity checks;
 - keel-pin-check: public crate metadata and source archives, retaining checksum
-  and source-identity verification.
+  and source-identity verification;
+- web-smoke: Chrome for Testing archives, retaining extraction and executable checks;
+- secret-scan: gitleaks release archives, retaining the pinned checksum check;
+- native-bridge-check: binary release assets, retaining the existing API headers
+  and removing authorization before a redirect changes origin.
 
 The Unity transport bounds disk writes even for unknown-length bodies on curl
 versions whose `--max-filesize` checks only Content-Length. The download is
 buffered in a private temporary directory before the existing archive consumer
-reads it. Redirect hops share the enclosing deadline.
+reads it. Redirect hops share the enclosing deadline. Other installers follow
+at most five HTTP(S) redirects through curl's ordinary `--location` policy,
+never `--location-trusted`; credentials are not forwarded across origins.
 
 The actionlint and sccache release-archive installers already have bounded curl
 retries and are unchanged. API-only clients and object-store bucket/lifecycle

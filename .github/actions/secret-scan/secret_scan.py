@@ -23,6 +23,9 @@ import tempfile
 import time
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '_shared'))
+import curl_retry
+
 VERSION = '8.30.1'
 CHECKSUMS = {
     'x86_64': ('x64', '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'),
@@ -86,8 +89,11 @@ def install(directory, version):
         raise ScanError('secret scan requires the checksum-pinned Linux gitleaks release')
     arch, digest = CHECKSUMS[platform.machine()]
     url = f'https://github.com/gitleaks/gitleaks/releases/download/v{VERSION}/gitleaks_{VERSION}_linux_{arch}.tar.gz'
-    with urllib.request.urlopen(url, timeout=60) as response:
-        archive = response.read()
+    try:
+        archive = curl_retry.read(url, label='gitleaks-download',
+                                  curl_args=curl_retry.HTTP_REDIRECTS)
+    except OSError:
+        raise ScanError('gitleaks release download failed; see network diagnostics') from None
     if hashlib.sha256(archive).hexdigest() != digest:
         raise ScanError('gitleaks release checksum mismatch')
     with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as bundle:
