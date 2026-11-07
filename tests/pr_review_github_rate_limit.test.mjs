@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { GitHub, GitHubHTTPError, APP_ID, CHECK_NAME } from '../.github/actions/pr-review/github.mjs';
+import { GitHub, GitHubHTTPError, PublishUnverified, githubFailureDetails, terminalCheckReceipt, APP_ID, CHECK_NAME } from '../.github/actions/pr-review/github.mjs';
 import { collectPullRequest, produceReview } from '../.github/actions/pr-review/producer.mjs';
 import { createReviewInput } from '../.github/actions/pr-review/contract.mjs';
 
@@ -261,8 +261,124 @@ test('producer never attempts neutral cleanup after an ambiguous terminal PATCH'
   f.github.begin = async () => ({ id: 7, app: { id: APP_ID }, name: CHECK_NAME, head_sha: head, status: 'in_progress' });
   f.github.current = async () => true;
   await assert.rejects(produceReview({ github: f.github, target, trigger, createReviewInput, engineVersion: 'test',
-    deadlineMs: Date.now() + 120_000, engine: async input => complete(input) }), error => error.code === 'outcome_unknown');
+    deadlineMs: Date.now() + 120_000, engine: async input => complete(input) }), error => error instanceof PublishUnverified && error.code === 'publish_unverified' &&
+      githubFailureDetails(error)?.code === 'outcome_unknown' && error.details.cause.code === 'outcome_unknown');
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].request.method, 'PATCH');
   assert.equal(JSON.parse(f.calls[0].request.body).conclusion, 'success');
 });
+
+// Exercise both real CLI processes with #489's accepted-creation and durable
+// terminal-intent contracts. These are explicitly synthetic provider responses.
+for (const stage of ['create-read', 'finish-write', 'finish-read']) {
+  for (const kind of ['primary_rate_limit', 'secondary_rate_limit', 'permission', 'unknown_forbidden']) {
+    test(`CLI ${stage} ${kind} preserves refusal cause through publication uncertainty and prevents finalizer writes`, () => {
+      const directory = mkdtempSync(join(tmpdir(), 'review-publication-refusal-'));
+      try {
+        writeFileSync(join(directory, 'pr-review-auth.json'), JSON.stringify({ checkToken: 'private-check-token', inferenceToken: 'private-inference-token' }), { mode: 0o600 });
+        writeFileSync(join(directory, 'event.json'), JSON.stringify({ repository: { full_name: 'example/repo', id: 1 }, inputs: { 'pull-request': '7' } }));
+        function preload(directory, base, head, stage, kind) {
+          GitHub.prototype.current = async () => true;
+          GitHub.prototype.source = async (path, sha) => path === 'src/change.js' ? (sha === base ? 'before\n' : 'after\n') : null;
+          let run;
+          const calls = [];
+          const record = () => writeFileSync(`${directory}/wire.json`, JSON.stringify({ calls, run }));
+          const ok = value => new Response(JSON.stringify(value));
+          const refusal = () => new Response(JSON.stringify({ message: kind === 'permission' ? 'Resource not accessible by integration' : 'private-token private-source' }), {
+            status: 403, headers: kind === 'primary_rate_limit' ? { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.ceil(Date.now() / 1000) + 3600) } :
+              kind === 'secondary_rate_limit' ? { 'retry-after': '3600' } : {},
+          });
+          globalThis.fetch = async (url, request) => {
+            const path = new URL(url).pathname;
+            calls.push(`${request.method} ${path}`); record();
+            if (String(url).includes('/v1/public/models/')) return ok({ id: 'vendor/reviewer', context_window: 1000000, max_output_tokens: 8192 });
+            if (path === '/v1/chat/completions') {
+              const input = JSON.parse(JSON.parse(request.body).messages[1].content);
+              const result = { schema_version: 1, repository_id: input.repository_id, base_sha: input.base_sha,
+                head_sha: input.head_sha, input_digest: input.input_digest, reviewer_version: input.reviewer_version,
+                policy_version: input.policy_version, completion: 'complete', findings: [], omitted_paths: [],
+                context_notes: [], context_requests: [], reason: '', review_summary: 'The source change is complete.', related_evidence: [], binary_reviews: [] };
+              return ok({ object: 'chat.completion', model: 'vendor/reviewer', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(result) } }] });
+            }
+            if (path.endsWith('/pulls/7')) return ok({ state: 'open', title: '[review] Fixture', changed_files: 1,
+              head: { sha: head }, base: { sha: base, ref: 'main', repo: { id: 1 } } });
+            if (path.endsWith('/pulls/7/files')) return ok([{ filename: 'src/change.js', status: 'modified' }]);
+            if (path.includes('/compare/')) return ok({ merge_base_commit: { sha: base } });
+            if (path.includes('/commits/')) return ok({ check_runs: [] });
+            assert.equal(request.headers.authorization, 'Bearer private-check-token');
+            if (request.method === 'POST' && path.endsWith('/check-runs')) {
+              run = { ...JSON.parse(request.body), id: 7, app: { id: APP_ID } }; record(); return ok(run);
+            }
+            assert.ok(path.endsWith('/check-runs/7'));
+            const [state] = JSON.parse(readFileSync(`${directory}/pr-review-state.json`, 'utf8'));
+            assert.equal(state.id, 7, 'accepted POST must be durable before its first read');
+            if (request.method === 'PATCH') {
+              assert.equal(state.publication.expected.conclusion, 'success', 'terminal intent must be durable before PATCH');
+              if (stage === 'finish-write') return refusal();
+              Object.assign(run, JSON.parse(request.body)); record(); return ok(run);
+            }
+            if (stage === 'create-read' || (stage === 'finish-read' && run.status === 'completed')) return refusal();
+            return ok(run);
+          };
+        }
+        writeFileSync(join(directory, 'preload.mjs'), `import assert from 'node:assert/strict';\nimport { readFileSync, writeFileSync } from 'node:fs';\nimport { GitHub, APP_ID } from ${JSON.stringify(new URL('../.github/actions/pr-review/github.mjs', import.meta.url).href)};\n(${preload.toString()})(${JSON.stringify(directory)}, ${JSON.stringify(base)}, ${JSON.stringify(head)}, ${JSON.stringify(stage)}, ${JSON.stringify(kind)});`);
+        const env = { ...process.env, RUNNER_TEMP: directory, GITHUB_REPOSITORY: 'example/repo', GITHUB_EVENT_NAME: 'workflow_dispatch',
+          GITHUB_EVENT_PATH: join(directory, 'event.json'), GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1', GITHUB_TOKEN: 'private-read-token',
+          REVIEW_MODEL: 'vendor/reviewer', GITHUB_OUTPUT: join(directory, 'outputs'), GITHUB_STEP_SUMMARY: join(directory, 'summary') };
+        const execute = command => spawnSync('node', ['--import', join(directory, 'preload.mjs'), '.github/actions/pr-review/cli.mjs', command], {
+          cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10_000, env });
+        const review = execute('review');
+        assert.equal(review.status, 1, review.stderr); assert.match(review.stderr, /publish_unverified/);
+        const code = kind.endsWith('_rate_limit') ? 'rate_limited' : kind === 'permission' ? 'permission_denied' : kind;
+        const failure = JSON.parse(readFileSync(join(directory, 'pr-review-github-failure.json'), 'utf8'));
+        assert.equal(failure.code, code); assert.equal(failure.classification, kind); assert.equal(failure.attempt, 1);
+        const [state] = JSON.parse(readFileSync(join(directory, 'pr-review-state.json'), 'utf8'));
+        assert.equal(state.id, 7); assert.equal(state.head_sha, head);
+        assert.equal(state.publication?.expected.conclusion, stage === 'create-read' ? undefined : 'success');
+        const before = readFileSync(join(directory, 'wire.json'), 'utf8');
+        const { calls, run } = JSON.parse(before);
+        assert.equal(calls.filter(call => call === 'POST /repos/example/repo/check-runs').length, 1);
+        assert.equal(calls.filter(call => call === 'PATCH /repos/example/repo/check-runs/7').length, stage === 'create-read' ? 0 : 1);
+        assert.equal(run.status, stage === 'finish-read' ? 'completed' : 'in_progress');
+        const finalized = execute('finalize');
+        assert.equal(finalized.status, 1, finalized.stderr); assert.match(finalized.stderr, new RegExp(code));
+        assert.equal(readFileSync(join(directory, 'wire.json'), 'utf8'), before, 'finalizer must not send any cleanup request after refusal');
+        assert.equal(existsSync(join(directory, 'pr-review-auth.json')), false);
+        for (const value of ['private-token', 'private-source', 'private-check-token', 'private-read-token', 'private-inference-token']) {
+          assert.equal((review.stderr + finalized.stderr + JSON.stringify(state) + JSON.stringify(failure)).includes(value), false);
+        }
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    });
+  }
+}
+
+for (const completed of [false, true]) for (const kind of ['rate_limited', 'permission_denied', 'unknown_forbidden']) {
+  test(`finalizer-first ${kind} on ${completed ? 'terminal receipt' : 'accepted creation'} stops all cleanup and persists cause across another process`, () => {
+    const directory = mkdtempSync(join(tmpdir(), 'review-finalizer-refusal-'));
+    try {
+      const state = { id: 7, head_sha: head, app: { id: APP_ID }, name: CHECK_NAME, status: completed ? 'completed' : 'in_progress' };
+      if (completed) state.publication = terminalCheckReceipt({ ...state, conclusion: 'success', completed_at: '2026-11-07T03:20:00Z', output: { title: 'Review complete', summary: 'private-source' } });
+      writeFileSync(join(directory, 'pr-review-state.json'), JSON.stringify([state, { ...state, id: 8, status: 'in_progress', publication: undefined }]));
+      const requests = join(directory, 'requests');
+      writeFileSync(join(directory, 'preload.mjs'), `import { appendFileSync } from 'node:fs';
+        globalThis.fetch = async (url, request) => {
+          appendFileSync(${JSON.stringify(requests)}, request.method + '\\n');
+          return new Response(JSON.stringify({ message: ${JSON.stringify(kind === 'permission_denied' ? 'Resource not accessible by integration' : 'private-source')} }),
+            { status: 403, headers: ${JSON.stringify(kind === 'rate_limited' ? { 'retry-after': '3600' } : {})} });
+        };`);
+      const execute = () => {
+        writeFileSync(join(directory, 'pr-review-auth.json'), JSON.stringify({ checkToken: 'fixture' }), { mode: 0o600 });
+        return spawnSync('node', ['--import', join(directory, 'preload.mjs'), '.github/actions/pr-review/cli.mjs', 'finalize'], {
+          cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10_000,
+          env: { ...process.env, RUNNER_TEMP: directory, GITHUB_REPOSITORY: 'example/repo', GITHUB_TOKEN: 'fixture' } });
+      };
+      const first = execute(); assert.equal(first.status, 1, first.stderr); assert.match(first.stderr, new RegExp(kind));
+      assert.equal(JSON.parse(readFileSync(join(directory, 'pr-review-github-failure.json'), 'utf8')).code, kind);
+      const before = readFileSync(requests, 'utf8'); assert.equal(before, 'GET\n');
+      const second = execute(); assert.equal(second.status, 1, second.stderr); assert.match(second.stderr, new RegExp(kind));
+      assert.equal(readFileSync(requests, 'utf8'), before);
+      assert.equal(existsSync(join(directory, 'pr-review-auth.json')), false);
+      assert.equal((first.stderr + second.stderr).includes('private-source'), false);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+}

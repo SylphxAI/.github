@@ -12,14 +12,24 @@ current head again, including a previous unavailable review. Normal merge-queue
 checks continue independently; this advisory check does not claim a review of
 the queue's combined merge commit.
 
+Same-input deduplication applies when an active check is observable; truly
+simultaneous first deliveries may both review. Callers must use a per-PR
+concurrency group with `cancel-in-progress: true`, as the supplied wrapper does.
+This is not a global exactly-once guarantee. Canonical selection uses the highest
+Check Run ID on the current head, not completion order; late completion of an
+older check cannot shadow a newer verdict. Completed verdict reuse still requires
+the exact input identity, and a different-input active check cannot defer it.
+
 ## Credentials and configuration
 
 Declare the exact wrapper `.github/workflows/pr-review.yml`, default branch,
 numeric repository/owner IDs and events in Access. The finite CI key needs
 `ai:inference` and `broker:exchange`. The wrapper needs GitHub `contents:read`,
-`pull-requests:read`, `actions:read`, and `id-token:write`. GitHub source reads use
-the caller's read token. Writes use only the Broker's one-repository installation
-token with `checks:write`, and reject another App issuer or wider permissions.
+`pull-requests:read`, `actions:read`, and `id-token:write`. GitHub source, pull-request and workflow reads use the caller's read token.
+Check Run discovery, readback and writes use only the Broker's one-repository
+installation token with `checks:write`, and reject another App issuer or wider
+permissions. The caller's `GITHUB_TOKEN` does not need `checks:read` for Check Run
+discovery.
 There is no App private key in Actions.
 
 Before activation, verify the chosen environment's owned/shared paid-account
@@ -214,6 +224,31 @@ If one workflow reviews several heads, any non-passing result fails the job;
 all Check Runs and receipts still publish before the command exits. A trusted
 trigger with no eligible open heads performs no review and exits zero.
 
+Accepted Check Run writes use read-only reconciliation: at most three GETs,
+with one-second gaps and a ten-second total read deadline. Neither POST nor a
+terminal PATCH is replayed. The accepted creation response is saved for the
+always-run finalizer before the first GET, so a temporarily missing or unavailable
+read projection cannot orphan a newly created check. A created check whose
+readback stays unavailable is finalized as interrupted from that saved identity.
+Before the terminal PATCH, the runner saves its intended result; finalization of
+that publication is read-only, including when a stale GET still says in progress.
+Reusing a completed success or failure saves the observed terminal receipt with
+its conclusion, completion time and output fingerprints. The finalizer reconciles
+that receipt read-only too; a later stale or unavailable GET cannot authorize a
+neutral overwrite of the reused verdict.
+
+Readback verifies canonical App/check/head identity and the fields actually
+written that a direct Check Run GET exposes, including status, conclusion,
+timestamps, output title and summary. Timestamps use the API's second precision;
+annotation contents are not exposed by that GET and are not replayed. Persistent
+mismatch, HTTP or network failure raises typed `publish_unverified` and fails the
+workflow without replacing the original verdict with neutral. Safe diagnostics
+retain expected and observed metadata and differing field names; arbitrary text
+is represented only by byte counts and SHA256 fingerprints, never source,
+credentials or provider error prose. The Check Run API's creation/update response
+and timestamp contracts were read on 2026-11-07 at 00:58:45 UTC
+([GitHub REST API 2022-11-28](https://docs.github.com/en/rest/checks/runs?apiVersion=2022-11-28)).
+
 An inference refusal, timeout, unsupported source, invalid binary evidence or malformed
 output receives neutral with a bounded reason when no grounded blocking finding
 is already present. A model's valid incomplete assessment instead uses bounded
@@ -334,6 +369,12 @@ The CLI saves the safe failure with mode 0600, exports `outcome=failed` and
 check with neutral. If GitHub refuses publication, the delivery cannot claim a
 completed Check Run; the prior Check state remains unchanged until an authorized
 later delivery can reconcile it.
+
+Publication reconciliation still preserves the accepted creation identity and
+any durable terminal/reused receipt. A refusal during publication or readback
+retains its safe typed cause inside `publish_unverified`; the CLI persists that
+cause for the separate finalizer process. The finalizer never falls back from a
+403/429 to an interruption PATCH, nor replaces an attempted terminal verdict.
 
 GitHub's documented 403/429 rate refusal permits retry after its wait, including
 a refused Check Run POST/PATCH. A network failure or unreadable successful write

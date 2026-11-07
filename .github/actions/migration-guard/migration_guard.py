@@ -72,11 +72,33 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[ContractMarker]]:
     """
     tokens, markers = [], []
     i, line = 0, 1
+    delimiter, client_start = ";", 0
     while i < len(sql):
         ch = sql[i]
         if ch.isspace():
             line += ch == "\n"
             i += 1
+        elif (dialect == "mysql" and re.match(r"DELIMITER\b", sql[i:], re.I)
+              and not sql[sql.rfind("\n", 0, i) + 1:i].strip()):
+            end = sql.find("\n", i)
+            end = len(sql) if end < 0 else end
+            directive = sql[i:end].split()
+            if (len(directive) != 2 or not re.fullmatch(r"[!$%&*+,./:;<=>?^|~-]+", directive[1])
+                    or any(part in directive[1] for part in ("--", "/*", "*/"))):
+                raise SqlError(f"line {line}: malformed or unsupported DELIMITER directive")
+            if client_start != len(tokens):
+                raise SqlError(f"line {line}: DELIMITER changes an unfinished statement")
+            # A client directive cannot close an unfinished compound definition.
+            sql_statements(tokens, dialect)
+            delimiter = directive[1]
+            i = end
+        elif dialect == "mysql" and delimiter != ";" and sql.startswith(delimiter, i):
+            # Keep ordinary semicolons inside routines; only this client boundary
+            # must prove the entire envelope is balanced before the next SQL.
+            sql_statements(tokens[client_start:], dialect)
+            tokens.append(Token(";", "symbol", line, delimiter, i))
+            i += len(delimiter)
+            client_start = len(tokens)
         elif (sql.startswith("--", i) and (dialect == "postgres" or i + 2 == len(sql) or sql[i + 2].isspace())) or (dialect == "mysql" and ch == "#"):
             end = sql.find("\n", i)
             end = len(sql) if end < 0 else end
@@ -116,7 +138,9 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[ContractMarker]]:
                 variable = VARIABLE.match(sql, i)
                 if not variable:
                     raise SqlError(f"line {line}: cannot inspect MySQL variable")
-                i += len(variable[0])
+                end = i + len(variable[0])
+                boundary = sql.find(delimiter, i) if delimiter != ";" else -1
+                i = boundary if i <= boundary < end else end
             tokens.append(Token(sql[start:i], "literal", line, sql[start:i], start))
             line += sql[start:i].count("\n")
         elif ch in "'\"`" or (dialect == "postgres" and ch == "$" and DOLLAR.match(sql, i)):
@@ -138,8 +162,16 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[ContractMarker]]:
         else:
             match = WORD.match(sql, i)
             value = match[0] if match else ch
+            if dialect == "mysql" and delimiter != ";":
+                boundary = sql.find(delimiter, i)
+                if i < boundary < i + len(value):
+                    value = sql[i:boundary]  # e.g. END$$ is not one identifier
             tokens.append(Token(value.upper(), "word" if match else "symbol", line, value, i))
             i += len(value)
+            if dialect == "mysql" and delimiter == ";" and value == ";":
+                client_start = len(tokens)
+    if dialect == "mysql" and delimiter != ";":
+        raise SqlError("unbalanced DELIMITER: restore ';' after complete statements")
     return tokens, markers
 
 
@@ -313,14 +345,9 @@ def inline_body_header(prefix: list[Token], dialect: str) -> bool:
     elif kind == "TRIGGER":
         if dialect != "mysql":
             return False
-        row = next((i for i in range(at, len(prefix)) if starts(prefix[i:], "FOR", "EACH", "ROW")), None)
-        if row is None:
-            return False
-        at = row + 3
-        if at < len(prefix) and prefix[at].value in {"FOLLOWS", "PRECEDES"}:
-            order_name, at = name(prefix, at + 1)
-            if not order_name:
-                return False
+        body = mysql_trigger(prefix)
+        return body == [] or (body is not None and len(body) == 2
+                              and body[0].kind in {"word", "identifier"} and body[1].value == ":")
     elif kind == "EVENT":
         if dialect != "mysql":
             return False
@@ -541,8 +568,29 @@ def routine_kind(stmt: list[Token]) -> str | None:
 
 def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int) -> list[tuple[int, str]]:
     opaque = [(stmt[0].line, "opaque procedural body requires a contract reference")]
-    if kind == "TRIGGER" and dialect == "postgres":
-        return [] if postgres_trigger(stmt) is not None else opaque
+    if kind == "TRIGGER":
+        if dialect == "postgres":
+            return [] if postgres_trigger(stmt) is not None else opaque
+        body = mysql_trigger(stmt)
+        if not body:
+            return opaque
+        root = body[2:] if len(body) > 2 and body[1].value == ":" else body
+        if not root or root[0].kind != "word" or root[0].value not in {
+                "BEGIN", "SIGNAL", "RESIGNAL", "SET", "SELECT", "IF", "CASE", "LOOP", "WHILE", "REPEAT",
+                "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH", "ALTER", "CREATE", "DROP", "TRUNCATE",
+                "CALL", "PREPARE", "EXECUTE", "GRANT", "REVOKE"}:
+            return opaque
+        # A reserved word after NEW./OLD. is a field identifier, not a verb.
+        body = [t._replace(kind="identifier")
+                if i >= 2 and body[i - 1].value == "."
+                and any(kw(body[i - 2], row) for row in ("NEW", "OLD"))
+                and t.kind == "word" else t for i, t in enumerate(body)]
+        findings = token_violations(body, dialect, nesting + 1)
+        # Dynamic execution is opaque even in handlers or loop/control prefixes
+        # not modeled by the generic procedural-statement recognizer.
+        findings.extend((t.line, "procedural or dynamic SQL requires a contract reference")
+                        for t in body if t.kind == "word" and t.value in {"PREPARE", "EXECUTE", "CALL"})
+        return findings
     if kind == "EVENT" or dialect != "postgres":
         return opaque
     if inline_routine(stmt, dialect):
@@ -891,6 +939,66 @@ def qualified_name(tokens: list[Token], at: int) -> tuple[tuple[str, str] | None
         return None, at
     parts = tuple(t.value if t.kind == "identifier" else t.value.lower() for t in (tokens[at], tokens[at + 2]))
     return parts, at + 3
+
+
+def mysql_trigger(stmt: list[Token]) -> list[Token] | None:
+    """Return only the body after a complete MySQL trigger header.
+
+    MySQL 8.4 grammar (read 2026-11-07):
+    https://dev.mysql.com/doc/refman/8.4/en/create-trigger.html
+    Event UPDATE/DELETE names are not executable mutations.
+    """
+    at = 0
+
+    def take(*words: str) -> bool:
+        nonlocal at
+        if starts(stmt[at:], *words):
+            at += len(words)
+            return True
+        return False
+
+    def identifier(qualified: bool = False) -> bool:
+        nonlocal at
+        for component in range(2 if qualified else 1):
+            if at >= len(stmt):
+                return False
+            token = stmt[at]
+            if not (token.kind == "identifier" and token.value and token.raw.startswith("`")
+                    or token.kind == "word" and re.fullmatch(r"[^\W\d][\w$]*", token.value)):
+                return False
+            at += 1
+            if component == 0 and qualified and at < len(stmt) and stmt[at].value == ".":
+                at += 1
+            else:
+                return True
+        return True
+
+    if not take("CREATE"):
+        return None
+    if take("DEFINER"):
+        if at >= len(stmt) or stmt[at].value != "=":
+            return None
+        at += 1
+        if take("CURRENT_USER"):
+            if at + 1 < len(stmt) and [t.value for t in stmt[at:at + 2]] == ["(", ")"]:
+                at += 2
+        elif (at + 1 < len(stmt) and stmt[at].kind in {"word", "identifier", "literal"}
+              and stmt[at + 1].kind == "literal" and stmt[at + 1].raw.startswith("@")):
+            at += 2
+        else:
+            return None
+    if not take("TRIGGER"):
+        return None
+    take("IF", "NOT", "EXISTS")
+    if not identifier(qualified=True) or not (take("BEFORE") or take("AFTER")):
+        return None
+    if not (take("INSERT") or take("UPDATE") or take("DELETE")) or not take("ON"):
+        return None
+    if not identifier(qualified=True) or not take("FOR", "EACH", "ROW"):
+        return None
+    if (take("FOLLOWS") or take("PRECEDES")) and not identifier():
+        return None
+    return stmt[at:]
 
 
 def postgres_trigger(stmt: list[Token]) -> list[Token] | None:
@@ -1380,6 +1488,59 @@ def finite_query_executes(tokens: list[Token], dialect: str, catalog_format: boo
         return set()
 
 
+def conflict_update(stmt: list[Token], at: int) -> bool:
+    """DO UPDATE is an upsert only after an INSERT's ON CONFLICT target.
+
+    A procedural WHILE ... DO UPDATE instead executes a real UPDATE. Keep
+    nested queries out of the clause search and require its target grammar.
+    """
+    if not at or not kw(stmt[at - 1], "DO") or not starts(stmt[at:], "UPDATE", "SET"):
+        return False
+    # A CTE/subquery owns its own INSERT and conflict clause. Search at the
+    # UPDATE's enclosing parenthesis depth, not the outer statement's depth.
+    scopes = []
+    for i, token in enumerate(stmt[:at]):
+        if token.kind == "symbol" and token.value == "(":
+            scopes.append(i + 1)
+        elif token.kind == "symbol" and token.value == ")":
+            scopes.pop()
+    if scopes:
+        stmt, at = stmt[scopes[-1]:], at - scopes[-1]
+    flat = top_level(stmt[:at - 1])
+    on = next((i for i in range(len(flat) - 1, -1, -1) if starts(flat[i:], "ON", "CONFLICT")), None)
+    if on is None or not any(kw(t, "INSERT") for t in flat[:on]):
+        return False
+    target_at = next(i for i, t in enumerate(stmt) if t is flat[on]) + 2
+    if target_at < at - 1 and stmt[target_at].value == "(":
+        target, end = group(stmt, target_at)
+        if not target:
+            return False
+    elif starts(stmt[target_at:], "ON", "CONSTRAINT"):
+        constraint, end = name(stmt, target_at + 2)
+        if not constraint:
+            return False
+    else:
+        return False
+    predicate = stmt[end:at - 1]
+    if not predicate:
+        return True
+    if not starts(predicate, "WHERE") or len(predicate) < 2:
+        return False
+    # CASE is an expression here, not a procedural control boundary. Parentheses
+    # are already excluded by top_level; track nested unparenthesized CASEs too.
+    cases = 0
+    for token in top_level(predicate[1:]):
+        if kw(token, "CASE"):
+            cases += 1
+        elif kw(token, "END") and cases:
+            cases -= 1
+        elif not cases and token.kind == "word" and token.value in {
+                "BEGIN", "THEN", "ELSE", "LOOP", "WHILE", "REPEAT", "DO",
+                "INSERT", "UPDATE", "DELETE", "SELECT"}:
+            return False
+    return cases == 0
+
+
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                      catalog_format: bool = False, finite_executes: set[int] | None = None,
                      historical_tables: set[str] | None = None,
@@ -1414,7 +1575,10 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                              if dialect == "postgres" and routine_kind(control_stmt) == "TRIGGER" else None)
         # Valid trigger DDL contains event names and constant callback arguments,
         # not mutations. Only its WHEN expression needs the generic SQL scan.
-        scan_stmt = trigger_condition if trigger_condition is not None else stmt
+        mysql_body = (mysql_trigger(control_stmt)
+                      if dialect == "mysql" and routine_kind(control_stmt) == "TRIGGER" else None)
+        # MySQL executes an inline body, inspected recursively in its own scope.
+        scan_stmt = [] if mysql_body is not None else trigger_condition if trigger_condition is not None else stmt
         if starts(control_stmt, "ALTER") and has(control_stmt, "SET", "SCHEMA"):
             dropped_concurrent_indexes.clear()
         if dialect == "postgres":
@@ -1510,7 +1674,9 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                         suffix.append(following)
                     if following.kind == "symbol" and following.value == "(":
                         depth += 1
-                lock_or_upsert = kw(token, "UPDATE") and i and any(kw(scan_stmt[i - 1], w) for w in ("FOR", "KEY", "ON", "DO"))
+                lock_or_upsert = kw(token, "UPDATE") and i and (
+                    any(kw(scan_stmt[i - 1], w) for w in ("FOR", "KEY", "ON"))
+                    or conflict_update(scan_stmt, i))
                 if not lock_or_upsert and not has(suffix, "WHERE"):
                     out.append((token.line, token.value + " without WHERE"))
         stmt = control_stmt
