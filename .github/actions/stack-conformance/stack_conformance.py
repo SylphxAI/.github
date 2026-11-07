@@ -1250,7 +1250,7 @@ def cmd_check(args) -> int:
     imported, imported_errors = source_provenance.architecture_report(
         head, source_base, source_roots, args.baseline, changed, today, architecture, parse_baseline)
     errors += imported_errors
-    for key in ("findings", "unreadable", "reviewed_paths", "excluded_paths"):
+    for key in ("findings", "unreadable", "reviewed_paths", "excluded_paths", "decision_errors"):
         report.setdefault(key, []).extend(imported[key])
     report["source_relocations"] = source_roots
     report.update({"repository": args.repository, "commit": git(args.repo, "rev-parse", f"{args.head}^{{commit}}").strip(),
@@ -1273,6 +1273,7 @@ def cmd_check(args) -> int:
             message = f"{row['class']} {row['rule']}: {row['reason']} ({row['contract']})"
             print(f"::error file={workflow_escape(row['path'], True)},line={row['line']}::{workflow_escape(message)}")
             errors.append(message)
+    errors.extend(row["reason"] for row in report.get("decision_errors", []))
     for row in report["unreadable"]:
         errors.append("input not reviewed: " + row["path"] + ": " + row["reason"])
     deal_rows = [row for row in report["findings"] if row["rule"] == "deal-randomness"]
@@ -1284,7 +1285,7 @@ def cmd_check(args) -> int:
     for n in notices:
         print(f"::notice::{n}")
     for e in errors:
-        print(f"::error::{e}")
+        print(f"::error::{workflow_escape(e)}")
     print(f"{len(found)} departure(s) found, {len(head_baseline or ())} recorded in {args.baseline}; "
           f"{len(runtime)} agent-runtime part(s) found in {args.repository or 'this repository'}; "
           f"{len(obligations)} new work-engine table(s) without an owner header; "
@@ -1322,6 +1323,8 @@ def cmd_scan(args) -> int:
     print(architecture.BASELINE_MARKER)
     for row in report["findings"]:
         print(architecture.baseline_key(row))
+    if report["decision_errors"]:
+        raise SystemExit("; ".join(row["reason"] for row in report["decision_errors"]))
     if report["unreadable"]:
         raise SystemExit("source unreadable; baseline scan incomplete")
     for line in agent_runtime(tree):

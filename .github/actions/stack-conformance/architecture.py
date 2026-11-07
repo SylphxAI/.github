@@ -666,16 +666,16 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
 
 
 def decisions(text, repository, today, *, ignore_expired=False):
-    """Validate every record; historical scans omit expired exemptions, not findings."""
+    """Return active exemptions and policy errors without aborting the census."""
     if text is None:
-        return []
+        return [], []
     data = json.loads(text)
     if not isinstance(data, dict) or set(data) != {"version", "decisions"} or data["version"] != 1:
         raise ValueError("invalid architecture decisions schema")
     rows = data["decisions"]
     if not isinstance(rows, list):
         raise ValueError("architecture decisions must be an array")
-    seen, active = set(), []
+    seen, active, errors = set(), [], []
     for row in rows:
         required = {"repository", "path", "line", "class", "rule", "source_sha256", "owner", "reason", "contract", "expires", "authority", "evidence", "reconsideration"}
         if (not isinstance(row, dict) or set(row) != required
@@ -698,10 +698,20 @@ def decisions(text, repository, today, *, ignore_expired=False):
             raise ValueError("architecture decision expiry must be an ISO date") from None
         if expires < today:
             if not ignore_expired:
-                raise ValueError("architecture decision expired: " + row["path"])
+                # The schema has no authored id; bind a stable diagnostic id to
+                # the exact exemption scope, including repository and source.
+                decision_id = hashlib.sha256(json.dumps(
+                    [repository, *identity], separators=(",", ":")).encode()).hexdigest()
+                errors.append({"decision_id": decision_id,
+                    **{k: row[k] for k in ("repository", "path", "line", "class", "rule",
+                                           "source_sha256", "expires", "authority")},
+                    "reason": (f"architecture decision expired: {decision_id} "
+                               f"({repository} {row['class']}/{row['rule']} at "
+                               f"{row['path']}:{row['line']}) expired on {row['expires']}; "
+                               f"authority: {row['authority']}")})
             continue
         active.append(row)
-    return active
+    return active, errors
 
 
 def evaluate(tree, repository, changed, today, *, ignore_expired=False):
@@ -714,7 +724,7 @@ def evaluate(tree, repository, changed, today, *, ignore_expired=False):
         retired = data.get("retired_routes", []) if data.get("completed") is True else []
         if not isinstance(retired, list) or any(not isinstance(r, str) or not r.startswith("/") for r in retired):
             raise ValueError("invalid retired-route migration contract")
-    allowed = decisions(tree.read(".github/architecture-decisions.json"), repository, today,
+    allowed, decision_errors = decisions(tree.read(".github/architecture-decisions.json"), repository, today,
                         ignore_expired=ignore_expired)
     findings, unreadable, reviewed, skipped = [], [], [], []
     # Always expose inherited findings. Changed lines control regression admission,
@@ -760,7 +770,7 @@ def evaluate(tree, repository, changed, today, *, ignore_expired=False):
         if tuple(row[k] for k in ("path", "line", "class", "rule", "source_sha256")) not in matched:
             unreadable.append({"path": ".github/architecture-decisions.json", "reason": "stale or mismatched architecture decision for " + row["path"]})
     return {"findings": findings, "unreadable": unreadable, "reviewed_paths": reviewed,
-            "excluded_paths": skipped, "decisions": allowed,
+            "excluded_paths": skipped, "decisions": allowed, "decision_errors": decision_errors,
             "scope": "changed lines with full-file context" if changed is not None else "supported constructs in the supplied tree",
             "semantic_census_complete": False, "limits": LIMITS}
 

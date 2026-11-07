@@ -1,0 +1,8 @@
+{
+  "path": "src/api/main.rs",
+  "prefix_lines": 410,
+  "source": "loop {\n    query_status();\n    sleep(1);\n}\n",
+  "expires": "2026-11-06",
+  "authority": "https://example.invalid/repository/issues/24#issuecomment-1",
+  "inherited_settings": 474
+}
