@@ -12,6 +12,14 @@ current head again, including a previous unavailable review. Normal merge-queue
 checks continue independently; this advisory check does not claim a review of
 the queue's combined merge commit.
 
+Same-input deduplication applies when an active check is observable; truly
+simultaneous first deliveries may both review. Callers must use a per-PR
+concurrency group with `cancel-in-progress: true`, as the supplied wrapper does.
+This is not a global exactly-once guarantee. Canonical selection uses the highest
+Check Run ID on the current head, not completion order; late completion of an
+older check cannot shadow a newer verdict. Completed verdict reuse still requires
+the exact input identity, and a different-input active check cannot defer it.
+
 ## Credentials and configuration
 
 Declare the exact wrapper `.github/workflows/pr-review.yml`, default branch,

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { APP_ID, CHECK_NAME, GitHub, PublishUnverified, digest } from '../.github/actions/pr-review/github.mjs';
+import { APP_ID, CHECK_NAME, GitHub, PublishUnverified, digest, bundleFile } from '../.github/actions/pr-review/github.mjs';
 import { produceReview } from '../.github/actions/pr-review/producer.mjs';
 import { createReviewInput, reviewerVersion } from '../.github/actions/pr-review/contract.mjs';
 
@@ -13,7 +13,11 @@ const target = { kind: 'pull_request', number: 7, base_sha: base, head_sha: head
   files: [{ filename: 'src/change.js', status: 'modified' }] };
 const externalId = `pr-review/v1/${digest(JSON.stringify(['example/repo', 'pull_request', 7, base, undefined, head, undefined,
   { kind: 'workflow_run', id: '7', generation: '1' }, reviewerVersion]))}`;
-const initial = () => ({ details_url: 'https://github.com/example/repo/actions/runs/1', external_id: externalId, id: 41, app: { id: APP_ID }, name: CHECK_NAME, head_sha: head, status: 'in_progress' });
+const input = createReviewInput({ schema_version: 2, repository: 'example/repo', repository_id: '1',
+  base_sha: base, head_sha: head, policy_version: 'missing', trigger: { kind: 'workflow_run', id: '7', generation: '1' },
+  files: [bundleFile(target.files[0], 'before\n', 'after\n')], context: [] });
+const inputIdentity = `Head: \`${head}\`\n\nReviewer: \`${reviewerVersion}\`\n\nSource digest: \`${input.input_digest}\`\n\n`;
+const initial = () => ({ output: { summary: `${inputIdentity}Reviewing exact head \`${head}\`.` }, details_url: 'https://github.com/example/repo/actions/runs/1', external_id: externalId, id: 41, app: { id: APP_ID }, name: CHECK_NAME, head_sha: head, status: 'in_progress' });
 const output = { title: 'Review complete', summary: 'private-source-and-credential', annotations: [] };
 const response = data => ({ ok: true, status: 200, json: async () => structuredClone(data) });
 function boundary({ observe = run => run, patchError, create = false } = {}) {
@@ -30,7 +34,7 @@ function boundary({ observe = run => run, patchError, create = false } = {}) {
       if (path.includes('/commits/')) return response({ check_runs: run ? [run] : [] });
       if (request.method === 'POST') {
         assert.equal(path, '/repos/example/repo/check-runs'); events.push('POST');
-        run = { ...JSON.parse(request.body), ...initial() };
+        run = { ...JSON.parse(request.body), id: 41, app: { id: APP_ID } };
         writes.push({ method: 'POST', body: JSON.parse(request.body) }); return response(run);
       }
       assert.equal(path, '/repos/example/repo/check-runs/41');
@@ -218,6 +222,7 @@ test('review CLI persists the accepted creation before a permanently 404 readbac
       const reconcile = GitHub.prototype.reconcile;
       GitHub.prototype.reconcile = function (...args) { this.wait = async () => {}; return reconcile.apply(this, args); };
       GitHub.prototype.current = async () => true;
+      GitHub.prototype.source = async (path, sha) => path === 'src/change.js' ? (sha === base ? 'before\n' : 'after\n') : null;
       let created, reads = 0;
       globalThis.fetch = async (url, request) => {
         const path = new URL(url).pathname;
