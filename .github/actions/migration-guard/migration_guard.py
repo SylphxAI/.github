@@ -1512,10 +1512,23 @@ def conflict_update(stmt: list[Token], at: int) -> bool:
     else:
         return False
     predicate = stmt[end:at - 1]
-    return not predicate or (starts(predicate, "WHERE") and len(predicate) > 1
-                             and not any(t.kind == "word" and t.value in {
-                                 "BEGIN", "THEN", "ELSE", "LOOP", "WHILE", "REPEAT", "DO",
-                                 "INSERT", "UPDATE", "DELETE", "SELECT"} for t in top_level(predicate[1:])))
+    if not predicate:
+        return True
+    if not starts(predicate, "WHERE") or len(predicate) < 2:
+        return False
+    # CASE is an expression here, not a procedural control boundary. Parentheses
+    # are already excluded by top_level; track nested unparenthesized CASEs too.
+    cases = 0
+    for token in top_level(predicate[1:]):
+        if kw(token, "CASE"):
+            cases += 1
+        elif kw(token, "END") and cases:
+            cases -= 1
+        elif not cases and token.kind == "word" and token.value in {
+                "BEGIN", "THEN", "ELSE", "LOOP", "WHILE", "REPEAT", "DO",
+                "INSERT", "UPDATE", "DELETE", "SELECT"}:
+            return False
+    return cases == 0
 
 
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,

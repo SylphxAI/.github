@@ -137,6 +137,20 @@ SIGNAL SQLSTATE '45000';
                 self.assertIn("UPDATE without WHERE", str(guard.check_sql(sql, "postgres")))
                 self.assertIn("UPDATE without WHERE", str(guard.violations(sql, "postgres")))
 
+    def test_postgres_conflict_predicate_case_is_an_expression(self):
+        sql = "INSERT INTO accounts(id,active) VALUES(1,1) ON CONFLICT (id) WHERE CASE WHEN active > 0 THEN true ELSE false END DO UPDATE SET active=1;"
+        for candidate in (
+            sql,
+            sql.replace("THEN true", "THEN CASE WHEN active > 1 THEN true ELSE false END"),
+            sql.replace("WHERE CASE", "WHERE (CASE").replace("END DO", "END) DO"),
+        ):
+            with self.subTest(sql=candidate):
+                self.assertEqual(guard.check_sql(candidate, "postgres"), [])
+                self.assertEqual(guard.violations(candidate, "postgres"), [])
+        sql = "CREATE TRIGGER t BEFORE UPDATE ON x FOR EACH ROW BEGIN IF NEW.id = 1 THEN UPDATE other SET active=0; END IF; END;"
+        self.assertIn("UPDATE without WHERE", str(guard.check_sql(sql, "mysql")))
+        self.assertIn("UPDATE without WHERE", str(guard.violations(sql, "mysql")))
+
     def test_dynamic_sql_is_refused_in_every_control_scope(self):
         for statement in ("PREPARE q FROM @sql", "EXECUTE q", "CALL cleanup()"):
             for body in (statement + ";", "IF NEW.id=1 THEN " + statement + "; END IF;",
