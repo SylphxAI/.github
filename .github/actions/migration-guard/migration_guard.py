@@ -580,6 +580,11 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
                 "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH", "ALTER", "CREATE", "DROP", "TRUNCATE",
                 "CALL", "PREPARE", "EXECUTE", "GRANT", "REVOKE"}:
             return opaque
+        # A reserved word after NEW./OLD. is a field identifier, not a verb.
+        body = [t._replace(kind="identifier")
+                if i >= 2 and body[i - 1].value == "."
+                and any(kw(body[i - 2], row) for row in ("NEW", "OLD"))
+                and t.kind == "word" else t for i, t in enumerate(body)]
         findings = token_violations(body, dialect, nesting + 1)
         # Dynamic execution is opaque even in handlers or loop/control prefixes
         # not modeled by the generic procedural-statement recognizer.

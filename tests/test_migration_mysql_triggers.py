@@ -76,6 +76,15 @@ SIGNAL SQLSTATE '45000';
 """
         self.assertEqual(guard.check_sql(sql, "mysql"), [])
 
+    def test_row_field_names_are_identifiers_even_when_they_spell_sql_verbs(self):
+        for field in ("update", "delete", "truncate", "prepare", "execute", "call"):
+            body = f"IF NEW.{field} <> OLD.{field} THEN SIGNAL SQLSTATE '45000'; END IF;"
+            sql = "CREATE TRIGGER x BEFORE UPDATE ON accounts FOR EACH ROW BEGIN " + body + " END;"
+            with self.subTest(field=field):
+                self.assertEqual(guard.check_sql(sql, "mysql"), [])
+                self.assertIn("DELETE without WHERE", str(guard.check_sql(sql.replace("END;", "DELETE FROM accounts; END;"), "mysql")))
+                self.assertIn("dynamic SQL", str(guard.check_sql(sql.replace("END;", "EXECUTE q; END;"), "mysql")))
+
     def test_each_body_mutation_needs_its_own_where(self):
         for body, reason in [
             ("DELETE FROM accounts; SELECT id FROM other WHERE id=1;", "DELETE without WHERE"),
