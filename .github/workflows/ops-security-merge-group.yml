@@ -14,20 +14,174 @@ permissions:
 jobs:
   stamps:
     name: ops-security/review
-    # This is a projection, not the initial authorization boundary. The main
-    # ruleset requires the operator's success on each exact PR head BEFORE it
-    # can enter this queue, including PRs editing this workflow or its scripts.
-    # GitHub couples required PR and merge-group checks; retain both stages.
+    # PR-head operator approval is required before enqueue; this check projects
+    # every member's approval onto the different combined commit.
     if: github.repository == 'SylphxAI/.github' && github.event.repository.visibility == 'public'
     runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     timeout-minutes: 10
     steps:
-      # Candidate code here has already passed exact-head operator approval.
-      # No workflow in this change can issue that PR-head approval itself.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          repository: SylphxAI/.github
+          ref: main
           persist-credentials: false
       - name: Require every exact-head PR stamp in the combined candidate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ops_security_merge_group.py
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          # actions/checkout selects SylphxAI/.github main, never the candidate tree.
+          ROOT = Path.cwd()
+          SPEC = importlib.util.spec_from_file_location(
+              'ops_security_contribution_policy', ROOT / '.github/actions/contribution-policy/contribution_policy.py')
+          policy = importlib.util.module_from_spec(SPEC)
+          SPEC.loader.exec_module(policy)
+
+
+          class GitHub(policy.GitHub):
+              def statuses(self, head):
+                  """Read the complete commit-status history for an immutable head.
+
+                  The stamp gate deliberately uses commit statuses rather than a workflow
+                  check on pull-request heads.  Fetch every page so a later non-success
+                  status cannot be hidden behind an earlier success, and reject malformed
+                  or incomplete responses instead of making an admission decision from a
+                  partial inventory.
+                  """
+                  statuses, page = [], 1
+                  while True:
+                      rows = self.get(f'commits/{head}/statuses?per_page=100&page={page}')
+                      if not isinstance(rows, list) or len(rows) > 100 or any(not isinstance(row, dict) for row in rows):
+                          raise policy.PolicyError('commit status response is invalid')
+                      statuses.extend(rows)
+                      ids = [row.get('id') for row in statuses]
+                      if any(type(value) is not int or value <= 0 for value in ids) or len(set(ids)) != len(ids):
+                          raise policy.PolicyError('commit status pagination is incomplete or changed')
+                      if len(rows) < 100:
+                          return statuses
+                      page += 1
+
+
+          def bind_head(api, pr, synthetic, base, group_shas):
+              """Bind the reviewed content to its immutable position, not live queue state."""
+              head = pr['head']['sha']
+              location = f"PR #{pr['number']} head {head}"
+              raw = synthetic.get('raw_commit')
+              headers = raw.partition(b'\n\n')[0].decode('ascii', errors='replace').splitlines() if isinstance(raw, bytes) else []
+              trees = [line[5:] for line in headers if line.startswith('tree ')]
+              parents = [line[7:] for line in headers if line.startswith('parent ')]
+              if len(trees) != 1 or len(parents) not in (1, 2) or not all(policy.SHA.fullmatch(sha) for sha in trees + parents):
+                  raise policy.PolicyError(location + ': immutable merge-group tree/parents are incomplete or unsupported')
+              if parents[0] != base and parents[0] not in group_shas:
+                  raise policy.PolicyError(location + ': immutable merge-group position is incomplete')
+              # The API's parent list must agree with the immutable Git commit object.
+              remote = api.get('commits/' + synthetic['sha'])
+              if remote.get('sha') != synthetic['sha'] or \
+                      [item['sha'] for item in remote['parents']] != parents:
+                  raise policy.PolicyError(location + ': API merge-group parents disagree with immutable source')
+              if len(parents) == 2:
+                  if parents[1] != head:
+                      raise policy.PolicyError(location + ': membership/head changed during evaluation; '
+                                        f'merge-group parent pins {parents[1]}')
+                  return
+              try:
+                  tree = policy.squash_merge_tree(api.repository, api.token, parents[0], head)
+              except policy.PolicyError as error:
+                  raise policy.PolicyError(location + ': ' + str(error)) from None
+              if tree != trees[0]:
+                  raise policy.PolicyError(location + f": squash tree mismatch at merge-group commit {synthetic['sha']}")
+
+
+
+          def ops_security_review_findings(api, pr):
+              """Require the latest exact-head ``ops-security/review`` stamp to pass.
+
+              This is intentionally independent of the contribution-policy review title
+              and App identity.  The operator's exact-head commit status is the only
+              admission stamp; the merge-group workflow emits the same context only on
+              the synthetic merge-group commit after checking every member.
+              """
+              number = pr.get('number') if isinstance(pr, dict) else None
+              head = (pr.get('head') or {}).get('sha') if isinstance(pr, dict) else None
+              location = f'PR #{number} head {head}'
+              if type(number) is not int or number <= 0 or not isinstance(head, str) or not policy.SHA.fullmatch(head):
+                  raise policy.PolicyError('merge-group PR identity is incomplete')
+              try:
+                  rows = api.statuses(head)
+                  matching = [row for row in rows if row.get('context') == 'ops-security/review']
+                  if not matching:
+                      state = 'missing'
+                  else:
+                      identities = [row.get('id') for row in matching]
+                      if any(type(value) is not int or value <= 0 for value in identities) or len(set(identities)) != len(identities):
+                          raise policy.PolicyError('commit status identity is incomplete')
+                      latest = max(matching, key=lambda row: row['id'])
+                      state = latest.get('state')
+                      if not isinstance(state, str) or not state:
+                          state = 'missing state'
+                  if state == 'success' and (latest.get('creator') or {}).get('login') != 'shtse8':
+                      state = 'unauthorized status creator'
+                  if state == 'success':
+                      return []
+              except (policy.PolicyError, KeyError, TypeError, ValueError) as error:
+                  state = 'API read error: ' + (str(error) if isinstance(error, policy.PolicyError) else 'incomplete commit status metadata')
+              return [{'rule': 'ops-security/review: ' + state, 'location': location, 'line': 0}]
+
+
+
+          def check(api, event, sha):
+              repository = event.get('repository') or {}
+              group = event.get('merge_group') or {}
+              if repository.get('full_name') != 'SylphxAI/.github' or repository.get('visibility') != 'public' or \
+                      repository.get('private') is not False or group.get('base_ref') != 'refs/heads/main' or \
+                      not isinstance(sha, str) or not policy.SHA.fullmatch(sha) or group.get('head_sha') != sha:
+                  raise policy.PolicyError('not the public .github/main merge-group candidate')
+              commits, snapshots, queued = policy.merge_group_snapshot(
+                  api, group, check_pull_text=False)
+              if not snapshots:
+                  raise policy.PolicyError('merge group has no resolved PR members')
+              findings, bound = [], set()
+              by_sha = {item['sha']: item for item in commits}
+              for pr, _ in snapshots:
+                  position = queued[pr['number']][1] if pr['number'] in queued else pr.get('merge_commit_sha')
+                  if position not in by_sha or position in bound:
+                      raise policy.PolicyError('merge-group member position is missing or duplicated')
+                  bind_head(api, pr, by_sha[position], group['base_sha'], set(by_sha))
+                  bound.add(position)
+                  findings.extend(ops_security_review_findings(api, pr))
+              findings.extend(policy.recheck_merge_group(api, group, commits, snapshots, queued))
+              return findings, len(snapshots)
+
+
+          def main():
+              try:
+                  if os.environ.get('GITHUB_EVENT_NAME') != 'merge_group' or \
+                          os.environ.get('GITHUB_REPOSITORY') != 'SylphxAI/.github':
+                      raise policy.PolicyError('this producer runs only on .github merge groups, never PR heads')
+                  token = os.environ.get('GH_TOKEN', '')
+                  if not token:
+                      raise policy.PolicyError('read-only metadata token is unavailable')
+                  event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+                  api = GitHub('SylphxAI/.github', token)
+                  findings, count = check(api, event, os.environ.get('GITHUB_SHA', ''))
+                  for finding in findings:
+                      print('::error::{rule} at {location}'.format(**finding))
+                  print(f'ops-security/review: checked {count} exact-head PR stamp(s); {len(findings)} finding(s).')
+                  return int(bool(findings))
+              except (policy.PolicyError, KeyError, ValueError, OSError, TypeError) as error:
+                  message = str(error) if isinstance(error, policy.PolicyError) else 'merge-group metadata could not be read'
+                  print('::error::ops-security/review: ' + message)
+                  return 2
+
+
+          if __name__ == '__main__':
+              sys.exit(main())
+          PY

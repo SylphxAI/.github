@@ -7,7 +7,7 @@ Existing CI requirements, branch protections and queue settings stay intact.
 
 ## Publishers and merge groups
 
-The operator publishes the PR-head status. No workflow produces this context on
+The authorized operator (`shtse8`) publishes the PR-head status. No workflow produces this context on
 a PR head, and a new source push needs a new exact-head stamp. The requirement
 has no integration binding because the operator status and GitHub Actions
 merge-group check have different publishers. Do not bind it to Actions or add a
@@ -18,9 +18,11 @@ only on `merge_group` and emits the named check on the combined commit. It uses
 the existing contribution-policy membership resolver to inventory every PR in
 the immutable candidate, including earlier queue entries that have already
 merged. Every member's current head is bound to its synthetic position using
-merge parents or squash-tree reconstruction, regardless of PR title. Every
+merge parents or squash-tree reconstruction, regardless of PR title. The GitHub commit API parent list must agree with the immutable synthetic
+commit object: two-parent positions require the second parent to equal the PR
+head; one-parent squash positions require reconstructed tree equality. Every
 member's complete status history is read; the highest status ID for
-`ops-security/review` must have state `success`. Missing, pending, failure,
+`ops-security/review` must have state `success` and creator `shtse8`. Missing, pending, failure,
 error, malformed or unreadable evidence fails closed. Membership and heads are
 rechecked after the status reads. The token has read-only contents,
 pull-requests and statuses permissions; the workflow never posts a PR status or
@@ -30,11 +32,13 @@ There are two separate admission boundaries. First, GitHub's `main` ruleset
 requires the PR-head status before the PR can enter the merge queue. Second,
 this workflow projects the already-authorized member stamps onto the different
 combined SHA. The workflow is not a substitute for the first boundary. A PR
-that edits the workflow, its script or the imported membership resolver still
-needs the operator's success on that exact edited head before enqueue. Merely
-changing candidate code to return success cannot satisfy the missing PR-head
-status: this workflow has no PR event or status-write permission. Its execution
-of candidate code therefore follows operator approval, not precedes it.
+that edits the workflow or imported membership resolver still needs the
+operator's success on that exact edited head before enqueue. The verifier is
+inline in the workflow and checks out only `repository: SylphxAI/.github` at
+`ref: main`. Its imported membership and immutable Git helpers therefore come
+from the trusted default branch, never the candidate working tree. Candidate
+objects are read as data, not checked out or executed. This also permits the
+initial adoption run before a new repository-relative script exists on main.
 
 For initial adoption, the producer PR must receive that exact-head operator
 stamp before it is armed, even though its new repository requirement is not

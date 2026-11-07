@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import types
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -12,9 +13,13 @@ from unittest import mock
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location('ops_security_group', ROOT / 'scripts/ops_security_merge_group.py')
-gate = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(gate)
+WORKFLOW = yaml.safe_load((ROOT / '.github/workflows/ops-security-merge-group.yml').read_text())
+INLINE = WORKFLOW['jobs']['stamps']['steps'][-1]['run']
+assert INLINE.startswith("python3 - <<'PY'\n") and INLINE.endswith('PY\n')
+SOURCE = INLINE.split('\n', 1)[1].rsplit('PY\n', 1)[0]
+gate = types.ModuleType('ops_security_group')
+with mock.patch.object(Path, 'cwd', return_value=ROOT):
+    exec(compile(SOURCE, '<inline-ops-security-producer>', 'exec'), gate.__dict__)
 policy = gate.policy
 BASE, HEAD1, HEAD2, GROUP1, GROUP2 = (c * 40 for c in 'abcde')
 
@@ -34,7 +39,7 @@ def entry(number, head, synthetic):
 
 
 def status(identifier=1, state='success', context='ops-security/review'):
-    return {'id': identifier, 'context': context, 'state': state}
+    return {'id': identifier, 'context': context, 'state': state, 'creator': {'login': 'shtse8'}}
 
 
 class GroupStampTest(unittest.TestCase):
@@ -43,7 +48,13 @@ class GroupStampTest(unittest.TestCase):
                       'merge_group': {'base_sha': BASE, 'head_sha': GROUP2, 'base_ref': 'refs/heads/main'}}
         self.prs = {1: pull(1, HEAD1), 2: pull(2, HEAD2)}
         self.api = mock.Mock(repository='SylphxAI/.github', token='read-token')
-        self.api.get.side_effect = lambda path: copy.deepcopy(self.prs[int(path.split('/')[1])])
+        def get(path):
+            if path.startswith('commits/'):
+                item = next(row for row in self.commits if row['sha'] == path.split('/')[1])
+                parents = [line[7:] for line in item['raw_commit'].decode().splitlines() if line.startswith('parent ')]
+                return {'sha': item['sha'], 'parents': [{'sha': head} for head in parents]}
+            return copy.deepcopy(self.prs[int(path.split('/')[1])])
+        self.api.get.side_effect = get
         self.api.queue_entries.return_value = [entry(1, HEAD1, GROUP1), entry(2, HEAD2, GROUP2)]
         self.api.pages.return_value = []
         self.api.statuses.return_value = [status()]
@@ -80,12 +91,25 @@ class GroupStampTest(unittest.TestCase):
         self.api.statuses.return_value = [status(context='ci-ok')]
         self.assertIn('missing', self.check()[0][0]['rule'])
 
+    def test_only_authorized_operator_can_supply_the_latest_success(self):
+        for creator in ({'login': 'github-actions[bot]'}, None, {'login': 'other-user'}):
+            self.api.statuses.return_value = [status(1), {**status(2), 'creator': creator}]
+            self.assertIn('unauthorized', self.check()[0][0]['rule'])
+
+    def test_api_parent_list_must_match_the_immutable_object(self):
+        original = self.api.get.side_effect
+        self.api.get.side_effect = lambda path: ({'sha': GROUP2, 'parents': [{'sha': BASE}, {'sha': HEAD1}]}
+                                               if path == 'commits/' + GROUP2 else original(path))
+        with self.assertRaisesRegex(policy.PolicyError, 'API merge-group parents disagree'):
+            self.check()
+
     def test_status_api_error_fails_closed(self):
         self.api.statuses.side_effect = policy.PolicyError('HTTP 503')
         self.assertIn('API read error', self.check()[0][0]['rule'])
 
     def test_already_merged_earlier_entry_is_still_checked(self):
         self.api.queue_entries.return_value = [entry(2, HEAD2, GROUP2)]
+        self.prs[1].update(merged_at='2026-11-07T00:00:00Z', merge_commit_sha=GROUP1)
         self.api.pages.side_effect = lambda path: [pull(1, HEAD1, merged_at='2026-11-07T00:00:00Z',
                                                      merge_commit_sha=GROUP1)] if GROUP1 in path else []
         self.api.statuses.side_effect = lambda head: [] if head == HEAD1 else [status()]
@@ -129,7 +153,7 @@ class GroupStampTest(unittest.TestCase):
 
 class StatusPaginationTest(unittest.TestCase):
     def test_full_history_and_later_error_are_not_hidden(self):
-        api = policy.GitHub('SylphxAI/.github', 'read-token')
+        api = gate.GitHub('SylphxAI/.github', 'read-token')
         rows = [status(i, context='ci-ok') for i in range(1, 101)]
         with mock.patch.object(api, 'get', side_effect=[rows, [status(101)]]):
             self.assertEqual(len(api.statuses(HEAD1)), 101)
@@ -150,6 +174,12 @@ class ProducerContractTest(unittest.TestCase):
         self.assertEqual(workflow['jobs']['stamps']['name'], 'ops-security/review')
         self.assertEqual(workflow['permissions'], {'contents': 'read', 'pull-requests': 'read', 'statuses': 'read'})
         self.assertIn("github.event.repository.visibility == 'public'", workflow['jobs']['stamps']['runs-on'])
+        checkout = workflow['jobs']['stamps']['steps'][0]['with']
+        self.assertEqual(checkout['repository'], 'SylphxAI/.github')
+        self.assertEqual(checkout['ref'], 'main')
+        self.assertFalse(checkout['persist-credentials'])
+        self.assertNotIn('scripts/ops_security_merge_group.py', INLINE)
+        self.assertNotIn('statuses: write', INLINE)
         for event in ('pull_request', 'push', 'workflow_dispatch'):
             with self.subTest(event=event), mock.patch.dict(os.environ, {'GITHUB_EVENT_NAME': event,
                     'GITHUB_REPOSITORY': 'SylphxAI/.github'}), contextlib.redirect_stdout(io.StringIO()):
