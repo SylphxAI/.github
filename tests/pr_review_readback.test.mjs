@@ -143,6 +143,39 @@ test('accepted POST identity is registered before 404 then 200 readback, with on
   assert.equal(reads(), 3); assert.deepEqual(writes.map(w => w.method), ['POST', 'PATCH']);
 });
 
+test('generated-only neutral persists terminal intent and finalizes read-only after a stale GET', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'review-generated-publication-'));
+  try {
+    const { github, writes, run } = boundary({ create: true });
+    const reads = [];
+    github.source = async path => {
+      reads.push(path);
+      assert.equal(path, '.github/review-policy.toml');
+      return 'version=1\n[tier0]\npaths=[]\n[review]\npaths=[]\n[generated]\npaths=["generated/**"]\n';
+    };
+    let saved, publication;
+    const receipt = await produceReview({ ...options(github), target: { ...target, review_requested: true,
+      files: [{ filename: 'generated/capture.json', status: 'modified' }] },
+      engine: async () => assert.fail('Excluded generated source must never enter inference'),
+      onBegin: value => { saved = structuredClone(value); },
+      onPublish: value => { publication = value; } });
+    assert.equal(receipt.conclusion, 'neutral'); assert.equal(receipt.applicable, false);
+    assert.deepEqual(reads, ['.github/review-policy.toml']);
+    assert.match(run().output.summary, /excludes every changed source as generated/);
+    assert.deepEqual(writes.map(write => write.method), ['POST', 'PATCH']);
+    assert.equal(publication.expected.conclusion, 'neutral');
+    assert.equal(publication.expected['output.title'].sha256, digest('Review outside path policy'));
+    for (const readback of [null, 'stale']) {
+      const { result, resource } = finalize(directory, run(), { ...saved, publication }, readback);
+      assert.equal(result.status, readback === null ? 0 : 1, result.stderr);
+      if (readback) assert.match(result.stderr, /publish_unverified/);
+      assert.equal(resource.writes.length, 0);
+      assert.equal(resource.run.output.title, 'Review outside path policy');
+      assert.equal(resource.run.conclusion, 'neutral');
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 // Run the actual always-run CLI against a durable resource/state, not an
 // alternative finalizer implementation in the test controller.
 function finalize(directory, run, state, readFailure = null) {

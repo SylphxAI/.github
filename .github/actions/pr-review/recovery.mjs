@@ -8,7 +8,7 @@ import { fileSegments, segmentWindows } from './source.mjs';
 export const recoveryLimits = { rounds: 3, files: contextRequestLimit, bytes: 1024 * 1024 };
 
 export async function recoverContext({ input, github, target, execute, createReviewInput,
-  validateResult, onResult, deadlineMs = Infinity }) {
+  validateResult, onResult, deadlineMs = Infinity, allowContext = () => true }) {
   const complete = (bytes, segments) => {
     const windows = segmentWindows(segments);
     return bytes === 0 || (windows.length === 1 && windows[0].start_byte === 0 && windows[0].end_byte === bytes);
@@ -100,11 +100,13 @@ export async function recoverContext({ input, github, target, execute, createRev
       return stop('invalid_request', 'Context recovery request is invalid.');
     }
     const fresh = [...new Map(requests.map(r => [`${r.side}:${r.path}`, r])).entries()].filter(([key]) => !seen.has(key));
+    const allowed = fresh.filter(([, request]) => allowContext(request.path));
+    if (fresh.length && !allowed.length) return finalizeBudget('generated_policy', 'Requested source is excluded by the base generated policy; deterministic provenance belongs to ci-ok.', nextRoundEstimateMs);
     if (!fresh.length) return finalizeBudget('no_new_context', 'Requested exact-source context was already supplied.', nextRoundEstimateMs);
     if (partRounds >= recoveryLimits.rounds) return finalizeBudget('round_limit', 'Context recovery round limit reached.', nextRoundEstimateMs);
-    if (added + fresh.length > recoveryLimits.files) return finalizeBudget('file_limit', 'Context recovery file limit reached.', nextRoundEstimateMs);
+    if (added + allowed.length > recoveryLimits.files) return finalizeBudget('file_limit', 'Context recovery file limit reached.', nextRoundEstimateMs);
     const context = [];
-    for (const [key, request] of fresh) {
+    for (const [key, request] of allowed) {
       if (Date.now() >= deadlineMs) return stop('deadline', 'Review deadline expired during context recovery.');
       let current;
       try { current = await github.current(target, { deadlineMs }); } catch (error) { if (githubRefusal(error)) throw error; current = null; }

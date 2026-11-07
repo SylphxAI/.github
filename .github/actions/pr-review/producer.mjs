@@ -2,42 +2,24 @@ import { APP_ID, CHECK_NAME, Unavailable, PublishUnverified, githubTerminalFailu
 import { changedRanges } from './source.mjs';
 import { spawnSync } from 'node:child_process';
 import { posix } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { recoverContext } from './recovery.mjs';
 
-function glob(pattern) {
-  let out = '^';
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i];
-    if (c === '*' && pattern[i + 1] === '*') {
-      i++;
-      if (pattern[i + 1] === '/') { i++; out += '(?:.*/)?'; }
-      else out += '.*';
-    } else if (c === '*') out += '[^/]*';
-    else if (c === '?') out += '[^/]';
-    else out += c.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
-  }
-  return new RegExp(`${out}$`);
+export function parsePolicy(content) {
+  const parsed = spawnSync('python3', [fileURLToPath(new URL('../_shared/review_policy.py', import.meta.url))],
+    { input: JSON.stringify(content), encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 5000 });
+  if (parsed.status !== 0) throw new Unavailable('Base review policy is invalid or unavailable.');
+  return JSON.parse(parsed.stdout);
 }
 
-export function parsePolicy(content) {
-  if (content === null) return { version: 'missing', tier0: { paths: [] }, generated: { paths: [] }, review: { paths: [] } };
-  const parsed = spawnSync('python3', ['-c', 'import json,sys,tomllib;print(json.dumps(tomllib.loads(sys.stdin.read())))'],
-    { input: content, encoding: 'utf8', maxBuffer: 1024 * 1024 });
-  if (parsed.status !== 0) throw new Unavailable('Base review policy is invalid TOML.');
-  const policy = JSON.parse(parsed.stdout);
-  if (!Number.isInteger(policy.version) || policy.version < 1) throw new Unavailable('Base review policy has no valid version.');
-  for (const section of ['tier0', 'generated', 'review']) {
-    if (!Array.isArray(policy[section]?.paths) || policy[section].paths.some(p => typeof p !== 'string')) {
-      throw new Unavailable(`Base review policy has invalid ${section} paths.`);
-    }
-  }
-  return policy;
-}
+// Match Python's codepoints, including valid Unicode line/paragraph separators.
+const matches = (policy, section, path) => policy._patterns[section].some(p => new RegExp(p, 'us').test(path));
+export const generatedSource = (policy, path) => path !== '.github/review-policy.toml' &&
+  matches(policy, 'generated', path) && !matches(policy, 'review', path);
 
 export function needsReview(policy, paths) {
-  const matches = (section, path) => (policy[section]?.paths ?? []).some(p => glob(p).test(path));
-  return paths.some(path => path === '.github/review-policy.toml' || matches('review', path) ||
-    !(matches('tier0', path) || matches('generated', path)));
+  return paths.some(path => path === '.github/review-policy.toml' || matches(policy, 'review', path) ||
+    !(matches(policy, 'tier0', path) || matches(policy, 'generated', path)));
 }
 
 export async function collectPullRequest(github, number, expectedHead, { deadlineMs } = {}) {
@@ -63,34 +45,42 @@ export async function collectBundle(github, target, trigger, { deadlineMs } = {}
   const policy = parsePolicy(policyText);
   const paths = target.files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
   if (!paths.every(validPath)) throw new Unavailable('Invalid changed-file path.');
+  for (const file of target.files) if (!['added', 'modified', 'removed', 'renamed', 'copied'].includes(file.status)) {
+    throw new Unavailable(`Unsupported change kind for ${file.filename}.`);
+  }
   const needs_review = target.review_requested || needsReview(policy, paths);
   if (!needs_review) return { needs_review: false };
   const files = [];
+  // Preserve the whole rename/copy transition when either identity is authored
+  // or explicitly reviewed. Generated-to-generated changes never fetch bytes.
+  const selected = target.files.filter(file =>
+    ![file.filename, file.previous_filename].filter(Boolean).every(path => generatedSource(policy, path)));
+  if (!selected.length) return { needs_review: false,
+    reason: 'The base policy excludes every changed source as generated; deterministic provenance is enforced independently by ci-ok, including for a [review] title.' };
   // A narrow sequential stream respects provider admission and avoids holding
   // the entire large repository source in memory at once.
-  for (const file of target.files) {
-    if (!['added', 'modified', 'removed', 'renamed', 'copied'].includes(file.status)) {
-      throw new Unavailable(`Unsupported change kind for ${file.filename}.`);
-    }
+  for (const file of selected) {
     const before = file.status === 'added' ? null : await github.source(file.previous_filename ?? file.filename, target.base_sha, false, { allowBinary: true, deadlineMs });
     const after = file.status === 'removed' ? null : await github.source(file.filename, target.head_sha, false, { allowBinary: true, deadlineMs });
     files.push(bundleFile(file, before, after));
   }
+  const selectedPaths = new Set(selected.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)));
   const context = [];
   if (policyText !== null) context.push({ path: '.github/review-policy.toml', content: policyText });
   // Base-side instructions are context, never authority to change credentials,
   // verdict rules, or the pinned reviewer definition.
   const instructionPaths = new Set(['AGENTS.md']);
-  for (const path of paths) {
+  for (const path of selected.flatMap(f => [f.filename, f.previous_filename].filter(Boolean))) {
     let directory = posix.dirname(path);
     while (directory !== '.') { instructionPaths.add(`${directory}/AGENTS.md`); directory = posix.dirname(directory); }
   }
   for (const path of instructionPaths) {
+    if (generatedSource(policy, path) && !selectedPaths.has(path)) continue;
     const content = await github.source(path, target.policy_sha ?? target.base_sha, true, { deadlineMs });
     if (content !== null) context.push({ path, content });
   }
   if (!await github.current(target, { deadlineMs })) throw new Unavailable('Head changed during source collection.');
-  return { needs_review, bundle: { schema_version: 2,
+  return { needs_review, allowContext: path => selectedPaths.has(path) || !generatedSource(policy, path), bundle: { schema_version: 2,
     repository: github.repository, repository_id: target.repository_id,
     base_sha: target.base_sha, head_sha: target.head_sha, policy_version: String(policy.version), trigger, files, context } };
 }
@@ -203,11 +193,11 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     if (collectionError) throw collectionError;
     if (!collected.needs_review) {
       const receipt = await finish('neutral', { title: 'Review outside path policy',
-        summary: `Head: \`${target.head_sha}\`\n\nThe base branch policy classifies every changed path as tier0 or generated; no [review] marker requests a review.` });
+        summary: `Head: \`${target.head_sha}\`\n\n${collected.reason ?? 'The base branch policy classifies every changed path as tier0 or generated; no [review] marker requests a review.'}` });
       return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion: 'neutral', applicable: false,
         started_at: run.started_at, observed_at: observedAt, elapsed_ms: Date.now() - started };
     }
-    const reviewed = await recoverContext({ input: initialInput, github, target,
+    const reviewed = await recoverContext({ input: initialInput, github, target, allowContext: collected.allowContext,
       execute: input => engine(input, externalId), createReviewInput, validateResult, onResult, deadlineMs });
     const input = reviewed.input;
     let result = reviewed.result;

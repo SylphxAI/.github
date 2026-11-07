@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import resource
 import subprocess
 import sys
 import tarfile
@@ -49,7 +50,22 @@ def phase(name):
         print(f'Secret scan phase {name}: elapsed {time.monotonic() - started:.3f}s.', flush=True)
 
 
-def command(args, *, cwd=None, env=None, input=None, timeout=METADATA_TIMEOUT):
+def command(args, *, cwd=None, env=None, input=None, timeout=METADATA_TIMEOUT, max_bytes=None, output_limit=None):
+    if max_bytes is not None:
+        # Bound stdout and each acquired Git object/pack on disk before reading.
+        # Credentials remain in env; neither raw stderr nor command args escape.
+        def limit_files():
+            resource.setrlimit(resource.RLIMIT_FSIZE, (max_bytes, max_bytes))
+        with tempfile.TemporaryFile() as output:
+            try:
+                result = subprocess.run(args, cwd=cwd, env=env, input=input, stdout=output,
+                                        stderr=subprocess.DEVNULL, timeout=timeout, preexec_fn=limit_files)
+            except subprocess.TimeoutExpired:
+                raise ScanError('bounded Git command timed out; raw diagnostics withheld') from None
+            if result.returncode or output.tell() > (output_limit if output_limit is not None else max_bytes):
+                raise ScanError('bounded Git command failed or exceeded its byte limit; raw diagnostics withheld')
+            output.seek(0)
+            return output.read((output_limit if output_limit is not None else max_bytes) + 1)
     try:
         result = subprocess.run(args, cwd=cwd, env=env, input=input,
                                 capture_output=True, timeout=timeout)
@@ -118,19 +134,32 @@ def revisions(event_name, event, sha):
     return base, head
 
 
-def fetch(repo, remote, base, head, token, *, filter_spec='blob:none'):
-    git(repo, 'init', '--bare', '-q')
-    git(repo, 'remote', 'add', 'origin', remote)
+def fetch(repo, remote, base, head, token, *, filter_spec='blob:none', depth=None, timeout=METADATA_TIMEOUT,
+          max_bytes=None, deadline=None):
+    def run(*args, env=None, timeout=METADATA_TIMEOUT):
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ScanError('bounded Git acquisition deadline expired; raw diagnostics withheld')
+            timeout = min(timeout, remaining)
+        return command(['git', '-C', str(repo), *args], env=env, timeout=timeout, max_bytes=max_bytes)
+
+    # A tree-only caller can bound the whole acquisition, including local setup.
+    # Without a deadline the scanner retains its existing per-command timeouts.
+    run('init', '--bare', '-q')
+    run('remote', 'add', 'origin', remote)
     env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
     if token:
         # Scope authentication to this GitHub server, never a URL from PR code.
         server = os.environ.get('GITHUB_SERVER_URL', 'https://github.com').rstrip('/')
         header = 'AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode()
         env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0=f'http.{server}/.extraheader', GIT_CONFIG_VALUE_0=header)
-    # Fetch complete commit ancestry but defer unrelated blobs. The same
+    # By default fetch complete ancestry; tree-only consumers can request depth=1.
+    # Defer unrelated blobs. The same
     # environment authenticates lazy blob reads during detection and allowlisting.
-    command(['git', '-C', str(repo), 'fetch', '--quiet', '--no-tags', '--filter=' + filter_spec,
-             'origin', *([base] if base else []), head], env=env)
+    run('fetch', '--quiet', '--no-tags', '--filter=' + filter_spec,
+        *(['--depth=' + str(depth)] if depth is not None else []),
+        'origin', *([base] if base and base != head else []), head, env=env, timeout=timeout)
     return env
 
 
