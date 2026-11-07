@@ -193,17 +193,40 @@ class GitHub:
                 return result
             page += 1
 
+    def check_runs(self, head):
+        """Read every canonical-name run; refuse a partial or moving inventory."""
+        runs, total, page = [], None, 1
+        while True:
+            body = self.get(f'commits/{head}/check-runs?check_name=Sylphx%20PR%20Review&filter=all&per_page=100&page={page}')
+            if not isinstance(body, dict):
+                raise PolicyError('review Check Run response is invalid')
+            count, rows = body.get('total_count'), body.get('check_runs')
+            if type(count) is not int or count < 0 or not isinstance(rows, list) or len(rows) > 100 or any(not isinstance(row, dict) for row in rows):
+                raise PolicyError('review Check Run pagination is invalid')
+            if total is not None and total != count:
+                raise PolicyError('review Check Run inventory changed during pagination')
+            total = count
+            runs.extend(rows)
+            ids = [row.get('id') for row in runs]
+            if any(type(value) is not int or value <= 0 for value in ids) or len(set(ids)) != len(ids) or len(runs) > total:
+                raise PolicyError('review Check Run pagination is incomplete')
+            if len(runs) == total:
+                return runs
+            if len(rows) < 100:
+                raise PolicyError('review Check Run pagination is incomplete')
+            page += 1
+
     def queue_entries(self, branch):
         query = '''query($owner:String!, $name:String!, $branch:String!, $cursor:String) {
           repository(owner:$owner, name:$name) { mergeQueue(branch:$branch) {
             entries(first:100, after:$cursor) {
-              nodes { pullRequest { number headRefOid } headCommit { oid } }
+              totalCount nodes { pullRequest { number headRefOid } headCommit { oid } }
               pageInfo { hasNextPage endCursor }
             }
           } }
         }'''
         owner, name = self.repository.split('/')
-        cursor, entries = None, []
+        cursor, entries, total, seen_cursors = None, [], None, set()
         while True:
             response = self.read(os.environ.get('GITHUB_GRAPHQL_URL', self.root + '/graphql'),
                                  {'query': query, 'variables': {'owner': owner, 'name': name,
@@ -219,13 +242,23 @@ class GitHub:
             if queue is None:
                 return entries
             connection = queue['entries']
-            entries.extend(connection['nodes'])
+            count, rows = connection['totalCount'], connection['nodes']
+            if type(count) is not int or count < 0 or not isinstance(rows, list) or \
+                    len(rows) > 100 or total is not None and count != total:
+                raise PolicyError('GitHub merge queue pagination is incomplete or changed')
+            total = count
+            entries.extend(rows)
             page = connection['pageInfo']
+            if type(page['hasNextPage']) is not bool or len(entries) > total:
+                raise PolicyError('GitHub merge queue pagination is incomplete')
             if not page['hasNextPage']:
+                if len(entries) != total:
+                    raise PolicyError('GitHub merge queue pagination is incomplete')
                 return entries
-            if not page['endCursor'] or page['endCursor'] == cursor:
+            if not rows or not page['endCursor'] or page['endCursor'] in seen_cursors:
                 raise PolicyError('GitHub merge queue pagination is incomplete')
             cursor = page['endCursor']
+            seen_cursors.add(cursor)
 
 
 def range_commits(base, head, repository, token):
@@ -365,16 +398,65 @@ def pull_snapshot(api, number, expected_head=None, *, check_text=True, expected_
     return after, commits
 
 
-def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
+def review_findings(api, pr, commits):
+    """Only an exact-head, completed success by the review App admits [review]."""
+    number, head = pr['number'], pr['head']['sha']
+    if not isinstance(pr.get('title'), str) or not SHA.fullmatch(head):
+        raise PolicyError('pull request review identity is incomplete')
+    if not pr['title'].startswith('[review]'):
+        return []
+    location = f'PR #{number} head {head}'
+
+    def canonical(sha):
+        return sorted((run for run in api.check_runs(sha)
+                       if run.get('name') == 'Sylphx PR Review' and
+                       (run.get('app') or {}).get('id') == 1299545),
+                      key=lambda run: run['id'], reverse=True)
+
+    try:
+        runs = canonical(head)
+        state = 'missing'
+        if runs:
+            latest = runs[0]
+            if latest.get('head_sha') != head:
+                state = 'success on an older head ' + str(latest.get('head_sha')) if latest.get('conclusion') == 'success' else 'wrong head'
+            elif latest.get('status') != 'completed':
+                state = 'pending'
+            else:
+                state = latest.get('conclusion') or 'missing conclusion'
+        else:
+            # Diagnostic only: an older success can never authorize this head.
+            for sha in reversed([item['sha'] for item in commits if item['sha'] != head]):
+                older = canonical(sha)
+                if older and older[0].get('head_sha') == sha and older[0].get('status') == 'completed' and older[0].get('conclusion') == 'success':
+                    state = 'success on an older head ' + sha
+                    break
+        after = api.get(f'pulls/{number}')
+        if after['head']['sha'] != head or after['title'] != pr['title'] or after['base']['ref'] != pr['base']['ref']:
+            state = 'PR head or metadata changed during review validation'
+        if state == 'success':
+            return []
+    except (PolicyError, KeyError, TypeError, ValueError) as error:
+        state = 'API read error: ' + (str(error) if isinstance(error, PolicyError) else 'incomplete review metadata')
+    return [{'rule': 'exact-head-review: ' + state, 'location': location, 'line': 0}]
+
+
+def check_event(api, event_name, event, sha, policy, *, check_pull_text=True,
+                require_merge_group_review=False):
     def verdict(pr, commits):
         return evaluate(pr, commits, policy,
                         verified_github_commits=verified_github_commits(api, commits, policy))
 
+    reviews = []
+
     def snapshot(number, head):
         if check_pull_text:
-            return pull_snapshot(api, number, head)
-        pr, commits = pull_snapshot(api, number, head, check_text=False)
-        return None, commits
+            pr, commits = pull_snapshot(api, number, head)
+        else:
+            pr, commits = pull_snapshot(api, number, head, check_text=False)
+        if require_merge_group_review and event_name == 'merge_group':
+            reviews.extend(review_findings(api, pr, commits))
+        return pr if check_pull_text else None, commits
 
     if event_name in {'pull_request', 'pull_request_target'}:
         pr = event.get('pull_request', {})
@@ -385,6 +467,8 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
         findings = []
         pulls, covered = {}, set()
         group_shas = {commit['sha'] for commit in commits}
+        if not group_shas:
+            raise PolicyError('merge group membership is incomplete: empty commit range')
         branch = group['base_ref'].removeprefix('refs/heads/')
         for entry in api.queue_entries(branch):
             synthetic = (entry.get('headCommit') or {}).get('oid')
@@ -410,7 +494,7 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
         if group_shas - covered:
             raise PolicyError('merge group membership is incomplete')
         findings.extend(verdict(None, commits))
-        return findings
+        return findings + reviews
     if event_name == 'workflow_dispatch':
         inputs = event.get('inputs') or {}
         if any(inputs.get('code-' + part) for part in ('merge', 'head', 'base', 'pr', 'base-ref')):
@@ -433,6 +517,8 @@ def main(argv=None):
     parser.add_argument('--report', type=Path)
     parser.add_argument('--scope', choices=('all', 'commits'), default='all',
                         help='commits is for code verdicts with a separately required PR metadata producer')
+    parser.add_argument('--require-merge-group-review', action='store_true',
+                        help='require exact-head review success for every [review] merge-group PR')
     args = parser.parse_args(argv)
     try:
         policy = json.loads(POLICY.read_text())
@@ -450,7 +536,8 @@ def main(argv=None):
             event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
             api = GitHub(os.environ['GITHUB_REPOSITORY'], token)
             findings = check_event(api, event_name, event, os.environ.get('GITHUB_SHA', ''), policy,
-                                   check_pull_text=args.scope == 'all')
+                                   check_pull_text=args.scope == 'all',
+                                   require_merge_group_review=args.require_merge_group_review)
         if args.report:
             args.report.write_text(json.dumps({'passed': not findings, 'findings': findings}, indent=2) + '\n')
         for finding in findings:

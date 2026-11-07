@@ -19,6 +19,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
     steps:
       - uses: SylphxAI/.github/.github/actions/ci-ok@<full-release-sha> # main
         with:
@@ -85,3 +86,26 @@ race. The dependency graph supplies the completion boundary.
 GitHub's primary contracts: [job dependencies and `always()`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idneeds),
 [the direct `needs` context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#needs-context),
 and [reusable-workflow concurrency](https://docs.github.com/en/actions/reference/reusable-workflows-reference).
+
+## Exact-head review on the merge queue
+
+On `merge_group`, `ci-ok` requires every PR whose current title starts with
+`[review]` to have a completed `Sylphx PR Review` Check Run from App `1299545`,
+with conclusion `success`, on the exact PR head used to build the group.
+There is no override. Missing, pending, neutral, failed or cancelled reviews
+refuse the entire group. A success on an older head does not authorize a new
+head. If several canonical runs exist, the newest run determines the verdict.
+
+The existing contribution-policy resolver reads paginated merge-queue entries
+and intersects their synthetic commits with the immutable group commit range.
+It checks original PR heads and refuses incomplete membership. Entries that
+merged while a later group builds are resolved through commit/PR associations.
+It does not depend on `autoMergeRequest` or infer membership from the queue ref.
+Read errors, incomplete Check Run pagination, and head or title movement fail
+closed. Failures name the PR number, full head SHA and observed review state.
+The caller's token now also needs `checks: read`.
+
+Pull-request-event CI is unchanged: review remains asynchronous there. Non-
+`[review]` PRs need no review. This applies even when `separate-pr-metadata` is
+true; that option does not disable merge-group review admission. Callers only
+receive this enforcement after adopting the new immutable action pin.
