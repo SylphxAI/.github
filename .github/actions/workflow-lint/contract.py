@@ -26,6 +26,7 @@ from expected_checks import DECLARATION, check_declaration
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "scripts"))
 from merge_lane import WorkflowLoader, contexts, events, merge_lane_findings, runnable, runner_evaluations
 from merge_lane_gate import exempt
+from pr_concurrency import problems as pr_concurrency_problems
 
 
 class Finding(NamedTuple):
@@ -421,6 +422,8 @@ def scan_dir(root):
     evaluations = runner_evaluations(workflows, private=private)
     for name, text in workflows.items():
         findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations))
+        findings.extend(Finding('.github/workflows/' + name, line, problem, True)
+                        for line, problem in pr_concurrency_problems(text))
     findings.extend(gate_coverage({'.github/workflows/' + name: text for name, text in workflows.items()}))
     findings.extend(Finding(DECLARATION, 1, problem, True) for problem in check_declaration(root, workflows))
     if entry:

@@ -75,6 +75,44 @@ checkout's workflows. Python tests are `python -m unittest discover -s tests
 -p test_workflow_contract.py` from the shared action repository.
 
 
+## PR supersession
+
+PR-triggered workflows (`pull_request` or `pull_request_target`) require
+workflow-level concurrency that cancels superseded PR work without cancelling
+or evicting non-PR runs. This rule blocks even in `report-only` mode:
+
+```yaml
+concurrency:
+  group: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
+```
+
+A `github.ref` fallback is not safe: even with `cancel-in-progress: false`,
+GitHub's default single pending slot replaces an older queued run. Non-PR
+runs therefore use `github.run_id`. Workflow names and the disjoint `-pr-` /
+`-run-` namespaces prevent cross-workflow and numeric-ID collisions.
+
+Equivalent interpolation/`format()` templates and event guards are accepted
+when symbolic identities prove these properties. Unknown inputs, ID-dependent
+predicates and unsupported functions fail closed; the checker does not sample
+PR numbers or run IDs. Workflows without a PR trigger, including
+`workflow_call`-only definitions and `workflow_run` review producers, are not
+subject to this rule. A reusable caller owns its run's concurrency.
+
+An intentional serialization or complete-evidence requirement can opt out
+with a column-zero header comment, before `jobs`, that gives its reason:
+
+```yaml
+# pr-concurrency: exempt — Complete qualification evidence must survive later PR commits.
+```
+
+A bare marker, run-body comment, advisory marker or actionlint ignore does not
+exempt this rule. Keep the reason specific to the workflow. Tests are
+`python -m unittest discover -s tests -p test_pr_concurrency.py`.
+
+Primary source: [GitHub workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency),
+read 2026-11-07 UTC.
+
 ## Resolved expected-check declaration
 
 Repositories with independently triggered required checks enroll by committing

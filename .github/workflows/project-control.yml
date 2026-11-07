@@ -1,3 +1,4 @@
+# pr-concurrency: exempt — Explicit base-retarget validation associates code-pr dispatch with native PR evidence; preserve its qualification and retarget routing.
 name: Project control
 
 on:
