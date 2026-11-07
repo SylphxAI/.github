@@ -103,9 +103,17 @@ merged while a later group builds are resolved through commit/PR associations.
 It does not depend on `autoMergeRequest` or infer membership from the queue ref.
 The gate compares group members, their heads and titles again after reading
 review inventories. Membership, head or title movement fails closed. Merge-commit
-queues additionally bind the PR head to the synthetic commit’s second parent;
-squash/rebase commits have no original-head parent and use the queue snapshots.
-Read errors and incomplete Check Run pagination also fail closed. Failures name the PR number, full head SHA and observed review state.
+queues bind each `[review]` PR head to its synthetic commit’s second parent.
+For a one-parent squash commit, the gate runs `git merge-tree --write-tree
+<synthetic-parent> <reviewed-head>` and requires the result to equal that
+synthetic commit’s tree. The immutable parent identifies the PR’s position even
+in a stacked group; a stable live queue head alone cannot authorize admission.
+Tree mismatches, conflicts, unreadable objects and unsupported commit/position
+shapes fail closed. Non-`[review]` PRs need no tree reconstruction. These bindings
+are enabled only by `--require-merge-group-review`; flag-absent contribution
+checks retain their existing behavior. Read errors and incomplete Check Run
+pagination also fail closed. Failures name the PR number, full head SHA and
+observed review state or binding failure.
 The caller's token now also needs `checks: read`.
 
 Pull-request-event CI is unchanged: review remains asynchronous there. Non-

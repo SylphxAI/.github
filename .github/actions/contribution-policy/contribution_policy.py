@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import random
+import subprocess
 import sys
 import tempfile
 import time
@@ -263,13 +264,18 @@ class GitHub:
             seen_cursors.add(cursor)
 
 
-def range_commits(base, head, repository, token):
-    if not SHA.fullmatch(base) or not SHA.fullmatch(head):
-        raise PolicyError('event has no immutable commit range')
+def immutable_git_source():
     # Share the existing read-only, authenticated object acquisition path.
     spec = importlib.util.spec_from_file_location('contribution_fetch', ROOT / '.github/actions/secret-scan/secret_scan.py')
     source = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(source)
+    return source
+
+
+def range_commits(base, head, repository, token):
+    if not SHA.fullmatch(base) or not SHA.fullmatch(head):
+        raise PolicyError('event has no immutable commit range')
+    source = immutable_git_source()
     server = os.environ.get('GITHUB_SERVER_URL', 'https://github.com').rstrip('/')
     with tempfile.TemporaryDirectory(prefix='contribution-policy-') as directory:
         repo = Path(directory)
@@ -447,35 +453,81 @@ def review_findings(api, pr, commits):
     return [{'rule': 'exact-head-review: ' + state, 'location': location, 'line': 0}]
 
 
-def merge_group_snapshot(api, group, *, check_pull_text=True):
-    """Resolve every group PR once, retaining the exact queued head and live text."""
-    def snapshot(number, head):
-        if check_pull_text:
-            return pull_snapshot(api, number, head)
-        return pull_snapshot(api, number, head, check_text=False)
+def squash_merge_tree(repository, token, parent, head):
+    """Reconstruct one position without checkout, retaining auth for lazy blob reads."""
+    source = immutable_git_source()
+    server = os.environ.get('GITHUB_SERVER_URL', 'https://github.com').rstrip('/')
+    with tempfile.TemporaryDirectory(prefix='review-tree-') as directory:
+        repo = Path(directory)
+        try:
+            env = source.fetch(repo, server + '/' + repository + '.git', parent, head, token)
+        except (source.ScanError, OSError):
+            raise PolicyError('squash tree proof object acquisition failed') from None
+        try:
+            result = subprocess.run(['git', '-C', str(repo), 'merge-tree', '--write-tree', '--no-messages',
+                                     parent, head], env=env, capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            raise PolicyError('squash tree proof timed out after 60s') from None
+        except OSError:
+            raise PolicyError('squash tree proof could not execute Git') from None
+        # Neither Git diagnostics nor conflict contents may enter the check output.
+        if result.returncode == 1:
+            raise PolicyError('squash tree proof conflicts')
+        tree = result.stdout.decode('ascii', errors='replace').strip()
+        if result.returncode or not SHA.fullmatch(tree):
+            raise PolicyError('squash tree proof failed')
+        return tree
+
+
+def bind_review_head(api, pr, synthetic, base, group_shas):
+    """Bind the reviewed content to its immutable position, not live queue state."""
+    if not isinstance(pr.get('title'), str):
+        raise PolicyError('pull request review identity is incomplete')
+    if not pr['title'].startswith('[review]'):
+        return
+    head = pr['head']['sha']
+    location = f"PR #{pr['number']} head {head}"
+    raw = synthetic.get('raw_commit')
+    headers = raw.partition(b'\n\n')[0].decode('ascii', errors='replace').splitlines() if isinstance(raw, bytes) else []
+    trees = [line[5:] for line in headers if line.startswith('tree ')]
+    parents = [line[7:] for line in headers if line.startswith('parent ')]
+    if len(trees) != 1 or len(parents) not in (1, 2) or not all(SHA.fullmatch(sha) for sha in trees + parents):
+        raise PolicyError(location + ': immutable merge-group tree/parents are incomplete or unsupported')
+    if parents[0] != base and parents[0] not in group_shas:
+        raise PolicyError(location + ': immutable merge-group position is incomplete')
+    if len(parents) == 2:
+        if parents[1] != head:
+            raise PolicyError(location + ': membership/head changed during evaluation; '
+                              f'merge-group parent pins {parents[1]}')
+        return
+    try:
+        tree = squash_merge_tree(api.repository, api.token, parents[0], head)
+    except PolicyError as error:
+        raise PolicyError(location + ': ' + str(error)) from None
+    if tree != trees[0]:
+        raise PolicyError(location + f": squash tree mismatch at merge-group commit {synthetic['sha']}")
+
+
+def merge_group_snapshot(api, group, *, check_pull_text=True, require_head_binding=False):
+    """Resolve every group PR once; bind review heads only on the opted-in path."""
+    def snapshot(number, head, synthetic):
+        pr, original = (pull_snapshot(api, number, head) if check_pull_text else
+                        pull_snapshot(api, number, head, check_text=False))
+        if require_head_binding:
+            bind_review_head(api, pr, by_sha[synthetic], group['base_sha'], group_shas)
+        return pr, original
 
     commits = range_commits(group['base_sha'], group['head_sha'], api.repository, api.token)
-    snapshots = []
-    pulls, covered = {}, set()
-    group_shas = {commit['sha'] for commit in commits}
+    snapshots, covered = [], set()
+    by_sha = {commit['sha']: commit for commit in commits}
+    group_shas = set(by_sha)
     if not group_shas:
         raise PolicyError('merge group membership is incomplete: empty commit range')
     branch = group['base_ref'].removeprefix('refs/heads/')
     queued = group_queue_members(api, branch, group_shas)
     for number, (head, synthetic) in queued.items():
-        # Merge-commit queues preserve the original PR head as parent two.
-        # Squash/rebase queues have one parent and need the queue API snapshot.
-        raw = next(commit for commit in commits if commit['sha'] == synthetic).get('raw_commit')
-        if isinstance(raw, bytes):
-            parents = [line[7:].decode('ascii') for line in raw.partition(b'\n\n')[0].splitlines()
-                       if line.startswith(b'parent ')]
-            if len(parents) == 2 and parents[1] != head:
-                raise PolicyError(f'PR #{number} head {head}: membership/head changed during evaluation; '
-                                  f'merge-group parent pins {parents[1]}')
-        pulls[number] = head
+        pr, original = snapshot(number, head, synthetic)
         covered.add(synthetic)
-    for number, expected_head in pulls.items():
-        pr, original = snapshot(number, expected_head)
         covered.update(commit['sha'] for commit in original)
         snapshots.append((pr, original))
     for commit in commits:
@@ -485,7 +537,7 @@ def merge_group_snapshot(api, group, *, check_pull_text=True):
         for pr in api.pages(f"commits/{commit['sha']}/pulls"):
             if pr['base']['ref'] == branch and pr.get('merged_at') and \
                     pr.get('merge_commit_sha') == commit['sha']:
-                current, original = snapshot(pr['number'], pr['head']['sha'])
+                current, original = snapshot(pr['number'], pr['head']['sha'], commit['sha'])
                 covered.add(commit['sha'])
                 covered.update(item['sha'] for item in original)
                 snapshots.append((current, original))
@@ -545,7 +597,8 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True,
         pr = event.get('pull_request', {})
         return verdict(*snapshot(event.get('number') or pr['number'], pr['head']['sha']))
     if event_name == 'merge_group':
-        commits, snapshots, queued = merge_group_snapshot(api, event['merge_group'], check_pull_text=check_pull_text)
+        commits, snapshots, queued = merge_group_snapshot(api, event['merge_group'], check_pull_text=check_pull_text,
+                                                          require_head_binding=require_merge_group_review)
         findings = []
         for pr, original in snapshots:
             findings.extend(verdict(pr if check_pull_text else None, original))

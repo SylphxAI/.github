@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -26,6 +27,12 @@ IDENTITY = {'name': 'Kyle Tse', 'email': 'hi@kylet.se'}
 def commit(sha):
     return {'sha': sha, 'commit': {'author': IDENTITY.copy(), 'committer': IDENTITY.copy(),
                                  'message': 'Improve validation'}}
+
+
+def group_commit(sha=GROUP, head=HEAD, parent=BASE):
+    item = commit(sha)
+    item['raw_commit'] = f'tree {BASE}\nparent {parent}\nparent {head}\n\nMerge PR'.encode()
+    return item
 
 
 def pull(number=1, head=HEAD, title='[review] Improve validation'):
@@ -195,7 +202,7 @@ class MergeGroupAdmissionTest(unittest.TestCase):
         return {'headCommit': {'oid': synthetic}, 'pullRequest': {'number': number, 'headRefOid': head}}
 
     def check(self, **options):
-        with mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_: [commit(head)]):
+        with mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_: [group_commit() if head == GROUP else commit(head)]):
             return policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
                                       require_merge_group_review=True, **options)
 
@@ -223,7 +230,7 @@ class MergeGroupAdmissionTest(unittest.TestCase):
         self.api.queue_entries.return_value += [self.entry(2, second_group, OLD)]
         self.api.check_runs.side_effect = lambda sha: [run(sha, conclusion='failure' if sha == OLD else 'neutral')]
         with mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_:
-                               [commit(GROUP), commit(second_group)] if head == GROUP else [commit(head)]):
+                               [group_commit(), group_commit(second_group, OLD, GROUP)] if head == GROUP else [commit(head)]):
             findings = policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
                                           require_merge_group_review=True)
         self.assertEqual(len(findings), 2)
@@ -238,7 +245,7 @@ class MergeGroupAdmissionTest(unittest.TestCase):
         self.api.queue_entries.return_value += [self.entry(2, second_group, OLD)]
         self.api.check_runs.side_effect = lambda sha: [run(sha, conclusion='failure' if sha == OLD else 'success')]
         with mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_:
-                               [commit(GROUP), commit(second_group)] if head == GROUP else [commit(head)]):
+                               [group_commit(), group_commit(second_group, OLD, GROUP)] if head == GROUP else [commit(head)]):
             findings = policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
                                           require_merge_group_review=True)
         self.assertEqual(len(findings), 1)
@@ -276,7 +283,7 @@ class MergeGroupAdmissionTest(unittest.TestCase):
             with self.subTest(after=after):
                 self.api.queue_entries.side_effect = [before, after]
                 with mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_:
-                                       [commit(GROUP), commit(second_group)] if head == GROUP else [commit(HEAD), commit(second_group)]):
+                                       [group_commit(), group_commit(second_group, OLD, GROUP)] if head == GROUP else [commit(HEAD), commit(second_group)]):
                     findings = policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
                                                   require_merge_group_review=True)
                 self.assertTrue(any('membership/head changed during evaluation' in f['rule'] for f in findings))
@@ -288,6 +295,50 @@ class MergeGroupAdmissionTest(unittest.TestCase):
             return pull(title='Different title') if reads >= 4 else pull()
         self.api.get.side_effect = changing_title
         self.assertIn('membership/head changed during evaluation', self.check()[0]['rule'])
+
+    def test_flag_absent_preserves_mismatched_parent_behavior(self):
+        synthetic = commit(GROUP)
+        synthetic['raw_commit'] = f'tree {BASE}\nparent {BASE}\nparent {OLD}\n\nMerge PR'.encode()
+        for title in ('Improve validation', '[review] Improve validation'):
+            self.prs[1]['title'] = title
+            with self.subTest(title=title), mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_:
+                    [synthetic] if head == GROUP else [commit(head)]):
+                self.assertEqual(policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES), [])
+        self.api.check_runs.assert_not_called()
+
+    def test_incomplete_or_unsupported_immutable_position_fails_closed(self):
+        for raw, reason in ((None, 'tree/parents are incomplete or unsupported'),
+                            (f'tree {BASE}\n\nMerge PR'.encode(), 'tree/parents are incomplete or unsupported'),
+                            (f'tree {BASE}\nparent invalid\n\nMerge PR'.encode(), 'tree/parents are incomplete or unsupported'),
+                            (f'tree {BASE}\nparent {OLD}\nparent {HEAD}\n\nMerge PR'.encode(), 'position is incomplete')):
+            synthetic = {**commit(GROUP), 'raw_commit': raw}
+            with self.subTest(raw=raw), mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_:
+                    [synthetic] if head == GROUP else [commit(head)]):
+                with self.assertRaisesRegex(policy.PolicyError, reason):
+                    policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
+                                       require_merge_group_review=True)
+        self.prs[1]['title'] = 'Improve validation'
+        with mock.patch.object(policy, 'range_commits', return_value=[commit(GROUP)]), \
+                mock.patch.object(policy, 'squash_merge_tree') as tree:
+            self.assertEqual(policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
+                                               require_merge_group_review=True), [])
+            tree.assert_not_called()
+
+    def test_first_pr_head_mutated_during_second_pr_review_read_refuses(self):
+        second_group = 'e' * 40
+        self.prs[2] = pull(2, OLD)
+        self.api.queue_entries.return_value += [self.entry(2, second_group, OLD)]
+        def review(sha):
+            if sha == OLD:
+                self.prs[1]['head']['sha'] = 'f' * 40
+            return [run(sha)]
+        self.api.check_runs.side_effect = review
+        with mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_:
+                [group_commit(), group_commit(second_group, OLD, GROUP)] if head == GROUP else [commit(head)]):
+            findings = policy.check_event(self.api, 'merge_group', self.group, GROUP, RULES,
+                                          require_merge_group_review=True)
+        self.assertEqual(findings, [{'rule': 'exact-head-review: membership/head changed during evaluation',
+                                    'location': 'PR #1 head ' + HEAD, 'line': 0}])
 
     def test_merge_commit_parent_pins_original_head_even_before_first_queue_read(self):
         synthetic = commit(GROUP)
@@ -320,10 +371,145 @@ class MergeGroupAdmissionTest(unittest.TestCase):
             env = {'GITHUB_EVENT_NAME': 'merge_group', 'GITHUB_EVENT_PATH': str(event),
                    'GITHUB_REPOSITORY': 'example/repo', 'CONTRIBUTION_POLICY_TOKEN': 'read-token'}
             with mock.patch.dict(os.environ, env), mock.patch.object(policy, 'GitHub', return_value=self.api), \
-                    mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_: [commit(head)]), \
+                    mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_: [group_commit() if head == GROUP else commit(head)]), \
                     contextlib.redirect_stdout(output):
                 self.assertEqual(policy.main(args), 1)
         self.assertIn('::error::Contribution policy: exact-head-review: missing at PR #1 head ' + HEAD, output.getvalue())
+
+
+class SquashTreeAdapterTest(unittest.TestCase):
+    def setUp(self):
+        self.source = mock.Mock(ScanError=RuntimeError)
+        self.source.fetch.return_value = {'GIT_TERMINAL_PROMPT': '0', 'REVIEW_TEST_AUTH': 'scoped'}
+        patch = mock.patch.object(policy, 'immutable_git_source', return_value=self.source)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_fetch_and_merge_keep_the_same_auth_environment(self):
+        with mock.patch.object(policy.subprocess, 'run', return_value=mock.Mock(returncode=0,
+                stdout=(OLD + '\n').encode())) as execute:
+            self.assertEqual(policy.squash_merge_tree('example/repo', 'read-token', BASE, HEAD), OLD)
+        self.source.fetch.assert_called_once()
+        self.assertEqual(self.source.fetch.call_args.args[1:],
+                         ('https://github.com/example/repo.git', BASE, HEAD, 'read-token'))
+        self.assertEqual(execute.call_args.args[0][-5:],
+                         ['merge-tree', '--write-tree', '--no-messages', BASE, HEAD])
+        self.assertEqual(execute.call_args.kwargs['env'], self.source.fetch.return_value)
+        self.assertEqual(execute.call_args.kwargs['timeout'], 60)
+
+    def test_acquisition_errors_and_merge_diagnostics_are_not_printed(self):
+        self.source.fetch.side_effect = RuntimeError('private diagnostic')
+        with self.assertRaisesRegex(policy.PolicyError, '^squash tree proof object acquisition failed$'):
+            policy.squash_merge_tree('example/repo', 'read-token', BASE, HEAD)
+        self.source.fetch.side_effect = None
+        for status, stdout in ((1, b'private conflict'), (2, b'private diagnostic'), (0, b'incomplete')):
+            reason = 'conflicts' if status == 1 else 'failed'
+            with self.subTest(status=status), mock.patch.object(policy.subprocess, 'run',
+                    return_value=mock.Mock(returncode=status, stdout=stdout)), \
+                    self.assertRaisesRegex(policy.PolicyError, '^squash tree proof ' + reason + '$'):
+                policy.squash_merge_tree('example/repo', 'read-token', BASE, HEAD)
+        for error, reason in ((subprocess.TimeoutExpired('git', 60), 'timed out after 60s'),
+                              (OSError('private diagnostic'), 'could not execute Git')):
+            with self.subTest(error=error), mock.patch.object(policy.subprocess, 'run', side_effect=error), \
+                    self.assertRaisesRegex(policy.PolicyError, '^squash tree proof ' + reason + '$'):
+                policy.squash_merge_tree('example/repo', 'read-token', BASE, HEAD)
+
+
+class SquashTreeBindingTest(unittest.TestCase):
+    """Run real object acquisition and merge-tree, not a mocked tree oracle."""
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.repo = self.root / 'example/repo.git'
+        self.repo.mkdir(parents=True)
+        self.env = {**os.environ, 'GIT_AUTHOR_NAME': 'Kyle Tse', 'GIT_AUTHOR_EMAIL': 'hi@kylet.se',
+                    'GIT_COMMITTER_NAME': 'Kyle Tse', 'GIT_COMMITTER_EMAIL': 'hi@kylet.se'}
+        self.git('init', '-q')
+        self.git('config', 'commit.gpgsign', 'false')
+        (self.repo / 'shared.txt').write_text('before\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'Initialize validation')
+        self.base = self.git('rev-parse', 'HEAD')
+        self.api = mock.Mock(repository='example/repo', token='')
+        self.prs = {}
+        self.entries = []
+        self.api.get.side_effect = lambda path: copy.deepcopy(self.prs[int(path.split('/')[1])])
+        self.api.queue_entries.side_effect = lambda _: copy.deepcopy(self.entries)
+        self.api.pages.return_value = []
+        self.api.check_runs.side_effect = lambda sha: [run(sha)]
+
+    def git(self, *args, input=None):
+        return subprocess.check_output(['git', '-C', str(self.repo), *args], input=input,
+                                       env=self.env, stderr=subprocess.PIPE).decode().strip()
+
+    def head(self, name, path, content):
+        self.git('checkout', '-qB', name, self.base)
+        (self.repo / path).write_text(content)
+        self.git('add', '.')
+        self.git('commit', '-qm', 'Improve validation')
+        return self.git('rev-parse', 'HEAD')
+
+    def synthetic(self, parent, head):
+        tree = self.git('merge-tree', '--write-tree', parent, head).splitlines()[0]
+        return self.git('commit-tree', tree, '-p', parent, input=b'Improve validation\n')
+
+    def member(self, number, synthetic, head):
+        self.prs[number] = pull(number, head)
+        self.prs[number]['base']['sha'] = self.base
+        self.entries.append(MergeGroupAdmissionTest.entry(number, synthetic, head))
+
+    def check(self, base, group, enabled=True):
+        event = {'merge_group': {'base_sha': base, 'head_sha': group, 'base_ref': 'refs/heads/main'}}
+        with mock.patch.dict(os.environ, {'GITHUB_SERVER_URL': self.root.as_uri()}):
+            return policy.check_event(self.api, 'merge_group', event, group, RULES,
+                                      require_merge_group_review=enabled)
+
+    def test_matching_squash_tree_admits_with_a_stale_pr_base(self):
+        head = self.head('first', 'first.txt', 'reviewed\n')
+        parent = self.head('main-update', 'unrelated.txt', 'base update\n')
+        synthetic = self.synthetic(parent, head)
+        self.member(1, synthetic, head)
+        self.assertEqual(self.check(parent, synthetic), [])
+        self.api.check_runs.assert_called_once_with(head)
+
+    def test_stable_replacement_head_with_success_cannot_authorize_old_squash_tree(self):
+        original = self.head('first', 'first.txt', 'reviewed old version\n')
+        synthetic = self.synthetic(self.base, original)
+        replacement = self.head('replacement', 'first.txt', 'replacement version\n')
+        self.member(1, synthetic, replacement)
+        self.assertEqual(self.check(self.base, synthetic, enabled=False), [])
+        with self.assertRaisesRegex(policy.PolicyError, f'PR #1 head {replacement}.*squash tree mismatch'):
+            self.check(self.base, synthetic)
+
+    def test_conflicting_reviewed_head_refuses(self):
+        head = self.head('first', 'shared.txt', 'reviewed change\n')
+        parent = self.head('main-update', 'shared.txt', 'conflicting base update\n')
+        synthetic = self.git('commit-tree', self.git('rev-parse', head + '^{tree}'), '-p', parent,
+                             input=b'Improve validation\n')
+        self.member(1, synthetic, head)
+        with self.assertRaisesRegex(policy.PolicyError, f'PR #1 head {head}.*squash tree proof conflicts'):
+            self.check(parent, synthetic)
+
+    def test_two_pr_squash_group_proves_each_position(self):
+        first = self.head('first', 'first.txt', 'first reviewed change\n')
+        second = self.head('second', 'second.txt', 'second reviewed change\n')
+        synthetic1 = self.synthetic(self.base, first)
+        synthetic2 = self.synthetic(synthetic1, second)
+        self.member(1, synthetic1, first)
+        self.member(2, synthetic2, second)
+        self.assertEqual(self.check(self.base, synthetic2), [])
+        self.assertEqual({call.args[0] for call in self.api.check_runs.call_args_list}, {first, second})
+        for number, path in ((1, 'first.txt'), (2, 'second.txt')):
+            replacement = self.head(f'replacement-{number}', path, 'unreviewed replacement\n')
+            original = self.prs[number]['head']['sha']
+            self.prs[number]['head']['sha'] = replacement
+            self.entries[number - 1]['pullRequest']['headRefOid'] = replacement
+            with self.subTest(number=number), self.assertRaisesRegex(
+                    policy.PolicyError, f'PR #{number} head {replacement}.*squash tree mismatch'):
+                self.check(self.base, synthetic2)
+            self.prs[number]['head']['sha'] = original
+            self.entries[number - 1]['pullRequest']['headRefOid'] = original
 
 
 class StandaloneReviewGateTest(unittest.TestCase):
@@ -340,7 +526,7 @@ class StandaloneReviewGateTest(unittest.TestCase):
         self.api.pages.return_value = []
         self.api.check_runs.return_value = []
 
-    def invoke(self, event_name='merge_group'):
+    def invoke(self, event_name='merge_group', synthetic=None):
         action = yaml.safe_load((ROOT / '.github/actions/review-gate/action.yml').read_text())
         args = shlex.split(action['runs']['steps'][0]['run'])[2:]
         with tempfile.TemporaryDirectory() as directory:
@@ -351,7 +537,8 @@ class StandaloneReviewGateTest(unittest.TestCase):
                    'GITHUB_REPOSITORY': 'example/repo', 'CONTRIBUTION_POLICY_TOKEN': 'read-token'}
             output = io.StringIO()
             with mock.patch.dict(os.environ, env), mock.patch.object(self.gate, 'GitHub', return_value=self.api), \
-                    mock.patch.object(self.resolver, 'range_commits', side_effect=lambda base, head, *_: [commit(head)]), \
+                    mock.patch.object(self.resolver, 'range_commits', side_effect=lambda base, head, *_:
+                                      [synthetic or group_commit()] if head == GROUP else [commit(head)]), \
                     contextlib.redirect_stdout(output):
                 return self.gate.main(args), output.getvalue()
 
@@ -361,6 +548,12 @@ class StandaloneReviewGateTest(unittest.TestCase):
         self.assertIn('exact-head-review: missing at PR #1 head ' + HEAD, output)
         self.assertEqual(self.api.queue_entries.call_count, 2)
         self.api.queue_entries.assert_called_with('main')
+
+    def test_standalone_cannot_skip_immutable_head_binding(self):
+        self.api.check_runs.return_value = [run()]
+        status, output = self.invoke(synthetic=commit(GROUP))
+        self.assertEqual(status, 2)
+        self.assertIn('PR #1 head ' + HEAD + ': immutable merge-group tree/parents are incomplete', output)
 
     def test_standalone_controls(self):
         self.api.check_runs.return_value = [run()]
@@ -404,7 +597,7 @@ class StandaloneReviewGateTest(unittest.TestCase):
             env = {'GITHUB_EVENT_NAME': 'merge_group', 'GITHUB_EVENT_PATH': str(path),
                    'GITHUB_REPOSITORY': 'example/repo', 'CONTRIBUTION_POLICY_TOKEN': 'read-token'}
             with mock.patch.dict(os.environ, env), mock.patch.object(policy, 'GitHub', return_value=self.api), \
-                    mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_: [commit(head)]), \
+                    mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_: [group_commit() if head == GROUP else commit(head)]), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(policy.main(args), 1)
 

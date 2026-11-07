@@ -23,7 +23,7 @@ def main(argv=None):
             raise PolicyError('read-only review metadata token is unavailable')
         event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
         api = GitHub(os.environ['GITHUB_REPOSITORY'], token)
-        commits, snapshots, queued = merge_group_snapshot(api, event['merge_group'])
+        commits, snapshots, queued = merge_group_snapshot(api, event['merge_group'], require_head_binding=True)
         findings = [finding for pr, commits in snapshots for finding in review_findings(api, pr, commits)]
         findings.extend(recheck_merge_group(api, event['merge_group'], commits, snapshots, queued))
         for finding in findings:
