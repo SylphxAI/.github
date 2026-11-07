@@ -1,4 +1,4 @@
-# pr-concurrency: exempt — Base-retarget validation must survive later text edits; its unique base-edit run dispatches required code validation.
+# pr-concurrency: exception base-retarget — Base-retarget validation must survive later text edits; its unique base-edit run dispatches required code validation.
 # optimistic-merge: advisory — Mutable contribution metadata is checked separately from the code verdict.
 # optimistic-merge: gate-external
 name: PR metadata

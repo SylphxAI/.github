@@ -92,38 +92,40 @@ GitHub's default single pending slot replaces an older queued run. Non-PR
 runs therefore use `github.run_id`. Workflow names and the disjoint `-pr-` /
 `-run-` namespaces prevent cross-workflow and numeric-ID collisions.
 
-Equivalent interpolation/`format()` templates and event guards are accepted
-when symbolic identities prove these properties. Unknown inputs, ID-dependent
-predicates and unsupported functions fail closed; the checker does not sample
-PR numbers or run IDs. Workflows without a PR trigger, including
-`workflow_call`-only definitions and `workflow_run` review producers, are not
-subject to this rule. A reusable caller owns its run's concurrency.
+Only the literal canonical form above is accepted, ignoring layout whitespace
+but preserving every quoted string byte. The existing single-`pull_request`
+variant is accepted only without `pull_request_target` or `workflow_call`.
+Equivalent rewritten expressions, unknown selectors and arbitrary opt-outs are
+refused with `non-canonical concurrency expression; use the canonical form or
+add a named exception`. No event payload or caller input is assumed absent.
+Workflows without a PR trigger, including `workflow_call`-only definitions and
+`workflow_run` review producers, are outside this rule. Mixed PR/reusable
+workflows require the two-PR-event canonical form because callers supply events.
 
-An intentional serialization or complete-evidence requirement can opt out
-with a column-zero header comment, before `jobs`, that gives its reason:
+Named exceptions require a column-zero header before `jobs`, a specific reason,
+and an exact alternative declared in `pr_concurrency.py`:
 
-```yaml
-# pr-concurrency: exempt — Complete qualification evidence must survive later PR commits.
-```
+- `complete-evidence` accepts only the following run-isolated, noncancelling block:
 
-This waives **only PR-event supersession**. Every non-PR branch still requires a
-workflow-specific, unique `-run-${{ github.run_id }}` group and cancellation off,
-including manual dispatches and mixed reusable caller events. A workflow-level
-concurrency block is still required. A bare marker, run-body comment, advisory
-marker or actionlint ignore grants no waiver.
+  ```yaml
+  # pr-concurrency: exception complete-evidence — Every qualification must finish.
+  concurrency:
+    group: ${{ github.workflow }}-run-${{ github.run_id }}
+    cancel-in-progress: false
+  ```
 
-A dispatch explicitly associated with a PR may retain its PR evidence group
-through an additional, reasoned header naming its declared dispatch input:
+- `base-retarget` admits only the literal `BASE_RETARGET` metadata routing form,
+  the `PR metadata` workflow name and the declared non-reusable trigger set.
+- `code-pr-association` admits only the literal `CODE_PR_ASSOCIATION` form,
+  the `Project control` workflow name, its non-reusable trigger set, and string
+  dispatch declarations for `code-pr` and `junit-producer-run`. Generic dispatch
+  and consumer qualification use unique run IDs; explicit code-PR dispatch joins
+  its named PR evidence group without cancelling it.
 
-```yaml
-# pr-concurrency: associated-pr-input pr-number — Retarget dispatch joins that PR's evidence group.
-```
-
-Only a nonempty named input permits the workflow-specific `-pr-<input>` group;
-its cancellation must remain off. All absent/present input branches are checked,
-so generic and qualification dispatches cannot inherit that exception. Inputs
-may select branches or be interpolated; ID comparisons and unknown selectors
-remain unsupported. Keep both reasons specific to their justified PR groups.
+The latter two retain the existing base-edit and explicit PR-association contracts.
+A new alternative needs a named, tested literal entry, not a generic exemption
+or symbolic payload evaluator. Bare markers, missing reasons, run-body comments,
+advisory annotations and actionlint ignores grant no exception.
 Tests are
 `python -m unittest discover -s tests -p test_pr_concurrency.py`.
 

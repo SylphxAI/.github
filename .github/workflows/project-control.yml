@@ -1,5 +1,4 @@
-# pr-concurrency: exempt — Explicit base-retarget validation associates code-pr dispatch with native PR evidence; preserve its qualification and retarget routing.
-# pr-concurrency: associated-pr-input code-pr — Explicit retarget dispatch joins the named PR evidence group; generic dispatch remains run-isolated.
+# pr-concurrency: exception code-pr-association — Explicit base-retarget validation associates code-pr dispatch with native PR evidence; preserve its qualification and retarget routing.
 name: Project control
 
 on:

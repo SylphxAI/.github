@@ -1,170 +1,90 @@
-"""Prove PR supersession without sharing non-PR pending slots.
+"""Admit only canonical concurrency declarations and named literal exceptions.
 
-Only event predicates, declared-input truthiness, format(), and interpolation
-are admitted. Identity values
-are symbolic, not sampled IDs: comparisons/functions over IDs are refused. This
-keeps unknown selectors fail-closed instead of mistaking examples for a proof.
+Do not infer event-payload absence or symbolically sample payloads. A new form
+requires an explicit, tested contract here before any workflow can use it.
 """
 from __future__ import annotations
 
-import itertools
 import re
 
 import yaml
 
-from merge_lane import Expression, UNKNOWN, events, expression
+from merge_lane import events
 
 PR_EVENTS = {"pull_request", "pull_request_target"}
-ASSOCIATED_PR = re.compile(r"^#\s*pr-concurrency:\s*associated-pr-input\s+([\w-]+)\s+[—:]\s*(.+)$", re.M)
-EXEMPT = re.compile(r"^#\s*pr-concurrency:\s*exempt\b(.*)$", re.M)
-WORKFLOW = "\x00workflow\x00"
-PR = "\x00pr\x00"
-RUN = "\x00run\x00"
+PR_GUARD = "github.event_name == 'pull_request' || github.event_name == 'pull_request_target'"
+GROUP = "${{ (" + PR_GUARD + ") && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}"
+CANCEL = '${{ ' + PR_GUARD + ' }}'
+SINGLE_GROUP = "${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}"
+SINGLE_CANCEL = "${{ github.event_name == 'pull_request' }}"
+RUN_GROUP = '${{ github.workflow }}-run-${{ github.run_id }}'
+BASE_RETARGET = "pr-metadata-${{ github.event_name == 'pull_request' && github.event.changes.base && format('base-{0}', github.run_id) || github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}"
+CODE_PR_ASSOCIATION = "${{ github.workflow }}-${{ github.event.inputs.junit-producer-run && format('consumer-run-{0}', github.run_id) || (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('run-{0}', github.run_id) }}"
+EXCEPTION = re.compile(r"^#[ \t]*pr-concurrency:[ \t]*exception[ \t]+([\w-]+)[ \t]+[—:][ \t]*(.*)$", re.M)
+MARKER = re.compile(r"^#\s*pr-concurrency:\s*(?:exception|exempt)\b", re.M)
+ERROR = 'non-canonical concurrency expression; use the canonical form or add a named exception'
 
 
-def evaluate(value, event, overrides=None):
-    """Evaluate a restricted expression/template with opaque identity markers."""
+def normalize(value):
+    """Ignore layout whitespace only; quoted string bytes remain significant."""
     if not isinstance(value, str):
         return value
-    context = {"github.event_name": {event}, "github.workflow": {WORKFLOW},
-               "github.event.pull_request.number": {PR if event in PR_EVENTS else None},
-               "github.run_id": {RUN}}
-    context.update(overrides or {})
+    return ''.join(token for token in re.findall(r"'(?:[^']|'')*'|\s+|.", value, re.S)
+                   if not token.isspace())
 
-    def replace(match):
-        source = match[1]
-        parser = Expression(source, context)
-        tokens = parser.tokens
-        for i, token in enumerate(tokens):
-            if token in ("==", "!="):
-                # No tests against sampled PR numbers/run IDs or unknown data.
-                operands = tokens[i - 1:i + 2:2]
-                if len(operands) != 2 or "github.event_name" not in operands or not any(
-                        operand.startswith("'") for operand in operands):
-                    raise ValueError("only event-name comparisons are supported")
-            if i + 1 < len(tokens) and tokens[i + 1] == "(" and token not in (
-                    "format", "&&", "||", "!", "("):
-                raise ValueError("only format() is supported")
-        errors = []
-        values = expression("${{" + source + "}}", context, errors=errors)
-        if errors or UNKNOWN in values or len(values) != 1:
-            raise ValueError("unresolved concurrency expression")
-        result = next(iter(values))
-        if not isinstance(result, (str, bool, int, float)):
-            raise ValueError("non-scalar concurrency expression")
-        return result
 
-    matches = list(re.finditer(r"\$\{\{(.*?)\}\}", value, re.S))
-    if len(matches) == 1 and matches[0].span() == (0, len(value)):
-        return replace(matches[0])
-    return re.sub(r"\$\{\{(.*?)\}\}", lambda m: str(replace(m)), value, flags=re.S)
+def matches(concurrency, group, cancel):
+    return (set(concurrency) == {'group', 'cancel-in-progress'}
+            and normalize(concurrency['group']) == normalize(group)
+            and normalize(concurrency['cancel-in-progress']) == normalize(cancel))
+
+
+def named_exception(name, decoded, triggered, concurrency):
+    """Each exception is a literal form with a finite trigger/input contract."""
+    if name == 'complete-evidence':
+        return matches(concurrency, RUN_GROUP, 'false')
+    # These metadata forms are not reusable: inherited caller payloads/inputs
+    # must never enter their special PR-association branches.
+    if not triggered <= {'pull_request', 'push', 'merge_group', 'workflow_dispatch'}:
+        return False
+    if name == 'base-retarget':
+        return (decoded.get('name') == 'PR metadata'
+                and matches(concurrency, BASE_RETARGET, SINGLE_CANCEL))
+    if name == 'code-pr-association':
+        on = decoded.get('on', {})
+        dispatch = on.get('workflow_dispatch', {}) if isinstance(on, dict) else {}
+        inputs = dispatch.get('inputs', {}) if isinstance(dispatch, dict) else {}
+        return (decoded.get('name') == 'Project control'
+                and all(isinstance(inputs.get(key), dict) and inputs[key].get('type') == 'string'
+                        for key in ('code-pr', 'junit-producer-run'))
+                and matches(concurrency, CODE_PR_ASSOCIATION, SINGLE_CANCEL))
+    return False
 
 
 def problems(text):
-    """Return (line, problem) pairs; workflow_call-only runs inherit the caller."""
+    """Return (line, problem) pairs; workflow_call-only definitions inherit callers."""
     document = yaml.compose(text, Loader=yaml.BaseLoader)
     fields = {k.value: v for k, v in document.value} if isinstance(document, yaml.MappingNode) else {}
     decoded = yaml.load(text, Loader=yaml.BaseLoader) or {}
     triggered = events(decoded)
     if not triggered & PR_EVENTS:
         return []
-    # Only a column-zero header declaration counts, never a run-body comment.
-    header = text[:fields.get("jobs", document).start_mark.index] if document else ""
-    declaration = EXEMPT.search(header)
-    if declaration:
-        reason = declaration[1].strip(" \t:-—")
-        if not reason:
-            return [(header[:declaration.start()].count("\n") + 1,
-                     "pr-concurrency exemption must include a specific reason")]
-    association = ASSOCIATED_PR.search(header)
-    associated_input = association[1] if association else None
-    concurrency = decoded.get("concurrency")
-    line = fields.get("concurrency", fields.get("on", document)).start_mark.line + 1
-    error = ("PR concurrency must supersede per PR and isolate every non-PR run: "
-             "use workflow-pr-<number> / workflow-run-<run_id> groups and PR-only "
-             "cancel-in-progress; # pr-concurrency: exempt — <specific reason> waives only PR supersession")
+    header = text[:fields.get('jobs', document).start_mark.index] if document else ''
+    declaration = EXCEPTION.search(header)
+    line = fields.get('concurrency', fields.get('on', document)).start_mark.line + 1
+    concurrency = decoded.get('concurrency')
+    if MARKER.search(header) and (not declaration or not declaration[2].strip(' \t:-—')):
+        return [(line, ERROR + '; named exception must include a specific reason')]
     if not isinstance(concurrency, dict):
-        return [(line, error)]
-    try:
-        checked_events = triggered - {"workflow_call"}
-        if "workflow_call" in triggered:
-            # A reusable call inherits its caller's event, not workflow_call.
-            # Supported predicates compare only event-name string constants;
-            # each constant plus one other name exhausts those partitions.
-            for value in concurrency.values():
-                for source in re.findall(r"\$\{\{(.*?)\}\}", str(value), re.S):
-                    tokens = Expression(source, {}).tokens
-                    for i, token in enumerate(tokens):
-                        if token in ("==", "!=") and i and i + 1 < len(tokens):
-                            left, right = tokens[i - 1], tokens[i + 1]
-                            literal = right if left == "github.event_name" else left if right == "github.event_name" else ""
-                            if literal.startswith("'"):
-                                checked_events.add(literal[1:-1].replace("''", "'"))
-            other = "__other_caller_event__"
-            while other in checked_events:
-                other += "_"
-            checked_events.add(other)
-            checked_events.update(PR_EVENTS)
-        input_fields = set()
-        change_fields = set()
-        for value in concurrency.values():
-            for source in re.findall(r"\$\{\{(.*?)\}\}", str(value), re.S):
-                for token in Expression(source, {}).tokens:
-                    if token.startswith("github.event.inputs."):
-                        input_fields.add(token)
-                    elif token.startswith("github.event.changes."):
-                        change_fields.add(token)
-        dispatch = decoded.get("on", {}).get("workflow_dispatch") if isinstance(decoded.get("on"), dict) else None
-        declared_inputs = dispatch.get("inputs", {}) if isinstance(dispatch, dict) else {}
-        if associated_input and (not declaration or associated_input not in declared_inputs):
-            return [(line, error)]
-        if len(input_fields) + len(change_fields) > 10:
-            return [(line, error)]
-        for event in checked_events:
-            # The reasoned waiver covers PR supersession only. A dispatch that
-            # explicitly names a PR may join that PR's group, but no generic
-            # dispatch/push/merge fallback inherits the waiver.
-            if declaration and event in PR_EVENTS:
-                continue
-            variants = [{}]
-            if declaration:
-                fields = sorted(input_fields)
-                if event == "workflow_dispatch":
-                    if any(field.removeprefix("github.event.inputs.") not in declared_inputs for field in fields):
-                        return [(line, error)]
-                    variants = [dict(zip(fields, row)) for row in itertools.product(*[
-                        ({None}, {PR if field == "github.event.inputs." + str(associated_input) else "\x00input:" + field + "\x00"})
-                        for field in fields])]
-                else:
-                    variants = [{field: {None} for field in fields}]
-            # Edited payloads are not PR-exclusive: issue_comment and
-            # discussion events also carry changes.*. Enumerate both truthiness
-            # partitions for every event, including unknown inherited callers,
-            # rather than guessing that a payload selector is absent. Unknown
-            # selector families still fail closed in evaluate().
-            variants = [{**context, **dict(zip(sorted(change_fields), row))}
-                        for context in variants
-                        for row in itertools.product(*[
-                            ({None}, {"\x00change:" + field + "\x00"})
-                            for field in sorted(change_fields)])]
-            for context in variants:
-                group = evaluate(concurrency.get("group"), event, context)
-                cancel = evaluate(concurrency.get("cancel-in-progress"), event, context)
-                if cancel in ("true", "false"):
-                    cancel = cancel == "true"
-                expected_pr = event in PR_EVENTS
-                # Full identity markers survive format/interpolation unchanged.
-                # The namespaces prevent PR/run numeric-ID collisions.
-                identity = "-pr-" + PR if expected_pr else "-run-" + RUN
-                forbidden = RUN if expected_pr else PR
-                safe_group = (isinstance(group, str) and WORKFLOW in group
-                              and identity in group and forbidden not in group)
-                associated = (event == "workflow_dispatch" and associated_input
-                              and context.get("github.event.inputs." + associated_input) == {PR})
-                if associated and isinstance(group, str) and WORKFLOW in group:
-                    safe_group |= "-pr-" + PR in group and RUN not in group
-                if not safe_group or type(cancel) is not bool or cancel != expected_pr:
-                    return [(line, error)]
-    except (ValueError, TypeError, IndexError):
-        return [(line, error)]
-    return []
+        return [(line, ERROR)]
+    if declaration:
+        if named_exception(declaration[1], decoded, triggered, concurrency):
+            return []
+        return [(line, ERROR)]
+    if matches(concurrency, GROUP, CANCEL):
+        return []
+    # This existing canonical variant is safe only when a target/caller event
+    # cannot enter it; mixed reusable definitions require the two-PR form.
+    if not triggered & {'pull_request_target', 'workflow_call'} and matches(concurrency, SINGLE_GROUP, SINGLE_CANCEL):
+        return []
+    return [(line, ERROR)]
