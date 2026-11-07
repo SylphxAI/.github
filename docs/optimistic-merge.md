@@ -187,9 +187,15 @@ true` (the revert, or the fix that reopens the tree) lands meanwhile.
 
 The starter gate has a `main-state` job (merge groups only) that runs
 [`main-red-gate`](../.github/actions/main-red-gate/action.yml). The trunk is
-red when its newest conclusive push run of the verify workflow failed
-(cancelled, skipped and superseded runs are passed over, as in owner
-standards/dx.md); a later success clears it. While red, a merge group is
+red when its newest conclusive push Verify verdict at or before the merge
+group's `base_sha` failed (commit ancestry, not timestamps). Later trunk
+commits cannot change that group's baseline. Set `verdict-check` to the exact
+workflow job name, for example `full-suite / suite-ok`: a completed successful
+verdict clears an older red even while trailing jobs keep its run in progress.
+The action reads jobs from the run's latest attempt, not unrelated checks on
+the same SHA. With no `verdict-check`, the run conclusion remains authoritative.
+Cancelled, skipped and superseded answers are passed over; a later success
+clears the failure. While red, a merge group is
 admitted when it is the way back to green:
 
 - a revert: branch `auto-revert/*` (the red-main handler's), a title starting
@@ -198,11 +204,18 @@ admitted when it is the way back to green:
   one either);
 - the fix, when a person labels the pull request `main-red-fix`.
 
-Any other pull request fails `main-state`, so `ci-ok` fails, and it leaves the
-queue, but only while the way back is in motion: a newer run of the verify
-workflow on the trunk is still running, or a revert or fix pull request (not a
-draft) is open. When nothing is in motion the group is admitted with a
-warning. The red-main handler reverts only after the same failure repeats on a
+An ordinary group with a newer pending Verify verdict **holds**, polling every
+60 seconds for up to `hold-minutes` (default **20 minutes**). Green admits it
+without manual re-enqueue; a newer red verdict or hold expiry fails with a
+clear message. Configure the hold **below the repository's merge-queue check
+timeout**, leaving margin for API calls and the other gate steps. Zero disables
+waiting. Reverts, outage fixes and labelled fixes never wait. Observe mode
+prints the decision without waiting; watch mode keeps its existing
+run-conclusion alert behaviour.
+
+With no newer pending verdict, an open non-draft revert or fix still fails
+`main-state`, so `ci-ok` fails and the ordinary change leaves the queue. When
+nothing is in motion the group is admitted with a warning. The red-main handler reverts only after the same failure repeats on a
 second completed run, and never reverts an infrastructure failure, a
 `timed_out` run or one that did not start; a queue that stayed shut on the
 first red would wait for a run nothing can start, and the next change landing
@@ -212,7 +225,8 @@ The gate fails open: a verify history, pull request or pull request list it
 cannot read admits with a warning, so it never jams the queue on its own
 fault. The starter ships `mode: observe` (prints what it would refuse and
 refuses nothing): read a few merge groups, including one on a red trunk, then
-set `enforce`. The job needs `pull-requests: read` beside the gate's other
+set `enforce`. The job needs `contents: read` (commit ancestry), `actions: read` (runs and
+jobs) and `pull-requests: read` beside the gate's other
 read permissions. A check on the trunk that is not the verify workflow (a
 benchmark or nightly) never makes the trunk red here.
 

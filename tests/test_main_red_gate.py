@@ -159,7 +159,7 @@ class MainTest(unittest.TestCase):
 
     ENV = {"EVENT_NAME": "merge_group", "REPO": "o/r", "TOKEN": "t", "BASE_BRANCH": "refs/heads/main",
            "VERIFY_WORKFLOW": "verify.yml", "MODE": "enforce", "FIX_LABEL": "main-red-fix",
-           "MERGE_GROUP_REF": "gh-readonly-queue/main/pr-77-" + "a" * 40}
+           "MERGE_GROUP_REF": "gh-readonly-queue/main/pr-77-" + "a" * 40, "HOLD_MINUTES": "0"}
 
     def go(self, runs, this_pr=None, open_pulls=(), env=None, list_error=False):
         calls: list[str] = []
@@ -205,7 +205,7 @@ class MainTest(unittest.TestCase):
     def test_a_newer_verify_run_still_going_holds_the_line(self) -> None:
         code, out, calls = self.go([running(), run("failure"), run("success")])
         self.assertEqual(code, 1)
-        self.assertIn("::error::trunk is red and a newer verify.yml run is still running (u)", out)
+        self.assertIn("::error::hold expired after 0 minutes", out)
         self.assertFalse([c for c in calls if "/pulls?state=open" in c], "no need to list pull requests")
 
     def test_an_open_revert_or_fix_pull_request_holds_the_line(self) -> None:
@@ -234,6 +234,138 @@ class MainTest(unittest.TestCase):
         code, out, _ = self.go([running(), run("failure")], env={"MODE": "observe"})
         self.assertEqual(code, 0)
         self.assertIn("would have refused", out)
+
+
+class VerdictHoldTest(unittest.TestCase):
+    """Exercise the assembled entrypoint with run-scoped jobs and a controlled clock."""
+
+    def go(self, snapshots, env=None, comparisons=None, this_pr=None, api_error=False, older_verdict="failure"):
+        calls = []
+        sleeps = []
+        clock = [0.0]
+        snapshot = [-1]
+        base = "b" * 40
+        newer = {**running(), "id": 2, "head_sha": base, "html_url": "new"}
+        older = {**run("failure"), "id": 1, "html_url": "old"}
+
+        def fake_get(url, token):
+            calls.append(url)
+            if "/actions/workflows/verify.yml/runs" in url:
+                snapshot[0] = min(snapshot[0] + 1, len(snapshots) - 1)
+                return {"workflow_runs": [newer, older]}
+            if "/compare/" in url:
+                sha = url.split("/compare/")[1].split("...")[0]
+                return {"status": (comparisons or {}).get(sha, "ahead")}
+            if "/actions/runs/" in url:
+                if api_error:
+                    raise urllib.error.URLError("jobs unavailable")
+                current = snapshots[snapshot[0]] if "/runs/2/" in url else older_verdict
+                jobs = [] if current == "missing" else [
+                    {"name": "full-suite / suite-ok", "status": "in_progress" if current is None else "completed",
+                     "conclusion": current}]
+                return {"jobs": jobs}
+            if url.endswith("/pulls/77"):
+                return this_pr or pull(number=77)
+            if "/pulls?state=open" in url:
+                return []
+            raise AssertionError(url)
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        out = io.StringIO()
+        config = {**MainTest.ENV, "HOLD_MINUTES": "20", "BASE_SHA": base,
+                  "VERDICT_CHECK": "full-suite / suite-ok", **(env or {})}
+        with mock.patch.dict(os.environ, config, clear=True), mock.patch.object(gate, "_get", fake_get), \
+                mock.patch.object(gate.time, "sleep", sleep), \
+                mock.patch.object(gate.time, "monotonic", lambda: clock[0]), contextlib.redirect_stdout(out):
+            code = gate.main()
+        return code, out.getvalue(), calls, sleeps
+
+    def test_success_verdict_admits_while_run_and_trailing_jobs_are_in_progress(self):
+        code, out, calls, sleeps = self.go(["success"])
+        self.assertEqual(code, 0)
+        self.assertIn("trunk is green", out)
+        self.assertEqual(sleeps, [])
+        self.assertFalse(any("/pulls" in url for url in calls))
+
+    def test_pending_verdict_turns_green_within_default_twenty_minute_hold(self):
+        code, out, calls, sleeps = self.go([None, None, "success"])
+        self.assertEqual(code, 0)
+        self.assertIn("green: admitted after hold", out)
+        self.assertEqual(sleeps, [60, 60])
+        self.assertEqual(sum("/compare/" in url for url in calls), 1, "ancestry is immutable and cached")
+
+    def test_pending_verdict_turns_red_and_refuses_even_without_an_open_fix(self):
+        code, out, _, sleeps = self.go([None, "failure"])
+        self.assertEqual(code, 1)
+        self.assertIn("newer verify.yml verdict is red", out)
+        self.assertEqual(sleeps, [60])
+
+    def test_default_hold_expires_after_twenty_minutes_not_sixty_seconds(self):
+        code, out, _, sleeps = self.go([None])
+        self.assertEqual(code, 1)
+        self.assertIn("hold expired after 20 minutes", out)
+        self.assertIn("verdict is still pending (new)", out)
+        self.assertEqual(sleeps, [60] * 20)
+
+    def test_fractional_hold_never_sleeps_past_deadline(self):
+        code, out, _, sleeps = self.go([None], env={"HOLD_MINUTES": "1.5"})
+        self.assertEqual(code, 1)
+        self.assertEqual(sleeps, [60, 30])
+        self.assertIn("after 1.5 minutes", out)
+
+    def test_later_red_run_is_excluded_at_merge_groups_green_base(self):
+        code, out, calls, sleeps = self.go(["failure"], env={"BASE_SHA": "a" * 40},
+                                          comparisons={"b" * 40: "behind"}, older_verdict="success")
+        self.assertEqual(code, 0)
+        self.assertIn("trunk is green", out)
+        self.assertFalse(any("/runs/2/jobs" in url for url in calls))
+        self.assertEqual(sleeps, [])
+
+    def test_observe_mode_does_not_hold_or_refuse(self):
+        code, out, _, sleeps = self.go([None], env={"MODE": "observe"})
+        self.assertEqual(code, 0)
+        self.assertIn("would have refused", out)
+        self.assertEqual(sleeps, [])
+
+    def test_way_back_does_not_wait_for_pending_verdict(self):
+        for p in (pull(title="Revert x"), pull(labels=("main-red-fix",)), pull(labels=("queue-jump:outage",))):
+            code, out, _, sleeps = self.go([None], this_pr=p)
+            self.assertEqual(code, 0)
+            self.assertIn("way back to green", out)
+            self.assertEqual(sleeps, [])
+
+    def test_jobs_api_error_preserves_fail_open_contract(self):
+        code, out, _, sleeps = self.go([None], api_error=True)
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::cannot read", out)
+        self.assertEqual(sleeps, [])
+
+    def test_missing_verdict_cannot_borrow_success_from_the_run(self):
+        code, out, _, sleeps = self.go(["missing"], env={"HOLD_MINUTES": "1"})
+        self.assertEqual(code, 1)
+        self.assertIn("hold expired", out)
+        self.assertEqual(sleeps, [60])
+
+    def test_invalid_hold_is_rejected_without_api_calls(self):
+        for hold in ("-1", "inf", "nan", "bad"):
+            code, out, calls, sleeps = self.go([None], env={"HOLD_MINUTES": hold})
+            self.assertEqual(code, 1)
+            self.assertIn("invalid hold-minutes", out)
+            self.assertEqual(calls, [])
+
+    def test_jobs_pagination_and_run_scoping(self):
+        newer = {**running(), "id": 2}
+        pages = [{"jobs": [{"name": "other", "status": "completed", "conclusion": "failure"}] * 100},
+                 {"jobs": [{"name": "full-suite / suite-ok", "status": "completed", "conclusion": "success"}]}]
+        with mock.patch.object(gate, "_get", side_effect=pages) as get:
+            projected = gate.gate_runs([newer, run("failure")], "main", "", "full-suite / suite-ok", "api", "t", {})
+        self.assertEqual(gate.trunk_state(projected, "main")[0], "green")
+        self.assertEqual([c.args[0] for c in get.call_args_list], [
+            "api/actions/runs/2/jobs?filter=latest&per_page=100&page=1",
+            "api/actions/runs/2/jobs?filter=latest&per_page=100&page=2"])
 
 
 def stamped(minutes_ago: float, **kwargs) -> dict:
