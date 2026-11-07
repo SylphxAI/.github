@@ -1,4 +1,5 @@
 # pr-concurrency: exempt — Explicit base-retarget validation associates code-pr dispatch with native PR evidence; preserve its qualification and retarget routing.
+# pr-concurrency: associated-pr-input code-pr — Explicit retarget dispatch joins the named PR evidence group; generic dispatch remains run-isolated.
 name: Project control
 
 on:
@@ -30,7 +31,7 @@ on:
 
 concurrency:
   # A consumer qualification must not replace pending native PR validation.
-  group: ${{ github.workflow }}-${{ github.event.inputs.junit-producer-run && format('consumer-{0}', github.ref) || (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('{0}-{1}', github.event_name, github.ref) }}
+  group: ${{ github.workflow }}-${{ github.event.inputs.junit-producer-run && format('consumer-run-{0}', github.run_id) || (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('run-{0}', github.run_id) }}
   # Only a superseded pull_request run is cancelled; merge_group and main pushes finish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

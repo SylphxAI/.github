@@ -106,8 +106,25 @@ with a column-zero header comment, before `jobs`, that gives its reason:
 # pr-concurrency: exempt — Complete qualification evidence must survive later PR commits.
 ```
 
-A bare marker, run-body comment, advisory marker or actionlint ignore does not
-exempt this rule. Keep the reason specific to the workflow. Tests are
+This waives **only PR-event supersession**. Every non-PR branch still requires a
+workflow-specific, unique `-run-${{ github.run_id }}` group and cancellation off,
+including manual dispatches and mixed reusable caller events. A workflow-level
+concurrency block is still required. A bare marker, run-body comment, advisory
+marker or actionlint ignore grants no waiver.
+
+A dispatch explicitly associated with a PR may retain its PR evidence group
+through an additional, reasoned header naming its declared dispatch input:
+
+```yaml
+# pr-concurrency: associated-pr-input pr-number — Retarget dispatch joins that PR's evidence group.
+```
+
+Only a nonempty named input permits the workflow-specific `-pr-<input>` group;
+its cancellation must remain off. All absent/present input branches are checked,
+so generic and qualification dispatches cannot inherit that exception. Inputs
+may select branches or be interpolated; ID comparisons and unknown selectors
+remain unsupported. Keep both reasons specific to their justified PR groups.
+Tests are
 `python -m unittest discover -s tests -p test_pr_concurrency.py`.
 
 Primary source: [GitHub workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency),

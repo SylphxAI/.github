@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+
+import yaml
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +14,7 @@ sys.path.insert(0, str(ROOT / '.github/actions/workflow-lint'))
 SPEC = importlib.util.spec_from_file_location('workflow_contract', ROOT / '.github/actions/workflow-lint/contract.py')
 contract = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(contract)
-from pr_concurrency import problems
+from pr_concurrency import evaluate, problems
 
 GUARD = "github.event_name == 'pull_request' || github.event_name == 'pull_request_target'"
 GROUP = "${{ (" + GUARD + ") && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}"
@@ -74,11 +76,77 @@ class PRConcurrencyTest(unittest.TestCase):
     def test_only_reasoned_header_exemption_counts(self):
         for reason in ('Preserve serialized publication of immutable artifacts.',
                        'Complete qualification evidence must survive later commits.'):
-            self.assertEqual(problems(workflow(None, header='# pr-concurrency: exempt — ' + reason + '\n')), [])
+            header = '# pr-concurrency: exempt — ' + reason + '\n'
+            self.assertEqual(problems(workflow('${{ github.workflow }}-run-${{ github.run_id }}', 'false', header=header)), [])
+            self.assertTrue(problems(workflow(None, header=header)))
         for marker in ('# pr-concurrency: exempt\n', '# pr-concurrency: exempt — \n'):
             self.assertIn('specific reason', problems(workflow(None, header=marker))[0][1])
         self.assertTrue(problems(workflow(None) + '      # pr-concurrency: exempt — not a header\n'))
         self.assertTrue(problems(workflow(None, header='# optimistic-merge: advisory — not this rule\n')))
+
+    def test_pr_waiver_cannot_hide_main_push_or_repeated_dispatch_eviction(self):
+        header = '# pr-concurrency: exempt — Every PR qualification must finish.\n'
+        for event in ('push', 'workflow_dispatch', 'merge_group'):
+            trigger = '[pull_request, ' + event + ']'
+            safe = workflow('${{ github.workflow }}-run-${{ github.run_id }}', 'false', trigger, header)
+            self.assertEqual(problems(safe), [])
+            self.assertTrue(problems(safe.replace('github.run_id', 'github.ref')))
+            self.assertTrue(problems(safe.replace('cancel-in-progress: false', 'cancel-in-progress: true')))
+        # A reusable call can inherit arbitrary non-PR events under a waiver too.
+        self.assertTrue(problems(workflow('${{ github.workflow }}-fixed', 'false',
+                                         '[pull_request, workflow_call]', header)))
+
+    def test_retarget_optouts_preserve_only_the_declared_pr_association(self):
+        for name in ('project-control.yml', 'pr-metadata.yml'):
+            text = (ROOT / '.github/workflows' / name).read_text()
+            self.assertEqual(problems(text), [])
+            # The old stable fallback under its reasoned waiver is refused.
+            broken = text.replace("format('run-{0}', github.run_id)",
+                                  "format('{0}-{1}', github.event_name, github.ref)")
+            broken = broken.replace("format('{0}-run-{1}', github.workflow, github.run_id)",
+                                    "format('{0}-{1}', github.event_name, github.ref)")
+            self.assertTrue(problems(broken), name)
+            if name == 'project-control.yml':
+                self.assertTrue(problems(text.replace("format('consumer-run-{0}', github.run_id)",
+                                                      "format('consumer-{0}', github.ref)")))
+                # The special dispatch association cannot leak into generic
+                # dispatch: without the named input, no PR-group waiver applies.
+                broken = text.replace("format('run-{0}', github.run_id)",
+                                      "format('pr-{0}', github.event.inputs.code-pr)")
+                self.assertTrue(problems(broken))
+                self.assertTrue(problems(text.replace('associated-pr-input code-pr',
+                                                      'associated-pr-input undeclared')))
+                self.assertTrue(problems(text.replace('# pr-concurrency: associated-pr-input',
+                                                      '# unrelated: associated-pr-input')))
+
+    def test_real_retarget_groups_and_all_non_pr_fallback_branches(self):
+        for name, title in (('project-control.yml', 'Project control'), ('pr-metadata.yml', 'PR metadata')):
+            text = (ROOT / '.github/workflows' / name).read_text()
+            concurrency = yaml.load(text, yaml.BaseLoader)['concurrency']
+            context = {'github.workflow': {title}, 'github.event.inputs.code-pr': {None},
+                       'github.event.inputs.junit-producer-run': {None},
+                       'github.event.changes.base': {None}}
+            for event in ('push', 'merge_group', 'workflow_dispatch'):
+                groups = []
+                for run in ('101', '102', '103'):
+                    overrides = {**context, 'github.run_id': {run}}
+                    groups.append(evaluate(concurrency['group'], event, overrides))
+                    self.assertIs(evaluate(concurrency['cancel-in-progress'], event, overrides), False)
+                self.assertEqual(len(set(groups)), 3, (name, event))
+            pr_context = {**context, 'github.event.pull_request.number': {'7'}, 'github.run_id': {'101'}}
+            native = evaluate(concurrency['group'], 'pull_request', pr_context)
+            if name == 'project-control.yml':
+                self.assertEqual(native, 'Project control-pr-7')
+                dispatch = {**context, 'github.event.inputs.code-pr': {'7'}, 'github.run_id': {'102'}}
+                self.assertEqual(evaluate(concurrency['group'], 'workflow_dispatch', dispatch), native)
+                consumer = {**dispatch, 'github.event.inputs.junit-producer-run': {'producer'}}
+                self.assertEqual(evaluate(concurrency['group'], 'workflow_dispatch', consumer),
+                                 'Project control-consumer-run-102')
+            else:
+                self.assertEqual(native, 'pr-metadata-pr-7')
+                base_edit = {**pr_context, 'github.event.changes.base': {'changed'}}
+                self.assertEqual(evaluate(concurrency['group'], 'pull_request', base_edit),
+                                 'pr-metadata-base-101')
 
     def test_reusable_only_and_workflow_run_review_are_outside_rule(self):
         for trigger in ('workflow_call', '[workflow_call, push]', '[workflow_run, workflow_dispatch]'):
