@@ -220,5 +220,82 @@ class PRConcurrencyTest(unittest.TestCase):
                 self.assertEqual([f for f in contract.scan_dir(root) if 'non-canonical concurrency expression' in f.problem], [])
 
 
+class RuleSelectionTest(unittest.TestCase):
+    def test_scoped_scan_never_calls_other_contract_families(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / '.github/workflows'
+            folder.mkdir(parents=True)
+            path = folder / 'ci.yml'
+            path.write_text(workflow(trigger='pull_request'))
+            with patch.dict(os.environ, {}, clear=True), \
+                    patch.object(contract, 'runner_evaluations', side_effect=AssertionError('runner evaluation')), \
+                    patch.object(contract, 'scan_workflow', side_effect=AssertionError('job contracts')), \
+                    patch.object(contract, 'gate_coverage', side_effect=AssertionError('ci-ok closure')), \
+                    patch.object(contract, 'check_declaration', side_effect=AssertionError('declarations')), \
+                    patch.object(contract, 'merge_lane_findings', side_effect=AssertionError('runner routing')):
+                self.assertEqual(contract.scan_dir(root, rules='pr-concurrency'), [])
+                path.write_text(workflow(None, trigger='pull_request'))
+                found = contract.scan_dir(root, rules='pr-concurrency')
+                self.assertEqual(len(found), 1)
+                self.assertTrue(found[0].blocking)
+                with self.assertRaisesRegex(ValueError, 'unknown workflow-lint rules'):
+                    contract.scan_dir(root, rules='typo')
+
+    def test_scoped_entrypoint_ignores_unrelated_debt_but_not_concurrency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / '.github/workflows'
+            folder.mkdir(parents=True)
+            path = folder / 'ci.yml'
+            text = workflow(trigger='[pull_request, merge_group]').replace('  ci-ok:', '  isolated:')
+            text = text.replace('    timeout-minutes: 1\n', '')
+            text = text.replace('ubuntu-latest', 'unknown-runner')
+            text = text.replace('- run: echo ok', '- uses: trstringer/manual-approval@v1\n      - run: k6 run load.js || true')
+            path.write_text(text)
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith('GITHUB_') and k not in ('WORKFLOW_LINT_RULES', 'CONTRACT_MODE')}
+            env.update(CONTRACT_MODE='report-only')
+            command = [sys.executable, str(ROOT / '.github/actions/workflow-lint/contract.py')]
+            full = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(full.returncode, 1, full.stdout + full.stderr)
+            self.assertIn('manual', full.stdout)
+            env['WORKFLOW_LINT_RULES'] = 'pr-concurrency'
+            scoped = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(scoped.returncode, 0, scoped.stdout + scoped.stderr)
+            self.assertIn('0 violation(s)', scoped.stdout)
+            self.assertNotIn('::warning', scoped.stdout)
+            path.write_text(text.replace('concurrency:', 'not-concurrency:', 1))
+            refused = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+            self.assertIn('non-canonical concurrency expression', refused.stdout)
+            for invalid in ('', 'typo', 'pr-concurrency,all'):
+                env['WORKFLOW_LINT_RULES'] = invalid
+                unknown = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+                self.assertNotEqual(unknown.returncode, 0)
+                self.assertIn('unknown workflow-lint rules', unknown.stderr)
+
+    def test_composite_selects_only_validator_and_scoped_contract(self):
+        action = yaml.safe_load((ROOT / '.github/actions/workflow-lint/action.yml').read_text())
+        self.assertEqual(action['inputs']['rules']['default'], 'all')
+        for rules in ('all', 'pr-concurrency'):
+            context = {'inputs.rules': {rules}, 'steps.restore-binary.outputs.cache-hit': {'false'}}
+            selected = [step for step in action['runs']['steps']
+                        if not step.get('if') or expression('${{ ' + step['if'] + ' }}', context) == {True}]
+            if rules == 'pr-concurrency':
+                self.assertEqual([s['name'] for s in selected],
+                                 ['Validate rule selection', 'Required workflow contract'])
+            else:
+                self.assertEqual(len(selected), len(action['runs']['steps']))
+            final = selected[-1]
+            self.assertEqual(final['env']['WORKFLOW_LINT_RULES'], '${{ inputs.rules }}')
+            self.assertIn('$GITHUB_ACTION_PATH/contract.py', final['run'])
+        validator = action['runs']['steps'][0]['run']
+        for rules, expected in (('all', 0), ('pr-concurrency', 0), ('', 1), ('typo', 1)):
+            checked = subprocess.run(['bash', '-euo', 'pipefail', '-c', validator],
+                                     env={**os.environ, 'RULES': rules}, capture_output=True, text=True)
+            self.assertEqual(checked.returncode, expected, checked.stdout + checked.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
