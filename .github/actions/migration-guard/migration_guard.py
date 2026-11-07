@@ -2349,7 +2349,8 @@ def recorded_unapplied_withdrawal(root: Path, new_tree: dict[str, tuple[str, str
 
 def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
                 schemas: list[str] | None = None, concurrent_index_runtime: str = "", *,
-                repository: str = "", provenance_policy=source_provenance.POLICY) -> tuple[list[str], int]:
+                repository: str = "", provenance_policy=source_provenance.POLICY,
+                dialect_from_suffix: bool = False) -> tuple[list[str], int]:
     # PRs can be behind main. Only their changes since the common ancestor
     # count; merge groups and pushes already have an ancestral base.
     ancestor = git(root, "merge-base", base, head).strip()
@@ -2364,6 +2365,12 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
                              if p.startswith(record["prefix"] + "/")})
     def migrations(tree):
         return {p: blob for p, blob in tree.items() if p.lower().endswith(".sql") and any(d == "." or p.startswith(d + "/") for d in dirs)}
+    def dialect_for(path):
+        if dialect_from_suffix:
+            for suffix, selected in ((".mysql.sql", "mysql"), (".postgresql.sql", "postgres")):
+                if path.lower().endswith(suffix):
+                    return selected
+        return dialect
     old, new = migrations(old_tree), migrations(new_tree)
     errors = []
     for path, blob in old.items():
@@ -2392,6 +2399,7 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
     }
     versions = Counter((str(PurePosixPath(p).parent), version(p)) for p in added if version(p) is not None)
     for path in added:
+        file_dialect = dialect_for(path)
         mode, oid = new[path]
         if mode not in {"100644", "100755"}:
             errors.append(f"{path}: migration must be a regular SQL file")
@@ -2418,6 +2426,7 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
                 for other_path in sorted(new):
                     if (str(PurePosixPath(other_path).parent) == parent
                             and PurePosixPath(other_path).name > cur_name
+                            and dialect_for(other_path) == file_dialect
                             and new[other_path][0] in {"100644", "100755"}):
                         later_bodies.append(git(root, "cat-file", "blob", new[other_path][1]))
             historical_tables: set[str] = set()
@@ -2425,12 +2434,13 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
             # history when the PR is behind main. Never trust working-tree SQL.
             history = {**base_migrations, **{p: b for p, b in new.items()
                        if p < path and p != path}}
-            if any(action == "CASCADE" for _, action in foreign_delete_actions(lex(sql, dialect)[0])):
+            if any(action == "CASCADE" for _, action in foreign_delete_actions(lex(sql, file_dialect)[0])):
                 for historical_path, historical_blob in history.items():
-                    historical_tables.update(declared_tables(
-                        git(root, "cat-file", "blob", historical_blob[1]), dialect))
+                    if dialect_for(historical_path) == file_dialect:
+                        historical_tables.update(declared_tables(
+                            git(root, "cat-file", "blob", historical_blob[1]), file_dialect))
             errors.extend(f"{path}:{line}: {reason}" for line, reason in check_sql(
-                sql, dialect, concurrent_index_runtime, later_bodies=later_bodies,
+                sql, file_dialect, concurrent_index_runtime, later_bodies=later_bodies,
                 historical_tables=historical_tables))
         except (SqlError, UnicodeError) as exc:
             errors.append(f"{path}: cannot inspect SQL: {exc}")
@@ -2487,8 +2497,13 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
     parser.add_argument("--schema-file", action="append")
     parser.add_argument("--concurrent-index-runtime", choices=("", CONCURRENT_INDEX_RUNTIME),
                         default=env.get("MIGRATION_CONCURRENT_INDEX_RUNTIME", ""))
+    parser.add_argument("--dialect-from-suffix", action=argparse.BooleanOptionalAction, default=None)
     args = parser.parse_args(argv)
     try:
+        suffix_mode = env.get("MIGRATION_DIALECT_FROM_SUFFIX", "false").lower()
+        if suffix_mode not in {"true", "false"}:
+            raise ValueError("dialect-from-suffix must be true or false")
+        dialect_from_suffix = args.dialect_from_suffix if args.dialect_from_suffix is not None else suffix_mode == "true"
         if args.dialect not in {"postgres", "mysql"}:
             raise ValueError("dialect must be postgres or mysql")
         dirs = directories("\n".join(args.directory) if args.directory else env.get("MIGRATION_DIRECTORIES", ""), allow_empty=True)
@@ -2499,11 +2514,11 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
         root = Path(env.get("GITHUB_WORKSPACE", "."))
         target_base = merge_group_target_base(root, {**env, "MIGRATION_BASE": args.base}, base)
         errors, count = check_range(root, base, head, dirs, args.dialect, schemas, args.concurrent_index_runtime,
-                                    repository=env.get("GITHUB_REPOSITORY", ""))
+                                    repository=env.get("GITHUB_REPOSITORY", ""), dialect_from_suffix=dialect_from_suffix)
         if target_base:
             target_errors, target_count = check_range(root, target_base, head, dirs, args.dialect, schemas,
                                                       args.concurrent_index_runtime,
-                                                      repository=env.get("GITHUB_REPOSITORY", ""))
+                                                      repository=env.get("GITHUB_REPOSITORY", ""), dialect_from_suffix=dialect_from_suffix)
             errors = list(dict.fromkeys([*target_errors, *errors]))
             count = max(count, target_count)
         if errors:
