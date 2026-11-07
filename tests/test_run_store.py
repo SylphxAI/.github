@@ -14,6 +14,7 @@ import os
 import pathlib
 import socket
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -253,6 +254,27 @@ class RunStoreTest(unittest.TestCase):
             "RUN_STORE_RETRY_DELAY": "0",
         }
         env.update(extra)
+        trace = extra.get("RUN_STORE_TEST_TRACE")
+        if trace:
+            wrapper_dir = self.dir / "python-wrapper"
+            wrapper_dir.mkdir(exist_ok=True)
+            wrapper = wrapper_dir / "python3"
+            wrapper.write_text(
+                f"#!{sys.executable}\n"
+                "import os, sys\n"
+                "if len(sys.argv) > 1 and sys.argv[1].endswith('/curl_retry.py'):\n"
+                "    try:\n"
+                "        label = sys.argv[sys.argv.index('--label') + 1]\n"
+                "        maximum = sys.argv[sys.argv.index('--max-time') + 1]\n"
+                "    except (ValueError, IndexError):\n"
+                "        pass\n"
+                "    else:\n"
+                "        with open(os.environ['RUN_STORE_TEST_TRACE'], 'a') as output:\n"
+                "            output.write(f'{label}:{maximum}\\n')\n"
+                "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+            )
+            wrapper.chmod(0o755)
+            env["PATH"] = f"{wrapper_dir}:{env['PATH']}"
         p = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
         log = p.stdout + p.stderr
         for secret in SECRETS:
@@ -263,11 +285,57 @@ class RunStoreTest(unittest.TestCase):
         outputs = dict(line.split("=", 1) for line in output.read_text().splitlines() if "=" in line)
         return p.returncode, log, outputs
 
+    def test_oidc_deadline_does_not_change_mint_or_transfer_deadlines(self) -> None:
+        source = self.dir / "upload.txt"
+        source.write_text("payload")
+        for index, (overrides, oidc, mint, transfer) in enumerate((
+            ({}, "30", "10", "30"),
+            ({"RUN_STORE_OIDC_MAX_TIME": "45"}, "45", "10", "30"),
+            ({"BUILD_CACHE_MAX_TIME": "7", "RUN_STORE_REQUEST_MAX_TIME": "17"}, "30", "7", "17"),
+        )):
+            with self.subTest(overrides=overrides):
+                trace = self.dir / f"trace-{index}"
+                name = f"separate-deadlines-{index}"
+                rc, log, _ = self.run_store("put", name, source, RUN_STORE_TEST_TRACE=str(trace), **overrides)
+                self.assertEqual(rc, 0, log)
+                self.assertEqual(
+                    trace.read_text().splitlines(),
+                    [f"run-store-oidc:{oidc}", f"run-store-mint:{mint}",
+                     f"run-store-put:{transfer}", f"run-store-head:{transfer}"],
+                )
+                trace.write_text("")
+                rc, log, out = self.run_store(
+                    "get", name, self.dir / f"download-{index}", RUN_STORE_TEST_TRACE=str(trace), **overrides
+                )
+                self.assertEqual(rc, 0, log)
+                self.assertEqual(out["found"], "true")
+                self.assertEqual(
+                    trace.read_text().splitlines(),
+                    [f"run-store-oidc:{oidc}", f"run-store-mint:{mint}",
+                     f"run-store-get:{transfer}", f"run-store-get:{transfer}"],
+                )
+
+    def test_invalid_oidc_deadlines_fall_back_to_thirty_seconds(self) -> None:
+        source = self.dir / "upload.txt"
+        source.write_text("payload")
+        for index, invalid in enumerate(("0", "abc", "-5", "000", "1000", "1.5")):
+            with self.subTest(invalid=invalid):
+                trace = self.dir / f"invalid-{index}"
+                rc, log, _ = self.run_store(
+                    "put",
+                    f"invalid-{index}",
+                    source,
+                    RUN_STORE_OIDC_MAX_TIME=invalid,
+                    RUN_STORE_TEST_TRACE=str(trace),
+                )
+                self.assertEqual(rc, 0, log)
+                self.assertEqual(trace.read_text().splitlines()[0], "run-store-oidc:30")
+
     def test_oidc_timeouts_twice_then_succeeds_without_reminting(self) -> None:
         self.fake.oidc_replies = ["timeout", "timeout"]
         source = self.dir / "upload.txt"
         source.write_text("payload")
-        rc, log, _ = self.run_store("put", "retry-oidc", source, BUILD_CACHE_MAX_TIME="1")
+        rc, log, _ = self.run_store("put", "retry-oidc", source, RUN_STORE_OIDC_MAX_TIME="1")
         self.assertEqual(rc, 0, log)
         self.assertEqual(sum(path.startswith("/oidc") for _, path, _ in self.fake.requests), 3)
         self.assertEqual(sum(method == "POST" for method, _, _ in self.fake.requests), 1)
