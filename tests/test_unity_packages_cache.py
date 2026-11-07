@@ -293,6 +293,59 @@ class UnityPackagesCache(unittest.TestCase):
         self.assertEqual((embedded / "package.json").read_text(), good)
         self.assertEqual(len(self.requests), 2)
 
+    def test_embedded_overrides_reject_contained_symlink_components_before_metadata_read(self):
+        name = "net.example.embedded"
+        for case in ("metadata", "package directory", "ancestor directory"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+                project = Path(temporary)
+                packages = project / "Packages"
+                pkg = packages / "pkg"
+                pkg.mkdir(parents=True)
+                (pkg / "package.json").write_text(json.dumps({"name": name, "version": "1.0.0"}))
+                registry = json.loads(json.dumps(self.registry))
+                registry[name] = {"version": "file:pkg", "source": "embedded", "dependencies": {}}
+                manifest = json.loads(json.dumps(self.manifest))
+                manifest["dependencies"][name] = "9.9.9"
+                (packages / "manifest.json").write_text(json.dumps(manifest))
+                (packages / "packages-lock.json").write_text(json.dumps({"dependencies": registry}))
+                pins = packages / "unity-packages.json"
+                pins.write_text(json.dumps(self.pins))
+                self.assertEqual(upm.validate(project)[0], self.pins)  # Genuine directory/metadata positive control.
+                if case == "metadata":
+                    target = packages / "real-package.json"
+                    (pkg / "package.json").rename(target)
+                    (pkg / "package.json").symlink_to(target)
+                elif case == "package directory":
+                    target = packages / "real-package"
+                    pkg.rename(target)
+                    pkg.symlink_to(target, target_is_directory=True)
+                else:
+                    parent = packages / "real-parent"
+                    parent.mkdir()
+                    pkg.rename(parent / "nested")
+                    registry[name]["version"] = "file:real-parent/nested"
+                    (packages / "packages-lock.json").write_text(json.dumps({"dependencies": registry}))
+                    self.assertEqual(upm.validate(project)[0], self.pins)  # Genuine nested-path positive control.
+                    (packages / "parent-link").symlink_to(parent, target_is_directory=True)
+                    registry[name]["version"] = "file:parent-link/nested"
+                    (packages / "packages-lock.json").write_text(json.dumps({"dependencies": registry}))
+                receipt = project / ".unity-packages-cache-receipt.json"
+                receipt.write_text("unchanged receipt")
+                before_pins = pins.read_bytes()
+                with patch.object(upm, "load", wraps=upm.load) as load, patch.object(upm, "fetch") as fetch, patch.object(
+                        upm.urllib.request, "urlopen") as request, patch.object(upm.tempfile, "TemporaryDirectory") as staging:
+                    for operation in (upm.validate, upm.hydrate, upm.pin):
+                        with self.assertRaisesRegex(ValueError, "invalid embedded package override"):
+                            operation(project)
+                    self.assertEqual([call.args[0] for call in load.call_args_list],
+                                     [packages / "manifest.json", packages / "packages-lock.json"] * 3)
+                    fetch.assert_not_called()
+                    request.assert_not_called()
+                    staging.assert_not_called()
+                self.assertEqual(receipt.read_text(), "unchanged receipt")
+                self.assertEqual(pins.read_bytes(), before_pins)
+        self.assertEqual(self.requests, [])
+
     def test_nonstring_manifest_requests_fail_closed(self):
         upm.validate(self.project)
         for name in ("com.autodesk.fbx", "com.unity.first", "com.other.local"):

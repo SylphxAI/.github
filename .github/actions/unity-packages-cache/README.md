@@ -29,8 +29,10 @@ and Git dependencies keep their existing preparation steps. Every direct version
 request must have a resolved `registry` or `builtin` lock entry, or a genuine
 `embedded` override. Embedded overrides use the lock's relative `file:` path
 inside `Packages` and require a package directory with a `package.json` whose
-name matches the dependency. Missing entries, stale Git/local/tarball sources
-and non-string manifest requests stop before network access or mutation.
+name matches the dependency. Directory components and `package.json` must not
+be symlinks, even when their targets are inside `Packages`. Missing entries,
+stale Git/local/tarball sources and non-string manifest requests stop before
+network access or mutation.
 Unselected explicit local/Git requests remain unaffected.
 Every pin records an exact positive `archiveBytes` count as well as its version
 and SHA256. Graph admission refuses missing or oversized counts before network

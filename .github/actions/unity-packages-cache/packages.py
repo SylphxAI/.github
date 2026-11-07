@@ -7,6 +7,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import tarfile
 import tempfile
 import urllib.parse
@@ -54,10 +55,21 @@ def graph(project):
                 if not isinstance(location, str) or not location.startswith("file:"):
                     raise ValueError(f"invalid embedded package override: {name}")
                 relative = PurePosixPath(location[5:])
+                if relative.is_absolute() or not relative.parts or ".." in relative.parts or "\\" in location:
+                    raise ValueError(f"invalid embedded package override: {name}")
+                # Reject every symlink below Packages before following a child
+                # or reading package.json, even when its target is contained.
+                current = packages
+                try:
+                    for part in (*relative.parts, "package.json"):
+                        current /= part
+                        if stat.S_ISLNK(current.lstat().st_mode):
+                            raise ValueError(f"invalid embedded package override: {name}")
+                except OSError as error:
+                    raise ValueError(f"invalid embedded package override: {name}") from error
                 embedded = packages.joinpath(*relative.parts)
                 metadata_path = embedded / "package.json"
-                if (relative.is_absolute() or not relative.parts or ".." in relative.parts or "\\" in location or
-                        not embedded.resolve().is_relative_to(packages.resolve()) or not embedded.is_dir() or
+                if (not embedded.resolve().is_relative_to(packages.resolve()) or not embedded.is_dir() or
                         not metadata_path.resolve().is_relative_to(packages.resolve()) or not metadata_path.is_file()):
                     raise ValueError(f"invalid embedded package override: {name}")
                 metadata = load(metadata_path)
