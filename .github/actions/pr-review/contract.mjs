@@ -190,6 +190,19 @@ export function parseReviewResult(text, input, { discardUngrounded = false } = {
 		const snapped = []
 		const requireEvidence = (evidence, kind, index, findingIndex = null) => {
 			let expected = sourceQuote(input, evidence.path, evidence.side, evidence.start_line, evidence.end_line, evidence.start_byte, evidence.end_byte)
+			// Byte-qualified quotes retain their exact slice and offsets. Tolerate only
+			// one LF at its end, never trim content or collapse repeated newlines.
+			if (expected !== null && expected !== evidence.quote && evidence.start_byte !== null && evidence.end_byte !== null) {
+				const operation = !evidence.quote.endsWith('\n') && expected === `${evidence.quote}\n` ? 'add' :
+					!expected.endsWith('\n') && evidence.quote === `${expected}\n` ? 'remove' : null
+				if (operation) {
+					snapped.push({ kind, evidence_index: index, finding_index: findingIndex, path: evidence.path, side: evidence.side,
+						reason: 'trailing_lf', operation, start_line: evidence.start_line, end_line: evidence.end_line,
+						start_byte: evidence.start_byte, end_byte: evidence.end_byte,
+						expected_bytes: Buffer.byteLength(expected), returned_bytes: Buffer.byteLength(evidence.quote) })
+					evidence.quote = expected
+				}
+			}
 			if (expected !== evidence.quote && evidence.start_byte === null && evidence.end_byte === null && evidence.end_line >= evidence.start_line && nonempty(evidence.quote)) {
 				const from = { start_line: evidence.start_line, end_line: evidence.end_line }
 				const quoteLines = lines(evidence.quote).map(line => line.trim()), span = quoteLines.length, firstLine = quoteLines[0]

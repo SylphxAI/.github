@@ -162,7 +162,11 @@ schema output. The parser checks repository, base/head, source digest, reviewer
 version, completeness, zero omissions and verbatim quoted evidence. Findings
 must reference changed physical source coordinates. Partial-line evidence carries
 exact start/end byte offsets; complete-line evidence uses null offsets and
-canonical LF quotes. Deleted-code findings cite the base side in
+canonical LF quotes. Byte-qualified quotes may differ from the supplied slice
+only by one terminal LF, with no other byte changed and no repeated trailing
+newlines normalized. Validation restores the exact source slice without changing
+offsets and records `reason=trailing_lf`, the add/remove operation and both byte
+counts in `snapped_evidence`. Unavailable or out-of-bounds slices still fail. Deleted-code findings cite the base side in
 the check summary; head-side findings become line annotations. Medium or higher
 concrete defects fail; clean reviewed code passes. Low findings remain advisory.
 If a finding points outside the changed ranges, its evidence is validated first.

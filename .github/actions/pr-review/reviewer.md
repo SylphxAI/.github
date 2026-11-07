@@ -94,7 +94,10 @@ set start_byte=end_byte=null; quotes join lines with LF and omit the final line
 ending. For partial lines or literal fragments, copy exact start_byte/end_byte
 offsets (zero-based UTF8 bytes, end exclusive) and verbatim content, including
 any original line endings; use physical start_line/end_line, excluding a final
-line ending from the end_line count. Never use view positions as annotation
+line ending from the end_line count. The validator may restore one missing or
+extra terminal LF on a byte-qualified slice, recording the operation without
+changing offsets; no other byte difference is accepted for such slices.
+Never use view positions as annotation
 lines. Explain trigger and consequence in separate fields as well as
 the concise explanation. Severity is critical for immediate widespread data loss
 or total outage, high for a major reachable failure, medium for a narrower concrete
