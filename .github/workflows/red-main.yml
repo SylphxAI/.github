@@ -764,7 +764,9 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .red-main-store
           persist-credentials: false
-          sparse-checkout: .github/actions/run-store
+          sparse-checkout: |
+            .github/actions/run-store
+            .github/actions/_shared
 
       - name: Prepare the handler helpers
         id: helpers
