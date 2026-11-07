@@ -165,8 +165,14 @@ and an exact alternative declared in `pr_concurrency.py`:
   and its independent cleanup path. The unlocked verdict is **not** natively
   superseded by these work-job locks; any automated sweep's eligibility,
   including whether same-head duplicates qualify, remains a separate contract.
-  Reusable callees must not declare a group that collides with their caller's
-  literal job namespace; validate the resolved call graph when adopting this form.
+  Every reusable call (including a reusable verdict) must resolve from the
+  supplied workflow inventory to `./.github/workflows/<file>.yml` or `.yaml`.
+  The callee must declare `workflow_call`, contain jobs, and have
+  no workflow-level or job-level `concurrency` declarations and no nested
+  reusable calls. Step-level action uses remain allowed. Missing inventory,
+  missing or malformed callees, external references and any declared callee
+  lock are refused, rather than inferring whether another group can collide.
+  Both full and rule-scoped scans pass the same complete local inventory.
 
 - `base-retarget` admits only the literal `BASE_RETARGET` metadata routing form,
   the `PR metadata` workflow name and the declared non-reusable trigger set.

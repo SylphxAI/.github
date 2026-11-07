@@ -25,6 +25,16 @@ GROUP = "${{ (" + GUARD + ") && format('{0}-pr-{1}', github.workflow, github.eve
 CANCEL = '${{ ' + GUARD + ' }}'
 HEADER = '# pr-concurrency: exception complete-evidence — Every qualification must finish.\n'
 RUN = '${{ github.workflow }}-run-${{ github.run_id }}'
+CALLEE = '''on: workflow_call
+jobs:
+  check:
+    runs-on: sylphx-linux-control
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - run: echo check
+'''
+CALLEES = {'reusable.yml': CALLEE}
 
 
 def workflow(group=GROUP, cancel=CANCEL, trigger='[pull_request, pull_request_target, merge_group, push, schedule, workflow_dispatch, release]', header=''):
@@ -67,6 +77,10 @@ def independent_verdict_workflow():
     steps:
       - run: exit 1
 '''
+
+
+def independent_problems(text):
+    return problems(text, workflows=CALLEES)
 
 
 class PRConcurrencyTest(unittest.TestCase):
@@ -179,7 +193,7 @@ class PRConcurrencyTest(unittest.TestCase):
 
     def test_independent_verdict_requires_every_work_job_lock(self):
         text = independent_verdict_workflow()
-        self.assertEqual(problems(text), [])
+        self.assertEqual(independent_problems(text), [])
         for name in ('select', 'tests'):
             lock = f'    concurrency:\n      group: {name}-{GROUP}\n      cancel-in-progress: {CANCEL}\n'
             for broken in (text.replace(lock, ''),
@@ -189,33 +203,33 @@ class PRConcurrencyTest(unittest.TestCase):
                            text.replace(lock, lock.replace(CANCEL, 'true')),
                            text.replace(lock, lock.replace(CANCEL, 'false'))):
                 with self.subTest(job=name, source=broken):
-                    self.assertTrue(problems(broken))
-        self.assertTrue(problems(text.replace('tests-' + GROUP, 'select-' + GROUP)))
-        self.assertTrue(problems(text.replace('tests', 'SELECT')))
-        self.assertTrue(problems(text.replace('group: ' + RUN, 'group: ' + GROUP)))
-        self.assertTrue(problems(text.replace('  cancel-in-progress: false', '  cancel-in-progress: true', 1)))
-        self.assertTrue(problems(text.replace('exception independent-verdict', 'exception unknown')))
-        self.assertTrue(problems(text.split('\n', 1)[1]))
-        self.assertTrue(problems(text.replace('pull_request_target,', 'pull_request_target, workflow_call,')))
+                    self.assertTrue(independent_problems(broken))
+        self.assertTrue(independent_problems(text.replace('tests-' + GROUP, 'select-' + GROUP)))
+        self.assertTrue(independent_problems(text.replace('tests', 'SELECT')))
+        self.assertTrue(independent_problems(text.replace('group: ' + RUN, 'group: ' + GROUP)))
+        self.assertTrue(independent_problems(text.replace('  cancel-in-progress: false', '  cancel-in-progress: true', 1)))
+        self.assertTrue(independent_problems(text.replace('exception independent-verdict', 'exception unknown')))
+        self.assertTrue(independent_problems(text.split('\n', 1)[1]))
+        self.assertTrue(independent_problems(text.replace('pull_request_target,', 'pull_request_target, workflow_call,')))
 
     def test_independent_verdict_is_unlocked_and_depends_on_every_work_job(self):
         text = independent_verdict_workflow()
         for condition in ('always()', '${{ always() }}'):
-            self.assertEqual(problems(text.replace('${{ always() }}', condition)), [])
+            self.assertEqual(independent_problems(text.replace('${{ always() }}', condition)), [])
         for needs in ('[select]', '[tests]', '[select, tests, tests]',
                       '[select, tests, absent]', '[select, select]', '[[select], tests]', '{}'):
             with self.subTest(needs=needs):
-                self.assertTrue(problems(text.replace('[select, tests]', needs)))
+                self.assertTrue(independent_problems(text.replace('[select, tests]', needs)))
         for broken in (text.replace('    if: ${{ always() }}', '    if: ${{ !cancelled() }}'),
                        text.replace('    if: ${{ always() }}', '    if: ${{ always() && success() }}'),
                        text.replace('    if: ${{ always() }}', f'    concurrency:\n      group: ci-ok-{GROUP}\n      cancel-in-progress: {CANCEL}\n    if: ${{{{ always() }}}}'),
                        text.replace('    if: ${{ always() }}', '    concurrency: null\n    if: ${{ always() }}'),
                        text.replace('    needs: select\n', '    needs: select\n    if: always()\n')):
-            self.assertTrue(problems(broken))
+            self.assertTrue(independent_problems(broken))
         one = text.split('  tests:\n')[0] + '  ci-ok:\n' + text.split('  ci-ok:\n')[1]
         one = one.replace('[select, tests]', 'select')
-        self.assertEqual(problems(one), [])
-        self.assertTrue(problems(workflow(RUN, 'false', header='# pr-concurrency: exception independent-verdict — No work jobs.\n')))
+        self.assertEqual(independent_problems(one), [])
+        self.assertTrue(independent_problems(workflow(RUN, 'false', header='# pr-concurrency: exception independent-verdict — No work jobs.\n')))
 
     def test_independent_job_locks_resolve_pr_and_non_pr_isolation(self):
         decoded = yaml.load(independent_verdict_workflow(), yaml.BaseLoader)
@@ -243,13 +257,78 @@ class PRConcurrencyTest(unittest.TestCase):
         for name in ('select', 'tests'):
             anchor = f'  {name}:\n'
             permitted = text.replace(anchor, anchor + "    if: needs.scope.outputs.selected == 'true'\n")
-            self.assertEqual(problems(permitted), [])
+            self.assertEqual(independent_problems(permitted), [])
             for condition in ('always() && true', '!cancelled() || always()',
                               '!success()', 'failure()', 'cancelled()',
                               'ALWAYS ()', 'SuCcEsS ( )', '!FAILURE ( )', '!CANCELLED ()'):
                 with self.subTest(job=name, condition=condition):
                     broken = text.replace(anchor, anchor + f'    if: ${{{{ {condition} }}}}\n')
-                    self.assertTrue(problems(broken))
+                    self.assertTrue(independent_problems(broken))
+
+    def test_independent_calls_require_resolved_local_callees(self):
+        text = independent_verdict_workflow()
+        self.assertEqual(problems(text, workflows=CALLEES), [])
+        self.assertEqual(problems(text.replace('reusable.yml', 'reusable.yaml'),
+                                  workflows={'reusable.yaml': CALLEE}), [])
+        # No reusable call needs no dependency inventory.
+        direct = text.replace('    uses: ./.github/workflows/reusable.yml',
+                              '    runs-on: sylphx-linux-control\n    steps: [{run: echo test}]')
+        self.assertEqual(problems(direct), [])
+        for inventory in (None, {}, {'different.yml': CALLEE}, {'reusable.yml': None}):
+            with self.subTest(inventory=inventory):
+                self.assertTrue(problems(text, workflows=inventory))
+        for target in ('owner/repo/.github/workflows/reusable.yml@' + 'a' * 40,
+                       './.github/workflows/nested/reusable.yml',
+                       './.github/workflows/../reusable.yml',
+                       './.github/workflows/reusable.yml@main',
+                       './.github/workflows/reusable',
+                       './.github/workflows/reusable\\name.yml'):
+            with self.subTest(target=target):
+                self.assertTrue(problems(text.replace('./.github/workflows/reusable.yml', target),
+                                         workflows=CALLEES))
+
+    def test_independent_callees_refuse_every_lock_and_nested_call(self):
+        text = independent_verdict_workflow()
+        for callee in (CALLEE.replace('jobs:', 'concurrency: tests-' + GROUP + '\njobs:'),
+                       CALLEE.replace('jobs:', 'concurrency: null\njobs:'),
+                       CALLEE.replace('jobs:', 'concurrency: {}\njobs:'),
+                       CALLEE.replace('    runs-on:', '    concurrency: different-but-not-proven-disjoint\n    runs-on:'),
+                       CALLEE.replace('    runs-on:', '    concurrency: null\n    runs-on:'),
+                       CALLEE + '  sibling:\n    concurrency: collision\n    steps: [{run: echo sibling}]\n',
+                       'on: workflow_call\njobs:\n  nested:\n    uses: ./.github/workflows/next.yml\n',
+                       CALLEE.replace('workflow_call', 'workflow_dispatch'),
+                       'on: workflow_call\njobs: {}\n',
+                       'on: workflow_call\njobs: [check]\n',
+                       'on: workflow_call\njobs: {check: null}\n',
+                       'on: workflow_call\n', 'on: [workflow_call, {}]\njobs: {check: {}}',
+                       '', '[]', 'jobs: ['):
+            with self.subTest(callee=callee):
+                self.assertTrue(problems(text, workflows={'reusable.yml': callee}))
+        # A reusable always() verdict cannot smuggle a colliding callee either.
+        verdict = text.replace('    runs-on: sylphx-linux-control\n    timeout-minutes: 1\n    steps:\n      - run: exit 1',
+                               '    uses: ./.github/workflows/reusable.yml')
+        self.assertEqual(problems(verdict, workflows=CALLEES), [])
+        self.assertTrue(problems(verdict, workflows={'reusable.yml': 'on: workflow_call\nconcurrency: tests-' + GROUP + '\njobs: {check: {steps: [{run: echo check}]}}'}))
+
+    def test_both_contract_scans_resolve_complete_callee_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / '.github/workflows'
+            folder.mkdir(parents=True)
+            (folder / 'ci.yml').write_text(independent_verdict_workflow())
+            callee = folder / 'reusable.yml'
+            for source, count in ((CALLEE, 0), (CALLEE.replace('jobs:', 'concurrency: tests-' + GROUP + '\njobs:'), 1),
+                                  (None, 1)):
+                if source is None:
+                    callee.unlink()
+                else:
+                    callee.write_text(source)
+                for rules in ('all', 'pr-concurrency'):
+                    with self.subTest(rules=rules, source=source), patch.dict(os.environ, {}, clear=True):
+                        found = [f for f in contract.scan_dir(root, rules=rules)
+                                 if 'non-canonical concurrency expression' in f.problem]
+                        self.assertEqual(len(found), count)
+                        self.assertTrue(all(f.blocking for f in found))
 
     def test_independent_verdict_through_scoped_entrypoint(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,6 +336,8 @@ class PRConcurrencyTest(unittest.TestCase):
             folder = root / '.github/workflows'
             folder.mkdir(parents=True)
             path = folder / 'ci.yml'
+            callee = folder / 'reusable.yml'
+            callee.write_text(CALLEE)
             text = independent_verdict_workflow()
             env = {k: v for k, v in os.environ.items() if not k.startswith('GITHUB_')}
             env.update(CONTRACT_MODE='report-only', WORKFLOW_LINT_RULES='pr-concurrency')
@@ -268,6 +349,26 @@ class PRConcurrencyTest(unittest.TestCase):
                                         cwd=root, env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 self.assertEqual('non-canonical concurrency expression' in result.stdout, bool(expected))
+            path.write_text(text)
+            for source in (CALLEE.replace('jobs:', 'concurrency: tests-' + GROUP + '\njobs:'),
+                           CALLEE.replace('    runs-on:', '    concurrency: tests-' + GROUP + '\n    runs-on:'),
+                           'on: workflow_call\njobs: {nested: {uses: ./.github/workflows/next.yml}}',
+                           None):
+                if source is None:
+                    callee.unlink()
+                else:
+                    callee.write_text(source)
+                rejected = subprocess.run([sys.executable, str(ROOT / '.github/actions/workflow-lint/contract.py')],
+                                          cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
+                self.assertIn('non-canonical concurrency expression', rejected.stdout)
+            callee.write_text(CALLEE)
+            path.write_text(text.replace('./.github/workflows/reusable.yml',
+                                         'owner/repo/.github/workflows/reusable.yml@' + 'a' * 40))
+            rejected = subprocess.run([sys.executable, str(ROOT / '.github/actions/workflow-lint/contract.py')],
+                                      cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
+            self.assertIn('non-canonical concurrency expression', rejected.stdout)
 
     def test_pr_exception_cannot_hide_main_push_or_dispatch_eviction(self):
         for event in ('push', 'workflow_dispatch', 'merge_group'):

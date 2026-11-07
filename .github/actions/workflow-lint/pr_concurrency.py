@@ -32,12 +32,13 @@ def matches(concurrency, group, cancel):
             and concurrency['cancel-in-progress'] == cancel)
 
 
-def named_exception(name, decoded, triggered, concurrency):
+def named_exception(name, decoded, triggered, concurrency, workflows=None):
     """Each exception is a literal form with a finite trigger/input contract."""
     if name == 'complete-evidence':
         return matches(concurrency, RUN_GROUP, 'false')
     if name == 'independent-verdict':
-        return 'workflow_call' not in triggered and independent_verdict(decoded, concurrency)
+        return ('workflow_call' not in triggered
+                and independent_verdict(decoded, concurrency, workflows))
     if name == 'reusable-regenerate':
         return (decoded.get('name') == 'Regenerate' and 'workflow_call' in triggered
                 and matches(concurrency, 'regenerate-' + GROUP, CANCEL))
@@ -59,12 +60,34 @@ def named_exception(name, decoded, triggered, concurrency):
     return False
 
 
-def independent_verdict(decoded, concurrency):
+def unlocked_local_callee(uses, workflows):
+    """Admit only resolved one-level local calls without another lock owner."""
+    if not isinstance(uses, str) or not isinstance(workflows, dict):
+        return False
+    path = re.fullmatch(r'\./\.github/workflows/([^/\\]+\.ya?ml)', uses)
+    text = workflows.get(path[1]) if path else None
+    if not isinstance(text, str):
+        return False
+    try:
+        callee = yaml.load(text, Loader=yaml.BaseLoader)
+        if (not isinstance(callee, dict) or 'workflow_call' not in events(callee)
+                or 'concurrency' in callee):
+            return False
+    except (yaml.YAMLError, TypeError):
+        return False
+    jobs = callee.get('jobs')
+    return (isinstance(jobs, dict) and bool(jobs)
+            and all(isinstance(job, dict) and 'concurrency' not in job and 'uses' not in job
+                    for job in jobs.values()))
+
+
+def independent_verdict(decoded, concurrency, workflows=None):
     """Keep the unconditional verdict outside every cancellable work lock.
 
     A surviving always() verdict must not hold the admission lock needed by
     its replacement's cleanup. Literal job namespaces also avoid collisions
-    between sibling jobs and reusable calls inheriting github.workflow.
+    between sibling jobs. Every reusable call must resolve to a local callee
+    with no workflow/job locks or further calls, since github.workflow is inherited.
     This validates lock coverage, not the verdict's result-propagation code.
     """
     if not matches(concurrency, RUN_GROUP, 'false'):
@@ -76,6 +99,8 @@ def independent_verdict(decoded, concurrency):
     work = []
     for name, job in jobs.items():
         if not isinstance(name, str) or not isinstance(job, dict):
+            return False
+        if 'uses' in job and not unlocked_local_callee(job['uses'], workflows):
             return False
         if job.get('if') in ('always()', '${{ always() }}'):
             if 'concurrency' in job:
@@ -103,7 +128,7 @@ def independent_verdict(decoded, concurrency):
             and set(needs) == set(work))
 
 
-def problems(text):
+def problems(text, workflows=None):
     """Return (line, problem) pairs; workflow_call-only definitions inherit callers."""
     document = yaml.compose(text, Loader=yaml.BaseLoader)
     fields = {k.value: v for k, v in document.value} if isinstance(document, yaml.MappingNode) else {}
@@ -120,7 +145,7 @@ def problems(text):
     if not isinstance(concurrency, dict):
         return [(line, ERROR)]
     if declaration:
-        if named_exception(declaration[1], decoded, triggered, concurrency):
+        if named_exception(declaration[1], decoded, triggered, concurrency, workflows):
             return []
         return [(line, ERROR)]
     if matches(concurrency, GROUP, CANCEL):
