@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import random
+import subprocess
 import sys
 import tempfile
 import time
@@ -193,17 +194,40 @@ class GitHub:
                 return result
             page += 1
 
+    def check_runs(self, head):
+        """Read every canonical-name run; refuse a partial or moving inventory."""
+        runs, total, page = [], None, 1
+        while True:
+            body = self.get(f'commits/{head}/check-runs?check_name=Sylphx%20PR%20Review&filter=all&per_page=100&page={page}')
+            if not isinstance(body, dict):
+                raise PolicyError('review Check Run response is invalid')
+            count, rows = body.get('total_count'), body.get('check_runs')
+            if type(count) is not int or count < 0 or not isinstance(rows, list) or len(rows) > 100 or any(not isinstance(row, dict) for row in rows):
+                raise PolicyError('review Check Run pagination is invalid')
+            if total is not None and total != count:
+                raise PolicyError('review Check Run inventory changed during pagination')
+            total = count
+            runs.extend(rows)
+            ids = [row.get('id') for row in runs]
+            if any(type(value) is not int or value <= 0 for value in ids) or len(set(ids)) != len(ids) or len(runs) > total:
+                raise PolicyError('review Check Run pagination is incomplete')
+            if len(runs) == total:
+                return runs
+            if len(rows) < 100:
+                raise PolicyError('review Check Run pagination is incomplete')
+            page += 1
+
     def queue_entries(self, branch):
         query = '''query($owner:String!, $name:String!, $branch:String!, $cursor:String) {
           repository(owner:$owner, name:$name) { mergeQueue(branch:$branch) {
             entries(first:100, after:$cursor) {
-              nodes { pullRequest { number headRefOid } headCommit { oid } }
+              totalCount nodes { pullRequest { number headRefOid } headCommit { oid } }
               pageInfo { hasNextPage endCursor }
             }
           } }
         }'''
         owner, name = self.repository.split('/')
-        cursor, entries = None, []
+        cursor, entries, total, seen_cursors = None, [], None, set()
         while True:
             response = self.read(os.environ.get('GITHUB_GRAPHQL_URL', self.root + '/graphql'),
                                  {'query': query, 'variables': {'owner': owner, 'name': name,
@@ -217,24 +241,41 @@ class GitHub:
                 raise PolicyError('GitHub merge queue metadata is unreadable')
             queue = response['data']['repository']['mergeQueue']
             if queue is None:
+                if total is not None:
+                    raise PolicyError('GitHub merge queue pagination is incomplete or changed')
                 return entries
             connection = queue['entries']
-            entries.extend(connection['nodes'])
+            count, rows = connection['totalCount'], connection['nodes']
+            if type(count) is not int or count < 0 or not isinstance(rows, list) or \
+                    len(rows) > 100 or total is not None and count != total:
+                raise PolicyError('GitHub merge queue pagination is incomplete or changed')
+            total = count
+            entries.extend(rows)
             page = connection['pageInfo']
+            if type(page['hasNextPage']) is not bool or len(entries) > total:
+                raise PolicyError('GitHub merge queue pagination is incomplete')
             if not page['hasNextPage']:
+                if len(entries) != total:
+                    raise PolicyError('GitHub merge queue pagination is incomplete')
                 return entries
-            if not page['endCursor'] or page['endCursor'] == cursor:
+            if not rows or not page['endCursor'] or page['endCursor'] in seen_cursors:
                 raise PolicyError('GitHub merge queue pagination is incomplete')
             cursor = page['endCursor']
+            seen_cursors.add(cursor)
+
+
+def immutable_git_source():
+    # Share the existing read-only, authenticated object acquisition path.
+    spec = importlib.util.spec_from_file_location('contribution_fetch', ROOT / '.github/actions/secret-scan/secret_scan.py')
+    source = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(source)
+    return source
 
 
 def range_commits(base, head, repository, token):
     if not SHA.fullmatch(base) or not SHA.fullmatch(head):
         raise PolicyError('event has no immutable commit range')
-    # Share the existing read-only, authenticated object acquisition path.
-    spec = importlib.util.spec_from_file_location('contribution_fetch', ROOT / '.github/actions/secret-scan/secret_scan.py')
-    source = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(source)
+    source = immutable_git_source()
     server = os.environ.get('GITHUB_SERVER_URL', 'https://github.com').rstrip('/')
     with tempfile.TemporaryDirectory(prefix='contribution-policy-') as directory:
         repo = Path(directory)
@@ -365,51 +406,207 @@ def pull_snapshot(api, number, expected_head=None, *, check_text=True, expected_
     return after, commits
 
 
-def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
+def review_findings(api, pr, commits):
+    """Only an exact-head, completed success by the review App admits [review]."""
+    number, head = pr['number'], pr['head']['sha']
+    if not isinstance(pr.get('title'), str) or not isinstance(head, str) or not SHA.fullmatch(head):
+        raise PolicyError('pull request review identity is incomplete')
+    if not pr['title'].startswith('[review]'):
+        return []
+    location = f'PR #{number} head {head}'
+
+    def canonical(sha):
+        runs = api.check_runs(sha)
+        if any(not isinstance(run.get('app'), dict) for run in runs):
+            raise PolicyError('review Check Run App identity is incomplete')
+        return sorted((run for run in runs
+                       if run.get('name') == 'Sylphx PR Review' and run['app'].get('id') == 1299545),
+                      key=lambda run: run['id'], reverse=True)
+
+    try:
+        runs = canonical(head)
+        state = 'missing'
+        if runs:
+            latest = runs[0]
+            if latest.get('head_sha') != head:
+                state = ('success on an older head ' + str(latest.get('head_sha'))
+                         if latest.get('conclusion') == 'success' else 'wrong head')
+            elif latest.get('status') != 'completed':
+                state = 'pending'
+            else:
+                state = latest.get('conclusion') or 'missing conclusion'
+        else:
+            # Diagnostic only: an older success can never authorize this head.
+            for sha in reversed([item['sha'] for item in commits if item['sha'] != head]):
+                older = canonical(sha)
+                if older and older[0].get('head_sha') == sha and \
+                        older[0].get('status') == 'completed' and older[0].get('conclusion') == 'success':
+                    state = 'success on an older head ' + sha
+                    break
+        after = api.get(f'pulls/{number}')
+        if after['head']['sha'] != head or after['title'] != pr['title'] or after['base']['ref'] != pr['base']['ref']:
+            state = 'PR head or metadata changed during review validation'
+        if state == 'success':
+            return []
+    except (PolicyError, KeyError, TypeError, ValueError) as error:
+        state = 'API read error: ' + (str(error) if isinstance(error, PolicyError) else 'incomplete review metadata')
+    return [{'rule': 'exact-head-review: ' + state, 'location': location, 'line': 0}]
+
+
+def squash_merge_tree(repository, token, parent, head):
+    """Reconstruct one position without checkout, retaining auth for lazy blob reads."""
+    source = immutable_git_source()
+    server = os.environ.get('GITHUB_SERVER_URL', 'https://github.com').rstrip('/')
+    with tempfile.TemporaryDirectory(prefix='review-tree-') as directory:
+        repo = Path(directory)
+        try:
+            env = source.fetch(repo, server + '/' + repository + '.git', parent, head, token)
+        except (source.ScanError, OSError):
+            raise PolicyError('squash tree proof object acquisition failed') from None
+        try:
+            result = subprocess.run(['git', '-C', str(repo), 'merge-tree', '--write-tree', '--no-messages',
+                                     parent, head], env=env, capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            raise PolicyError('squash tree proof timed out after 60s') from None
+        except OSError:
+            raise PolicyError('squash tree proof could not execute Git') from None
+        # Neither Git diagnostics nor conflict contents may enter the check output.
+        if result.returncode == 1:
+            raise PolicyError('squash tree proof conflicts')
+        tree = result.stdout.decode('ascii', errors='replace').strip()
+        if result.returncode or not SHA.fullmatch(tree):
+            raise PolicyError('squash tree proof failed')
+        return tree
+
+
+def bind_review_head(api, pr, synthetic, base, group_shas):
+    """Bind the reviewed content to its immutable position, not live queue state."""
+    if not isinstance(pr.get('title'), str):
+        raise PolicyError('pull request review identity is incomplete')
+    if not pr['title'].startswith('[review]'):
+        return
+    head = pr['head']['sha']
+    location = f"PR #{pr['number']} head {head}"
+    raw = synthetic.get('raw_commit')
+    headers = raw.partition(b'\n\n')[0].decode('ascii', errors='replace').splitlines() if isinstance(raw, bytes) else []
+    trees = [line[5:] for line in headers if line.startswith('tree ')]
+    parents = [line[7:] for line in headers if line.startswith('parent ')]
+    if len(trees) != 1 or len(parents) not in (1, 2) or not all(SHA.fullmatch(sha) for sha in trees + parents):
+        raise PolicyError(location + ': immutable merge-group tree/parents are incomplete or unsupported')
+    if parents[0] != base and parents[0] not in group_shas:
+        raise PolicyError(location + ': immutable merge-group position is incomplete')
+    if len(parents) == 2:
+        if parents[1] != head:
+            raise PolicyError(location + ': membership/head changed during evaluation; '
+                              f'merge-group parent pins {parents[1]}')
+        return
+    try:
+        tree = squash_merge_tree(api.repository, api.token, parents[0], head)
+    except PolicyError as error:
+        raise PolicyError(location + ': ' + str(error)) from None
+    if tree != trees[0]:
+        raise PolicyError(location + f": squash tree mismatch at merge-group commit {synthetic['sha']}")
+
+
+def merge_group_snapshot(api, group, *, check_pull_text=True, require_head_binding=False):
+    """Resolve every group PR once; bind review heads only on the opted-in path."""
+    def snapshot(number, head, synthetic):
+        pr, original = (pull_snapshot(api, number, head) if check_pull_text else
+                        pull_snapshot(api, number, head, check_text=False))
+        if require_head_binding:
+            bind_review_head(api, pr, by_sha[synthetic], group['base_sha'], group_shas)
+        return pr, original
+
+    commits = range_commits(group['base_sha'], group['head_sha'], api.repository, api.token)
+    snapshots, covered = [], set()
+    by_sha = {commit['sha']: commit for commit in commits}
+    group_shas = set(by_sha)
+    if not group_shas:
+        raise PolicyError('merge group membership is incomplete: empty commit range')
+    branch = group['base_ref'].removeprefix('refs/heads/')
+    queued = group_queue_members(api, branch, group_shas)
+    for number, (head, synthetic) in queued.items():
+        pr, original = snapshot(number, head, synthetic)
+        covered.add(synthetic)
+        covered.update(commit['sha'] for commit in original)
+        snapshots.append((pr, original))
+    for commit in commits:
+        if commit['sha'] in covered:
+            continue
+        # Earlier entries can merge while a later group is still building.
+        for pr in api.pages(f"commits/{commit['sha']}/pulls"):
+            if pr['base']['ref'] == branch and pr.get('merged_at') and \
+                    pr.get('merge_commit_sha') == commit['sha']:
+                current, original = snapshot(pr['number'], pr['head']['sha'], commit['sha'])
+                covered.add(commit['sha'])
+                covered.update(item['sha'] for item in original)
+                snapshots.append((current, original))
+    if group_shas - covered:
+        raise PolicyError('merge group membership is incomplete')
+    return commits, snapshots, queued
+
+
+def group_queue_members(api, branch, group_shas):
+    members = {}
+    synthetic_heads = set()
+    for entry in api.queue_entries(branch):
+        synthetic = (entry.get('headCommit') or {}).get('oid')
+        if synthetic not in group_shas:
+            continue
+        pr = entry['pullRequest']
+        number, head = pr['number'], pr['headRefOid']
+        if type(number) is not int or number <= 0 or not isinstance(head, str) or not SHA.fullmatch(head):
+            raise PolicyError('merge group member identity is incomplete')
+        if number in members or synthetic in synthetic_heads:
+            raise PolicyError('merge group membership is duplicated')
+        members[number] = (head, synthetic)
+        synthetic_heads.add(synthetic)
+    return members
+
+
+def recheck_merge_group(api, group, commits, snapshots, queued):
+    """Refuse membership, head or title churn across the review inventory reads."""
+    branch = group['base_ref'].removeprefix('refs/heads/')
+    after = group_queue_members(api, branch, {commit['sha'] for commit in commits})
+    changed = {number for number in queued.keys() | after.keys() if queued.get(number) != after.get(number)}
+    expected = {pr['number']: pr for pr, _ in snapshots}
+    for number, pr in expected.items():
+        current = api.get(f'pulls/{number}')
+        if current['head']['sha'] != pr['head']['sha'] or current['title'] != pr['title'] or \
+                current['base']['ref'] != pr['base']['ref']:
+            changed.add(number)
+    return [{'rule': 'exact-head-review: membership/head changed during evaluation',
+             'location': f"PR #{number} head " + (expected[number]['head']['sha'] if number in expected else after[number][0]),
+             'line': 0} for number in sorted(changed)]
+
+
+def check_event(api, event_name, event, sha, policy, *, check_pull_text=True,
+                require_merge_group_review=False):
     def verdict(pr, commits):
         return evaluate(pr, commits, policy,
                         verified_github_commits=verified_github_commits(api, commits, policy))
 
     def snapshot(number, head):
         if check_pull_text:
-            return pull_snapshot(api, number, head)
-        pr, commits = pull_snapshot(api, number, head, check_text=False)
-        return None, commits
+            pr, commits = pull_snapshot(api, number, head)
+        else:
+            pr, commits = pull_snapshot(api, number, head, check_text=False)
+        return pr if check_pull_text else None, commits
 
     if event_name in {'pull_request', 'pull_request_target'}:
         pr = event.get('pull_request', {})
         return verdict(*snapshot(event.get('number') or pr['number'], pr['head']['sha']))
     if event_name == 'merge_group':
-        group = event['merge_group']
-        commits = range_commits(group['base_sha'], group['head_sha'], api.repository, api.token)
+        commits, snapshots, queued = merge_group_snapshot(api, event['merge_group'], check_pull_text=check_pull_text,
+                                                          require_head_binding=require_merge_group_review)
         findings = []
-        pulls, covered = {}, set()
-        group_shas = {commit['sha'] for commit in commits}
-        branch = group['base_ref'].removeprefix('refs/heads/')
-        for entry in api.queue_entries(branch):
-            synthetic = (entry.get('headCommit') or {}).get('oid')
-            if synthetic in group_shas:
-                pr = entry['pullRequest']
-                pulls[pr['number']] = pr['headRefOid']
-                covered.add(synthetic)
-        for number, expected_head in pulls.items():
-            pr, original = snapshot(number, expected_head)
-            covered.update(commit['sha'] for commit in original)
-            findings.extend(verdict(pr, original))
-        for commit in commits:
-            if commit['sha'] in covered:
-                continue
-            # Earlier entries can merge while a later group is still building.
-            for pr in api.pages(f"commits/{commit['sha']}/pulls"):
-                if pr['base']['ref'] == branch and pr.get('merged_at') and \
-                        pr.get('merge_commit_sha') == commit['sha']:
-                    current, original = snapshot(pr['number'], pr['head']['sha'])
-                    covered.add(commit['sha'])
-                    covered.update(item['sha'] for item in original)
-                    findings.extend(verdict(current, original))
-        if group_shas - covered:
-            raise PolicyError('merge group membership is incomplete')
+        for pr, original in snapshots:
+            findings.extend(verdict(pr if check_pull_text else None, original))
+            if require_merge_group_review:
+                findings.extend(review_findings(api, pr, original))
         findings.extend(verdict(None, commits))
+        if require_merge_group_review:
+            findings.extend(recheck_merge_group(api, event['merge_group'], commits, snapshots, queued))
         return findings
     if event_name == 'workflow_dispatch':
         inputs = event.get('inputs') or {}
@@ -433,6 +630,8 @@ def main(argv=None):
     parser.add_argument('--report', type=Path)
     parser.add_argument('--scope', choices=('all', 'commits'), default='all',
                         help='commits is for code verdicts with a separately required PR metadata producer')
+    parser.add_argument('--require-merge-group-review', action='store_true',
+                        help='require exact-head review success for every [review] merge-group PR')
     args = parser.parse_args(argv)
     try:
         policy = json.loads(POLICY.read_text())
@@ -450,7 +649,8 @@ def main(argv=None):
             event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
             api = GitHub(os.environ['GITHUB_REPOSITORY'], token)
             findings = check_event(api, event_name, event, os.environ.get('GITHUB_SHA', ''), policy,
-                                   check_pull_text=args.scope == 'all')
+                                   check_pull_text=args.scope == 'all',
+                                   require_merge_group_review=args.require_merge_group_review)
         if args.report:
             args.report.write_text(json.dumps({'passed': not findings, 'findings': findings}, indent=2) + '\n')
         for finding in findings:
@@ -460,7 +660,7 @@ def main(argv=None):
                   'reopen this branch as an approved account.')
         print(f'Contribution policy: {len(findings)} finding(s).')
         return int(bool(findings))
-    except (PolicyError, KeyError, ValueError, OSError) as error:
+    except (PolicyError, KeyError, ValueError, OSError, TypeError) as error:
         message = str(error) if isinstance(error, PolicyError) else 'metadata or policy could not be read'
         if args.report:
             args.report.write_text(json.dumps({'passed': False, 'findings': [], 'error': message}) + '\n')

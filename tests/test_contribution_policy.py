@@ -501,7 +501,7 @@ class ContributionPolicy(unittest.TestCase):
     def test_queue_pagination_and_permission_errors(self):
         api = checker.GitHub('example/repo', 'read-token')
         def page(nodes, more, cursor):
-            return {'data': {'repository': {'mergeQueue': {'entries': {'nodes': nodes,
+            return {'data': {'repository': {'mergeQueue': {'entries': {'totalCount': 2, 'nodes': nodes,
                     'pageInfo': {'hasNextPage': more, 'endCursor': cursor}}}}}}
         with mock.patch.object(api, 'read', side_effect=[page([{'number': 1}], True, 'next'),
                                                        page([{'number': 2}], False, 'last')]) as read:
