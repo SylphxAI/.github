@@ -4,7 +4,8 @@ description: >
   read), then automatically scans the added commits of every pull request and merge group
   for secrets before returning the aggregate verdict. Fetches immutable Git
   objects into a temporary bare repository; no caller checkout is needed.
-  Requires contents: read. Exact reasoned exceptions use
+  On merge_group, [review] PRs require exact-head review success.
+  Requires contents, pull-requests and checks: read. Exact reasoned exceptions use
   .desk-secret-allowlist.json (see docs/secret-scan.md).
   The aggregate verdict of a workflow: pass when every needed job succeeded or
   was skipped (except `required` and, outside merge_group,
@@ -65,7 +66,7 @@ runs:
       env:
         CONTRIBUTION_POLICY_TOKEN: ${{ github.token }}
         CONTRIBUTION_POLICY_SCOPE: ${{ inputs.separate-pr-metadata == 'true' && 'commits' || 'all' }}
-      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE"
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE" --require-merge-group-review
     - shell: bash
       env:
         NEEDS: ${{ inputs.needs }}

@@ -1,0 +1,17 @@
+name: Exact-head review gate
+description: >
+  On merge_group, require every [review] PR to have a successful canonical
+  review on the exact queued head. Other events are unchanged. Requires
+  contents, pull-requests and checks read. No caller checkout is needed.
+inputs:
+  token:
+    description: Read-only token for merge-group membership and review Check Runs.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Require exact-head merge-group reviews
+      shell: bash
+      env:
+        CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
+      run: python3 "$GITHUB_ACTION_PATH/review_gate.py" --require-merge-group-review

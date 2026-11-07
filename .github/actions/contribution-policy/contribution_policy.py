@@ -445,60 +445,71 @@ def review_findings(api, pr, commits):
     return [{'rule': 'exact-head-review: ' + state, 'location': location, 'line': 0}]
 
 
+def merge_group_snapshot(api, group, *, check_pull_text=True):
+    """Resolve every group PR once, retaining the exact queued head and live text."""
+    def snapshot(number, head):
+        if check_pull_text:
+            return pull_snapshot(api, number, head)
+        return pull_snapshot(api, number, head, check_text=False)
+
+    commits = range_commits(group['base_sha'], group['head_sha'], api.repository, api.token)
+    snapshots = []
+    pulls, covered = {}, set()
+    group_shas = {commit['sha'] for commit in commits}
+    if not group_shas:
+        raise PolicyError('merge group membership is incomplete: empty commit range')
+    branch = group['base_ref'].removeprefix('refs/heads/')
+    for entry in api.queue_entries(branch):
+        synthetic = (entry.get('headCommit') or {}).get('oid')
+        if synthetic in group_shas:
+            pr = entry['pullRequest']
+            pulls[pr['number']] = pr['headRefOid']
+            covered.add(synthetic)
+    for number, expected_head in pulls.items():
+        pr, original = snapshot(number, expected_head)
+        covered.update(commit['sha'] for commit in original)
+        snapshots.append((pr, original))
+    for commit in commits:
+        if commit['sha'] in covered:
+            continue
+        # Earlier entries can merge while a later group is still building.
+        for pr in api.pages(f"commits/{commit['sha']}/pulls"):
+            if pr['base']['ref'] == branch and pr.get('merged_at') and \
+                    pr.get('merge_commit_sha') == commit['sha']:
+                current, original = snapshot(pr['number'], pr['head']['sha'])
+                covered.add(commit['sha'])
+                covered.update(item['sha'] for item in original)
+                snapshots.append((current, original))
+    if group_shas - covered:
+        raise PolicyError('merge group membership is incomplete')
+    return commits, snapshots
+
+
 def check_event(api, event_name, event, sha, policy, *, check_pull_text=True,
                 require_merge_group_review=False):
     def verdict(pr, commits):
         return evaluate(pr, commits, policy,
                         verified_github_commits=verified_github_commits(api, commits, policy))
 
-    reviews = []
-
     def snapshot(number, head):
         if check_pull_text:
             pr, commits = pull_snapshot(api, number, head)
         else:
             pr, commits = pull_snapshot(api, number, head, check_text=False)
-        if require_merge_group_review and event_name == 'merge_group':
-            reviews.extend(review_findings(api, pr, commits))
         return pr if check_pull_text else None, commits
 
     if event_name in {'pull_request', 'pull_request_target'}:
         pr = event.get('pull_request', {})
         return verdict(*snapshot(event.get('number') or pr['number'], pr['head']['sha']))
     if event_name == 'merge_group':
-        group = event['merge_group']
-        commits = range_commits(group['base_sha'], group['head_sha'], api.repository, api.token)
+        commits, snapshots = merge_group_snapshot(api, event['merge_group'], check_pull_text=check_pull_text)
         findings = []
-        pulls, covered = {}, set()
-        group_shas = {commit['sha'] for commit in commits}
-        if not group_shas:
-            raise PolicyError('merge group membership is incomplete: empty commit range')
-        branch = group['base_ref'].removeprefix('refs/heads/')
-        for entry in api.queue_entries(branch):
-            synthetic = (entry.get('headCommit') or {}).get('oid')
-            if synthetic in group_shas:
-                pr = entry['pullRequest']
-                pulls[pr['number']] = pr['headRefOid']
-                covered.add(synthetic)
-        for number, expected_head in pulls.items():
-            pr, original = snapshot(number, expected_head)
-            covered.update(commit['sha'] for commit in original)
-            findings.extend(verdict(pr, original))
-        for commit in commits:
-            if commit['sha'] in covered:
-                continue
-            # Earlier entries can merge while a later group is still building.
-            for pr in api.pages(f"commits/{commit['sha']}/pulls"):
-                if pr['base']['ref'] == branch and pr.get('merged_at') and \
-                        pr.get('merge_commit_sha') == commit['sha']:
-                    current, original = snapshot(pr['number'], pr['head']['sha'])
-                    covered.add(commit['sha'])
-                    covered.update(item['sha'] for item in original)
-                    findings.extend(verdict(current, original))
-        if group_shas - covered:
-            raise PolicyError('merge group membership is incomplete')
+        for pr, original in snapshots:
+            findings.extend(verdict(pr if check_pull_text else None, original))
+            if require_merge_group_review:
+                findings.extend(review_findings(api, pr, original))
         findings.extend(verdict(None, commits))
-        return findings + reviews
+        return findings
     if event_name == 'workflow_dispatch':
         inputs = event.get('inputs') or {}
         if any(inputs.get('code-' + part) for part in ('merge', 'head', 'base', 'pr', 'base-ref')):

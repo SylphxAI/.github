@@ -120,6 +120,11 @@ class ReviewVerdictTest(unittest.TestCase):
         self.api.check_runs.assert_not_called()
 
 
+    def test_malformed_app_identity_is_named_read_error(self):
+        self.api.check_runs.return_value = [{**run(), 'app': []}]
+        self.assert_state('API read error: review Check Run App identity is incomplete')
+
+
 class ReviewPaginationTest(unittest.TestCase):
     def setUp(self):
         self.api = policy.GitHub('example/repo', 'read-token')
@@ -260,6 +265,72 @@ class MergeGroupAdmissionTest(unittest.TestCase):
                     contextlib.redirect_stdout(output):
                 self.assertEqual(policy.main(args), 1)
         self.assertIn('::error::Contribution policy: exact-head-review: missing at PR #1 head ' + HEAD, output.getvalue())
+
+
+class StandaloneReviewGateTest(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            'standalone_review_gate', ROOT / '.github/actions/review-gate/review_gate.py')
+        self.gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.gate)
+        import sys
+        self.resolver = sys.modules['contribution_policy']
+        self.api = mock.Mock(repository='example/repo', token='read-token')
+        self.api.get.return_value = pull()
+        self.api.queue_entries.return_value = [MergeGroupAdmissionTest.entry(1, GROUP, HEAD)]
+        self.api.pages.return_value = []
+        self.api.check_runs.return_value = []
+
+    def invoke(self, event_name='merge_group'):
+        action = yaml.safe_load((ROOT / '.github/actions/review-gate/action.yml').read_text())
+        args = shlex.split(action['runs']['steps'][0]['run'])[2:]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'event.json'
+            path.write_text(json.dumps({'merge_group': {'base_sha': BASE, 'head_sha': GROUP,
+                                                        'base_ref': 'refs/heads/main'}}))
+            env = {'GITHUB_EVENT_NAME': event_name, 'GITHUB_EVENT_PATH': str(path),
+                   'GITHUB_REPOSITORY': 'example/repo', 'CONTRIBUTION_POLICY_TOKEN': 'read-token'}
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, env), mock.patch.object(self.gate, 'GitHub', return_value=self.api), \
+                    mock.patch.object(self.resolver, 'range_commits', side_effect=lambda base, head, *_: [commit(head)]), \
+                    contextlib.redirect_stdout(output):
+                return self.gate.main(args), output.getvalue()
+
+    def test_real_shared_resolver_and_review_verdict_refuse_queued_missing_review(self):
+        status, output = self.invoke()
+        self.assertEqual(status, 1)
+        self.assertIn('exact-head-review: missing at PR #1 head ' + HEAD, output)
+        self.api.queue_entries.assert_called_once_with('main')
+
+    def test_standalone_controls(self):
+        self.api.check_runs.return_value = [run()]
+        self.assertEqual(self.invoke()[0], 0)
+        self.api.get.return_value = pull(title='Improve validation')
+        self.api.check_runs.reset_mock()
+        self.assertEqual(self.invoke()[0], 0)
+        self.api.check_runs.assert_not_called()
+        self.assertEqual(self.invoke('pull_request')[0], 0)
+
+    def test_membership_api_error_fails_closed(self):
+        self.api.queue_entries.side_effect = self.resolver.PolicyError('HTTP 503')
+        status, output = self.invoke()
+        self.assertEqual(status, 2)
+        self.assertIn('HTTP 503', output)
+
+    def test_needs_pass_uses_the_same_enabled_cli_path(self):
+        action = yaml.safe_load((ROOT / '.github/actions/needs-pass/action.yml').read_text())
+        step = next(step for step in action['runs']['steps'] if step['name'] == 'Check contribution metadata')
+        args = [arg.replace('$CONTRIBUTION_POLICY_SCOPE', 'all') for arg in shlex.split(step['run'])[2:]]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'event.json'
+            path.write_text(json.dumps({'merge_group': {'base_sha': BASE, 'head_sha': GROUP,
+                                                        'base_ref': 'refs/heads/main'}}))
+            env = {'GITHUB_EVENT_NAME': 'merge_group', 'GITHUB_EVENT_PATH': str(path),
+                   'GITHUB_REPOSITORY': 'example/repo', 'CONTRIBUTION_POLICY_TOKEN': 'read-token'}
+            with mock.patch.dict(os.environ, env), mock.patch.object(policy, 'GitHub', return_value=self.api), \
+                    mock.patch.object(policy, 'range_commits', side_effect=lambda base, head, *_: [commit(head)]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(policy.main(args), 1)
 
 
 if __name__ == '__main__':

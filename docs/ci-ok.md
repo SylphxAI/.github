@@ -109,3 +109,16 @@ Pull-request-event CI is unchanged: review remains asynchronous there. Non-
 `[review]` PRs need no review. This applies even when `separate-pr-metadata` is
 true; that option does not disable merge-group review admission. Callers only
 receive this enforcement after adopting the new immutable action pin.
+
+The shared `needs-pass` verdict enables the same review check. Repositories
+with inline verdict logic can use the review-only action inside the required
+`ci-ok` job without replacing that logic:
+
+```yaml
+- uses: SylphxAI/.github/.github/actions/review-gate@<full-release-sha> # main
+```
+
+Give that job `contents: read`, `pull-requests: read` and `checks: read`. The
+action is a no-op outside `merge_group` and shares the membership resolver and
+review decision with both aggregate actions; it does not add contribution
+metadata or job-result requirements to an inline verdict.
