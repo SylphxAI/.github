@@ -10,8 +10,11 @@ import io
 import os
 import pathlib
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location(
@@ -416,6 +419,38 @@ class VerdictHoldTest(unittest.TestCase):
         with mock.patch.object(gate.time, "monotonic", lambda: clock[0]), mock.patch.object(gate, "_get", get):
             with self.assertRaises(gate.HoldExpired):
                 gate._read("u", "t", 5)
+
+    def test_read_deadline_covers_a_trickling_http_response(self):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                data = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                for byte in data:
+                    try:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                        time.sleep(0.04)
+                    except BrokenPipeError:
+                        break
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        started = time.monotonic()
+        try:
+            with self.assertRaises(gate.HoldExpired):
+                gate._read(f"http://127.0.0.1:{server.server_port}/", "fixture", started + 0.1)
+            elapsed = time.monotonic() - started
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertLess(elapsed, 0.3)
 
     def test_jobs_pagination_and_run_scoping(self):
         newer = {**running(), "id": 2}

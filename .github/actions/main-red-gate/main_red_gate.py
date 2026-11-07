@@ -48,6 +48,7 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -195,14 +196,28 @@ def _read(url: str, token: str, deadline: float | None = None) -> dict | list:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise HoldExpired
-    try:
-        data = _get(url, token, timeout=min(30, remaining))
-    except Exception:
-        if time.monotonic() >= deadline:
-            raise HoldExpired from None
-        raise
-    if time.monotonic() >= deadline:
+    # urllib's timeout limits each socket operation, not the whole response.
+    # A peer that trickles one byte before every socket timeout could therefore
+    # keep this call alive past the hold. Run the blocking read separately and
+    # bound the join, so the monotonic deadline covers connect and body reads.
+    result: list[tuple[bool, object]] = []
+
+    def read() -> None:
+        try:
+            result.append((True, _get(url, token, timeout=min(30, remaining))))
+        except BaseException as exc:
+            result.append((False, exc))
+
+    worker = threading.Thread(target=read, daemon=True)
+    worker.start()
+    worker.join(remaining)
+    if worker.is_alive() or time.monotonic() >= deadline:
         raise HoldExpired
+    succeeded, value = result[0]
+    if not succeeded:
+        raise value
+    data = value
+    assert isinstance(data, (dict, list))
     return data
 
 
