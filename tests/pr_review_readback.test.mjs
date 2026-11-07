@@ -13,7 +13,7 @@ const target = { kind: 'pull_request', number: 7, base_sha: base, head_sha: head
   files: [{ filename: 'src/change.js', status: 'modified' }] };
 const externalId = `pr-review/v1/${digest(JSON.stringify(['example/repo', 'pull_request', 7, base, undefined, head, undefined,
   { kind: 'workflow_run', id: '7', generation: '1' }, reviewerVersion]))}`;
-const initial = () => ({ external_id: externalId, id: 41, app: { id: APP_ID }, name: CHECK_NAME, head_sha: head, status: 'in_progress' });
+const initial = () => ({ details_url: 'https://github.com/example/repo/actions/runs/1', external_id: externalId, id: 41, app: { id: APP_ID }, name: CHECK_NAME, head_sha: head, status: 'in_progress' });
 const output = { title: 'Review complete', summary: 'private-source-and-credential', annotations: [] };
 const response = data => ({ ok: true, status: 200, json: async () => structuredClone(data) });
 function boundary({ observe = run => run, patchError, create = false } = {}) {
@@ -22,8 +22,11 @@ function boundary({ observe = run => run, patchError, create = false } = {}) {
   const github = new GitHub({ repository: 'example/repo', readToken: 'source', checkToken: 'checks',
     now: () => now, wait: async ms => { waits.push(ms); now += ms; },
     fetcher: async (url, request) => {
-      assert.equal(request.headers.authorization, 'Bearer checks');
       const path = new URL(url).pathname;
+      if (path.endsWith('/actions/runs/1')) {
+        assert.equal(request.headers.authorization, 'Bearer source'); return response({ id: 1, status: 'in_progress' });
+      }
+      assert.equal(request.headers.authorization, 'Bearer checks');
       if (path.includes('/commits/')) return response({ check_runs: run ? [run] : [] });
       if (request.method === 'POST') {
         assert.equal(path, '/repos/example/repo/check-runs'); events.push('POST');
@@ -50,7 +53,7 @@ function boundary({ observe = run => run, patchError, create = false } = {}) {
   return { github, writes, waits, events, run: () => run, reads: () => reads };
 }
 const options = github => ({ github, target, trigger: { kind: 'workflow_run', id: '7', generation: '1' },
-  detailsUrl: 'https://example.com/run/1', createReviewInput, engineVersion: reviewerVersion,
+  detailsUrl: 'https://github.com/example/repo/actions/runs/1', createReviewInput, engineVersion: reviewerVersion,
   engine: async input => ({ status: 'complete', head_sha: input.head_sha, base_sha: input.base_sha,
     input_digest: input.input_digest, reviewer_version: input.reviewer_version, findings: [], omitted_paths: [], reason: '' }) });
 const safeFailure = error => {
