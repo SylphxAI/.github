@@ -1,4 +1,4 @@
-import { APP_ID, CHECK_NAME, Unavailable, PublishUnverified, digest, validSha, validPath, bundleFile } from './github.mjs';
+import { APP_ID, CHECK_NAME, Unavailable, PublishUnverified, githubTerminalFailure, digest, validSha, validPath, bundleFile } from './github.mjs';
 import { changedRanges } from './source.mjs';
 import { spawnSync } from 'node:child_process';
 import { posix } from 'node:path';
@@ -40,26 +40,26 @@ export function needsReview(policy, paths) {
     !(matches('tier0', path) || matches('generated', path)));
 }
 
-export async function collectPullRequest(github, number, expectedHead) {
-  const pr = await github.request(`/pulls/${number}`);
+export async function collectPullRequest(github, number, expectedHead, { deadlineMs } = {}) {
+  const pr = await github.request(`/pulls/${number}`, { deadlineMs });
   if (pr.state !== 'open') throw new Unavailable('Pull request is closed.');
   if (!validSha(pr.head.sha) || !validSha(pr.base.sha) || (expectedHead && pr.head.sha !== expectedHead)) {
     throw new Unavailable('Pull request head changed before collection.');
   }
-  const files = await github.pages(`/pulls/${number}/files`);
+  const files = await github.pages(`/pulls/${number}/files`, undefined, { deadlineMs });
   if (files.length !== pr.changed_files || files.length === 0) throw new Unavailable('Changed-file population is incomplete or empty.');
-  const comparison = await github.request(`/compare/${pr.base.sha}...${pr.head.sha}`);
+  const comparison = await github.request(`/compare/${pr.base.sha}...${pr.head.sha}`, { deadlineMs });
   if (!validSha(comparison.merge_base_commit?.sha)) throw new Unavailable('No pinned merge base.');
   const target = { kind: 'pull_request', number, base_sha: comparison.merge_base_commit.sha,
     policy_sha: pr.base.sha, base_ref: pr.base.ref, head_sha: pr.head.sha,
     review_requested: /\[review\]/i.test(pr.title ?? ''),
     repository_id: String(pr.base.repo.id), files };
-  if (!await github.current(target)) throw new Unavailable('Pull request changed during file collection.');
+  if (!await github.current(target, { deadlineMs })) throw new Unavailable('Pull request changed during file collection.');
   return target;
 }
 
-export async function collectBundle(github, target, trigger) {
-  const policyText = await github.source('.github/review-policy.toml', target.policy_sha ?? target.base_sha, true);
+export async function collectBundle(github, target, trigger, { deadlineMs } = {}) {
+  const policyText = await github.source('.github/review-policy.toml', target.policy_sha ?? target.base_sha, true, { deadlineMs });
   const policy = parsePolicy(policyText);
   const paths = target.files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
   if (!paths.every(validPath)) throw new Unavailable('Invalid changed-file path.');
@@ -72,8 +72,8 @@ export async function collectBundle(github, target, trigger) {
     if (!['added', 'modified', 'removed', 'renamed', 'copied'].includes(file.status)) {
       throw new Unavailable(`Unsupported change kind for ${file.filename}.`);
     }
-    const before = file.status === 'added' ? null : await github.source(file.previous_filename ?? file.filename, target.base_sha, false, { allowBinary: true });
-    const after = file.status === 'removed' ? null : await github.source(file.filename, target.head_sha, false, { allowBinary: true });
+    const before = file.status === 'added' ? null : await github.source(file.previous_filename ?? file.filename, target.base_sha, false, { allowBinary: true, deadlineMs });
+    const after = file.status === 'removed' ? null : await github.source(file.filename, target.head_sha, false, { allowBinary: true, deadlineMs });
     files.push(bundleFile(file, before, after));
   }
   const context = [];
@@ -86,10 +86,10 @@ export async function collectBundle(github, target, trigger) {
     while (directory !== '.') { instructionPaths.add(`${directory}/AGENTS.md`); directory = posix.dirname(directory); }
   }
   for (const path of instructionPaths) {
-    const content = await github.source(path, target.policy_sha ?? target.base_sha, true);
+    const content = await github.source(path, target.policy_sha ?? target.base_sha, true, { deadlineMs });
     if (content !== null) context.push({ path, content });
   }
-  if (!await github.current(target)) throw new Unavailable('Head changed during source collection.');
+  if (!await github.current(target, { deadlineMs })) throw new Unavailable('Head changed during source collection.');
   return { needs_review, bundle: { schema_version: 2,
     repository: github.repository, repository_id: target.repository_id,
     base_sha: target.base_sha, head_sha: target.head_sha, policy_version: String(policy.version), trigger, files, context } };
@@ -158,9 +158,9 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
   // same head alone does not prove the base, instructions or policy are equal.
   let collected, initialInput, collectionError;
   try {
-    collected = await collectBundle(github, target, trigger);
+    collected = await collectBundle(github, target, trigger, { deadlineMs });
     if (collected.needs_review) initialInput = createReviewInput(collected.bundle);
-  } catch (error) { collectionError = error; }
+  } catch (error) { if (githubTerminalFailure(error)) throw error; collectionError = error; }
   const identity = initialInput && `Head: \`${initialInput.head_sha}\`\n\nReviewer: \`${initialInput.reviewer_version}\`\n\nSource digest: \`${initialInput.input_digest}\`\n\n`;
   const begin = async (restartCompleted = false) => {
     let recorded = false;
@@ -170,7 +170,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
       }
       await onBegin?.(run); recorded = true;
     };
-    const run = await github.begin(target, externalId, detailsUrl, { restartCompleted, inputIdentity: identity, onCreated: register });
+    const run = await github.begin(target, externalId, detailsUrl, { restartCompleted, inputIdentity: identity, onCreated: register, deadlineMs });
     if (run.app?.id !== APP_ID || run.head_sha !== target.head_sha || run.name !== CHECK_NAME ||
         (restartCompleted && run.status === 'completed')) {
       throw new Unavailable('Publisher did not receive the canonical App Check Run in an active state.');
@@ -198,7 +198,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     run = await begin(true);
     if (run.deferred) return deferredReceipt(run);
   }
-  const finish = (conclusion, output) => github.finish(run, conclusion, output, { onPublish });
+  const finish = (conclusion, output) => github.finish(run, conclusion, output, { onPublish, deadlineMs });
   try {
     if (collectionError) throw collectionError;
     if (!collected.needs_review) {
@@ -212,8 +212,9 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     const input = reviewed.input;
     let result = reviewed.result;
     let current;
-    try { current = await github.current(target); }
-    catch {
+    try { current = await github.current(target, { deadlineMs }); }
+    catch (error) {
+      if (githubTerminalFailure(error)) throw error;
       result = { ...result, status: 'incomplete', terminal_incomplete: false, terminal_invalid: false, reason: 'Current head could not be verified after source review.' };
       await onResult?.(result);
     }
@@ -225,7 +226,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     // GitHub admits 50 annotations per request. Intermediate batches stay in
     // progress; only the final request publishes the terminal conclusion.
     while (output.annotations.length > 50) {
-      await github.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, body: {
+      await github.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, deadlineMs, body: {
         output: { ...output, annotations: output.annotations.splice(0, 50) },
       } });
     }
@@ -243,12 +244,12 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
   } catch (error) {
     // A terminal write may already be visible to GitHub. Never replace its
     // verdict because its read projection is stale or unavailable.
-    if (error instanceof PublishUnverified) throw error;
+    if (error instanceof PublishUnverified || githubTerminalFailure(error)) throw error;
     // Operational unavailability is distinct from a code finding. Keep the
     // advisory check terminal even after collection
     // or inference fails. Provider failures remain visible to the caller.
     const reason = error instanceof Unavailable ? error.message : 'The review engine or source collection failed.';
-    const current = await github.current(target);
+    const current = await github.current(target, { deadlineMs });
     const conclusion = current ? 'neutral' : 'cancelled';
     const receipt = await finish(conclusion, { title: current ? 'Review unavailable' : 'Head superseded',
       summary: `Head: \`${target.head_sha}\`\n\n${reason}` });

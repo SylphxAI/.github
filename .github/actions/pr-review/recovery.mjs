@@ -1,6 +1,6 @@
 import { contextRequestLimit } from './schema.mjs';
 import { canonical, discardedItems } from './contract.mjs';
-import { validPath, digest } from './github.mjs';
+import { validPath, digest, githubRefusal } from './github.mjs';
 import { fileSegments, segmentWindows } from './source.mjs';
 
 // Recovery is evidence collection, not an inference retry. Its fixed total
@@ -37,7 +37,8 @@ export async function recoverContext({ input, github, target, execute, createRev
   const infer = async () => {
     let next;
     try { next = validateResult(await execute(input), input); }
-    catch {
+    catch (error) {
+      if (githubRefusal(error)) throw error;
       next = { status: 'unavailable', head_sha: input.head_sha, base_sha: input.base_sha,
         input_digest: input.input_digest, reviewer_version: input.reviewer_version,
         findings: [], omitted_paths: input.files.map(f => f.path), reason: 'Review engine could not return a valid pinned result.' };
@@ -106,7 +107,7 @@ export async function recoverContext({ input, github, target, execute, createRev
     for (const [key, request] of fresh) {
       if (Date.now() >= deadlineMs) return stop('deadline', 'Review deadline expired during context recovery.');
       let current;
-      try { current = await github.current(target, { deadlineMs }); } catch { current = null; }
+      try { current = await github.current(target, { deadlineMs }); } catch (error) { if (githubRefusal(error)) throw error; current = null; }
       if (current !== true) return stop('head_unverified', 'Current head changed or could not be verified during context recovery.');
       const commit_sha = input[`${request.side}_sha`];
       const outcome = { input_digest: input.input_digest, path_sha256: digest(request.path),
@@ -115,6 +116,7 @@ export async function recoverContext({ input, github, target, execute, createRev
       try { content = await github.source(request.path, commit_sha, true,
         { deadlineMs, maxBytes: Math.min(recoveryLimits.bytes, result.budget?.request_byte_limit ?? Infinity) - bytes }); }
       catch (error) {
+        if (githubRefusal(error)) throw error;
         sources.push({ ...outcome, status: 'unavailable', bytes: 0 });
         if (error?.message === 'Pinned source exceeds the context recovery byte limit.') {
           return finalizeBudget('byte_limit', 'Context recovery byte limit reached.', nextRoundEstimateMs);
@@ -130,7 +132,7 @@ export async function recoverContext({ input, github, target, execute, createRev
         ...(content === null ? { absent: true } : { content }) });
     }
     let current;
-    try { current = await github.current(target, { deadlineMs }); } catch { current = null; }
+    try { current = await github.current(target, { deadlineMs }); } catch (error) { if (githubRefusal(error)) throw error; current = null; }
     if (current !== true) return stop('head_unverified', 'Current head changed or could not be verified after context recovery.');
     if (Date.now() >= deadlineMs) return stop('deadline', 'Review deadline expired during context recovery.');
     if (nextRoundEstimateMs > 0 && deadlineMs - Date.now() < nextRoundEstimateMs) return stop('deadline', 'Insufficient review deadline remaining for another context recovery round.');

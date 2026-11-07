@@ -25,9 +25,11 @@ the exact input identity, and a different-input active check cannot defer it.
 Declare the exact wrapper `.github/workflows/pr-review.yml`, default branch,
 numeric repository/owner IDs and events in Access. The finite CI key needs
 `ai:inference` and `broker:exchange`. The wrapper needs GitHub `contents:read`,
-`pull-requests:read`, `actions:read`, and `id-token:write`. GitHub source reads use
-the caller's read token. Writes use only the Broker's one-repository installation
-token with `checks:write`, and reject another App issuer or wider permissions.
+`pull-requests:read`, `actions:read`, and `id-token:write`. GitHub source, pull-request and workflow reads use the caller's read token.
+Check Run discovery, readback and writes use only the Broker's one-repository
+installation token with `checks:write`, and reject another App issuer or wider
+permissions. The caller's `GITHUB_TOKEN` does not need `checks:read` for Check Run
+discovery.
 There is no App private key in Actions.
 
 Before activation, verify the chosen environment's owned/shared paid-account
@@ -324,13 +326,71 @@ weaken verbatim validation, prove a root cause, add an inference retry or turn
 unavailable work into a pass. The existing CLI prints and saves the safe receipt,
 so it survives the ephemeral runner without exporting private round diagnostics.
 
-The shared model deadline is ten minutes from review-step start; the process is stopped
-at thirteen minutes and the always-run finalizer settles unfinished checks as
-neutral. The job reserves twenty minutes for authentication, source collection
-and finalization. A runner loss or hard job termination can prevent the finalizer;
+The shared deadline is 35 minutes from review-step start, including event discovery,
+source collection, inference and Check Run publication. The process is stopped at
+38 minutes; the 45-minute wrapper job leaves time for authentication and
+finalization. The two-minute finalizer has its own 90-second request deadline and
+settles unfinished checks as neutral only when no terminal GitHub refusal was
+recorded. A runner loss or hard job termination can prevent the finalizer;
 dispatch the same PR to recover. If publishing credentials cannot be obtained,
 the workflow fails with the exchange reason: it cannot manufacture an App check
 without App authority.
+
+## GitHub refusals and bounded recovery
+
+The Node GitHub adapter classifies every HTTP 403/429 before its caller can turn
+an unavailable operation into a neutral review:
+
+- `primary_rate_limit`: `x-ratelimit-remaining: 0`; a valid reset time is
+  mandatory even when `Retry-After` is also present. A missing or invalid reset
+  fails closed without guessing or retrying.
+- `secondary_rate_limit`: HTTP 429, a `Retry-After` header, or a JSON message
+  starting with the affirmative sentence `You have exceeded a secondary rate limit.`
+  Other mentions, negations and policy-denial prose are not quota evidence. The
+  body marker is used internally, never published.
+- `permission`: the exact `Resource not accessible by integration` or personal
+  access token message. It fails immediately, without a retry or identity change.
+- `unknown_forbidden`: a 403 without those proofs. It is not called a quota or
+  permission failure merely because the status is 403.
+
+Diagnostics retain method, a validated endpoint without query values, HTTP status,
+classification and machine code. The only retained response headers are numeric
+rate counts/reset/Retry-After, a known rate resource and a validated GitHub request
+ID. Arbitrary endpoints are redacted; response bodies, authorization headers,
+credentials and provider prose never enter diagnostics. JSON classification reads
+at most 8192 response bytes.
+
+A proven rate refusal can retry **that request once**, with the same method,
+endpoint, body and credential. It honors the longer of any announced wait and
+primary reset (after the UTC epoch second); a secondary refusal without wait
+headers uses GitHub's minimum 60 seconds. The wait must leave 30 seconds for the
+retry plus a five-second deadline margin. A malformed announced wait, exhausted
+retry or insufficient time is a typed terminal `rate_limited` failure, not a
+neutral/successful assessment. This delivery makes no later cleanup API requests.
+The CLI saves the safe failure with mode 0600, exports `outcome=failed` and
+`review_passed=false`, and exits 1. Its finalizer also exits 1 without replacing a
+check with neutral. If GitHub refuses publication, the delivery cannot claim a
+completed Check Run; the prior Check state remains unchanged until an authorized
+later delivery can reconcile it.
+
+Publication reconciliation still preserves the accepted creation identity and
+any durable terminal/reused receipt. A refusal during publication or readback
+retains its safe typed cause inside `publish_unverified`; the CLI persists that
+cause for the separate finalizer process. The finalizer never falls back from a
+403/429 to an interruption PATCH, nor replaces an attempted terminal verdict.
+
+GitHub's documented 403/429 rate refusal permits retry after its wait, including
+a refused Check Run POST/PATCH. A network failure or unreadable successful write
+response has `outcome_unknown` and is never resent. This terminal unknown write
+also bypasses neutral cleanup and is retained for the finalizer. No transport recovery reruns
+inference, jobs or workflows, switches identities, or bypasses provider quota.
+
+Primary sources read 2026-11-07 at 02:50:44 UTC and rechecked at 03:24 UTC:
+[GitHub REST troubleshooting](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#rate-limit-errors)
+and [GitHub API best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+The earlier observed Check Run discovery 403 did not retain response headers/body;
+its actual rate-versus-permission cause is unknown. The regression fixtures below
+are explicitly synthetic, not reconstructed live responses.
 
 ## Acceptance and evidence
 
