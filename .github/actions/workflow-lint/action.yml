@@ -12,10 +12,16 @@ description: >
   launched products audit the default branch on a separate schedule, and
   unlaunched products defer audits to launch. Delivered customer repositories
   skip these rules. Also requires job timeouts, forbids manual approval and
-  maintenance-window booking gates, and forbids failure masking on required needs paths. Every PR and merge-group job must reach ci-ok or declare a reasoned advisory workflow. Needs a checkout and
+  maintenance-window booking gates, and forbids failure masking on required needs paths. PR-triggered workflows must supersede per PR while giving non-PR events unique run groups, with only named, reasoned literal concurrency exceptions. Every PR and merge-group job must reach ci-ok or declare a reasoned advisory workflow. Needs a checkout and
   python3 with pip (the scalar scanner supplies pinned PyYAML). Linux x86_64.
 
 inputs:
+  rules:
+    description: >
+      all runs the existing full lint. pr-concurrency adopts only the canonical
+      PR-concurrency rule, without actionlint, performance or other contract rules.
+      Other values fail rather than skipping lint.
+    default: all
   io-reviewer-secrets:
     description: >
       Comma-separated repository secret names allowed only for SHA-pinned
@@ -44,13 +50,24 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Validate rule selection
+      shell: bash
+      env:
+        RULES: ${{ inputs.rules }}
+      run: |
+        case "$RULES" in
+          all|pr-concurrency) ;;
+          *) echo "::error::Unknown workflow-lint rules: $RULES"; exit 1 ;;
+        esac
     - name: Restore actionlint release archive
       id: restore-binary
+      if: inputs.rules == 'all'
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ${{ runner.temp }}/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         key: pinned-release-actionlint-linux-x64-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-    - shell: bash
+    - if: inputs.rules == 'all'
+      shell: bash
       env:
         VERSION: 1.7.12
         SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -84,12 +101,13 @@ runs:
         done <<<"$ARGS"
         "$bin" "${argv[@]}"
     - name: Save actionlint release archive
-      if: steps.restore-binary.outputs.cache-hit != 'true'
+      if: inputs.rules == 'all' && steps.restore-binary.outputs.cache-hit != 'true'
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ${{ runner.temp }}/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         key: pinned-release-actionlint-linux-x64-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
     - name: No non-deterministic gate before merge
+      if: inputs.rules == 'all'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
@@ -108,6 +126,7 @@ runs:
       env:
         GITHUB_TOKEN: ${{ github.token }}
         CONTRACT_MODE: ${{ inputs.contract-mode }}
+        WORKFLOW_LINT_RULES: ${{ inputs.rules }}
         IO_REVIEWER_SECRETS: ${{ inputs.io-reviewer-secrets }}
       run: |
         python3 -m pip install --quiet --target "$RUNNER_TEMP/workflow-contract" PyYAML==6.0.3

@@ -1,0 +1,46 @@
+# pr-concurrency: exception code-pr-association — Explicit base-retarget validation associates code-pr dispatch with native PR evidence; preserve its qualification and retarget routing.
+name: Project control
+
+on:
+  merge_group:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      code-merge:
+        description: Immutable merge commit for PR base validation.
+        type: string
+      code-head:
+        description: Exact PR head represented by code-merge.
+        type: string
+      code-base:
+        description: Exact PR base represented by code-merge.
+        type: string
+      code-pr:
+        type: string
+      code-base-ref:
+        type: string
+      junit-producer-run:
+        description: 'Completed Project control producer run to read from a different run.'
+        required: false
+        type: string
+
+concurrency:
+  # A consumer qualification must not replace pending native PR validation.
+  group: $ {{ github.workflow }}-$ {{ github.event.inputs.junit-producer-run && format('consumer-run-{0}', github.run_id) || (github.event.pull_request.number || github.event.inputs.code-pr) && format('pr-{0}', github.event.pull_request.number || github.event.inputs.code-pr) || format('run-{0}', github.run_id) }}
+  # Only a superseded pull_request run is cancelled; merge_group and main pushes finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ci-ok:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo ok

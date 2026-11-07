@@ -683,6 +683,8 @@ class EventAndManifestTests(unittest.TestCase):
         self.assertIn("$GITHUB_ACTION_PATH/migration_guard.py", step["run"])
         self.assertNotIn("${{", step["run"])
         self.assertEqual(step["env"]["MIGRATION_DIRECTORIES"], "${{ inputs.migration-directories }}")
+        self.assertEqual(manifest["inputs"]["dialect-from-suffix"]["default"], "false")
+        self.assertEqual(step["env"]["MIGRATION_DIALECT_FROM_SUFFIX"], "${{ inputs.dialect-from-suffix }}")
         self.assertEqual(step["env"]["MIGRATION_CONCURRENT_INDEX_RUNTIME"], "${{ inputs.concurrent-index-runtime }}")
 
 

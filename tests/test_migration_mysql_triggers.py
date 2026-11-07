@@ -144,7 +144,8 @@ SIGNAL SQLSTATE '45000';
                 self.assertEqual(check(sql, "postgres"), [])
                 self.assertIn("UPDATE without WHERE", str(check(sql.replace("ON CONFLICT (id)", "ON CONFLICT"), "postgres")))
                 self.assertIn("UPDATE without WHERE", str(check("WITH changed AS (UPDATE accounts SET active=0 RETURNING id) SELECT * FROM changed;", "postgres")))
-                nested = "WITH outer_changed AS (" + sql[:-1] + ") SELECT * FROM outer_changed;"
+                # PostgreSQL permits nested read CTEs, but modifying CTEs must be top-level.
+                nested = "WITH source AS (WITH candidate AS (SELECT 1 AS id) SELECT id FROM candidate) INSERT INTO accounts(id) SELECT id FROM source WHERE true ON CONFLICT (id) DO UPDATE SET active=1;"
                 self.assertEqual(check(nested, "postgres"), [])
 
     def test_postgres_targetless_do_update_is_not_an_upsert_exemption(self):

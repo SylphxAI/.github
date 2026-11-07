@@ -16,15 +16,101 @@ export const validPath = value => typeof value === 'string' && value.length > 0 
 
 export class Unavailable extends Error {}
 
-class GitHubHTTPError extends Unavailable {
-  constructor(message, status) { super(message); this.status = status; }
+// Keep this status-bearing type usable by read-only publication reconciliation.
+export class GitHubHTTPError extends Unavailable {
+  constructor(details) {
+    super(`GitHub ${details.method} ${details.endpoint} returned HTTP ${details.status} (${details.code}/${details.classification}): ${JSON.stringify(details)}`);
+    this.status = details.status;
+    this.code = details.code;
+    this.classification = details.classification;
+    this.details = details;
+  }
+}
+
+export const githubRefusal = error => error instanceof GitHubHTTPError && [403, 429].includes(error.status);
+export const githubFailureDetails = error => githubRefusal(error) ||
+  (error instanceof Unavailable && error.code === 'outcome_unknown') ? error.details :
+  error instanceof PublishUnverified ? githubFailureDetails(error.cause) : null;
+export const githubTerminalFailure = error => githubFailureDetails(error) !== null;
+function unreadableResponse(method, path, stage) {
+  const code = method === 'GET' ? 'read_unavailable' : 'outcome_unknown';
+  const endpoint = safeEndpoint(path);
+  const error = new Unavailable(`GitHub ${method} ${endpoint} ${stage} (${code}); request not retried.`);
+  error.code = code;
+  error.details = { method, endpoint, status: null, code, classification: code, headers: {}, retry_at_ms: null };
+  return error;
+}
+const requestTimeoutMs = 30_000, retryMarginMs = 5_000;
+const safeEndpoint = path => {
+  const endpoint = path.split('?')[0];
+  return /^\/(?:pulls\/[1-9][0-9]*(?:\/files)?|commits\/[a-f0-9]{40}\/(?:check-runs|pulls)|check-runs(?:\/[1-9][0-9]*)?|git\/(?:trees|blobs)\/[a-f0-9]{40}|compare\/[a-f0-9]{40}\.\.\.[a-f0-9]{40}|actions\/runs\/[1-9][0-9]*)$/.test(endpoint)
+    ? endpoint : endpoint.startsWith('/git/ref/heads/') ? '/git/ref/heads/<redacted>' : '/<redacted>';
+};
+const integer = value => typeof value === 'string' && /^[0-9]{1,16}$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+function safeHeaders(response) {
+  const get = name => response.headers?.get?.(name) ?? null;
+  const headers = {};
+  for (const name of ['x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-used', 'x-ratelimit-reset', 'retry-after']) {
+    const value = integer(get(name));
+    if (value !== null) headers[name] = value;
+  }
+  const resource = get('x-ratelimit-resource'), id = get('x-github-request-id');
+  if (['core', 'search', 'code_search', 'graphql', 'integration_manifest'].includes(resource)) headers['x-ratelimit-resource'] = resource;
+  if (typeof id === 'string' && /^[A-Fa-f0-9:]{1,128}$/.test(id)) headers['x-github-request-id'] = id;
+  return headers;
+}
+
+async function refusalMessage(response) {
+  // Inspect only a bounded JSON message internally, never retain provider prose.
+  const reader = response.body?.getReader?.();
+  if (!reader) return '';
+  const chunks = []; let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 8192) return '';
+      chunks.push(value);
+    }
+    const message = JSON.parse(Buffer.concat(chunks).toString('utf8')).message;
+    return typeof message === 'string' ? message : '';
+  } catch { return ''; }
+  finally { await reader.cancel().catch(() => {}); }
+}
+
+async function classify(response, method, path, now) {
+  const headers = safeHeaders(response), status = response.status;
+  const message = [403, 429].includes(status) ? await refusalMessage(response) : '';
+  let classification = 'http_error', retryAtMs = null;
+  if (status === 403 && ['Resource not accessible by integration', 'Resource not accessible by personal access token'].includes(message)) {
+    classification = 'permission';
+  } else if ([403, 429].includes(status)) {
+    if (headers['x-ratelimit-remaining'] === 0) classification = 'primary_rate_limit';
+    else if (status === 429 || response.headers?.has?.('retry-after') || message.startsWith('You have exceeded a secondary rate limit.')) classification = 'secondary_rate_limit';
+    else classification = 'unknown_forbidden';
+    if (classification.endsWith('_rate_limit')) {
+      const retry = headers['retry-after'], reset = headers['x-ratelimit-reset'];
+      // A primary exhaustion always requires its own valid reset, independently
+      // of Retry-After. Neither header can shorten the other provider wait.
+      if (response.headers?.has?.('retry-after') && retry === undefined) retryAtMs = null;
+      else if (classification === 'primary_rate_limit' && reset === undefined) retryAtMs = null;
+      else retryAtMs = Math.max(now + (retry ?? 0) * 1000,
+        headers['x-ratelimit-remaining'] === 0 && reset !== undefined ? reset * 1000 + 1000 : 0,
+        classification === 'secondary_rate_limit' && retry === undefined ? now + 60_000 : 0);
+    }
+  }
+  const code = classification.endsWith('_rate_limit') ? 'rate_limited' : classification === 'permission' ? 'permission_denied' : classification;
+  return { method, endpoint: safeEndpoint(path), status, code, classification, headers, retry_at_ms: retryAtMs };
 }
 
 export class PublishUnverified extends Unavailable {
-  constructor(details) {
-    super(`Check Run publication unverified (publish_unverified): ${JSON.stringify(details)}`);
+  constructor(details, cause) {
+    const refusal = githubFailureDetails(cause);
+    const safeDetails = { ...details, ...(refusal ? { cause: refusal } : {}) };
+    super(`Check Run publication unverified (publish_unverified): ${JSON.stringify(safeDetails)}`, refusal ? { cause } : undefined);
     this.code = 'publish_unverified';
-    this.details = details;
+    this.details = safeDetails;
   }
 }
 
@@ -51,7 +137,7 @@ export const terminalCheckReceipt = (run, phase = 'reuse') => ({ phase, expected
 
 export class GitHub {
   constructor({ repository, readToken, checkToken, apiOrigin = 'https://api.github.com', fetcher = fetch,
-    now = Date.now, wait = sleep }) {
+    now = Date.now, wait = sleep, deadlineMs, onDiagnostic = details => process.stderr.write(`GitHub refusal: ${JSON.stringify(details)}\n`) }) {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Unavailable('Invalid repository.');
     this.repository = repository;
     this.readToken = readToken;
@@ -60,6 +146,8 @@ export class GitHub {
     this.fetcher = fetcher;
     this.now = now;
     this.wait = wait;
+    this.deadlineMs = deadlineMs ?? now() + 35 * 60_000;
+    this.onDiagnostic = onDiagnostic;
     this.sourceTrees = new Map();
   }
 
@@ -70,29 +158,57 @@ export class GitHub {
     return tree.tree;
   }
 
-  async request(path, { method = 'GET', body, checks = false, deadlineMs = Infinity } = {}) {
+  async request(path, { method = 'GET', body, checks = false, deadlineMs = this.deadlineMs } = {}) {
+    if (this.rateFailure) throw this.rateFailure;
     const token = checks ? this.checkToken : this.readToken;
     if (!token) throw new Unavailable(`Missing ${checks ? 'checks' : 'source'} credential.`);
-    const remaining = Math.min(30_000, deadlineMs - this.now());
-    if (!(remaining > 0)) throw new Unavailable('Pinned source deadline expired.');
-    const response = await this.fetcher(`${this.apiOrigin}/repos/${this.repository}${path}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(remaining),
-      headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json',
-        'x-github-api-version': '2022-11-28', 'content-type': 'application/json' },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    if (!response.ok) {
-      // Never log a response body: a provider can echo a credential or source.
-      throw new GitHubHTTPError(`GitHub ${method} ${path.split('?')[0]} returned HTTP ${response.status}.`, response.status);
+    deadlineMs = Math.min(deadlineMs, this.deadlineMs);
+    const encodedBody = body === undefined ? undefined : JSON.stringify(body);
+    for (let attempt = 0; ; attempt++) {
+      const remaining = Math.min(requestTimeoutMs, deadlineMs - this.now());
+      if (!(remaining > 0)) throw new Unavailable('Pinned source deadline expired.');
+      let response;
+      try {
+        response = await this.fetcher(`${this.apiOrigin}/repos/${this.repository}${path}`, {
+          method, redirect: 'error', signal: AbortSignal.timeout(Math.ceil(remaining)),
+          headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28', 'content-type': 'application/json' },
+          ...(encodedBody === undefined ? {} : { body: encodedBody }),
+        });
+      } catch {
+        // A lost response after POST/PATCH does not prove the write was rejected.
+        throw unreadableResponse(method, path, 'transport failed');
+      }
+      if (response.ok) {
+        try { return await response.json(); }
+        catch {
+          throw unreadableResponse(method, path, 'response could not be read');
+        }
+      }
+      const details = { ...await classify(response, method, path, this.now()), attempt: attempt + 1 };
+      const error = new GitHubHTTPError(details);
+      try { this.onDiagnostic(details); } catch { /* Diagnostics cannot replace the provider refusal. */ }
+      if (error.code !== 'rate_limited') throw error;
+      // GitHub documents 403/429 rate responses as refusals and explicitly
+      // permits retrying the request after its wait. Never retry a lost response.
+      const delay = details.retry_at_ms === null ? null : Math.max(0, details.retry_at_ms - this.now());
+      if (attempt || delay === null || delay + requestTimeoutMs + retryMarginMs >= deadlineMs - this.now()) {
+        this.rateFailure = error; // Stop this delivery, including later cleanup calls.
+        throw error;
+      }
+      await this.wait(delay);
+      if (this.now() + requestTimeoutMs + retryMarginMs >= deadlineMs) {
+        this.rateFailure = error;
+        throw error;
+      }
     }
-    return response.json();
   }
 
-  async pages(path, field) {
+  async pages(path, field, { deadlineMs = this.deadlineMs } = {}) {
     const rows = [];
     for (let page = 1; ; page++) {
       const body = await this.request(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`,
-        { checks: field === 'check_runs' });
+        { checks: field === 'check_runs', deadlineMs });
       const items = field ? body[field] : body;
       if (!Array.isArray(items)) throw new Unavailable('Malformed GitHub list response.');
       rows.push(...items);
@@ -149,12 +265,12 @@ export class GitHub {
     return ref.object?.sha === target.head_sha;
   }
 
-  async checkRuns(sha) {
-    return this.pages(`/commits/${sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=all`, 'check_runs');
+  async checkRuns(sha, { deadlineMs = this.deadlineMs } = {}) {
+    return this.pages(`/commits/${sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=all`, 'check_runs', { deadlineMs });
   }
 
-  async begin(target, externalId, detailsUrl, { restartCompleted = false, inputIdentity, onCreated } = {}) {
-    const runs = await this.checkRuns(target.head_sha);
+  async begin(target, externalId, detailsUrl, { restartCompleted = false, inputIdentity, onCreated, deadlineMs = this.deadlineMs } = {}) {
+    const runs = await this.checkRuns(target.head_sha, { deadlineMs });
     const existing = runs.filter(r => r.app?.id === APP_ID && r.name === CHECK_NAME &&
       r.head_sha === target.head_sha).sort((a, b) => b.id - a.id)[0];
     if (existing?.status === 'completed' && !restartCompleted) return existing;
@@ -170,33 +286,35 @@ export class GitHub {
       let live = false;
       if (owner) {
         try {
-          const workflow = await this.request(`/actions/runs/${owner}`);
+          const workflow = await this.request(`/actions/runs/${owner}`, { deadlineMs });
           live = String(workflow.id) === owner && ['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(workflow.status);
-        } catch {}
+        } catch (error) { if (githubRefusal(error)) throw error; }
       }
       if (live && owner !== current) return { ...existing, deferred: true, owner_run_id: owner };
       // A delivery may reconcile its own accepted creation. Completed owners,
       // missing/unknown ownership and read errors instead need a fresh attempt.
       if (live && owner === current && existing.external_id === externalId) return existing;
     }
-    // POST has no retry. After an ambiguous transport result the next delivery
+    // POST retries only a conclusive rate refusal. After an ambiguous transport result the next delivery
     // finds this stable external_id before attempting another creation.
     const body = {
       name: CHECK_NAME, head_sha: target.head_sha, external_id: externalId,
       details_url: detailsUrl, status: 'in_progress', started_at: timestamp(),
       output: { title: 'Review running', summary: `${inputIdentity ?? ''}Reviewing exact head \`${target.head_sha}\`.` },
     };
-    const created = await this.request('/check-runs', { method: 'POST', checks: true, body });
+    const created = await this.request('/check-runs', { method: 'POST', checks: true, body, deadlineMs });
     // The accepted POST response is the created resource's authoritative receipt.
     // Persist its identity before an eventually consistent GET can fail.
     await onCreated?.(created);
     const expected = checkProjection({ ...body, id: created.id, app: { id: APP_ID } },
       [...identityFields, 'external_id', 'details_url', 'status', 'started_at', 'output.title', 'output.summary']);
-    return this.reconcile({ phase: 'create', expected });
+    return this.reconcile({ phase: 'create', expected }, { deadlineMs });
   }
 
-  async reconcile(publication) {
-    const { phase, expected } = publication, deadlineMs = this.now() + 10_000;
+  async reconcile(publication, { deadlineMs = this.deadlineMs } = {}) {
+    const { phase, expected } = publication;
+    deadlineMs = Math.min(deadlineMs, this.deadlineMs, this.now() + 10_000);
+    let terminalCause;
     let observed = null, failure = 'deadline', httpStatus = null, attempts = 0;
     const fields = Object.keys(expected);
     for (; attempts < 3 && this.now() < deadlineMs;) {
@@ -209,6 +327,7 @@ export class GitHub {
       } catch (error) {
         failure = error instanceof GitHubHTTPError ? 'http' : 'read_failed';
         httpStatus = error instanceof GitHubHTTPError ? error.status : null;
+        if (githubTerminalFailure(error)) { terminalCause = error; break; }
         if (httpStatus !== null && httpStatus !== 404 && httpStatus < 500) break;
       }
       const remaining = deadlineMs - this.now();
@@ -216,10 +335,10 @@ export class GitHub {
     }
     throw new PublishUnverified({ phase, check_run_id: expected.id, attempts, failure, http_status: httpStatus,
       expected, observed, mismatched_fields: observed === null ? [] : fields.filter(field =>
-        JSON.stringify(observed[field]) !== JSON.stringify(expected[field])) });
+        JSON.stringify(observed[field]) !== JSON.stringify(expected[field])) }, terminalCause);
   }
 
-  async finish(run, conclusion, output, { onPublish } = {}) {
+  async finish(run, conclusion, output, { onPublish, deadlineMs = this.deadlineMs } = {}) {
     const body = { status: 'completed', conclusion, completed_at: timestamp(), output };
     const publication = terminalCheckReceipt({ ...body,
       id: run.id, head_sha: run.head_sha, name: CHECK_NAME, app: { id: APP_ID } }, 'finish');
@@ -227,13 +346,13 @@ export class GitHub {
     // finalizer can reconcile it read-only even after a crash or stale GET.
     await onPublish?.(publication);
     try {
-      await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, body });
+      await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, body, deadlineMs });
     } catch (error) {
       throw new PublishUnverified({ phase: 'finish', check_run_id: run.id, attempts: 0,
         failure: 'write_unverified', http_status: error instanceof GitHubHTTPError ? error.status : null,
-        expected: publication.expected, observed: null, mismatched_fields: [] });
+        expected: publication.expected, observed: null, mismatched_fields: [] }, error);
     }
-    return this.reconcile(publication);
+    return this.reconcile(publication, { deadlineMs });
   }
 }
 

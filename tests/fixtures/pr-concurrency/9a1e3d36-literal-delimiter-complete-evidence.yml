@@ -1,0 +1,11 @@
+# pr-concurrency: exception complete-evidence — Every qualification must finish.
+on: [pull_request, push]
+concurrency:
+  group: $ {{ github.workflow }}-run-$ {{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  ci-ok:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo ok

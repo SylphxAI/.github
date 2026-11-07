@@ -170,3 +170,45 @@ print(json.dumps(results))
     assert.equal(collected.allowContext(vector.path), !excluded, `${vector.id}: recovery routing`);
   }
 });
+
+test('mixed generated selection preserves one deadline through collection, recovery, current-head checks and publication', async () => {
+  const deadlineMs = Date.now() + 120_000;
+  const github = provider(policy(['generated/handwritten.js']), {
+    'generated/handwritten.js': sha => sha === base ? 'old handwritten source\n' : 'new handwritten source\n',
+    'src/helper.js': 'handwritten helper context\n',
+  });
+  const source = github.source, begin = github.begin, finish = github.finish;
+  const sourceOptions = []; let currentChecks = 0, executions = 0;
+  github.source = async (path, sha, optional, options) => {
+    assert.equal(options?.deadlineMs, deadlineMs, `${path}: source deadline`);
+    sourceOptions.push({ path, ...options });
+    return source(path, sha, optional, options);
+  };
+  github.current = async (_target, options) => {
+    assert.equal(options?.deadlineMs, deadlineMs, 'current-head deadline');
+    currentChecks++; return true;
+  };
+  github.begin = async (...args) => {
+    assert.equal(args[3]?.deadlineMs, deadlineMs, 'begin deadline'); return begin(...args);
+  };
+  github.finish = async (...args) => {
+    assert.equal(args[3]?.deadlineMs, deadlineMs, 'finish deadline'); return finish(...args);
+  };
+  const receipt = await produceReview({ ...options(github,
+    [modified('generated/capture.json'), modified('generated/handwritten.js'), modified('src/manual.js')]),
+    deadlineMs, engine: async input => {
+      executions++;
+      assert.deepEqual(input.files.map(file => file.path), ['generated/handwritten.js', 'src/manual.js']);
+      if (input.context.some(context => context.path === 'src/helper.js')) return complete(input);
+      return { ...complete(input), status: 'incomplete', reason: 'Need handwritten helper.', context_requests: [
+        { path: 'generated/capture.json', side: 'head' }, { path: 'src/helper.js', side: 'head' }] };
+    } });
+  assert.equal(receipt.conclusion, 'success'); assert.equal(executions, 2);
+  assert.ok(currentChecks >= 4);
+  assert.equal(sourceOptions.filter(call => call.path === 'generated/capture.json').length, 0);
+  assert.equal(sourceOptions.filter(call => call.path === 'generated/AGENTS.md').length, 0);
+  assert.equal(sourceOptions.filter(call => call.path === 'src/helper.js').length, 1);
+  const changedReads = sourceOptions.filter(call => ['generated/handwritten.js', 'src/manual.js'].includes(call.path));
+  assert.equal(changedReads.length, 4);
+  assert.ok(changedReads.every(call => call.allowBinary === true));
+});
