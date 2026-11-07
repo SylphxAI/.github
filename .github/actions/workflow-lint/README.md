@@ -2,7 +2,8 @@
 
 The action runs checksum-pinned actionlint 1.7.12, the pre-merge performance
 rule, and a workflow contract check. Actionlint resolves `needs` and `steps`
-references and rejects malformed workflows; contract mode never disables it.
+references and rejects malformed workflows; contract mode never disables it
+when the default full lint is selected.
 
 The performance rule permits `lhci collect`, which records reports without
 asserting budgets. Before merge, `lhci assert --config=path.json` is allowed
@@ -19,7 +20,27 @@ it exempts neither its job nor another step. Dependency audit policy is unchange
     contract-mode: enforce
 ```
 
-The contract scans `.github/workflows/*.yml` and `*.yaml` in the checkout:
+The default `rules: all` preserves the full lint. A caller adopting only PR
+supersession can use one step in existing CI without enabling other rule families:
+
+```yaml
+- uses: SylphxAI/.github/.github/actions/workflow-lint@<commit>
+  with:
+    rules: pr-concurrency
+```
+
+That scope runs only the canonical PR-concurrency checker over all checkout
+workflow files. It does not run actionlint, performance, timeout, failure-masking,
+ci-ok closure, expected-check declaration or runner-routing checks. Existing
+findings in those families are separate debt, not exemptions to this rule.
+Invalid or empty `rules` values fail closed. `contract-mode` does not weaken the
+selected concurrency rule. For an offline scoped check:
+
+```sh
+WORKFLOW_LINT_RULES=pr-concurrency python3 path/to/workflow-lint/contract.py
+```
+
+With full lint selected, the contract scans `.github/workflows/*.yml` and `*.yaml` in the checkout:
 
 - Every executable job declares `timeout-minutes`. A reusable-workflow call
   job cannot have this field under GitHub's schema; check the called workflow's

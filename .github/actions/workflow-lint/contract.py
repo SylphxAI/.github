@@ -395,7 +395,9 @@ def scan_io_job(document, name, node, add, routes):
                 break
 
 
-def scan_dir(root):
+def scan_dir(root, rules="all"):
+    if rules not in ("all", "pr-concurrency"):
+        raise ValueError(f"unknown workflow-lint rules: {rules}")
     repository = os.environ.get("GITHUB_REPOSITORY", "")
     entry = exempt(repository, datetime.datetime.now(datetime.timezone.utc).date()) if repository else None
     if entry and entry['class'] in ('hands-off', 'frozen-legacy', 'paused-or-stopped'):
@@ -408,6 +410,13 @@ def scan_dir(root):
             if path.is_file() and path.suffix in (".yml", ".yaml"):
                 text = path.read_text(encoding="utf-8")
                 workflows[path.name] = text
+    # Rule-scoped adoption does not execute unrelated rule families. In
+    # particular, runner evaluation and ci-ok closure are not prerequisites for
+    # adopting PR supersession on a repository with an existing CI graph.
+    if rules == "pr-concurrency":
+        return [Finding('.github/workflows/' + name, line, problem, True)
+                for name, text in workflows.items()
+                for line, problem in pr_concurrency_problems(text)]
     # The required verdict repeats R8 against immutable source without relying
     # on checkout. Here it also fails early for workflow-lint consumers, even
     # when unrelated legacy contract findings are report-only.
@@ -446,16 +455,19 @@ def exit_code(findings, mode):
 
 def main():
     mode = os.environ.get("CONTRACT_MODE", "enforce")
+    rules = os.environ.get("WORKFLOW_LINT_RULES", "all")
+    if rules not in ("all", "pr-concurrency"):
+        raise ValueError(f"unknown workflow-lint rules: {rules}")
     exit_code([], mode)
     state = delivered(dict(os.environ))
     if state is True or (state is None and os.environ.get("GITHUB_ACTIONS") == "true"):
         print("workflow-contract: delivered property is delivered or unreadable; skipped")
         return 0
-    findings = scan_dir(pathlib.Path.cwd())
+    findings = scan_dir(pathlib.Path.cwd(), rules=rules)
     for finding in findings:
         level = "error" if finding.blocking or mode == "enforce" else "warning"
         print(f"::{level} file={finding.file},line={finding.line}::{finding.problem}")
-    print(f"workflow-contract: {len(findings)} violation(s), mode={mode}")
+    print(f"workflow-contract: {len(findings)} violation(s), mode={mode}, rules={rules}")
     return exit_code(findings, mode)
 
 
