@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
-import { GitHub, APP_ID, CHECK_NAME, Unavailable } from './github.mjs';
+import { GitHub, APP_ID, CHECK_NAME, Unavailable, githubTerminalFailure } from './github.mjs';
 import { credentials } from './auth.mjs';
 import { eventTargets } from './events.mjs';
 import { createReviewInput, reviewerVersion } from './contract.mjs';
@@ -9,6 +9,7 @@ import { produceReview, completedReviewReceipt } from './producer.mjs';
 const env = process.env;
 const statePath = `${env.RUNNER_TEMP}/pr-review-state.json`;
 const authPath = `${env.RUNNER_TEMP}/pr-review-auth.json`;
+const githubFailurePath = `${env.RUNNER_TEMP}/pr-review-github-failure.json`;
 const read = path => JSON.parse(readFileSync(path, 'utf8'));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
 const passed = receipt => !receipt.unavailable && (receipt.conclusion === 'success' ||
@@ -20,7 +21,7 @@ const reasonFor = receipt => receipt.reason || (receipt.applicable === false ? '
 const summarize = line => {
   if (env.GITHUB_STEP_SUMMARY) writeFileSync(env.GITHUB_STEP_SUMMARY, `${line}\n`, { flag: 'a' });
 };
-const githubFor = auth => new GitHub({ repository: env.GITHUB_REPOSITORY, readToken: env.GITHUB_TOKEN, checkToken: auth.checkToken });
+const githubFor = (auth, deadlineMs) => new GitHub({ repository: env.GITHUB_REPOSITORY, readToken: env.GITHUB_TOKEN, checkToken: auth.checkToken, deadlineMs });
 
 async function main() {
   const command = process.argv[2];
@@ -28,9 +29,15 @@ async function main() {
     save(authPath, await credentials({ ciName: env.REVIEW_CI_NAME, trustPolicy: env.REVIEW_TRUST_POLICY, repository: env.GITHUB_REPOSITORY }));
     return;
   }
-  const github = githubFor(read(authPath));
+  // Bound event/source discovery and publication too, not just inference.
+  const deadlineMs = Date.now() + (command === 'finalize' ? 90_000 : 35 * 60_000);
+  const github = githubFor(read(authPath), deadlineMs);
   if (command === 'finalize') {
     try {
+    if (existsSync(githubFailurePath)) {
+      const failure = read(githubFailurePath);
+      throw new Unavailable(`GitHub terminal failure (${failure.code}): ${JSON.stringify(failure)}`);
+    }
     for (const { id, head_sha } of existsSync(statePath) ? read(statePath) : []) {
       const run = await github.request(`/check-runs/${id}`, { checks: true });
       if (run.app?.id !== APP_ID || run.head_sha !== head_sha || run.name !== CHECK_NAME) throw new Unavailable('Finalizer found a foreign check.');
@@ -49,8 +56,7 @@ async function main() {
   }
   if (command !== 'review') throw new Unavailable('Unknown review command.');
   const started = Date.now();
-  const deadlineMs = started + 35 * 60_000;
-  const targets = await eventTargets(github, env.GITHUB_EVENT_NAME, read(env.GITHUB_EVENT_PATH), `${env.GITHUB_RUN_ID}/${env.GITHUB_RUN_ATTEMPT}`);
+  const targets = await eventTargets(github, env.GITHUB_EVENT_NAME, read(env.GITHUB_EVENT_PATH), `${env.GITHUB_RUN_ID}/${env.GITHUB_RUN_ATTEMPT}`, { deadlineMs });
   const states = [], receipts = [], results = [];
   for (const { target, trigger } of targets) {
     // Configure inside produceReview's fault boundary so configuration failure
@@ -58,7 +64,7 @@ async function main() {
     let reviewer;
     const engine = input => (reviewer ??= gatewayReviewer({ token: read(authPath).inferenceToken,
       model: env.REVIEW_MODEL, maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
-      reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs, current: () => github.current(target) }))(input);
+      reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs, current: () => github.current(target, { deadlineMs }) }))(input);
     const receipt = await produceReview({ github, target, trigger, engine, createReviewInput, engineVersion: reviewerVersion, deadlineMs,
       detailsUrl: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
       onResult: result => {
@@ -91,6 +97,10 @@ function eventLatency(event, now) {
 
 try { await main(); }
 catch (error) {
+  // No cleanup request or neutral overwrite after a conclusive provider refusal.
+  // Store only the adapter's value-checked diagnostic, never provider prose.
+  if (githubTerminalFailure(error)) save(githubFailurePath, error.details);
+  if (env.GITHUB_OUTPUT) writeFileSync(env.GITHUB_OUTPUT, 'outcome=failed\nreview_passed=false\n', { flag: 'a' });
   const reason = error instanceof Unavailable ? error.message : 'Review integration could not complete; see its configured credentials and source references.';
   process.stderr.write(`${reason}\n`);
   summarize(reason);

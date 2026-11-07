@@ -1,6 +1,6 @@
 import { digest, reviewerVersion, unavailable, canonical, discardedItems } from './contract.mjs';
 import { literalSegments, changedRanges, fileSegments } from './source.mjs';
-import { digest as sourceDigest } from './github.mjs';
+import { digest as sourceDigest, githubRefusal } from './github.mjs';
 import { recoveryLimits } from './recovery.mjs';
 
 export const seal = value => ({ ...value, input_digest: digest(value), reviewer_version: reviewerVersion });
@@ -108,7 +108,7 @@ function requestedSource(input, request) {
 }
 
 export async function reviewPartitions(input, { execute, requestBytes, byteBudget, current = async () => true, completedParts }) {
-  const isCurrent = async () => { try { return await current(); } catch { return null; } };
+  const isCurrent = async () => { try { return await current(); } catch (error) { if (githubRefusal(error)) throw error; return null; } };
   let parts;
   try { parts = planReview(input, requestBytes, byteBudget); }
   catch (error) { return unavailable(input, error.message); }

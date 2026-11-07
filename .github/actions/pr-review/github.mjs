@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { segmentBundleFile } from './source.mjs';
 
 export const CHECK_NAME = 'Sylphx PR Review';
@@ -15,14 +16,104 @@ export const validPath = value => typeof value === 'string' && value.length > 0 
 
 export class Unavailable extends Error {}
 
+// Keep this status-bearing type usable by read-only publication reconciliation.
+export class GitHubHTTPError extends Unavailable {
+  constructor(details) {
+    super(`GitHub ${details.method} ${details.endpoint} returned HTTP ${details.status} (${details.code}/${details.classification}): ${JSON.stringify(details)}`);
+    this.status = details.status;
+    this.code = details.code;
+    this.classification = details.classification;
+    this.details = details;
+  }
+}
+
+export const githubRefusal = error => error instanceof GitHubHTTPError && [403, 429].includes(error.status);
+export const githubTerminalFailure = error => githubRefusal(error) ||
+  (error instanceof Unavailable && error.code === 'outcome_unknown');
+function unreadableResponse(method, path, stage) {
+  const code = method === 'GET' ? 'read_unavailable' : 'outcome_unknown';
+  const endpoint = safeEndpoint(path);
+  const error = new Unavailable(`GitHub ${method} ${endpoint} ${stage} (${code}); request not retried.`);
+  error.code = code;
+  error.details = { method, endpoint, status: null, code, classification: code, headers: {}, retry_at_ms: null };
+  return error;
+}
+const requestTimeoutMs = 30_000, retryMarginMs = 5_000;
+const safeEndpoint = path => {
+  const endpoint = path.split('?')[0];
+  return /^\/(?:pulls\/[1-9][0-9]*(?:\/files)?|commits\/[a-f0-9]{40}\/(?:check-runs|pulls)|check-runs(?:\/[1-9][0-9]*)?|git\/(?:trees|blobs)\/[a-f0-9]{40}|compare\/[a-f0-9]{40}\.\.\.[a-f0-9]{40}|actions\/runs\/[1-9][0-9]*)$/.test(endpoint)
+    ? endpoint : endpoint.startsWith('/git/ref/heads/') ? '/git/ref/heads/<redacted>' : '/<redacted>';
+};
+const integer = value => typeof value === 'string' && /^[0-9]{1,16}$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+function safeHeaders(response) {
+  const get = name => response.headers?.get?.(name) ?? null;
+  const headers = {};
+  for (const name of ['x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-used', 'x-ratelimit-reset', 'retry-after']) {
+    const value = integer(get(name));
+    if (value !== null) headers[name] = value;
+  }
+  const resource = get('x-ratelimit-resource'), id = get('x-github-request-id');
+  if (['core', 'search', 'code_search', 'graphql', 'integration_manifest'].includes(resource)) headers['x-ratelimit-resource'] = resource;
+  if (typeof id === 'string' && /^[A-Fa-f0-9:]{1,128}$/.test(id)) headers['x-github-request-id'] = id;
+  return headers;
+}
+
+async function refusalMessage(response) {
+  // Inspect only a bounded JSON message internally, never retain provider prose.
+  const reader = response.body?.getReader?.();
+  if (!reader) return '';
+  const chunks = []; let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 8192) return '';
+      chunks.push(value);
+    }
+    const message = JSON.parse(Buffer.concat(chunks).toString('utf8')).message;
+    return typeof message === 'string' ? message : '';
+  } catch { return ''; }
+  finally { await reader.cancel().catch(() => {}); }
+}
+
+async function classify(response, method, path, now) {
+  const headers = safeHeaders(response), status = response.status;
+  const message = [403, 429].includes(status) ? await refusalMessage(response) : '';
+  let classification = 'http_error', retryAtMs = null;
+  if (status === 403 && ['Resource not accessible by integration', 'Resource not accessible by personal access token'].includes(message)) {
+    classification = 'permission';
+  } else if ([403, 429].includes(status)) {
+    if (headers['x-ratelimit-remaining'] === 0) classification = 'primary_rate_limit';
+    else if (status === 429 || response.headers?.has?.('retry-after') || /secondary rate limit/i.test(message)) classification = 'secondary_rate_limit';
+    else classification = 'unknown_forbidden';
+    if (classification.endsWith('_rate_limit')) {
+      const retry = headers['retry-after'], reset = headers['x-ratelimit-reset'];
+      // Do not guess a shorter wait when an announced value is malformed.
+      if (response.headers?.has?.('retry-after') && retry === undefined) retryAtMs = null;
+      else if (classification === 'primary_rate_limit' && reset === undefined && retry === undefined) retryAtMs = null;
+      else retryAtMs = Math.max(now + (retry ?? 0) * 1000,
+        headers['x-ratelimit-remaining'] === 0 && reset !== undefined ? reset * 1000 + 1000 : 0,
+        classification === 'secondary_rate_limit' && retry === undefined ? now + 60_000 : 0);
+    }
+  }
+  const code = classification.endsWith('_rate_limit') ? 'rate_limited' : classification === 'permission' ? 'permission_denied' : classification;
+  return { method, endpoint: safeEndpoint(path), status, code, classification, headers, retry_at_ms: retryAtMs };
+}
+
 export class GitHub {
-  constructor({ repository, readToken, checkToken, apiOrigin = 'https://api.github.com', fetcher = fetch }) {
+  constructor({ repository, readToken, checkToken, apiOrigin = 'https://api.github.com', fetcher = fetch,
+    now = Date.now, wait = sleep, deadlineMs, onDiagnostic = details => process.stderr.write(`GitHub refusal: ${JSON.stringify(details)}\n`) }) {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Unavailable('Invalid repository.');
     this.repository = repository;
     this.readToken = readToken;
     this.checkToken = checkToken;
     this.apiOrigin = apiOrigin.replace(/\/$/, '');
     this.fetcher = fetcher;
+    this.now = now;
+    this.wait = wait;
+    this.deadlineMs = deadlineMs ?? now() + 35 * 60_000;
+    this.onDiagnostic = onDiagnostic;
     this.sourceTrees = new Map();
   }
 
@@ -33,29 +124,57 @@ export class GitHub {
     return tree.tree;
   }
 
-  async request(path, { method = 'GET', body, checks = false, deadlineMs = Infinity } = {}) {
+  async request(path, { method = 'GET', body, checks = false, deadlineMs = this.deadlineMs } = {}) {
+    if (this.rateFailure) throw this.rateFailure;
     const token = checks ? this.checkToken : this.readToken;
     if (!token) throw new Unavailable(`Missing ${checks ? 'checks' : 'source'} credential.`);
-    const remaining = Math.min(30_000, deadlineMs - Date.now());
-    if (!(remaining > 0)) throw new Unavailable('Pinned source deadline expired.');
-    const response = await this.fetcher(`${this.apiOrigin}/repos/${this.repository}${path}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(remaining),
-      headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json',
-        'x-github-api-version': '2022-11-28', 'content-type': 'application/json' },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    if (!response.ok) {
-      // Never log a response body: a provider can echo a credential or source.
-      throw new Unavailable(`GitHub ${method} ${path.split('?')[0]} returned HTTP ${response.status}.`);
+    deadlineMs = Math.min(deadlineMs, this.deadlineMs);
+    const encodedBody = body === undefined ? undefined : JSON.stringify(body);
+    for (let attempt = 0; ; attempt++) {
+      const remaining = Math.min(requestTimeoutMs, deadlineMs - this.now());
+      if (!(remaining > 0)) throw new Unavailable('Pinned source deadline expired.');
+      let response;
+      try {
+        response = await this.fetcher(`${this.apiOrigin}/repos/${this.repository}${path}`, {
+          method, redirect: 'error', signal: AbortSignal.timeout(Math.ceil(remaining)),
+          headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28', 'content-type': 'application/json' },
+          ...(encodedBody === undefined ? {} : { body: encodedBody }),
+        });
+      } catch {
+        // A lost response after POST/PATCH does not prove the write was rejected.
+        throw unreadableResponse(method, path, 'transport failed');
+      }
+      if (response.ok) {
+        try { return await response.json(); }
+        catch {
+          throw unreadableResponse(method, path, 'response could not be read');
+        }
+      }
+      const details = { ...await classify(response, method, path, this.now()), attempt: attempt + 1 };
+      const error = new GitHubHTTPError(details);
+      try { this.onDiagnostic(details); } catch { /* Diagnostics cannot replace the provider refusal. */ }
+      if (error.code !== 'rate_limited') throw error;
+      // GitHub documents 403/429 rate responses as refusals and explicitly
+      // permits retrying the request after its wait. Never retry a lost response.
+      const delay = details.retry_at_ms === null ? null : Math.max(0, details.retry_at_ms - this.now());
+      if (attempt || delay === null || delay + requestTimeoutMs + retryMarginMs >= deadlineMs - this.now()) {
+        this.rateFailure = error; // Stop this delivery, including later cleanup calls.
+        throw error;
+      }
+      await this.wait(delay);
+      if (this.now() + requestTimeoutMs + retryMarginMs >= deadlineMs) {
+        this.rateFailure = error;
+        throw error;
+      }
     }
-    return response.json();
   }
 
-  async pages(path, field) {
+  async pages(path, field, { deadlineMs = this.deadlineMs } = {}) {
     const rows = [];
     for (let page = 1; ; page++) {
       const body = await this.request(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`,
-        { checks: field === 'check_runs' });
+        { checks: field === 'check_runs', deadlineMs });
       const items = field ? body[field] : body;
       if (!Array.isArray(items)) throw new Unavailable('Malformed GitHub list response.');
       rows.push(...items);
@@ -112,12 +231,12 @@ export class GitHub {
     return ref.object?.sha === target.head_sha;
   }
 
-  async checkRuns(sha) {
-    return this.pages(`/commits/${sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=all`, 'check_runs');
+  async checkRuns(sha, { deadlineMs = this.deadlineMs } = {}) {
+    return this.pages(`/commits/${sha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=all`, 'check_runs', { deadlineMs });
   }
 
-  async begin(target, externalId, detailsUrl, { restartCompleted = false, inputIdentity } = {}) {
-    const runs = await this.checkRuns(target.head_sha);
+  async begin(target, externalId, detailsUrl, { restartCompleted = false, inputIdentity, deadlineMs = this.deadlineMs } = {}) {
+    const runs = await this.checkRuns(target.head_sha, { deadlineMs });
     const existing = runs.filter(r => r.app?.id === APP_ID && r.name === CHECK_NAME &&
       r.head_sha === target.head_sha).sort((a, b) => b.id - a.id)[0];
     if (existing?.status === 'completed' && !restartCompleted) return existing;
@@ -133,30 +252,30 @@ export class GitHub {
       let live = false;
       if (owner) {
         try {
-          const workflow = await this.request(`/actions/runs/${owner}`);
+          const workflow = await this.request(`/actions/runs/${owner}`, { deadlineMs });
           live = String(workflow.id) === owner && ['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(workflow.status);
-        } catch {}
+        } catch (error) { if (githubRefusal(error)) throw error; }
       }
       if (live && owner !== current) return { ...existing, deferred: true, owner_run_id: owner };
       // A delivery may reconcile its own accepted creation. Completed owners,
       // missing/unknown ownership and read errors instead need a fresh attempt.
       if (live && owner === current && existing.external_id === externalId) return existing;
     }
-    // POST has no retry. After an ambiguous transport result the next delivery
+    // POST retries only a conclusive rate refusal. After an ambiguous transport result the next delivery
     // finds this stable external_id before attempting another creation.
-    const created = await this.request('/check-runs', { method: 'POST', checks: true, body: {
+    const created = await this.request('/check-runs', { method: 'POST', checks: true, deadlineMs, body: {
       name: CHECK_NAME, head_sha: target.head_sha, external_id: externalId,
       details_url: detailsUrl, status: 'in_progress', started_at: new Date().toISOString(),
       output: { title: 'Review running', summary: `${inputIdentity ?? ''}Reviewing exact head \`${target.head_sha}\`.` },
     } });
-    return this.request(`/check-runs/${created.id}`, { checks: true });
+    return this.request(`/check-runs/${created.id}`, { checks: true, deadlineMs });
   }
 
-  async finish(run, conclusion, output) {
-    await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, body: {
+  async finish(run, conclusion, output, { deadlineMs = this.deadlineMs } = {}) {
+    await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, deadlineMs, body: {
       status: 'completed', conclusion, completed_at: new Date().toISOString(), output,
     } });
-    const readback = await this.request(`/check-runs/${run.id}`, { checks: true });
+    const readback = await this.request(`/check-runs/${run.id}`, { checks: true, deadlineMs });
     if (readback.app?.id !== APP_ID || readback.head_sha !== run.head_sha ||
         readback.conclusion !== conclusion || readback.status !== 'completed') {
       throw new Unavailable('Check Run readback did not match the published result.');
