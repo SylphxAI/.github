@@ -227,6 +227,36 @@ def unpack(archive, destination, name, node):
         raise ValueError(f"archive dependency graph differs from lock: {name}")
 
 
+def check_stage(packages, name, identity):
+    try:
+        current = os.stat(name, dir_fd=packages, follow_symlinks=False)
+    except OSError as error:
+        raise ValueError("Unity package staging directory changed") from error
+    if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != identity:
+        raise ValueError("Unity package staging directory changed")
+
+
+@contextmanager
+def package_stage(packages):
+    stage = Path(tempfile.mkdtemp(prefix=".unity-upm-", dir=f"/proc/self/fd/{packages}"))
+    fd = None
+    try:
+        fd = os.open(stage.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=packages)
+        info = os.fstat(fd)
+        identity = (info.st_dev, info.st_ino)
+        yield stage, fd, identity
+    finally:
+        if fd is not None:
+            os.close(fd)
+            try:
+                check_stage(packages, stage.name, identity)
+            except ValueError:
+                # Preserve an uncertain replacement; never clean through a link.
+                pass
+            else:
+                shutil.rmtree(stage.name, dir_fd=packages)
+
+
 def hydrate(project, mirror=MIRROR):
     with package_inputs(project) as (root, packages):
         pins, registry = validate_inputs(packages)  # All drift before network or mutation.
@@ -245,18 +275,19 @@ def hydrate(project, mirror=MIRROR):
             if os.path.lexists(packages_path / name):
                 raise ValueError(f"refusing to overwrite an existing embedded package: {name}")
         moved = []
-        with tempfile.TemporaryDirectory(prefix=".unity-upm-", dir=packages_path) as temporary:
-            stage = Path(temporary)
+        with package_stage(packages) as (stage, stage_fd, stage_identity):
             for name, node in sorted(registry.items()):
                 pin = pins["packages"][name]
                 archive = stage / f"{name}.tgz"
                 fetch(f"{mirror.rstrip('/')}/upm/{pin['sha256']}/{name}/{pin['version']}", archive,
                       pin["sha256"], expected_size=pin["archiveBytes"])
+                check_stage(packages, stage.name, stage_identity)
                 unpack(archive, stage / name, name, node)
                 archive.unlink()
             try:
                 for name in sorted(registry):
-                    os.rename(stage / name, name, dst_dir_fd=packages)
+                    check_stage(packages, stage.name, stage_identity)
+                    os.rename(name, name, src_dir_fd=stage_fd, dst_dir_fd=packages)
                     moved.append(name)
                 receipt = {"schemaVersion": 1, "lockSha256": pins["lockSha256"],
                            "manifestSha256": pins["manifestSha256"], "mirror": mirror,

@@ -36,7 +36,13 @@ from those same opened file descriptors; symlinks and pathname replacement canno
 redirect these reads, even to another location inside `Packages`. The Linux action
 retains these directory descriptors through receipt cleanup, staging, package
 installation and pins output, so replacing `Packages` after admission cannot
-redirect writes either. Missing entries,
+redirect writes either. Private staging records the opened directory's device
+and inode, rejects changed or linked staging paths immediately before extraction
+and each installation move, and moves relative to the anchored staging descriptor.
+Cleanup preserves uncertain replacements instead of following them. These checks
+refuse static/committed links for input reads and writes; they are not an isolation
+boundary against a concurrently running, fully privileged process in the same job
+replacing private staging contents between checks. Missing entries,
 stale Git/local/tarball sources and non-string manifest requests stop before
 network access or mutation.
 Unselected explicit local/Git requests remain unaffected.

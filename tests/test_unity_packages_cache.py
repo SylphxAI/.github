@@ -564,6 +564,48 @@ class UnityPackagesCache(unittest.TestCase):
                 self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, before)
         self.assertEqual(self.requests, [])
 
+    def test_staging_replacement_before_extract_or_install_aborts_without_outside_changes(self):
+        for boundary in ("extract", "install"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory(dir=self.tmp.name) as temporary:
+                project, packages, outside = self.package_input_fixture(temporary)
+                for name, data in self.archives.items():
+                    (outside / f"{name}.tgz").write_bytes(data)
+                    (outside / name).mkdir()
+                    (outside / name / "keep.txt").write_text("unrelated outside file")
+                before = {p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}
+                original = Path(temporary) / "original-stage"
+                real_unlink, swaps = Path.unlink, []
+
+                def swap(stage):
+                    stage.rename(original)
+                    stage.symlink_to(outside, target_is_directory=True)
+                    swaps.append(boundary)
+
+                def local_fetch(url, destination, expected=None, *, expected_size=None):
+                    result = self.real_fetch(url.replace(upm.MIRROR, self.origin), destination, expected, expected_size=expected_size)
+                    if boundary == "extract" and not swaps:
+                        swap(destination.parent)
+                    return result
+
+                def unlink_and_swap(path, *args, **kwargs):
+                    real_unlink(path, *args, **kwargs)
+                    if boundary == "install" and path.name == "com.unity.transitive.tgz":
+                        swap(path.parent)
+
+                refusal = None
+                with patch.object(upm, "fetch", side_effect=local_fetch), patch.object(Path, "unlink", unlink_and_swap):
+                    try:
+                        upm.hydrate(project)
+                    except Exception as error:
+                        refusal = error
+                self.assertEqual(swaps, [boundary])
+                self.assertEqual({p.relative_to(outside): p.read_bytes() for p in outside.rglob("*") if p.is_file()}, before)
+                for name in self.registry:
+                    self.assertFalse(os.path.lexists(packages / name), "no registry package may be installed after a stage swap")
+                self.assertIsInstance(refusal, ValueError)
+                self.assertIn("staging directory changed", str(refusal))
+                self.assertFalse((project / ".unity-packages-cache-receipt.json").exists())
+
     def test_nonstring_manifest_requests_fail_closed(self):
         upm.validate(self.project)
         for name in ("com.autodesk.fbx", "com.unity.first", "com.other.local"):
