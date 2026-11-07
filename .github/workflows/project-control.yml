@@ -350,6 +350,10 @@ jobs:
             ${{ runner.temp }}/starter/.github/workflows/pages-publish.yml
 
   template-verdict:
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
     needs: template-plan
     if: always() && !cancelled() && github.event_name != 'push'
     runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}

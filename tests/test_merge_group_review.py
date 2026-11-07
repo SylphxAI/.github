@@ -367,6 +367,22 @@ class StandaloneReviewGateTest(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn('HTTP 503', output)
 
+    def test_every_local_verdict_caller_has_review_read_permissions(self):
+        callers = set()
+        for path in (ROOT / '.github/workflows').glob('*.yml'):
+            workflow = yaml.safe_load(path.read_text())
+            for name, job in workflow.get('jobs', {}).items():
+                if not any(step.get('uses') in {'./.github/actions/ci-ok', './.github/actions/needs-pass'}
+                           for step in job.get('steps', [])):
+                    continue
+                callers.add((path.name, name))
+                permissions = job.get('permissions', workflow.get('permissions', {}))
+                for scope in ('contents', 'pull-requests', 'checks'):
+                    with self.subTest(workflow=path.name, job=name, scope=scope):
+                        self.assertIn(permissions.get(scope), ('read', 'write'))
+        self.assertEqual(callers, {('project-control.yml', 'ci-ok'),
+                                   ('project-control.yml', 'template-verdict')})
+
     def test_needs_pass_uses_the_same_enabled_cli_path(self):
         action = yaml.safe_load((ROOT / '.github/actions/needs-pass/action.yml').read_text())
         step = next(step for step in action['runs']['steps'] if step['name'] == 'Check contribution metadata')
