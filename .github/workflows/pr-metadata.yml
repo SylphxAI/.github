@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pr-metadata-${{ github.event.changes.base && format('base-{0}', github.run_id) || github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
+  group: pr-metadata-${{ github.event_name == 'pull_request' && github.event.changes.base && format('base-{0}', github.run_id) || github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

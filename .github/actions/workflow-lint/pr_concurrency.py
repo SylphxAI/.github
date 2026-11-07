@@ -106,19 +106,19 @@ def problems(text):
             checked_events.add(other)
             checked_events.update(PR_EVENTS)
         input_fields = set()
-        absent_fields = set()
+        change_fields = set()
         for value in concurrency.values():
             for source in re.findall(r"\$\{\{(.*?)\}\}", str(value), re.S):
                 for token in Expression(source, {}).tokens:
                     if token.startswith("github.event.inputs."):
                         input_fields.add(token)
                     elif token.startswith("github.event.changes."):
-                        absent_fields.add(token)
+                        change_fields.add(token)
         dispatch = decoded.get("on", {}).get("workflow_dispatch") if isinstance(decoded.get("on"), dict) else None
         declared_inputs = dispatch.get("inputs", {}) if isinstance(dispatch, dict) else {}
         if associated_input and (not declaration or associated_input not in declared_inputs):
             return [(line, error)]
-        if len(input_fields) > 10:
+        if len(input_fields) + len(change_fields) > 10:
             return [(line, error)]
         for event in checked_events:
             # The reasoned waiver covers PR supersession only. A dispatch that
@@ -137,8 +137,16 @@ def problems(text):
                         for field in fields])]
                 else:
                     variants = [{field: {None} for field in fields}]
-                for context in variants:
-                    context.update({field: {None} for field in absent_fields})
+            # Edited payloads are not PR-exclusive: issue_comment and
+            # discussion events also carry changes.*. Enumerate both truthiness
+            # partitions for every event, including unknown inherited callers,
+            # rather than guessing that a payload selector is absent. Unknown
+            # selector families still fail closed in evaluate().
+            variants = [{**context, **dict(zip(sorted(change_fields), row))}
+                        for context in variants
+                        for row in itertools.product(*[
+                            ({None}, {"\x00change:" + field + "\x00"})
+                            for field in sorted(change_fields)])]
             for context in variants:
                 group = evaluate(concurrency.get("group"), event, context)
                 cancel = evaluate(concurrency.get("cancel-in-progress"), event, context)

@@ -96,6 +96,25 @@ class PRConcurrencyTest(unittest.TestCase):
         self.assertTrue(problems(workflow('${{ github.workflow }}-fixed', 'false',
                                          '[pull_request, workflow_call]', header)))
 
+    def test_payload_changes_cannot_hide_edited_event_eviction(self):
+        header = '# pr-concurrency: exempt — Each PR qualification must finish.\n'
+        group = "${{ github.event.changes.body && format('{0}-shared', github.workflow) || format('{0}-run-{1}', github.workflow, github.run_id) }}"
+        for event in ('issue_comment', 'discussion', 'pull_request_review', 'workflow_call'):
+            text = workflow(group, 'false', '[pull_request, ' + event + ']', header)
+            self.assertTrue(problems(text), event)
+            # The same payload predicate is safe when both branches isolate runs.
+            safe = text.replace("format('{0}-shared', github.workflow)",
+                                "format('{0}-edited-run-{1}', github.workflow, github.run_id)")
+            self.assertEqual(problems(safe), [], event)
+        # Reproduce the scheduler collision independently of the linter verdict.
+        groups = [evaluate(group, 'issue_comment', {
+            'github.workflow': {'CI'}, 'github.run_id': {run},
+            'github.event.changes.body': {'edited'}}) for run in ('101', '102', '103')]
+        self.assertEqual(groups, ['CI-shared'] * 3)
+        # Unmodeled payload selectors cannot inherit an absent-value assumption.
+        self.assertTrue(problems(workflow(group.replace('changes.body', 'comment.body'),
+                                         'false', '[pull_request, issue_comment]', header)))
+
     def test_retarget_optouts_preserve_only_the_declared_pr_association(self):
         for name in ('project-control.yml', 'pr-metadata.yml'):
             text = (ROOT / '.github/workflows' / name).read_text()
