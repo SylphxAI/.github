@@ -38,7 +38,11 @@ class ContractScopeTests(unittest.TestCase):
                          "CREATE FUNCTION nested() RETURNS int LANGUAGE SQL AS $$SELECT 1;$$;"]:
                 sql = header + " " + body + " END;"
                 with self.subTest(dialect=dialect, body=body, header=header):
-                    self.assertIn("opaque procedural body", str(guard.check_sql(sql, dialect)))
+                    if header.startswith("CREATE TRIGGER") and not body.startswith("CREATE FUNCTION"):
+                        expected = [(1, "DROP TABLE")] if body.startswith("SELECT 1; DROP") else []
+                        self.assertEqual(guard.check_sql(sql, dialect), expected)
+                    else:
+                        self.assertIn("opaque procedural body", str(guard.check_sql(sql, dialect)))
                     self.assertEqual(guard.check_sql(MARKER + sql, dialect), [])
                     self.assertEqual(guard.check_sql(MARKER + sql + "\nDROP TABLE accounts;", dialect), [(3, "DROP TABLE")])
                     self.assertEqual(guard.check_sql(MARKER + sql + "\n" + MARKER + "DROP TABLE accounts;", dialect), [])

@@ -97,9 +97,11 @@ PostgreSQL SQL and PL/pgSQL functions, procedures, and `DO` blocks are inspected
 recursively. Dollar-quoted and ordinary single-quoted bodies use the same SQL
 rules as the surrounding migration, including SQL inside control blocks.
 Additive report functions and create/grant blocks pass without a marker;
-destructive bodies report the underlying operation. Unquoted inline bodies,
-including MySQL routine definitions, other procedural languages, escape-string
-bodies, and opaque dynamic execution require a contract reference. A marker inside a body string
+destructive bodies report the underlying operation. MySQL trigger bodies are
+also inspected recursively, including single-statement `SIGNAL` refusals and
+compound `BEGIN ... END` bodies. Other unquoted inline routine definitions,
+other procedural languages, escape-string bodies, and opaque dynamic execution
+require a contract reference. A marker inside a body string
 does not authorize the surrounding migration.
 One PostgreSQL dynamic ACL form is inspected: `EXECUTE pg_catalog.format(...)`
 with a constant template for `GRANT`/`REVOKE USAGE ON SCHEMA`
@@ -149,6 +151,22 @@ schema-qualified, followed by constant/name arguments. Expressions, dynamic or
 inline actions, malformed references, and unsupported clauses remain opaque.
 `UPDATE`, `DELETE`, and `TRUNCATE` in the event list are not data mutations.
 
+MySQL `CREATE TRIGGER` headers recognize `BEFORE`/`AFTER`, `INSERT`/`UPDATE`/`DELETE`,
+optional `DEFINER`, `IF NOT EXISTS`, and `FOLLOWS`/`PRECEDES` ordering. Event words
+are not DML. The body is checked in its own scope: reads of `NEW`/`OLD` and
+refusal-only `SIGNAL` statements pass, while real destructive or dynamic SQL
+still requires a contract reference. Malformed or unsupported headers remain opaque.
+
+MySQL client `DELIMITER` directives must occupy their own line, between complete
+statements, and restore `;` before the file ends. Unquoted punctuation delimiters
+such as `$$`, `//`, and `;;` are supported; quotes, backslashes, comment markers,
+and alphanumeric delimiters are refused. Delimiters inside quoted tokens or
+comments are inert. A delimiter change never suppresses body or sibling findings,
+and unbalanced boundaries fail even with a contract marker. This follows the
+[MySQL 8.4 trigger grammar](https://dev.mysql.com/doc/refman/8.4/en/create-trigger.html)
+and [client delimiter documentation](https://dev.mysql.com/doc/refman/8.4/en/stored-programs-defining.html)
+(read 2026-11-07).
+
 A trigger may target an existing table and reference an existing callback;
 neither a new table nor a local function definition proves its runtime effects.
 Every actual `CREATE FUNCTION` body in the migration is still independently
@@ -181,7 +199,8 @@ backdate authorization. An empty `;` also consumes the marker. Whitespace and
 ordinary comments between the marker and its statement are allowed.
 
 A routine definition is one statement, including its body; quoted bodies remain
-recursively inspected and inline bodies remain opaque. Unbalanced or ambiguous
+recursively inspected, as do supported MySQL trigger bodies; other inline bodies
+remain opaque. Unbalanced or ambiguous
 inline routine boundaries fail inspection even with a marker. Marked statements
 still update safety facts used for later SQL. Reviewers verify that each named
 expand step was actually released. Markers never exempt lexical errors, edits
