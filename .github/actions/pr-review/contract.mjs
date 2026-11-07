@@ -13,6 +13,8 @@ const instructions = readFileSync(new URL('./reviewer.md', import.meta.url), 'ut
 export const reviewerVersion = `sha256:${digest({ instructions, resultSchema })}`
 export const reviewerInstructions = `${instructions}\nReviewer version: ${reviewerVersion}\nResult schema: ${canonical(resultSchema)}\n`
 export { resultSchema }
+export const identityFields = Object.freeze(['repository_id', 'base_sha', 'head_sha', 'input_digest', 'reviewer_version', 'policy_version'])
+export const requestIdentity = input => Object.fromEntries(identityFields.map(key => [key, input[key]]))
 export const sourceValidationReasons = Object.freeze([
 	'finding outside supplied source',
 	'evidence differs from supplied source',
@@ -174,7 +176,7 @@ export function parseReviewResult(text, input, { discardUngrounded = false } = {
 	let diagnostics, validationFailure
 	try {
 		const result = validateSchema(JSON.parse(text), resultSchema)
-		for (const key of ['repository_id', 'base_sha', 'head_sha', 'input_digest', 'reviewer_version', 'policy_version']) requireValue(result[key] === input[key], `mismatched ${key}`)
+		for (const key of identityFields) requireValue(result[key] === input[key], `mismatched ${key}`)
 		const incomplete = [
 			result.completion !== 'complete' && `completion=${result.completion}`,
 			result.omitted_paths.length > 0 && `omitted_paths=${result.omitted_paths.length}`,
@@ -309,7 +311,7 @@ export function parseReviewResult(text, input, { discardUngrounded = false } = {
 		if (incomplete.length) return { ...unavailable(input, `review incomplete (${incomplete.join(', ')})`),
 			status: result.completion, findings: result.findings, omitted_paths: result.omitted_paths.length ? result.omitted_paths : [...paths],
 			context_requests: result.context_requests, diagnostics, ...(discarded.length ? { discarded_items: discarded } : {}) }
-		return { ...result, status: 'complete', ...(snapped.length ? { snapped_evidence: snapped } : {}) }
+		return { ...result, ...requestIdentity(input), status: 'complete', ...(snapped.length ? { snapped_evidence: snapped } : {}) }
 	} catch (error) {
 		return unavailable(input, error instanceof SyntaxError ? 'invalid JSON review result' : error.message,
 			{ ...(diagnostics ? { diagnostics } : {}), ...(validationFailure ? { validation_failure: validationFailure } : {}) })

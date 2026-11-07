@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createReviewInput, parseReviewResult, resultSchema } from '../.github/actions/pr-review/contract.mjs';
+import { createReviewInput, parseReviewResult, resultSchema, identityFields, digest } from '../.github/actions/pr-review/contract.mjs';
 import { gatewayReviewer, reviewRequest } from '../.github/actions/pr-review/gateway.mjs';
 import { planReview } from '../.github/actions/pr-review/partition.mjs';
 import { produceReview } from '../.github/actions/pr-review/producer.mjs';
@@ -26,44 +26,44 @@ const wire = (input, changes = {}) => ({ schema_version: 1, repository_id: input
   completion: 'complete', findings: [], omitted_paths: [], context_notes: [], context_requests: [], reason: '',
   review_summary: 'Reviewed every assigned source row, the dependency and changed contract.', related_evidence: [], binary_reviews: [], ...changes });
 const response = value => ({ ok: true, status: 200, json: async () => ({ object: 'chat.completion', model,
-  choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(value) } }] }) });
-function engine(reply) {
-  const posts = [], attempts = new Map();
-  const review = gatewayReviewer({ token: 'fixture', ...configuration, deadlineMs: Date.now() + 10_000,
+  choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: typeof value === 'string' ? value : JSON.stringify(value) } }] }) });
+function engine(reply, byteLimit = byteBudget) {
+  const posts = [], attempts = new Map(), logged = [];
+  const review = gatewayReviewer({ token: 'fixture', ...configuration, identityLog: record => logged.push(record), deadlineMs: Date.now() + 10_000,
     fetcher: async (url, request) => {
       if (request.method === 'GET') {
         assert.equal(new URL(url).pathname, '/v1/public/models/vendor/reviewer');
         return { ok: true, json: async () => ({ id: model, max_output_tokens: maxOutputTokens,
-          context_window: byteBudget + maxOutputTokens + 4096 }) };
+          context_window: byteLimit + maxOutputTokens + 4096 }) };
       }
       assert.equal(String(url), 'https://api.sylphx.com/v1/chat/completions');
-      assert.ok(Buffer.byteLength(request.body) <= byteBudget);
+      assert.ok(Buffer.byteLength(request.body) <= byteLimit);
       const body = JSON.parse(request.body), part = JSON.parse(body.messages[1].content);
       posts.push({ body, part });
       const n = (attempts.get(part.input_digest) ?? 0) + 1; attempts.set(part.input_digest, n);
       const value = reply(part, n, body);
       return value?.error ? { ok: false, status: 429, json: async () => value } : response(value);
     } });
-  return { review, posts };
+  return { review, posts, logged };
 }
-async function publish(reply, { current = () => true } = {}) {
-  const { review, posts } = engine(reply), run = { id: 1, name: CHECK_NAME, head_sha: head, app: { id: APP_ID } };
-  const reads = [];
+async function publish(reply, { current = () => true, sources = source, byteLimit = byteBudget } = {}) {
+  const { review, posts, logged } = engine(reply, byteLimit), run = { id: 1, name: CHECK_NAME, head_sha: head, app: { id: APP_ID } };
+  const reads = [], saved = [];
   const github = { repository: 'example/repo', current: async () => current(posts), begin: async () => run,
     finish: async (_run, conclusion, output) => Object.assign(run, { conclusion, output }),
     source: async (path, sha, optional) => {
       reads.push({ path, sha });
       if (path === '.github/review-policy.toml') return 'version=1\n[tier0]\npaths=[]\n[generated]\npaths=[]\n[review]\npaths=["**"]\n';
-      if (source[path]) return source[path][sha === base ? 0 : 1];
+      if (sources[path]) return sources[path][sha === base ? 0 : 1];
       if (path === dependency.path) { assert.equal(sha, head); return dependency.content; }
       if (optional) return null;
       throw new Error('Unexpected source request');
     } };
   const receipt = await produceReview({ github, target: { kind: 'pull_request', number: 1, repository_id: '1',
-    base_sha: base, head_sha: head, files: Object.keys(source).map(filename => ({ filename, status: 'modified' })) },
+    base_sha: base, head_sha: head, files: Object.keys(sources).map(filename => ({ filename, status: 'modified' })) },
     trigger: { kind: 'workflow_dispatch', id: '1', generation: '1' }, createReviewInput,
-    engineVersion: 'fixture', engine: review, deadlineMs: Date.now() + 10_000 });
-  return { receipt, run, posts, reads };
+    engineVersion: 'fixture', engine: review, onResult: result => saved.push(result), deadlineMs: Date.now() + 10_000 });
+  return { receipt, run, posts, reads, saved, logged };
 }
 const second = part => part.scope?.kind === 'partition' && part.scope.index === '00000002';
 const needDependency = part => wire(part, { completion: 'incomplete', omitted_paths: part.files.map(f => f.path),
@@ -177,4 +177,80 @@ test('a head-read outage supersedes terminal invalidity rather than declaring a 
   });
   assert.equal(receipt.conclusion, 'neutral');
   assert.match(receipt.reason, /Current head could not be verified/);
+});
+
+
+const largeSources = Object.fromEntries(Array.from({ length: 81 }, (_, i) => [`src/change${String(i).padStart(3, '0')}.js`, [
+  `before-${i}-${'x'.repeat(i < 12 ? 12_000 : 50)}\n`, `after-${i}-${'y'.repeat(i < 12 ? 12_000 : 50)}\n`,
+]]));
+const largeOptions = { sources: largeSources, byteLimit: 100_000 };
+const partNumber = part => Number(part.scope?.index);
+
+for (const key of identityFields) test(`all request identities use the same bounded correction: ${key}`, async () => {
+  const bad = 'PRIVATE_RETURNED_IDENTITY_CANARY';
+  const { receipt, posts, saved, run, logged } = await publish((part, attempt, body) => {
+    if (!second(part)) return wire(part);
+    if (attempt === 1) return wire(part, { [key]: bad });
+    const correction = JSON.parse(body.messages.at(-1).content);
+    assert.deepEqual(correction.fields, [key]);
+    for (const field of identityFields) assert.equal(correction[field], part[field]);
+    return wire(part);
+  });
+  assert.equal(receipt.conclusion, 'success', receipt.reason);
+  assert.equal(posts.filter(p => second(p.part)).length, 2);
+  const badEcho = saved.at(-1).identity_diagnostics.find(d => d.returned[key].value === '[redacted]');
+  assert.ok(badEcho); assert.equal(badEcho.returned[key].sha256, digest(bad));
+  assert.deepEqual(logged, [badEcho], 'redacted mismatch diagnostics survive in the workflow log without artifacts');
+  assert.equal(Object.keys(badEcho.returned).length, 6);
+  assert.ok(!JSON.stringify({ receipt, output: run.output, diagnostics: saved.at(-1).identity_diagnostics }).includes(bad));
+});
+
+test('530 shape: part 3 reviewer-version echo corrects and all fifteen parts complete', async () => {
+  const { receipt, posts, saved } = await publish((part, attempt) => wire(part,
+    partNumber(part) === 3 && attempt === 1 ? { reviewer_version: 'sha256:' + '0'.repeat(64) } : {}), largeOptions);
+  assert.equal(receipt.conclusion, 'success', receipt.reason);
+  assert.deepEqual(receipt.parts, { planned: 15, completed: 15 });
+  assert.equal(posts.filter(p => partNumber(p.part) === 3).length, 2);
+  assert.equal(saved.at(-1).identity_diagnostics.filter(d => d.returned.reviewer_version.value === '[redacted]').length, 1);
+});
+
+test('530 shape: persistent part 3 version mismatch fails with 2/15 complete and 79 omitted paths', async () => {
+  const { receipt, run, saved } = await publish(part => wire(part,
+    partNumber(part) === 3 ? { reviewer_version: 'sha256:' + '0'.repeat(64) } : {}), largeOptions);
+  assert.equal(receipt.conclusion, 'failure'); assert.equal(run.output.title, 'Review invalid');
+  assert.deepEqual(receipt.parts, { planned: 15, completed: 2 });
+  assert.match(receipt.reason, /Part 3\/15: mismatched reviewer_version/);
+  assert.equal(saved.at(-1).omitted_paths.length, 79);
+  assert.deepEqual(saved.at(-1).invalid_result, { code: 'identity_mismatch', fields: ['reviewer_version'] });
+});
+
+test('615 shape: digest echoes on parts ten and eleven correct independently before synthesis', async () => {
+  const { receipt, posts } = await publish((part, attempt) => wire(part,
+    [10, 11].includes(partNumber(part)) && attempt === 1 ? { input_digest: part.source_digest } : {}), largeOptions);
+  assert.equal(receipt.conclusion, 'success', receipt.reason);
+  assert.deepEqual(receipt.parts, { planned: 15, completed: 15 });
+  for (const n of [10, 11]) assert.equal(posts.filter(p => partNumber(p.part) === n).length, 2);
+});
+
+test('malformed findings after bounded correction are terminal-invalid rather than unavailable', async () => {
+  const { receipt, run, saved, posts } = await publish(part => wire(part,
+    partNumber(part) === 3 ? { findings: [{ title: 'Malformed finding' }] } : {}), largeOptions);
+  assert.equal(receipt.conclusion, 'failure'); assert.equal(run.output.title, 'Review invalid');
+  assert.deepEqual(receipt.parts, { planned: 15, completed: 2 });
+  assert.equal(posts.filter(p => partNumber(p.part) === 3).length, 3);
+  assert.deepEqual(saved.at(-1).invalid_result, { code: 'malformed_assessment', fields: [] });
+  assert.deepEqual(run.output.annotations, []);
+});
+
+
+test('deep malformed identity values cannot turn diagnostic collection into a neutral outage', async () => {
+  const raw = '['.repeat(12_000) + '0' + ']'.repeat(12_000);
+  const { receipt, saved } = await publish(part => second(part)
+    ? JSON.stringify(wire(part)).replace(/"reviewer_version":"[^"]*"/, '"reviewer_version":' + raw)
+    : wire(part));
+  assert.equal(receipt.conclusion, 'failure');
+  assert.deepEqual(saved.at(-1).invalid_result, { code: 'identity_mismatch', fields: ['reviewer_version'] });
+  const record = saved.at(-1).identity_diagnostics.find(d => d.returned.reviewer_version.type === 'array');
+  assert.ok(record); assert.match(record.response_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(record.returned.reviewer_version.value, '[redacted]');
 });
