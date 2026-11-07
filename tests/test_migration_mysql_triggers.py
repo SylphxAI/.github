@@ -103,6 +103,40 @@ SIGNAL SQLSTATE '45000';
                     self.assertIn(reason, str(guard.check_sql(sql, "mysql")))
         self.assertEqual(guard.check_sql("CREATE TRIGGER x BEFORE UPDATE ON accounts FOR EACH ROW BEGIN UPDATE other SET active=0 WHERE id=NEW.id; DELETE FROM other WHERE id=OLD.id; END;", "mysql"), [])
 
+    def test_loop_updates_are_not_postgres_upsert_clauses(self):
+        for body in (
+            "WHILE NEW.id = 1 DO UPDATE other SET active=0; END WHILE;",
+            "REPEAT UPDATE other SET active=0; UNTIL NEW.id = 1 END REPEAT;",
+            "LOOP UPDATE other SET active=0; END LOOP;",
+        ):
+            plain = "CREATE TRIGGER t BEFORE UPDATE ON x FOR EACH ROW BEGIN " + body + " END;"
+            wrapped = "DELIMITER $$\n" + plain[:-1] + "$$\nDELIMITER ;"
+            for sql in (plain, wrapped):
+                for check in (guard.check_sql, guard.violations):
+                    with self.subTest(body=body, wrapped=sql == wrapped, check=check.__name__):
+                        self.assertIn("UPDATE without WHERE", str(check(sql, "mysql")))
+                        self.assertEqual(check(sql.replace("SET active=0;", "SET active=0 WHERE id=NEW.id;"), "mysql"), [])
+
+    def test_postgres_conflict_updates_and_anonymous_blocks_remain_distinct(self):
+        for clause in (
+            "ON CONFLICT (id)",
+            "ON CONFLICT ON CONSTRAINT accounts_pkey",
+            "ON CONFLICT (id) WHERE active > 0",
+        ):
+            sql = "INSERT INTO accounts (id) VALUES (1) " + clause + " DO UPDATE SET active=1;"
+            with self.subTest(clause=clause):
+                self.assertEqual(guard.check_sql(sql, "postgres"), [])
+                self.assertEqual(guard.violations(sql, "postgres"), [])
+                self.assertIn("UPDATE without WHERE", str(guard.check_sql(sql + " UPDATE other SET active=0;", "postgres")))
+        for sql in (
+            "DO $$ BEGIN UPDATE accounts SET active=0; END $$;",
+            "DO $$ BEGIN WHILE true LOOP UPDATE accounts SET active=0; END LOOP; END $$;",
+            "DO $$ BEGIN INSERT INTO accounts(id) VALUES(1) ON CONFLICT(id) DO UPDATE SET active=1; UPDATE other SET active=0; END $$;",
+        ):
+            with self.subTest(sql=sql):
+                self.assertIn("UPDATE without WHERE", str(guard.check_sql(sql, "postgres")))
+                self.assertIn("UPDATE without WHERE", str(guard.violations(sql, "postgres")))
+
     def test_dynamic_sql_is_refused_in_every_control_scope(self):
         for statement in ("PREPARE q FROM @sql", "EXECUTE q", "CALL cleanup()"):
             for body in (statement + ";", "IF NEW.id=1 THEN " + statement + "; END IF;",

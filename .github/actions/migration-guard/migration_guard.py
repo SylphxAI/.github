@@ -1488,6 +1488,36 @@ def finite_query_executes(tokens: list[Token], dialect: str, catalog_format: boo
         return set()
 
 
+def conflict_update(stmt: list[Token], at: int) -> bool:
+    """DO UPDATE is an upsert only after an INSERT's ON CONFLICT target.
+
+    A procedural WHILE ... DO UPDATE instead executes a real UPDATE. Keep
+    nested queries out of the clause search and require its target grammar.
+    """
+    if not at or not kw(stmt[at - 1], "DO") or not starts(stmt[at:], "UPDATE", "SET"):
+        return False
+    flat = top_level(stmt[:at - 1])
+    on = next((i for i in range(len(flat) - 1, -1, -1) if starts(flat[i:], "ON", "CONFLICT")), None)
+    if on is None or not any(kw(t, "INSERT") for t in flat[:on]):
+        return False
+    target_at = next(i for i, t in enumerate(stmt) if t is flat[on]) + 2
+    if target_at < at - 1 and stmt[target_at].value == "(":
+        target, end = group(stmt, target_at)
+        if not target:
+            return False
+    elif starts(stmt[target_at:], "ON", "CONSTRAINT"):
+        constraint, end = name(stmt, target_at + 2)
+        if not constraint:
+            return False
+    else:
+        return False
+    predicate = stmt[end:at - 1]
+    return not predicate or (starts(predicate, "WHERE") and len(predicate) > 1
+                             and not any(t.kind == "word" and t.value in {
+                                 "BEGIN", "THEN", "ELSE", "LOOP", "WHILE", "REPEAT", "DO",
+                                 "INSERT", "UPDATE", "DELETE", "SELECT"} for t in top_level(predicate[1:])))
+
+
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                      catalog_format: bool = False, finite_executes: set[int] | None = None,
                      historical_tables: set[str] | None = None,
@@ -1621,7 +1651,9 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                         suffix.append(following)
                     if following.kind == "symbol" and following.value == "(":
                         depth += 1
-                lock_or_upsert = kw(token, "UPDATE") and i and any(kw(scan_stmt[i - 1], w) for w in ("FOR", "KEY", "ON", "DO"))
+                lock_or_upsert = kw(token, "UPDATE") and i and (
+                    any(kw(scan_stmt[i - 1], w) for w in ("FOR", "KEY", "ON"))
+                    or conflict_update(scan_stmt, i))
                 if not lock_or_upsert and not has(suffix, "WHERE"):
                     out.append((token.line, token.value + " without WHERE"))
         stmt = control_stmt
