@@ -334,8 +334,10 @@ class GateCoverageTest(unittest.TestCase):
             root = pathlib.Path(tmp)
             folder = root / ".github/workflows"
             folder.mkdir(parents=True)
-            (folder / "ci.yml").write_text(workflow())
-            (folder / "test.yml").write_text("on: [pull_request, merge_group]\njobs: {extra: {runs-on: ubuntu-latest, timeout-minutes: 1}}")
+            exemption = "# pr-concurrency: exception complete-evidence — Isolated ci-ok coverage fixture.\n"
+            concurrency = "concurrency: {group: '${{ github.workflow }}-run-${{ github.run_id }}', cancel-in-progress: false}\n"
+            (folder / "ci.yml").write_text(exemption + concurrency + workflow())
+            (folder / "test.yml").write_text(exemption + concurrency + "on: [pull_request, merge_group]\njobs: {extra: {runs-on: ubuntu-latest, timeout-minutes: 1}}")
             found = contract.scan_dir(root)
             self.assertEqual(len(found), 2)
             self.assertTrue(all("job extra:" in f.problem and f.blocking for f in found))

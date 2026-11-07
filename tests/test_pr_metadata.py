@@ -68,7 +68,8 @@ class MetadataEvents(unittest.TestCase):
             # fork's common branch name or the trunk's branch name.
             self.assertIn('github.event.pull_request.number || github.event.inputs.code-pr', group)
             self.assertIn("format('pr-{0}'", group)
-            self.assertIn("format('{0}-{1}', github.event_name, github.ref)", group)
+            self.assertIn("format('run-{0}', github.run_id)" if path == CODE[0] else
+                          "format('{0}-{1}', github.event_name, github.ref)", group)
             self.assertNotIn('github.head_ref', group)
         for path in METADATA:
             concurrency = document(path)['concurrency']

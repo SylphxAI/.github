@@ -12,7 +12,7 @@ description: >
   launched products audit the default branch on a separate schedule, and
   unlaunched products defer audits to launch. Delivered customer repositories
   skip these rules. Also requires job timeouts, forbids manual approval and
-  maintenance-window booking gates, and forbids failure masking on required needs paths. Every PR and merge-group job must reach ci-ok or declare a reasoned advisory workflow. Needs a checkout and
+  maintenance-window booking gates, and forbids failure masking on required needs paths. PR-triggered workflows must supersede per PR while giving non-PR events unique run groups, with only named, reasoned literal concurrency exceptions. Every PR and merge-group job must reach ci-ok or declare a reasoned advisory workflow. Needs a checkout and
   python3 with pip (the scalar scanner supplies pinned PyYAML). Linux x86_64.
 
 inputs:

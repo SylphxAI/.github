@@ -75,6 +75,68 @@ checkout's workflows. Python tests are `python -m unittest discover -s tests
 -p test_workflow_contract.py` from the shared action repository.
 
 
+## PR supersession
+
+PR-triggered workflows (`pull_request` or `pull_request_target`) require
+workflow-level concurrency that cancels superseded PR work without cancelling
+or evicting non-PR runs. This rule blocks even in `report-only` mode:
+
+```yaml
+concurrency:
+  group: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
+```
+
+A `github.ref` fallback is not safe: even with `cancel-in-progress: false`,
+GitHub's default single pending slot replaces an older queued run. Non-PR
+runs therefore use `github.run_id`. Workflow names and the disjoint `-pr-` /
+`-run-` namespaces prevent cross-workflow and numeric-ID collisions.
+
+After YAML parsing, scalar values must match the literal canonical form above
+byte-for-byte. No normalization is applied: `$ {{` is a literal string, not an
+expression opener. YAML mapping layout is independent of scalar identity. The existing single-`pull_request`
+variant is accepted only without `pull_request_target` or `workflow_call`.
+Equivalent rewritten expressions, unknown selectors and arbitrary opt-outs are
+refused with `non-canonical concurrency expression; use the canonical form or
+add a named exception`. No event payload or caller input is assumed absent.
+Workflows without a PR trigger, including `workflow_call`-only definitions and
+`workflow_run` review producers, are outside this rule. Mixed PR/reusable
+workflows require the two-PR-event canonical form because callers supply events.
+
+Named exceptions require a column-zero header before `jobs`, a specific reason,
+and an exact alternative declared in `pr_concurrency.py`:
+
+- `complete-evidence` accepts only the following run-isolated, noncancelling block:
+
+  ```yaml
+  # pr-concurrency: exception complete-evidence — Every qualification must finish.
+  concurrency:
+    group: ${{ github.workflow }}-run-${{ github.run_id }}
+    cancel-in-progress: false
+  ```
+
+- `base-retarget` admits only the literal `BASE_RETARGET` metadata routing form,
+  the `PR metadata` workflow name and the declared non-reusable trigger set.
+- `code-pr-association` admits only the literal `CODE_PR_ASSOCIATION` form,
+  the `Project control` workflow name, its non-reusable trigger set, and string
+  dispatch declarations for `code-pr` and `junit-producer-run`. Generic dispatch
+  and consumer qualification use unique run IDs; explicit code-PR dispatch joins
+  its named PR evidence group without cancelling it.
+
+- `reusable-regenerate` admits only the canonical two-PR form prefixed
+  `regenerate-`, workflow name `Regenerate`, and `workflow_call` declared. The
+  callee namespace prevents sharing its caller's inherited workflow/run group.
+
+The two metadata alternatives retain the existing base-edit and explicit PR-association contracts.
+A new alternative needs a named, tested literal entry, not a generic exemption
+or symbolic payload evaluator. Bare markers, missing reasons, run-body comments,
+advisory annotations and actionlint ignores grant no exception.
+Tests are
+`python -m unittest discover -s tests -p test_pr_concurrency.py`.
+
+Primary source: [GitHub workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency),
+read 2026-11-07 UTC.
+
 ## Resolved expected-check declaration
 
 Repositories with independently triggered required checks enroll by committing

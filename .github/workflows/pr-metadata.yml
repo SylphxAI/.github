@@ -1,3 +1,4 @@
+# pr-concurrency: exception base-retarget — Base-retarget validation must survive later text edits; its unique base-edit run dispatches required code validation.
 # optimistic-merge: advisory — Mutable contribution metadata is checked separately from the code verdict.
 # optimistic-merge: gate-external
 name: PR metadata
@@ -9,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pr-metadata-${{ github.event.changes.base && format('base-{0}', github.run_id) || github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.ref) }}
+  group: pr-metadata-${{ github.event_name == 'pull_request' && github.event.changes.base && format('base-{0}', github.run_id) || github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
