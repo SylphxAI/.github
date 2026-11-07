@@ -25,24 +25,19 @@ MARKER = re.compile(r"^#\s*pr-concurrency:\s*(?:exception|exempt)\b", re.M)
 ERROR = 'non-canonical concurrency expression; use the canonical form or add a named exception'
 
 
-def normalize(value):
-    """Ignore layout whitespace only; quoted string bytes remain significant."""
-    if not isinstance(value, str):
-        return value
-    return ''.join(token for token in re.findall(r"'(?:[^']|'')*'|\s+|.", value, re.S)
-                   if not token.isspace())
-
-
 def matches(concurrency, group, cancel):
     return (set(concurrency) == {'group', 'cancel-in-progress'}
-            and normalize(concurrency['group']) == normalize(group)
-            and normalize(concurrency['cancel-in-progress']) == normalize(cancel))
+            and concurrency['group'] == group
+            and concurrency['cancel-in-progress'] == cancel)
 
 
 def named_exception(name, decoded, triggered, concurrency):
     """Each exception is a literal form with a finite trigger/input contract."""
     if name == 'complete-evidence':
         return matches(concurrency, RUN_GROUP, 'false')
+    if name == 'reusable-regenerate':
+        return (decoded.get('name') == 'Regenerate' and 'workflow_call' in triggered
+                and matches(concurrency, 'regenerate-' + GROUP, CANCEL))
     # These metadata forms are not reusable: inherited caller payloads/inputs
     # must never enter their special PR-association branches.
     if not triggered <= {'pull_request', 'push', 'merge_group', 'workflow_dispatch'}:

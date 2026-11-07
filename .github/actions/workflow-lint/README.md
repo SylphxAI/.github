@@ -92,8 +92,9 @@ GitHub's default single pending slot replaces an older queued run. Non-PR
 runs therefore use `github.run_id`. Workflow names and the disjoint `-pr-` /
 `-run-` namespaces prevent cross-workflow and numeric-ID collisions.
 
-Only the literal canonical form above is accepted, ignoring layout whitespace
-but preserving every quoted string byte. The existing single-`pull_request`
+After YAML parsing, scalar values must match the literal canonical form above
+byte-for-byte. No normalization is applied: `$ {{` is a literal string, not an
+expression opener. YAML mapping layout is independent of scalar identity. The existing single-`pull_request`
 variant is accepted only without `pull_request_target` or `workflow_call`.
 Equivalent rewritten expressions, unknown selectors and arbitrary opt-outs are
 refused with `non-canonical concurrency expression; use the canonical form or
@@ -122,7 +123,11 @@ and an exact alternative declared in `pr_concurrency.py`:
   and consumer qualification use unique run IDs; explicit code-PR dispatch joins
   its named PR evidence group without cancelling it.
 
-The latter two retain the existing base-edit and explicit PR-association contracts.
+- `reusable-regenerate` admits only the canonical two-PR form prefixed
+  `regenerate-`, workflow name `Regenerate`, and `workflow_call` declared. The
+  callee namespace prevents sharing its caller's inherited workflow/run group.
+
+The two metadata alternatives retain the existing base-edit and explicit PR-association contracts.
 A new alternative needs a named, tested literal entry, not a generic exemption
 or symbolic payload evaluator. Bare markers, missing reasons, run-body comments,
 advisory annotations and actionlint ignores grant no exception.

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -43,9 +44,64 @@ def resolve(value, context):
 class PRConcurrencyTest(unittest.TestCase):
     def test_canonical_all_events_and_layout(self):
         self.assertEqual(problems(workflow()), [])
-        self.assertEqual(problems(workflow(GROUP.replace(' && ', '\n    && ').replace(', ', ','))), [])
+        self.assertTrue(problems(workflow(GROUP.replace(' && ', '\n    && ').replace(', ', ','))))
         # Whitespace in string literals is semantic, not layout.
         self.assertTrue(problems(workflow(GROUP.replace('-run-', '- run-'))))
+
+    def test_literal_delimiters_are_not_normalized_into_expressions(self):
+        single = GROUP.replace('(' + GUARD + ')', "github.event_name == 'pull_request'")
+        for group, cancel, trigger in ((GROUP, CANCEL, '[pull_request, pull_request_target]'),
+                (single, "${{ github.event_name == 'pull_request' }}", 'pull_request')):
+            for delimiter in ('$ {{', '${ {'):
+                self.assertTrue(problems(workflow(group.replace('${{', delimiter), cancel, trigger)))
+                self.assertTrue(problems(workflow(group, cancel.replace('${{', delimiter), trigger)))
+
+    def test_named_reusable_callee_is_disjoint_under_inherited_context(self):
+        header = '# pr-concurrency: exception reusable-regenerate — Callee must not share caller group.\nname: Regenerate\n'
+        text = workflow('regenerate-' + GROUP, CANCEL, '[pull_request, workflow_call, push]', header)
+        self.assertEqual(problems(text), [])
+        for broken in (text.replace('regenerate-${{', '${{'),
+                       text.replace('name: Regenerate', 'name: Other'),
+                       text.replace('workflow_call', 'workflow_dispatch')):
+            self.assertTrue(problems(broken))
+        for event in ('pull_request', 'pull_request_target', 'push', 'merge_group',
+                      'workflow_dispatch', 'schedule', 'release'):
+            context = {'github.event_name': event, 'github.workflow': 'CI',
+                       'github.event.pull_request.number': 7, 'github.run_id': 101}
+            caller = resolve(GROUP, context)
+            callee = resolve('regenerate-' + GROUP, context)
+            self.assertNotEqual(caller, callee, event)
+            self.assertEqual(callee, 'regenerate-' + caller, event)
+
+    def test_five_literal_delimiter_fixtures_through_real_entrypoint(self):
+        fixtures = sorted((ROOT / 'tests/fixtures/pr-concurrency').glob('*literal-delimiter-*.yml'))
+        self.assertEqual(len(fixtures), 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / '.github/workflows'
+            folder.mkdir(parents=True)
+            event = root / 'event.json'
+            event.write_text('{"repository":{"private":false,"visibility":"public"}}')
+            env = {k: v for k, v in os.environ.items() if not k.startswith('GITHUB_')}
+            env.update(CONTRACT_MODE='report-only', GITHUB_EVENT_PATH=str(event))
+            for fixture in fixtures:
+                with self.subTest(fixture=fixture.name):
+                    text = fixture.read_text()
+                    self.assertTrue(problems(text))
+                    path = folder / 'ci.yml'
+                    path.write_text(text)
+                    rejected = subprocess.run([sys.executable, str(ROOT / '.github/actions/workflow-lint/contract.py')],
+                                              cwd=root, env=env, capture_output=True, text=True)
+                    self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
+                    self.assertIn('non-canonical concurrency expression', rejected.stdout)
+                    # A valid delimiter, with every other byte preserved, is
+                    # the passing control through the very same entrypoint.
+                    path.write_text(text.replace('$ {{', '${{'))
+                    self.assertEqual(problems(path.read_text()), [])
+                    accepted = subprocess.run([sys.executable, str(ROOT / '.github/actions/workflow-lint/contract.py')],
+                                              cwd=root, env=env, capture_output=True, text=True)
+                    self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+                    self.assertNotIn('non-canonical concurrency expression', accepted.stdout)
 
     def test_existing_single_pr_canonical_variant(self):
         single = GROUP.replace('(' + GUARD + ')', "github.event_name == 'pull_request'")
