@@ -41,6 +41,34 @@ def resolve(value, context):
     return re.sub(r'\$\{\{(.*?)\}\}', replace, value)
 
 
+def independent_verdict_workflow():
+    header = '# pr-concurrency: exception independent-verdict — Admit cleanup without the surviving verdict lock.\n'
+    prefix = workflow(RUN, 'false', header=header).split('jobs:\n', 1)[0]
+    return prefix + f'''jobs:
+  select:
+    concurrency:
+      group: select-{GROUP}
+      cancel-in-progress: {CANCEL}
+    runs-on: sylphx-linux-control
+    timeout-minutes: 1
+    steps:
+      - run: echo select-and-cleanup
+  tests:
+    needs: select
+    concurrency:
+      group: tests-{GROUP}
+      cancel-in-progress: {CANCEL}
+    uses: ./.github/workflows/reusable.yml
+  ci-ok:
+    needs: [select, tests]
+    if: ${{{{ always() }}}}
+    runs-on: sylphx-linux-control
+    timeout-minutes: 1
+    steps:
+      - run: exit 1
+'''
+
+
 class PRConcurrencyTest(unittest.TestCase):
     def test_canonical_all_events_and_layout(self):
         self.assertEqual(problems(workflow()), [])
@@ -148,6 +176,83 @@ class PRConcurrencyTest(unittest.TestCase):
                        HEADER.replace('complete-evidence', 'unknown')):
             self.assertTrue(problems(workflow(RUN, 'false', header=header)))
         self.assertTrue(problems(workflow(None) + '      ' + HEADER))
+
+    def test_independent_verdict_requires_every_work_job_lock(self):
+        text = independent_verdict_workflow()
+        self.assertEqual(problems(text), [])
+        for name in ('select', 'tests'):
+            lock = f'    concurrency:\n      group: {name}-{GROUP}\n      cancel-in-progress: {CANCEL}\n'
+            for broken in (text.replace(lock, ''),
+                           text.replace(name + '-' + GROUP, GROUP),
+                           text.replace(name + '-' + GROUP, '${{ github.job }}-' + GROUP),
+                           text.replace(name + '-' + GROUP, name + '-' + GROUP.replace('github.run_id', 'github.ref')),
+                           text.replace(lock, lock.replace(CANCEL, 'true')),
+                           text.replace(lock, lock.replace(CANCEL, 'false'))):
+                with self.subTest(job=name, source=broken):
+                    self.assertTrue(problems(broken))
+        self.assertTrue(problems(text.replace('tests-' + GROUP, 'select-' + GROUP)))
+        self.assertTrue(problems(text.replace('tests', 'SELECT')))
+        self.assertTrue(problems(text.replace('group: ' + RUN, 'group: ' + GROUP)))
+        self.assertTrue(problems(text.replace('  cancel-in-progress: false', '  cancel-in-progress: true', 1)))
+        self.assertTrue(problems(text.replace('exception independent-verdict', 'exception unknown')))
+        self.assertTrue(problems(text.split('\n', 1)[1]))
+        self.assertTrue(problems(text.replace('pull_request_target,', 'pull_request_target, workflow_call,')))
+
+    def test_independent_verdict_is_unlocked_and_depends_on_every_work_job(self):
+        text = independent_verdict_workflow()
+        for condition in ('always()', '${{ always() }}'):
+            self.assertEqual(problems(text.replace('${{ always() }}', condition)), [])
+        for needs in ('[select]', '[tests]', '[select, tests, tests]',
+                      '[select, tests, absent]', '[select, select]', '[[select], tests]', '{}'):
+            with self.subTest(needs=needs):
+                self.assertTrue(problems(text.replace('[select, tests]', needs)))
+        for broken in (text.replace('    if: ${{ always() }}', '    if: ${{ !cancelled() }}'),
+                       text.replace('    if: ${{ always() }}', '    if: ${{ always() && success() }}'),
+                       text.replace('    if: ${{ always() }}', f'    concurrency:\n      group: ci-ok-{GROUP}\n      cancel-in-progress: {CANCEL}\n    if: ${{{{ always() }}}}'),
+                       text.replace('    if: ${{ always() }}', '    concurrency: null\n    if: ${{ always() }}'),
+                       text.replace('    needs: select\n', '    needs: select\n    if: always()\n')):
+            self.assertTrue(problems(broken))
+        one = text.split('  tests:\n')[0] + '  ci-ok:\n' + text.split('  ci-ok:\n')[1]
+        one = one.replace('[select, tests]', 'select')
+        self.assertEqual(problems(one), [])
+        self.assertTrue(problems(workflow(RUN, 'false', header='# pr-concurrency: exception independent-verdict — No work jobs.\n')))
+
+    def test_independent_job_locks_resolve_pr_and_non_pr_isolation(self):
+        decoded = yaml.load(independent_verdict_workflow(), yaml.BaseLoader)
+        for event in ('pull_request', 'pull_request_target', 'push', 'merge_group',
+                      'workflow_dispatch', 'schedule', 'release'):
+            seen = {}
+            for run in (101, 102, 103):
+                context = {'github.event_name': event, 'github.workflow': 'CI',
+                           'github.event.pull_request.number': 7, 'github.run_id': run}
+                self.assertEqual(resolve(RUN, context), f'CI-run-{run}')
+                for name in ('select', 'tests'):
+                    lock = decoded['jobs'][name]['concurrency']
+                    seen.setdefault(name, []).append(resolve(lock['group'], context))
+                    self.assertEqual(resolve(lock['cancel-in-progress'], context).lower(),
+                                     str(event in ('pull_request', 'pull_request_target')).lower())
+            self.assertTrue(set(seen['select']).isdisjoint(seen['tests']))
+            for name in seen:
+                self.assertEqual(len(set(seen[name])), 1 if event.startswith('pull_request') else 3)
+            if event.startswith('pull_request'):
+                context['github.event.pull_request.number'] = 8
+                self.assertNotIn(resolve(decoded['jobs']['select']['concurrency']['group'], context), seen['select'])
+
+    def test_independent_verdict_through_scoped_entrypoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / '.github/workflows'
+            folder.mkdir(parents=True)
+            path = folder / 'ci.yml'
+            text = independent_verdict_workflow()
+            env = {k: v for k, v in os.environ.items() if not k.startswith('GITHUB_')}
+            env.update(CONTRACT_MODE='report-only', WORKFLOW_LINT_RULES='pr-concurrency')
+            for source, expected in ((text, 0), (text.replace('tests-' + GROUP, GROUP), 1)):
+                path.write_text(source)
+                result = subprocess.run([sys.executable, str(ROOT / '.github/actions/workflow-lint/contract.py')],
+                                        cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertEqual('non-canonical concurrency expression' in result.stdout, bool(expected))
 
     def test_pr_exception_cannot_hide_main_push_or_dispatch_eviction(self):
         for event in ('push', 'workflow_dispatch', 'merge_group'):

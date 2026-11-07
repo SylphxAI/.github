@@ -35,6 +35,8 @@ def named_exception(name, decoded, triggered, concurrency):
     """Each exception is a literal form with a finite trigger/input contract."""
     if name == 'complete-evidence':
         return matches(concurrency, RUN_GROUP, 'false')
+    if name == 'independent-verdict':
+        return 'workflow_call' not in triggered and independent_verdict(decoded, concurrency)
     if name == 'reusable-regenerate':
         return (decoded.get('name') == 'Regenerate' and 'workflow_call' in triggered
                 and matches(concurrency, 'regenerate-' + GROUP, CANCEL))
@@ -54,6 +56,44 @@ def named_exception(name, decoded, triggered, concurrency):
                         for key in ('code-pr', 'junit-producer-run'))
                 and matches(concurrency, CODE_PR_ASSOCIATION, SINGLE_CANCEL))
     return False
+
+
+def independent_verdict(decoded, concurrency):
+    """Keep the unconditional verdict outside every cancellable work lock.
+
+    A surviving always() verdict must not hold the admission lock needed by
+    its replacement's cleanup. Literal job namespaces also avoid collisions
+    between sibling jobs and reusable calls inheriting github.workflow.
+    This validates lock coverage, not the verdict's result-propagation code.
+    """
+    if not matches(concurrency, RUN_GROUP, 'false'):
+        return False
+    jobs = decoded.get('jobs')
+    if not isinstance(jobs, dict) or len(jobs) < 2:
+        return False
+    verdicts = []
+    work = []
+    for name, job in jobs.items():
+        if not isinstance(name, str) or not isinstance(job, dict):
+            return False
+        if job.get('if') in ('always()', '${{ always() }}'):
+            if 'concurrency' in job:
+                return False
+            verdicts.append(job)
+        else:
+            lock = job.get('concurrency')
+            if not isinstance(lock, dict) or not matches(lock, name + '-' + GROUP, CANCEL):
+                return False
+            work.append(name)
+    # GitHub concurrency groups are case-insensitive even when job IDs differ.
+    if len(verdicts) != 1 or not work or len({name.casefold() for name in work}) != len(work):
+        return False
+    needs = verdicts[0].get('needs')
+    if isinstance(needs, str):
+        needs = [needs]
+    return (isinstance(needs, list) and all(isinstance(name, str) for name in needs)
+            and len(needs) == len(work)
+            and set(needs) == set(work))
 
 
 def problems(text):
