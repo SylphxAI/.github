@@ -9,6 +9,7 @@ import importlib.util
 import io
 import os
 import pathlib
+import tempfile
 import unittest
 import urllib.error
 from unittest import mock
@@ -164,7 +165,7 @@ class MainTest(unittest.TestCase):
     def go(self, runs, this_pr=None, open_pulls=(), env=None, list_error=False):
         calls: list[str] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             if "/actions/workflows/verify.yml/runs" in url:
                 return {"workflow_runs": runs}
@@ -239,7 +240,7 @@ class MainTest(unittest.TestCase):
 class VerdictHoldTest(unittest.TestCase):
     """Exercise the assembled entrypoint with run-scoped jobs and a controlled clock."""
 
-    def go(self, snapshots, env=None, comparisons=None, this_pr=None, api_error=False, older_verdict="failure"):
+    def go(self, snapshots, env=None, comparisons=None, this_pr=None, api_error=False, older_verdict="failure", ancestry_error=False, refresh_seconds=0):
         calls = []
         sleeps = []
         clock = [0.0]
@@ -248,12 +249,16 @@ class VerdictHoldTest(unittest.TestCase):
         newer = {**running(), "id": 2, "head_sha": base, "html_url": "new"}
         older = {**run("failure"), "id": 1, "html_url": "old"}
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             if "/actions/workflows/verify.yml/runs" in url:
+                if snapshot[0] >= 0:
+                    clock[0] += refresh_seconds
                 snapshot[0] = min(snapshot[0] + 1, len(snapshots) - 1)
                 return {"workflow_runs": [newer, older]}
             if "/compare/" in url:
+                if ancestry_error:
+                    raise urllib.error.HTTPError(url, 403, "Resource not accessible by integration", {}, None)
                 sha = url.split("/compare/")[1].split("...")[0]
                 return {"status": (comparisons or {}).get(sha, "ahead")}
             if "/actions/runs/" in url:
@@ -356,6 +361,39 @@ class VerdictHoldTest(unittest.TestCase):
             self.assertIn("invalid hold-minutes", out)
             self.assertEqual(calls, [])
 
+    def test_missing_contents_permission_warns_in_log_and_summary_and_admits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = pathlib.Path(tmp) / "summary.md"
+            code, out, _, sleeps = self.go([None], ancestry_error=True,
+                                          env={"GITHUB_STEP_SUMMARY": str(summary)})
+            self.assertIn("contents: read", summary.read_text())
+            self.assertIn("HTTP 403", summary.read_text())
+            self.assertIn("not protected by the red-main gate", summary.read_text())
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::Commit ancestry read denied", out)
+        self.assertIn("contents: read", out)
+        self.assertIn("admitted", out)
+        self.assertEqual(sleeps, [])
+
+    def test_slow_refresh_expiring_hold_refuses_even_if_it_returns_green(self):
+        code, out, _, sleeps = self.go([None, "success"], env={"HOLD_MINUTES": "1.5"}, refresh_seconds=31)
+        self.assertEqual(code, 1)
+        self.assertIn("hold expired after 1.5 minutes", out)
+        self.assertNotIn("admitted after hold", out)
+        self.assertEqual(sleeps, [60])
+
+    def test_reads_use_remaining_hold_budget_and_translate_timeout_to_expiry(self):
+        clock = [0.0]
+
+        def get(url, token, timeout):
+            self.assertEqual(timeout, 5)
+            clock[0] = 5.0
+            raise urllib.error.URLError("socket timed out")
+
+        with mock.patch.object(gate.time, "monotonic", lambda: clock[0]), mock.patch.object(gate, "_get", get):
+            with self.assertRaises(gate.HoldExpired):
+                gate._read("u", "t", 5)
+
     def test_jobs_pagination_and_run_scoping(self):
         newer = {**running(), "id": 2}
         pages = [{"jobs": [{"name": "other", "status": "completed", "conclusion": "failure"}] * 100},
@@ -384,7 +422,7 @@ class WatchTest(unittest.TestCase):
         calls: list[str] = []
         posts: list[tuple[str, dict]] = []
 
-        def fake_get(url, token):
+        def fake_get(url, token, **kwargs):
             calls.append(url)
             if "/actions/workflows/verify.yml/runs" in url:
                 return {"workflow_runs": runs}

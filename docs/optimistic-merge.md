@@ -215,7 +215,8 @@ run-conclusion alert behaviour.
 
 With no newer pending verdict, an open non-draft revert or fix still fails
 `main-state`, so `ci-ok` fails and the ordinary change leaves the queue. When
-nothing is in motion the group is admitted with a warning. The red-main handler reverts only after the same failure repeats on a
+nothing is in motion the group is admitted with a warning. The red-main
+handler reverts only after the same failure repeats on a
 second completed run, and never reverts an infrastructure failure, a
 `timed_out` run or one that did not start; a queue that stayed shut on the
 first red would wait for a run nothing can start, and the next change landing
@@ -225,15 +226,17 @@ The gate fails open: a verify history, pull request or pull request list it
 cannot read admits with a warning, so it never jams the queue on its own
 fault. The starter ships `mode: observe` (prints what it would refuse and
 refuses nothing): read a few merge groups, including one on a red trunk, then
-set `enforce`. The job needs `contents: read` (commit ancestry), `actions: read` (runs and
-jobs) and `pull-requests: read` beside the gate's other
-read permissions. A check on the trunk that is not the verify workflow (a
+set `enforce`. The job needs `contents: read` (commit ancestry), `actions:
+read` (runs and jobs) and `pull-requests: read`. An unreadable ancestry
+comparison, including a token without `contents: read`, warns and admits
+instead of ejecting the group. HTTP 403 also writes a job-summary warning
+naming the required caller permission; fail-open is not gate protection. A check on the trunk that is not the verify workflow (a
 benchmark or nightly) never makes the trunk red here.
 
 ## The shared pieces
 
 - [`main-red-gate`](../.github/actions/main-red-gate/action.yml): the red-trunk
-  admission rule above; `mode`, `verify-workflow` and `fix-label` inputs. Its
+  admission rule above; `mode`, `verify-workflow`, `verdict-check`, `hold-minutes` and `fix-label` inputs. Its
   `mode: watch` is the scheduled half of the andon (see
   [the red-main handler](#the-red-main-handler)): it files one issue labelled
   `red-main-red-watchdog` when the trunk has stayed red past

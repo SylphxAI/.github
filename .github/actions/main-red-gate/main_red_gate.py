@@ -5,8 +5,8 @@ Andon for the merge queue (docs/optimistic-merge.md). It runs in a merge group
 only. The trunk is judged at the merge group's base SHA: the newest conclusive
 Verify verdict on that commit or an ancestor decides. With `verdict-check`,
 that exact workflow job decides even before trailing jobs finish; otherwise
-the run conclusion decides. A later success clears an earlier failure. A cancelled, skipped
-or superseded run is not an answer and is passed over (owner standards/dx.md:
+the run conclusion decides. A later success clears an earlier failure. A
+cancelled, skipped or superseded run is not an answer and is passed over (owner standards/dx.md:
 a red trunk counts only a completed failure of the verifying run).
 
 While red, a merge group is admitted when its pull request is the way back to
@@ -84,7 +84,7 @@ def newer_unfinished_run(runs: list[dict], branch: str, deciding: dict | None) -
 
 
 def gate_runs(runs: list[dict], branch: str, base_sha: str, verdict_check: str,
-              api: str, token: str, ancestry: dict[str, bool]) -> list[dict]:
+              api: str, token: str, ancestry: dict[str, bool], deadline: float | None = None) -> list[dict]:
     """Project push runs onto verdict jobs, limited to ancestors of the group's base.
 
     Workflow jobs are scoped to this run's latest attempt, not checks on a SHA
@@ -98,7 +98,12 @@ def gate_runs(runs: list[dict], branch: str, base_sha: str, verdict_check: str,
         sha = run.get("head_sha")
         if base_sha:
             if sha not in ancestry:
-                comparison = {} if sha == base_sha else _get(f"{api}/compare/{sha}...{base_sha}", token)
+                try:
+                    comparison = {} if sha == base_sha else _read(f"{api}/compare/{sha}...{base_sha}", token, deadline)
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 403:
+                        warn_ancestry_permission()
+                    raise
                 ancestry[sha] = sha == base_sha or comparison.get("status") in {"ahead", "identical"}
             if not ancestry[sha]:
                 continue
@@ -107,7 +112,7 @@ def gate_runs(runs: list[dict], branch: str, base_sha: str, verdict_check: str,
             page = 1
             verdict = None
             while True:
-                data = _get(f"{api}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100&page={page}", token)
+                data = _read(f"{api}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100&page={page}", token, deadline)
                 jobs = data.get("jobs", [])
                 verdict = next((job for job in jobs if job.get("name") == verdict_check), None)
                 if verdict is not None or len(jobs) < 100:
@@ -174,10 +179,46 @@ def decide(state: str, pull: dict | None, mode: str, fix_label: str, motion: str
     return False, f"::error::{message}"
 
 
-def _get(url: str, token: str) -> dict | list:
+def _get(url: str, token: str, timeout: float = 30) -> dict | list:
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
-    return json.load(urllib.request.urlopen(req, timeout=30))
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
+
+
+class HoldExpired(Exception):
+    """The admission hold deadline elapsed, including refresh I/O."""
+
+
+def _read(url: str, token: str, deadline: float | None = None) -> dict | list:
+    if deadline is None:
+        return _get(url, token)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise HoldExpired
+    try:
+        data = _get(url, token, timeout=min(30, remaining))
+    except Exception:
+        if time.monotonic() >= deadline:
+            raise HoldExpired from None
+        raise
+    if time.monotonic() >= deadline:
+        raise HoldExpired
+    return data
+
+
+def warn_ancestry_permission() -> None:
+    message = ("Commit ancestry read denied (HTTP 403). main-red-gate requires `contents: read` "
+               "on the invoking job/token, alongside `actions: read` and `pull-requests: read`. "
+               "Grant the missing permission in the caller; if already granted, check token repository access. "
+               "This group is admitted with a warning (fail-open), not protected by the red-main gate.")
+    print(f"::warning::{message}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as stream:
+                stream.write(f"\n### main-red-gate: `contents: read` required\n\n{message}\n")
+        except OSError as exc:
+            print(f"::warning::cannot write ancestry permission warning to job summary ({exc})")
 
 
 def _post(url: str, token: str, payload: dict) -> dict:
@@ -281,11 +322,11 @@ def main() -> int:
     # Both the merge group's base and ancestry answers are immutable during a hold.
     ancestry: dict[str, bool] = {}
 
-    def read_runs() -> list[dict]:
-        data = _get(f"{api}/actions/workflows/{env['VERIFY_WORKFLOW']}/runs"
-                    f"?event=push&branch={branch}&per_page=30", token)
+    def read_runs(deadline: float | None = None) -> list[dict]:
+        data = _read(f"{api}/actions/workflows/{env['VERIFY_WORKFLOW']}/runs"
+                    f"?event=push&branch={branch}&per_page=30", token, deadline)
         return gate_runs(data.get("workflow_runs", []), branch, env.get("BASE_SHA", ""),
-                         env.get("VERDICT_CHECK", ""), api, token, ancestry)
+                         env.get("VERDICT_CHECK", ""), api, token, ancestry, deadline)
 
     try:
         runs = read_runs()
@@ -310,19 +351,24 @@ def main() -> int:
         if running and mode == "enforce":
             deadline = time.monotonic() + hold_minutes * 60
             initial_red = run.get("id")
+            def expired() -> int:
+                print(f"::error::hold expired after {hold_minutes:g} minutes: newer "
+                      f"{env['VERIFY_WORKFLOW']} verdict is still pending ({running.get('html_url')}); "
+                      "re-enqueue once the trunk is green or label its fix")
+                return 1
+
             while running:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    print(f"::error::hold expired after {hold_minutes:g} minutes: newer "
-                          f"{env['VERIFY_WORKFLOW']} verdict is still pending ({running.get('html_url')}); "
-                          "re-enqueue once the trunk is green or label its fix")
-                    return 1
+                    return expired()
                 print(f"Holding merge group: newer {env['VERIFY_WORKFLOW']} verdict is pending "
                       f"({running.get('html_url')}); checking again in {min(60, remaining):g} seconds", flush=True)
                 time.sleep(min(60, remaining))
                 try:
-                    runs = read_runs()
+                    runs = read_runs(deadline)
                     state, run = trunk_state(runs, branch)
+                except HoldExpired:
+                    return expired()
                 except Exception as exc:
                     print(f"::warning::cannot refresh {env['VERIFY_WORKFLOW']} verdict ({exc}): admitted")
                     return 0
