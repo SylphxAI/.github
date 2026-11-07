@@ -137,6 +137,16 @@ SIGNAL SQLSTATE '45000';
                 self.assertIn("UPDATE without WHERE", str(guard.check_sql(sql, "postgres")))
                 self.assertIn("UPDATE without WHERE", str(guard.violations(sql, "postgres")))
 
+    def test_postgres_cte_upserts_are_inspected_in_their_own_parenthesis_scope(self):
+        sql = "WITH changed AS (INSERT INTO accounts(id) VALUES (1) ON CONFLICT (id) DO UPDATE SET active=1 RETURNING id) SELECT * FROM changed;"
+        for check in (guard.check_sql, guard.violations):
+            with self.subTest(check=check.__name__):
+                self.assertEqual(check(sql, "postgres"), [])
+                self.assertIn("UPDATE without WHERE", str(check(sql.replace("ON CONFLICT (id)", "ON CONFLICT"), "postgres")))
+                self.assertIn("UPDATE without WHERE", str(check("WITH changed AS (UPDATE accounts SET active=0 RETURNING id) SELECT * FROM changed;", "postgres")))
+                nested = "WITH outer_changed AS (" + sql[:-1] + ") SELECT * FROM outer_changed;"
+                self.assertEqual(check(nested, "postgres"), [])
+
     def test_postgres_targetless_do_update_is_not_an_upsert_exemption(self):
         # PostgreSQL 18: DO UPDATE "conflict_target must be provided": https://www.postgresql.org/docs/18/sql-insert.html#SQL-ON-CONFLICT
         sql = "INSERT INTO accounts(id,active) VALUES(1,1) ON CONFLICT DO UPDATE SET active=1;"

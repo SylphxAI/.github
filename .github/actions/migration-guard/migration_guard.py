@@ -1496,6 +1496,16 @@ def conflict_update(stmt: list[Token], at: int) -> bool:
     """
     if not at or not kw(stmt[at - 1], "DO") or not starts(stmt[at:], "UPDATE", "SET"):
         return False
+    # A CTE/subquery owns its own INSERT and conflict clause. Search at the
+    # UPDATE's enclosing parenthesis depth, not the outer statement's depth.
+    scopes = []
+    for i, token in enumerate(stmt[:at]):
+        if token.kind == "symbol" and token.value == "(":
+            scopes.append(i + 1)
+        elif token.kind == "symbol" and token.value == ")":
+            scopes.pop()
+    if scopes:
+        stmt, at = stmt[scopes[-1]:], at - scopes[-1]
     flat = top_level(stmt[:at - 1])
     on = next((i for i in range(len(flat) - 1, -1, -1) if starts(flat[i:], "ON", "CONFLICT")), None)
     if on is None or not any(kw(t, "INSERT") for t in flat[:on]):
