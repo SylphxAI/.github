@@ -43,6 +43,12 @@ const checkProjection = (run, fields) => Object.fromEntries(fields.map(field => 
 const identityFields = ['id', 'app.id', 'name', 'head_sha'];
 const timestamp = () => new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 
+// A reused terminal observation has the same no-overwrite authority as our own
+// attempted terminal write. Retain its verdict, completion time and output
+// fingerprints across the review/finalize process boundary.
+export const terminalCheckReceipt = (run, phase = 'reuse') => ({ phase, expected: checkProjection(run,
+  [...identityFields, 'status', 'conclusion', 'completed_at', 'output.title', 'output.summary']) });
+
 export class GitHub {
   constructor({ repository, readToken, checkToken, apiOrigin = 'https://api.github.com', fetcher = fetch,
     now = Date.now, wait = sleep }) {
@@ -215,9 +221,8 @@ export class GitHub {
 
   async finish(run, conclusion, output, { onPublish } = {}) {
     const body = { status: 'completed', conclusion, completed_at: timestamp(), output };
-    const publication = { phase: 'finish', expected: checkProjection({ ...body,
-      id: run.id, head_sha: run.head_sha, name: CHECK_NAME, app: { id: APP_ID } },
-    [...identityFields, 'status', 'conclusion', 'completed_at', 'output.title', 'output.summary']) };
+    const publication = terminalCheckReceipt({ ...body,
+      id: run.id, head_sha: run.head_sha, name: CHECK_NAME, app: { id: APP_ID } }, 'finish');
     // Save the intended result before the only terminal PATCH. The always-run
     // finalizer can reconcile it read-only even after a crash or stale GET.
     await onPublish?.(publication);

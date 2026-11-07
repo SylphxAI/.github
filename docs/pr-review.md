@@ -230,6 +230,10 @@ read projection cannot orphan a newly created check. A created check whose
 readback stays unavailable is finalized as interrupted from that saved identity.
 Before the terminal PATCH, the runner saves its intended result; finalization of
 that publication is read-only, including when a stale GET still says in progress.
+Reusing a completed success or failure saves the observed terminal receipt with
+its conclusion, completion time and output fingerprints. The finalizer reconciles
+that receipt read-only too; a later stale or unavailable GET cannot authorize a
+neutral overwrite of the reused verdict.
 
 Readback verifies canonical App/check/head identity and the fields actually
 written that a direct Check Run GET exposes, including status, conclusion,

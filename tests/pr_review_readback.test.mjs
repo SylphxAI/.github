@@ -160,8 +160,13 @@ function finalize(directory, run, state, readFailure = null) {
         writeFileSync(path, JSON.stringify(data)); return { ok: true, status: 200, json: async () => data.run };
       }
       data.reads++; writeFileSync(path, JSON.stringify(data));
-      if (readFailure === 'stale') return { ok: true, status: 200, json: async () => ({ ...data.run, status: 'in_progress', conclusion: null }) };
-      if (readFailure) return { ok: false, status: readFailure };
+      const failure = Array.isArray(readFailure) ? readFailure[data.reads - 1] : readFailure;
+      if (failure === 'stale') return { ok: true, status: 200, json: async () => ({ ...data.run, status: 'in_progress', conclusion: null }) };
+      if (failure === 'network') throw new Error('private-source-and-credential');
+      if (failure === 'conclusion') data.run = { ...data.run, conclusion: data.run.conclusion === 'success' ? 'failure' : 'success' };
+      else if (failure === 'summary') data.run = { ...data.run, output: { ...data.run.output, summary: 'different-private-source' } };
+      else if (failure === 'completed_at') data.run = { ...data.run, completed_at: '2000-01-01T00:00:00Z' };
+      else if (failure) return { ok: false, status: failure };
       return { ok: true, status: 200, json: async () => data.run };
     };
   }
@@ -255,5 +260,83 @@ test('review CLI persists the accepted creation before a permanently 404 readbac
     const settled = finalize(directory, created, state, 404);
     assert.equal(settled.result.status, 1); assert.equal(settled.resource.run.status, 'completed');
     assert.equal(settled.resource.writes.length, 1);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+// Reuse must cross both real CLI processes: the producer's completed run is
+// persisted by review, then reloaded by finalize under a stale read projection.
+async function reviewReused(directory, conclusion) {
+  const { github, run } = boundary({ create: true });
+  await produceReview({ ...options(github), trigger: { kind: 'workflow_dispatch', id: 'dispatch/1/1', generation: '1/1' } });
+  const completed = structuredClone(run());
+  completed.conclusion = conclusion;
+  completed.output.title = conclusion === 'success' ? 'Review complete' : '1 defect requires a change';
+  writeFileSync(join(directory, 'pr-review-auth.json'), JSON.stringify({ checkToken: 'checks' }), { mode: 0o600 });
+  writeFileSync(join(directory, 'event.json'), JSON.stringify({ repository: { full_name: 'example/repo', id: 1 }, inputs: { 'pull-request': '7' } }));
+  writeFileSync(join(directory, 'resource.json'), JSON.stringify({ run: completed, writes: [] }));
+  function preload(directory, base, head) {
+    GitHub.prototype.current = async () => true;
+    GitHub.prototype.source = async (path, sha) => path === 'src/change.js' ? (sha === base ? 'before\n' : 'after\n') : null;
+    globalThis.fetch = async (url, request) => {
+      const path = new URL(url).pathname;
+      const ok = value => ({ ok: true, status: 200, json: async () => value });
+      if (path.endsWith('/pulls/7')) return ok({ state: 'open', changed_files: 1, title: '[review] Fixture',
+        head: { sha: head }, base: { sha: base, ref: 'main', repo: { id: 1 } } });
+      if (path.endsWith('/pulls/7/files')) return ok([{ filename: 'src/change.js', status: 'modified' }]);
+      if (path.includes('/compare/')) return ok({ merge_base_commit: { sha: base } });
+      if (path.includes('/commits/') && path.endsWith('/check-runs')) {
+        return ok({ check_runs: [JSON.parse(readFileSync(`${directory}/resource.json`, 'utf8')).run] });
+      }
+      throw new Error(`Reuse must not infer, create, or update a check: ${request.method} ${path}`);
+    };
+  }
+  writeFileSync(join(directory, 'review-preload.mjs'), `import { readFileSync } from 'node:fs';\nimport { GitHub } from ${JSON.stringify(new URL('../.github/actions/pr-review/github.mjs', import.meta.url).href)};\n(${preload.toString()})(${JSON.stringify(directory)}, ${JSON.stringify(base)}, ${JSON.stringify(head)});`);
+  const result = spawnSync('node', ['--import', join(directory, 'review-preload.mjs'), '.github/actions/pr-review/cli.mjs', 'review'], {
+    cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, RUNNER_TEMP: directory, GITHUB_REPOSITORY: 'example/repo', GITHUB_TOKEN: 'source',
+      GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_EVENT_PATH: join(directory, 'event.json'), GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1' },
+  });
+  assert.equal(result.status, conclusion === 'success' ? 0 : 1, result.stderr);
+  const receipt = JSON.parse(result.stdout).reviews[0];
+  assert.equal(receipt.reused, true); assert.equal(receipt.conclusion, conclusion);
+  assert.equal(receipt.review_passed, conclusion === 'success');
+  const [state] = JSON.parse(readFileSync(join(directory, 'pr-review-state.json'), 'utf8'));
+  return { completed, state };
+}
+for (const conclusion of ['success', 'failure']) {
+  for (const readback of [null, ['stale', null], 'stale', 404, 503, 'network', 'conclusion', 'summary', 'completed_at']) {
+    test(`actual CLI reused ${conclusion} preserves its terminal receipt with zero PATCH after ${JSON.stringify(readback)} readback`, async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'review-reused-cli-'));
+      try {
+        const { completed, state } = await reviewReused(directory, conclusion);
+        const { result, resource } = finalize(directory, completed, state, readback);
+        assert.equal(resource.writes.length, 0, `Terminal reuse must never publish neutral: ${JSON.stringify(resource.writes)}`);
+        assert.deepEqual(resource.run, completed, 'the canonical original verdict and output must remain untouched');
+        const converges = readback === null || Array.isArray(readback);
+        assert.equal(result.status, converges && conclusion === 'success' ? 0 : 1, result.stderr);
+        assert.equal(resource.reads, readback === null ? 1 : Array.isArray(readback) ? 2 : 3);
+        if (!converges) assert.match(result.stderr, /publish_unverified/);
+        else assert.ok(!result.stderr.includes('publish_unverified'), result.stderr);
+        assert.equal(state.status, 'completed');
+        assert.equal(state.publication.phase, 'reuse');
+        assert.equal(state.publication.expected.conclusion, conclusion);
+        assert.equal(state.publication.expected.status, 'completed');
+        assert.equal(state.publication.expected.completed_at, Date.parse(completed.completed_at));
+        assert.equal(state.publication.expected['output.title'].sha256, digest(completed.output.title));
+        assert.equal(state.publication.expected['output.summary'].sha256, digest(completed.output.summary));
+        assert.ok(!JSON.stringify(state).includes(completed.output.summary));
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    });
+  }
+}
+test('a legacy persisted completed status without a full receipt never authorizes a neutral PATCH', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'review-legacy-completed-'));
+  try {
+    const completed = { ...initial(), status: 'completed', conclusion: 'success', output };
+    const state = { id: completed.id, head_sha: head, app: { id: APP_ID }, name: CHECK_NAME, status: 'completed' };
+    const { result, resource } = finalize(directory, completed, state, 'stale');
+    assert.equal(resource.writes.length, 0); assert.equal(resource.run.conclusion, 'success');
+    assert.equal(result.status, 1); assert.match(result.stderr, /publish_unverified/);
+    assert.equal(resource.reads, 3);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

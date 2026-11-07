@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
-import { GitHub, APP_ID, CHECK_NAME, Unavailable } from './github.mjs';
+import { GitHub, APP_ID, CHECK_NAME, Unavailable, terminalCheckReceipt } from './github.mjs';
 import { credentials } from './auth.mjs';
 import { eventTargets } from './events.mjs';
 import { createReviewInput, reviewerVersion } from './contract.mjs';
@@ -42,10 +42,11 @@ async function main() {
         try {
           const { id, head_sha } = state;
           let run;
-          if (state.publication) {
-            // No second PATCH after any attempted terminal publication. Even a
-            // stale in-progress read cannot authorize a conflicting neutral.
-            run = await github.reconcile(state.publication);
+          if (state.publication || state.status === 'completed') {
+            // Neither attempted publication nor an observed terminal result may
+            // be downgraded by a stale GET. Legacy terminal state without a full
+            // receipt can fail verification, but still cannot authorize a PATCH.
+            run = await github.reconcile(state.publication ?? terminalCheckReceipt(state));
           } else {
             try { run = await github.request(`/check-runs/${id}`, { checks: true }); }
             catch {
@@ -95,7 +96,8 @@ async function main() {
         if (index < 0) results.push(record); else results[index] = record;
         save(`${env.RUNNER_TEMP}/pr-review-results.json`, results);
       },
-      onBegin: run => remember({ id: run.id, head_sha: run.head_sha, app: { id: run.app.id }, name: run.name, status: run.status }),
+      onBegin: run => remember({ id: run.id, head_sha: run.head_sha, app: { id: run.app.id }, name: run.name, status: run.status,
+        ...(run.status === 'completed' ? { publication: terminalCheckReceipt(run) } : {}) }),
       onPublish: rememberPublication });
     receipts.push({ ...receipt, review_passed: passed(receipt), pull_request: target.number, event_to_check_ms: eventLatency(read(env.GITHUB_EVENT_PATH), Date.parse(receipt.observed_at)) });
   }
