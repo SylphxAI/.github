@@ -234,3 +234,73 @@ test('binary-only producer recovers pinned text provenance without refetching bi
   assert.deepEqual(reads.filter(r => ['source.proto', 'generate.js'].includes(r.path)),
     [{ path: 'source.proto', sha: head }, { path: 'generate.js', sha: head }]);
 });
+
+const boundarySource = '  // A complete fictional example request in wire (snake_case) JSON. Path\n' +
+  '  // variables default to the generated fictional resource names. Use when\n' +
+  '  // required-field placeholders cannot express conditional input modes.\n' +
+  '  string example_request_json = 15;\n';
+const boundaryPath = 'options.proto';
+function boundaryReview(quote, { source = boundarySource, start = 5536, end = 5536 + Buffer.byteLength(source),
+  kind = 'binary_source_evidence', endLine = 5 } = {}) {
+  const content = ' '.repeat(5535) + '\n' + source;
+  const input = createReviewInput(bundle([bundleFile(binary, Buffer.from([0]), payload),
+    bundleFile({ filename: boundaryPath, status: 'added' }, null, content)]));
+  const e = { path: boundaryPath, side: 'head', start_line: 2, end_line: endLine, start_byte: start, end_byte: end, quote };
+  const review = structuredClone(provenance), extra = { binary_reviews: [review] };
+  if (kind === 'binary_source_evidence') review.source_evidence = [e];
+  else if (kind === 'binary_derivation_evidence') review.derivation_evidence = [e];
+  else if (kind === 'related_evidence') extra.related_evidence = [e];
+  else extra.findings = [{ path: boundaryPath, side: 'head', start_line: 2, end_line: 5,
+    severity: 'low', title: 'Example defect', explanation: 'The changed example triggers a defect.',
+    trigger: 'Reading the example.', consequence: 'Incorrect example output.', evidence: [e] }];
+  return parse(input, extra);
+}
+
+for (const kind of ['binary_source_evidence', 'binary_derivation_evidence', 'related_evidence', 'finding_evidence']) {
+  test(`byte-qualified evidence accepts only one terminal LF difference (${kind})`, () => {
+    assert.equal(Buffer.byteLength(boundarySource), 258);
+    assert.equal(digest(boundarySource), '60e6a76b319d420ba9f5f487de3b9251603e95cea49fe7599cf4ebed83d4535f');
+    const withoutLF = boundarySource.slice(0, -1);
+    assert.equal(Buffer.byteLength(withoutLF), 257);
+    assert.equal(digest(withoutLF), 'af0f7d52219ad83e278d775950648c09187426b50d4a841ddcb9442e9a7dc9fa');
+    for (const [quote, end, operation, expected] of [[withoutLF, 5794, 'add', boundarySource],
+      [boundarySource, 5793, 'remove', withoutLF]]) {
+      const result = boundaryReview(quote, { kind, end });
+      assert.equal(result.status, 'complete', result.reason);
+      assert.deepEqual(result.snapped_evidence, [{ kind, evidence_index: 0, finding_index: kind === 'finding_evidence' ? 0 : null,
+        path: boundaryPath, side: 'head', reason: 'trailing_lf', operation,
+        start_line: 2, end_line: 5, start_byte: 5536, end_byte: end,
+        expected_bytes: Buffer.byteLength(expected), returned_bytes: Buffer.byteLength(quote) }]);
+      const normalized = kind === 'binary_source_evidence' ? result.binary_reviews[0].source_evidence[0] :
+        kind === 'binary_derivation_evidence' ? result.binary_reviews[0].derivation_evidence[0] :
+          kind === 'related_evidence' ? result.related_evidence[0] : result.findings[0].evidence[0];
+      assert.equal(normalized.quote, expected);
+      assert.equal(normalized.start_byte, 5536);
+      assert.equal(normalized.end_byte, end);
+    }
+    const exact = boundaryReview(boundarySource, { kind });
+    assert.equal(exact.status, 'complete', exact.reason);
+    assert.equal(exact.snapped_evidence, undefined);
+  });
+}
+
+for (const [name, quote, options = {}, code = 'quote_mismatch'] of [
+  ['changed byte', boundarySource.replace('wire', 'tire')],
+  ['interior CRLF', boundarySource.replace('Path\n', 'Path\r\n')],
+  ['leading whitespace added', ' ' + boundarySource],
+  ['leading whitespace removed', boundarySource.slice(1)],
+  ['two trailing LFs added', boundarySource.slice(0, -1) + '\n\n', { end: 5793 }],
+  ['one LF added to an existing LF', boundarySource + '\n'],
+  ['one LF removed from two trailing LFs', boundarySource, { source: boundarySource + '\n', endLine: 6 }],
+  ['non-LF truncation', boundarySource.slice(0, -2)],
+  ['interior byte removed', boundarySource.replace('wire', 'wre')],
+  ['LF removed and byte changed', boundarySource.slice(0, -1).replace('wire', 'tire')],
+  ['end offset outside file', boundarySource.slice(0, -1), { end: 5795 }, 'source_unavailable'],
+  ['start offset outside file', boundarySource.slice(0, -1), { start: 5795, end: 5796 }, 'source_unavailable'],
+]) test(`byte-qualified evidence refuses ${name}`, () => {
+  const result = boundaryReview(quote, options);
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.validation_failure.kind, 'binary_source_evidence');
+  assert.equal(result.validation_failure.code, code);
+  assert.equal(result.snapped_evidence, undefined);
+});
