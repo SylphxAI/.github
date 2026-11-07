@@ -790,6 +790,14 @@ or all Kubernetes aliases; these remain census and owning-writer review work.
 
 ### Recorded decisions
 
+Head scans reject expired decisions. Historical base scans still validate every
+record, but discard expired decisions from exemptions and retain the actual
+findings. Removing an expired decision therefore preserves unchanged inherited
+debt; it neither clears the base census nor exempts new violations. The required
+check, offline adoption and relocated-source comparisons use this same base-only
+behavior. Other malformed or unreadable base inputs keep their existing error
+handling.
+
 `.github/architecture-decisions.json` has `version: 1` and a `decisions` array.
 Every entry names `repository`, `path`, `line`, `class`, `rule`, `source_sha256`,
 `owner`, `reason`, `contract`, `expires`, `authority`, `evidence` and

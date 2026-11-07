@@ -59,11 +59,11 @@ class GitFixture:
         self.git('add', '.')
         self.git('commit', '-qm', 'fixture', '--allow-empty')
 
-    def check(self, base=None, repository='SylphxAI/spiron'):
+    def check(self, base=None, repository='SylphxAI/spiron', today=TODAY):
         report = self.root.parent / (self.root.name + '-report.json')
         result = subprocess.run(['python3', str(ACTION / 'stack_conformance.py'), 'check',
             '--repo', str(self.root), '--base', base or self.base, '--head', 'HEAD',
-            '--repository', repository, '--today', TODAY.isoformat(), '--report', str(report),
+            '--repository', repository, '--today', today.isoformat(), '--report', str(report),
             '--shared-source', str(ROOT)],
             text=True, capture_output=True)
         return result, json.loads(report.read_text()) if report.exists() else None
@@ -414,6 +414,136 @@ class BaselineEntryPointTests(unittest.TestCase):
             result, report = f.check()
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertNotIn('fake-sensitive-value', result.stdout + json.dumps(report))
+
+class HistoricalDecisionTests(unittest.TestCase):
+    """Replay removal of a decision that expired on 2026-11-06."""
+
+    TODAY = datetime.date(2026, 11, 7)
+    DECISIONS = '.github/architecture-decisions.json'
+    decision = StructuralBoundaryTests.decision
+
+    def files(self):
+        files = dict([VIOLATIONS['C5'], VIOLATIONS['C4']])
+        rows = a.evaluate(sc.DictTree(files), 'SylphxAI/spiron', None, self.TODAY)['findings']
+        decision = self.decision(next(row for row in rows if row['class'] == 'C5'))
+        decision['expires'] = '2026-11-06'
+        files[self.DECISIONS] = json.dumps({'version': 1, 'decisions': [decision]})
+        files[sc.BASELINE] = a.BASELINE_MARKER + '\n' + ''.join(
+            sc.adoption.RULE_MARKER + 'architecture/' + row['class'] + '/' + row['rule'] + '\n'
+            for row in rows) + '\n'.join(map(a.baseline_key, rows)) + '\n'
+        return files, rows
+
+    def test_historical_expiry_keeps_true_findings_without_an_exemption(self):
+        files, expected = self.files()
+        for today, exempt in [(datetime.date(2026, 11, 6), True), (self.TODAY, False)]:
+            with self.subTest(today=today):
+                report = a.evaluate(sc.DictTree(files), 'SylphxAI/spiron', None, today,
+                                    ignore_expired=True)
+                self.assertEqual(list(map(a.baseline_key, report['findings'])),
+                                 list(map(a.baseline_key, expected)))
+                self.assertEqual(report['unreadable'], [])
+                self.assertEqual(bool(report['decisions']), exempt)
+                row = next(row for row in report['findings'] if row['class'] == 'C5')
+                self.assertEqual(bool(row['decision']), exempt)
+        with self.assertRaisesRegex(ValueError, 'architecture decision expired:'):
+            a.evaluate(sc.DictTree(files), 'SylphxAI/spiron', None, self.TODAY)
+
+    def test_historical_expiry_does_not_skip_schema_or_duplicate_validation(self):
+        files, _ = self.files()
+        decision = json.loads(files[self.DECISIONS])['decisions'][0]
+        for rows, message in [([decision | {'expires': 'not-a-date'}], 'expiry must be an ISO date'),
+                              ([decision | {'contract': 'not-a-url'}], 'must link'),
+                              ([decision, decision], 'duplicate architecture decision')]:
+            with self.subTest(message=message):
+                files[self.DECISIONS] = json.dumps({'version': 1, 'decisions': rows})
+                with self.assertRaisesRegex(ValueError, message):
+                    a.evaluate(sc.DictTree(files), 'SylphxAI/spiron', None, self.TODAY,
+                               ignore_expired=True)
+
+    def test_removing_expired_decision_passes_but_new_debt_and_expired_head_fail(self):
+        for change in ('remove', 'new-violation', 'retain'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as d:
+                f = GitFixture(d)
+                files, expected = self.files()
+                f.write(files)
+                f.commit()
+                base = f.git('rev-parse', 'HEAD').strip()
+                if change != 'retain':
+                    (f.root / self.DECISIONS).unlink()
+                if change == 'new-violation':
+                    f.write({'src/new.rs': VIOLATIONS['C6'][1]})
+                f.commit()
+                result, report = f.check(base=base, today=self.TODAY)
+                self.assertEqual(result.returncode, int(change != 'remove'), result.stdout + result.stderr)
+                if change == 'retain':
+                    self.assertIn('architecture decision expired:', result.stdout)
+                else:
+                    self.assertEqual(report['unreadable'], [])
+                    inherited = [row for row in report['findings'] if row['disposition'] == 'inherited']
+                    self.assertEqual({a.baseline_key(row) for row in inherited},
+                                     {a.baseline_key(row) for row in expected})
+                    self.assertTrue(all(row['decision'] is None for row in inherited))
+                    self.assertTrue(all(row['baseline_recorded'] for row in inherited))
+                    if change == 'new-violation':
+                        self.assertEqual([(row['path'], row['rule']) for row in report['findings']
+                                          if row['disposition'] == 'regression'],
+                                         [('src/new.rs', 'unexplained-suppression')])
+
+    def test_offline_adoption_ignores_only_the_base_expiry(self):
+        files, expected = self.files()
+        files['.github/workflows/stack.yml'] = (
+            'uses: SylphxAI/.github/.github/actions/stack-conformance@bc664ac7410c00d233fe4f729b6747969a4a9bed # main\n')
+        head = {path: text for path, text in files.items() if path != self.DECISIONS}
+        report = sc.adoption.plan_adoption(sc.DictTree(files), sc.DictTree(head),
+            'SylphxAI/spiron', shared_repo=str(ROOT), today=self.TODAY)
+        self.assertEqual({line for line in sc.parse_baseline(report['baseline_text'])
+                          if line.startswith('architecture ')}, {a.baseline_key(row) for row in expected})
+        with self.assertRaisesRegex(ValueError, 'architecture decision expired:'):
+            sc.adoption.plan_adoption(sc.DictTree(files), sc.DictTree(files),
+                'SylphxAI/spiron', shared_repo=str(ROOT), today=self.TODAY)
+
+    def test_relocated_source_ignores_only_the_base_expiry(self):
+        files, expected = self.files()
+        prefix = 'legacy/component'
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        fixture = GitFixture(temporary.name)
+        fixture.write({prefix + '/' + path: text for path, text in files.items()})
+        fixture.commit()
+        base = sc.Tree(str(fixture.root), 'HEAD')
+        (fixture.root / prefix / self.DECISIONS).unlink()
+        fixture.commit()
+        current = sc.Tree(str(fixture.root), 'HEAD')
+        records = [{'prefix': prefix, 'base_tree': 'a' * 40, 'source_repository': 'SylphxAI/spiron',
+                    'source_commit': 'b' * 40, 'source_tree': 'c' * 40, 'proof': 'exact-origin-tree'}]
+        report, errors = sc.source_provenance.architecture_report(current, base, records,
+            sc.BASELINE, None, self.TODAY, a, sc.parse_baseline)
+        self.assertEqual(errors, [])
+        self.assertEqual(report['unreadable'], [])
+        self.assertEqual(len(report['findings']), len(expected))
+        self.assertTrue(all(not row['changed'] and row['decision'] is None for row in report['findings']))
+        with self.assertRaisesRegex(ValueError, 'architecture decision expired:'):
+            sc.source_provenance.architecture_report(base, base, records,
+                sc.BASELINE, None, self.TODAY, a, sc.parse_baseline)
+
+    def test_non_expiry_base_error_still_reports_unreadable_during_adoption(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = GitFixture(d)
+            path, source = VIOLATIONS['C5']
+            f.write({path: source, self.DECISIONS: '{invalid', '.github/workflows/stack.yml':
+                     'uses: SylphxAI/.github/.github/actions/stack-conformance@bc664ac7410c00d233fe4f729b6747969a4a9bed # main\n'})
+            f.commit()
+            base = f.git('rev-parse', 'HEAD').strip()
+            (f.root / self.DECISIONS).unlink()
+            row = a.evaluate(sc.DictTree({path: source}), 'SylphxAI/spiron', None, self.TODAY)['findings'][0]
+            f.write({sc.BASELINE: a.BASELINE_MARKER + '\n' + sc.adoption.RULE_MARKER +
+                     'architecture/C5/polling-loop\n' + a.baseline_key(row) + '\n'})
+            f.commit()
+            result, report = f.check(base=base, today=self.TODAY)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertTrue(any(row['path'] == 'base architecture configuration' and
+                                'Expecting property name' in row['reason'] for row in report['unreadable']), report)
+
 
 class DistributionTests(unittest.TestCase):
     def test_downloaded_action_without_git_uses_immutable_supplied_pin(self):

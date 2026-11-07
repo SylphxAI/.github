@@ -211,7 +211,7 @@ def architecture_report(head, base, records, baseline, changed, today, architect
         current = TreeView(head, prefix)
         prior = TreeView(base, prefix) if base and record['base_tree'] else current
         report = architecture.evaluate(current, record['source_repository'], local_changes(changed, prefix), today)
-        previous = architecture.evaluate(prior, record['source_repository'], None, today)
+        previous = architecture.evaluate(prior, record['source_repository'], None, today, ignore_expired=True)
         old = {architecture.baseline_key(row): row for row in previous['findings']}
         def entries(tree):
             return {v for v in parse_baseline(tree.read(baseline)) or () if v.startswith('architecture ')}
