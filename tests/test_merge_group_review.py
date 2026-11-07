@@ -155,6 +155,16 @@ class ReviewPaginationTest(unittest.TestCase):
             findings = policy.review_findings(self.api, pull(), [commit(HEAD)])
         self.assertIn('API read error: HTTP 503', findings[0]['rule'])
 
+    def test_queue_disappearing_after_a_partial_page_is_not_a_complete_inventory(self):
+        entries = [{'headCommit': {'oid': GROUP}, 'pullRequest': {'number': i, 'headRefOid': HEAD}}
+                   for i in range(1, 101)]
+        absent = {'data': {'repository': {'mergeQueue': None}}}
+        with mock.patch.object(self.api, 'read', side_effect=[queue_page(entries, 101, True, 'next'), absent]):
+            with self.assertRaisesRegex(policy.PolicyError, 'pagination is incomplete or changed'):
+                self.api.queue_entries('main')
+        with mock.patch.object(self.api, 'read', return_value=absent):
+            self.assertEqual(self.api.queue_entries('main'), [])
+
     def test_queue_page_boundary_and_gaps(self):
         entries = [{'headCommit': {'oid': GROUP}, 'pullRequest': {'number': i, 'headRefOid': HEAD}}
                    for i in range(1, 102)]

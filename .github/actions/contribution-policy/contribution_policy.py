@@ -240,6 +240,8 @@ class GitHub:
                 raise PolicyError('GitHub merge queue metadata is unreadable')
             queue = response['data']['repository']['mergeQueue']
             if queue is None:
+                if total is not None:
+                    raise PolicyError('GitHub merge queue pagination is incomplete or changed')
                 return entries
             connection = queue['entries']
             count, rows = connection['totalCount'], connection['nodes']
