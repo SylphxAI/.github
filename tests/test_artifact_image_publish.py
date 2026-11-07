@@ -731,6 +731,7 @@ def test_pipeline_cleans_credentials_and_emits_receipt_only_after_full_success(
         assert child_env["SOURCE_WORKFLOW"] == env["GITHUB_WORKFLOW_REF"]
         assert child_env["SOURCE_RUN_ID"] == "123"
         assert child_env["SOURCE_RUN_ATTEMPT"] == "2"
+        assert child_env["ARTIFACT_DRY_RUN"] == "false"
         if command in ("build", "evidence"):
             assert Path(child_env["ARTIFACT_REGISTRY_AUTH_FILE"]).is_file()
             assert (root / "registry-auth/config.json").is_file()
@@ -821,6 +822,219 @@ def test_pipeline_cleans_credentials_and_emits_receipt_only_after_full_success(
             }
 
 
+def dry_run_environment(tmp_path, monkeypatch, event="pull_request"):
+    values = {
+        "INPUT_DRY_RUN": "true", "GITHUB_EVENT_NAME": event,
+        "INPUT_PROJECT": PARENT, "INPUT_SOURCE_SHA": "a" * 40,
+        "GITHUB_SHA": "a" * 40, "GITHUB_REPOSITORY": "owner/source",
+        "GITHUB_REPOSITORY_ID": "42", "GITHUB_REF": "refs/pull/7/merge",
+        "GITHUB_WORKFLOW_REF": "owner/source/.github/workflows/image.yml@refs/pull/7/merge",
+        "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2",
+        "RUNNER_TEMP": str(tmp_path), "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "INPUT_CI_NAME": "test-ci", "INPUT_PLATFORMS": "linux/amd64",
+        "INPUT_BUILD_COMMAND": "same-build", "INPUT_EVIDENCE_COMMAND": "same-evidence",
+        "INPUT_VERIFY_COMMAND": "remote-verify-must-not-run",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "private-oidc-request",
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc.invalid/token",
+        "GH_TOKEN": "private-github-token", "GITHUB_TOKEN": "private-github-token",
+        "SYLPHX_API_KEY": "private-existing-api-key",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    return values
+
+
+@pytest.mark.parametrize("event", ["pull_request", "merge_group", "push"])
+def test_dry_run_reuses_build_and_evidence_with_zero_writes_and_exact_manifest(
+    tmp_path, monkeypatch, event,
+):
+    source = dry_run_environment(tmp_path, monkeypatch, event)
+    observed = []
+
+    class ReadOnlyAccess:
+        def prepare(self, parent):
+            pytest.fail("dry run attempted an upload reservation")
+
+        def call(self, path, **kwargs):
+            if kwargs.get("document") is not None:
+                pytest.fail("dry run attempted an API write")
+            return {}
+
+    def command(command, env):
+        observed.append(command)
+        assert env["ARTIFACT_DRY_RUN"] == "true"
+        assert env["GITHUB_EVENT_NAME"] == event
+        assert env["GITHUB_REF"] == source["GITHUB_REF"]
+        assert env["SOURCE_WORKFLOW"] == source["GITHUB_WORKFLOW_REF"]
+        assert env["IMAGE_TAG"] == "dry-run-aaaaaaaaaaaa-runtime"
+        assert env["BUILD_EVIDENCE_TAG"] == "dry-run-aaaaaaaaaaaa-evidence"
+        assert not any(Path(env["DOCKER_CONFIG"]).iterdir())
+        for private in ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+                        "GH_TOKEN", "GITHUB_TOKEN", "SYLPHX_API_KEY", "ARTIFACT_REGISTRY_AUTH_FILE"):
+            assert private not in env
+        if command == "same-build":
+            make_layout(Path(env["OCI_DIR"]))
+        else:
+            assert command == "same-evidence"
+            (Path(env["BUILD_EVIDENCE_DIR"]) / "nested").mkdir()
+            (Path(env["BUILD_EVIDENCE_DIR"]) / "nested/proof.json").write_bytes(b'{"proved":true}\n')
+            make_layout(Path(env["BUILD_EVIDENCE_OCI_DIR"]), "evidence")
+
+    with (
+        mock.patch.object(lane, "Access", return_value=ReadOnlyAccess()) as access,
+        mock.patch.object(lane, "request", side_effect=AssertionError("external HTTP request")) as request,
+        mock.patch.object(lane, "push", side_effect=AssertionError("registry write")) as push,
+        mock.patch.object(lane, "register", side_effect=AssertionError("Artifact write")) as register,
+        mock.patch.object(lane, "write_auth", side_effect=AssertionError("credential materialization")) as auth,
+        mock.patch.object(lane, "readback", side_effect=AssertionError("remote readback")) as readback,
+        mock.patch.object(lane, "shell", side_effect=command),
+        mock.patch.object(lane.platform, "machine", return_value="x86_64"),
+        mock.patch.object(lane.shutil, "which", return_value="/fixture/tool"),
+        mock.patch.object(lane.subprocess, "check_output", return_value="a" * 40),
+    ):
+        lane.run()
+    for external in (access, request, push, register, auth, readback):
+        external.assert_not_called()
+    assert observed == ["same-build", "same-evidence"]
+    root = next(tmp_path.glob("artifact-image-*"))
+    assert not (root / "registry-auth").exists()
+    outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
+    assert set(outputs) == {"_root", "dry_run", "dry_run_manifest"}
+    assert outputs["dry_run"] == "true"
+    manifest = json.loads(outputs["dry_run_manifest"])
+    assert manifest == json.loads((root / "dry-run-manifest.json").read_text())
+    assert manifest["dryRun"] is True and manifest["published"] is False
+    assert manifest["artifactsRegistered"] is False and manifest["uploadTagsReserved"] is False
+    assert manifest["authenticatedManifestReadback"] is False and manifest["promotionAuthorized"] is False
+    assert manifest["access"]["checked"] is False
+    assert manifest["remoteVerification"].startswith("skipped:")
+    assert manifest["target"] == {
+        "project": PARENT, "image": IMAGE, "ciName": "test-ci", "sourceSha": "a" * 40,
+        "platforms": "linux/amd64", "repository": "owner/source", "repositoryID": "42",
+        "workflow": source["GITHUB_WORKFLOW_REF"], "event": event, "ref": "refs/pull/7/merge",
+        "runID": "123", "runAttempt": "2",
+    }
+    for key, directory in (("runtime", "image-oci"), ("evidence", "evidence-oci")):
+        descriptor, raw = lane.local_manifest(root / directory)
+        assert manifest[key]["digest"] == descriptor["digest"] == lane.sha256(raw)
+        assert manifest[key]["imageReference"] == IMAGE + "@" + descriptor["digest"]
+        assert manifest[key]["artifactName"] == lane.artifact_name(PARENT, descriptor["digest"])
+    assert manifest["evidence"]["subject"] == manifest["runtime"]["artifactName"]
+    assert manifest["evidence"]["files"] == {
+        "nested/proof.json": {"digest": lane.sha256(b'{"proved":true}\n'), "sizeBytes": "16"},
+    }
+    assert all(secret not in outputs["dry_run_manifest"] for secret in
+               ("private-oidc-request", "private-github-token", "private-existing-api-key"))
+
+
+def test_dry_run_shipped_entrypoint_executes_real_local_commands_without_oidc(tmp_path, monkeypatch):
+    dry_run_environment(tmp_path, monkeypatch)
+    fixture = tmp_path / "fixture"
+    make_layout(fixture / "runtime")
+    make_layout(fixture / "evidence-oci", "evidence")
+    (fixture / "evidence").mkdir()
+    (fixture / "evidence/proof.json").write_bytes(b"real fixture\n")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "skopeo").write_text("#!/bin/sh\nexit 91\n")
+    (tools / "skopeo").chmod(0o700)
+    source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    env = {
+        **os.environ,
+        "GITHUB_SHA": source, "INPUT_SOURCE_SHA": source,
+        "PREVIEW_FIXTURE": str(fixture), "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+        "INPUT_BUILD_COMMAND": 'test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN+x}"; '
+                               'cp -a "$PREVIEW_FIXTURE/runtime/." "$OCI_DIR/"',
+        "INPUT_EVIDENCE_COMMAND": 'cp -a "$PREVIEW_FIXTURE/evidence-oci/." "$BUILD_EVIDENCE_OCI_DIR/"; '
+                                  'cp -a "$PREVIEW_FIXTURE/evidence/." "$BUILD_EVIDENCE_DIR/"',
+        "INPUT_VERIFY_COMMAND": "",
+    }
+    result = subprocess.run([lane.sys.executable, str(ACTION / "publish.py")], cwd=ROOT,
+                            env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert "access_check=skipped" in result.stdout
+    assert "remote_verification=skipped published=false" in result.stdout
+    assert "stage=publish" not in result.stdout and "stage=verify" not in result.stdout
+    outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
+    assert set(outputs) == {"_root", "dry_run", "dry_run_manifest"}
+    manifest = json.loads(outputs["dry_run_manifest"])
+    assert manifest["target"]["event"] == "pull_request"
+    assert manifest["target"]["sourceSha"] == source
+    assert manifest["runtime"]["digest"] == lane.local_manifest(fixture / "runtime")[0]["digest"]
+    assert manifest["evidence"]["files"]["proof.json"]["digest"] == lane.sha256(b"real fixture\n")
+
+
+@pytest.mark.parametrize("failure", ["build", "evidence", "changed-blob", "symlink", "oversized-manifest"])
+def test_dry_run_failure_emits_no_manifest_or_promotion_output(tmp_path, monkeypatch, failure):
+    dry_run_environment(tmp_path, monkeypatch)
+    if failure == "oversized-manifest":
+        monkeypatch.setenv("GITHUB_WORKFLOW_REF", "w" * 524289)
+
+    def command(command, env):
+        if failure == {"same-build": "build", "same-evidence": "evidence"}[command]:
+            raise RuntimeError("fixture command failure")
+        if command == "same-build":
+            layout = Path(env["OCI_DIR"])
+            make_layout(layout)
+            if failure == "changed-blob":
+                next((layout / "blobs/sha256").iterdir()).write_bytes(b"changed")
+        else:
+            evidence = Path(env["BUILD_EVIDENCE_DIR"])
+            if failure == "symlink":
+                (evidence / "foreign-proof").symlink_to(tmp_path / "private-file")
+            else:
+                (evidence / "proof.json").write_text("{}")
+            make_layout(Path(env["BUILD_EVIDENCE_OCI_DIR"]), "evidence")
+
+    with (
+        mock.patch.object(lane, "Access", side_effect=AssertionError("Access attempted")),
+        mock.patch.object(lane, "shell", side_effect=command),
+        mock.patch.object(lane.platform, "machine", return_value="x86_64"),
+        mock.patch.object(lane.shutil, "which", return_value="/fixture/tool"),
+        mock.patch.object(lane.subprocess, "check_output", return_value="a" * 40),
+        pytest.raises((RuntimeError, ValueError)),
+    ):
+        lane.run()
+    outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
+    assert set(outputs) == {"_root"}
+    assert not (next(tmp_path.glob("artifact-image-*")) / "dry-run-manifest.json").exists()
+
+
+@pytest.mark.parametrize("value", ["TRUE", "true ", "1", "yes", ""])
+def test_dry_run_rejects_ambiguous_boolean_before_access(monkeypatch, value):
+    monkeypatch.setenv("INPUT_DRY_RUN", value)
+    with mock.patch.object(lane, "Access") as access, pytest.raises(ValueError, match="dry-run"):
+        lane.run()
+    access.assert_not_called()
+
+
+@pytest.mark.parametrize("dry,missing", [("true", "INPUT_BUILD_COMMAND"),
+                                           ("true", "INPUT_EVIDENCE_COMMAND"),
+                                           ("false", "INPUT_VERIFY_COMMAND")])
+def test_required_commands_fail_before_any_credential_or_mutation(tmp_path, monkeypatch, dry, missing):
+    dry_run_environment(tmp_path, monkeypatch, "push")
+    monkeypatch.setenv("INPUT_DRY_RUN", dry)
+    monkeypatch.delenv(missing)
+    with (
+        mock.patch.object(lane, "Access") as access,
+        mock.patch.object(lane.platform, "machine", return_value="x86_64"),
+        mock.patch.object(lane.shutil, "which", return_value="/fixture/tool"),
+        mock.patch.object(lane.subprocess, "check_output", return_value="a" * 40),
+        pytest.raises(ValueError, match="required"),
+    ):
+        lane.run()
+    access.assert_not_called()
+    assert not (tmp_path / "output").exists()
+
+
+def test_dry_run_defaults_false_and_keeps_publication_push_only(monkeypatch):
+    monkeypatch.delenv("INPUT_DRY_RUN", raising=False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    with mock.patch.object(lane, "Access") as access, pytest.raises(ValueError, match="push events only"):
+        lane.run()
+    access.assert_not_called()
+
+
 def test_receipt_is_required_and_bounded(tmp_path):
     with pytest.raises(ValueError, match="no receipt"):
         lane.receipt(tmp_path)
@@ -863,6 +1077,10 @@ def test_provider_and_tool_errors_do_not_log_secrets(capsys, monkeypatch):
 def test_composite_keeps_caller_identity_and_always_cleans_up():
     action = yaml.safe_load((ACTION / "action.yml").read_text())
     assert action["runs"]["using"] == "composite"
+    assert action["inputs"]["dry-run"]["default"] == "false"
+    assert action["inputs"]["verify-command"]["required"] is False
+    assert action["runs"]["steps"][0]["env"]["INPUT_DRY_RUN"] == "${{ inputs.dry-run }}"
+    assert {"dry_run", "dry_run_manifest"} <= set(action["outputs"])
     assert not {"image", "repository", "token", "registry", "api-url"} & set(
         action["inputs"]
     )

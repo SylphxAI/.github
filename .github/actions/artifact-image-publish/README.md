@@ -3,8 +3,10 @@
 `artifact-image-publish` builds a runtime OCI image and an evidence OCI image,
 publishes both through the public Sylphx Artifact API, and returns the caller's
 promotion verification receipt. The composite runs in the caller's job, so
-Access admits the source workflow's GitHub OIDC identity. Call it only from a
-push job declared in Access. Other events fail before requesting credentials.
+Access admits the source workflow's GitHub OIDC identity. Real publication runs
+only from a push job declared in Access; other events fail before requesting
+credentials. `dry-run: 'true'` also supports PR and merge-group checks without
+contacting Access or publishing anything.
 
 The only destination input is the canonical `project` resource name. The
 action exchanges the job's GitHub OIDC token, with audience `sylphx-access`, at
@@ -54,6 +56,52 @@ It does not claim signature or provenance verification. The required
 cosign/provenance checks. It runs once, after publisher credential cleanup,
 against the authenticated registry manifests. The action emits promotion
 outputs only after that command writes its receipt.
+
+## Dry run
+
+Set `dry-run: 'true'` to execute the **same build-command and evidence-command**
+without publishing. It defaults to `'false'`; ambiguous values are refused.
+The checkout/source-SHA and native-platform checks still apply, but a dry run
+may run on a pull request or merge group. The action passes
+`ARTIFACT_DRY_RUN=true` to both commands and preserves the actual event, ref,
+source workflow and run identity. It never rewrites a PR identity into a main
+push.
+
+No GitHub OIDC or Access credential is issued, no `prepareUpload` reference is
+reserved, no registry request or push is made, and no Artifact is registered.
+Access authorization is explicitly **skipped**: the action accepts no existing
+read credential, and its normal OIDC exchange would issue one. Publisher API,
+GitHub and OIDC credential environment variables are removed from the command
+environment, registry auth is absent, and Docker points at a separate empty
+configuration. Caller commands must perform only local build/evidence work;
+this option does not sandbox arbitrary shell commands. Any build dependencies
+must already be available or use the caller's normal read-only build path.
+
+`IMAGE_TAG` and `BUILD_EVIDENCE_TAG` are explicitly local, unreserved
+`dry-run-<source-prefix>-runtime` and `dry-run-<source-prefix>-evidence` tags.
+Both complete OCI descriptor graphs are validated against their local bytes.
+Every staged evidence file is hashed, with symlinks and non-regular entries
+refused. The resulting `dry_run_manifest` JSON contains:
+
+- source commit, repository ID/name, workflow, actual event/ref, run/attempt,
+  platform, CI declaration and canonical target project/repository;
+- runtime and evidence manifest digests, media types, sizes, proposed immutable
+  references and Artifact names, and the evidence subject;
+- the digest and size of every staged evidence file;
+- explicit false publication, reservation, registration, authenticated-readback
+  and promotion flags, plus the skipped Access and remote-verification reasons.
+
+The manifest is also retained in `LANE_ROOT/dry-run-manifest.json` and is capped
+at 524288 bytes without truncation. Only `dry_run=true` and `dry_run_manifest`
+are emitted as public outputs. A failed build, evidence command or local-byte
+validation emits neither. Normal Artifact and promotion outputs, including
+`verify_receipt`, remain absent. `verify-command` is skipped because its
+contract requires authenticated registry readback; local bytes are never
+presented as a remote verification. It is optional for a dry run, but remains
+required before real publication can request a credential.
+
+A dry-run manifest describes these local candidate bytes, not a reservation
+or a promise that a future rebuild will produce the same bytes.
 
 ## Caller setup
 

@@ -525,9 +525,79 @@ def cleanup(root):
     shutil.rmtree(path / "registry-auth", ignore_errors=True)
 
 
+def build_and_evidence(commands, env, root):
+    """Both modes execute exactly one shared build and evidence path."""
+    print("artifact_publish stage=build", flush=True)
+    shell(commands[0], env)
+    print("artifact_publish stage=package-evidence", flush=True)
+    shell(commands[1], env)
+    if not any((root / "evidence").iterdir()):
+        raise ValueError("evidence-command produced no evidence bundle")
+    return local_manifest(root / "image-oci"), local_manifest(root / "evidence-oci")
+
+
+def preview_manifest(parent, image, runtime, evidence, env, root):
+    """Describe verified local bytes, never a reservation or publication receipt."""
+    files = {}
+    for path in sorted((root / "evidence").rglob("*")):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise ValueError("dry-run evidence must contain only regular files and directories")
+        if path.is_file():
+            with path.open("rb") as stream:
+                digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+            files[path.relative_to(root / "evidence").as_posix()] = {
+                "digest": digest, "sizeBytes": str(path.stat().st_size),
+            }
+    if not files:
+        raise ValueError("evidence-command produced no evidence files")
+
+    def artifact(value):
+        descriptor, _ = value
+        return {
+            "artifactName": artifact_name(parent, descriptor["digest"]),
+            "imageReference": image + "@" + descriptor["digest"],
+            "digest": descriptor["digest"], "mediaType": descriptor["mediaType"],
+            "sizeBytes": str(descriptor["size"]), "kind": "image",
+        }
+
+    runtime_record, evidence_record = artifact(runtime), artifact(evidence)
+    evidence_record.update(subject=runtime_record["artifactName"], files=files)
+    value = {
+        "schemaVersion": 1, "dryRun": True, "published": False,
+        "uploadTagsReserved": False, "artifactsRegistered": False,
+        "authenticatedManifestReadback": False, "promotionAuthorized": False,
+        "access": {
+            "checked": False,
+            "reason": "skipped: no existing read credential; OIDC exchange would issue a credential",
+        },
+        "remoteVerification": "skipped: verify-command requires published registry readback",
+        "target": {
+            "project": parent, "image": image, "ciName": env["INPUT_CI_NAME"],
+            "sourceSha": env["SOURCE_SHA"], "platforms": env["PLATFORMS"],
+            "repository": env["GITHUB_REPOSITORY"],
+            "repositoryID": env["GITHUB_REPOSITORY_ID"],
+            "workflow": env["SOURCE_WORKFLOW"], "event": env["GITHUB_EVENT_NAME"],
+            "ref": env["GITHUB_REF"],
+            "runID": env["SOURCE_RUN_ID"], "runAttempt": env["SOURCE_RUN_ATTEMPT"],
+        },
+        "runtime": runtime_record, "evidence": evidence_record,
+    }
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode()) > 524288:
+        raise ValueError("dry-run manifest exceeds 524288 bytes")
+    (root / "dry-run-manifest.json").write_text(encoded + "\n")
+    print("artifact_publish stage=dry-run-complete access_check=skipped "
+          "remote_verification=skipped published=false", flush=True)
+    output({"dry_run": "true", "dry_run_manifest": encoded})
+
+
 def run():
-    # Refuse PRs before reading an OIDC endpoint or creating any credential.
-    if os.environ.get("GITHUB_EVENT_NAME") != "push":
+    dry_run = os.environ.get("INPUT_DRY_RUN", "false")
+    if dry_run not in ("true", "false"):
+        raise ValueError("dry-run must be true or false")
+    dry_run = dry_run == "true"
+    # Real publication still refuses PRs before creating any credential.
+    if not dry_run and os.environ.get("GITHUB_EVENT_NAME") != "push":
         raise ValueError("artifact-image-publish admits push events only")
     parent = os.environ["INPUT_PROJECT"]
     image = expected_image(parent)
@@ -554,9 +624,10 @@ def run():
         os.environ.get("INPUT_EVIDENCE_COMMAND", ""),
         os.environ.get("INPUT_VERIFY_COMMAND", ""),
     ]
-    if not all(command.strip() for command in commands):
+    required = commands[:2] if dry_run else commands
+    if not all(command.strip() for command in required):
         raise ValueError(
-            "build-command, evidence-command and verify-command are required"
+            "build-command and evidence-command are required; publication also requires verify-command"
         )
     root = Path(
         tempfile.mkdtemp(prefix="artifact-image-", dir=os.environ["RUNNER_TEMP"])
@@ -573,6 +644,7 @@ def run():
             "SOURCE_WORKFLOW": os.environ["GITHUB_WORKFLOW_REF"],
             "SOURCE_RUN_ID": os.environ["GITHUB_RUN_ID"],
             "SOURCE_RUN_ATTEMPT": os.environ["GITHUB_RUN_ATTEMPT"],
+            "ARTIFACT_DRY_RUN": "true" if dry_run else "false",
             "OCI_DIR": str(root / "image-oci"),
             "BUILD_EVIDENCE_DIR": str(root / "evidence"),
             "EVIDENCE_DIR": str(root / "evidence"),
@@ -587,28 +659,37 @@ def run():
     access = None
     try:
         print("artifact_publish stage=prepare-build", flush=True)
-        access = Access(os.environ["INPUT_CI_NAME"])
-        image_ref, token, auth = access.prepare(parent)
-        evidence_ref, evidence_token, evidence_auth = access.prepare(parent)
-        if evidence_ref == image_ref:
-            raise ValueError("runtime and evidence upload references must be distinct")
-        env.update(
-            {
-                "IMAGE_TAG": image_ref.rsplit(":", 1)[1],
-                "BUILD_EVIDENCE_TAG": evidence_ref.rsplit(":", 1)[1],
-            }
-        )
-        write_auth(auth_dir, evidence_token, evidence_auth)
-        token = ""
-        auth = None
-        print("artifact_publish stage=build", flush=True)
-        shell(commands[0], env)
-        print("artifact_publish stage=package-evidence", flush=True)
-        shell(commands[1], env)
-        if not any((root / "evidence").iterdir()):
-            raise ValueError("evidence-command produced no evidence bundle")
-        runtime = local_manifest(root / "image-oci")
-        evidence = local_manifest(root / "evidence-oci")
+        if dry_run:
+            # No issuance, reservation, registry request or caller API credential.
+            # Tags are local placeholders, not claimed server upload targets.
+            for name in ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+                         "GH_TOKEN", "GITHUB_TOKEN", "SYLPHX_API_KEY",
+                         "ARTIFACT_REGISTRY_AUTH_FILE"):
+                env.pop(name, None)
+            env.update(IMAGE_TAG="dry-run-" + source[:12] + "-runtime",
+                       BUILD_EVIDENCE_TAG="dry-run-" + source[:12] + "-evidence",
+                       DOCKER_CONFIG=str(root / "dry-run-docker"))
+            (root / "dry-run-docker").mkdir()
+            print("artifact_publish dry_run=true access_check=skipped", flush=True)
+        else:
+            access = Access(os.environ["INPUT_CI_NAME"])
+            image_ref, token, auth = access.prepare(parent)
+            evidence_ref, evidence_token, evidence_auth = access.prepare(parent)
+            if evidence_ref == image_ref:
+                raise ValueError("runtime and evidence upload references must be distinct")
+            env.update(
+                {
+                    "IMAGE_TAG": image_ref.rsplit(":", 1)[1],
+                    "BUILD_EVIDENCE_TAG": evidence_ref.rsplit(":", 1)[1],
+                }
+            )
+            write_auth(auth_dir, evidence_token, evidence_auth)
+            token = ""
+            auth = None
+        runtime, evidence = build_and_evidence(commands, env, root)
+        if dry_run:
+            preview_manifest(parent, image, runtime, evidence, env, root)
+            return
         # Reuse the prepared Access key and upload credentials when > 300s of
         # Access key lifetime remain; otherwise mint fresh credentials after a
         # long build while keeping the original unique upload references.
