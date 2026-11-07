@@ -156,6 +156,7 @@ class UnityPackagesCache(unittest.TestCase):
         self.write_json("manifest.json", self.manifest)
         upm.validate(self.project)
 
+    @patch.object(upm.curl_retry.time, "sleep", new=lambda _: None)
     def test_hash_mismatch_and_missing_mirror_never_fallback_or_partially_embed(self):
         for response in (b"corrupt", None):
             with self.subTest(response=response):
@@ -231,9 +232,7 @@ class UnityPackagesCache(unittest.TestCase):
         for size in (upm.MAX_ARCHIVE, upm.MAX_ARCHIVE + 1):
             with self.subTest(archiveBytes=size):
                 response, sink = Stream(size), Sink()
-                opener = Mock()
-                opener.open.return_value = response
-                with patch.object(upm.urllib.request, "build_opener", return_value=opener):
+                with patch.object(upm.curl_retry, "download", return_value=response):
                     if size == upm.MAX_ARCHIVE:
                         self.assertEqual(self.real_fetch(upm.MIRROR, sink)[2], size)
                         self.assertEqual(sink.written, size)

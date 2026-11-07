@@ -7,10 +7,14 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import sys
 import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
+import curl_retry
 
 REGISTRY = "https://packages.unity.com"
 MIRROR = "https://build-cache.sylphx.net"
@@ -97,8 +101,8 @@ class UnityCDNRedirect(urllib.request.HTTPRedirectHandler):
 def fetch(url, destination, expected=None, *, expected_size=None, allow_unity_cdn=False):
     """Bounded disk streaming; transport and integrity errors never select another host."""
     sha256, sha1, size = hashlib.sha256(), hashlib.sha1(), 0
-    opener = urllib.request.build_opener(UnityCDNRedirect if allow_unity_cdn else NoRedirect)
-    with opener.open(url, timeout=120) as response, destination.open("xb") as stream:
+    with curl_retry.download(url, label="unity-package", max_bytes=MAX_ARCHIVE,
+                             redirect=UnityCDNRedirect() if allow_unity_cdn else NoRedirect()) as response, destination.open("xb") as stream:
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:

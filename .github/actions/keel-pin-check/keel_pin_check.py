@@ -44,8 +44,10 @@ import subprocess
 import sys
 import tarfile
 import tomllib
-import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "_shared"))
+import curl_retry
 
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
@@ -284,9 +286,7 @@ def registry_commit(version):
     commits = []
     for package in ("sylphx-keel-engine", "sylphx-keel-cli"):
         def read(url):
-            request = urllib.request.Request(url, headers={"User-Agent": "keel-pin-check"})
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return response.read()
+            return curl_retry.read(url, label="crate-source", headers=("User-Agent: keel-pin-check",))
         try:
             item = json.loads(read(f"https://crates.io/api/v1/crates/{package}/{version}"))["version"]
             if item.get("crate") != package or item.get("num") != version or item.get("yanked") is not False:

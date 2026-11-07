@@ -5,8 +5,10 @@
 #
 # In:  MODE (put|get), NAME, STORE_PATH, STORE_RUN_ID, REPO_ID, REQUIRED,
 #      BUILD_CACHE_URL, BUILD_CACHE_NETWORK, BUILD_CACHE_MAX_TIME (seconds for
-#      the token calls, default 10), RUN_STORE_MAX_BYTES (default 1 GiB, the
-#      gateway's largest entry), RUN_STORE_RETRY_DELAY (seconds, default 5),
+#      each token attempt, default 10), RUN_STORE_MAX_BYTES (default 1 GiB, the
+#      gateway's largest entry), RUN_STORE_RETRY_DELAY (backoff base seconds, default 2),
+#      RUN_STORE_REQUEST_BUDGET (per-request total seconds, default 120),
+#      RUN_STORE_REQUEST_MAX_TIME (transfer attempt seconds, default 30),
 #      ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_ID_TOKEN_REQUEST_TOKEN,
 #      GITHUB_OUTPUT, RUNNER_TEMP.
 # Out: key, found, bytes, unavailable in $GITHUB_OUTPUT.
@@ -21,7 +23,8 @@ set -uo pipefail
 
 out="${GITHUB_OUTPUT:-/dev/null}"
 max_bytes="${RUN_STORE_MAX_BYTES:-1073741824}"
-delay="${RUN_STORE_RETRY_DELAY:-5}"
+delay="${RUN_STORE_RETRY_DELAY:-2}"
+retry_helper="$(dirname "${BASH_SOURCE[0]}")/../_shared/curl_retry.py"
 part_bytes="${RUN_STORE_PART_BYTES:-67108864}"
 parts_helper="$(dirname "${BASH_SOURCE[0]}")/parts.py"
 required="${REQUIRED:-true}"
@@ -100,6 +103,23 @@ work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/run-store.XXXXXX")" || fail "
 trap 'rm -rf "$work"' EXIT
 chmod 700 "$work"
 
+# Every transport replay shares one enclosing deadline. Keep signed URLs on
+# stdin along with credentials; neither curl errors nor response bodies are logs.
+http_request() {
+  local label="$1" max="$2"
+  shift 2
+  python3 "$retry_helper" --label "$label" --max-time "$max" \
+    --budget "${RUN_STORE_REQUEST_BUDGET:-120}" --base-delay "$delay" -- "$@"
+}
+curl_url() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  printf 'url = "%s"\n' "$value"
+}
+
 # --- token: the job's OIDC token for a BuildCache run token ----------------
 exchange() {
   local url network max sep oidc_url code rc jwt
@@ -125,10 +145,10 @@ exchange() {
   if [ "${RUN_STORE_MANUAL:-false}" = true ]; then
     rc=0
     code="$(printf 'header = "Authorization: Bearer %s"\n' "$SYLPHX_API_KEY" \
-      | curl -sS -K - --max-time "$max" -o "$work/tok" -w '%{http_code}' -X POST \
+      | http_request run-store-mint "$max" -K - -o "$work/tok" -X POST \
         -H 'Content-Type: application/json' \
         --data "$(printf '{"cache":"ci","access":"read","ttl_seconds":3600,"network":"%s"}' "$network")" \
-        "$url/v1/tokens" 2>/dev/null)" || rc=$?
+        "$url/v1/tokens")" || rc=$?
     if [ "$rc" -ne 0 ]; then reason="read token exchange: curl exit $rc"; return 1; fi
     if [ "$code" != 200 ]; then rm -f "$work/tok"; reason="read token exchange: HTTP $code"; return 2; fi
   else
@@ -136,18 +156,18 @@ exchange() {
   case "$ACTIONS_ID_TOKEN_REQUEST_URL" in *\?*) sep='&' ;; esac
   oidc_url="${ACTIONS_ID_TOKEN_REQUEST_URL}${sep}audience=sylphx-build-cache"
   rc=0
-  code="$(printf 'header = "Authorization: Bearer %s"\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-    | curl -sS -K - --max-time "$max" -o "$work/tok" -w '%{http_code}' "$oidc_url" 2>/dev/null)" || rc=$?
+  code="$( { printf 'header = "Authorization: Bearer %s"\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"; curl_url "$oidc_url"; } \
+    | http_request run-store-oidc "$max" -K - -o "$work/tok")" || rc=$?
   if [ "$rc" -ne 0 ]; then reason="OIDC token request: curl exit $rc"; return 1; fi
   if [ "$code" != 200 ]; then reason="OIDC token request: HTTP $code"; return 1; fi
   if ! jwt="$(json_field "$work/tok" value)"; then reason="OIDC token request: invalid response"; return 1; fi
   mask "$jwt"
   rc=0
   code="$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" \
-    | curl -sS -K - --max-time "$max" -o "$work/tok" -w '%{http_code}' -X POST \
+    | http_request run-store-mint "$max" -K - -o "$work/tok" -X POST \
       -H 'Content-Type: application/json' \
       --data "$(printf '{"ttl_seconds":7200,"network":"%s"}' "$network")" \
-      "$url/v1/tokens/github" 2>/dev/null)" || rc=$?
+      "$url/v1/tokens/github")" || rc=$?
   jwt=""
   if [ "$rc" -ne 0 ]; then rm -f "$work/tok"; reason="token exchange: curl exit $rc"; return 1; fi
   if [ "$code" != 200 ]; then rm -f "$work/tok"; reason="token exchange: HTTP $code"; return 1; fi
@@ -171,14 +191,7 @@ exchange() {
 token=""
 api=""
 reason=""
-for attempt in 1 2 3; do
-  exchange
-  rc=$?
-  [ "$rc" -eq 0 ] && break
-  [ "$rc" -eq 2 ] && fail "BuildCache unavailable ($reason)"
-  [ "$attempt" -lt 3 ] && sleep "$delay"
-done
-[ -n "$token" ] || fail "BuildCache unavailable ($reason)"
+exchange || fail "BuildCache unavailable ($reason)"
 entry="$api/v8/artifacts/$key"
 if [ "$MODE" = get ] || [ -n "$retention_days" ]; then entry="$api/v1/retained/$key"; fi
 
@@ -197,8 +210,9 @@ call() {
     fi
   fi
   c="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
-    | curl -sS -K - -X "$method" --connect-timeout 20 --max-time 3600 \
-      -D "$work/headers" -o "$dest" -w '%{http_code}' "$@" "$entry" 2>/dev/null)" || true
+    | http_request "run-store-$(printf '%s' "$method" | tr '[:upper:]' '[:lower:]')" "${RUN_STORE_REQUEST_MAX_TIME:-30}" \
+      -K - -X "$method" --connect-timeout 20 \
+      -D "$work/headers" -o "$dest" "$@" "$entry")" || c=000
   [[ "$c" =~ ^[0-9]{3}$ ]] || c=000
   echo "$c"
 }
@@ -343,53 +357,44 @@ if [ "$MODE" = put ]; then
   store_entry() {
     local payload="$1"
     stored=""
-    for attempt in 1 2 3; do
-      code="$(call PUT "$work/resp" -H 'Content-Type: application/octet-stream' -T "$payload")"
-      case "$code" in
-        202)
-          if grep -qi '^x-build-cache: *dropped' "$work/headers" 2>/dev/null; then
-            reason="the gateway dropped the write (store unavailable)"
-          else
-            stored=yes
-            break
-          fi
-          ;;
-        409)
-          # A protected entry is written once: a re-run of the producer keeps the
-          # first attempt's bundle, built from the same commit.
-          echo "::notice::run-store put $NAME: the entry exists from an earlier attempt of this run; it is kept"
-          if [ -n "$retention_days" ] && [ "${is_part:-false}" != true ]; then
-            code="$(call HEAD /dev/null -I)"
-            [ "$code" = 200 ] || fail "the existing bundle is unreadable (HTTP $code)"
-            check_existing_retained
-            exit 0
-          fi
-          if [ "${is_part:-false}" = true ]; then
-            code="$(call GET "$work/existing-part" --max-filesize "$part_bytes")"
-            if [ "$code" != 200 ] || ! cmp -s "$payload" "$work/existing-part"; then
-              fail "an existing immutable part differs; no manifest was committed"
-            fi
-          fi
+    code="$(call PUT "$work/resp" -H 'Content-Type: application/octet-stream' -T "$payload")"
+    case "$code" in
+      202)
+        if grep -qi '^x-build-cache: *dropped' "$work/headers" 2>/dev/null; then
+          reason="the gateway dropped the write (store unavailable)"
+        else
           stored=yes
-          break
-          ;;
-        503)
-          reason="store unavailable (HTTP 503 from the build cache)"
-          unavailable_report "$reason"
-          ;;
-        400 | 403 | 411 | 413 | 507) reason="HTTP $code packed_bytes=$bytes request_bytes=$(file_bytes "$payload") response_id=$(response_id)"; break ;;
-        *) reason="HTTP $code" ;;
-      esac
-      [ "$attempt" -lt 3 ] && sleep "$delay"
-    done
+        fi
+        ;;
+      409)
+        # A protected entry is written once: a re-run of the producer keeps the
+        # first attempt's bundle, built from the same commit.
+        echo "::notice::run-store put $NAME: the entry exists from an earlier attempt of this run; it is kept"
+        if [ -n "$retention_days" ] && [ "${is_part:-false}" != true ]; then
+          code="$(call HEAD /dev/null -I)"
+          [ "$code" = 200 ] || fail "the existing bundle is unreadable (HTTP $code)"
+          check_existing_retained
+          exit 0
+        fi
+        if [ "${is_part:-false}" = true ]; then
+          code="$(call GET "$work/existing-part" --max-filesize "$part_bytes")"
+          if [ "$code" != 200 ] || ! cmp -s "$payload" "$work/existing-part"; then
+            fail "an existing immutable part differs; no manifest was committed"
+          fi
+        fi
+        stored=yes
+        ;;
+      503)
+        reason="store unavailable (HTTP 503 from the build cache)"
+        unavailable_report "$reason"
+        ;;
+      400 | 403 | 411 | 413 | 507) reason="HTTP $code packed_bytes=$bytes request_bytes=$(file_bytes "$payload") response_id=$(response_id)" ;;
+      *) reason="HTTP $code" ;;
+    esac
     [ -n "$stored" ] || fail "could not store the bundle ($reason)"
     # The PUT has already been accepted. Recheck its receipt with the same
     # bounded read policy as GET; never send the accepted upload again.
-    for attempt in 1 2 3; do
-      code="$(call HEAD /dev/null -I)"
-      case "$code" in 200 | 401 | 403) break ;; esac
-      [ "$attempt" -lt 3 ] && sleep "$delay"
-    done
+    code="$(call HEAD /dev/null -I)"
     if [ "$code" = 503 ]; then
       unavailable_report "HTTP $code while reading back the accepted bundle"
     fi
@@ -427,17 +432,14 @@ fi
 
 # get
 code=000
-for attempt in 1 2 3; do
-  entry="$api/v1/retained/$key"
+entry="$api/v1/retained/$key"
+code="$(call GET "$work/bundle.tgz" --max-filesize "$max_bytes")"
+if [ "$code" = 404 ] && [ "$entry" = "$api/v1/retained/$key" ]; then
+  # Existing seven-day callers continue to read the original Turbo door.
+  entry="$api/v8/artifacts/$key"
   code="$(call GET "$work/bundle.tgz" --max-filesize "$max_bytes")"
-  if [ "$code" = 404 ] && [ "$entry" = "$api/v1/retained/$key" ]; then
-    # Existing seven-day callers continue to read the original Turbo door.
-    entry="$api/v8/artifacts/$key"
-    code="$(call GET "$work/bundle.tgz" --max-filesize "$max_bytes")"
-  fi
-  case "$code" in 200 | 401 | 403) break ;; esac
-  [ "$attempt" -lt 3 ] && sleep "$delay"
-done
+fi
+
 if [ "$code" = 503 ]; then
   unavailable_report "HTTP $code from the build cache's object store"
 fi
@@ -453,11 +455,7 @@ if [ "$parts" -gt 0 ]; then
   index=0
   while [ "$index" -lt "$parts" ]; do
     entry="$root_entry$part_suffix$index"
-    for attempt in 1 2 3; do
-      code="$(call GET "$work/part-$index" --max-filesize "$part_bytes")"
-      case "$code" in 200 | 401 | 403 | 503) break ;; esac
-      [ "$attempt" -lt 3 ] && sleep "$delay"
-    done
+    code="$(call GET "$work/part-$index" --max-filesize "$part_bytes")"
     [ "$code" != 503 ] || unavailable_report "HTTP 503 while reading bundle parts"
     [ "$code" = 200 ] || fail "bundle part $index is missing or unreadable (HTTP $code)"
     verify_download "$work/part-$index" || fail "bundle part $index failed SHA256 verification"

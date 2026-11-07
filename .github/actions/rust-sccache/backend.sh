@@ -47,6 +47,23 @@ _backend_skipped() {
   return 1
 }
 
+_buildcache_request() {
+  local label="$1" max="$2"
+  shift 2
+  python3 "$(dirname "${BASH_SOURCE[0]}")/../_shared/curl_retry.py" \
+    --label "$label" --max-time "$max" --budget "${BUILD_CACHE_REQUEST_BUDGET:-120}" \
+    --base-delay "${BUILD_CACHE_RETRY_DELAY:-2}" -- "$@"
+}
+
+_buildcache_url() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  printf 'url = "%s"\n' "$value"
+}
+
 _buildcache_warn() {
   echo "::warning::BuildCache unavailable ($1); trying the next cache backend"
 }
@@ -83,8 +100,8 @@ _buildcache() {
   case "$ACTIONS_ID_TOKEN_REQUEST_URL" in *\?*) sep='&' ;; esac
   oidc_url="${ACTIONS_ID_TOKEN_REQUEST_URL}${sep}audience=sylphx-build-cache"
   rc=0
-  code="$(printf 'header = "Authorization: Bearer %s"\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-    | curl -sS -K - --max-time "$max" -o "$tmp" -w '%{http_code}' "$oidc_url" 2>/dev/null)" || rc=$?
+  code="$( { printf 'header = "Authorization: Bearer %s"\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"; _buildcache_url "$oidc_url"; } \
+    | _buildcache_request sccache-oidc "$max" -K - -o "$tmp")" || rc=$?
   if [ "$rc" -ne 0 ]; then rm -f "$tmp"; _buildcache_warn "OIDC token request: curl exit $rc"; return 1; fi
   if [ "$code" != 200 ]; then rm -f "$tmp"; _buildcache_warn "OIDC token request: HTTP $code"; return 1; fi
   if ! jwt="$(jq -er '.value | strings' "$tmp" 2>/dev/null)"; then
@@ -95,10 +112,10 @@ _buildcache() {
   # 2. The run token.
   rc=0
   code="$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" \
-    | curl -sS -K - --max-time "$max" -o "$tmp" -w '%{http_code}' -X POST \
+    | _buildcache_request sccache-mint "$max" -K - -o "$tmp" -X POST \
       -H 'Content-Type: application/json' \
       --data "$(printf '{"ttl_seconds":22500,"network":"%s"}' "$network")" \
-      "$url/v1/tokens/github" 2>/dev/null)" || rc=$?
+      "$url/v1/tokens/github")" || rc=$?
   jwt=""
   if [ "$rc" -ne 0 ]; then rm -f "$tmp"; _buildcache_warn "token exchange: curl exit $rc"; return 1; fi
   if [ "$code" != 200 ]; then rm -f "$tmp"; _buildcache_warn "token exchange: HTTP $code"; return 1; fi
