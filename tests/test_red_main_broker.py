@@ -18,8 +18,8 @@ CONNECTION = 'orgs/example/connections/github-tenant'
 PERMISSIONS = {'contents': 'read', 'metadata': 'read'}
 
 
-def action():
-    return yaml.safe_load(ACTION.read_text())
+def action(path=ACTION):
+    return yaml.safe_load(path.read_text())
 
 
 CURL_STUB = r'''
@@ -73,7 +73,25 @@ def grant(**over):
                    token_exchange=POLICY + '/token_exchanges/tkx_example'), **over}
 
 
-def run_script(data, extra):
+CLOCK_STUB = r'''
+import importlib, importlib.util, json, os, sys, types
+sys.path.insert(0, os.environ['BROKER_SHARED'])
+now = 0.0
+def sleep(seconds):
+    global now
+    assert seconds >= 0
+    now += seconds
+    with open(os.environ['SLEEPS'], 'a') as out:
+        out.write(json.dumps(seconds) + '\n')
+# Replace only the action modules' clocks, not subprocess timeout/reaping internals.
+clock = types.SimpleNamespace(sleep=sleep, monotonic=lambda: now)
+for name in ('access_ready', 'broker'):
+    if importlib.util.find_spec(name):
+        importlib.import_module(name).time = clock
+'''
+
+
+def run_script(data, extra, *, action_path=ACTION, sleeps=None):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         (root / 'curl').write_text('#!/usr/bin/env python3\n' + CURL_STUB)
@@ -81,16 +99,109 @@ def run_script(data, extra):
         (root / 'replies').write_text(json.dumps(data))
         (root / 'wire').touch()
         environment = {**os.environ, **extra, 'RUNNER_TEMP': directory,
-            'GITHUB_ACTION_PATH': str(ACTION.parent), 'GITHUB_OUTPUT': str(root / 'out'),
+            'GITHUB_ACTION_PATH': str(action_path.parent), 'GITHUB_OUTPUT': str(root / 'out'),
             'REPLIES': str(root / 'replies'), 'WIRE': str(root / 'wire'), 'PATH': directory + ':' + os.environ['PATH']}
-        result = subprocess.run(['bash', '-c', action()['runs']['steps'][0]['run']], capture_output=True, text=True, env=environment)
+        if sleeps is not None:
+            (root / 'sitecustomize.py').write_text(CLOCK_STUB)
+            environment.update(PYTHONPATH=directory + os.pathsep + environment.get('PYTHONPATH', ''),
+                               SLEEPS=str(root / 'sleeps'),
+                               BROKER_SHARED=str(action_path.parent.parent / '_shared'))
+        result = subprocess.run(['bash', '-c', action(action_path)['runs']['steps'][0]['run']],
+                                capture_output=True, text=True, env=environment, timeout=30)
+        if sleeps is not None and (root / 'sleeps').exists():
+            sleeps.extend(json.loads(line) for line in (root / 'sleeps').read_text().splitlines())
         output = (root / 'out').read_text() if (root / 'out').exists() else ''
         wire = [json.loads(line) for line in (root / 'wire').read_text().splitlines()]
         assert not (root / 'broker-token').exists(), 'provider token persisted by action'
         return result.returncode, result.stdout + result.stderr, output, wire
 
 
+def pinned_self_actions():
+    """Resolve real declarative callers and execute their immutable action bundle."""
+    prefix = 'SylphxAI/.github/.github/actions/broker-write-token@'
+    callers = {}
+
+    def visit(value):
+        if isinstance(value, dict):
+            use = value.get('uses', '')
+            if isinstance(use, str) and use.startswith(prefix):
+                pin = use[len(prefix):]
+                if len(pin) != 40 or any(c not in '0123456789abcdef' for c in pin):
+                    raise AssertionError('full commit SHA required: ' + use)
+                callers.setdefault(pin, []).append(value.get('with', {}))
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    tracked = subprocess.check_output(['git', 'ls-files', '-z', '--', '*.yml', '*.yaml'], cwd=ROOT)
+    for path in tracked.split(b'\0'):
+        if path:
+            visit(yaml.safe_load((ROOT / os.fsdecode(path)).read_text()))
+    if not callers:
+        raise AssertionError('no Broker action self-references found')
+    with tempfile.TemporaryDirectory() as directory:
+        for pin, inputs in callers.items():
+            bundle = Path(directory) / pin
+            paths = subprocess.check_output(['git', 'ls-tree', '-rz', '--name-only', pin, '--',
+                '.github/actions/broker-write-token', '.github/actions/_shared'], cwd=ROOT)
+            for raw in paths.split(b'\0'):
+                if raw:
+                    path = os.fsdecode(raw)
+                    target = bundle / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(subprocess.check_output(['git', 'show', pin + ':' + path], cwd=ROOT))
+            yield bundle / '.github/actions/broker-write-token/action.yml', inputs
+
+
 class ExchangeTests(unittest.TestCase):
+    def test_pinned_self_references_execute_bounded_typed_401_contract(self):
+        lagging = {'_http': 401, 'code': 'NOT_YET_PROPAGATED', 'detail': 'private-propagation-detail'}
+        refused = {'_http': 401, 'code': 'UNAUTHENTICATED', 'detail': 'authentication refused'}
+        for pinned_action, callers in pinned_self_actions():
+            declared = action(pinned_action)['inputs']
+            for inputs in callers:
+                self.assertLessEqual(set(inputs), set(declared))
+                self.assertTrue(all(not value.get('required') or key in inputs or 'default' in value
+                                    for key, value in declared.items()))
+            for soft_fail in {inputs.get('soft-fail', 'false') for inputs in callers}:
+                for endpoint in ('/v1/whoami', ':exchangeToken'):
+                    success = replies()[endpoint]
+                    for name, sequence, accepted, waits, requests in (
+                        ('ready-success', success, True, [0], 4),
+                        ('typed-401-then-success', [lagging, success], True, [0, 2], 5),
+                        ('other-401-then-success-is-not-retried', [refused, success], False, [0],
+                         3 if endpoint == '/v1/whoami' else 4),
+                        ('typed-401-deadline', lagging, False, [0] + [2] * 90,
+                         92 if endpoint == '/v1/whoami' else 93),
+                    ):
+                        with self.subTest(pin=pinned_action.parents[3].name, endpoint=endpoint,
+                                          case=name, soft_fail=soft_fail):
+                            sleeps = []
+                            code, log, output, wire = run_script(replies(**{endpoint: sequence}),
+                                env(SOFT_FAIL=soft_fail), action_path=pinned_action, sleeps=sleeps)
+                            self.assertEqual(code, 0 if accepted or soft_fail == 'true' else 1, log)
+                            self.assertEqual('token=ghs_install\n' in output, accepted, log)
+                            self.assertEqual(sleeps, waits)
+                            self.assertEqual(len(wire), requests)
+                            # Exactly one issuance, with the same key retained for every later attempt.
+                            urls = [item['args'][item['args'].index('--url') + 1] for item in wire]
+                            self.assertEqual(sum('/v1/access/github/token' in url for url in urls), 1)
+                            for item in wire[2:]:
+                                self.assertIn('Bearer syl_ci_key', item['config'])
+                            if not accepted:
+                                self.assertIn('token=\nfailure=', output)
+                                if endpoint == '/v1/whoami':
+                                    self.assertIn('HTTP 401' if name.startswith('other-401')
+                                                  else 'did not become ready within 180 seconds', output)
+                                    if name.startswith('other-401'):
+                                        self.assertIn('UNAUTHENTICATED', output)
+                                else:
+                                    self.assertIn('request was not retried', output)
+                            for secret in ('private-propagation-detail',):
+                                self.assertNotIn(secret, log + output)
+
     def test_complete_wire_and_metadata_without_secret_argv_or_file(self):
         code, log, output, wire = run_script(replies(), env(APP_SLUG='tenant-app'))
         self.assertEqual(code, 0, log)

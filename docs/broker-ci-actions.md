@@ -32,8 +32,12 @@ There is no write-exchange fallback. Every call requests exactly one full
 The action reads the runner's OIDC URL/token directly, requests audience
 `sylphx-access`, issues one Access key, waits for its native propagation
 interval, then checks Whoami against the key's issued stable subject. Only the
-explicit `key_not_yet_propagated` readiness read can repeat; issuance and Broker
-exchange are never retried. Errors do not echo provider response bodies.
+typed HTTP 401 `key_not_yet_propagated` or `NOT_YET_PROPAGATED` response
+can repeat, during readiness reads or the Broker exchange, at two-second
+intervals within a 180-second deadline for each stage. Other 401 responses fail
+immediately; Access issuance is never retried. No opt-in input is required.
+Broker response bodies are not echoed; readiness refusals expose only bounded,
+credential-redacted public error fields.
 
 Outputs include `token`, `issuer`, `connection`, `expire-time`,
 `token-exchange`, `permissions`, `app-slug` and `failure`. Returned repository,
