@@ -86,7 +86,9 @@ def independent_verdict(decoded, concurrency, workflows=None):
 
     A surviving always() verdict must not hold the admission lock needed by
     its replacement's cleanup. Literal job namespaces also avoid collisions
-    between sibling jobs. Every reusable call must resolve to a local callee
+    between sibling jobs. Caller matrix jobs are refused because their expanded
+    children would share the same literal job lock. Every reusable call must
+    resolve to a local callee
     with no workflow/job locks or further calls, since github.workflow is inherited.
     This validates lock coverage, not the verdict's result-propagation code.
     """
@@ -99,6 +101,9 @@ def independent_verdict(decoded, concurrency, workflows=None):
     work = []
     for name, job in jobs.items():
         if not isinstance(name, str) or not isinstance(job, dict):
+            return False
+        strategy = job.get('strategy', {})
+        if not isinstance(strategy, dict) or 'matrix' in strategy:
             return False
         if 'uses' in job and not unlocked_local_callee(job['uses'], workflows):
             return False

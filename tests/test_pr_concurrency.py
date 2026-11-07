@@ -265,6 +265,34 @@ class PRConcurrencyTest(unittest.TestCase):
                     broken = text.replace(anchor, anchor + f'    if: ${{{{ {condition} }}}}\n')
                     self.assertTrue(independent_problems(broken))
 
+    def test_independent_caller_jobs_refuse_matrix_expansion(self):
+        text = independent_verdict_workflow()
+        self.assertEqual(independent_problems(text), [])
+        for name in ('select', 'tests', 'ci-ok'):
+            for strategy in ('{matrix: {lane: [one, two]}}',
+                             '{matrix: "${{ fromJSON(needs.select.outputs.matrix) }}"}',
+                             '{matrix: {include: [{lane: one}, {lane: two}]}}',
+                             'null', '[]'):
+                with self.subTest(job=name, strategy=strategy):
+                    broken = text.replace(f'  {name}:\n', f'  {name}:\n    strategy: {strategy}\n')
+                    self.assertTrue(independent_problems(broken))
+        # Matrix children inside an unlocked callee have no shared job lock.
+        callee = CALLEE.replace('  check:\n', '  check:\n    strategy:\n      matrix:\n        lane: [one, two]\n')
+        self.assertEqual(problems(text, workflows={'reusable.yml': callee}), [])
+        # The ordinary workflow-level lock owns the whole matrix, not siblings.
+        canonical = workflow().replace('  ci-ok:\n', '  ci-ok:\n    strategy: {matrix: {lane: [one, two]}}\n')
+        self.assertEqual(problems(canonical), [])
+
+    def test_independent_matrix_siblings_resolve_the_same_lock(self):
+        decoded = yaml.load(independent_verdict_workflow(), yaml.BaseLoader)
+        for event in ('pull_request', 'pull_request_target', 'push', 'merge_group'):
+            context = {'github.event_name': event, 'github.workflow': 'CI',
+                       'github.event.pull_request.number': 7, 'github.run_id': 101}
+            for name in ('select', 'tests'):
+                lock = decoded['jobs'][name]['concurrency']['group']
+                self.assertEqual(resolve(lock, {**context, 'matrix.lane': 'one'}),
+                                 resolve(lock, {**context, 'matrix.lane': 'two'}))
+
     def test_independent_calls_require_resolved_local_callees(self):
         text = independent_verdict_workflow()
         self.assertEqual(problems(text, workflows=CALLEES), [])
@@ -329,6 +357,16 @@ class PRConcurrencyTest(unittest.TestCase):
                                  if 'non-canonical concurrency expression' in f.problem]
                         self.assertEqual(len(found), count)
                         self.assertTrue(all(f.blocking for f in found))
+            callee.write_text(CALLEE)
+            for name in ('select', 'tests', 'ci-ok'):
+                (folder / 'ci.yml').write_text(independent_verdict_workflow().replace(
+                    f'  {name}:\n', f'  {name}:\n    strategy: {{matrix: {{lane: [one, two]}}}}\n'))
+                for rules in ('all', 'pr-concurrency'):
+                    with self.subTest(rules=rules, matrix_job=name), patch.dict(os.environ, {}, clear=True):
+                        found = [f for f in contract.scan_dir(root, rules=rules)
+                                 if 'non-canonical concurrency expression' in f.problem]
+                        self.assertEqual(len(found), 1)
+                        self.assertTrue(found[0].blocking)
 
     def test_independent_verdict_through_scoped_entrypoint(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -342,8 +380,10 @@ class PRConcurrencyTest(unittest.TestCase):
             env = {k: v for k, v in os.environ.items() if not k.startswith('GITHUB_')}
             env.update(CONTRACT_MODE='report-only', WORKFLOW_LINT_RULES='pr-concurrency')
             surviving = text.replace('  select:\n', '  select:\n    if: ${{ always() && true }}\n')
+            matrices = tuple(text.replace(f'  {name}:\n', f'  {name}:\n    strategy: {{matrix: {{lane: [one, two]}}}}\n')
+                             for name in ('select', 'tests', 'ci-ok'))
             for source, expected in ((text, 0), (text.replace('tests-' + GROUP, GROUP), 1),
-                                     (surviving, 1)):
+                                     (surviving, 1), *((source, 1) for source in matrices)):
                 path.write_text(source)
                 result = subprocess.run([sys.executable, str(ROOT / '.github/actions/workflow-lint/contract.py')],
                                         cwd=root, env=env, capture_output=True, text=True)

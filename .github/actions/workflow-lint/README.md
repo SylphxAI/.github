@@ -146,7 +146,11 @@ and an exact alternative declared in `pr_concurrency.py`:
   exactly once. This keeps an unconditional required verdict outside the lock
   its replacement needs for admission and cleanup; `github.job` is not used
   as a concurrency-context value. Work-job IDs must also be distinct ignoring
-  case because GitHub concurrency groups are case insensitive. Work-job `if`
+  case because GitHub concurrency groups are case insensitive. All caller jobs,
+  including the verdict and reusable callers, must be non-matrix: expanded work
+  siblings would share the same literal group and cancel or evict each other,
+  while a matrix verdict would no longer be a single emitted verdict. Matrices
+  inside an unlocked callee remain allowed. Work-job `if`
   conditions must retain GitHub's implicit `success()` guard: omit the condition
   or use expressions without explicit `always`, `success`, `failure` or
   `cancelled` function calls. The rule conservatively refuses those tokens
