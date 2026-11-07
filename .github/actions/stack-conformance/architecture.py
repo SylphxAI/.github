@@ -665,7 +665,8 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
     return with_occurrences(list(unique.values()))
 
 
-def decisions(text, repository, today):
+def decisions(text, repository, today, *, ignore_expired=False):
+    """Validate every record; historical scans omit expired exemptions, not findings."""
     if text is None:
         return []
     data = json.loads(text)
@@ -674,7 +675,7 @@ def decisions(text, repository, today):
     rows = data["decisions"]
     if not isinstance(rows, list):
         raise ValueError("architecture decisions must be an array")
-    seen = set()
+    seen, active = set(), []
     for row in rows:
         required = {"repository", "path", "line", "class", "rule", "source_sha256", "owner", "reason", "contract", "expires", "authority", "evidence", "reconsideration"}
         if (not isinstance(row, dict) or set(row) != required
@@ -696,11 +697,14 @@ def decisions(text, repository, today):
         except ValueError:
             raise ValueError("architecture decision expiry must be an ISO date") from None
         if expires < today:
-            raise ValueError("architecture decision expired: " + row["path"])
-    return rows
+            if not ignore_expired:
+                raise ValueError("architecture decision expired: " + row["path"])
+            continue
+        active.append(row)
+    return active
 
 
-def evaluate(tree, repository, changed, today):
+def evaluate(tree, repository, changed, today, *, ignore_expired=False):
     """Pure git-tree input -> report. No network, environment, clock or mutation."""
     declared = env_declarations(tree)
     retired = []
@@ -710,7 +714,8 @@ def evaluate(tree, repository, changed, today):
         retired = data.get("retired_routes", []) if data.get("completed") is True else []
         if not isinstance(retired, list) or any(not isinstance(r, str) or not r.startswith("/") for r in retired):
             raise ValueError("invalid retired-route migration contract")
-    allowed = decisions(tree.read(".github/architecture-decisions.json"), repository, today)
+    allowed = decisions(tree.read(".github/architecture-decisions.json"), repository, today,
+                        ignore_expired=ignore_expired)
     findings, unreadable, reviewed, skipped = [], [], [], []
     # Always expose inherited findings. Changed lines control regression admission,
     # never which old debt is visible in the report.

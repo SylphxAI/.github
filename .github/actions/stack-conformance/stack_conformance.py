@@ -1208,7 +1208,7 @@ def cmd_check(args) -> int:
                   "semantic_census_complete": False, "limits": architecture.LIMITS}
     try:
         progress("scanning base architecture rules")
-        base_report = architecture.evaluate(outer_base, args.repository, None, today) if args.base else {"findings": [], "unreadable": []}
+        base_report = architecture.evaluate(outer_base, args.repository, None, today, ignore_expired=True) if args.base else {"findings": [], "unreadable": []}
         base_findings = base_report["findings"]
         if introduced:
             report["unreadable"] += base_report["unreadable"]
