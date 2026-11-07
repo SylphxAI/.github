@@ -253,7 +253,13 @@ def package_stage(packages):
         identity = (info.st_dev, info.st_ino)
         yield stage, fd, identity
     finally:
-        if fd is not None:
+        if fd is None:
+            try:
+                os.rmdir(stage.name, dir_fd=packages)
+            except OSError:
+                # Only remove an empty directory; preserve replacements and the open error.
+                pass
+        else:
             os.close(fd)
             try:
                 check_stage(packages, stage.name, identity)
