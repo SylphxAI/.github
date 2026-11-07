@@ -23,6 +23,7 @@ CODE_PR_ASSOCIATION = "${{ github.workflow }}-${{ github.event.inputs.junit-prod
 EXCEPTION = re.compile(r"^#[ \t]*pr-concurrency:[ \t]*exception[ \t]+([\w-]+)[ \t]+[—:][ \t]*(.*)$", re.M)
 MARKER = re.compile(r"^#\s*pr-concurrency:\s*(?:exception|exempt)\b", re.M)
 ERROR = 'non-canonical concurrency expression; use the canonical form or add a named exception'
+STATUS_CHECK = re.compile(r'\b(?:always|success|failure|cancelled)\s*\(', re.I)
 
 
 def matches(concurrency, group, cancel):
@@ -81,6 +82,12 @@ def independent_verdict(decoded, concurrency):
                 return False
             verdicts.append(job)
         else:
+            # Explicit status functions replace GitHub's implicit success()
+            # guard. Do not infer cancellability from arbitrary boolean forms:
+            # a surviving work job could retain the replacement cleanup lock.
+            condition = job.get('if', '')
+            if not isinstance(condition, str) or STATUS_CHECK.search(condition):
+                return False
             lock = job.get('concurrency')
             if not isinstance(lock, dict) or not matches(lock, name + '-' + GROUP, CANCEL):
                 return False

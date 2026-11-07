@@ -238,6 +238,19 @@ class PRConcurrencyTest(unittest.TestCase):
                 context['github.event.pull_request.number'] = 8
                 self.assertNotIn(resolve(decoded['jobs']['select']['concurrency']['group'], context), seen['select'])
 
+    def test_independent_work_conditions_retain_implicit_success(self):
+        text = independent_verdict_workflow()
+        for name in ('select', 'tests'):
+            anchor = f'  {name}:\n'
+            permitted = text.replace(anchor, anchor + "    if: needs.scope.outputs.selected == 'true'\n")
+            self.assertEqual(problems(permitted), [])
+            for condition in ('always() && true', '!cancelled() || always()',
+                              '!success()', 'failure()', 'cancelled()',
+                              'ALWAYS ()', 'SuCcEsS ( )', '!FAILURE ( )', '!CANCELLED ()'):
+                with self.subTest(job=name, condition=condition):
+                    broken = text.replace(anchor, anchor + f'    if: ${{{{ {condition} }}}}\n')
+                    self.assertTrue(problems(broken))
+
     def test_independent_verdict_through_scoped_entrypoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -247,7 +260,9 @@ class PRConcurrencyTest(unittest.TestCase):
             text = independent_verdict_workflow()
             env = {k: v for k, v in os.environ.items() if not k.startswith('GITHUB_')}
             env.update(CONTRACT_MODE='report-only', WORKFLOW_LINT_RULES='pr-concurrency')
-            for source, expected in ((text, 0), (text.replace('tests-' + GROUP, GROUP), 1)):
+            surviving = text.replace('  select:\n', '  select:\n    if: ${{ always() && true }}\n')
+            for source, expected in ((text, 0), (text.replace('tests-' + GROUP, GROUP), 1),
+                                     (surviving, 1)):
                 path.write_text(source)
                 result = subprocess.run([sys.executable, str(ROOT / '.github/actions/workflow-lint/contract.py')],
                                         cwd=root, env=env, capture_output=True, text=True)

@@ -146,7 +146,12 @@ and an exact alternative declared in `pr_concurrency.py`:
   exactly once. This keeps an unconditional required verdict outside the lock
   its replacement needs for admission and cleanup; `github.job` is not used
   as a concurrency-context value. Work-job IDs must also be distinct ignoring
-  case because GitHub concurrency groups are case insensitive. For example,
+  case because GitHub concurrency groups are case insensitive. Work-job `if`
+  conditions must retain GitHub's implicit `success()` guard: omit the condition
+  or use expressions without explicit `always`, `success`, `failure` or
+  `cancelled` function calls. The rule conservatively refuses those tokens
+  rather than evaluating their boolean combinations; a surviving work job
+  could otherwise retain the lock needed by replacement cleanup. For example,
   job `select` uses:
 
   ```yaml
