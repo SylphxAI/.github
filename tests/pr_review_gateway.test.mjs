@@ -34,6 +34,10 @@ const gatewayReviewer = options => actualGatewayReviewer({ ...options, fetcher: 
 // enum/const leaves. Ordinary JSON Schema validators allow those leaves to
 // omit a type, so validating a returned review alone misses this refusal.
 function assertTypedSchema(schema, path = '$') {
+  if (schema.anyOf) {
+    for (const [index, alternative] of schema.anyOf.entries()) assertTypedSchema(alternative, `${path}.anyOf[${index}]`);
+    return;
+  }
   assert.ok(['object', 'array', 'string', 'integer'].includes(schema.type) ||
     JSON.stringify(schema.type) === JSON.stringify(['integer', 'null']), `explicit type at ${path}`);
   if (schema.type === 'object') {
@@ -55,6 +59,17 @@ test('outbound strict review schema includes explicit scalar types at every dept
   assert.equal(format.type, 'json_schema');
   assert.equal(format.json_schema.strict, true);
   assertTypedSchema(format.json_schema.schema);
+});
+
+test('only the nonempty semantic-claim shape extends the unchanged source finding', () => {
+  const input = inputFor();
+  const result = parseReviewResult(JSON.stringify(wire(input, [finding])), input);
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(result.findings, [finding]);
+  assert.equal(result.findings[0].severity, 'medium');
+  const empty = parseReviewResult(JSON.stringify(wire(input, [{ ...finding, semantic_claims: [] }])), input);
+  assert.equal(empty.status, 'unavailable');
+  assert.match(empty.reason, /invalid result.findings/);
 });
 
 test('typed discriminators retain exact version, completion, side and severity refusals', () => {

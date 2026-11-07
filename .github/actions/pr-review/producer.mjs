@@ -120,6 +120,9 @@ function outputFor(result, input) {
   if (result.snapped_evidence?.length) summary.push(`Snapped evidence ranges:\n\n\`\`\`json\n${JSON.stringify(result.snapped_evidence)}\n\`\`\``);
   if (result.status !== 'complete') summary.push(`Review incomplete: ${result.reason}\nUnreviewed changed paths: ${result.omitted_paths.length}.`);
   for (const note of result.context_notes ?? []) summary.push(`Context: ${note}`);
+  for (const finding of result.findings) for (const claim of finding.semantic_claims ?? []) {
+    summary.push(`Documentation for ${claim.tool} (${finding.path}, ${finding.side} lines ${finding.start_line}–${finding.end_line}; read ${claim.documentation_read_date}): ${claim.documentation_url}\n${claim.documentation_quote}`);
+  }
   for (const finding of result.findings.filter(f => f.side === 'base')) {
     summary.push(`${finding.severity}: ${finding.title} (${finding.path}, base lines ${finding.start_line}–${finding.end_line})\n${finding.explanation}\nTrigger: ${finding.trigger}\nConsequence: ${finding.consequence}`);
   }

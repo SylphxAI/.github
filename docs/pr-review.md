@@ -169,6 +169,26 @@ offsets and records `reason=trailing_lf`, the add/remove operation and both byte
 counts in `snapped_evidence`. Unavailable or out-of-bounds slices still fail. Deleted-code findings cite the base side in
 the check summary; head-side findings become line annotations. Medium or higher
 concrete defects fail; clean reviewed code passes. Low findings remain advisory.
+Findings asserting external DSL, tool or library semantics must declare those
+claims in optional `semantic_claims`, including the tool, claim, authoritative
+`documentation_url`, relevant verbatim `documentation_quote`, and
+`documentation_read_date` (YYYY-MM-DD). The reviewer checks authority, applicable
+version and support for the claim. The parser checks citation structure (HTTPS
+URL, nonempty quotation, valid date), not vendor semantics or remote page
+contents. A declared claim missing any citation component becomes a visible
+non-blocking question, not an annotation or an incomplete review. Cited findings
+retain their severity and publish their documentation in the Check Run summary.
+Omitting `semantic_claims` means no external claims (when present, the array must
+be nonempty): ordinary source-evidenced findings retain
+all blocking power and need no extra output fields. Normal source grounding still
+applies before a claim can become either a finding or a question.
+
+For example, the [Kyverno Validate Rules operator table](https://kyverno.io/docs/policy-types/cluster-policy/validate/#operators)
+(read 2026-11-07) defines `|` as “logical or”. A claim that a pattern such as
+`stateful|infra-critical` matches only that literal string cannot be justified by
+assuming another language's string semantics. This is a regression example, not a
+vendor-specific rule in the validator.
+
 If a finding points outside the changed ranges, its evidence is validated first.
 The first verbatim-validated evidence overlapping any changed range supplies the
 anchor, including another changed file or renamed base source, with severity

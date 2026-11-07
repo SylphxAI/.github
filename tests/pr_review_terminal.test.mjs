@@ -56,8 +56,8 @@ for (const mode of ['fabricated quote', 'unknown finding path', 'unknown evidenc
 const { APP_ID, CHECK_NAME } = await import('../.github/actions/pr-review/github.mjs');
 const { produceReview } = await import('../.github/actions/pr-review/producer.mjs');
 const { reviewPartitions } = await import('../.github/actions/pr-review/partition.mjs');
-async function publish(reply, { current, deadlineMs } = {}) {
-  const source = { 'change.js': ['before\nstable\n', 'after\nstable\n'], 'caller.js': ['old caller\n', 'new caller\n'] };
+async function publish(reply, { current, deadlineMs, source: suppliedSource } = {}) {
+  const source = suppliedSource ?? { 'change.js': ['before\nstable\n', 'after\nstable\n'], 'caller.js': ['old caller\n', 'new caller\n'] };
   const reads = [], posts = [], runs = [];
   const github = { repository: 'example/repo',
     current: async () => current ? current(posts) : true,
@@ -189,4 +189,106 @@ test('an incomplete finding can be reassessed by a final verdict but is not eras
       assert.match(receipt.reason, /Final verdict unavailable/);
     }
   }
+});
+
+const priorityPath = 'data-infra-priority-floor.yaml';
+const priorityPattern = 'stateful|infra-critical|production|production-nopreempt|system-cluster-critical|system-node-critical';
+const priorityLine = `                  priorityClassName: "${priorityPattern}"`;
+const prioritySource = { [priorityPath]: ['', '# context\n'.repeat(88) + priorityLine + '\n'] };
+const semanticFinding = () => ({ path: priorityPath, side: 'head', start_line: 89, end_line: 89,
+  severity: 'high', title: 'The priority pattern matches only a literal string',
+  explanation: 'The tool treats the pipe-separated alternatives as one literal value.',
+  trigger: 'Creating a workload with priorityClassName stateful.', consequence: 'The workload is rejected.',
+  evidence: [evidence(priorityPath, priorityLine, 89)] });
+const uncitedClaim = { tool: 'Kyverno', claim: 'The pipe-separated pattern matches only the literal string.' };
+// Authoritative Operators table, read 2026-11-07: `|` means “logical or”.
+// It refutes the uncited claim above; this citation tests structure, not a fact list.
+const citation = { tool: 'Kyverno', claim: 'The pattern operator | means logical OR.',
+  documentation_url: 'https://kyverno.io/docs/policy-types/cluster-policy/validate/#operators',
+  documentation_quote: '| logical or', documentation_read_date: '2026-11-07' };
+const semanticPublish = f => publish(input => wire(input, [f]), { source: prioritySource });
+
+// The absence of a declaration never weakens a source-only finding, including
+// old fixtures that predate semantic_claims. Assert the full annotation bytes.
+test('source-evidenced finding without semantic_claims retains the exact blocking verdict', async () => {
+  const { receipt, run } = await publish(input => wire(input, [finding([evidence('change.js', 'after')])]));
+  assert.equal(receipt.conclusion, 'failure');
+  assert.equal(receipt.findings, 1);
+  assert.deepEqual(run.output.annotations, [{ path: 'change.js', start_line: 1, end_line: 1,
+    annotation_level: 'failure', title: 'Changed contract breaks the consumer',
+    message: 'The caller no longer receives its expected value.\nTrigger: The caller reads the value.\nConsequence: The request fails.' }]);
+  assert.equal(run.output.title, '1 defects require a change');
+  assert.ok(!run.output.summary.includes('tool semantics'));
+});
+
+test('uncited Kyverno pipe-pattern claim becomes a visible non-blocking question', async () => {
+  const { receipt, run } = await semanticPublish({ ...semanticFinding(), semantic_claims: [uncitedClaim] });
+  assert.equal(receipt.conclusion, 'success', receipt.reason);
+  assert.equal(receipt.findings, 0);
+  assert.deepEqual(run.output.annotations, []);
+  assert.match(run.output.summary, /0 findings; 0 blocking/);
+  assert.match(run.output.summary, /Unverified tool semantics \(non-blocking question\): Can authoritative documentation confirm this claim\?/);
+  assert.match(run.output.summary, /The priority pattern matches only a literal string/);
+  assert.match(run.output.summary, /head lines 89–89/);
+});
+
+test('declared semantics with a complete citation retain blocking power and publish the citation', async () => {
+  // A genuinely wrong literal pattern excludes the intended second alternative.
+  const line = '                  priorityClassName: "stateful"';
+  const f = { ...semanticFinding(), title: 'The literal pattern omits the intended alternative',
+    explanation: 'Only stateful is allowed; infra-critical is not one of the alternatives.',
+    trigger: 'Creating an infra-critical workload.', semantic_claims: [citation], evidence: [evidence(priorityPath, line, 89)] };
+  const { receipt, run } = await publish(input => wire(input, [f]),
+    { source: { [priorityPath]: ['', '# context\n'.repeat(88) + line + '\n'] } });
+  assert.equal(receipt.conclusion, 'failure');
+  assert.equal(receipt.findings, 1);
+  assert.equal(run.output.annotations[0].annotation_level, 'failure');
+  assert.ok(run.output.summary.includes(citation.documentation_url));
+  assert.ok(run.output.summary.includes(citation.documentation_quote));
+  assert.match(run.output.summary, /read 2026-11-07/);
+});
+
+for (const key of ['documentation_url', 'documentation_quote', 'documentation_read_date']) {
+  for (const mode of ['missing', 'empty']) test(`declared semantics with ${mode} ${key} are a question, not a failed review`, async () => {
+    const claim = { ...citation };
+    if (mode === 'missing') delete claim[key]; else claim[key] = '  ';
+    const { receipt, run } = await semanticPublish({ ...semanticFinding(), semantic_claims: [claim] });
+    assert.equal(receipt.conclusion, 'success', receipt.reason);
+    assert.equal(receipt.findings, 0);
+    assert.deepEqual(run.output.annotations, []);
+    assert.match(run.output.summary, /non-blocking question/);
+  });
+}
+
+for (const [name, changes] of [
+  ['non-HTTPS URL', { documentation_url: 'http://example.org/reference' }],
+  ['invalid URL', { documentation_url: 'not a URL' }],
+  ['credential-bearing URL', { documentation_url: 'https://user:password@example.org/reference' }],
+  ['impossible date', { documentation_read_date: '2026-02-30' }],
+  ['undated prose', { documentation_read_date: 'today' }],
+]) test(`declared semantics with ${name} remain non-blocking`, async () => {
+  const { receipt, run } = await semanticPublish({ ...semanticFinding(), semantic_claims: [{ ...citation, ...changes }] });
+  assert.equal(receipt.conclusion, 'success', receipt.reason);
+  assert.equal(receipt.findings, 0);
+  assert.match(run.output.summary, /non-blocking question/);
+});
+
+test('every declared claim needs a citation; the validator has no vendor fact list', async () => {
+  const { receipt, run } = await semanticPublish({ ...semanticFinding(),
+    semantic_claims: [{ ...citation, tool: 'Another DSL' }, { ...uncitedClaim, tool: 'Another DSL' }] });
+  assert.equal(receipt.conclusion, 'success');
+  assert.equal(receipt.findings, 0);
+  assert.match(run.output.summary, /non-blocking question/);
+});
+
+test('uncited semantics cannot turn fabricated evidence into a public question', async () => {
+  const input = createReviewInput({ schema_version: 2, repository: 'example/repo', repository_id: '1',
+    base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), policy_version: '1',
+    trigger: { kind: 'workflow_dispatch', id: '1', generation: '1' }, context: [],
+    files: [bundleFile({ filename: priorityPath, status: 'added' }, null, prioritySource[priorityPath][1])] });
+  const f = { ...semanticFinding(), semantic_claims: [uncitedClaim], evidence: [evidence(priorityPath, 'fabricated', 89)] };
+  const result = parseReviewResult(JSON.stringify(wire(input, [f])), input);
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.validation_failure.code, 'quote_mismatch');
+  assert.ok(!JSON.stringify(result).includes('non-blocking question'));
 });

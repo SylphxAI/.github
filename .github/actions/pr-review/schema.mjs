@@ -12,6 +12,21 @@ const evidence = object({
 	end_byte: { type: ['integer', 'null'], minimum: 0 },
 })
 
+const finding = object({
+	path: text, side: { type: 'string', enum: ['base', 'head'] }, start_line: line, end_line: line,
+	severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
+	title: text, explanation: text, trigger: text, consequence: text,
+	evidence: { type: 'array', minItems: 1, items: evidence },
+})
+// Two strict object shapes keep semantic_claims optional without requiring
+// extra output fields for ordinary source-derived findings.
+const findingWithSemantics = object({ ...finding.properties,
+	semantic_claims: { type: 'array', minItems: 1, items: object({ tool: text, claim: text,
+		documentation_url: { type: 'string' }, documentation_quote: { type: 'string' },
+		documentation_read_date: { type: 'string' },
+	}) },
+})
+
 export const resultSchema = object({
 	schema_version: { type: 'integer', const: 1 },
 	repository_id: text,
@@ -21,12 +36,7 @@ export const resultSchema = object({
 	reviewer_version: text,
 	policy_version: text,
 	completion: { type: 'string', enum: ['complete', 'incomplete', 'unavailable'] },
-	findings: { type: 'array', items: object({
-		path: text, side: { type: 'string', enum: ['base', 'head'] }, start_line: line, end_line: line,
-		severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
-		title: text, explanation: text, trigger: text, consequence: text,
-		evidence: { type: 'array', minItems: 1, items: evidence },
-	}) },
+	findings: { type: 'array', items: { anyOf: [finding, findingWithSemantics] } },
 	binary_reviews: { type: 'array', items: object({
 		path: text, status: { type: 'string', enum: ['source-reviewed', 'unresolved'] },
 		source_evidence: { type: 'array', items: evidence },
@@ -46,6 +56,12 @@ export const resultSchema = object({
 // The supported schema vocabulary is deliberately small and checked recursively.
 export function validateSchema(value, schema, at = 'result') {
 	const fail = () => { throw new Error(`invalid ${at}`) }
+	if (schema.anyOf) {
+		for (const alternative of schema.anyOf) {
+			try { return validateSchema(value, alternative, at) } catch {}
+		}
+		fail()
+	}
 	if (Array.isArray(schema.type)) {
 		if (value === null && schema.type.includes('null')) return value
 		return validateSchema(value, { ...schema, type: schema.type.find(t => t !== 'null') }, at)
