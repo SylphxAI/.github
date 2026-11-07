@@ -2,9 +2,8 @@
 
 `SylphxAI/skills` and `SylphxAI/.github` require an `ops-security/review`
 Check Run from the canonical `sylphx-ai` App (`1299545`) with conclusion
-`success` on the exact PR head before merging to `main`. This policy applies
-only to these two public repositories. Existing CI, protections and queue
-settings stay intact. Commit statuses from other publishers and GitHub Actions
+`success` on the exact PR head before merging to `main`. This policy applies only to these two public repositories.
+Existing CI, protections and queue settings stay intact. Commit statuses from other publishers and GitHub Actions
 checks (`15368`) cannot satisfy this App-bound requirement; the native rule binds
 the App, not the result type. The operator interface and queue projection use
 Check Runs only.
