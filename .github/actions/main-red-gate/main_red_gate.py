@@ -58,6 +58,8 @@ REVERT_LABELS = {"auto-revert", "queue-jump:red-main"}
 OUTAGE_LABEL = "queue-jump:outage"
 WATCH_LABEL = "red-main-red-watchdog"
 MERGE_GROUP_PR = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/[^/].*?/pr-(\d+)-[0-9a-f]{7,40}$")
+RUNS_PAGE_SIZE = 100
+HISTORY_PAGE_LIMIT = 10
 
 
 def trunk_state(runs: list[dict], branch: str) -> tuple[str, dict | None]:
@@ -188,6 +190,10 @@ def _get(url: str, token: str, timeout: float = 30) -> dict | list:
 
 class HoldExpired(Exception):
     """The admission hold deadline elapsed, including refresh I/O."""
+
+
+class HistoryIncomplete(Exception):
+    """The history read budget ended before a conclusive baseline or history end."""
 
 
 def _read(url: str, token: str, deadline: float | None = None) -> dict | list:
@@ -338,14 +344,43 @@ def main() -> int:
     ancestry: dict[str, bool] = {}
 
     def read_runs(deadline: float | None = None) -> list[dict]:
-        data = _read(f"{api}/actions/workflows/{env['VERIFY_WORKFLOW']}/runs"
-                    f"?event=push&branch={branch}&per_page=30", token, deadline)
-        return gate_runs(data.get("workflow_runs", []), branch, env.get("BASE_SHA", ""),
-                         env.get("VERDICT_CHECK", ""), api, token, ancestry, deadline)
+        selected = []
+        for page in range(1, HISTORY_PAGE_LIMIT + 1):
+            data = _read(f"{api}/actions/workflows/{env['VERIFY_WORKFLOW']}/runs"
+                         f"?event=push&branch={branch}&per_page={RUNS_PAGE_SIZE}&page={page}", token, deadline)
+            history = data.get("workflow_runs", [])
+            projected = gate_runs(history, branch, env.get("BASE_SHA", ""),
+                                  env.get("VERDICT_CHECK", ""), api, token, ancestry, deadline)
+            selected.extend(projected)
+            if trunk_state(projected, branch)[0] != "unknown" or len(history) < RUNS_PAGE_SIZE:
+                return selected
+        raise HistoryIncomplete(f"workflow history read budget exhausted after {HISTORY_PAGE_LIMIT} pages "
+                                f"({HISTORY_PAGE_LIMIT * RUNS_PAGE_SIZE} runs) without a conclusive base verdict")
+
+    def incomplete_history(exc: HistoryIncomplete, deadline: float | None = None) -> int:
+        if mode != "enforce":
+            print(f"::warning::observe mode, would have refused: {exc}: admitted")
+            return 0
+        # Exhaustion is not evidence of green, but it must not block the way
+        # back either. A failed/late eligibility read cannot turn the exhausted
+        # history budget into an ordinary-group admission.
+        number = pr_number(env.get("MERGE_GROUP_REF", ""))
+        if number is not None:
+            try:
+                why = is_way_back(_read(f"{api}/pulls/{number}", token, deadline), fix_label)
+                if why:
+                    print(f"::warning::{exc}; this pull request is a way back to green ({why}): admitted")
+                    return 0
+            except Exception as error:
+                print(f"::warning::cannot establish recovery eligibility ({error})")
+        print(f"::error::{exc}: refused; re-enqueue after Verify establishes the base verdict")
+        return 1
 
     try:
         runs = read_runs()
         state, run = trunk_state(runs, branch)
+    except HistoryIncomplete as exc:
+        return incomplete_history(exc)
     except Exception as exc:
         print(f"::warning::cannot read {env['VERIFY_WORKFLOW']} runs ({exc}): admitted")
         return 0
@@ -384,6 +419,8 @@ def main() -> int:
                     state, run = trunk_state(runs, branch)
                 except HoldExpired:
                     return expired()
+                except HistoryIncomplete as exc:
+                    return incomplete_history(exc, deadline)
                 except Exception as exc:
                     print(f"::warning::cannot refresh {env['VERIFY_WORKFLOW']} verdict ({exc}): admitted")
                     return 0

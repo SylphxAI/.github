@@ -194,6 +194,12 @@ workflow job name, for example `full-suite / suite-ok`: a completed successful
 verdict clears an older red even while trailing jobs keep its run in progress.
 The action reads jobs from the run's latest attempt, not unrelated checks on
 the same SHA. With no `verdict-check`, the run conclusion remains authoritative.
+History is paginated in 100-run pages until a conclusive ancestor verdict or
+the end, with a budget of 10 pages per snapshot. If that 1,000-run window is
+still inconclusive, the gate refuses with a history-budget error rather than
+admitting an unknown baseline. Refresh pagination shares the remaining hold
+deadline. Observe mode still only warns, and a readable revert or labelled fix
+still passes when the history budget is exhausted.
 Cancelled, skipped and superseded answers are passed over; a later success
 clears the failure. While red, a merge group is
 admitted when it is the way back to green:
