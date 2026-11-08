@@ -1826,8 +1826,8 @@ def valid_index_scalar_tokens(tokens: list[Token], *, allow_boolean: bool) -> li
     for i, token in enumerate(tokens[:-1]):
         if tokens[i + 1].value != "(" or token.kind not in {"word", "identifier"}:
             continue
-        if token.kind == "word" and token.value in {"IN", "ANY", "SOME", "ALL", "CAST"}:
-            if token.value == "IN" and not allow_boolean:
+        if token.kind == "word" and token.value in {"AND", "OR", "NOT", "IN", "ANY", "SOME", "ALL", "CAST", "WHEN", "THEN", "ELSE", "BETWEEN"}:
+            if token.value in {"AND", "OR", "NOT", "IN", "BETWEEN"} and not allow_boolean:
                 raise ValueError("boolean IN predicate is not valid in an index key expression")
             continue
         fn = token.value if token.kind == "identifier" else token.value.lower()
@@ -1868,8 +1868,10 @@ def canon_index_tokens(tokens: list[Token]) -> tuple[tuple[str, str], ...]:
             out.append(("kw", token.value))
         elif token.kind == "identifier":
             out.append(("id", token.value))
+        elif re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", token.raw or token.value):
+            out.append(("num", (token.raw or token.value).lower()))
         else:
-            out.append(("id", (token.raw or token.value).lower() if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", token.raw or token.value) else token.value.lower()))
+            out.append(("id", token.value.lower()))
     return tuple(out)
 
 

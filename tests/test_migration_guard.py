@@ -301,6 +301,23 @@ class ConcurrentIndexTests(unittest.TestCase):
         ]:
             with self.subTest(bad_decl=bad_decl):
                 self.assertTrue(guard.check_sql(self.source(bad_decl, statement), "postgres", "atlas-qualified-v1"))
+        num_decl = {k: v for k, v in self.declaration.items() if k != "where_null"} | {
+            "where": "owner_id = 1 AND (deleted_at IS NULL OR status = 2)",
+        }
+        num_stmt = (
+            'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" ("owner_id") '
+            "WHERE owner_id = 1 AND (deleted_at IS NULL OR status = 2);"
+        )
+        self.assertEqual(guard.check_sql(self.source(num_decl, num_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(num_decl, num_stmt.replace("owner_id = 1", 'owner_id = "1"')),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
+        quoted_id_decl = num_decl | {"where": 'owner_id = "1" AND (deleted_at IS NULL OR status = 2)'}
+        self.assertTrue(guard.check_sql(self.source(quoted_id_decl, num_stmt), "postgres", "atlas-qualified-v1"))
 
 
 class HistoryTests(unittest.TestCase):
