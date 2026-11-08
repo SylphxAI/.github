@@ -94,6 +94,35 @@ class RustCiWorkflow(unittest.TestCase):
         for later in ("Format", "Clippy", "Test"):
             self.assertLess(names.index("Compile cache (sccache)"), names.index(later))
 
+    def test_only_the_optional_accelerator_may_fail_without_blocking_checks(self) -> None:
+        self.assertIs(step("Compile cache (sccache)")["continue-on-error"], True)
+        for candidate in job()["steps"]:
+            if candidate.get("name") != "Compile cache (sccache)":
+                self.assertNotIn("continue-on-error", candidate)
+        self.assertEqual(step("Compile without cache when unavailable")["if"], "steps.sccache.outcome == 'failure'")
+
+    def test_failed_installer_clears_partial_wrapper_and_preserves_compiler_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            envfile = pathlib.Path(tmp, "env")
+            summary = pathlib.Path(tmp, "summary")
+            env = dict(os.environ, RUSTC_WRAPPER="/missing/sccache", GITHUB_ENV=str(envfile),
+                       GITHUB_STEP_SUMMARY=str(summary))
+            result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c",
+                                     step("Compile without cache when unavailable")["run"]],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("::warning::", result.stdout)
+            self.assertEqual(envfile.read_text(), "RUSTC_WRAPPER=\n")
+            self.assertIn("compiling cold", summary.read_text())
+            # A cold compiler failure is still the enclosing check's failure.
+            cargo = pathlib.Path(tmp, "cargo")
+            cargo.write_text("#!/bin/sh\n[ -z \"$RUSTC_WRAPPER\" ] || exit 99\nexit 23\n")
+            cargo.chmod(0o755)
+            env.update(PATH=tmp + ":" + env["PATH"], RUSTC_WRAPPER="", IN_LOCKED="true", IN_FEATURES="",
+                       IN_CLIPPY="--workspace --all-targets -- -D warnings")
+            result = subprocess.run(["bash", "-c", step("Clippy")["run"]], env=env, capture_output=True)
+            self.assertEqual(result.returncode, 23, result.stderr)
+
     def test_never_uses_the_platform_key_or_a_ref_scoped_key(self) -> None:
         declaration = job()
         checkout = next(s for s in declaration['steps'] if s.get('name') == 'Checkout')
