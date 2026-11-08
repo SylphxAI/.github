@@ -182,3 +182,5 @@ The `rust-sccache` action's `key-prefix` defaults to `rustc`, the one
 namespace of ADR 0004, so a caller that does not set it cannot land in a
 namespace of its own. A caller still states `key-prefix: rustc` until its pin
 is at or after the commit that made it the default.
+
+If compile-cache installation is unavailable, the job records a warning, clears any partial RUSTC_WRAPPER, and compiles cold. Formatting, Clippy, and tests still fail the job on errors; the cache is an optional accelerator, not a correctness gate.
