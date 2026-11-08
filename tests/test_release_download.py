@@ -92,11 +92,12 @@ class ReleaseDownloadTest(unittest.TestCase):
         self.request_patch.start()
         self.addCleanup(self.request_patch.stop)
 
-    def scan(self):
+    def scan(self, token_environment="SECRET_SCAN_TOKEN"):
         output = io.StringIO()
         with mock.patch.object(sys, 'argv', ['scan', '--repo', str(self.repo)]), \
                 mock.patch.dict(os.environ, GITHUB_EVENT_PATH=str(self.event), GITHUB_EVENT_NAME='pull_request',
-                                SECRET_SCAN_TOKEN=self.token, EXECUTION_MARKER=str(self.marker)), \
+                                EXECUTION_MARKER=str(self.marker),
+                                **{"SECRET_SCAN_TOKEN": "", "GITHUB_TOKEN": "", token_environment: self.token}), \
                 mock.patch.object(SCAN.platform, 'system', return_value='Linux'), \
                 mock.patch.object(SCAN.platform, 'machine', return_value='x86_64'), \
                 mock.patch.dict(SCAN.CHECKSUMS, {'x86_64': ('x64', self.digest)}), \
@@ -122,6 +123,13 @@ class ReleaseDownloadTest(unittest.TestCase):
                 self.assertEqual(headers['Accept'], 'application/octet-stream')
             else:
                 self.assertNotIn('Authorization', headers)
+
+    def test_job_github_token_alone_authenticates_asset_fallback(self):
+        code, output = self.scan("GITHUB_TOKEN")
+        self.assertEqual(code, 0, output)
+        self.assertTrue(self.marker.is_file())
+        self.assertTrue(any('/releases/assets/' in path and headers.get('Authorization') == 'Bearer ' + self.token
+                            for path, headers in self.calls))
 
     def test_both_routes_fail_with_stage_http_status_and_class(self):
         self.fallback = 503

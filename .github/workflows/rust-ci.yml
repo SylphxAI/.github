@@ -297,11 +297,18 @@ jobs:
         # One namespace per organization; the backend is the action's choice
         # (docs/adr/0004-fleet-rust-compile-cache.md).
         id: sccache
-        uses: SylphxAI/.github/.github/actions/rust-sccache@b051405836fcc2346300b21bd5f3af9e8eae5419 # main
+        continue-on-error: true
+        uses: SylphxAI/.github/.github/actions/rust-sccache@5bb96f017593941c433874edca6281540eb91755 # main after #515
         with:
           s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
           s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}
           key-prefix: ${{ inputs.key-prefix }}
+      - name: Compile without cache when unavailable
+        if: steps.sccache.outcome == 'failure'
+        run: |
+          echo "::warning::sccache installation failed; compiling cold. Compiler and test failures remain blocking."
+          echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          echo "### Rust compile cache unavailable: compiling cold" >> "$GITHUB_STEP_SUMMARY"
       - name: Format
         if: inputs.fmt
         working-directory: ${{ inputs.workspace }}
