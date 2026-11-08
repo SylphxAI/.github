@@ -46,12 +46,22 @@ export async function recoverContext({ input, github, target, execute, createRev
     return next;
   };
   const finalizeBudget = async (cause, reason, nextRoundEstimateMs) => {
+    const binaryVerdict = cause === 'no_requests' && input.files.some(file => file.source_mode === 'binary-metadata');
+    const unavailableVerdict = async (code, detail) => {
+      result = { ...result, status: 'unavailable', unavailability_code: code,
+        reason: `${code}: ${detail}` };
+      return stop(code, '');
+    };
     // One terminal inference, not another context collection cycle. Re-sealing
     // binds the instruction to the exact evidence and normal result validation.
-    if (deadlineMs - Date.now() <= 0 || deadlineMs - Date.now() < nextRoundEstimateMs) return stop('deadline', 'Insufficient review deadline remaining for the final verdict.');
+    if (deadlineMs - Date.now() <= 0 || deadlineMs - Date.now() < nextRoundEstimateMs) {
+      if (binaryVerdict) return unavailableVerdict('binary_provenance_deadline', 'Insufficient review deadline remaining for the provenance verdict.');
+      return stop('deadline', 'Insufficient review deadline remaining for the final verdict.');
+    }
     const previous = result;
     const originalReason = result.reason;
-    input = createReviewInput({ ...input, context_recovery: 'exhausted' });
+    input = createReviewInput({ ...input, context_recovery: 'exhausted',
+      ...(binaryVerdict ? { binary_provenance_verdict: true } : {}) });
     result = await infer();
     sizes.push(...(result.request_bytes ?? []));
     if (result.diagnostics) diagnostics.push(result.diagnostics);
@@ -63,6 +73,11 @@ export async function recoverContext({ input, github, target, execute, createRev
       .map(finding => [canonical(finding), finding])).values()] };
     // A valid model assessment that still refuses a verdict is a terminal
     // review failure, not infrastructure unavailability or a clean review.
+    if (binaryVerdict) {
+      const code = result.terminal_invalid ? 'binary_provenance_invalid_verdict'
+        : result.status === 'incomplete' ? 'binary_provenance_no_verdict' : 'binary_provenance_engine_unavailable';
+      return unavailableVerdict(code, result.reason || 'The reviewer returned no complete source/derivation verdict.');
+    }
     if (result.status === 'incomplete') result = { ...result, terminal_incomplete: true };
     else return stop(cause, `Final verdict unavailable. ${reason}`);
     result = { ...result, reason: originalReason };
@@ -88,6 +103,12 @@ export async function recoverContext({ input, github, target, execute, createRev
     sizes.push(...(result.request_bytes ?? []));
     if (result.diagnostics) diagnostics.push(result.diagnostics);
     await record(result.status === 'incomplete' ? 'pending' : result.status);
+    // Retry only the exact missing binary assessment, never source/identity failures.
+    if (result.status === 'unavailable' && result.terminal_invalid &&
+        /binary provenance review incomplete/.test(result.reason ?? '') &&
+        input.files.some(file => file.source_mode === 'binary-metadata')) {
+      return finalizeBudget('no_requests', 'Binary provenance verdict was omitted.', nextRoundEstimateMs);
+    }
     if (result.status !== 'incomplete') return { input, result };
     const requests = result.context_requests ?? [];
     if (!requests.length) {
