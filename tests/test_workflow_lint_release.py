@@ -5,6 +5,7 @@ import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -78,15 +79,78 @@ class WorkflowLintReleaseTest(unittest.TestCase):
         self.env = dict(os.environ, PATH=str(bin_dir) + ':' + os.environ['PATH'],
                         RUNNER_TEMP=str(self.root), GITHUB_ACTION_PATH=str(ACTION),
                         GITHUB_TOKEN=self.token, VERSION='1.7.12', SHA256=self.digest,
+                        BINARY_SHA256=self.step['env']['BINARY_SHA256'],
                         IGNORE='property "job_workflow_ref" is not defined',
                         ARGS='-config-file\npath with spaces.yaml',
                         LINT_ARGS=str(self.root / 'lint-args'))
 
     def run_step(self):
-        result = subprocess.run(['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', self.step['run']],
+        shell = self.step['run'].replace('/usr/local/bin/actionlint', str(self.root / 'absent-image-binary'))
+        result = subprocess.run(['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', shell],
                                 env=self.env, text=True, capture_output=True, timeout=15)
         self.assertNotIn(self.token, result.stdout + result.stderr)
         return result
+
+    def check_prebaked(self, tool, mismatch=None):
+        shutil.rmtree(self.root / 'pinned-tools', ignore_errors=True)
+        self.calls.clear()
+        name = 'actionlint' if tool == 'workflow-lint' else 'sccache'
+        action_path = ACTION.parent / tool
+        step = next(step for step in yaml.safe_load((action_path / 'action.yml').read_text())['runs']['steps']
+                    if 'VERSION' in step.get('env', {}))
+        version = '1.7.12' if name == 'actionlint' else 'sccache 0.18.0'
+        version_arg = '-version' if name == 'actionlint' else '--version'
+        def executable(output):
+            return ('#!/bin/bash\nif [ "$1" = ' + version_arg + ' ]; then echo "' + output +
+                    '"; exit; fi\nprintf "%s\\n" "$@" > "$LINT_ARGS"\n').encode()
+        good = executable(version)
+        candidate_bytes = executable('0.0.0') if mismatch == 'version' else good
+        if mismatch == 'digest':
+            candidate_bytes += b'# changed bytes, same displayed version\n'
+        candidate = self.root / ('image-' + name)
+        candidate.write_bytes(candidate_bytes)
+        candidate.chmod(0o700)
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode='w:gz') as bundle:
+            member = tarfile.TarInfo(name if name == 'actionlint' else
+                                     'sccache-v0.18.0-x86_64-unknown-linux-musl/sccache')
+            member.size, member.mode = len(good), 0o700
+            bundle.addfile(member, io.BytesIO(good))
+        self.body = archive.getvalue()
+        env = dict(self.env, VERSION=step['env']['VERSION'], SHA256=hashlib.sha256(self.body).hexdigest(),
+                   BINARY_SHA256=hashlib.sha256(good if mismatch == 'digest' else candidate_bytes).hexdigest(),
+                   GITHUB_ACTION_PATH=str(action_path), GITHUB_PATH=str(self.root / 'path'),
+                   GITHUB_ENV=str(self.root / 'env'), SCCACHE_PROBE=str(self.root / 'sccache-probe'))
+        self.assertIn('/usr/local/bin/' + name, step['run'])
+        shell = step['run'].replace('/usr/local/bin/' + name, str(candidate))
+        # Keep the complete installer; backend startup has its own fixture suite.
+        shell = shell.replace('. "$GITHUB_ACTION_PATH/start.sh"',
+                              '"$dir/sccache" --version > "$SCCACHE_PROBE"')
+        result = subprocess.run(['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', shell],
+                                env=env, text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        installed = list((self.root / 'pinned-tools').glob('*/' + name))
+        self.assertEqual(len(installed), 1)
+        self.assertEqual(installed[0].read_bytes(), good)
+        if mismatch is None:
+            self.assertEqual(self.calls, [])
+            self.assertIn('version-verified pre-baked binary', result.stdout)
+        else:
+            self.assertTrue(any('/releases/assets/' in path for path, _ in self.calls))
+            # A fetched archive is independently pinned, not accepted just because
+            # the runner's candidate did not match.
+            self.assertIn('authenticated API asset fallback', result.stdout)
+
+    def test_matching_prebaked_tools_are_reused_with_zero_network(self):
+        for tool in ('workflow-lint', 'rust-sccache'):
+            with self.subTest(tool=tool):
+                self.check_prebaked(tool)
+
+    def test_wrong_digest_or_version_uses_the_verified_asset_instead(self):
+        for tool in ('workflow-lint', 'rust-sccache'):
+            for mismatch in ('digest', 'version'):
+                with self.subTest(tool=tool, mismatch=mismatch):
+                    self.check_prebaked(tool, mismatch)
 
     def test_release_identity_and_job_token_are_unchanged(self):
         self.assertEqual(self.step['env']['VERSION'], '1.7.12')

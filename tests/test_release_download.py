@@ -92,8 +92,12 @@ class ReleaseDownloadTest(unittest.TestCase):
         self.request_patch.start()
         self.addCleanup(self.request_patch.stop)
 
-    def scan(self, token_environment="SECRET_SCAN_TOKEN"):
+    def scan(self, token_environment="SECRET_SCAN_TOKEN", prebaked=None):
         output = io.StringIO()
+        copy_verified = SCAN.verified_binary.copy_verified
+        def local_candidate(path, destination, **kwargs):
+            self.assertEqual(path, '/usr/local/bin/gitleaks')
+            return copy_verified(prebaked or self.root / 'absent-image-binary', destination, **kwargs)
         with mock.patch.object(sys, 'argv', ['scan', '--repo', str(self.repo)]), \
                 mock.patch.dict(os.environ, GITHUB_EVENT_PATH=str(self.event), GITHUB_EVENT_NAME='pull_request',
                                 EXECUTION_MARKER=str(self.marker),
@@ -101,11 +105,46 @@ class ReleaseDownloadTest(unittest.TestCase):
                 mock.patch.object(SCAN.platform, 'system', return_value='Linux'), \
                 mock.patch.object(SCAN.platform, 'machine', return_value='x86_64'), \
                 mock.patch.dict(SCAN.CHECKSUMS, {'x86_64': ('x64', self.digest)}), \
+                mock.patch.object(SCAN.verified_binary, 'copy_verified', side_effect=local_candidate), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             code = SCAN.main()
         self.assertNotIn(self.token, output.getvalue())
         self.assertNotIn('Secret scan could not complete; raw diagnostics withheld', output.getvalue())
         return code, output.getvalue()
+
+    def scan_with_prebaked(self, mismatch=None):
+        with tarfile.open(fileobj=io.BytesIO(self.archive), mode='r:gz') as archive:
+            original_binary = archive.extractfile('gitleaks').read()
+        def executable(version):
+            return (b'#!/bin/sh\nif [ "$1" = version ]; then echo "' + version.encode() +
+                    b'"; exit; fi\n' + original_binary.split(b'\n', 1)[1])
+        good = executable('8.30.1')
+        content = executable('0.0.0') if mismatch == 'version' else good
+        if mismatch == 'digest':
+            content += b'# changed bytes, same displayed version\n'
+        candidate = self.root / 'image-gitleaks'
+        candidate.write_bytes(content)
+        candidate.chmod(0o700)
+        digest = hashlib.sha256(good if mismatch == 'digest' else content).hexdigest()
+        with mock.patch.dict(SCAN.BINARY_CHECKSUMS, {'x86_64': digest}):
+            return self.scan(prebaked=candidate)
+
+    def test_matching_prebaked_scanner_is_reused_with_zero_network(self):
+        code, output = self.scan_with_prebaked()
+        self.assertEqual(code, 0, output)
+        self.assertTrue(self.marker.is_file())
+        self.assertEqual(self.calls, [])
+
+    def test_wrong_prebaked_digest_or_version_downloads_and_verifies_scanner(self):
+        for mismatch in ('digest', 'version'):
+            with self.subTest(mismatch=mismatch):
+                self.calls.clear()
+                self.marker.unlink(missing_ok=True)
+                code, output = self.scan_with_prebaked(mismatch)
+                self.assertEqual(code, 0, output)
+                self.assertTrue(self.marker.is_file())
+                self.assertTrue(any('/releases/assets/' in path for path, _ in self.calls))
+                self.assertIn('authenticated API asset fallback', output)
 
     def test_primary_504_api_200_runs_scan_and_records_fallback(self):
         code, output = self.scan()

@@ -103,6 +103,7 @@ runs:
         VERSION: v0.18.0
         GITHUB_TOKEN: ${{ github.token }}
         SHA256: 45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
+        BINARY_SHA256: 973cb15f6a986d84ca334bbed3bbe2eb8f1ee8fd81bf9e115b8539a293bf8d59
         S3_ACCESS_KEY: ${{ inputs.s3-access-key }}
         S3_SECRET_KEY: ${{ inputs.s3-secret-key }}
         S3_ENDPOINT: ${{ inputs.s3-endpoint }}
@@ -117,17 +118,23 @@ runs:
         dir="$RUNNER_TEMP/pinned-tools/sccache-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
         mkdir -p "$dir"
         name="sccache-$VERSION-x86_64-unknown-linux-musl"
-        if [ ! -f "$dir/sccache.tgz" ]; then
-          python3 "$GITHUB_ACTION_PATH/../_shared/release_download.py" \
-            --repository mozilla/sccache --tag "$VERSION" --filename "$name.tar.gz" \
-            --asset-id 563130201 --sha256 "$SHA256" --destination "$dir/sccache.tgz.part"
-          echo "$SHA256  $dir/sccache.tgz.part" | sha256sum -c --quiet
-          mv "$dir/sccache.tgz.part" "$dir/sccache.tgz"
+        if python3 "$GITHUB_ACTION_PATH/../_shared/verified_binary.py" \
+            --candidate /usr/local/bin/sccache --destination "$dir/sccache" \
+            --sha256 "$BINARY_SHA256" --version "sccache ${VERSION#v}" --version-arg=--version; then
+          : # The private binary has the exact release identity; no download.
         else
-          echo "sccache release archive from cache"
+          if [ ! -f "$dir/sccache.tgz" ]; then
+            python3 "$GITHUB_ACTION_PATH/../_shared/release_download.py" \
+              --repository mozilla/sccache --tag "$VERSION" --filename "$name.tar.gz" \
+              --asset-id 563130201 --sha256 "$SHA256" --destination "$dir/sccache.tgz.part"
+            echo "$SHA256  $dir/sccache.tgz.part" | sha256sum -c --quiet
+            mv "$dir/sccache.tgz.part" "$dir/sccache.tgz"
+          else
+            echo "sccache release archive from cache"
+          fi
+          echo "$SHA256  $dir/sccache.tgz" | sha256sum -c --quiet
+          tar -xzf "$dir/sccache.tgz" -C "$dir" --strip-components=1 "$name/sccache"
         fi
-        echo "$SHA256  $dir/sccache.tgz" | sha256sum -c --quiet
-        tar -xzf "$dir/sccache.tgz" -C "$dir" --strip-components=1 "$name/sccache"
         echo "$dir" >> "$GITHUB_PATH"
         export PATH="$dir:$PATH"
         # Incremental artifacts are not cacheable, and sccache refuses them.

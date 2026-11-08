@@ -27,11 +27,16 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '_shared'))
 import release_download
+import verified_binary
 
 VERSION = '8.30.1'
 CHECKSUMS = {
     'x86_64': ('x64', '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'),
     'aarch64': ('arm64', 'e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080'),
+}
+BINARY_CHECKSUMS = {
+    'x86_64': '88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509',
+    'aarch64': '00e91bbe655bd7c47753e8cfe61cb76ea1a5d7e7702fe161ee40102b46b3823b',
 }
 SHA = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 ALLOWLIST = '.desk-secret-allowlist.json'
@@ -129,6 +134,11 @@ def install(directory, version):
     if version != VERSION or platform.system() != 'Linux' or platform.machine() not in CHECKSUMS:
         raise ScanError('secret scan requires the checksum-pinned Linux gitleaks release')
     arch, digest = CHECKSUMS[platform.machine()]
+    binary = directory / 'gitleaks'
+    if verified_binary.copy_verified('/usr/local/bin/gitleaks', binary,
+                                     sha256=BINARY_CHECKSUMS[platform.machine()],
+                                     version=VERSION, version_args=('version',)):
+        return str(binary)
     asset_id = {'x86_64': 378332058, 'aarch64': 378332057}[platform.machine()]
     try:
         archive = release_download.download(
