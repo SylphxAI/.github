@@ -280,17 +280,20 @@ terminal PATCH is replayed. The accepted creation response is saved for the
 always-run finalizer before the first GET, so a temporarily missing or unavailable
 read projection cannot orphan a newly created check. A created check whose
 readback stays unavailable is finalized as interrupted from that saved identity.
-Before any annotation batch or terminal PATCH, the runner saves its intended
-result alongside `pending_finish` in the mode-0600 runner-local state file, and
-clears `pending_finish` once the terminal PATCH response is accepted. Finalization
-of an accepted publication is read-only, including when a stale GET still says in
-progress. If the terminal PATCH was never accepted (`pending_finish` remains
-present, with no terminal GitHub refusal or ambiguous write) and finalizer
-readback observes the canonical Check Run still in progress, the finalizer exits
-non-zero with `publish_unverified` and completes the Check Run from
-`pending_finish` (or fails closed with `conclusion="failure"` and title
-`Review interrupted` if `pending_finish` cannot be written), never overwriting a
-Check Run whose live status is already `completed`.
+Before pre-flight deadline checks or intermediate annotation batches in `finish`,
+the runner saves its unsent review result as `pending_finish` in the mode-0600
+runner-local state file. Once the terminal `PATCH` passes pre-flight guards and is
+about to be transmitted, the runner saves `publication` and clears
+`pending_finish`. Finalization of any dispatched terminal publication is strictly
+read-only, including when a stale GET still says in progress. If `finish` failed
+before the terminal `PATCH` could be dispatched (`pending_finish` remains present
+with no `publication`) and the canonical Check Run is still in progress, the
+finalizer exits non-zero with `publish_unverified` and completes the Check Run
+from `pending_finish` (or fails closed with `conclusion="failure"` and title
+`Review interrupted` if `pending_finish` is incomplete or an intermediate
+annotation batch fails before the terminal `PATCH` is dispatched), never
+overwriting a Check Run whose live status is already `completed` or replaying a
+dispatched terminal `PATCH`.
 Reusing a completed success or failure saves the observed terminal receipt with
 its conclusion, completion time and output fingerprints. The finalizer reconciles
 that receipt read-only too; a later stale or unavailable GET cannot authorize a

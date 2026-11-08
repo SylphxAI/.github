@@ -464,9 +464,13 @@ test('finalizer fails visibly with publish_unverified and settles an in_progress
     github.deadlineMs = now + 1000;
     const state = { ...initial() };
     const rememberState = (publication, pending_finish) => {
-      state.publication = publication;
-      if (pending_finish === undefined) delete state.pending_finish;
-      else state.pending_finish = pending_finish;
+      if (pending_finish !== undefined) {
+        delete state.publication;
+        state.pending_finish = pending_finish;
+      } else {
+        state.publication = publication;
+        delete state.pending_finish;
+      }
     };
     await assert.rejects(() => produceReview({
       ...options(github),
@@ -489,7 +493,7 @@ test('finalizer fails visibly with publish_unverified and settles an in_progress
     Date.now = realNow;
     assert.equal(writes.length, 0, 'expired outer deadline prevented any PATCH in the review step');
     assert.equal(run().status, 'in_progress');
-    assert.equal(state.publication.expected.conclusion, 'failure');
+    assert.equal('publication' in state, false, 'pre-flight deadline failure before terminal PATCH must not record dispatched publication');
     assert.equal(state.pending_finish.conclusion, 'failure');
     assert.equal(state.pending_finish.output.annotations.length, 55);
 
@@ -508,46 +512,80 @@ test('finalizer fails visibly with publish_unverified and settles an in_progress
     assert.equal(resource.writes[1].output.annotations.length, 5);
     const [persisted] = JSON.parse(readFileSync(join(directory, 'pr-review-state.json'), 'utf8'));
     assert.equal('pending_finish' in persisted, false, 'settled check must clear pending_finish');
+    assert.equal(persisted.publication.expected.conclusion, 'failure');
   } finally {
     Date.now = realNow;
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test('finalizer fails closed with conclusion=failure when pending_finish is unavailable or its PATCH fails, even for a success verdict', () => {
-  for (const mode of ['missing-output', 'patch-rejected']) {
+test('finalizer fails closed with conclusion=failure when pending_finish fails before terminal PATCH dispatch, and never replays a dispatched terminal PATCH', () => {
+  for (const mode of ['missing-output', 'intermediate-batch-rejected', 'terminal-patch-dispatched']) {
     const directory = mkdtempSync(join(tmpdir(), `review-pending-finish-fallback-${mode}-`));
     try {
       const active = initial();
+      const annotations = mode === 'intermediate-batch-rejected'
+        ? Array.from({ length: 55 }, (_, i) => ({
+            path: 'src/change.js', start_line: i + 1, end_line: i + 1,
+            annotation_level: 'notice', title: `Note ${i + 1}`, message: `Body ${i + 1}`,
+          }))
+        : [];
       const state = {
         ...active,
-        publication: {
-          phase: 'finish',
-          expected: {
-            id: active.id, 'app.id': APP_ID, name: { bytes: CHECK_NAME.length, sha256: digest(CHECK_NAME) },
-            head_sha: head, status: 'completed', conclusion: 'success', completed_at: 1_000,
-            'output.title': { bytes: 1, sha256: digest('x') }, 'output.summary': { bytes: 1, sha256: digest('y') },
-          },
-        },
         pending_finish: mode === 'missing-output' ? null : {
           conclusion: 'success',
-          output: { title: 'Review complete', summary: 'Clean review whose primary PATCH failed.', annotations: [] },
+          output: { title: 'Review complete', summary: 'Clean review whose primary PATCH was not sent.', annotations },
         },
       };
-      const { result, resource } = finalize(directory, active, state, null, mode === 'patch-rejected' ? [422, null] : null);
+      const patchFailure = mode === 'intermediate-batch-rejected' ? [422, null]
+        : mode === 'terminal-patch-dispatched' ? [503, null] : null;
+      const { result, resource } = finalize(directory, active, state, null, patchFailure);
       assert.equal(result.status, 1, `${mode}: finalizer must exit 1`);
       assert.match(result.stderr, /publish_unverified/);
-      assert.equal(resource.run.status, 'completed');
-      assert.equal(resource.run.conclusion, 'failure', `${mode}: fallback Review interrupted must always fail closed as failure`);
-      assert.equal(resource.run.output.title, 'Review interrupted');
-      assert.equal(resource.writes.length, mode === 'patch-rejected' ? 2 : 1);
-      assert.equal(resource.writes.at(-1).conclusion, 'failure');
+      if (mode === 'terminal-patch-dispatched') {
+        assert.equal(resource.writes.length, 1, 'dispatched terminal PATCH must never be followed by a second terminal PATCH');
+        const [persisted] = JSON.parse(readFileSync(join(directory, 'pr-review-state.json'), 'utf8'));
+        assert.equal('pending_finish' in persisted, false);
+        assert.equal(persisted.publication.expected.conclusion, 'success');
+      } else {
+        assert.equal(resource.run.status, 'completed');
+        assert.equal(resource.run.conclusion, 'failure', `${mode}: fallback Review interrupted must always fail closed as failure`);
+        assert.equal(resource.run.output.title, 'Review interrupted');
+        assert.equal(resource.writes.length, mode === 'intermediate-batch-rejected' ? 2 : 1);
+        assert.equal(resource.writes.at(-1).conclusion, 'failure');
+      }
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }
 });
 
+test('dispatched terminal PATCH clears pending_finish before fetch so stale in_progress readback remains strictly read-only', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'review-dispatched-stale-readonly-'));
+  try {
+    const { github, run, writes } = boundary({ observe: () => 'stale' });
+    const state = { ...initial() };
+    const rememberState = (publication, pending_finish) => {
+      if (pending_finish !== undefined) {
+        delete state.publication;
+        state.pending_finish = pending_finish;
+      } else {
+        state.publication = publication;
+        delete state.pending_finish;
+      }
+    };
+    await assert.rejects(() => produceReview({ ...options(github), onPublish: rememberState }), safeFailure);
+    assert.equal(writes.length, 1);
+    assert.equal(run().conclusion, 'success');
+    assert.equal('pending_finish' in state, false, 'beforeSend must clear pending_finish before dispatching terminal PATCH');
+    assert.equal(state.publication.expected.conclusion, 'success');
+    const { result, resource } = finalize(directory, run(), state, 'stale');
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /publish_unverified/);
+    assert.equal(resource.writes.length, 0, 'stale in_progress GET after dispatched terminal PATCH must never trigger another PATCH');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 for (const mismatch of ['completed_at', 'summary', 'conclusion']) {
-  test(`finalizer never overwrites an already-completed Check Run when reconcile mismatches on ${mismatch} even if pending_finish is present`, () => {
+  test(`finalizer never overwrites an already-completed Check Run when reconcile mismatches on ${mismatch} or when pending_finish sees completed status`, () => {
     const directory = mkdtempSync(join(tmpdir(), 'review-completed-no-overwrite-'));
     try {
       const completed = {

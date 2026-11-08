@@ -164,7 +164,7 @@ export class GitHub {
     return tree.tree;
   }
 
-  async request(path, { method = 'GET', body, checks = false, deadlineMs = this.deadlineMs, maxReadAttempts = 4 } = {}) {
+  async request(path, { method = 'GET', body, checks = false, deadlineMs = this.deadlineMs, maxReadAttempts = 4, beforeSend } = {}) {
     if (this.rateFailure) throw this.rateFailure;
     const token = checks ? this.checkToken : this.readToken;
     if (!token) throw new Unavailable(`Missing ${checks ? 'checks' : 'source'} credential.`);
@@ -173,6 +173,7 @@ export class GitHub {
     for (let attempt = 0; ; attempt++) {
       const remaining = Math.min(requestTimeoutMs, deadlineMs - this.now());
       if (!(remaining > 0)) throw new Unavailable('Pinned source deadline expired.');
+      if (attempt === 0) await beforeSend?.();
       let response;
       try {
         response = await this.fetcher(`${this.apiOrigin}/repos/${this.repository}${path}`, {
@@ -355,9 +356,10 @@ export class GitHub {
     const publication = terminalCheckReceipt({ ...body,
       id: run.id, head_sha: run.head_sha, name: CHECK_NAME, app: { id: APP_ID } }, 'finish');
     const pending = () => ({ conclusion, output: { ...output, ...(annotations ? { annotations: [...annotations] } : {}) } });
-    // Save the intended result before any annotation or terminal PATCH. Once the
-    // terminal PATCH response is accepted, clear pending_finish so finalization
-    // reconciles the accepted write read-only.
+    // Save the unsent verdict before pre-flight deadline checks or intermediate
+    // annotation batches. Once the terminal PATCH passes pre-flight guards and
+    // is about to be sent, record publication and clear pending_finish so any
+    // dispatched terminal write reconciles read-only.
     await onPublish?.(publication, pending());
     try {
       // GitHub admits 50 annotations per request. Intermediate batches stay in
@@ -371,14 +373,15 @@ export class GitHub {
         await onPublish?.(publication, pending());
       }
       const finalBody = { ...body, output: annotations ? { ...output, annotations } : output };
-      await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, body: finalBody, deadlineMs });
+      await this.request(`/check-runs/${run.id}`, {
+        method: 'PATCH', checks: true, body: finalBody, deadlineMs,
+        beforeSend: () => onPublish?.(publication),
+      });
     } catch (error) {
-      if (githubTerminalFailure(error)) await onPublish?.(publication);
       throw new PublishUnverified({ phase: 'finish', check_run_id: run.id, attempts: 0,
         failure: 'write_unverified', http_status: error instanceof GitHubHTTPError ? error.status : null,
         expected: publication.expected, observed: null, mismatched_fields: [] }, error);
     }
-    await onPublish?.(publication);
     return this.reconcile(publication, { deadlineMs });
   }
 }
