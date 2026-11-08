@@ -1,10 +1,10 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
-import { GitHub, APP_ID, CHECK_NAME, Unavailable, terminalCheckReceipt, githubTerminalFailure, githubFailureDetails } from './github.mjs';
+import { GitHub, APP_ID, CHECK_NAME, Unavailable, PublishUnverified, terminalCheckReceipt, githubTerminalFailure, githubFailureDetails } from './github.mjs';
 import { credentials } from './auth.mjs';
 import { eventTargets } from './events.mjs';
 import { createReviewInput, reviewerVersion } from './contract.mjs';
 import { gatewayReviewer } from './gateway.mjs';
-import { produceReview, completedReviewReceipt } from './producer.mjs';
+import { produceReview, completedReviewReceipt, inferenceDeadlineFor } from './producer.mjs';
 
 const env = process.env;
 const statePath = `${env.RUNNER_TEMP}/pr-review-state.json`;
@@ -24,10 +24,16 @@ const summarize = line => {
 const remember = record => {
   const states = existsSync(statePath) ? read(statePath) : [];
   const index = states.findIndex(state => state.id === record.id);
-  if (index < 0) states.push(record); else states[index] = { ...states[index], ...record };
+  const next = { ...(index < 0 ? {} : states[index]), ...record };
+  if ('pending_finish' in record && record.pending_finish === undefined) delete next.pending_finish;
+  if ('publication' in record && record.publication === undefined) delete next.publication;
+  if (index < 0) states.push(next); else states[index] = next;
   save(statePath, states);
 };
-const rememberPublication = publication => remember({ id: publication.expected.id, publication });
+const rememberPublication = (publication, pending_finish) =>
+  remember(pending_finish !== undefined
+    ? { id: publication.expected.id, publication: undefined, pending_finish }
+    : { id: publication.expected.id, publication, pending_finish: undefined });
 const githubFor = (auth, deadlineMs) => new GitHub({ repository: env.GITHUB_REPOSITORY, readToken: env.GITHUB_TOKEN, checkToken: auth.checkToken, deadlineMs });
 
 async function main() {
@@ -66,11 +72,35 @@ async function main() {
           }
           if (run.app?.id !== APP_ID || run.head_sha !== head_sha || run.name !== CHECK_NAME) throw new Unavailable('Finalizer found no authoritative canonical check identity.');
           if (run.status !== 'completed') {
-            await github.finish(run, 'neutral', { title: 'Review interrupted',
-              summary: `The workflow ended before a complete review was available for head \`${head_sha}\`. Dispatch a review to recover.` },
-            { onPublish: rememberPublication });
-            process.exitCode = 1;
-            summarize(`Check ${id}: neutral — Review interrupted before completion.`);
+            if ('pending_finish' in state) {
+              const validPending = ['success', 'failure', 'neutral', 'cancelled'].includes(state.pending_finish?.conclusion) &&
+                typeof state.pending_finish?.output?.title === 'string' && typeof state.pending_finish?.output?.summary === 'string';
+              let terminalDispatched = false;
+              const rememberPendingSettlement = (publication, pending_finish) => {
+                if (pending_finish === undefined) terminalDispatched = true;
+                rememberPublication(publication, pending_finish);
+              };
+              try {
+                if (!validPending) throw new PublishUnverified({ phase: 'finish', check_run_id: id, failure: 'write_unverified' });
+                run = await github.finish(run, state.pending_finish.conclusion, state.pending_finish.output,
+                  { onPublish: rememberPendingSettlement });
+              } catch (finishError) {
+                if (githubTerminalFailure(finishError) || terminalDispatched) throw finishError;
+                run = await github.finish(run, 'failure', { title: 'Review interrupted',
+                  summary: `Head: \`${head_sha}\`\n\nThe workflow could not verify publication of the review result before termination. Dispatch a review to recover.` },
+                { onPublish: rememberPublication });
+              }
+              process.exitCode = 1;
+              const message = `Check ${id}: ${run.conclusion} — ${run.output?.title || 'Review settled during finalization.'} (publish_unverified)`;
+              process.stderr.write(`${message}\n`);
+              summarize(message);
+            } else {
+              await github.finish(run, 'neutral', { title: 'Review interrupted',
+                summary: `The workflow ended before a complete review was available for head \`${head_sha}\`. Dispatch a review to recover.` },
+              { onPublish: rememberPublication });
+              process.exitCode = 1;
+              summarize(`Check ${id}: neutral — Review interrupted before completion.`);
+            }
           } else if (!passed(completedReviewReceipt(run))) {
             process.exitCode = 1;
             summarize(`Check ${id}: ${run.conclusion} — ${run.output?.title || 'Review did not complete successfully.'}`);
@@ -93,9 +123,10 @@ async function main() {
     // Configure inside produceReview's fault boundary so configuration failure
     // still publishes an honest neutral result on the exact head.
     let reviewer;
-    const engine = input => (reviewer ??= gatewayReviewer({ token: read(authPath).inferenceToken,
-      model: env.REVIEW_MODEL, maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
-      reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs, current: () => github.current(target, { deadlineMs }) }))(input);
+    const engine = (input, _externalId, { deadlineMs: engineDeadlineMs = inferenceDeadlineFor(deadlineMs, started) } = {}) =>
+      (reviewer ??= gatewayReviewer({ token: read(authPath).inferenceToken,
+        model: env.REVIEW_MODEL, maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
+        reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs: engineDeadlineMs, current: () => github.current(target, { deadlineMs: engineDeadlineMs }) }))(input);
     const receipt = await produceReview({ github, target, trigger, engine, createReviewInput, engineVersion: reviewerVersion, deadlineMs,
       detailsUrl: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
       onResult: result => {

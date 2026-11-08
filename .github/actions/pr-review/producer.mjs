@@ -144,15 +144,20 @@ export function completedReviewReceipt(run) {
       { reason: run.output?.title || 'Review unavailable or incomplete.' } : {}) };
 }
 
+export const PUBLISH_RESERVE_MS = 60_000;
+export const inferenceDeadlineFor = (deadlineMs, now = Date.now()) =>
+  Number.isFinite(deadlineMs) && deadlineMs - PUBLISH_RESERVE_MS > now ? deadlineMs - PUBLISH_RESERVE_MS : deadlineMs;
+
 export async function produceReview({ github, target, trigger, detailsUrl, engine, createReviewInput, engineVersion, onBegin, onPublish, onResult, deadlineMs }) {
   const started = Date.now();
+  const inferenceDeadlineMs = inferenceDeadlineFor(deadlineMs, started);
   const externalId = `pr-review/v1/${digest(JSON.stringify([github.repository, target.kind, target.number ?? target.ref,
     target.base_sha, target.policy_sha, target.head_sha, target.review_requested, trigger, engineVersion]))}`;
   // Resolve the exact source/policy input before choosing any prior work. The
   // same head alone does not prove the base, instructions or policy are equal.
   let collected, initialInput, collectionError;
   try {
-    collected = await collectBundle(github, target, trigger, { deadlineMs });
+    collected = await collectBundle(github, target, trigger, { deadlineMs: inferenceDeadlineMs });
     if (collected.needs_review) initialInput = createReviewInput(collected.bundle);
   } catch (error) { if (githubTerminalFailure(error)) throw error; collectionError = error; }
   const identity = initialInput && `Head: \`${initialInput.head_sha}\`\n\nReviewer: \`${initialInput.reviewer_version}\`\n\nSource digest: \`${initialInput.input_digest}\`\n\n`;
@@ -202,7 +207,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
         started_at: run.started_at, observed_at: observedAt, elapsed_ms: Date.now() - started };
     }
     const reviewed = await recoverContext({ input: initialInput, github, target, allowContext: collected.allowContext,
-      execute: input => engine(input, externalId), createReviewInput, validateResult, onResult, deadlineMs });
+      execute: input => engine(input, externalId, { deadlineMs: inferenceDeadlineMs }), createReviewInput, validateResult, onResult, deadlineMs: inferenceDeadlineMs });
     const input = reviewed.input;
     let result = reviewed.result;
     let current;
@@ -217,13 +222,6 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
       return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion: 'cancelled', elapsed_ms: Date.now() - started };
     }
     const { conclusion, output } = outputFor(result, input);
-    // GitHub admits 50 annotations per request. Intermediate batches stay in
-    // progress; only the final request publishes the terminal conclusion.
-    while (output.annotations.length > 50) {
-      await github.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, deadlineMs, body: {
-        output: { ...output, annotations: output.annotations.splice(0, 50) },
-      } });
-    }
     const receipt = await finish(conclusion, output);
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, findings: result.findings.length,
       ...(result.status === 'complete' ? {} : { unavailable: true, reason: result.reason }),

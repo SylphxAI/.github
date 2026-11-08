@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { APP_ID, CHECK_NAME, GitHub, PublishUnverified, digest, bundleFile } from '../.github/actions/pr-review/github.mjs';
-import { produceReview } from '../.github/actions/pr-review/producer.mjs';
+import { produceReview, PUBLISH_RESERVE_MS } from '../.github/actions/pr-review/producer.mjs';
 import { createReviewInput, reviewerVersion } from '../.github/actions/pr-review/contract.mjs';
 
 const base = 'a'.repeat(40), head = 'b'.repeat(40);
@@ -178,18 +178,21 @@ test('generated-only neutral persists terminal intent and finalizes read-only af
 
 // Run the actual always-run CLI against a durable resource/state, not an
 // alternative finalizer implementation in the test controller.
-function finalize(directory, run, state, readFailure = null) {
+function finalize(directory, run, state, readFailure = null, patchFailure = null) {
   writeFileSync(join(directory, 'pr-review-auth.json'), JSON.stringify({ checkToken: 'checks' }), { mode: 0o600 });
   writeFileSync(join(directory, 'pr-review-state.json'), JSON.stringify([state]), { mode: 0o600 });
   writeFileSync(join(directory, 'resource.json'), JSON.stringify({ run, writes: [], reads: 0 }));
-  function preload(directory, readFailure) {
+  function preload(directory, readFailure, patchFailure) {
     // Keep reconciliation deterministic/instant while preserving the real CLI,
     // GitHub adapter, state persistence and wire request/response contracts.
     Date.now = () => 1;
     globalThis.fetch = async (_url, request) => {
       const path = `${directory}/resource.json`, data = JSON.parse(readFileSync(path, 'utf8'));
       if (request.method === 'PATCH') {
-        const body = JSON.parse(request.body); Object.assign(data.run, body); data.writes.push(body);
+        const body = JSON.parse(request.body); data.writes.push(body);
+        const failPatch = Array.isArray(patchFailure) ? patchFailure[data.writes.length - 1] : patchFailure;
+        if (failPatch) { writeFileSync(path, JSON.stringify(data)); return { ok: false, status: failPatch }; }
+        Object.assign(data.run, body);
         writeFileSync(path, JSON.stringify(data)); return { ok: true, status: 200, json: async () => data.run };
       }
       data.reads++; writeFileSync(path, JSON.stringify(data));
@@ -203,7 +206,7 @@ function finalize(directory, run, state, readFailure = null) {
       return { ok: true, status: 200, json: async () => data.run };
     };
   }
-  writeFileSync(join(directory, 'preload.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';\nimport { GitHub } from ${JSON.stringify(new URL('../.github/actions/pr-review/github.mjs', import.meta.url).href)};\nconst request = GitHub.prototype.request; GitHub.prototype.request = function (...args) { this.wait = async () => {}; return request.apply(this, args); };\nconst reconcile = GitHub.prototype.reconcile; GitHub.prototype.reconcile = function (...args) { this.wait = async () => {}; return reconcile.apply(this, args); };\n(${preload.toString()})(${JSON.stringify(directory)}, ${JSON.stringify(readFailure)});`);
+  writeFileSync(join(directory, 'preload.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';\nimport { GitHub } from ${JSON.stringify(new URL('../.github/actions/pr-review/github.mjs', import.meta.url).href)};\nconst request = GitHub.prototype.request; GitHub.prototype.request = function (...args) { this.wait = async () => {}; return request.apply(this, args); };\nconst reconcile = GitHub.prototype.reconcile; GitHub.prototype.reconcile = function (...args) { this.wait = async () => {}; return reconcile.apply(this, args); };\n(${preload.toString()})(${JSON.stringify(directory)}, ${JSON.stringify(readFailure)}, ${JSON.stringify(patchFailure)});`);
   const result = spawnSync('node', ['--import', join(directory, 'preload.mjs'), '.github/actions/pr-review/cli.mjs', 'finalize'], {
     cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10_000,
     env: { ...process.env, RUNNER_TEMP: directory, GITHUB_REPOSITORY: 'example/repo', GITHUB_TOKEN: 'source',
@@ -373,3 +376,243 @@ test('a legacy persisted completed status without a full receipt never authorize
     assert.equal(resource.reads, 3);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+const blockingFindings = count => Array.from({ length: count }, (_, index) => ({
+  path: 'src/change.js', side: 'head', start_line: 1, end_line: 1, severity: 'high',
+  title: `Blocking defect ${index + 1}`, explanation: `Defect ${index + 1} breaks callers.`,
+  trigger: 'Calling the changed function.', consequence: 'Runtime failure.',
+  evidence: [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1, start_byte: null, end_byte: null, quote: 'after' }],
+}));
+
+test('inference stopping at inferenceDeadlineMs preserves PUBLISH_RESERVE_MS to publish failure and all annotation batches', async () => {
+  const realNow = Date.now;
+  let clock = 1_000_000;
+  Date.now = () => clock;
+  try {
+    const outerDeadlineMs = clock + 35 * 60_000;
+    const expectedInferenceDeadlineMs = outerDeadlineMs - PUBLISH_RESERVE_MS;
+    const writes = [];
+    let run = initial();
+    const github = new GitHub({ repository: 'example/repo', readToken: 'source', checkToken: 'checks',
+      now: () => clock, wait: async ms => { clock += ms; }, deadlineMs: outerDeadlineMs,
+      fetcher: async (url, request) => {
+        const path = new URL(url).pathname;
+        if (path.endsWith('/actions/runs/1')) return response({ id: 1, status: 'in_progress' });
+        if (path.includes('/commits/')) return response({ check_runs: [run] });
+        if (path.endsWith('/pulls/7')) return response({ state: 'open', head: { sha: head }, base: { sha: base, ref: 'main' } });
+        assert.equal(path, '/repos/example/repo/check-runs/41');
+        if (request.method === 'PATCH') {
+          const body = JSON.parse(request.body);
+          writes.push(body);
+          Object.assign(run, body);
+          return response(run);
+        }
+        return response(run);
+      } });
+    github.source = async (path, sha, optional) => {
+      if (path === 'src/change.js') return sha === base ? 'before\n' : 'after\n';
+      assert.equal(optional, true); return null;
+    };
+    let seenEngineDeadlineMs, persistedPublication, persistedPending;
+    const receipt = await produceReview({
+      ...options(github),
+      deadlineMs: outerDeadlineMs,
+      onPublish: (publication, pending) => { persistedPublication = publication; persistedPending = pending; },
+      engine: async (reviewInput, _externalId, { deadlineMs: engineDeadlineMs } = {}) => {
+        seenEngineDeadlineMs = engineDeadlineMs;
+        // Consume the entire inference budget so Date.now() reaches inferenceDeadlineMs,
+        // leaving only PUBLISH_RESERVE_MS before outerDeadlineMs (reproducing HKMT#594).
+        clock = engineDeadlineMs;
+        return {
+          status: 'incomplete', head_sha: reviewInput.head_sha, base_sha: reviewInput.base_sha,
+          input_digest: reviewInput.input_digest, reviewer_version: reviewInput.reviewer_version,
+          findings: blockingFindings(55), omitted_paths: ['src/change.js'],
+          context_requests: [{ path: 'src/caller.js', side: 'head' }],
+          reason: 'Review inference reached the inference deadline after earlier partitions found blocking defects.',
+        };
+      },
+    });
+    assert.equal(seenEngineDeadlineMs, expectedInferenceDeadlineMs);
+    assert.equal(receipt.conclusion, 'failure');
+    assert.equal(receipt.findings, 55);
+    assert.equal(run.status, 'completed');
+    assert.equal(run.conclusion, 'failure');
+    assert.equal(run.output.title, '55 defects require a change; review incomplete');
+    assert.equal(writes.length, 2, '55 annotations must upload in one 50-item batch plus the 5-item terminal PATCH');
+    assert.equal(writes[0].status, undefined);
+    assert.equal(writes[0].output.annotations.length, 50);
+    assert.equal(writes[1].status, 'completed');
+    assert.equal(writes[1].conclusion, 'failure');
+    assert.equal(writes[1].output.annotations.length, 5);
+    assert.equal(persistedPublication.expected.conclusion, 'failure');
+    assert.equal(persistedPending, undefined, 'accepted terminal PATCH must clear pending_finish');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('finalizer fails visibly with publish_unverified and settles an in_progress check from pending_finish including annotation batches', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'review-pending-finish-settle-'));
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    // Simulate a review step whose outer deadline expired right as finish() tried to PATCH,
+    // leaving Check Run 41 in_progress on GitHub and publication + pending_finish in state.
+    const { github, run, writes } = boundary();
+    github.now = () => now;
+    github.deadlineMs = now + 1000;
+    const state = { ...initial() };
+    const rememberState = (publication, pending_finish) => {
+      if (pending_finish !== undefined) {
+        delete state.publication;
+        state.pending_finish = pending_finish;
+      } else {
+        state.publication = publication;
+        delete state.pending_finish;
+      }
+    };
+    await assert.rejects(() => produceReview({
+      ...options(github),
+      deadlineMs: now + 1000,
+      onPublish: rememberState,
+      engine: async reviewInput => {
+        now += 1001; // Expire the outer deadline before post-review finish() can PATCH.
+        return {
+          status: 'incomplete', head_sha: reviewInput.head_sha, base_sha: reviewInput.base_sha,
+          input_digest: reviewInput.input_digest, reviewer_version: reviewInput.reviewer_version,
+          findings: blockingFindings(55), omitted_paths: ['src/change.js'],
+          reason: 'Partition 2 exceeded deadline.',
+        };
+      },
+    }), error => {
+      safeFailure(error);
+      assert.equal(error.details.failure, 'write_unverified');
+      return true;
+    });
+    Date.now = realNow;
+    assert.equal(writes.length, 0, 'expired outer deadline prevented any PATCH in the review step');
+    assert.equal(run().status, 'in_progress');
+    assert.equal('publication' in state, false, 'pre-flight deadline failure before terminal PATCH must not record dispatched publication');
+    assert.equal(state.pending_finish.conclusion, 'failure');
+    assert.equal(state.pending_finish.output.annotations.length, 55);
+
+    const { result, resource } = finalize(directory, run(), state, null);
+    assert.equal(result.status, 1, 'finalizer must still fail when primary publication was unverified');
+    assert.match(result.stderr, /publish_unverified/);
+    const summary = readFileSync(join(directory, 'summary.md'), 'utf8');
+    assert.match(summary, /publish_unverified/);
+    assert.equal(resource.run.status, 'completed', 'finalizer must never leave the Check Run in_progress');
+    assert.equal(resource.run.conclusion, 'failure');
+    assert.equal(resource.run.output.title, '55 defects require a change; review incomplete');
+    assert.equal(resource.writes.length, 2, 'finalizer must upload the 50-item batch and the 5-item terminal PATCH');
+    assert.equal(resource.writes[0].output.annotations.length, 50);
+    assert.equal(resource.writes[1].status, 'completed');
+    assert.equal(resource.writes[1].conclusion, 'failure');
+    assert.equal(resource.writes[1].output.annotations.length, 5);
+    const [persisted] = JSON.parse(readFileSync(join(directory, 'pr-review-state.json'), 'utf8'));
+    assert.equal('pending_finish' in persisted, false, 'settled check must clear pending_finish');
+    assert.equal(persisted.publication.expected.conclusion, 'failure');
+  } finally {
+    Date.now = realNow;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('finalizer fails closed with conclusion=failure when pending_finish fails before terminal PATCH dispatch, and never replays a dispatched terminal PATCH', () => {
+  for (const mode of ['missing-output', 'intermediate-batch-rejected', 'terminal-patch-dispatched']) {
+    const directory = mkdtempSync(join(tmpdir(), `review-pending-finish-fallback-${mode}-`));
+    try {
+      const active = initial();
+      const annotations = mode === 'intermediate-batch-rejected'
+        ? Array.from({ length: 55 }, (_, i) => ({
+            path: 'src/change.js', start_line: i + 1, end_line: i + 1,
+            annotation_level: 'notice', title: `Note ${i + 1}`, message: `Body ${i + 1}`,
+          }))
+        : [];
+      const state = {
+        ...active,
+        pending_finish: mode === 'missing-output' ? null : {
+          conclusion: 'success',
+          output: { title: 'Review complete', summary: 'Clean review whose primary PATCH was not sent.', annotations },
+        },
+      };
+      const patchFailure = mode === 'intermediate-batch-rejected' ? [422, null]
+        : mode === 'terminal-patch-dispatched' ? [503, null] : null;
+      const { result, resource } = finalize(directory, active, state, null, patchFailure);
+      assert.equal(result.status, 1, `${mode}: finalizer must exit 1`);
+      assert.match(result.stderr, /publish_unverified/);
+      if (mode === 'terminal-patch-dispatched') {
+        assert.equal(resource.writes.length, 1, 'dispatched terminal PATCH must never be followed by a second terminal PATCH');
+        const [persisted] = JSON.parse(readFileSync(join(directory, 'pr-review-state.json'), 'utf8'));
+        assert.equal('pending_finish' in persisted, false);
+        assert.equal(persisted.publication.expected.conclusion, 'success');
+      } else {
+        assert.equal(resource.run.status, 'completed');
+        assert.equal(resource.run.conclusion, 'failure', `${mode}: fallback Review interrupted must always fail closed as failure`);
+        assert.equal(resource.run.output.title, 'Review interrupted');
+        assert.equal(resource.writes.length, mode === 'intermediate-batch-rejected' ? 2 : 1);
+        assert.equal(resource.writes.at(-1).conclusion, 'failure');
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('dispatched terminal PATCH clears pending_finish before fetch so stale in_progress readback remains strictly read-only', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'review-dispatched-stale-readonly-'));
+  try {
+    const { github, run, writes } = boundary({ observe: () => 'stale' });
+    const state = { ...initial() };
+    const rememberState = (publication, pending_finish) => {
+      if (pending_finish !== undefined) {
+        delete state.publication;
+        state.pending_finish = pending_finish;
+      } else {
+        state.publication = publication;
+        delete state.pending_finish;
+      }
+    };
+    await assert.rejects(() => produceReview({ ...options(github), onPublish: rememberState }), safeFailure);
+    assert.equal(writes.length, 1);
+    assert.equal(run().conclusion, 'success');
+    assert.equal('pending_finish' in state, false, 'beforeSend must clear pending_finish before dispatching terminal PATCH');
+    assert.equal(state.publication.expected.conclusion, 'success');
+    const { result, resource } = finalize(directory, run(), state, 'stale');
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /publish_unverified/);
+    assert.equal(resource.writes.length, 0, 'stale in_progress GET after dispatched terminal PATCH must never trigger another PATCH');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+for (const mismatch of ['completed_at', 'summary', 'conclusion']) {
+  test(`finalizer never overwrites an already-completed Check Run when reconcile mismatches on ${mismatch} or when pending_finish sees completed status`, () => {
+    const directory = mkdtempSync(join(tmpdir(), 'review-completed-no-overwrite-'));
+    try {
+      const completed = {
+        ...initial(), status: 'completed', conclusion: 'failure', completed_at: '2026-11-08T21:00:00Z',
+        output: { title: '2 defects require a change', summary: 'Canonical completed verdict on GitHub.', annotations: [] },
+      };
+      const state = {
+        ...initial(),
+        publication: {
+          phase: 'finish',
+          expected: {
+            id: completed.id, 'app.id': APP_ID, name: { bytes: CHECK_NAME.length, sha256: digest(CHECK_NAME) },
+            head_sha: head, status: 'completed', conclusion: 'failure', completed_at: Date.parse(completed.completed_at),
+            'output.title': { bytes: Buffer.byteLength(completed.output.title), sha256: digest(completed.output.title) },
+            'output.summary': { bytes: Buffer.byteLength(completed.output.summary), sha256: digest(completed.output.summary) },
+          },
+        },
+        pending_finish: {
+          conclusion: 'neutral',
+          output: { title: 'Stale pending output', summary: 'Must never overwrite a completed check.', annotations: [] },
+        },
+      };
+      const { result, resource } = finalize(directory, completed, state, mismatch);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /publish_unverified/);
+      assert.equal(resource.writes.length, 0, 'completed Check Run on GitHub must never be overwritten');
+      assert.equal(resource.reads, 3);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+}

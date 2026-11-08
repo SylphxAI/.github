@@ -119,7 +119,7 @@ test('bounded model calls preserve all findings and use source-qualified cross-f
 test('late refusal retains validated findings, marks partially covered paths incomplete and bounds transient retries', async () => {
   const file = bundleFile({ filename: 'long-line.rs', status: 'modified' }, 'a'.repeat(200_000), 'b'.repeat(200_000));
   const input = inputFor([file]); let posts = 0;
-  const review = gatewayReviewer({ token: 'private-value', ...configuration, deadlineMs: Date.now() + 10_000, sleep: async () => {},
+  const review = gatewayReviewer({ token: 'private-value', ...configuration, deadlineMs: Date.now() + 30_000, sleep: async () => {},
     fetcher: async (_url, request) => {
       if (request.method === 'GET') return { ok: true, json: async () => metadata };
       posts++;

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { APP_ID, CHECK_NAME } from '../.github/actions/pr-review/github.mjs';
 import { createReviewInput } from '../.github/actions/pr-review/contract.mjs';
 import { planReview } from '../.github/actions/pr-review/partition.mjs';
-import { collectBundle, produceReview, parsePolicy, generatedSource, needsReview } from '../.github/actions/pr-review/producer.mjs';
+import { collectBundle, produceReview, parsePolicy, generatedSource, needsReview, PUBLISH_RESERVE_MS } from '../.github/actions/pr-review/producer.mjs';
 
 const base = 'a'.repeat(40), head = 'b'.repeat(40), policySha = 'c'.repeat(40);
 const policy = (review = []) => `version=1\n[tier0]\npaths=[]\n[review]\npaths=${JSON.stringify(review)}\n[generated]\npaths=["generated/**"]\n[[generated.provenance]]\npaths=["generated/**"]\njobs=["regenerate"]\n`;
@@ -171,22 +171,21 @@ print(json.dumps(results))
   }
 });
 
-test('mixed generated selection preserves one deadline through collection, recovery, current-head checks and publication', async () => {
-  const deadlineMs = Date.now() + 120_000;
+test('mixed generated selection reserves publication time while bounding collection and recovery', async () => {
+  const deadlineMs = Date.now() + 120_000, inferenceDeadlineMs = deadlineMs - PUBLISH_RESERVE_MS;
   const github = provider(policy(['generated/handwritten.js']), {
     'generated/handwritten.js': sha => sha === base ? 'old handwritten source\n' : 'new handwritten source\n',
     'src/helper.js': 'handwritten helper context\n',
   });
   const source = github.source, begin = github.begin, finish = github.finish;
-  const sourceOptions = []; let currentChecks = 0, executions = 0;
+  const sourceOptions = [], currentDeadlines = []; let executions = 0;
   github.source = async (path, sha, optional, options) => {
-    assert.equal(options?.deadlineMs, deadlineMs, `${path}: source deadline`);
+    assert.equal(options?.deadlineMs, inferenceDeadlineMs, `${path}: source deadline`);
     sourceOptions.push({ path, ...options });
     return source(path, sha, optional, options);
   };
   github.current = async (_target, options) => {
-    assert.equal(options?.deadlineMs, deadlineMs, 'current-head deadline');
-    currentChecks++; return true;
+    currentDeadlines.push(options?.deadlineMs); return true;
   };
   github.begin = async (...args) => {
     assert.equal(args[3]?.deadlineMs, deadlineMs, 'begin deadline'); return begin(...args);
@@ -204,7 +203,9 @@ test('mixed generated selection preserves one deadline through collection, recov
         { path: 'generated/capture.json', side: 'head' }, { path: 'src/helper.js', side: 'head' }] };
     } });
   assert.equal(receipt.conclusion, 'success'); assert.equal(executions, 2);
-  assert.ok(currentChecks >= 4);
+  assert.ok(currentDeadlines.length >= 4);
+  assert.ok(currentDeadlines.slice(0, -1).every(d => d === inferenceDeadlineMs));
+  assert.equal(currentDeadlines.at(-1), deadlineMs, 'post-review current-head deadline');
   assert.equal(sourceOptions.filter(call => call.path === 'generated/capture.json').length, 0);
   assert.equal(sourceOptions.filter(call => call.path === 'generated/AGENTS.md').length, 0);
   assert.equal(sourceOptions.filter(call => call.path === 'src/helper.js').length, 1);
