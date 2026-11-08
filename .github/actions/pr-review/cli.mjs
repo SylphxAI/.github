@@ -1,10 +1,10 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
-import { GitHub, APP_ID, CHECK_NAME, Unavailable, terminalCheckReceipt, githubTerminalFailure, githubFailureDetails } from './github.mjs';
+import { GitHub, APP_ID, CHECK_NAME, Unavailable, PublishUnverified, terminalCheckReceipt, githubTerminalFailure, githubFailureDetails } from './github.mjs';
 import { credentials } from './auth.mjs';
 import { eventTargets } from './events.mjs';
 import { createReviewInput, reviewerVersion } from './contract.mjs';
 import { gatewayReviewer } from './gateway.mjs';
-import { produceReview, completedReviewReceipt } from './producer.mjs';
+import { produceReview, completedReviewReceipt, inferenceDeadlineFor } from './producer.mjs';
 
 const env = process.env;
 const statePath = `${env.RUNNER_TEMP}/pr-review-state.json`;
@@ -24,10 +24,13 @@ const summarize = line => {
 const remember = record => {
   const states = existsSync(statePath) ? read(statePath) : [];
   const index = states.findIndex(state => state.id === record.id);
-  if (index < 0) states.push(record); else states[index] = { ...states[index], ...record };
+  const next = { ...(index < 0 ? {} : states[index]), ...record };
+  if ('pending_finish' in record && record.pending_finish === undefined) delete next.pending_finish;
+  if (index < 0) states.push(next); else states[index] = next;
   save(statePath, states);
 };
-const rememberPublication = publication => remember({ id: publication.expected.id, publication });
+const rememberPublication = (publication, pending_finish) =>
+  remember({ id: publication.expected.id, publication, pending_finish });
 const githubFor = (auth, deadlineMs) => new GitHub({ repository: env.GITHUB_REPOSITORY, readToken: env.GITHUB_TOKEN, checkToken: auth.checkToken, deadlineMs });
 
 async function main() {
@@ -51,9 +54,37 @@ async function main() {
           let run;
           if (state.publication || state.status === 'completed') {
             // Neither attempted publication nor an observed terminal result may
-            // be downgraded by a stale GET. Legacy terminal state without a full
-            // receipt can fail verification, but still cannot authorize a PATCH.
-            run = await github.reconcile(state.publication ?? terminalCheckReceipt(state));
+            // be downgraded by a stale GET. When the terminal PATCH was never
+            // accepted (pending_finish remains present) and readback confirms the
+            // canonical check is still in progress, complete it in finalization.
+            try {
+              run = await github.reconcile(state.publication ?? terminalCheckReceipt(state));
+            } catch (error) {
+              if (!('pending_finish' in state) || !(error instanceof PublishUnverified) || githubTerminalFailure(error)) throw error;
+              const { expected, observed } = error.details;
+              const canonical = observed && ['id', 'app.id', 'name', 'head_sha'].every(
+                field => JSON.stringify(observed[field]) === JSON.stringify(expected[field]));
+              if (!canonical || observed.status === 'completed') throw error;
+              const targetRun = { id, head_sha, app: { id: APP_ID }, name: CHECK_NAME, status: observed.status };
+              const validPending = ['success', 'failure', 'neutral', 'cancelled'].includes(state.pending_finish?.conclusion) &&
+                typeof state.pending_finish?.output?.title === 'string' && typeof state.pending_finish?.output?.summary === 'string';
+              try {
+                if (!validPending) throw new PublishUnverified(error.details);
+                run = await github.finish(targetRun, state.pending_finish.conclusion, state.pending_finish.output,
+                  { onPublish: rememberPublication });
+              } catch (finishError) {
+                if (githubTerminalFailure(finishError) ||
+                    (validPending && finishError.details?.failure !== 'write_unverified')) throw finishError;
+                const fallbackConclusion = expected.conclusion === 'failure' ||
+                  state.pending_finish?.conclusion === 'failure' ? 'failure' : 'neutral';
+                run = await github.finish(targetRun, fallbackConclusion, { title: 'Review interrupted',
+                  summary: `Head: \`${head_sha}\`\n\nThe workflow could not verify publication of the review result before termination. Dispatch a review to recover.` },
+                { onPublish: rememberPublication });
+              }
+              process.exitCode = 1;
+              process.stderr.write(`${error.message}\n`);
+              summarize(error.message);
+            }
           } else {
             try { run = await github.request(`/check-runs/${id}`, { checks: true }); }
             catch (error) {
@@ -93,9 +124,10 @@ async function main() {
     // Configure inside produceReview's fault boundary so configuration failure
     // still publishes an honest neutral result on the exact head.
     let reviewer;
-    const engine = input => (reviewer ??= gatewayReviewer({ token: read(authPath).inferenceToken,
-      model: env.REVIEW_MODEL, maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
-      reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs, current: () => github.current(target, { deadlineMs }) }))(input);
+    const engine = (input, _externalId, { deadlineMs: engineDeadlineMs = inferenceDeadlineFor(deadlineMs, started) } = {}) =>
+      (reviewer ??= gatewayReviewer({ token: read(authPath).inferenceToken,
+        model: env.REVIEW_MODEL, maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
+        reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs: engineDeadlineMs, current: () => github.current(target, { deadlineMs: engineDeadlineMs }) }))(input);
     const receipt = await produceReview({ github, target, trigger, engine, createReviewInput, engineVersion: reviewerVersion, deadlineMs,
       detailsUrl: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
       onResult: result => {

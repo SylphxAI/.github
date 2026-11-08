@@ -280,8 +280,16 @@ terminal PATCH is replayed. The accepted creation response is saved for the
 always-run finalizer before the first GET, so a temporarily missing or unavailable
 read projection cannot orphan a newly created check. A created check whose
 readback stays unavailable is finalized as interrupted from that saved identity.
-Before the terminal PATCH, the runner saves its intended result; finalization of
-that publication is read-only, including when a stale GET still says in progress.
+Before any annotation batch or terminal PATCH, the runner saves its intended
+result alongside `pending_finish` in the mode-0600 runner-local state file, and
+clears `pending_finish` once the terminal PATCH response is accepted. Finalization
+of an accepted publication is read-only, including when a stale GET still says in
+progress. If the terminal PATCH was never accepted (`pending_finish` remains
+present, with no terminal GitHub refusal or ambiguous write) and finalizer
+readback observes the canonical Check Run still in progress, the finalizer exits
+non-zero with `publish_unverified` and completes the Check Run from
+`pending_finish` (or settles it as interrupted if `pending_finish` cannot be
+written), never overwriting a Check Run whose live status is already `completed`.
 Reusing a completed success or failure saves the observed terminal receipt with
 its conclusion, completion time and output fingerprints. The finalizer reconciles
 that receipt read-only too; a later stale or unavailable GET cannot authorize a
@@ -379,10 +387,14 @@ unavailable work into a pass. The existing CLI prints and saves the safe receipt
 so it survives the ephemeral runner without exporting private round diagnostics.
 
 The shared deadline is 35 minutes from review-step start, including event discovery,
-source collection, inference and Check Run publication. The process is stopped at
+source collection, inference and Check Run publication. Within that budget, the
+producer reserves the final 60 seconds (`PUBLISH_RESERVE_MS`) for post-review
+head verification, annotation batch uploads and terminal Check Run publication,
+bounding source collection, inference and context recovery to the earlier
+inference deadline when the total budget exceeds 60 seconds. The process is stopped at
 38 minutes; the 45-minute wrapper job leaves time for authentication and
 finalization. The two-minute finalizer has its own 90-second request deadline and
-settles unfinished checks as neutral only when no terminal GitHub refusal was
+settles unfinished checks only when no terminal GitHub refusal was
 recorded. A runner loss or hard job termination can prevent the finalizer;
 dispatch the same PR to recover. If publishing credentials cannot be obtained,
 the workflow fails with the exchange reason: it cannot manufacture an App check

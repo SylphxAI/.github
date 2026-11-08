@@ -120,8 +120,8 @@ export class PublishUnverified extends Unavailable {
 }
 
 // A direct Check Run GET exposes these written fields, but not annotation
-// contents. Fingerprint arbitrary strings: neither source nor provider prose
-// may cross the diagnostic or durable finalizer-state boundary.
+// contents. Fingerprint arbitrary strings in public receipts and diagnostics so
+// neither source nor provider prose crosses stderr or step-summary output.
 const fingerprint = value => typeof value === 'string' ? { bytes: Buffer.byteLength(value), sha256: digest(value) } : null;
 const checkProjection = (run, fields) => Object.fromEntries(fields.map(field => {
   const value = field.split('.').reduce((object, key) => object?.[key], run);
@@ -344,19 +344,35 @@ export class GitHub {
   }
 
   async finish(run, conclusion, output, { onPublish, deadlineMs = this.deadlineMs } = {}) {
+    const annotations = Array.isArray(output?.annotations) ? [...output.annotations] : undefined;
     const body = { status: 'completed', conclusion, completed_at: timestamp(), output };
     const publication = terminalCheckReceipt({ ...body,
       id: run.id, head_sha: run.head_sha, name: CHECK_NAME, app: { id: APP_ID } }, 'finish');
-    // Save the intended result before the only terminal PATCH. The always-run
-    // finalizer can reconcile it read-only even after a crash or stale GET.
-    await onPublish?.(publication);
+    const pending = () => ({ conclusion, output: { ...output, ...(annotations ? { annotations: [...annotations] } : {}) } });
+    // Save the intended result before any annotation or terminal PATCH. Once the
+    // terminal PATCH response is accepted, clear pending_finish so finalization
+    // reconciles the accepted write read-only.
+    await onPublish?.(publication, pending());
     try {
-      await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, body, deadlineMs });
+      // GitHub admits 50 annotations per request. Intermediate batches stay in
+      // progress; only the final request publishes the terminal conclusion.
+      while (annotations && annotations.length > 50) {
+        const chunk = annotations.slice(0, 50);
+        await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, deadlineMs, body: {
+          output: { ...output, annotations: chunk },
+        } });
+        annotations.splice(0, 50);
+        await onPublish?.(publication, pending());
+      }
+      const finalBody = { ...body, output: annotations ? { ...output, annotations } : output };
+      await this.request(`/check-runs/${run.id}`, { method: 'PATCH', checks: true, body: finalBody, deadlineMs });
     } catch (error) {
+      if (githubTerminalFailure(error)) await onPublish?.(publication);
       throw new PublishUnverified({ phase: 'finish', check_run_id: run.id, attempts: 0,
         failure: 'write_unverified', http_status: error instanceof GitHubHTTPError ? error.status : null,
         expected: publication.expected, observed: null, mismatched_fields: [] }, error);
     }
+    await onPublish?.(publication);
     return this.reconcile(publication, { deadlineMs });
   }
 }
