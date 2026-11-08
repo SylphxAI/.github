@@ -374,6 +374,12 @@ class SecretScanTest(unittest.TestCase):
 
 
 class ManifestTest(unittest.TestCase):
+    def test_standalone_scan_binds_the_job_token_for_authenticated_fallback(self):
+        import yaml
+        manifest = yaml.safe_load((ROOT / '.github/actions/secret-scan/action.yml').read_text())
+        scanner = next(step for step in manifest['runs']['steps'] if 'secret_scan.py' in step.get('run', ''))
+        self.assertEqual(scanner['env']['GITHUB_TOKEN'], chr(36) + '{{ github.token }}')
+
     def test_pr_code_dispatch_must_validate_its_target_before_scanning(self):
         module = load()
         policy = mock.Mock()

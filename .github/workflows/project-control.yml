@@ -116,6 +116,7 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/ci-test-runners" --ignore-scripts --no-audit --no-fund "@rollup/rollup-linux-${rollup_arch}-gnu@${rollup_version}"
       - name: Unit tests
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           CI_TEST_SCRIPT: ${{ steps.ci-test.outputs.script }}
           CI_TEST_VITEST_BIN: ${{ runner.temp }}/ci-test-runners/node_modules/.bin/vitest
           CI_TEST_REQUIRE_RUNNERS: '1'

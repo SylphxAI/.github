@@ -27,6 +27,24 @@ fail closed. Flushed phase labels and elapsed times distinguish these failures
 without printing command arguments, remote addresses, blob bodies or raw
 subprocess diagnostics. No target code is executed.
 
+Release installation first reuses a checksum-verified local archive, then tries
+GitHub's release-download route. A transient transport failure, HTTP 429 or 5xx
+uses the pinned release asset ID through the authenticated GitHub API with
+Accept: application/octet-stream. The fallback requires the existing job token;
+credentials stay in curl's stdin configuration and are not sent to the primary
+route. Redirects retain curl's cross-origin Authorization stripping. Both routes
+and all retries share a 120-second budget. HTTP 401, 403 and 404 remain terminal.
+The archive's pinned SHA-256 is verified before any executable is installed.
+The same helper serves rust-sccache, whose Actions archive cache is also
+re-verified before extraction.
+
+A failed scan reports a code-owned stage, error class and typed reason.
+Release HTTP failures additionally report the numeric HTTP status and curl exit
+code. Exception values, response bodies, URLs and subprocess stderr stay private.
+The release-download tests exercise primary 504 recovery, authenticated fallback
+headers, total upstream failure and tampered bytes through real curl, a local
+HTTP server and the complete scanner entrypoint; they contact no GitHub endpoint.
+
 For pull requests the range is `pull_request.base.sha..pull_request.head.sha`;
 for merge groups it is `merge_group.base_sha..merge_group.head_sha`. Every commit
 in that range is checked, including a secret removed in a later commit. Only

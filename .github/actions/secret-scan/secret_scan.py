@@ -7,6 +7,7 @@ import ast
 import base64
 import collections
 import contextlib
+import errno
 import hashlib
 import io
 import importlib.util
@@ -21,10 +22,11 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '_shared'))
-import curl_retry
+import release_download
 
 VERSION = '8.30.1'
 CHECKSUMS = {
@@ -39,7 +41,41 @@ DETECTOR_TIMEOUT = 600
 
 
 class ScanError(Exception):
-    """Only constant, value-free messages may cross the output boundary."""
+    """Only code-owned messages, reasons and phases cross the output boundary."""
+
+    def __init__(self, message, *, reason='scan-refused'):
+        super().__init__(message)
+        self.reason = reason
+        self.phase = 'setup'
+
+
+def safe_error(error):
+    """Never format exception types/values, paths, URLs, stderr or response bodies."""
+    if isinstance(error, ScanError):
+        return error
+    if isinstance(error, release_download.ReleaseError):
+        return ScanError(str(error), reason=error.reason)
+    if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+        reason = 'timeout'
+    elif isinstance(error, urllib.error.HTTPError):
+        reason = 'http-error'
+    elif isinstance(error, urllib.error.URLError):
+        reason = 'network-error'
+    elif isinstance(error, FileNotFoundError):
+        reason = 'file-not-found'
+    elif isinstance(error, PermissionError):
+        reason = 'permission-denied'
+    elif isinstance(error, OSError):
+        reason = 'storage-full' if error.errno == errno.ENOSPC else 'os-error'
+    elif isinstance(error, json.JSONDecodeError):
+        reason = 'invalid-json'
+    elif isinstance(error, UnicodeError):
+        reason = 'invalid-encoding'
+    elif isinstance(error, tarfile.TarError):
+        reason = 'invalid-archive'
+    else:
+        reason = 'unexpected-error'
+    return ScanError('Secret scan stopped; exception details withheld.', reason=reason)
 
 
 @contextlib.contextmanager
@@ -49,6 +85,11 @@ def phase(name):
     started = time.monotonic()
     try:
         yield
+    except Exception as error:
+        safe = safe_error(error)
+        if safe.phase == 'setup':
+            safe.phase = name
+        raise safe from None
     finally:
         print(f'Secret scan phase {name}: elapsed {time.monotonic() - started:.3f}s.', flush=True)
 
@@ -88,18 +129,26 @@ def install(directory, version):
     if version != VERSION or platform.system() != 'Linux' or platform.machine() not in CHECKSUMS:
         raise ScanError('secret scan requires the checksum-pinned Linux gitleaks release')
     arch, digest = CHECKSUMS[platform.machine()]
-    url = f'https://github.com/gitleaks/gitleaks/releases/download/v{VERSION}/gitleaks_{VERSION}_linux_{arch}.tar.gz'
+    asset_id = {'x86_64': 378332058, 'aarch64': 378332057}[platform.machine()]
     try:
-        archive = curl_retry.read(url, label='gitleaks-download',
-                                  curl_args=curl_retry.HTTP_REDIRECTS)
-    except OSError:
-        raise ScanError('gitleaks release download failed; see network diagnostics') from None
+        archive = release_download.download(
+            directory / 'gitleaks.tar.gz', repository='gitleaks/gitleaks', tag='v' + VERSION,
+            filename=f'gitleaks_{VERSION}_linux_{arch}.tar.gz', asset_id=asset_id, sha256=digest,
+            token=os.environ.get('SECRET_SCAN_TOKEN', '') or os.environ.get('GITHUB_TOKEN', '')).read_bytes()
+    except release_download.ReleaseError as error:
+        # Preserve the installer's public refusal type, including direct callers.
+        message = ('gitleaks release checksum mismatch' if error.reason == 'release-checksum-mismatch'
+                   else str(error))
+        raise ScanError(message, reason=error.reason) from None
     if hashlib.sha256(archive).hexdigest() != digest:
-        raise ScanError('gitleaks release checksum mismatch')
+        raise ScanError('gitleaks release checksum mismatch', reason='release-checksum-mismatch')
     with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as bundle:
-        member = bundle.getmember('gitleaks')
+        try:
+            member = bundle.getmember('gitleaks')
+        except KeyError:
+            raise ScanError('gitleaks release has no executable', reason='release-executable-missing') from None
         if not member.isfile():
-            raise ScanError('gitleaks release has no regular executable')
+            raise ScanError('gitleaks release has no regular executable', reason='release-executable-invalid')
         binary = directory / 'gitleaks'
         binary.write_bytes(bundle.extractfile(member).read())
         binary.chmod(0o700)
@@ -446,13 +495,12 @@ def main():
                 with phase('commit-metadata-fetch'):
                     env = fetch(repo, remote, base, head, os.environ.get('SECRET_SCAN_TOKEN', ''))
                 os.environ.update(env)
-            binary = args.gitleaks or install(directory, args.version)
+            with phase('gitleaks-install'):
+                binary = args.gitleaks or install(directory, args.version)
             return scan(repo, base, head, binary, directory, str(Path(args.config).resolve()) if args.config else '')
-    except ScanError as error:
-        print('::error::' + str(error))
-    except Exception:
-        # JSON, subprocess, filesystem and download exceptions may carry values.
-        print('::error::Secret scan could not complete; raw diagnostics withheld.')
+    except Exception as error:
+        safe = safe_error(error)
+        print(f'::error::Secret scan stage={safe.phase} class=ScanError reason={safe.reason}: {safe}')
     return 1
 
 
