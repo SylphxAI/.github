@@ -100,6 +100,8 @@ runs:
       if: runner.os == 'Linux' && runner.arch == 'X64'
       shell: bash
       env:
+        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN || github.token }}
+        ASSET_ID: "563130201"
         VERSION: v0.18.0
         SHA256: 45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
         S3_ACCESS_KEY: ${{ inputs.s3-access-key }}
@@ -117,9 +119,7 @@ runs:
         mkdir -p "$dir"
         name="sccache-$VERSION-x86_64-unknown-linux-musl"
         if [ ! -f "$dir/sccache.tgz" ]; then
-          curl --retry 5 --retry-connrefused --retry-max-time 180 --connect-timeout 20 --max-time 120 -sSfL -o "$dir/sccache.tgz.part" \
-            "https://github.com/mozilla/sccache/releases/download/$VERSION/$name.tar.gz"
-          echo "$SHA256  $dir/sccache.tgz.part" | sha256sum -c --quiet
+          bash "$GITHUB_ACTION_PATH/../release-download/download.sh" mozilla/sccache "$VERSION" "$name.tar.gz" "$ASSET_ID" "$SHA256" "$dir/sccache.tgz.part"
           mv "$dir/sccache.tgz.part" "$dir/sccache.tgz"
         else
           echo "sccache release archive from cache"
