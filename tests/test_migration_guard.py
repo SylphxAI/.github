@@ -240,6 +240,48 @@ class ConcurrentIndexTests(unittest.TestCase):
         with self.assertRaises(guard.SqlError):
             guard.check_sql(self.source(declaration, statement.replace('"Event""Log"', '"Event"Log"')), "postgres", "atlas-qualified-v1")
 
+    def test_expression_keys_and_partial_where_predicates_in_qualified_contract(self):
+        where_pred = (
+            "method = 'sylphx.app.v1.DeliveryExecutionService.RealizeCellResource' "
+            "AND request_type = 'sylphx.app.v1.DeliveryRealizationRequest' "
+            "AND lower(btrim(trim(state), '\"')) IN ("
+            "'operation_state_pending', 'operation_state_waiting', 'operation_state_running')"
+        )
+        declaration = {
+            "schema": "public",
+            "table": "platform_operations",
+            "index": "platform_operations_delivery_active_target_idx",
+            "columns": ['lower(btrim(trim(state), \'"\'))', "target"],
+            "where": where_pred,
+            "lock_timeout_ms": 3000,
+            "statement_timeout_ms": 240000,
+        }
+        statement = """CREATE INDEX CONCURRENTLY platform_operations_delivery_active_target_idx
+  ON public.platform_operations (lower(btrim(trim(state), '"')), target)
+  WHERE method = 'sylphx.app.v1.DeliveryExecutionService.RealizeCellResource'
+    AND request_type = 'sylphx.app.v1.DeliveryRealizationRequest'
+    AND lower(btrim(trim(state), '"')) IN (
+      'operation_state_pending', 'operation_state_waiting', 'operation_state_running'
+    );"""
+        self.assertEqual(guard.check_sql(self.source(declaration, statement), "postgres", "atlas-qualified-v1"), [])
+        dict_col_decl = declaration | {"columns": [{"expr": 'lower(btrim(trim(state), \'"\'))'}, "target"]}
+        self.assertEqual(guard.check_sql(self.source(dict_col_decl, statement), "postgres", "atlas-qualified-v1"), [])
+        for bad_stmt in [
+            statement.replace("btrim(trim(state)", "ltrim(trim(state)"),
+            statement.replace(", target)", ", id)"),
+            statement.replace("'operation_state_waiting'", "'operation_state_cancelled'"),
+            statement.replace("WHERE method =", "WHERE true AND method ="),
+        ]:
+            with self.subTest(bad_stmt=bad_stmt):
+                self.assertTrue(guard.check_sql(self.source(declaration, bad_stmt), "postgres", "atlas-qualified-v1"))
+        for bad_decl in [
+            declaration | {"where_null": "deleted_at"},
+            declaration | {"columns": ["evil_func(state)", "target"]},
+            declaration | {"where": "EXISTS (SELECT 1 FROM platform_operations)"},
+        ]:
+            with self.subTest(bad_decl=bad_decl):
+                self.assertTrue(guard.check_sql(self.source(bad_decl, statement), "postgres", "atlas-qualified-v1"))
+
 
 class HistoryTests(unittest.TestCase):
     def setUp(self):
@@ -651,6 +693,72 @@ RESET lock_timeout;
         errors, count = self.check()
         self.assertEqual(count, 1)
         self.assertTrue(any("concurrent index:" in e for e in errors), errors)
+
+    def test_drop_first_zero_lock_timeout_concurrent_expression_index_pair_and_negatives(self):
+        self.write("db/20261226150000_clock_anchor.sql", "SELECT 1;")
+        self.base = self.commit()
+        index_sql = """-- atlas:txmode none
+-- atlas:serving-compatible — Additive concurrent index for the serving Hands queries; no caller or data changes.
+-- Typed delivery and the legacy Hands executor are different method families.
+-- The legacy hands_state_target index cannot serve the typed claim sweep or
+-- past-deadline count. Restrict discovery to the normalized nonterminal family
+-- before reading request JSON, rather than scanning completed request history.
+SET lock_timeout = 0;
+SET statement_timeout = '240s';
+DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;
+CREATE INDEX CONCURRENTLY platform_operations_delivery_active_target_idx
+  ON public.platform_operations (lower(btrim(trim(state), '"')), target)
+  WHERE method = 'sylphx.app.v1.DeliveryExecutionService.RealizeCellResource'
+    AND request_type = 'sylphx.app.v1.DeliveryRealizationRequest'
+    AND lower(btrim(trim(state), '"')) IN (
+      'operation_state_pending', 'operation_state_waiting', 'operation_state_running'
+    );
+RESET statement_timeout;
+RESET lock_timeout;
+"""
+        validity_sql = """-- Refuse rollout if an interrupted concurrent build left an unusable index.
+DO $delivery_active_operations_index_validity$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_index
+    WHERE indexrelid = to_regclass('public.platform_operations_delivery_active_target_idx')
+      AND indisvalid AND indisready
+  ) THEN
+    RAISE EXCEPTION 'platform_operations_delivery_active_target_idx missing or invalid; repair concurrent build before resuming';
+  END IF;
+END
+$delivery_active_operations_index_validity$;
+"""
+        self.write("db/20261226155550_delivery_active_operations_index.sql", index_sql)
+        self.write("db/20261226155605_delivery_active_operations_index_validity.sql", validity_sql)
+        self.commit()
+        errors, count = self.check()
+        self.assertEqual(count, 2)
+        self.assertEqual(errors, [])
+
+        # Negative 1: lock_timeout = 0 without a finite positive statement_timeout is refused.
+        no_stmt_timeout = index_sql.replace("SET statement_timeout = '240s';\n", "")
+        self.assertTrue(guard.check_sql(no_stmt_timeout, "postgres", later_bodies=[validity_sql]))
+        zero_stmt_timeout = index_sql.replace("SET statement_timeout = '240s';", "SET statement_timeout = 0;")
+        self.assertTrue(guard.check_sql(zero_stmt_timeout, "postgres", later_bodies=[validity_sql]))
+
+        # Negative 2: mismatched DROP/CREATE index names or missing DROP on unconditional CREATE is refused.
+        mismatched_drop = index_sql.replace(
+            "DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;",
+            "DROP INDEX CONCURRENTLY IF EXISTS public.other_operations_idx;",
+        )
+        self.assertTrue(guard.check_sql(mismatched_drop, "postgres", later_bodies=[validity_sql]))
+        missing_drop = index_sql.replace(
+            "DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;\n",
+            "",
+        )
+        self.assertTrue(guard.check_sql(missing_drop, "postgres", later_bodies=[validity_sql]))
+
+        # Negative 4: non-concurrent CREATE INDEX under lock_timeout = 0 is never exempted by paired_concurrent_index_valid.
+        non_concurrent = index_sql.replace("CREATE INDEX CONCURRENTLY", "CREATE INDEX")
+        tokens, _ = guard.lex(non_concurrent, "postgres")
+        self.assertFalse(guard.paired_concurrent_index_valid(non_concurrent, tokens, "postgres", [validity_sql]))
+        self.assertTrue(guard.check_sql(non_concurrent, "postgres", later_bodies=[validity_sql]))
 
 
 class EventAndManifestTests(unittest.TestCase):

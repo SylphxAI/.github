@@ -1773,6 +1773,99 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
 
 CONCURRENT_INDEX_MARKER = "-- migration:concurrent-index-v1 "
 CONCURRENT_INDEX_RUNTIME = "atlas-qualified-v1"
+INDEX_FORBIDDEN_WORDS = {
+    "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "RETURNING",
+    "CALL", "EXECUTE", "COPY", "CREATE", "ALTER", "DROP", "TRUNCATE", "GRANT", "REVOKE",
+    "SET", "RESET", "DISCARD", "DO", "BEGIN", "COMMIT", "ROLLBACK", "WITH", "UNION",
+    "INTERSECT", "EXCEPT", "FOR", "LOCK", "TABLE", "INDEX", "CONCURRENTLY", "USING",
+    "ON", "JOIN", "EXISTS",
+}
+INDEX_SQL_KEYWORDS = {
+    "AND", "OR", "IN", "IS", "NOT", "NULL", "TRUE", "FALSE", "BETWEEN", "LIKE", "ILIKE",
+    "SIMILAR", "TO", "ESCAPE", "CASE", "WHEN", "THEN", "ELSE", "END", "CAST", "AS",
+    "ASC", "DESC", "NULLS", "FIRST", "LAST", "COLLATE", "ANY", "SOME", "ALL", "ARRAY",
+}
+INDEX_IMMUTABLE_FUNCTIONS = {
+    "lower", "upper", "btrim", "trim", "ltrim", "rtrim", "coalesce", "nullif",
+    "greatest", "least", "split_part", "length", "char_length", "octet_length",
+    "substr", "substring", "replace", "md5", "abs", "floor", "ceil", "ceiling",
+    "round", "trunc", "date_trunc", "extract",
+}
+
+
+def valid_index_scalar_tokens(tokens: list[Token], *, allow_boolean: bool) -> list[Token]:
+    if not tokens:
+        raise ValueError("empty SQL expression in concurrent index")
+    stack: list[str] = []
+    for token in tokens:
+        if token.kind == "symbol":
+            if token.value in {"(", "["}:
+                stack.append(")" if token.value == "(" else "]")
+            elif token.value in {")", "]"}:
+                if not stack or stack.pop() != token.value:
+                    raise ValueError("unbalanced parentheses in concurrent index expression")
+            elif token.value == ";":
+                raise ValueError("unexpected semicolon in concurrent index expression")
+        elif token.kind == "word" and token.value in INDEX_FORBIDDEN_WORDS:
+            raise ValueError("unsupported keyword in concurrent index expression")
+    if stack:
+        raise ValueError("unclosed parentheses in concurrent index expression")
+    for i, token in enumerate(tokens[:-1]):
+        if tokens[i + 1].value != "(" or token.kind not in {"word", "identifier"}:
+            continue
+        if token.kind == "word" and token.value in {"IN", "ANY", "SOME", "ALL", "CAST"}:
+            if token.value == "IN" and not allow_boolean:
+                raise ValueError("boolean IN predicate is not valid in an index key expression")
+            continue
+        fn = token.value if token.kind == "identifier" else token.value.lower()
+        if fn not in INDEX_IMMUTABLE_FUNCTIONS:
+            raise ValueError(f"unsupported function in concurrent index expression: {fn}")
+        if i and tokens[i - 1].value == ".":
+            qualified, _ = qualified_name(tokens, i - 2)
+            if qualified != ("pg_catalog", fn):
+                raise ValueError("schema-qualified function in concurrent index expression must use pg_catalog")
+    if not allow_boolean:
+        flat = top_level(tokens)
+        if any(t.value == "," for t in flat):
+            raise ValueError("index key expression must be a single scalar expression")
+        if any(t.kind == "word" and t.value in {"AND", "OR", "IS", "IN", "ASC", "DESC", "NULLS", "FIRST", "LAST"} for t in flat):
+            raise ValueError("index key expression cannot contain top-level predicate or sort modifiers")
+    return tokens
+
+
+def parse_index_scalar_sql(fragment: str, *, allow_boolean: bool) -> list[Token]:
+    if (not isinstance(fragment, str) or not fragment.strip()
+            or "--" in fragment or "/*" in fragment or ";" in fragment):
+        raise ValueError("invalid SQL expression in concurrent index declaration")
+    tokens, markers = lex(fragment, "postgres")
+    if markers:
+        raise ValueError("comments and markers are not allowed in concurrent index declaration expressions")
+    return valid_index_scalar_tokens(tokens, allow_boolean=allow_boolean)
+
+
+def canon_index_tokens(tokens: list[Token]) -> tuple[tuple[str, str], ...]:
+    out: list[tuple[str, str]] = []
+    for token in tokens:
+        if token.kind == "literal":
+            val = unquote_postgres_literal(token)
+            out.append(("literal", val if val is not None else token.raw))
+        elif token.kind == "symbol":
+            out.append(("symbol", token.value))
+        elif token.kind == "word" and token.value in INDEX_SQL_KEYWORDS:
+            out.append(("kw", token.value))
+        elif token.kind == "identifier":
+            out.append(("id", token.value))
+        else:
+            out.append(("id", (token.raw or token.value).lower() if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", token.raw or token.value) else token.value.lower()))
+    return tuple(out)
+
+
+def matches_declared_ident(token: Token, expected: str) -> bool:
+    if token.kind == "identifier":
+        return token.value == expected
+    if token.kind == "word":
+        return (token.raw or token.value) == expected and token.value.lower() == expected
+    return False
 
 
 def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
@@ -1820,7 +1913,9 @@ def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
 
         declaration = json.loads(declarations[0], object_pairs_hook=unique_fields)
         required = {"schema", "table", "index", "columns", "lock_timeout_ms", "statement_timeout_ms"}
-        if not isinstance(declaration, dict) or not required <= declaration.keys() or declaration.keys() - required - {"where_null"}:
+        if (not isinstance(declaration, dict) or not required <= declaration.keys()
+                or declaration.keys() - required - {"where_null", "where"}
+                or ("where_null" in declaration and "where" in declaration)):
             raise ValueError("unsupported declaration fields")
 
         def quote(value):
@@ -1836,14 +1931,89 @@ def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
         columns = declaration["columns"]
         if not isinstance(columns, list) or not columns:
             raise ValueError("one or more plain index columns are required")
-        expected = (f'CREATE INDEX CONCURRENTLY {quote(declaration["index"])} '
-                    f'ON {quote(declaration["schema"])}.{quote(declaration["table"])} '
-                    f'USING btree ({", ".join(quote(column) for column in columns)})')
-        if declaration.get("where_null") is not None:
-            expected += f' WHERE {quote(declaration["where_null"])} IS NULL'
-        expected += ";"
-        if "\n".join(body).strip() != expected:
-            raise ValueError("SQL must be the exact declared single nonunique concurrent CREATE; no IF NOT EXISTS, SET, DROP, expression or extra statement")
+        quote(declaration["index"])
+        quote(declaration["schema"])
+        quote(declaration["table"])
+        has_expr_or_where = ("where" in declaration) or any(
+            isinstance(col, dict) or (isinstance(col, str) and "(" in col)
+            for col in columns
+        )
+        if not has_expr_or_where:
+            expected = (f'CREATE INDEX CONCURRENTLY {quote(declaration["index"])} '
+                        f'ON {quote(declaration["schema"])}.{quote(declaration["table"])} '
+                        f'USING btree ({", ".join(quote(column) for column in columns)})')
+            if declaration.get("where_null") is not None:
+                expected += f' WHERE {quote(declaration["where_null"])} IS NULL'
+            expected += ";"
+            if "\n".join(body).strip() != expected:
+                raise ValueError("SQL must be the exact declared single nonunique concurrent CREATE; no IF NOT EXISTS, SET, DROP, expression or extra statement")
+        else:
+            expected_cols: list[tuple[tuple[str, str], ...]] = []
+            for col in columns:
+                if isinstance(col, dict):
+                    if set(col.keys()) != {"expr"} or not isinstance(col["expr"], str):
+                        raise ValueError("expression column entry must be {\"expr\": \"...\"}")
+                    expr_tokens = parse_index_scalar_sql(col["expr"], allow_boolean=False)
+                    if not any(t.value == "(" for t in expr_tokens):
+                        raise ValueError("expression column entry must contain a function or parenthesized expression")
+                    expected_cols.append(canon_index_tokens(expr_tokens))
+                elif isinstance(col, str) and "(" in col:
+                    expr_tokens = parse_index_scalar_sql(col, allow_boolean=False)
+                    expected_cols.append(canon_index_tokens(expr_tokens))
+                else:
+                    quote(col)
+                    expected_cols.append((("id", col),))
+            if "where" in declaration:
+                where_tokens = parse_index_scalar_sql(declaration["where"], allow_boolean=True)
+                expected_where: tuple[tuple[str, str], ...] | None = canon_index_tokens(where_tokens)
+            elif declaration.get("where_null") is not None:
+                wn = declaration["where_null"]
+                quote(wn)
+                expected_where = (("id", wn), ("kw", "IS"), ("kw", "NULL"))
+            else:
+                expected_where = None
+
+            body_sql = "\n".join(body).strip()
+            if not body_sql.endswith(";") or "--" in body_sql or "/*" in body_sql:
+                raise ValueError("SQL must be a single comment-free CREATE INDEX CONCURRENTLY statement")
+            body_tokens, body_markers = lex(body_sql, "postgres")
+            stmts = split(body_tokens, ";")
+            if body_markers or not body_tokens or body_tokens[-1].value != ";" or len(stmts) != 1:
+                raise ValueError("SQL must be the exact declared single nonunique concurrent CREATE")
+            stmt = stmts[0]
+            if (len(stmt) < 9 or not starts(stmt, "CREATE", "INDEX", "CONCURRENTLY")
+                    or starts(stmt[3:], "IF", "NOT", "EXISTS")
+                    or not matches_declared_ident(stmt[3], declaration["index"])
+                    or not kw(stmt[4], "ON")
+                    or not matches_declared_ident(stmt[5], declaration["schema"])
+                    or stmt[6].value != "."
+                    or not matches_declared_ident(stmt[7], declaration["table"])):
+                raise ValueError("SQL must match declared index, schema, and table on a single nonunique concurrent CREATE")
+            at = 8
+            if starts(stmt[at:], "USING"):
+                if not starts(stmt[at:], "USING", "BTREE") or (stmt[at + 1].raw or stmt[at + 1].value).lower() != "btree":
+                    raise ValueError("concurrent index USING clause must be btree")
+                at += 2
+            if at >= len(stmt) or stmt[at].value != "(":
+                raise ValueError("concurrent index requires parenthesized key list")
+            key_group, at = group(stmt, at)
+            actual_parts = split(key_group, ",")
+            if len(actual_parts) != len(expected_cols) or any(not p for p in actual_parts):
+                raise ValueError("concurrent index key count does not match declaration")
+            for actual_part, expected_col in zip(actual_parts, expected_cols):
+                valid_index_scalar_tokens(actual_part, allow_boolean=False)
+                if canon_index_tokens(actual_part) != expected_col:
+                    raise ValueError("concurrent index key expression does not match declaration")
+            if expected_where is None:
+                if at != len(stmt):
+                    raise ValueError("unexpected trailing clause in concurrent index statement")
+            else:
+                if not starts(stmt[at:], "WHERE"):
+                    raise ValueError("missing declared WHERE predicate in concurrent index statement")
+                actual_where = stmt[at + 1:]
+                valid_index_scalar_tokens(actual_where, allow_boolean=True)
+                if canon_index_tokens(actual_where) != expected_where:
+                    raise ValueError("concurrent index WHERE predicate does not match declaration")
     except (ValueError, TypeError, KeyError, UnicodeError) as exc:
         return fail(str(exc))
     return []
@@ -1884,14 +2054,16 @@ def asserts_index_valid(later_sql: str, index_name: str) -> bool:
 
 def paired_concurrent_index_valid(sql: str, tokens: list[Token], dialect: str,
                                   later_bodies: tuple[str, ...] | list[str] = ()) -> bool:
-    """Return True if sql is a resume-safe concurrent index file paired with a later validity check."""
-    if dialect != "postgres" or not later_bodies:
+    """Return True if sql is a resume-safe concurrent index file (drop-first or validity-paired)."""
+    if dialect != "postgres":
         return False
     if not re.search(r"^\s*--\s*atlas:txmode\s+none\b", sql, re.I | re.M):
         return False
     lock_zero = False
     stmt_positive = False
-    created_indexes: list[str] = []
+    dropped_targets: set[tuple[str, str]] = set()
+    conditional_indexes: list[str] = []
+    recreated_indexes: list[str] = []
     for stmt in split(tokens, ";"):
         if not stmt:
             continue
@@ -1914,13 +2086,30 @@ def paired_concurrent_index_valid(sql: str, tokens: list[Token], dialect: str,
         concurrent = concurrent_index_target(stmt)
         if concurrent is not None:
             kind, target, conditional = concurrent
-            if kind == "CREATE" and conditional and target is not None and lock_zero and stmt_positive:
-                created_indexes.append(target[1])
+            if target is None or not (lock_zero and stmt_positive):
+                return False
+            if kind == "DROP":
+                if not conditional or target in dropped_targets:
+                    return False
+                dropped_targets.add(target)
+                continue
+            if kind == "CREATE":
+                if conditional:
+                    if target in dropped_targets:
+                        return False
+                    conditional_indexes.append(target[1])
+                    continue
+                if target not in dropped_targets:
+                    return False
+                dropped_targets.discard(target)
+                recreated_indexes.append(target[1])
                 continue
         return False
-    if not created_indexes:
+    if (not conditional_indexes and not recreated_indexes) or dropped_targets:
         return False
-    return all(any(asserts_index_valid(body, idx) for body in later_bodies) for idx in created_indexes)
+    if conditional_indexes and not later_bodies:
+        return False
+    return all(any(asserts_index_valid(body, idx) for body in later_bodies) for idx in conditional_indexes)
 
 
 def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "",
