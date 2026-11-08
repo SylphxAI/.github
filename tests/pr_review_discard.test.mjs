@@ -127,6 +127,6 @@ for (const badQuote of [false, true]) for (const final of ['complete', 'incomple
   assert.equal(result.status, final); assert.equal(sourceReads, 0);
   assert.equal(result.recovery.stop, final === 'complete' ? 'no_new_context_finalized' : 'no_new_context');
   assert.equal(result.terminal_incomplete ?? false, final === 'incomplete');
-  assert.equal(posts.filter(p => p.scope.kind === 'synthesis' && p.context_recovery === 'exhausted').length, 1);
+  assert.equal(posts.filter(p => p.scope.kind === 'synthesis' && p.context_recovery === 'exhausted').length, badQuote ? 3 : 1);
   assert.equal(result.discarded_items.length, badQuote ? 1 : 0);
 });

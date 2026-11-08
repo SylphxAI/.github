@@ -75,6 +75,10 @@ jobs:
             echo '::error::larger or GPU GitHub-hosted runners are banned (owner#750)'
             exit 1
           fi
+      - name: Check mechanism boundaries
+        run: python3 scripts/check_mechanism_boundary.py --policy .architecture-policy.json
+      - name: Check PR review engine
+        run: node --test tests/pr_review*.test.mjs
       - name: Check Changesets publisher syntax
         run: node --check .github/actions/setup-changesets-publisher/changesets-publish.mjs
 

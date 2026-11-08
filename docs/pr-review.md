@@ -531,3 +531,20 @@ Do not rerun CI solely to obtain another review.
 
 Source: [GitHub workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run),
 read 2026-11-06 at 20:58:42 UTC. GitHub does not emit `requested` for CI reruns.
+
+Transient gateway capacity/transport failures and idempotent GitHub source reads
+use at most four wire attempts with exponential backoff under the original
+deadline. Provider Retry-After waits are never shortened. GitHub writes with an
+unknown outcome are not replayed. These transport attempts do not consume the
+three assessment-correction attempts, including on the final context pass.
+
+Binary `source-reviewed` assessments require input and generator evidence.
+Primary/authored binary inputs and fixtures instead use `input-reviewed` with
+exact pinned consumer, compiler, test or manifest evidence in
+`derivation_evidence`; no invented upstream source is required. Neither status
+claims decoded bytes or semantic equivalence. Unresolved binary provenance stays
+incomplete even after context recovery is exhausted.
+
+The project-control gate also checks tracked generic mechanism sources against
+`.architecture-policy.json`. Repository policy stays in this explicit declaration,
+not in the checker engine; tenant manifests outside mechanism roots are not scanned.

@@ -206,7 +206,7 @@ function finalize(directory, run, state, readFailure = null, patchFailure = null
       return { ok: true, status: 200, json: async () => data.run };
     };
   }
-  writeFileSync(join(directory, 'preload.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';\nimport { GitHub } from ${JSON.stringify(new URL('../.github/actions/pr-review/github.mjs', import.meta.url).href)};\nconst reconcile = GitHub.prototype.reconcile; GitHub.prototype.reconcile = function (...args) { this.wait = async () => {}; return reconcile.apply(this, args); };\n(${preload.toString()})(${JSON.stringify(directory)}, ${JSON.stringify(readFailure)}, ${JSON.stringify(patchFailure)});`);
+  writeFileSync(join(directory, 'preload.mjs'), `import { readFileSync, writeFileSync } from 'node:fs';\nimport { GitHub } from ${JSON.stringify(new URL('../.github/actions/pr-review/github.mjs', import.meta.url).href)};\nconst request = GitHub.prototype.request; GitHub.prototype.request = function (...args) { this.wait = async () => {}; return request.apply(this, args); };\nconst reconcile = GitHub.prototype.reconcile; GitHub.prototype.reconcile = function (...args) { this.wait = async () => {}; return reconcile.apply(this, args); };\n(${preload.toString()})(${JSON.stringify(directory)}, ${JSON.stringify(readFailure)}, ${JSON.stringify(patchFailure)});`);
   const result = spawnSync('node', ['--import', join(directory, 'preload.mjs'), '.github/actions/pr-review/cli.mjs', 'finalize'], {
     cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10_000,
     env: { ...process.env, RUNNER_TEMP: directory, GITHUB_REPOSITORY: 'example/repo', GITHUB_TOKEN: 'source',

@@ -18,7 +18,12 @@ conversion that produces the artifact, using supplied source or context_requests
 For status=source-reviewed, quote exact source_evidence for the original inputs
 and derivation_evidence for the generator/build relationship. These are evidence,
 not claims that the binary was decoded or regenerated. State that limitation and
-any unverified equivalence in limitation and context_notes. If material binary
+any unverified equivalence in limitation and context_notes.
+For a primary/authored binary input or test fixture that is not generated from
+text, use status=input-reviewed. Quote exact consumer/compiler/test or manifest
+evidence in derivation_evidence proving how this path is used; source_evidence
+may be empty. Do not fabricate a generator or claim binary semantics were decoded.
+A filename or hash alone is not consumer evidence. If material binary
 semantics or provenance remains unresolved, use status=unresolved and return an
 incomplete review with the affected binary path in omitted_paths. Do not complete
 by silently omitting it or treating byte identity as semantic verification.
@@ -70,7 +75,9 @@ final-pass completion instruction below does not override this binary requiremen
 When context_recovery="exhausted", this is the final bounded verdict pass. Do not
 request any more context. Assess every assigned changed path from the supplied
 source. Return completion="complete", omitted_paths=[], context_requests=[] and
-reason="". State missing context as explicit assumptions in context_notes, or
+reason="" only when binary provenance is resolved. A genuinely unresolved binary
+remains completion="incomplete", with its path in omitted_paths and a clear reason;
+context_requests remains empty. State missing context as explicit assumptions in context_notes, or
 report a concrete blocking finding with exact supplied evidence. Never invent
 source, claim an assumption was verified, or manufacture a defect merely because
 context is unavailable.

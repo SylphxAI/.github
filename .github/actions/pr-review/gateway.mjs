@@ -1,4 +1,5 @@
 import { reviewerInstructions, resultSchema, parseReviewResult, unavailable, sourceValidationReasons, identityFields, requestIdentity, digest } from './contract.mjs';
+import { fetchWithRetry } from './retry.mjs';
 import { reviewPartitions } from './partition.mjs';
 
 export function reviewRequest(input, { model, maxOutputTokens, reasoningEffort }) {
@@ -32,9 +33,9 @@ export function contextBudget(metadata, model, maxOutputTokens) {
 }
 
 // The environment's ordinary AI policy chooses eligible paid-account capacity.
-// This client never selects an area, changes model, retries, or falls back.
+// This client never selects an area, changes model, or falls back.
 export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.com',
-  maxOutputTokens, reasoningEffort, deadlineMs, fetcher = fetch, current,
+  maxOutputTokens, reasoningEffort, deadlineMs, fetcher = fetch, current, sleep, now = Date.now, random = Math.random,
   identityLog = value => process.stderr.write(`${JSON.stringify({ review_identity: value })}\n`) }) {
   const origin = new URL(apiOrigin);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== '/') {
@@ -47,17 +48,18 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
     throw new Error('Invalid review output budget.');
   }
   const configuration = { model, maxOutputTokens, reasoningEffort };
+  const retryOptions = { fetcher, deadlineMs, wait: sleep, now, random };
   const completedParts = new Map(), identities = [];
   return async input => {
     let budget;
     try {
-      const remaining = deadlineMs - Date.now();
+      const remaining = deadlineMs - now();
       if (!(remaining > 0)) return unavailable(input, 'Review deadline expired before model metadata collection.');
       const metadataUrl = new URL(`/v1/public/models/${model.split('/').map(encodeURIComponent).join('/')}`, origin);
-      const response = await fetcher(metadataUrl, {
+      const response = await fetchWithRetry(metadataUrl, {
         method: 'GET', redirect: 'error', signal: AbortSignal.timeout(Math.min(30_000, remaining)),
         headers: { accept: 'application/json' },
-      });
+      }, { ...retryOptions, timeoutMs: 30_000 });
       if (!response.ok) return unavailable(input, `Review model metadata returned HTTP ${response.status}.`);
       budget = contextBudget(await response.json(), model, maxOutputTokens);
       budget.metadata_url = String(metadataUrl); budget.metadata_read_at = new Date().toISOString();
@@ -86,28 +88,27 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
         { role: 'assistant', content }, { role: 'user', content: JSON.stringify(correction) }] });
       requestBody = Buffer.byteLength(body) <= byteLimit ? body : originalBody;
     };
-    const retriesAllowed = input.context_recovery !== 'exhausted';
     const alreadySuppliedRequest = r =>
       (input.context ?? []).some(c => c.path === r.path && ((c.side ?? 'context') === r.side || (c.side ?? 'context') === 'context')) ||
       (input.scope?.partitioned_context ?? []).some(c => c.path === r.path && (c.side === r.side || c.side === 'context')) ||
       (input.manifest ?? input.files ?? []).some(f => (r.side === 'base' ? f.previous_path ?? f.path : f.path) === r.path && f[r.side === 'base' ? 'before' : 'after'] !== null);
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const remaining = deadlineMs - Date.now();
+      const remaining = deadlineMs - now();
       if (!(remaining > 0)) return unavailable(input, 'Review deadline expired before inference.');
       let response;
       try {
-        response = await fetcher(new URL('/v1/chat/completions', origin), {
+        response = await fetchWithRetry(new URL('/v1/chat/completions', origin), {
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(remaining),
           headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
           body: requestBody,
-        });
+        }, retryOptions);
       } catch {
-        return unavailable(input, Date.now() >= deadlineMs ? 'Review inference exceeded its deadline.' : 'Review inference failed at the network.');
+        return unavailable(input, now() >= deadlineMs ? 'Review inference exceeded its deadline.' : 'Review inference failed at the network.');
       }
       let body;
       try { body = await response.json(); } catch {
-        if (Date.now() >= deadlineMs) return unavailable(input, 'Review inference exceeded its deadline.');
-        if (retriesAllowed && response.ok && attempt < 3) continue;
+        if (now() >= deadlineMs) return unavailable(input, 'Review inference exceeded its deadline.');
+        if (response.ok && attempt < 3) continue;
         return unavailable(input, `Review gateway returned invalid JSON (HTTP ${response.status}).`);
       }
       if (!response.ok) {
@@ -139,7 +140,7 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
       identities.push(identity);
       if (fields.length) identityLog(identity);
       let parsed = parseReviewResult(choice.message.content, input);
-      const mayCorrect = retriesAllowed && attempt < 3 && Date.now() < deadlineMs;
+      const mayCorrect = attempt < 3 && now() < deadlineMs;
       if (parsed.status === 'unavailable' && sourceValidationReasons.includes(parsed.reason) && !mayCorrect) {
         parsed = parseReviewResult(choice.message.content, input, { discardUngrounded: true });
       }
@@ -156,9 +157,9 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
         correct(choice.message.content, correction);
         continue;
       }
-      if (retriesAllowed && attempt < 3 && Date.now() < deadlineMs && (
+      if (attempt < 3 && now() < deadlineMs && (
         (parsed.status === 'unavailable' && parsed.reason === 'invalid JSON review result') ||
-        (input.scope?.kind === 'partition' && parsed.status === 'incomplete' &&
+        (input.context_recovery !== 'exhausted' && input.scope?.kind === 'partition' && parsed.status === 'incomplete' &&
           (parsed.context_requests?.length ?? 0) > 0 && parsed.context_requests.every(alreadySuppliedRequest))
       )) continue;
       return finish(parsed);
