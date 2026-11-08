@@ -28,8 +28,8 @@ import curl_retry
 
 VERSION = '8.30.1'
 CHECKSUMS = {
-    'x86_64': ('x64', '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'),
-    'aarch64': ('arm64', 'e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080'),
+    'x86_64': ('x64', '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb', '378332058'),
+    'aarch64': ('arm64', 'e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080', '378332057'),
 }
 SHA = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 ALLOWLIST = '.desk-secret-allowlist.json'
@@ -87,13 +87,20 @@ def git(repo, *args):
 def install(directory, version):
     if version != VERSION or platform.system() != 'Linux' or platform.machine() not in CHECKSUMS:
         raise ScanError('secret scan requires the checksum-pinned Linux gitleaks release')
-    arch, digest = CHECKSUMS[platform.machine()]
-    url = f'https://github.com/gitleaks/gitleaks/releases/download/v{VERSION}/gitleaks_{VERSION}_linux_{arch}.tar.gz'
+    arch, digest, asset_id = CHECKSUMS[platform.machine()]
+    destination = directory / 'gitleaks.tar.gz'
+    downloader = Path(__file__).resolve().parents[1] / 'release-download/download.sh'
+    env = {**os.environ, 'GITHUB_TOKEN': os.environ.get('SECRET_SCAN_TOKEN') or os.environ.get('GITHUB_TOKEN', '')}
     try:
-        archive = curl_retry.read(url, label='gitleaks-download',
-                                  curl_args=curl_retry.HTTP_REDIRECTS)
-    except OSError:
-        raise ScanError('gitleaks release download failed; see network diagnostics') from None
+        result = subprocess.run(
+            ['bash', str(downloader), 'gitleaks/gitleaks', f'v{VERSION}',
+             f'gitleaks_{VERSION}_linux_{arch}.tar.gz', asset_id, digest, str(destination)],
+            env=env, capture_output=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ScanError('gitleaks release download failed; authenticated fallback requires GITHUB_TOKEN or SECRET_SCAN_TOKEN and the pinned SHA-256') from None
+    if result.returncode:
+        raise ScanError('gitleaks release download failed; authenticated fallback requires GITHUB_TOKEN or SECRET_SCAN_TOKEN and the pinned SHA-256')
+    archive = destination.read_bytes()
     if hashlib.sha256(archive).hexdigest() != digest:
         raise ScanError('gitleaks release checksum mismatch')
     with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as bundle:

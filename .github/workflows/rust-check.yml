@@ -213,7 +213,7 @@ jobs:
         # job's OIDC identity, else the organization's own cache user. Never
         # the platform's ci-sccache key.
         id: sccache
-        uses: SylphxAI/.github/.github/actions/rust-sccache@b051405836fcc2346300b21bd5f3af9e8eae5419 # main after #217
+        uses: SylphxAI/.github/.github/actions/rust-sccache@da9eb81e678eb4b35557c7e55b081e47e52bf47e # main
         with:
           s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
           s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}

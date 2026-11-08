@@ -203,3 +203,14 @@ The shared `release-download` action takes the repository, tag, filename, asset
 ID, SHA-256 and destination as one caller-owned pin. Updating a release requires
 updating that entire tuple; asset IDs are not discovered at runtime. An exact
 asset-ID endpoint has no name-selection ambiguity; a missing asset refuses.
+
+The shared secret scanner uses the same transport for its existing gitleaks
+v8.30.1 Linux x64 and arm64 pins; its detector and allowlist policy are unchanged.
+It accepts its existing `SECRET_SCAN_TOKEN` or `GITHUB_TOKEN` in process memory.
+The original digests are enforced before the executable is written. Metadata
+verified from the release API on 2026-11-08 at 10:36 UTC:
+
+| Asset | ID | Bytes | SHA-256 |
+| --- | --- | --- | --- |
+| `gitleaks_8.30.1_linux_x64.tar.gz` | 378332058 | 8,230,402 | `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb` |
+| `gitleaks_8.30.1_linux_arm64.tar.gz` | 378332057 | 7,601,421 | `e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080` |

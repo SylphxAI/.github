@@ -133,6 +133,7 @@ sys.exit(subprocess.call([os.environ['REAL_CURL'], *filtered]))
     def test_wrong_sha_fails_before_install(self):
         self.assertNotEqual(self.setup(wrong_sha=True).returncode, 0)
         self.assertFalse(Path(self.env['GITHUB_PATH']).exists())
+        self.assertFalse(any(p.is_file() for p in self.root.rglob(self.tool)))
         self.assertEqual(len(self.requests), 2)
 
     def test_missing_token_refuses_api(self):
@@ -146,12 +147,52 @@ sys.exit(subprocess.call([os.environ['REAL_CURL'], *filtered]))
         self.api = 404
         self.assertNotEqual(self.setup().returncode, 0)
         self.assertFalse(Path(self.env['GITHUB_PATH']).exists())
+        self.assertFalse(any(p.is_file() for p in self.root.rglob(self.tool)))
         self.assertEqual(len(self.requests), 2)
 
     def test_primary_wrong_sha_does_not_fallback(self):
         self.primary = 200
         self.assertNotEqual(self.setup(wrong_sha=True).returncode, 0)
         self.assertEqual(len(self.requests), 1)
+
+
+class SecretScannerDownloadTests(ReleaseDownloadTests):
+    tool = 'gitleaks'
+    expected_api = '/repos/gitleaks/gitleaks/releases/assets/378332058'
+    machine = 'x86_64'
+
+    def setup(self, wrong_sha=False):
+        import importlib.util
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location(
+            'release_secret_scan', ROOT / '.github/actions/secret-scan/secret_scan.py')
+        scanner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scanner)
+        arch, _, asset_id = scanner.CHECKSUMS[self.machine]
+        digest = '0' * 64 if wrong_sha else hashlib.sha256(self.payload).hexdigest()
+        scanner.CHECKSUMS[self.machine] = (arch, digest, asset_id)
+        # Never inherit the CI credential: these tests use only the synthetic token.
+        env = {k: v for k, v in self.env.items() if k != 'SECRET_SCAN_TOKEN'}
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch.object(scanner.platform, 'system', return_value='Linux'), \
+             mock.patch.object(scanner.platform, 'machine', return_value=self.machine):
+            try:
+                scanner.install(self.root, scanner.VERSION)
+                result = subprocess.CompletedProcess([], 0, '', '')
+            except scanner.ScanError as error:
+                message = str(error)
+                result = subprocess.CompletedProcess([], 1, '', message)
+        self.assertNotIn(TOKEN, result.stdout + result.stderr)
+        self.assertNotIn(TOKEN, (self.root / 'argv').read_text())
+        return result
+
+    def installed(self):
+        return self.root / 'gitleaks'
+
+
+class SecretScannerArmDownloadTests(SecretScannerDownloadTests):
+    machine = 'aarch64'
+    expected_api = '/repos/gitleaks/gitleaks/releases/assets/378332057'
 
 
 if __name__ == '__main__':
