@@ -239,6 +239,26 @@ class ConcurrentIndexTests(unittest.TestCase):
         self.assertEqual(guard.check_sql(self.source(declaration, statement), "postgres", "atlas-qualified-v1"), [])
         with self.assertRaises(guard.SqlError):
             guard.check_sql(self.source(declaration, statement.replace('"Event""Log"', '"Event"Log"')), "postgres", "atlas-qualified-v1")
+        paren_col_decl = self.declaration | {"columns": ["owner(id)"]}
+        paren_col_stmt = 'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" USING btree ("owner(id)") WHERE "deleted_at" IS NULL;'
+        self.assertEqual(guard.check_sql(self.source(paren_col_decl, paren_col_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(paren_col_decl, paren_col_stmt.replace('"owner(id)"', "owner(id)")),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
+        paren_where_decl = {k: v for k, v in paren_col_decl.items() if k != "where_null"} | {"where": "deleted_at IS NULL"}
+        paren_where_stmt = 'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" ("owner(id)") WHERE deleted_at IS NULL;'
+        self.assertEqual(guard.check_sql(self.source(paren_where_decl, paren_where_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(paren_where_decl, paren_where_stmt.replace('"owner(id)"', "owner(id)")),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
 
     def test_expression_keys_and_partial_where_predicates_in_qualified_contract(self):
         where_pred = (
@@ -748,6 +768,22 @@ $delivery_active_operations_index_validity$;
             "DROP INDEX CONCURRENTLY IF EXISTS public.other_operations_idx;",
         )
         self.assertTrue(guard.check_sql(mismatched_drop, "postgres", later_bodies=[validity_sql]))
+        quoted_dot_drop = index_sql.replace(
+            "DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;",
+            'DROP INDEX CONCURRENTLY IF EXISTS "public.platform_operations_delivery_active_target_idx";',
+        )
+        self.assertTrue(guard.check_sql(quoted_dot_drop, "postgres", later_bodies=[validity_sql]))
+        self.assertTrue(
+            guard.check_sql(
+                """-- atlas:txmode none
+SET lock_timeout = '2s';
+SET statement_timeout = '30s';
+DROP INDEX CONCURRENTLY IF EXISTS "public.idx";
+CREATE INDEX CONCURRENTLY idx ON public.events (owner_id);
+""",
+                "postgres",
+            )
+        )
         missing_drop = index_sql.replace(
             "DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;\n",
             "",

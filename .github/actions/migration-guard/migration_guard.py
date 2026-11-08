@@ -700,18 +700,31 @@ def timeout_setting(stmt: list[Token]) -> tuple[str, bool] | None:
     return (key, False)
 
 
-def normalize_index_target(index_name: str, table_name: str = "") -> tuple[str, str] | None:
-    if not index_name or index_name.count(".") > 1 or table_name.count(".") > 1:
+def name_parts(tokens: list[Token], at: int) -> tuple[tuple[str, ...], int]:
+    parts: list[str] = []
+    while at < len(tokens) and tokens[at].kind in {"word", "identifier"}:
+        parts.append(tokens[at].value if tokens[at].kind == "identifier" else tokens[at].value.lower())
+        at += 1
+        if at >= len(tokens) or tokens[at].value != ".":
+            break
+        at += 1
+    if not parts or (at > 0 and tokens[at - 1].value == "."):
+        return (), at
+    return tuple(parts), at
+
+
+def normalize_index_target(index_parts: tuple[str, ...], table_parts: tuple[str, ...] = ()) -> tuple[str, str] | None:
+    if not index_parts or len(index_parts) > 2 or len(table_parts) > 2:
         return None
-    if "." in index_name:
-        schema, short = index_name.split(".", 1)
-        if "." in table_name and table_name.split(".", 1)[0] != schema:
+    if len(index_parts) == 2:
+        schema, short = index_parts
+        if len(table_parts) == 2 and table_parts[0] != schema:
             return None
         return (schema, short)
-    if "." in table_name:
-        schema, _ = table_name.split(".", 1)
-        return (schema, index_name)
-    return ("public", index_name)
+    short = index_parts[0]
+    if len(table_parts) == 2:
+        return (table_parts[0], short)
+    return ("public", short)
 
 
 def concurrent_index_target(stmt: list[Token]) -> tuple[str, tuple[str, str] | None, bool] | None:
@@ -719,7 +732,7 @@ def concurrent_index_target(stmt: list[Token]) -> tuple[str, tuple[str, str] | N
     if starts(stmt, "DROP", "INDEX", "CONCURRENTLY"):
         if not starts(stmt[3:], "IF", "EXISTS"):
             return ("DROP", None, False)
-        idx, at = name(stmt, 5)
+        idx, at = name_parts(stmt, 5)
         if not idx or (at < len(stmt) and not (at + 1 == len(stmt) and kw(stmt[at], "RESTRICT"))):
             return ("DROP", None, True)
         return ("DROP", normalize_index_target(idx), True)
@@ -730,13 +743,13 @@ def concurrent_index_target(stmt: list[Token]) -> tuple[str, tuple[str, str] | N
     conditional = starts(stmt[at:], "IF", "NOT", "EXISTS")
     if conditional:
         at += 3
-    idx, at = name(stmt, at)
+    idx, at = name_parts(stmt, at)
     if not idx or not starts(stmt[at:], "ON"):
         return ("CREATE", None, conditional)
     at += 1
     if at < len(stmt) and kw(stmt[at], "ONLY"):
         at += 1
-    tbl, _ = name(stmt, at)
+    tbl, _ = name_parts(stmt, at)
     if not tbl:
         return ("CREATE", None, conditional)
     return ("CREATE", normalize_index_target(idx, tbl), conditional)
@@ -1934,86 +1947,99 @@ def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
         quote(declaration["index"])
         quote(declaration["schema"])
         quote(declaration["table"])
-        has_expr_or_where = ("where" in declaration) or any(
-            isinstance(col, dict) or (isinstance(col, str) and "(" in col)
-            for col in columns
-        )
-        if not has_expr_or_where:
-            expected = (f'CREATE INDEX CONCURRENTLY {quote(declaration["index"])} '
-                        f'ON {quote(declaration["schema"])}.{quote(declaration["table"])} '
-                        f'USING btree ({", ".join(quote(column) for column in columns)})')
-            if declaration.get("where_null") is not None:
-                expected += f' WHERE {quote(declaration["where_null"])} IS NULL'
-            expected += ";"
-            if "\n".join(body).strip() != expected:
-                raise ValueError("SQL must be the exact declared single nonunique concurrent CREATE; no IF NOT EXISTS, SET, DROP, expression or extra statement")
+        body_sql = "\n".join(body).strip()
+        if "where" not in declaration and all(isinstance(col, str) for col in columns):
+            if not any("(" in col for col in columns):
+                expected = (f'CREATE INDEX CONCURRENTLY {quote(declaration["index"])} '
+                            f'ON {quote(declaration["schema"])}.{quote(declaration["table"])} '
+                            f'USING btree ({", ".join(quote(column) for column in columns)})')
+                if declaration.get("where_null") is not None:
+                    expected += f' WHERE {quote(declaration["where_null"])} IS NULL'
+                expected += ";"
+                if body_sql != expected:
+                    raise ValueError("SQL must be the exact declared single nonunique concurrent CREATE; no IF NOT EXISTS, SET, DROP, expression or extra statement")
+                return []
+            try:
+                expected = (f'CREATE INDEX CONCURRENTLY {quote(declaration["index"])} '
+                            f'ON {quote(declaration["schema"])}.{quote(declaration["table"])} '
+                            f'USING btree ({", ".join(quote(column) for column in columns)})')
+                if declaration.get("where_null") is not None:
+                    expected += f' WHERE {quote(declaration["where_null"])} IS NULL'
+                expected += ";"
+            except ValueError:
+                expected = None
+            if expected is not None and body_sql == expected:
+                return []
+
+        if "where" in declaration:
+            where_tokens = parse_index_scalar_sql(declaration["where"], allow_boolean=True)
+            expected_where: tuple[tuple[str, str], ...] | None = canon_index_tokens(where_tokens)
+        elif declaration.get("where_null") is not None:
+            wn = declaration["where_null"]
+            quote(wn)
+            expected_where = (("id", wn), ("kw", "IS"), ("kw", "NULL"))
         else:
-            expected_cols: list[tuple[tuple[str, str], ...]] = []
-            for col in columns:
-                if isinstance(col, dict):
-                    if set(col.keys()) != {"expr"} or not isinstance(col["expr"], str):
-                        raise ValueError("expression column entry must be {\"expr\": \"...\"}")
-                    expr_tokens = parse_index_scalar_sql(col["expr"], allow_boolean=False)
-                    if not any(t.value == "(" for t in expr_tokens):
-                        raise ValueError("expression column entry must contain a function or parenthesized expression")
-                    expected_cols.append(canon_index_tokens(expr_tokens))
-                elif isinstance(col, str) and "(" in col:
+            expected_where = None
+
+        if not body_sql.endswith(";") or "--" in body_sql or "/*" in body_sql:
+            raise ValueError("SQL must be a single comment-free CREATE INDEX CONCURRENTLY statement")
+        body_tokens, body_markers = lex(body_sql, "postgres")
+        stmts = split(body_tokens, ";")
+        if body_markers or not body_tokens or body_tokens[-1].value != ";" or len(stmts) != 1:
+            raise ValueError("SQL must be the exact declared single nonunique concurrent CREATE")
+        stmt = stmts[0]
+        if (len(stmt) < 9 or not starts(stmt, "CREATE", "INDEX", "CONCURRENTLY")
+                or starts(stmt[3:], "IF", "NOT", "EXISTS")
+                or not matches_declared_ident(stmt[3], declaration["index"])
+                or not kw(stmt[4], "ON")
+                or not matches_declared_ident(stmt[5], declaration["schema"])
+                or stmt[6].value != "."
+                or not matches_declared_ident(stmt[7], declaration["table"])):
+            raise ValueError("SQL must match declared index, schema, and table on a single nonunique concurrent CREATE")
+        at = 8
+        if starts(stmt[at:], "USING"):
+            if not starts(stmt[at:], "USING", "BTREE") or (stmt[at + 1].raw or stmt[at + 1].value).lower() != "btree":
+                raise ValueError("concurrent index USING clause must be btree")
+            at += 2
+        if at >= len(stmt) or stmt[at].value != "(":
+            raise ValueError("concurrent index requires parenthesized key list")
+        key_group, at = group(stmt, at)
+        actual_parts = split(key_group, ",")
+        if len(actual_parts) != len(columns) or any(not p for p in actual_parts):
+            raise ValueError("concurrent index key count does not match declaration")
+        for actual_part, col in zip(actual_parts, columns):
+            if isinstance(col, dict):
+                if set(col.keys()) != {"expr"} or not isinstance(col["expr"], str):
+                    raise ValueError("expression column entry must be {\"expr\": \"...\"}")
+                expr_tokens = parse_index_scalar_sql(col["expr"], allow_boolean=False)
+                if not any(t.value == "(" for t in expr_tokens):
+                    raise ValueError("expression column entry must contain a function or parenthesized expression")
+                valid_index_scalar_tokens(actual_part, allow_boolean=False)
+                if canon_index_tokens(actual_part) != canon_index_tokens(expr_tokens):
+                    raise ValueError("concurrent index key expression does not match declaration")
+            elif isinstance(col, str):
+                if len(actual_part) == 1 and matches_declared_ident(actual_part[0], col):
+                    quote(col)
+                elif "(" in col:
                     expr_tokens = parse_index_scalar_sql(col, allow_boolean=False)
-                    expected_cols.append(canon_index_tokens(expr_tokens))
+                    valid_index_scalar_tokens(actual_part, allow_boolean=False)
+                    if canon_index_tokens(actual_part) != canon_index_tokens(expr_tokens):
+                        raise ValueError("concurrent index key expression does not match declaration")
                 else:
                     quote(col)
-                    expected_cols.append((("id", col),))
-            if "where" in declaration:
-                where_tokens = parse_index_scalar_sql(declaration["where"], allow_boolean=True)
-                expected_where: tuple[tuple[str, str], ...] | None = canon_index_tokens(where_tokens)
-            elif declaration.get("where_null") is not None:
-                wn = declaration["where_null"]
-                quote(wn)
-                expected_where = (("id", wn), ("kw", "IS"), ("kw", "NULL"))
+                    raise ValueError("concurrent index key column does not match declaration")
             else:
-                expected_where = None
-
-            body_sql = "\n".join(body).strip()
-            if not body_sql.endswith(";") or "--" in body_sql or "/*" in body_sql:
-                raise ValueError("SQL must be a single comment-free CREATE INDEX CONCURRENTLY statement")
-            body_tokens, body_markers = lex(body_sql, "postgres")
-            stmts = split(body_tokens, ";")
-            if body_markers or not body_tokens or body_tokens[-1].value != ";" or len(stmts) != 1:
-                raise ValueError("SQL must be the exact declared single nonunique concurrent CREATE")
-            stmt = stmts[0]
-            if (len(stmt) < 9 or not starts(stmt, "CREATE", "INDEX", "CONCURRENTLY")
-                    or starts(stmt[3:], "IF", "NOT", "EXISTS")
-                    or not matches_declared_ident(stmt[3], declaration["index"])
-                    or not kw(stmt[4], "ON")
-                    or not matches_declared_ident(stmt[5], declaration["schema"])
-                    or stmt[6].value != "."
-                    or not matches_declared_ident(stmt[7], declaration["table"])):
-                raise ValueError("SQL must match declared index, schema, and table on a single nonunique concurrent CREATE")
-            at = 8
-            if starts(stmt[at:], "USING"):
-                if not starts(stmt[at:], "USING", "BTREE") or (stmt[at + 1].raw or stmt[at + 1].value).lower() != "btree":
-                    raise ValueError("concurrent index USING clause must be btree")
-                at += 2
-            if at >= len(stmt) or stmt[at].value != "(":
-                raise ValueError("concurrent index requires parenthesized key list")
-            key_group, at = group(stmt, at)
-            actual_parts = split(key_group, ",")
-            if len(actual_parts) != len(expected_cols) or any(not p for p in actual_parts):
-                raise ValueError("concurrent index key count does not match declaration")
-            for actual_part, expected_col in zip(actual_parts, expected_cols):
-                valid_index_scalar_tokens(actual_part, allow_boolean=False)
-                if canon_index_tokens(actual_part) != expected_col:
-                    raise ValueError("concurrent index key expression does not match declaration")
-            if expected_where is None:
-                if at != len(stmt):
-                    raise ValueError("unexpected trailing clause in concurrent index statement")
-            else:
-                if not starts(stmt[at:], "WHERE"):
-                    raise ValueError("missing declared WHERE predicate in concurrent index statement")
-                actual_where = stmt[at + 1:]
-                valid_index_scalar_tokens(actual_where, allow_boolean=True)
-                if canon_index_tokens(actual_where) != expected_where:
-                    raise ValueError("concurrent index WHERE predicate does not match declaration")
+                raise ValueError("index columns must be identifier strings or {\"expr\": ...} objects")
+        if expected_where is None:
+            if at != len(stmt):
+                raise ValueError("unexpected trailing clause in concurrent index statement")
+        else:
+            if not starts(stmt[at:], "WHERE"):
+                raise ValueError("missing declared WHERE predicate in concurrent index statement")
+            actual_where = stmt[at + 1:]
+            valid_index_scalar_tokens(actual_where, allow_boolean=True)
+            if canon_index_tokens(actual_where) != expected_where:
+                raise ValueError("concurrent index WHERE predicate does not match declaration")
     except (ValueError, TypeError, KeyError, UnicodeError) as exc:
         return fail(str(exc))
     return []
