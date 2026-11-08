@@ -288,8 +288,9 @@ progress. If the terminal PATCH was never accepted (`pending_finish` remains
 present, with no terminal GitHub refusal or ambiguous write) and finalizer
 readback observes the canonical Check Run still in progress, the finalizer exits
 non-zero with `publish_unverified` and completes the Check Run from
-`pending_finish` (or settles it as interrupted if `pending_finish` cannot be
-written), never overwriting a Check Run whose live status is already `completed`.
+`pending_finish` (or fails closed with `conclusion="failure"` and title
+`Review interrupted` if `pending_finish` cannot be written), never overwriting a
+Check Run whose live status is already `completed`.
 Reusing a completed success or failure saves the observed terminal receipt with
 its conclusion, completion time and output fingerprints. The finalizer reconciles
 that receipt read-only too; a later stale or unavailable GET cannot authorize a

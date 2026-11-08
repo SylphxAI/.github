@@ -75,9 +75,7 @@ async function main() {
               } catch (finishError) {
                 if (githubTerminalFailure(finishError) ||
                     (validPending && finishError.details?.failure !== 'write_unverified')) throw finishError;
-                const fallbackConclusion = expected.conclusion === 'failure' ||
-                  state.pending_finish?.conclusion === 'failure' ? 'failure' : 'neutral';
-                run = await github.finish(targetRun, fallbackConclusion, { title: 'Review interrupted',
+                run = await github.finish(targetRun, 'failure', { title: 'Review interrupted',
                   summary: `Head: \`${head_sha}\`\n\nThe workflow could not verify publication of the review result before termination. Dispatch a review to recover.` },
                 { onPublish: rememberPublication });
               }
