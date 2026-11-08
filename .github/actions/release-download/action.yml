@@ -1,0 +1,34 @@
+name: Pinned release download
+description: Download a checksum-pinned release with a single authenticated asset API fallback.
+inputs:
+  repository:
+    description: Release owner/repository.
+    required: true
+  tag:
+    description: Exact release tag.
+    required: true
+  asset:
+    description: Exact release filename.
+    required: true
+  asset-id:
+    description: Exact API asset ID for this release filename.
+    required: true
+  sha256:
+    description: Pinned SHA-256, enforced on either transport.
+    required: true
+  destination:
+    description: Output path with an existing parent directory.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN || github.token }}
+        RELEASE_REPOSITORY: ${{ inputs.repository }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        RELEASE_ASSET: ${{ inputs.asset }}
+        RELEASE_ASSET_ID: ${{ inputs.asset-id }}
+        RELEASE_SHA256: ${{ inputs.sha256 }}
+        RELEASE_DESTINATION: ${{ inputs.destination }}
+      run: bash "$GITHUB_ACTION_PATH/download.sh" "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$RELEASE_ASSET" "$RELEASE_ASSET_ID" "$RELEASE_SHA256" "$RELEASE_DESTINATION"

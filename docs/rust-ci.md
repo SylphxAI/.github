@@ -182,3 +182,24 @@ The `rust-sccache` action's `key-prefix` defaults to `rustc`, the one
 namespace of ADR 0004, so a caller that does not set it cannot land in a
 namespace of its own. A caller still states `key-prefix: rustc` until its pin
 is at or after the commit that made it the default.
+
+### Pinned release transport
+
+The Linux X64 sccache setup retains v0.18.0 and its SHA-256. If the primary
+GitHub release URL fails, `release-download` makes one authenticated asset API
+GET (no API retry or release-metadata lookup). Callers may supply `GITHUB_TOKEN`
+in the workflow environment; otherwise the action uses `github.token`. Missing
+credentials refuse fallback. Credentials travel to curl on stdin, not argv.
+Both primary and API bytes must pass the same pinned SHA-256 before extraction;
+a checksum failure never triggers another transport. Cached archives are still
+verified on every use.
+
+Asset metadata verified from GitHub's release API on 2026-11-08 at 10:00:18 UTC:
+`mozilla/sccache` tag `v0.18.0`,
+`sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz`, asset `563130201`,
+9,730,540 bytes, SHA-256
+`45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89`.
+The shared `release-download` action takes the repository, tag, filename, asset
+ID, SHA-256 and destination as one caller-owned pin. Updating a release requires
+updating that entire tuple; asset IDs are not discovered at runtime. An exact
+asset-ID endpoint has no name-selection ambiguity; a missing asset refuses.
