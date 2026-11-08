@@ -83,13 +83,13 @@ test('corrective feedback over the byte budget resends the original body', async
 });
 
 for (const retry of ['HTTP invalid JSON', 'review invalid JSON', 'supplied context', 'source validation']) {
-  test(`exhausted context prevents ${retry} retries after one POST`, async () => {
+  test(`exhausted context preserves bounded ${retry} corrections without more context`, async () => {
     const { result, posts } = await run(inputFor('partition', true), part =>
       retry === 'HTTP invalid JSON' ? new SyntaxError('malformed response') :
       retry === 'review invalid JSON' ? '{' : retry === 'source validation' ? invalid(part) :
       wire(part, { completion: 'incomplete', findings: [], omitted_paths: [evidence.path], reason: 'Need context.',
         context_requests: [{ path: evidence.path, side: 'head' }] }));
-    assert.equal(posts.length, 1);
+    assert.equal(posts.length, retry === 'supplied context' ? 1 : 3);
     assert.equal(result.status, retry === 'supplied context' ? 'incomplete' : retry === 'source validation' ? 'complete' : 'unavailable');
     if (retry === 'source validation') assert.equal(result.discarded_items.length, 1);
   });

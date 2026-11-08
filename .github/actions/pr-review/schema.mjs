@@ -38,7 +38,7 @@ export const resultSchema = object({
 	completion: { type: 'string', enum: ['complete', 'incomplete', 'unavailable'] },
 	findings: { type: 'array', items: { anyOf: [finding, findingWithSemantics] } },
 	binary_reviews: { type: 'array', items: object({
-		path: text, status: { type: 'string', enum: ['source-reviewed', 'unresolved'] },
+		path: text, status: { type: 'string', enum: ['source-reviewed', 'input-reviewed', 'unresolved'] },
 		source_evidence: { type: 'array', items: evidence },
 		derivation_evidence: { type: 'array', items: evidence }, limitation: text,
 	}) },

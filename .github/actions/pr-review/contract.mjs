@@ -307,8 +307,16 @@ export function parseReviewResult(text, input, { discardUngrounded = false } = {
 				for (const [index, quote] of evidence.entries()) requireEvidence(quote, `binary_${kind}_evidence`, index)
 			}
 			if (review.status === 'source-reviewed') requireValue(review.source_evidence.length > 0 && review.derivation_evidence.length > 0, 'binary provenance requires source and derivation evidence')
+			if (review.status === 'input-reviewed') requireValue(review.derivation_evidence.length > 0, 'authored binary requires consumer or manifest evidence')
 		}
-		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length && (input.scope?.kind === 'partition' || result.binary_reviews.every(r => r.status === 'source-reviewed')), 'binary provenance review incomplete')
+		const unresolved = result.binary_reviews.filter(r => r.status === 'unresolved').map(r => r.path)
+		if (input.context_recovery === 'exhausted' && input.scope?.kind !== 'partition' && unresolved.length && result.completion === 'complete') {
+			result.completion = 'incomplete'
+			result.omitted_paths = [...new Set([...result.omitted_paths, ...unresolved])]
+			result.reason = 'Binary provenance remains unresolved after bounded context recovery.'
+			incomplete.push(result.reason)
+		}
+		if (result.completion === 'complete') requireValue(result.binary_reviews.length === binaryFiles.length && (input.scope?.kind === 'partition' || result.binary_reviews.every(r => ['source-reviewed', 'input-reviewed'].includes(r.status))), 'binary provenance review incomplete')
 		const outsideChange = [], ungroundedFindings = [], uncitedSemantics = []
 		const files = input.source_files ?? input.files
 		for (const [findingIndex, finding] of result.findings.entries()) {
