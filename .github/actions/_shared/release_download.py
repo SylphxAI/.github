@@ -13,6 +13,9 @@ import time
 import curl_retry
 
 
+_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+
+
 class ReleaseError(Exception):
     """Code-owned reasons only; never retain raw responses or exception text."""
 
@@ -24,7 +27,8 @@ class ReleaseError(Exception):
 
 def download(destination, *, repository, tag, filename, asset_id, sha256, token, budget=120):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) or \
-            any(not re.fullmatch(r'[A-Za-z0-9_.+-]+', value) for value in (tag, filename)) or \
+            not re.fullmatch(r'[A-Za-z0-9_./+-]+', tag) or '..' in tag or tag.startswith('/') or tag.endswith('/') or \
+            not re.fullmatch(r'[A-Za-z0-9_.+-]+', filename) or \
             type(asset_id) is not int or asset_id <= 0 or not re.fullmatch(r'[0-9a-f]{64}', sha256):
         raise ReleaseError('invalid-release-identity')
     destination = Path(destination)
@@ -42,7 +46,7 @@ def download(destination, *, repository, tag, filename, asset_id, sha256, token,
         headers = () if primary else ('Accept: application/octet-stream', 'Authorization: Bearer ' + token)
         return curl_retry.request(
             url, part, label=label, headers=headers, curl_args=curl_retry.HTTP_REDIRECTS,
-            max_bytes=32 * 1024 * 1024,
+            max_bytes=_MAX_ARCHIVE_BYTES,
             policy=curl_retry.Policy(attempts=2 if primary else 5,
                                      budget=min(30, remaining) if primary else remaining,
                                      attempt_time=10 if primary else 30, base_delay=1))

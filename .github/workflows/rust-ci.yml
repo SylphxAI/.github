@@ -298,7 +298,7 @@ jobs:
         # (docs/adr/0004-fleet-rust-compile-cache.md).
         id: sccache
         continue-on-error: true
-        uses: SylphxAI/.github/.github/actions/rust-sccache@320f00ab1567eae22a968850f76f5b0e765a3426 # main
+        uses: SylphxAI/.github/.github/actions/rust-sccache@5bb96f017593941c433874edca6281540eb91755 # main after #515
         with:
           s3-access-key: ${{ secrets.SYLPHX_CI_CACHE_ACCESS_KEY }}
           s3-secret-key: ${{ secrets.SYLPHX_CI_CACHE_SECRET_KEY }}

@@ -184,3 +184,42 @@ namespace of its own. A caller still states `key-prefix: rustc` until its pin
 is at or after the commit that made it the default.
 
 If compile-cache installation is unavailable, the job records a warning, clears any partial RUSTC_WRAPPER, and compiles cold. Formatting, Clippy, and tests still fail the job on errors; the cache is an optional accelerator, not a correctness gate.
+
+## Pinned release download bounds
+
+The shared release downloader accepts slash-separated release tags (for example,
+release/v1.2.3) but refuses parent traversal, leading/trailing slashes and URL
+control characters. Asset filenames remain single path components. Archives are
+streamed with a 64 MiB ceiling before publication and must still match the pinned
+SHA-256; oversized or corrupt responses are removed rather than reused. This
+covers tool archives larger than the former 32 MiB ceiling without relaxing
+integrity, authentication or the single wall-clock retry budget. The narrow
+regression command is python3 -m unittest discover -s tests -p test_release_download.py.
+
+### Verified pre-baked binaries
+
+The actionlint, sccache and gitleaks installers may reuse their fixed
+/usr/local/bin candidate only after copying it privately, verifying the exact
+executable SHA-256 below, and checking the exact pinned version before publishing
+that copy. Hash mismatch is detected before the candidate is ever executed.
+Missing, unreadable, changed or wrong-version candidates fall back to the same
+checksum-pinned release archive installation; PATH discovery is not trust.
+Never replace a digest with a version-only check to recover an image mismatch.
+
+These executable digests were extracted from the existing SHA-256-verified
+release archives via the authenticated release asset API on 2026-11-08:
+
+| Tool / Linux architecture | Exact version output (first line) | Executable SHA-256 |
+| --- | --- | --- |
+| actionlint / amd64 | 1.7.12 | c872d6db8c6bf83a8eaa704fc93999f027d55dffbc63b8a6abdccb47df5f4cd4 |
+| sccache / amd64 | sccache 0.18.0 | 973cb15f6a986d84ca334bbed3bbe2eb8f1ee8fd81bf9e115b8539a293bf8d59 |
+| gitleaks / amd64 | 8.30.1 | 88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509 |
+| gitleaks / arm64 | 8.30.1 | 00e91bbe655bd7c47753e8cfe61cb76ea1a5d7e7702fe161ee40102b46b3823b |
+
+On a tool upgrade, verify the release archive against its pin first, derive the
+executable digest from that archive's named executable member, then update both
+identities together. The archive digest is not the executable digest. ARM64
+bytes were verified from their pinned archive; version execution requires an
+ARM64 runner. Offline regressions in test_workflow_lint_release.py and
+test_release_download.py exercise all three consumer paths with both zero-network
+reuse and independent digest/version mismatches that fetch the verified asset.

@@ -308,7 +308,20 @@ benchmark or nightly) never makes the trunk red here.
   `SYLPHX_CI_CACHE_*`) still work until they are retired. Entries are
   prefixed by repository.
 - [`workflow-lint`](../.github/actions/workflow-lint/action.yml): pinned
-  actionlint, the gate's workflow parse. Declare self-hosted runner labels in
+  actionlint, the gate's workflow parse. The Linux x64 archive remains
+  actionlint 1.7.12, SHA-256
+  `8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8`.
+  A transient release-download failure falls back to the pinned GitHub REST
+  asset `rhysd/actionlint/releases/assets/384924896` with the job token and
+  `Accept: application/octet-stream`; both routes share the downloader's
+  120-second budget. Cached and downloaded archives must pass the same checksum
+  before extraction. A permanent 401/403/404, corrupt bytes, or an exhausted
+  fallback remains a failed check, never a lint skip.
+  Installation failures report `stage=release-download` and a bounded reason;
+  check the job token and asset access rather than changing the hash or bypassing
+  workflow lint. The offline regression is
+  `python3 -m unittest discover -s tests -p test_workflow_lint_release.py -v`.
+  Declare self-hosted runner labels in
   `.github/actionlint.yaml` (`self-hosted-runner: labels:`), never with an
   ignore pattern. `ignore` takes one regular expression per line and `args`
   one argument per line, never shell-quoted and never split on spaces:
