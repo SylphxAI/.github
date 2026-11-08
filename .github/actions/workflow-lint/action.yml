@@ -70,6 +70,7 @@ runs:
       shell: bash
       env:
         VERSION: 1.7.12
+        GITHUB_TOKEN: ${{ github.token }}
         SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         IGNORE: ${{ inputs.ignore }}
         ARGS: ${{ inputs.args }}
@@ -78,8 +79,10 @@ runs:
         dir="$RUNNER_TEMP/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
         mkdir -p "$dir"
         if [ ! -f "$dir/a.tgz" ]; then
-          curl --retry 5 --retry-connrefused --retry-max-time 180 --connect-timeout 20 --max-time 120 -sSfL -o "$dir/a.tgz.part" \
-            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
+          python3 "$GITHUB_ACTION_PATH/../_shared/release_download.py" \
+            --repository rhysd/actionlint --tag "v$VERSION" \
+            --filename "actionlint_${VERSION}_linux_amd64.tar.gz" \
+            --asset-id 384924896 --sha256 "$SHA256" --destination "$dir/a.tgz.part"
           echo "$SHA256  $dir/a.tgz.part" | sha256sum -c --quiet
           mv "$dir/a.tgz.part" "$dir/a.tgz"
         else
