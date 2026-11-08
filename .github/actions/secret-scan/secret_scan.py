@@ -130,10 +130,16 @@ def install(directory, version):
         raise ScanError('secret scan requires the checksum-pinned Linux gitleaks release')
     arch, digest = CHECKSUMS[platform.machine()]
     asset_id = {'x86_64': 378332058, 'aarch64': 378332057}[platform.machine()]
-    archive = release_download.download(
-        directory / 'gitleaks.tar.gz', repository='gitleaks/gitleaks', tag='v' + VERSION,
-        filename=f'gitleaks_{VERSION}_linux_{arch}.tar.gz', asset_id=asset_id, sha256=digest,
-        token=os.environ.get('SECRET_SCAN_TOKEN', '') or os.environ.get('GITHUB_TOKEN', '')).read_bytes()
+    try:
+        archive = release_download.download(
+            directory / 'gitleaks.tar.gz', repository='gitleaks/gitleaks', tag='v' + VERSION,
+            filename=f'gitleaks_{VERSION}_linux_{arch}.tar.gz', asset_id=asset_id, sha256=digest,
+            token=os.environ.get('SECRET_SCAN_TOKEN', '') or os.environ.get('GITHUB_TOKEN', '')).read_bytes()
+    except release_download.ReleaseError as error:
+        # Preserve the installer's public refusal type, including direct callers.
+        message = ('gitleaks release checksum mismatch' if error.reason == 'release-checksum-mismatch'
+                   else str(error))
+        raise ScanError(message, reason=error.reason) from None
     if hashlib.sha256(archive).hexdigest() != digest:
         raise ScanError('gitleaks release checksum mismatch', reason='release-checksum-mismatch')
     with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as bundle:
