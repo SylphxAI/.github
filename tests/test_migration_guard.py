@@ -755,6 +755,17 @@ $delivery_active_operations_index_validity$;
         errors, count = self.check()
         self.assertEqual(count, 2)
         self.assertEqual(errors, [])
+        self.assertEqual(guard.check_sql(index_sql, "postgres", later_bodies=(validity_sql,)), [])
+
+        # Negative 0: drop-first concurrent index without a later validity body is refused.
+        self.assertTrue(guard.check_sql(index_sql, "postgres", later_bodies=()))
+        self.assertTrue(
+            guard.check_sql(
+                index_sql,
+                "postgres",
+                later_bodies=[validity_sql.replace("platform_operations_delivery_active_target_idx", "other_idx")],
+            )
+        )
 
         # Negative 1: lock_timeout = 0 without a finite positive statement_timeout is refused.
         no_stmt_timeout = index_sql.replace("SET statement_timeout = '240s';\n", "")

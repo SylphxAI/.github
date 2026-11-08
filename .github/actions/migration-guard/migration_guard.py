@@ -2080,7 +2080,7 @@ def asserts_index_valid(later_sql: str, index_name: str) -> bool:
 
 def paired_concurrent_index_valid(sql: str, tokens: list[Token], dialect: str,
                                   later_bodies: tuple[str, ...] | list[str] = ()) -> bool:
-    """Return True if sql is a resume-safe concurrent index file (drop-first or validity-paired)."""
+    """Return True if sql is a validity-paired resume-safe concurrent index file."""
     if dialect != "postgres":
         return False
     if not re.search(r"^\s*--\s*atlas:txmode\s+none\b", sql, re.I | re.M):
@@ -2131,11 +2131,10 @@ def paired_concurrent_index_valid(sql: str, tokens: list[Token], dialect: str,
                 recreated_indexes.append(target[1])
                 continue
         return False
-    if (not conditional_indexes and not recreated_indexes) or dropped_targets:
+    tracked_indexes = [*conditional_indexes, *recreated_indexes]
+    if not tracked_indexes or dropped_targets or not later_bodies:
         return False
-    if conditional_indexes and not later_bodies:
-        return False
-    return all(any(asserts_index_valid(body, idx) for body in later_bodies) for idx in conditional_indexes)
+    return all(any(asserts_index_valid(body, idx) for body in later_bodies) for idx in tracked_indexes)
 
 
 def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "",
