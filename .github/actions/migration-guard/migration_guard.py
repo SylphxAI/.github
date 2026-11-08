@@ -2005,7 +2005,8 @@ def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
             raise ValueError("SQL must be a single comment-free CREATE INDEX CONCURRENTLY statement")
         body_tokens, body_markers = lex(body_sql, "postgres")
         stmts = split(body_tokens, ";")
-        if body_markers or not body_tokens or body_tokens[-1].value != ";" or len(stmts) != 1:
+        if (body_markers or not body_tokens or body_tokens[-1].value != ";"
+                or len(stmts) != 1 or sum(1 for t in top_level(body_tokens) if t.value == ";") != 1):
             raise ValueError("SQL must be the exact declared single nonunique concurrent CREATE")
         stmt = stmts[0]
         if (len(stmt) < 9 or not starts(stmt, "CREATE", "INDEX", "CONCURRENTLY")
@@ -2025,7 +2026,8 @@ def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
             raise ValueError("concurrent index requires parenthesized key list")
         key_group, at = group(stmt, at)
         actual_parts = split(key_group, ",")
-        if len(actual_parts) != len(columns) or any(not p for p in actual_parts):
+        top_level_commas = sum(1 for t in top_level(key_group) if t.value == ",")
+        if len(actual_parts) != len(columns) or top_level_commas != len(columns) - 1:
             raise ValueError("concurrent index key count does not match declaration")
         for actual_part, col in zip(actual_parts, columns):
             if isinstance(col, dict):

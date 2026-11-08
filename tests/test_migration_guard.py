@@ -289,11 +289,26 @@ class ConcurrentIndexTests(unittest.TestCase):
         for bad_stmt in [
             statement.replace("btrim(trim(state)", "ltrim(trim(state)"),
             statement.replace(", target)", ", id)"),
+            statement.replace(", target)", ", target,)"),
+            statement.replace("(lower(btrim(", "(, lower(btrim("),
+            statement.replace(", target)", ",, target)"),
             statement.replace("'operation_state_waiting'", "'operation_state_cancelled'"),
             statement.replace("WHERE method =", "WHERE true AND method ="),
         ]:
             with self.subTest(bad_stmt=bad_stmt):
                 self.assertTrue(guard.check_sql(self.source(declaration, bad_stmt), "postgres", "atlas-qualified-v1"))
+        single_expr_decl = {k: v for k, v in self.declaration.items() if k != "where_null"} | {
+            "columns": [{"expr": "lower(state)"}],
+        }
+        single_expr_stmt = 'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" (lower(state));'
+        self.assertEqual(guard.check_sql(self.source(single_expr_decl, single_expr_stmt), "postgres", "atlas-qualified-v1"), [])
+        for bad_single_stmt in [
+            single_expr_stmt.replace("(lower(state))", "(lower(state),)"),
+            single_expr_stmt.replace("(lower(state))", "(,lower(state))"),
+            single_expr_stmt.replace("(lower(state))", "(lower(state),,id)"),
+        ]:
+            with self.subTest(bad_single_stmt=bad_single_stmt):
+                self.assertTrue(guard.check_sql(self.source(single_expr_decl, bad_single_stmt), "postgres", "atlas-qualified-v1"))
         for bad_decl in [
             declaration | {"where_null": "deleted_at"},
             declaration | {"columns": ["evil_func(state)", "target"]},
