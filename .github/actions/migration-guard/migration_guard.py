@@ -700,31 +700,18 @@ def timeout_setting(stmt: list[Token]) -> tuple[str, bool] | None:
     return (key, False)
 
 
-def name_parts(tokens: list[Token], at: int) -> tuple[tuple[str, ...], int]:
-    parts: list[str] = []
-    while at < len(tokens) and tokens[at].kind in {"word", "identifier"}:
-        parts.append(tokens[at].value if tokens[at].kind == "identifier" else tokens[at].value.lower())
-        at += 1
-        if at >= len(tokens) or tokens[at].value != ".":
-            break
-        at += 1
-    if not parts or (at > 0 and tokens[at - 1].value == "."):
-        return (), at
-    return tuple(parts), at
-
-
-def normalize_index_target(index_parts: tuple[str, ...], table_parts: tuple[str, ...] = ()) -> tuple[str, str] | None:
-    if not index_parts or len(index_parts) > 2 or len(table_parts) > 2:
+def normalize_index_target(index_name: str, table_name: str = "") -> tuple[str, str] | None:
+    if not index_name or index_name.count(".") > 1 or table_name.count(".") > 1:
         return None
-    if len(index_parts) == 2:
-        schema, short = index_parts
-        if len(table_parts) == 2 and table_parts[0] != schema:
+    if "." in index_name:
+        schema, short = index_name.split(".", 1)
+        if "." in table_name and table_name.split(".", 1)[0] != schema:
             return None
         return (schema, short)
-    short = index_parts[0]
-    if len(table_parts) == 2:
-        return (table_parts[0], short)
-    return ("public", short)
+    if "." in table_name:
+        schema, _ = table_name.split(".", 1)
+        return (schema, index_name)
+    return ("public", index_name)
 
 
 def concurrent_index_target(stmt: list[Token]) -> tuple[str, tuple[str, str] | None, bool] | None:
@@ -732,7 +719,7 @@ def concurrent_index_target(stmt: list[Token]) -> tuple[str, tuple[str, str] | N
     if starts(stmt, "DROP", "INDEX", "CONCURRENTLY"):
         if not starts(stmt[3:], "IF", "EXISTS"):
             return ("DROP", None, False)
-        idx, at = name_parts(stmt, 5)
+        idx, at = name(stmt, 5)
         if not idx or (at < len(stmt) and not (at + 1 == len(stmt) and kw(stmt[at], "RESTRICT"))):
             return ("DROP", None, True)
         return ("DROP", normalize_index_target(idx), True)
@@ -743,13 +730,13 @@ def concurrent_index_target(stmt: list[Token]) -> tuple[str, tuple[str, str] | N
     conditional = starts(stmt[at:], "IF", "NOT", "EXISTS")
     if conditional:
         at += 3
-    idx, at = name_parts(stmt, at)
+    idx, at = name(stmt, at)
     if not idx or not starts(stmt[at:], "ON"):
         return ("CREATE", None, conditional)
     at += 1
     if at < len(stmt) and kw(stmt[at], "ONLY"):
         at += 1
-    tbl, _ = name_parts(stmt, at)
+    tbl, _ = name(stmt, at)
     if not tbl:
         return ("CREATE", None, conditional)
     return ("CREATE", normalize_index_target(idx, tbl), conditional)
@@ -2102,16 +2089,14 @@ def asserts_index_valid(later_sql: str, index_name: str) -> bool:
 
 def paired_concurrent_index_valid(sql: str, tokens: list[Token], dialect: str,
                                   later_bodies: tuple[str, ...] | list[str] = ()) -> bool:
-    """Return True if sql is a validity-paired resume-safe concurrent index file."""
-    if dialect != "postgres":
+    """Return True if sql is a resume-safe concurrent index file paired with a later validity check."""
+    if dialect != "postgres" or not later_bodies:
         return False
     if not re.search(r"^\s*--\s*atlas:txmode\s+none\b", sql, re.I | re.M):
         return False
     lock_zero = False
     stmt_positive = False
-    dropped_targets: set[tuple[str, str]] = set()
-    conditional_indexes: list[str] = []
-    recreated_indexes: list[str] = []
+    created_indexes: list[str] = []
     for stmt in split(tokens, ";"):
         if not stmt:
             continue
@@ -2134,29 +2119,13 @@ def paired_concurrent_index_valid(sql: str, tokens: list[Token], dialect: str,
         concurrent = concurrent_index_target(stmt)
         if concurrent is not None:
             kind, target, conditional = concurrent
-            if target is None or not (lock_zero and stmt_positive):
-                return False
-            if kind == "DROP":
-                if not conditional or target in dropped_targets:
-                    return False
-                dropped_targets.add(target)
-                continue
-            if kind == "CREATE":
-                if conditional:
-                    if target in dropped_targets:
-                        return False
-                    conditional_indexes.append(target[1])
-                    continue
-                if target not in dropped_targets:
-                    return False
-                dropped_targets.discard(target)
-                recreated_indexes.append(target[1])
+            if kind == "CREATE" and conditional and target is not None and lock_zero and stmt_positive:
+                created_indexes.append(target[1])
                 continue
         return False
-    tracked_indexes = [*conditional_indexes, *recreated_indexes]
-    if not tracked_indexes or dropped_targets or not later_bodies:
+    if not created_indexes:
         return False
-    return all(any(asserts_index_valid(body, idx) for body in later_bodies) for idx in tracked_indexes)
+    return all(any(asserts_index_valid(body, idx) for body in later_bodies) for idx in created_indexes)
 
 
 def check_sql(sql: str, dialect: str, concurrent_index_runtime: str = "",

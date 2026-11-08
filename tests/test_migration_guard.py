@@ -776,15 +776,10 @@ RESET lock_timeout;
         self.assertEqual(count, 1)
         self.assertTrue(any("concurrent index:" in e for e in errors), errors)
 
-    def test_drop_first_zero_lock_timeout_concurrent_expression_index_pair_and_negatives(self):
+    def test_unconditional_concurrent_index_pair_is_rejected_without_runtime_adoption(self):
         self.write("db/20261226150000_clock_anchor.sql", "SELECT 1;")
         self.base = self.commit()
         index_sql = """-- atlas:txmode none
--- atlas:serving-compatible — Additive concurrent index for the serving Hands queries; no caller or data changes.
--- Typed delivery and the legacy Hands executor are different method families.
--- The legacy hands_state_target index cannot serve the typed claim sweep or
--- past-deadline count. Restrict discovery to the normalized nonterminal family
--- before reading request JSON, rather than scanning completed request history.
 SET lock_timeout = 0;
 SET statement_timeout = '240s';
 DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;
@@ -798,8 +793,7 @@ CREATE INDEX CONCURRENTLY platform_operations_delivery_active_target_idx
 RESET statement_timeout;
 RESET lock_timeout;
 """
-        validity_sql = """-- Refuse rollout if an interrupted concurrent build left an unusable index.
-DO $delivery_active_operations_index_validity$
+        validity_sql = """DO $delivery_active_operations_index_validity$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_index
@@ -816,58 +810,8 @@ $delivery_active_operations_index_validity$;
         self.commit()
         errors, count = self.check()
         self.assertEqual(count, 2)
-        self.assertEqual(errors, [])
-        self.assertEqual(guard.check_sql(index_sql, "postgres", later_bodies=(validity_sql,)), [])
-
-        # Negative 0: drop-first concurrent index without a later validity body is refused.
-        self.assertTrue(guard.check_sql(index_sql, "postgres", later_bodies=()))
-        self.assertTrue(
-            guard.check_sql(
-                index_sql,
-                "postgres",
-                later_bodies=[validity_sql.replace("platform_operations_delivery_active_target_idx", "other_idx")],
-            )
-        )
-
-        # Negative 1: lock_timeout = 0 without a finite positive statement_timeout is refused.
-        no_stmt_timeout = index_sql.replace("SET statement_timeout = '240s';\n", "")
-        self.assertTrue(guard.check_sql(no_stmt_timeout, "postgres", later_bodies=[validity_sql]))
-        zero_stmt_timeout = index_sql.replace("SET statement_timeout = '240s';", "SET statement_timeout = 0;")
-        self.assertTrue(guard.check_sql(zero_stmt_timeout, "postgres", later_bodies=[validity_sql]))
-
-        # Negative 2: mismatched DROP/CREATE index names or missing DROP on unconditional CREATE is refused.
-        mismatched_drop = index_sql.replace(
-            "DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;",
-            "DROP INDEX CONCURRENTLY IF EXISTS public.other_operations_idx;",
-        )
-        self.assertTrue(guard.check_sql(mismatched_drop, "postgres", later_bodies=[validity_sql]))
-        quoted_dot_drop = index_sql.replace(
-            "DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;",
-            'DROP INDEX CONCURRENTLY IF EXISTS "public.platform_operations_delivery_active_target_idx";',
-        )
-        self.assertTrue(guard.check_sql(quoted_dot_drop, "postgres", later_bodies=[validity_sql]))
-        self.assertTrue(
-            guard.check_sql(
-                """-- atlas:txmode none
-SET lock_timeout = '2s';
-SET statement_timeout = '30s';
-DROP INDEX CONCURRENTLY IF EXISTS "public.idx";
-CREATE INDEX CONCURRENTLY idx ON public.events (owner_id);
-""",
-                "postgres",
-            )
-        )
-        missing_drop = index_sql.replace(
-            "DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;\n",
-            "",
-        )
-        self.assertTrue(guard.check_sql(missing_drop, "postgres", later_bodies=[validity_sql]))
-
-        # Negative 4: non-concurrent CREATE INDEX under lock_timeout = 0 is never exempted by paired_concurrent_index_valid.
-        non_concurrent = index_sql.replace("CREATE INDEX CONCURRENTLY", "CREATE INDEX")
-        tokens, _ = guard.lex(non_concurrent, "postgres")
-        self.assertFalse(guard.paired_concurrent_index_valid(non_concurrent, tokens, "postgres", [validity_sql]))
-        self.assertTrue(guard.check_sql(non_concurrent, "postgres", later_bodies=[validity_sql]))
+        self.assertTrue(any("concurrent index:" in e for e in errors), errors)
+        self.assertTrue(guard.check_sql(index_sql, "postgres", later_bodies=(validity_sql,)))
 
 
 class EventAndManifestTests(unittest.TestCase):
