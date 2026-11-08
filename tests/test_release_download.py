@@ -85,7 +85,7 @@ class ReleaseDownloadTest(unittest.TestCase):
             path = url.split('/', 3)[3]
             policy = kwargs['policy']
             kwargs['policy'] = RELEASE.curl_retry.Policy(policy.attempts, min(policy.budget, 3),
-                                                       min(policy.attempt_time, 1), 0)
+                                                       min(policy.attempt_time, 3), 0)
             return original(f'http://127.0.0.1:{self.server.server_port}/' + path, destination, **kwargs)
 
         self.request_patch = mock.patch.object(RELEASE.curl_retry, 'request', side_effect=local_request)
@@ -191,6 +191,59 @@ class ReleaseDownloadTest(unittest.TestCase):
                              filename='test.tgz', asset_id=378332058, sha256=self.digest,
                              token=self.token, budget=45)
         self.assertEqual(budgets, [30, 15])
+
+    def test_namespaced_release_tag_uses_primary_and_authenticated_fallback(self):
+        for status in (200, 504):
+            with self.subTest(primary_status=status):
+                self.primary = status
+                self.calls.clear()
+                destination = self.root / ('namespaced-' + str(status))
+                RELEASE.download(destination, repository='example/tool', tag='release/v1.2.3+build-4',
+                                 filename='tool.tar.gz', asset_id=123, sha256=self.digest,
+                                 token=self.token)
+                self.assertEqual(destination.read_bytes(), self.archive)
+                self.assertEqual(self.calls[0][0],
+                                 '/example/tool/releases/download/release/v1.2.3+build-4/tool.tar.gz')
+                self.assertEqual(len(self.calls), 1 if status == 200 else 3)
+
+    def test_unsafe_release_tags_and_slash_filenames_never_request_or_publish(self):
+        for tag in ('/release', 'release/', '../v1', 'release/../v1', 'v1..2',
+                    'release?x=1', 'v1#fragment', 'v1\n'):
+            with self.subTest(tag=tag), mock.patch.object(RELEASE.curl_retry, 'request') as request:
+                destination = self.root / 'refused'
+                with self.assertRaisesRegex(RELEASE.ReleaseError, 'invalid-release-identity'):
+                    RELEASE.download(destination, repository='example/tool', tag=tag,
+                                     filename='tool.tar.gz', asset_id=123, sha256=self.digest,
+                                     token=self.token)
+                request.assert_not_called()
+                self.assertFalse(destination.exists())
+                self.assertFalse(destination.with_name('refused.part').exists())
+        with mock.patch.object(RELEASE.curl_retry, 'request') as request:
+            with self.assertRaisesRegex(RELEASE.ReleaseError, 'invalid-release-identity'):
+                RELEASE.download(self.root / 'refused', repository='example/tool', tag='release/v1',
+                                 filename='nested/tool.tar.gz', asset_id=123, sha256=self.digest,
+                                 token=self.token)
+            request.assert_not_called()
+
+    def test_large_pinned_archive_and_oversized_response_through_real_curl(self):
+        self.assertEqual(RELEASE._MAX_ARCHIVE_BYTES, 67_108_864)
+        for size, accepted in ((42_015_139, True), (67_108_865, False)):
+            with self.subTest(size=size):
+                self.primary = 200
+                self.body = b'x' * size
+                destination = self.root / ('large-' + str(size))
+                kwargs = dict(repository='example/tool', tag='v1.2.3', filename='tool.zip',
+                              asset_id=123, sha256=hashlib.sha256(self.body).hexdigest(),
+                              token=self.token)
+                if accepted:
+                    RELEASE.download(destination, **kwargs)
+                    self.assertEqual(destination.stat().st_size, size)
+                    self.assertEqual(hashlib.sha256(destination.read_bytes()).hexdigest(), kwargs['sha256'])
+                else:
+                    with self.assertRaisesRegex(RELEASE.ReleaseError, 'download-network-error'):
+                        RELEASE.download(destination, **kwargs)
+                    self.assertFalse(destination.exists())
+                self.assertFalse(destination.with_name(destination.name + '.part').exists())
 
     def test_unknown_exception_is_typed_without_exception_text(self):
         with mock.patch.object(SCAN, 'install', side_effect=RuntimeError(self.token)):

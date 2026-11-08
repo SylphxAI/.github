@@ -184,3 +184,14 @@ namespace of its own. A caller still states `key-prefix: rustc` until its pin
 is at or after the commit that made it the default.
 
 If compile-cache installation is unavailable, the job records a warning, clears any partial RUSTC_WRAPPER, and compiles cold. Formatting, Clippy, and tests still fail the job on errors; the cache is an optional accelerator, not a correctness gate.
+
+## Pinned release download bounds
+
+The shared release downloader accepts slash-separated release tags (for example,
+release/v1.2.3) but refuses parent traversal, leading/trailing slashes and URL
+control characters. Asset filenames remain single path components. Archives are
+streamed with a 64 MiB ceiling before publication and must still match the pinned
+SHA-256; oversized or corrupt responses are removed rather than reused. This
+covers tool archives larger than the former 32 MiB ceiling without relaxing
+integrity, authentication or the single wall-clock retry budget. The narrow
+regression command is python3 -m unittest discover -s tests -p test_release_download.py.

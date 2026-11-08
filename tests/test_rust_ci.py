@@ -83,7 +83,7 @@ class RustCiWorkflow(unittest.TestCase):
         cache = step("Compile cache (sccache)")
         self.assertRegex(cache["uses"], r"^SylphxAI/\.github/\.github/actions/rust-sccache@[0-9a-f]{40}$")
         # The pin carries the buildcache backend (the runner-carried "org" backend is gone).
-        self.assertIn("rust-sccache@320f00ab1567eae22a968850f76f5b0e765a3426", cache["uses"])
+        self.assertIn("rust-sccache@5bb96f017593941c433874edca6281540eb91755", cache["uses"])
         self.assertNotIn("'org'", self.text)
         self.assertEqual(cache["with"]["key-prefix"], "${{ inputs.key-prefix }}")
         spec = yaml.safe_load(self.text)[True]["workflow_call"]["inputs"]
