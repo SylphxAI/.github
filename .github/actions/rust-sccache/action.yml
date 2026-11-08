@@ -118,9 +118,10 @@ runs:
         dir="$RUNNER_TEMP/pinned-tools/sccache-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
         mkdir -p "$dir"
         name="sccache-$VERSION-x86_64-unknown-linux-musl"
-        if python3 "$GITHUB_ACTION_PATH/../_shared/verified_binary.py" \
-            --candidate /usr/local/bin/sccache --destination "$dir/sccache" \
-            --sha256 "$BINARY_SHA256" --version "sccache ${VERSION#v}" --version-arg=--version; then
+        if [ ! -f "$dir/sccache.tgz" ] && [ -n "${GITHUB_ACTION_PATH:-}" ] && \
+            python3 "$GITHUB_ACTION_PATH/../_shared/verified_binary.py" \
+              --candidate /usr/local/bin/sccache --destination "$dir/sccache" \
+              --sha256 "${BINARY_SHA256:-}" --version "sccache ${VERSION#v}" --version-arg=--version; then
           : # The private binary has the exact release identity; no download.
         else
           if [ ! -f "$dir/sccache.tgz" ]; then

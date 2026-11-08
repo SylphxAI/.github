@@ -79,9 +79,10 @@ runs:
         set -euo pipefail
         dir="$RUNNER_TEMP/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
         mkdir -p "$dir"
-        if python3 "$GITHUB_ACTION_PATH/../_shared/verified_binary.py" \
-            --candidate /usr/local/bin/actionlint --destination "$dir/actionlint" \
-            --sha256 "$BINARY_SHA256" --version "$VERSION" --version-arg=-version; then
+        if [ ! -f "$dir/a.tgz" ] && [ -n "${GITHUB_ACTION_PATH:-}" ] && \
+            python3 "$GITHUB_ACTION_PATH/../_shared/verified_binary.py" \
+              --candidate /usr/local/bin/actionlint --destination "$dir/actionlint" \
+              --sha256 "${BINARY_SHA256:-}" --version "$VERSION" --version-arg=-version; then
           : # The private binary has the exact release identity; no download.
         else
           if [ ! -f "$dir/a.tgz" ]; then
