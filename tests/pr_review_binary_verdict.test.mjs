@@ -149,3 +149,40 @@ test('partition aggregation retains resolved binary provenance while a text part
   assert.deepEqual(result.binary_reviews, [provenance]);
   assert.deepEqual(result.omitted_paths, ['generate.js']);
 });
+
+for (const initialSynthesisResolved of [true, false]) {
+  test(`incomplete synthesis binary assessment overrides provisional partition assessment: initial=${initialSynthesisResolved}`, async () => {
+    const { inputs } = await publish('reviewed');
+    const unresolved = { ...provenance, status: 'unresolved', source_evidence: [], derivation_evidence: [] };
+    const rounds = [];
+    const { result } = await recoverContext({
+      input: inputs[0], github: {}, target: {}, createReviewInput, validateResult,
+      execute: input => reviewPartitions(input, {
+        requestBytes: value => value.files.length * 10, byteBudget: 20,
+        execute: async (part, source) => {
+          const validationInput = source ? { ...part, source_files: source.files, source_context: source.context } : part;
+          if (part.scope?.kind === 'synthesis') {
+            rounds.push(input);
+            const resolved = initialSynthesisResolved || rounds.length > 1;
+            return parseReviewResult(JSON.stringify(wire(part, {
+              completion: 'incomplete',
+              binary_reviews: [resolved ? provenance : unresolved],
+              omitted_paths: ['generate.js'],
+              reason: 'Text review remains incomplete.',
+            })), validationInput);
+          }
+          return parseReviewResult(JSON.stringify(wire(part, {
+            binary_reviews: part.files.some(file => file.source_mode === 'binary-metadata') ? [unresolved] : [],
+          })), validationInput);
+        },
+      }),
+    });
+    assert.equal(rounds.length, 2);
+    assert.equal(rounds[1].binary_provenance_verdict, initialSynthesisResolved ? undefined : true);
+    assert.equal(result.status, 'incomplete');
+    assert.equal(result.terminal_incomplete, true);
+    assert.equal(result.unavailability_code, undefined);
+    assert.equal(result.recovery.stop, 'no_requests');
+    assert.deepEqual(result.binary_reviews, [provenance]);
+  });
+}

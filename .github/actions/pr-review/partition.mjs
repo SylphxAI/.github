@@ -93,6 +93,14 @@ export function unionFindings(results) {
   return [...new Map(results.flatMap(r => r.findings).map(f => [canonical(f), f])).values()];
 }
 
+function mergeBinaryReviews(...results) {
+  const byPath = new Map();
+  for (const review of results.flatMap(r => r?.binary_reviews ?? [])) {
+    if (byPath.get(review.path)?.status !== 'source-reviewed' || review.status === 'source-reviewed') byPath.set(review.path, review);
+  }
+  return [...byPath.values()];
+}
+
 function requestedSource(input, request) {
   if (!['base', 'head'].includes(request.side)) return null;
   const context = input.context.find(c => c.path === request.path && c.side === request.side && c.absent !== true);
@@ -139,7 +147,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   }
   const snappedFromParts = completed.flatMap(r => r.snapped_evidence ?? []);
   const base = { ...unavailable(input, ''), status: 'incomplete', findings: unionFindings([...completed, ...(interrupted ? [interrupted] : [])]),
-    binary_reviews: [...completed, ...(interrupted ? [interrupted] : [])].flatMap(r => r.binary_reviews ?? []),
+    binary_reviews: mergeBinaryReviews(...completed, interrupted),
     context_notes: completed.flatMap(r => r.context_notes ?? []),
     discarded_items: discardedItems([...completed, ...(interrupted ? [interrupted] : [])]),
     ...(snappedFromParts.length ? { snapped_evidence: snappedFromParts } : {}),
@@ -160,9 +168,10 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   if (requestBytes(synthesis) > byteBudget) return { ...base, reason: 'All source parts completed, but cross-file synthesis exceeds the configured model context.' };
   const head = await isCurrent();
   if (head !== true) return { ...base, status: 'unavailable', reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
-  let result;
+  let result, binaryReviews = base.binary_reviews;
   try { result = await execute(synthesis, { files: input.files, context: input.context }); }
   catch { result = unavailable(synthesis, 'Cross-file synthesis could not complete.'); }
+  binaryReviews = mergeBinaryReviews({ binary_reviews: binaryReviews }, result);
   // A synthesis initially receives summaries, not the source already reviewed in
   // other parts. Supply only its requested pinned source, without recollecting it
   // or putting the full validation bundle on the wire.
@@ -176,11 +185,12 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
     const next = seal({ ...bare(synthesis), context: [...synthesis.context, ...requested] });
     if (requestBytes(next) > byteBudget) break;
     const head = await isCurrent();
-    if (head !== true) return { ...base, status: 'unavailable', reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
+    if (head !== true) return { ...base, binary_reviews: binaryReviews, status: 'unavailable', reason: head === false ? 'Head superseded before cross-file synthesis.' : 'Current head could not be verified before cross-file synthesis.' };
     try { result = await execute(next, { files: input.files, context: input.context }); }
     catch { result = unavailable(next, 'Cross-file synthesis could not complete.'); }
+    binaryReviews = mergeBinaryReviews({ binary_reviews: binaryReviews }, result);
   }
-  if (result.status !== 'complete') return { ...base, status: result.status, discarded_items: discardedItems([...completed, result]), findings: unionFindings([...completed, result]), reason: `Cross-file synthesis: ${result.reason}`,
+  if (result.status !== 'complete') return { ...base, status: result.status, binary_reviews: binaryReviews, discarded_items: discardedItems([...completed, result]), findings: unionFindings([...completed, result]), reason: `Cross-file synthesis: ${result.reason}`,
     context_requests: result.status === 'incomplete' ? result.context_requests ?? [] : [],
     ...(result.terminal_invalid ? { terminal_invalid: true } : {}),
     ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
