@@ -67,6 +67,17 @@ and the bundle's pinned commit identities. Raw binary bytes, base64 and lossy
 replacement text never enter the prompt. Text sides of text/binary transitions
 retain their literal hunks. Binary sides have no invented lines or annotations.
 
+An incomplete binary review with no context requests gets one explicit final
+provenance-verdict pass within the original deadline and request-byte budget.
+That pass retains the exact pinned source and derivation context and asks for
+a real assessment, not another discovery round. Only a validated model verdict
+with source/derivation evidence can complete; author-supplied manifests, hashes
+and zero findings never substitute for it. A missing verdict remains non-success
+with `binary_provenance_no_verdict`; invalid output, engine unavailability and
+insufficient deadline use `binary_provenance_invalid_verdict`,
+`binary_provenance_engine_unavailable` and `binary_provenance_deadline`. The typed
+cause is published in the Check Run title, summary and result receipt.
+
 The result includes `binary_reviews` (empty for text-only scopes). Every binary
 path needs an explicit source/derivation assessment and limitation. A complete
 review requires verbatim quoted input-source and generator/build relationship

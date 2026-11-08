@@ -56,6 +56,17 @@ this repository's source-collection boundary. Review the in-repository change,
 including its syntax, identity and call contract. Record unavailable external
 contents and any assumption in context_notes, not omitted_paths or reason. Do
 not declare a path incomplete just because an external revision cannot be read.
+When binary_provenance_verdict=true, this is an explicit final provenance-verdict
+request, not another context-discovery round. Re-read the exact pinned original
+source and derivation context already supplied in files, context or synthesis
+references. Return a real assessment for every binary path: source-reviewed with
+verbatim source_evidence and derivation_evidence if reviewed, otherwise unresolved
+with the exact missing relationship in reason and the binary in omitted_paths.
+A manifest, verified hashes, zero findings or no context requests are never a
+review verdict. No byte decoding or regeneration is claimed. If evidence remains
+insufficient, return completion="incomplete" and context_requests=[]; the general
+final-pass completion instruction below does not override this binary requirement.
+
 When context_recovery="exhausted", this is the final bounded verdict pass. Do not
 request any more context. Assess every assigned changed path from the supplied
 source. Return completion="complete", omitted_paths=[], context_requests=[] and

@@ -129,9 +129,10 @@ function outputFor(result, input) {
   const annotations = result.findings.filter(f => f.side === 'head').map(f => ({ path: f.path, start_line: f.start_line, end_line: f.end_line,
     annotation_level: ['critical', 'high', 'medium'].includes(f.severity) ? 'failure' : 'notice',
     title: f.title.slice(0, 255), message: `${f.explanation}\nTrigger: ${f.trigger}\nConsequence: ${f.consequence}`.slice(0, 65535) }));
+  const title = blocking.length ? `${blocking.length} defects require a change${result.status === 'complete' ? '' : '; review incomplete'}` : result.status === 'complete' ? 'Review complete' : result.terminal_invalid ? 'Review invalid' : result.terminal_incomplete ? 'Review incomplete' : 'Review unavailable';
   return { conclusion: blocking.length || result.terminal_incomplete || result.terminal_invalid ? 'failure' : result.status === 'complete' ? 'success' : 'neutral', output: {
-    title: blocking.length ? `${blocking.length} defects require a change${result.status === 'complete' ? '' : '; review incomplete'}` : result.status === 'complete' ? 'Review complete' : result.terminal_invalid ? 'Review invalid' : result.terminal_incomplete ? 'Review incomplete' : 'Review unavailable',
-    summary: summary.join('\n\n'), annotations,
+    title: result.unavailability_code ? `${title} (${result.unavailability_code})` : title,
+    summary: [...summary, ...(result.unavailability_code ? [`Unavailability cause: ${result.unavailability_code}`] : [])].join('\n\n'), annotations,
   } };
 }
 
@@ -226,6 +227,7 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
     const receipt = await finish(conclusion, output);
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, findings: result.findings.length,
       ...(result.status === 'complete' ? {} : { unavailable: true, reason: result.reason }),
+      ...(result.unavailability_code ? { unavailability_code: result.unavailability_code } : {}),
       ...(result.discarded_items?.length ? { discarded_items: result.discarded_items.length } : {}),
       parts: result.parts, budget: result.budget, request_bytes: result.request_bytes, recovery: result.recovery,
       recovery_sources: result.recovery_sources,
