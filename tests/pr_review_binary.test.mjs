@@ -304,3 +304,19 @@ for (const [name, quote, options = {}, code = 'quote_mismatch'] of [
   assert.equal(result.validation_failure.code, code);
   assert.equal(result.snapped_evidence, undefined);
 });
+
+test('authored binary inputs require pinned consumer evidence, not fabricated upstream sources', () => {
+  const input = inputOf();
+  const authored = { ...provenance, status: 'input-reviewed', source_evidence: [],
+    derivation_evidence: [evidence('generate.js', generator)] };
+  assert.equal(parse(input, { binary_reviews: [authored] }).status, 'complete');
+  assert.equal(parse(input, { binary_reviews: [{ ...authored, derivation_evidence: [] }] }).reason, 'authored binary requires consumer or manifest evidence');
+  assert.equal(parse(input, { binary_reviews: [{ ...authored, derivation_evidence: [evidence('missing.js', generator)] }] }).status, 'unavailable');
+});
+
+test('exhausted binary provenance remains incomplete without a terminal contract error', () => {
+  const input = createReviewInput({ ...bundle([bundleFile(binary, Buffer.from([0]), payload)]), context_recovery: 'exhausted' });
+  const parsed = parse(input, { binary_reviews: [{ ...provenance, status: 'unresolved', source_evidence: [], derivation_evidence: [] }] });
+  assert.equal(parsed.status, 'incomplete'); assert.deepEqual(parsed.omitted_paths, [binary.filename]);
+  assert.match(parsed.reason, /Binary provenance remains unresolved/); assert.equal(parsed.terminal_invalid, undefined);
+});

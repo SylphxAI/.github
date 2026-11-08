@@ -272,7 +272,7 @@ for (const mode of ['recovery', 'absence', 'anchor', 'defect', 'unavailable', 'i
         if (path.includes('/v1/public/models/')) data = { id: 'vendor/reviewer', context_window: 100_000, max_output_tokens: 8192 };
         else if (path === '/v1/chat/completions') {
           const input = JSON.parse(body.messages[1].content); calls++;
-          if (mode === 'unavailable') return { ok: false, status: 503, json: async () => ({ error: { code: 'service_unavailable' } }) };
+          if (mode === 'unavailable') return { ok: false, status: 503, headers: new Headers({ 'retry-after': '1000000' }), json: async () => ({ error: { code: 'service_unavailable' } }) };
           const result = { schema_version: 1, repository_id: input.repository_id, base_sha: base, head_sha: head,
             input_digest: input.input_digest, reviewer_version: input.reviewer_version, policy_version: input.policy_version,
             completion: calls === 1 ? 'incomplete' : 'complete', findings: [], related_evidence: [], binary_reviews: [], review_summary: 'Reviewed source.',

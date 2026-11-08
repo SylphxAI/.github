@@ -93,7 +93,7 @@ test('all changed paths and hunk rows survive complete bounded partitioning with
 
 test('bounded model calls preserve all findings and use source-qualified cross-file synthesis without changing model or budgets', async () => {
   const input = largeInput(), posts = [], findings = [];
-  const review = gatewayReviewer({ token: 'private-value', ...configuration, deadlineMs: Date.now() + 10_000,
+  const review = gatewayReviewer({ token: 'private-value', ...configuration, deadlineMs: Date.now() + 10_000, sleep: async () => {},
     fetcher: async (url, request) => {
       if (request.method === 'GET') return { ok: true, json: async () => metadata };
       const body = JSON.parse(request.body), part = JSON.parse(body.messages[1].content);
@@ -116,19 +116,19 @@ test('bounded model calls preserve all findings and use source-qualified cross-f
   assert.equal(result.parts.completed, result.parts.planned);
 });
 
-test('late refusal retains validated findings, marks partially covered paths incomplete and stops without retry', async () => {
+test('late refusal retains validated findings, marks partially covered paths incomplete and bounds transient retries', async () => {
   const file = bundleFile({ filename: 'long-line.rs', status: 'modified' }, 'a'.repeat(200_000), 'b'.repeat(200_000));
   const input = inputFor([file]); let posts = 0;
-  const review = gatewayReviewer({ token: 'private-value', ...configuration, deadlineMs: Date.now() + 10_000,
+  const review = gatewayReviewer({ token: 'private-value', ...configuration, deadlineMs: Date.now() + 10_000, sleep: async () => {},
     fetcher: async (_url, request) => {
       if (request.method === 'GET') return { ok: true, json: async () => metadata };
       posts++;
-      if (posts === 2) return { ok: false, status: 429, json: async () => ({ error: { code: 'included_capacity_unavailable' } }) };
+      if (posts >= 2) return { ok: false, status: 429, json: async () => ({ error: { code: 'included_capacity_unavailable' } }) };
       const part = JSON.parse(JSON.parse(request.body).messages[1].content), { file, row } = changed(part);
       return response(part, [findingFor(file, row)]);
     } });
   const result = await review(input);
-  assert.equal(result.status, 'unavailable'); assert.equal(posts, 2);
+  assert.equal(result.status, 'unavailable'); assert.equal(posts, 5);
   assert.equal(result.findings.length, 1); assert.deepEqual(result.omitted_paths, ['long-line.rs']);
   assert.ok(result.parts.completed < result.parts.planned); assert.match(result.reason, /HTTP 429/);
 });
@@ -203,7 +203,7 @@ test('failed-anchor receipts survive partition and synthesis boundaries with the
 
 test('cross-file synthesis validates line-qualified sub-ranges, byte-stripped references, and full bundle source without bloating wire payload', async () => {
   const input = largeInput(), posts = [];
-  const review = gatewayReviewer({ token: 'private-value', ...configuration, deadlineMs: Date.now() + 10_000,
+  const review = gatewayReviewer({ token: 'private-value', ...configuration, deadlineMs: Date.now() + 10_000, sleep: async () => {},
     fetcher: async (url, request) => {
       if (request.method === 'GET') return { ok: true, json: async () => metadata };
       const body = JSON.parse(request.body), part = JSON.parse(body.messages[1].content);

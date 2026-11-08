@@ -29,7 +29,7 @@ const response = value => ({ ok: true, status: 200, json: async () => ({ object:
   choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: typeof value === 'string' ? value : JSON.stringify(value) } }] }) });
 function engine(reply, byteLimit = byteBudget) {
   const posts = [], attempts = new Map(), logged = [];
-  const review = gatewayReviewer({ token: 'fixture', ...configuration, identityLog: record => logged.push(record), deadlineMs: Date.now() + 10_000,
+  const review = gatewayReviewer({ token: 'fixture', sleep: async () => {}, ...configuration, identityLog: record => logged.push(record), deadlineMs: Date.now() + 10_000,
     fetcher: async (url, request) => {
       if (request.method === 'GET') {
         assert.equal(new URL(url).pathname, '/v1/public/models/vendor/reviewer');
@@ -129,7 +129,7 @@ for (const exhausted of [false, true]) test(`persistent part-2 digest mismatch f
   assert.equal(result.terminal_invalid, true);
   assert.match(result.reason, /Part 2\/3: mismatched input_digest/);
   assert.deepEqual(result.parts, { planned: 3, completed: 1 });
-  assert.equal(posts.filter(p => second(p.part)).length, exhausted ? 1 : 3);
+  assert.equal(posts.filter(p => second(p.part)).length, 3);
   assert.equal(posts.some(p => p.part.scope.kind === 'synthesis'), false);
   const wrong = wire(posts.at(-1).part, { input_digest: input.input_digest });
   assert.equal(parseReviewResult(JSON.stringify(wrong), posts.at(-1).part, { discardUngrounded: true }).status, 'unavailable');
@@ -163,11 +163,11 @@ test('16082 shape: part-2 unsupported evidence is corrected/discarded without lo
   assert.deepEqual(posts.at(-1).part.reviewed_parts[1].related_evidence, [evidence]);
 });
 
-test('a real middle-part quota refusal stays neutral and is not retried', async () => {
+test('a real middle-part quota refusal stays neutral and has bounded retries', async () => {
   const { receipt, posts } = await publish(part => second(part)
     ? { error: { code: 'included_capacity_unavailable', message: 'private' } } : wire(part));
   assert.equal(receipt.conclusion, 'neutral');
-  assert.equal(posts.length, 2);
+  assert.equal(posts.length, 5);
   assert.match(receipt.reason, /HTTP 429 \(included_capacity_unavailable\)/);
 });
 

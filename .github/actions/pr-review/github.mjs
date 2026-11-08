@@ -1,3 +1,4 @@
+import { waitForRetry } from './retry.mjs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -163,7 +164,7 @@ export class GitHub {
     return tree.tree;
   }
 
-  async request(path, { method = 'GET', body, checks = false, deadlineMs = this.deadlineMs } = {}) {
+  async request(path, { method = 'GET', body, checks = false, deadlineMs = this.deadlineMs, maxReadAttempts = 4 } = {}) {
     if (this.rateFailure) throw this.rateFailure;
     const token = checks ? this.checkToken : this.readToken;
     if (!token) throw new Unavailable(`Missing ${checks ? 'checks' : 'source'} credential.`);
@@ -181,18 +182,22 @@ export class GitHub {
           ...(encodedBody === undefined ? {} : { body: encodedBody }),
         });
       } catch {
-        // A lost response after POST/PATCH does not prove the write was rejected.
+        // GET is idempotent; a lost write response still has unknown effects.
+        if (method === 'GET' && await waitForRetry({ attempt, maxAttempts: maxReadAttempts, deadlineMs, now: this.now, wait: this.wait })) continue;
         throw unreadableResponse(method, path, 'transport failed');
       }
       if (response.ok) {
         try { return await response.json(); }
         catch {
+          if (method === 'GET' && await waitForRetry({ attempt, maxAttempts: maxReadAttempts, deadlineMs, now: this.now, wait: this.wait })) continue;
           throw unreadableResponse(method, path, 'response could not be read');
         }
       }
       const details = { ...await classify(response, method, path, this.now()), attempt: attempt + 1 };
       const error = new GitHubHTTPError(details);
       try { this.onDiagnostic(details); } catch { /* Diagnostics cannot replace the provider refusal. */ }
+      if (method === 'GET' && [502, 503, 504].includes(response.status) &&
+          await waitForRetry({ attempt, response, maxAttempts: maxReadAttempts, deadlineMs, now: this.now, wait: this.wait })) continue;
       if (error.code !== 'rate_limited') throw error;
       // GitHub documents 403/429 rate responses as refusals and explicitly
       // permits retrying the request after its wait. Never retry a lost response.
@@ -325,7 +330,8 @@ export class GitHub {
     for (; attempts < 3 && this.now() < deadlineMs;) {
       attempts++;
       try {
-        const readback = await this.request(`/check-runs/${expected.id}`, { checks: true, deadlineMs });
+        // This bounded reconciliation loop owns read retries; do not multiply them.
+        const readback = await this.request(`/check-runs/${expected.id}`, { checks: true, deadlineMs, maxReadAttempts: 1 });
         observed = checkProjection(readback, fields);
         if (fields.every(field => JSON.stringify(observed[field]) === JSON.stringify(expected[field]))) return readback;
         failure = 'mismatch'; httpStatus = null;

@@ -26,7 +26,7 @@ const finding = { path: 'src/value.js', side: 'head', start_line: 1, end_line: 1
 const reply = (input, changes = {}) => ({ object: 'chat.completion', model: 'vendor/reviewer', choices: [{
   finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(wire(input, [finding])) },
 }], ...changes });
-const gatewayReviewer = options => actualGatewayReviewer({ ...options, fetcher: async (url, request) => request.method === 'GET' ? {
+const gatewayReviewer = options => actualGatewayReviewer({ sleep: async () => {}, ...options, fetcher: async (url, request) => request.method === 'GET' ? {
   ok: true, status: 200, json: async () => ({ id: options.model, context_window: 1_050_000, max_output_tokens: 128_000 }),
 } : options.fetcher(url, request) });
 
@@ -111,14 +111,14 @@ test('truncation, refusal, wrong model, multiple choices and malformed output ca
   }
 });
 
-test('quota and transport failures are explicit, secret-safe and never retried', async () => {
+test('quota and transport failures are explicit, secret-safe and bounded', async () => {
   const input = inputFor(); let requests = 0;
   const review = gatewayReviewer({ token: 'private-value', model: 'vendor/reviewer', deadlineMs: Date.now() + 5000,
     fetcher: async () => { requests++; return { ok: false, status: 429, json: async () => ({ error: {
       code: 'included_capacity_unavailable', message: 'private-value',
     } }) }; } });
   const result = await review(input);
-  assert.equal(requests, 1); assert.match(result.reason, /HTTP 429 \(included_capacity_unavailable\)/);
+  assert.equal(requests, 3); assert.match(result.reason, /HTTP 429 \(included_capacity_unavailable\)/);
   assert.ok(!JSON.stringify(result).includes('private-value'));
   const failed = gatewayReviewer({ token: 'private-value', model: 'vendor/reviewer', deadlineMs: Date.now() + 5000,
     fetcher: async () => { throw new Error('private-value'); } });
