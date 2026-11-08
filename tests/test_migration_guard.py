@@ -318,6 +318,36 @@ class ConcurrentIndexTests(unittest.TestCase):
         )
         quoted_id_decl = num_decl | {"where": 'owner_id = "1" AND (deleted_at IS NULL OR status = 2)'}
         self.assertTrue(guard.check_sql(self.source(quoted_id_decl, num_stmt), "postgres", "atlas-qualified-v1"))
+        sci_decl = num_decl | {"where": 'owner_id = "1e1"'}
+        sci_quoted_stmt = (
+            'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" ("owner_id") '
+            'WHERE owner_id = "1e1";'
+        )
+        self.assertEqual(guard.check_sql(self.source(sci_decl, sci_quoted_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(sci_decl, sci_quoted_stmt.replace('"1e1"', "1e1")),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
+        self.assertNotEqual(
+            guard.canon_index_tokens(guard.lex('owner_id = "1e1"', "postgres")[0]),
+            guard.canon_index_tokens(guard.lex("owner_id = 1e1", "postgres")[0]),
+        )
+        case_decl = num_decl | {"where": '"OwnerId" = 1'}
+        case_quoted_stmt = (
+            'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" ("owner_id") '
+            'WHERE "OwnerId" = 1;'
+        )
+        self.assertEqual(guard.check_sql(self.source(case_decl, case_quoted_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(case_decl, case_quoted_stmt.replace('"OwnerId"', "ownerid")),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
 
 
 class HistoryTests(unittest.TestCase):

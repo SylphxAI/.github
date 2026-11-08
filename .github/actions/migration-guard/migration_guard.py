@@ -1819,8 +1819,14 @@ def valid_index_scalar_tokens(tokens: list[Token], *, allow_boolean: bool) -> li
                     raise ValueError("unbalanced parentheses in concurrent index expression")
             elif token.value == ";":
                 raise ValueError("unexpected semicolon in concurrent index expression")
-        elif token.kind == "word" and token.value in INDEX_FORBIDDEN_WORDS:
-            raise ValueError("unsupported keyword in concurrent index expression")
+        elif token.kind == "word":
+            if token.value in INDEX_FORBIDDEN_WORDS:
+                raise ValueError("unsupported keyword in concurrent index expression")
+            raw = token.raw or token.value
+            if (token.value not in INDEX_SQL_KEYWORDS
+                    and not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", raw)
+                    and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", raw)):
+                raise ValueError(f"unsupported word token in concurrent index expression: {raw}")
     if stack:
         raise ValueError("unclosed parentheses in concurrent index expression")
     for i, token in enumerate(tokens[:-1]):
@@ -1856,6 +1862,14 @@ def parse_index_scalar_sql(fragment: str, *, allow_boolean: bool) -> list[Token]
     return valid_index_scalar_tokens(tokens, allow_boolean=allow_boolean)
 
 
+def canon_ident_name(name: str) -> tuple[str, str]:
+    if (re.fullmatch(r"[a-z_][a-z0-9_$]*", name)
+            and name.upper() not in INDEX_SQL_KEYWORDS
+            and name.upper() not in INDEX_FORBIDDEN_WORDS):
+        return ("id", name)
+    return ("quoted_id", name)
+
+
 def canon_index_tokens(tokens: list[Token]) -> tuple[tuple[str, str], ...]:
     out: list[tuple[str, str]] = []
     for token in tokens:
@@ -1867,11 +1881,15 @@ def canon_index_tokens(tokens: list[Token]) -> tuple[tuple[str, str], ...]:
         elif token.kind == "word" and token.value in INDEX_SQL_KEYWORDS:
             out.append(("kw", token.value))
         elif token.kind == "identifier":
-            out.append(("id", token.value))
-        elif re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", token.raw or token.value):
-            out.append(("num", (token.raw or token.value).lower()))
+            out.append(canon_ident_name(token.value))
         else:
-            out.append(("id", token.value.lower()))
+            raw = token.raw or token.value
+            if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", raw):
+                out.append(("num", raw.lower()))
+            elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", raw) and token.value not in INDEX_FORBIDDEN_WORDS:
+                out.append(("id", raw.lower()))
+            else:
+                out.append(("word", raw.lower()))
     return tuple(out)
 
 
@@ -1979,7 +1997,7 @@ def concurrent_index_violations(sql: str, tokens: list[Token], dialect: str,
         elif declaration.get("where_null") is not None:
             wn = declaration["where_null"]
             quote(wn)
-            expected_where = (("id", wn), ("kw", "IS"), ("kw", "NULL"))
+            expected_where = (canon_ident_name(wn), ("kw", "IS"), ("kw", "NULL"))
         else:
             expected_where = None
 
