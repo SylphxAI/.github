@@ -239,6 +239,130 @@ class ConcurrentIndexTests(unittest.TestCase):
         self.assertEqual(guard.check_sql(self.source(declaration, statement), "postgres", "atlas-qualified-v1"), [])
         with self.assertRaises(guard.SqlError):
             guard.check_sql(self.source(declaration, statement.replace('"Event""Log"', '"Event"Log"')), "postgres", "atlas-qualified-v1")
+        paren_col_decl = self.declaration | {"columns": ["owner(id)"]}
+        paren_col_stmt = 'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" USING btree ("owner(id)") WHERE "deleted_at" IS NULL;'
+        self.assertEqual(guard.check_sql(self.source(paren_col_decl, paren_col_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(paren_col_decl, paren_col_stmt.replace('"owner(id)"', "owner(id)")),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
+        paren_where_decl = {k: v for k, v in paren_col_decl.items() if k != "where_null"} | {"where": "deleted_at IS NULL"}
+        paren_where_stmt = 'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" ("owner(id)") WHERE deleted_at IS NULL;'
+        self.assertEqual(guard.check_sql(self.source(paren_where_decl, paren_where_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(paren_where_decl, paren_where_stmt.replace('"owner(id)"', "owner(id)")),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
+
+    def test_expression_keys_and_partial_where_predicates_in_qualified_contract(self):
+        where_pred = (
+            "method = 'sylphx.app.v1.DeliveryExecutionService.RealizeCellResource' "
+            "AND request_type = 'sylphx.app.v1.DeliveryRealizationRequest' "
+            "AND lower(btrim(trim(state), '\"')) IN ("
+            "'operation_state_pending', 'operation_state_waiting', 'operation_state_running')"
+        )
+        declaration = {
+            "schema": "public",
+            "table": "platform_operations",
+            "index": "platform_operations_delivery_active_target_idx",
+            "columns": ['lower(btrim(trim(state), \'"\'))', "target"],
+            "where": where_pred,
+            "lock_timeout_ms": 3000,
+            "statement_timeout_ms": 240000,
+        }
+        statement = """CREATE INDEX CONCURRENTLY platform_operations_delivery_active_target_idx
+  ON public.platform_operations (lower(btrim(trim(state), '"')), target)
+  WHERE method = 'sylphx.app.v1.DeliveryExecutionService.RealizeCellResource'
+    AND request_type = 'sylphx.app.v1.DeliveryRealizationRequest'
+    AND lower(btrim(trim(state), '"')) IN (
+      'operation_state_pending', 'operation_state_waiting', 'operation_state_running'
+    );"""
+        self.assertEqual(guard.check_sql(self.source(declaration, statement), "postgres", "atlas-qualified-v1"), [])
+        dict_col_decl = declaration | {"columns": [{"expr": 'lower(btrim(trim(state), \'"\'))'}, "target"]}
+        self.assertEqual(guard.check_sql(self.source(dict_col_decl, statement), "postgres", "atlas-qualified-v1"), [])
+        for bad_stmt in [
+            statement.replace("btrim(trim(state)", "ltrim(trim(state)"),
+            statement.replace(", target)", ", id)"),
+            statement.replace(", target)", ", target,)"),
+            statement.replace("(lower(btrim(", "(, lower(btrim("),
+            statement.replace(", target)", ",, target)"),
+            statement.replace("'operation_state_waiting'", "'operation_state_cancelled'"),
+            statement.replace("WHERE method =", "WHERE true AND method ="),
+        ]:
+            with self.subTest(bad_stmt=bad_stmt):
+                self.assertTrue(guard.check_sql(self.source(declaration, bad_stmt), "postgres", "atlas-qualified-v1"))
+        single_expr_decl = {k: v for k, v in self.declaration.items() if k != "where_null"} | {
+            "columns": [{"expr": "lower(state)"}],
+        }
+        single_expr_stmt = 'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" (lower(state));'
+        self.assertEqual(guard.check_sql(self.source(single_expr_decl, single_expr_stmt), "postgres", "atlas-qualified-v1"), [])
+        for bad_single_stmt in [
+            single_expr_stmt.replace("(lower(state))", "(lower(state),)"),
+            single_expr_stmt.replace("(lower(state))", "(,lower(state))"),
+            single_expr_stmt.replace("(lower(state))", "(lower(state),,id)"),
+        ]:
+            with self.subTest(bad_single_stmt=bad_single_stmt):
+                self.assertTrue(guard.check_sql(self.source(single_expr_decl, bad_single_stmt), "postgres", "atlas-qualified-v1"))
+        for bad_decl in [
+            declaration | {"where_null": "deleted_at"},
+            declaration | {"columns": ["evil_func(state)", "target"]},
+            declaration | {"where": "EXISTS (SELECT 1 FROM platform_operations)"},
+        ]:
+            with self.subTest(bad_decl=bad_decl):
+                self.assertTrue(guard.check_sql(self.source(bad_decl, statement), "postgres", "atlas-qualified-v1"))
+        num_decl = {k: v for k, v in self.declaration.items() if k != "where_null"} | {
+            "where": "owner_id = 1 AND (deleted_at IS NULL OR status = 2)",
+        }
+        num_stmt = (
+            'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" ("owner_id") '
+            "WHERE owner_id = 1 AND (deleted_at IS NULL OR status = 2);"
+        )
+        self.assertEqual(guard.check_sql(self.source(num_decl, num_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(num_decl, num_stmt.replace("owner_id = 1", 'owner_id = "1"')),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
+        quoted_id_decl = num_decl | {"where": 'owner_id = "1" AND (deleted_at IS NULL OR status = 2)'}
+        self.assertTrue(guard.check_sql(self.source(quoted_id_decl, num_stmt), "postgres", "atlas-qualified-v1"))
+        sci_decl = num_decl | {"where": 'owner_id = "1e1"'}
+        sci_quoted_stmt = (
+            'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" ("owner_id") '
+            'WHERE owner_id = "1e1";'
+        )
+        self.assertEqual(guard.check_sql(self.source(sci_decl, sci_quoted_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(sci_decl, sci_quoted_stmt.replace('"1e1"', "1e1")),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
+        self.assertNotEqual(
+            guard.canon_index_tokens(guard.lex('owner_id = "1e1"', "postgres")[0]),
+            guard.canon_index_tokens(guard.lex("owner_id = 1e1", "postgres")[0]),
+        )
+        case_decl = num_decl | {"where": '"OwnerId" = 1'}
+        case_quoted_stmt = (
+            'CREATE INDEX CONCURRENTLY "events_owner_idx" ON "public"."events" ("owner_id") '
+            'WHERE "OwnerId" = 1;'
+        )
+        self.assertEqual(guard.check_sql(self.source(case_decl, case_quoted_stmt), "postgres", "atlas-qualified-v1"), [])
+        self.assertTrue(
+            guard.check_sql(
+                self.source(case_decl, case_quoted_stmt.replace('"OwnerId"', "ownerid")),
+                "postgres",
+                "atlas-qualified-v1",
+            )
+        )
 
 
 class HistoryTests(unittest.TestCase):
@@ -651,6 +775,43 @@ RESET lock_timeout;
         errors, count = self.check()
         self.assertEqual(count, 1)
         self.assertTrue(any("concurrent index:" in e for e in errors), errors)
+
+    def test_unconditional_concurrent_index_pair_is_rejected_without_runtime_adoption(self):
+        self.write("db/20261226150000_clock_anchor.sql", "SELECT 1;")
+        self.base = self.commit()
+        index_sql = """-- atlas:txmode none
+SET lock_timeout = 0;
+SET statement_timeout = '240s';
+DROP INDEX CONCURRENTLY IF EXISTS public.platform_operations_delivery_active_target_idx;
+CREATE INDEX CONCURRENTLY platform_operations_delivery_active_target_idx
+  ON public.platform_operations (lower(btrim(trim(state), '"')), target)
+  WHERE method = 'sylphx.app.v1.DeliveryExecutionService.RealizeCellResource'
+    AND request_type = 'sylphx.app.v1.DeliveryRealizationRequest'
+    AND lower(btrim(trim(state), '"')) IN (
+      'operation_state_pending', 'operation_state_waiting', 'operation_state_running'
+    );
+RESET statement_timeout;
+RESET lock_timeout;
+"""
+        validity_sql = """DO $delivery_active_operations_index_validity$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_index
+    WHERE indexrelid = to_regclass('public.platform_operations_delivery_active_target_idx')
+      AND indisvalid AND indisready
+  ) THEN
+    RAISE EXCEPTION 'platform_operations_delivery_active_target_idx missing or invalid; repair concurrent build before resuming';
+  END IF;
+END
+$delivery_active_operations_index_validity$;
+"""
+        self.write("db/20261226155550_delivery_active_operations_index.sql", index_sql)
+        self.write("db/20261226155605_delivery_active_operations_index_validity.sql", validity_sql)
+        self.commit()
+        errors, count = self.check()
+        self.assertEqual(count, 2)
+        self.assertTrue(any("concurrent index:" in e for e in errors), errors)
+        self.assertTrue(guard.check_sql(index_sql, "postgres", later_bodies=(validity_sql,)))
 
 
 class EventAndManifestTests(unittest.TestCase):
