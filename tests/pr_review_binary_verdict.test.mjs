@@ -4,6 +4,7 @@ import { createReviewInput, parseReviewResult } from '../.github/actions/pr-revi
 import { APP_ID, CHECK_NAME } from '../.github/actions/pr-review/github.mjs';
 import { recoverContext } from '../.github/actions/pr-review/recovery.mjs';
 import { produceReview, validateResult } from '../.github/actions/pr-review/producer.mjs';
+import { reviewPartitions } from '../.github/actions/pr-review/partition.mjs';
 import { reviewRequest } from '../.github/actions/pr-review/gateway.mjs';
 
 const base = 'a'.repeat(40), head = 'b'.repeat(40);
@@ -48,6 +49,8 @@ async function publish(mode) {
       let result;
       if (inputs.length === 1 && mode.startsWith('initial-invalid')) result = {
         ...parseReviewResult(JSON.stringify(wire(input, { binary_reviews: [] })), input), terminal_invalid: true };
+      else if (mode === 'text-incomplete' || (inputs.length > 1 && mode === 'binary-then-text-incomplete')) result = parseReviewResult(JSON.stringify(wire(input, { completion: 'incomplete',
+        omitted_paths: ['source.proto'], reason: 'Text review remains incomplete.' })), input);
       else if (inputs.length === 1 || mode === 'no-verdict' || mode === 'initial-invalid-no-verdict') result = parseReviewResult(JSON.stringify(incomplete(input)), input);
       else if (mode === 'invalid') result = { ...parseReviewResult(JSON.stringify(wire(input, { binary_reviews: [] })), input), terminal_invalid: true };
       else if (mode === 'engine-unavailable') result = { ...parseReviewResult(JSON.stringify(wire(input, { completion: 'unavailable',
@@ -98,4 +101,51 @@ test('binary verdict deadline is typed and does not start a second inference wit
     assert.equal(result.unavailability_code, 'binary_provenance_deadline');
     assert.equal(result.recovery.stop, 'binary_provenance_deadline');
   } finally { Date.now = originalNow; }
+});
+
+for (const mode of ['text-incomplete', 'binary-then-text-incomplete']) test(`resolved binary provenance preserves text terminal incompleteness: ${mode}`, async () => {
+  const { inputs, receipt, output } = await publish(mode);
+  assert.equal(inputs.length, 2);
+  assert.equal(inputs[1].binary_provenance_verdict, mode === 'text-incomplete' ? undefined : true);
+  assert.equal(receipt.conclusion, 'failure');
+  assert.equal(receipt.unavailability_code, undefined);
+  assert.equal(receipt.recovery.stop, 'no_requests');
+  assert.equal(output.title, 'Review incomplete');
+  assert.ok(!output.summary.includes('binary_provenance_no_verdict'));
+});
+
+test('validated resolved binary assessment survives incomplete text parsing and final recovery', async () => {
+  const { inputs } = await publish('reviewed');
+  const { result } = await recoverContext({ input: inputs[0], github: {}, target: {},
+    createReviewInput, validateResult, execute: async input => parseReviewResult(JSON.stringify(wire(input, {
+      completion: 'incomplete', omitted_paths: ['source.proto'], reason: 'Text review remains incomplete.',
+    })), input) });
+  assert.equal(result.status, 'incomplete');
+  assert.equal(result.terminal_incomplete, true);
+  assert.deepEqual(result.binary_reviews, [provenance]);
+  assert.equal(result.unavailability_code, undefined);
+});
+
+test('partition aggregation retains resolved binary provenance while a text part is incomplete', async () => {
+  const { inputs } = await publish('reviewed');
+  const input = createReviewInput({ ...inputs[0], context: [...inputs[0].context,
+    { path: 'source.proto', side: 'head', commit_sha: head, content: source },
+    { path: 'generate.js', side: 'head', commit_sha: head, content: generator },
+  ] });
+  const result = await reviewPartitions(input, {
+    // Force a two-file binary/source part followed by a text-only part.
+    requestBytes: value => value.files.length * 10, byteBudget: 20,
+    execute: async part => {
+      const textPending = part.files.some(file => file.path === 'generate.js');
+      return parseReviewResult(JSON.stringify(wire(part, {
+        completion: textPending ? 'incomplete' : 'complete',
+        binary_reviews: part.files.some(file => file.source_mode === 'binary-metadata') ? [provenance] : [],
+        omitted_paths: textPending ? ['generate.js'] : [],
+      })), part);
+    },
+  });
+  assert.equal(result.status, 'incomplete');
+  assert.deepEqual(result.parts, { planned: 2, completed: 1 });
+  assert.deepEqual(result.binary_reviews, [provenance]);
+  assert.deepEqual(result.omitted_paths, ['generate.js']);
 });

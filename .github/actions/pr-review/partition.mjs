@@ -139,6 +139,7 @@ export async function reviewPartitions(input, { execute, requestBytes, byteBudge
   }
   const snappedFromParts = completed.flatMap(r => r.snapped_evidence ?? []);
   const base = { ...unavailable(input, ''), status: 'incomplete', findings: unionFindings([...completed, ...(interrupted ? [interrupted] : [])]),
+    binary_reviews: [...completed, ...(interrupted ? [interrupted] : [])].flatMap(r => r.binary_reviews ?? []),
     context_notes: completed.flatMap(r => r.context_notes ?? []),
     discarded_items: discardedItems([...completed, ...(interrupted ? [interrupted] : [])]),
     ...(snappedFromParts.length ? { snapped_evidence: snappedFromParts } : {}),

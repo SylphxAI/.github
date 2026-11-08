@@ -347,9 +347,11 @@ export function parseReviewResult(text, input, { discardUngrounded = false } = {
 		result.related_evidence = result.related_evidence.filter((evidence, index) =>
 			groundedItem(evidence, 'related_evidence', index, () => requireEvidence(evidence, 'related_evidence', index)))
 		if (discarded.length) result.discarded_items = discarded
+		// Keep validated partial provenance so recovery can distinguish an
+		// unresolved binary from an unrelated incomplete text path.
 		if (incomplete.length) return { ...unavailable(input, `review incomplete (${incomplete.join(', ')})`),
 			status: result.completion, findings: result.findings, omitted_paths: result.omitted_paths.length ? result.omitted_paths : [...paths],
-			context_requests: result.context_requests, diagnostics, ...(discarded.length ? { discarded_items: discarded } : {}) }
+			binary_reviews: result.binary_reviews, context_requests: result.context_requests, diagnostics, ...(discarded.length ? { discarded_items: discarded } : {}) }
 		return { ...result, ...requestIdentity(input), status: 'complete', ...(snapped.length ? { snapped_evidence: snapped } : {}) }
 	} catch (error) {
 		return unavailable(input, error instanceof SyntaxError ? 'invalid JSON review result' : error.message,

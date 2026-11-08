@@ -46,7 +46,9 @@ export async function recoverContext({ input, github, target, execute, createRev
     return next;
   };
   const finalizeBudget = async (cause, reason, nextRoundEstimateMs) => {
-    const binaryVerdict = cause === 'no_requests' && input.files.some(file => file.source_mode === 'binary-metadata');
+    const unresolvedBinary = value => input.files.some(file => file.source_mode === 'binary-metadata' &&
+      !(value.binary_reviews ?? []).some(review => review.path === file.path && review.status === 'source-reviewed'));
+    const binaryVerdict = cause === 'no_requests' && unresolvedBinary(result);
     const unavailableVerdict = async (code, detail) => {
       result = { ...result, status: 'unavailable', unavailability_code: code,
         reason: `${code}: ${detail}` };
@@ -71,9 +73,9 @@ export async function recoverContext({ input, github, target, execute, createRev
     }
     result = { ...result, discarded_items: discardedItems([previous, result]), findings: [...new Map([...previous.findings, ...result.findings]
       .map(finding => [canonical(finding), finding])).values()] };
-    // A valid model assessment that still refuses a verdict is a terminal
-    // review failure, not infrastructure unavailability or a clean review.
-    if (binaryVerdict) {
+    // If provenance was resolved by either pass, incomplete text retains its
+    // ordinary terminal failure instead of becoming binary unavailability.
+    if (binaryVerdict && (result.status !== 'incomplete' || unresolvedBinary(result))) {
       const code = result.terminal_invalid ? 'binary_provenance_invalid_verdict'
         : result.status === 'incomplete' ? 'binary_provenance_no_verdict' : 'binary_provenance_engine_unavailable';
       return unavailableVerdict(code, result.reason || 'The reviewer returned no complete source/derivation verdict.');
