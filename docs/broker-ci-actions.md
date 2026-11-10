@@ -43,8 +43,14 @@ OIDC/issuance calls + six seconds exchange overrun = 556 seconds, leaving
 44 seconds for startup and output handling.
 
 Outputs include `token`, `issuer`, `connection`, `expire-time`,
-`token-exchange`, `permissions`, `app-slug` and `failure`. Returned repository,
+`token-exchange`, `permissions`, `repositories`, `app-slug` and `failure`. Returned repository,
 permissions, resource parents and expiry are checked before exposing a token.
+With explicit requested permissions, the returned set must match exactly except
+for GitHub's implicit `metadata: read` when metadata was not requested. Any other
+extra permission, changed level or missing requested permission refuses the
+credential. An explicitly requested metadata level remains exact. This applies
+to both exchange RPCs; selecting ordinary `ExchangeToken` does not enlarge an
+explicit read-only request.
 `expected-issuer` and `expected-connection` optionally pin the exact caller's
 resources. There is no company-global issuer, Connection or bot-slug default.
 When a bot identity is needed, pass `app-slug`; its public App id must equal the
