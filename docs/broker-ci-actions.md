@@ -43,7 +43,7 @@ OIDC/issuance calls + six seconds exchange overrun = 556 seconds, leaving
 44 seconds for startup and output handling.
 
 Outputs include `token`, `issuer`, `connection`, `expire-time`,
-`token-exchange`, `permissions`, `app-slug` and `failure`. Returned repository,
+`token-exchange`, `permissions`, `repositories`, `app-slug` and `failure`. Returned repository,
 permissions, resource parents and expiry are checked before exposing a token.
 With explicit requested permissions, the returned set must match exactly except
 for GitHub's implicit `metadata: read` when metadata was not requested. Any other

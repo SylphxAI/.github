@@ -304,6 +304,7 @@ class ExchangeTests(unittest.TestCase):
                     self.assertEqual(code, 0, log)
                     self.assertIn('token=ghs_install\n', output)
                     self.assertIn('permissions=' + json.dumps(issued, separators=(',', ':')), output)
+                    self.assertIn('repositories=' + json.dumps([REPO], separators=(',', ':')), output)
                     body = json.loads(json.loads(wire[3]['config'].split('data = ')[1]))
                     self.assertEqual(body, {'repositories': [REPO], 'permissions': requested})
                     self.assertEqual(len(wire), 4)
