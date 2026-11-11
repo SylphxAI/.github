@@ -263,11 +263,12 @@ existing exclusion.
 
 ## Agent-runtime parts
 
-Sylphx Agents is the one owner of agent definitions, session logs, turn loops,
-agent memory, the tool gateway, credential injection and the egress guard
-(SylphxAI/cloud
-[ADR-01M495TCCBZGSQ68A4P4G428H2](https://github.com/SylphxAI/cloud/blob/main/docs/adr/ADR-01M495TCCBZGSQ68A4P4G428H2-sylphx-agents-hosted-agent-runtime.md),
-D5). The same check fails a product repository that holds one of these parts:
+The three-pillar agent runtime and cloud substrate repositories
+(SylphxAI/anyagents, SylphxAI/spiron, SylphxAI/cloud and SylphxAI/sylphx;
+see SylphxAI/owner company/architecture-map.md) own multi-agent
+orchestration, single-agent harnesses, session logs, turn loops, agent memory,
+tool gateways, credential custody and egress guards. The check fails any
+product repository that holds one of these parts:
 
 | Line | Found when |
 | --- | --- |
@@ -282,8 +283,8 @@ change that touches a manifest or SQL file fails until the part has moved onto
 Sylphx Agents and been deleted. An entry whose part is gone is reported as a
 notice; delete it. Extending a date is a pull request here with its reason.
 
-`owner_repos` (SylphxAI/cloud, where `services/agents` lives) is not checked
-for these parts. A delivered customer repository (organization custom property
+owner_repos (SylphxAI/anyagents, SylphxAI/cloud, SylphxAI/spiron and
+SylphxAI/sylphx) are not checked for these parts. A delivered customer repository (organization custom property
 `sylphx_delivery` = `delivered`) is not checked at all; the action reads the
 property with the job token, and an unreadable property leaves the check on.
 
