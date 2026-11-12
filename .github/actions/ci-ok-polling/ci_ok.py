@@ -238,11 +238,11 @@ def suite_events(workflow_runs: list[dict]) -> dict[int, str]:
     workflow and event on the commit maps to "superseded": a workflow that
     failed to start once (a transient reusable-workflow or permission fault)
     and then ran on a re-trigger is judged by the later run's check runs."""
-    latest: dict[tuple[str, str], str] = {}
+    latest: dict[tuple[str, str], tuple[str, int]] = {}
     for r in workflow_runs:
         key = (r.get("path", ""), r.get("event", ""))
-        latest[key] = max(latest.get(key, ""), r.get("created_at", ""))
-    return {r["check_suite_id"]: (r.get("event", "") if r.get("created_at", "") >= latest[(r.get("path", ""), r.get("event", ""))]
+        latest[key] = max(latest.get(key, ("", 0)), (r.get("created_at", ""), r.get("id", 0) or 0))
+    return {r["check_suite_id"]: (r.get("event", "") if (r.get("created_at", ""), r.get("id", 0) or 0) >= latest[(r.get("path", ""), r.get("event", ""))]
                                   else "superseded")
             for r in workflow_runs}
 

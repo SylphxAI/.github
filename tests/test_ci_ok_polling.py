@@ -337,6 +337,22 @@ class ExistingPollingProtectionsTest(unittest.TestCase):
         self.assertEqual(ci_ok.evaluate([a, b], set(), suite_events=ci_ok.suite_events(wr))[0], "fail")
         self.assertEqual(ci_ok.evaluate([a, b], set())[0], "fail")
 
+    def test_same_second_runs_of_the_same_workflow_supersede_by_id(self) -> None:
+        old = dict(run("shared-path-window", conclusion="cancelled"), id=10, check_suite={"id": 1},
+                   started_at="2026-11-12T02:05:36Z")
+        new = dict(run("shared-path-window"), id=20, check_suite={"id": 2},
+                   started_at="2026-11-12T02:05:36Z")
+        wr = [{"check_suite_id": 1, "id": 43138971656, "path": ".github/workflows/shared-path-window.yml", "event": "pull_request",
+               "created_at": "2026-11-12T02:05:36Z"},
+              {"check_suite_id": 2, "id": 43138972745, "path": ".github/workflows/shared-path-window.yml", "event": "pull_request",
+               "created_at": "2026-11-12T02:05:36Z"}]
+        expected = {1: "superseded", 2: "pull_request"}
+        for ordered in (wr, list(reversed(wr))):
+            events = ci_ok.suite_events(ordered)
+            self.assertEqual(events, expected)
+            self.assertEqual(ci_ok.evaluate([old, new, run("a")], set(), suite_events=events),
+                             ("pass", ["a", "shared-path-window"]))
+
     def test_exhausted_api_budget_fails_closed_before_the_deadline(self) -> None:
         import io, email.message, urllib.error
         headers = email.message.Message()
