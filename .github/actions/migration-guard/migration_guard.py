@@ -2611,7 +2611,9 @@ def check_range(root: Path, base: str, head: str, dirs: list[str], dialect: str,
             continue
         v, parent = version(path), str(PurePosixPath(path).parent)
         if v is not None and (v <= tops.get(parent, -1) or versions[parent, v] > 1):
-            errors.append(f"{path}: migration version must be unique and above {tops.get(parent, -1)} already on the base")
+            errors.append(f"{path}: migration version must be unique and above {tops.get(parent, -1)} already on the base; "
+                          "rename it to a newer UTC timestamp (date -u +%Y%m%d%H%M%S) and regenerate the migration "
+                          "checksum file (for Atlas: atlas migrate hash)")
         ts = version_timestamp(path)
         if ts is not None:
             on_clock = (
@@ -2692,6 +2694,26 @@ def merge_group_target_base(root: Path, env: dict[str, str], base: str) -> str |
     return None
 
 
+def merge_group_queue_parent(root: Path, env: dict[str, str], base: str, head: str) -> str | None:
+    """The tree a merge-queue entry lands on: its head's first parent.
+
+    Entries queued ahead are already in that parent but not in the group's
+    base, so only this comparison sees a version below a migration that will
+    merge first. Unreadable parent history fails closed.
+    """
+    if env.get("MIGRATION_BASE") or not env.get("GITHUB_EVENT_PATH"):
+        return None
+    event = json.loads(Path(env["GITHUB_EVENT_PATH"]).read_text())
+    if not isinstance(event.get("merge_group"), dict):
+        return None
+    proc = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", f"{head}^1^{{commit}}"],
+                          capture_output=True, text=True)
+    parent = proc.stdout.strip()
+    if proc.returncode != 0 or not parent:
+        raise ValueError(f"cannot read the merge group head's parent {head}^1; fetch full history (checkout fetch-depth: 0)")
+    return None if parent == base else parent
+
+
 def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(description=__doc__)
@@ -2726,6 +2748,12 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None) -> in
                                                       repository=env.get("GITHUB_REPOSITORY", ""), dialect_from_suffix=dialect_from_suffix)
             errors = list(dict.fromkeys([*target_errors, *errors]))
             count = max(count, target_count)
+        queue_parent = merge_group_queue_parent(root, {**env, "MIGRATION_BASE": args.base}, base, head)
+        if queue_parent:
+            queue_errors, _ = check_range(root, queue_parent, head, dirs, args.dialect, schemas,
+                                          args.concurrent_index_runtime,
+                                          repository=env.get("GITHUB_REPOSITORY", ""), dialect_from_suffix=dialect_from_suffix)
+            errors = list(dict.fromkeys([*queue_errors, *errors]))
         if errors:
             print("\n".join(errors))
             print("::error::Migration safety check failed:\n" + "\n".join(errors))
