@@ -471,7 +471,7 @@ class RequiredCheckTests(unittest.TestCase):
     def rows(self, gh):
         return amq.plan([item for org in SHIPPED_POLICY["orgs"] for item in amq.read_org(gh, org)], SHIPPED_POLICY, {})
 
-    def test_declared_review_gate_covers_the_gated_repositories(self):
+    def test_declared_checks_cover_the_gated_repositories(self):
         self.assertEqual([entry["repo"] for entry in SHIPPED_POLICY["required_checks"]],
                          ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/desk-tools", "SylphxAI/.github",
                           "SylphxAI/owner", "Cubeage/solar2d-singular-sdk"])
@@ -487,9 +487,21 @@ class RequiredCheckTests(unittest.TestCase):
                     {"context": "ci-ok", "integration_id": 15368},
                     {"context": "always-loaded", "integration_id": 15368}]
             if entry["repo"] == "SylphxAI/.github":
-                expected.append({"context": "pr-metadata", "integration_id": 15368})
-                expected.append({"context": "ops-security/review", "integration_id": 1299545})
+                expected = [{"context": "pr-metadata", "integration_id": 15368}]
             self.assertEqual(entry["checks"], expected)
+
+    def test_dotgithub_metadata_only_does_not_reintroduce_retired_gates(self):
+        repo = "SylphxAI/.github"
+        gh = FakeGh({repo: ruleset(20321046, "sylphx-merge-queue", SHIPPED_POLICY["settings"],
+                                  checks=("pr-metadata",), reviews=0, extra=True)})
+        fleet = [item for org in SHIPPED_POLICY["orgs"] for item in amq.read_org(gh, org)]
+        amq.enrich_extra_approval(gh, fleet, {}, {repo})
+        rows = amq.plan(fleet, SHIPPED_POLICY, {}, {repo})
+        drift = [row for row in rows if row["status"] == "DRIFT"]
+        self.assertEqual(len(drift), 1)
+        self.assertEqual(drift[0]["changes"], {
+            "require_extra_approval_for_unattributed_changes": [True, False]})
+        self.assertEqual(gh.puts, [])
 
     def test_scoped_missing_review_check_is_reported_with_exact_issuer(self):
         rows = [row for row in self.rows(self.fake()) if row["status"] == "DRIFT"]
@@ -498,7 +510,7 @@ class RequiredCheckTests(unittest.TestCase):
             before, after = row["changes"]["required_status_checks"]
             self.assertEqual(before, [{"context": "ci-ok", "integration_id": 15368}])
             entry = next(e for e in SHIPPED_POLICY["required_checks"] if e["repo"] == row["repo"])
-            for check in entry["checks"][1:]:
+            for check in entry["checks"]:
                 self.assertIn(check, after)
 
     def test_apply_adds_gate_preserves_other_checks_and_queue_rollback_keeps_bindings(self):
@@ -795,7 +807,7 @@ class StrictConvergenceTests(unittest.TestCase):
 
 class CheckOnlyAdoptionTests(unittest.TestCase):
     repo = 'SylphxAI/.github'
-    context = 'ops-security/review'
+    context = 'pr-metadata'
 
     def before(self):
         body = ruleset(20321046, 'sylphx-merge-queue', OLD, checks=('ci-ok', 'custom-check'), reviews=3, extra=True)
@@ -821,7 +833,7 @@ class CheckOnlyAdoptionTests(unittest.TestCase):
         self.assertEqual((rc, len(drift), gh.puts), (0, 1, []))
         self.assertEqual(set(drift[0]['changes']), {'required_status_checks'})
         old, new = drift[0]['changes']['required_status_checks']
-        self.assertEqual(new, old + [{'context': self.context, 'integration_id': 1299545}])
+        self.assertEqual(new, old + [{'context': self.context, 'integration_id': 15368}])
 
     def test_apply_preserves_every_unselected_field_and_binding(self):
         before = self.before()
@@ -829,7 +841,7 @@ class CheckOnlyAdoptionTests(unittest.TestCase):
         gh = FakeGh({self.repo: before, 'SylphxAI/neighbor': neighbor})
         expected = copy.deepcopy(before)
         expected['rules'][1]['parameters']['required_status_checks'].append(
-            {'context': self.context, 'integration_id': 1299545})
+            {'context': self.context, 'integration_id': 15368})
         with tempfile.TemporaryDirectory() as directory:
             rc, out = self.run_main(gh, directory)
             self.assertEqual((rc, json.loads(out)['results'][0]['result']), (0, 'APPLIED'))

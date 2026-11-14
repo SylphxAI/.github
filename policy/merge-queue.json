@@ -111,12 +111,9 @@
       "ruleset": "sylphx-merge-queue",
       "ruleset_id": 20321046,
       "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 },
-        { "context": "pr-metadata", "integration_id": 15368 },
-        { "context": "ops-security/review", "integration_id": 1299545 }
+        { "context": "pr-metadata", "integration_id": 15368 }
       ],
-      "reason": "Preserve CI and independent review. Metadata never replaces code evidence. Require the canonical sylphx-ai App (1299545) operator Check Run on exact PR heads and trusted-main merge-group projections. Activate only after the producer is observed; do not converge unrelated existing check drift."
+      "reason": "Match repository ruleset 20321046: require Actions PR metadata, with ci-ok inherited from the organization. Trusted-main Sylphx PR Review remains advisory and is not a merge-queue gate."
     },
     {
       "repo": "SylphxAI/owner",
