@@ -523,6 +523,55 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(guard.main([], env), 1)
         self.assertIn("0002_bad_ahead.sql", output.getvalue())
 
+    def _queue(self, ahead_version: str, behind_version: str) -> dict[str, str]:
+        # Two PRs branch from the same main; the queue squashes the first onto
+        # main and builds the second entry on top of it.
+        base = self.base
+        self.git("checkout", "-qb", "queue")
+        self.write(f"db/{ahead_version}_ahead.sql", "ALTER TABLE accounts ADD nickname text;")
+        self.commit()
+        self.write(f"db/{behind_version}_behind.sql", "ALTER TABLE accounts ADD alias text;")
+        entry = self.commit()
+        event_path = self.root / "event.json"
+        event_path.write_text(json.dumps({
+            "merge_group": {"base_ref": "refs/heads/main", "base_sha": base, "head_sha": entry},
+        }))
+        return {
+            "GITHUB_WORKSPACE": str(self.root),
+            "GITHUB_EVENT_PATH": str(event_path),
+            "MIGRATION_DIALECT": "postgres",
+            "MIGRATION_DIRECTORIES": "db",
+        }
+
+    def test_merge_group_entry_must_sort_above_migrations_queued_ahead(self):
+        env = self._queue("0003", "0002")
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(guard.main([], env), 1)
+        text = output.getvalue()
+        self.assertIn("0002_behind.sql: migration version must be unique and above 3 already on the base", text)
+        self.assertIn("rename it to a newer UTC timestamp", text)
+        self.assertNotIn("0003_ahead.sql: migration version", text)
+
+    def test_merge_group_entry_above_migrations_queued_ahead_passes(self):
+        env = self._queue("0002", "0003")
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(guard.main([], env), 0)
+        self.assertIn("Migration safety check passed", output.getvalue())
+
+    def test_merge_group_entry_without_readable_parent_fails_closed(self):
+        env = self._queue("0002", "0003")
+        real_run = subprocess.run
+
+        def no_parent(cmd, *args, **kwargs):
+            if cmd[-1].endswith("^1^{commit}"):
+                return subprocess.CompletedProcess(cmd, 1, "", "")
+            return real_run(cmd, *args, **kwargs)
+
+        with unittest.mock.patch.object(guard.subprocess, "run", side_effect=no_parent):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(guard.main([], env), 1)
+        self.assertIn("cannot read the merge group head's parent", output.getvalue())
+
     def test_recorded_unapplied_withdrawal_and_refusals(self):
         import hashlib
         unapplied = "db/20261217091104_unapplied_kind.sql"
