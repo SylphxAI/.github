@@ -327,6 +327,47 @@ class ExistingPollingProtectionsTest(unittest.TestCase):
         self.assertTrue(ci_ok.needs_suite_events([old, new], set()))
         self.assertFalse(ci_ok.needs_suite_events([new, run("a")], set()))
 
+    def test_rerun_attempt_replaces_an_earlier_attempt_in_the_same_suite(self) -> None:
+        # A desk push (synchronize) and a PR body edit (edited) started two runs of
+        # one workflow at the same instant. Concurrency cancelled one's lanes, its
+        # verdict job failed; a re-run of that run passed in the same check suite.
+        def r(name, conclusion, rid, suite, started):
+            return dict(run(name, conclusion=conclusion), id=rid, check_suite={"id": suite},
+                        started_at=f"2026-11-14T{started}Z")
+        runs = [
+            r("shared-path-window", "success", 6, 1, "01:39:43"),
+            r("shared-path-source", "success", 5, 1, "01:39:09"),
+            r("shared-path-window", "success", 4, 2, "01:24:34"),
+            r("shared-path-source", "success", 3, 2, "01:23:48"),
+            r("shared-path-window", "failure", 2, 1, "01:22:43"),
+            r("shared-path-source", "cancelled", 1, 1, "01:22:03"),
+        ]
+        wr = [{"check_suite_id": 1, "id": 43540159632, "path": ".github/workflows/shared-path-window.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:22:03Z"},
+              {"check_suite_id": 2, "id": 43540160281, "path": ".github/workflows/shared-path-window.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:22:03Z"}]
+        required = {"shared-path-window"}
+        # With workflow runs readable, the same-second run with the lower id is superseded.
+        self.assertEqual(ci_ok.evaluate(runs, set(), required=required, suite_events=ci_ok.suite_events(wr)),
+                         ("pass", ["shared-path-source", "shared-path-window"]))
+        # Without them (no actions: read), the re-run attempt still replaces the failed one.
+        self.assertEqual(ci_ok.evaluate(runs, set(), required=required),
+                         ("pass", ["shared-path-source", "shared-path-source", "shared-path-window", "shared-path-window"]))
+
+        # A genuinely failing latest attempt still fails, however the earlier one ended.
+        flipped = [dict(x, conclusion="failure") if x["id"] == 6 else
+                   dict(x, conclusion="success") if x["id"] == 2 else x for x in runs]
+        self.assertEqual(ci_ok.evaluate(flipped, set(), required=required),
+                         ("fail", ["shared-path-window=failure", "shared-path-window=failure (required)"]))
+
+    def test_required_check_is_judged_by_its_newest_run(self) -> None:
+        old = dict(run("verdict", conclusion="cancelled"), id=1, check_suite={"id": 1},
+                   started_at="2026-11-14T01:00:00Z")
+        new = dict(run("verdict"), id=2, check_suite={"id": 2}, started_at="2026-11-14T01:01:00Z")
+        self.assertEqual(ci_ok.evaluate([new, old], set(), required={"verdict"}), ("pass", ["verdict"]))
+        self.assertEqual(ci_ok.evaluate([dict(new, conclusion="failure"), old], set(), required={"verdict"}),
+                         ("fail", ["verdict=failure", "verdict=failure (required)"]))
+
     def test_same_named_jobs_of_two_live_workflows_both_count(self) -> None:
         a = dict(run("build", conclusion="failure"), id=1, check_suite={"id": 1}, started_at="2026-10-04T18:00:00Z")
         b = dict(run("build"), id=2, check_suite={"id": 2}, started_at="2026-10-04T18:01:00Z")

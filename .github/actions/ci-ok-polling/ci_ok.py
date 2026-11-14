@@ -22,11 +22,14 @@ It fails closed when a check never ran:
 - every name in CI_OK_REQUIRED must be present and have succeeded (skipped,
   neutral or missing fails).
 
-Each check is judged by its latest run: the check-runs list keeps the latest
-run per check suite, so a run cancelled by a newer run of the same workflow on
-the same commit (concurrency) is still listed beside the newer one. A run in a
-superseded check suite does not count; without `actions: read`, an older
-cancelled or stale run yields to a newer run of the same name.
+Each check is judged by its latest run. The gate reads every attempt
+(`filter=all`), and a re-run posts its attempts into the same check suite, so
+within one suite only the newest run of a check name counts: an earlier
+attempt's failure cannot outlive a passing re-run. A run cancelled by a newer
+run of the same workflow on the same commit (concurrency) sits in another
+suite: a run in a superseded check suite does not count, and without
+`actions: read` an older cancelled or stale run yields to a newer run of the
+same name. A required check is judged by its newest run.
 
 It never depends on API budget it does not have: when the token's rate limit
 is spent until after the deadline, the gate fails at once and says so, rather
@@ -108,7 +111,11 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
                 for r in relevant if r["name"] in required and r.get("status") == "completed"
                 and r.get("conclusion") != "success" and r.get("conclusion") not in BAD]
         return ("fail", sorted(bad)) if bad else ("pending", sorted(pending))
-    concluded = {r["name"]: r.get("conclusion") for r in relevant}
+    newest: dict[str, dict] = {}
+    for r in relevant:
+        if r["name"] not in newest or _started(r) > _started(newest[r["name"]]):
+            newest[r["name"]] = r
+    concluded = {name: r.get("conclusion") for name, r in newest.items()}
     for name in sorted(required):
         if concluded.get(name) != "success":
             bad.append(f'{name}={concluded.get(name) or "missing"} (required)')
@@ -124,11 +131,22 @@ def _started(r: dict) -> tuple[str, int]:
 def latest_runs(runs: list[dict], suite_events: dict[int, str] | None) -> list[dict]:
     """Drop runs that a newer run of the same check replaced on this commit.
 
-    A run whose check suite is superseded (a later run of the same workflow
-    and event) never counts. Without workflow-run data, an older cancelled or
-    stale run yields to a newer run of the same name; any other older run still
+    A re-run attempt posts into the same check suite, so within one suite only
+    the newest run of a name counts, whatever the older attempt concluded. A
+    run whose check suite is superseded (a later run of the same workflow and
+    event) never counts. Without workflow-run data, an older cancelled or stale
+    run yields to a newer run of the same name; any other older run still
     counts, since two workflows may each have a job of that name.
     """
+    attempt: dict[tuple[int, str], dict] = {}
+    for r in runs:
+        suite = (r.get("check_suite") or {}).get("id")
+        if suite is not None:
+            key = (suite, r.get("name"))
+            if key not in attempt or _started(r) > _started(attempt[key]):
+                attempt[key] = r
+    runs = [r for r in runs if (r.get("check_suite") or {}).get("id") is None
+            or attempt[((r.get("check_suite") or {}).get("id"), r.get("name"))] is r]
     if suite_events:
         runs = [r for r in runs if suite_events.get((r.get("check_suite") or {}).get("id")) != "superseded"]
     newest: dict[str, dict] = {}
