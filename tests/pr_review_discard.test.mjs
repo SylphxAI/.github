@@ -62,6 +62,19 @@ function reviewer(reply, { budget = 100_000, current } = {}) {
       if (request.method === 'GET') return { ok: true, json: async () => ({ id: model,
         context_window: budget + 8192 + 4096, max_output_tokens: 8192 }) };
       const body = JSON.parse(request.body), part = JSON.parse(body.messages[1].content);
+      if (part.source_files) {
+        const decisions = (part.candidates ?? []).map(candidate => {
+          const finding = candidate.finding;
+          const proof = finding?.evidence?.[0];
+          const retain = proof && typeof proof.quote === 'string' && proof.quote.startsWith('after-');
+          return { candidate_id: candidate.candidate_id, verdict: retain ? 'retain' : 'discard', contradiction: '', proof_evidence: retain ? [proof] : [] };
+        });
+        const adjudication = { schema_version: 1, repository_id: part.repository_id, base_sha: part.base_sha, head_sha: part.head_sha,
+          input_digest: part.input_digest, reviewer_version: part.reviewer_version, policy_version: part.policy_version,
+          completion: 'complete', reason: 'Fixture explicitly adjudicated supplied candidates.', decisions };
+        return { ok: true, status: 200, json: async () => ({ object: 'chat.completion', model,
+          choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(adjudication) } }] }) };
+      }
       assert.equal(part.source_files, undefined); assert.equal(part.source_context, undefined); posts.push(part);
       const value = reply(part, posts);
       return { ok: true, status: 200, json: async () => ({ object: 'chat.completion', model,

@@ -8,5 +8,8 @@ class PrReviewTests(unittest.TestCase):
     def test_review_contract(self):
         root = pathlib.Path(__file__).resolve().parents[1]
         # This ceiling catches hangs; individual Node tests retain their own timeouts.
-        subprocess.run(["node", "--test", "tests/pr_review.test.mjs", "tests/pr_review_generated.test.mjs", "tests/pr_review_binary.test.mjs", "tests/pr_review_binary_verdict.test.mjs", "tests/pr_review_gateway.test.mjs", "tests/pr_review_budget.test.mjs", "tests/pr_review_recovery.test.mjs", "tests/pr_review_synthesis_context.test.mjs", "tests/pr_review_final_round.test.mjs", "tests/pr_review_ws_snap.test.mjs", "tests/pr_review_corrective_retry.test.mjs", "tests/pr_review_terminal.test.mjs", "tests/pr_review_discard.test.mjs", "tests/pr_review_exit.test.mjs", "tests/pr_review_part_identity.test.mjs", "tests/pr_review_reuse.test.mjs", "tests/pr_review_readback.test.mjs", "tests/pr_review_github_rate_limit.test.mjs"],
+        contracts = sorted(str(path.relative_to(root)) for path in
+                           (root / "tests").glob("pr_review*.test.mjs"))
+        self.assertTrue(contracts, "No review contracts found")
+        subprocess.run(["node", "--test", *contracts],
                        cwd=root, check=True, timeout=600)

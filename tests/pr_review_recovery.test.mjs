@@ -246,7 +246,7 @@ test('only validated omitted names are retained and request/file bounds share th
     (_, n) => ({ path: `src/${n}.js`, side: 'head' })) }).status, 'unavailable');
 });
 
-for (const mode of ['recovery', 'absence', 'anchor', 'defect', 'unavailable', 'incomplete', 'outside', 'cancelled']) test(`CLI ${mode} persists mode-0600 results and emits only the safe final receipt`, async () => {
+for (const mode of ['recovery', 'absence', 'anchor', 'defect', 'selected', 'unavailable', 'incomplete', 'outside', 'cancelled']) test(`CLI ${mode} persists mode-0600 results and emits only the safe final receipt`, async () => {
   const { mkdtempSync, writeFileSync, readFileSync, statSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -265,6 +265,8 @@ for (const mode of ['recovery', 'absence', 'anchor', 'defect', 'unavailable', 'i
         return { path, mode: '100644', type: 'blob', sha, size: Buffer.byteLength(content) };
       };
       const before = file('change.js', 'before\n'), after = file('change.js', 'after\n'), caller = file('caller.js', 'caller\n');
+      const generated = file('generated.json', 'NEVER_FETCH_GENERATED');
+      const selectedPolicy = file('review-policy.toml', 'version = 1\n[tier0]\npaths = []\n[generated]\npaths = ["generated.json"]\n[review]\npaths = []\n');
       const policy = file('review-policy.toml', 'version = 1\n[tier0]\npaths = ["src/**"]\n[generated]\npaths = []\n[review]\npaths = []\n');
       let run, calls = 0;
       globalThis.fetch = async (url, request = {}) => {
@@ -273,6 +275,17 @@ for (const mode of ['recovery', 'absence', 'anchor', 'defect', 'unavailable', 'i
         else if (path === '/v1/chat/completions') {
           const input = JSON.parse(body.messages[1].content); calls++;
           if (mode === 'unavailable') return { ok: false, status: 503, headers: new Headers({ 'retry-after': '1000000' }), json: async () => ({ error: { code: 'service_unavailable' } }) };
+          if (mode === 'selected' && [...(input.files ?? []), ...(input.source_files ?? [])].some(f => f.path === 'generated.json')) throw new Error('Excluded generated source entered inference');
+          if (input.source_files) {
+            const decisions = (input.candidates ?? []).map(candidate => ({ candidate_id: candidate.candidate_id,
+              verdict: ['defect', 'selected'].includes(mode) ? 'retain' : 'discard', contradiction: '',
+              proof_evidence: ['defect', 'selected'].includes(mode) ? (candidate.finding?.evidence ?? []) : [] }));
+            const adjudication = { schema_version: 1, repository_id: input.repository_id, base_sha: base, head_sha: head,
+              input_digest: input.input_digest, reviewer_version: input.reviewer_version, policy_version: input.policy_version,
+              completion: 'complete', reason: 'Fixture explicitly adjudicated supplied candidates.', decisions };
+            data = { object: 'chat.completion', model: 'vendor/reviewer', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(adjudication) } }] };
+            return { ok: true, status: 200, json: async () => data };
+          }
           const result = { schema_version: 1, repository_id: input.repository_id, base_sha: base, head_sha: head,
             input_digest: input.input_digest, reviewer_version: input.reviewer_version, policy_version: input.policy_version,
             completion: calls === 1 ? 'incomplete' : 'complete', findings: [], related_evidence: [], binary_reviews: [], review_summary: 'Reviewed source.',
@@ -283,22 +296,22 @@ for (const mode of ['recovery', 'absence', 'anchor', 'defect', 'unavailable', 'i
               start_byte: null, end_byte: null, quote: 'PRIVATE_CLI_ANCHOR' }] });
           if (mode === 'incomplete') Object.assign(result, { completion: 'incomplete', omitted_paths: ['src/change.js'],
             context_requests: [], reason: 'PRIVATE_CLI_DIAGNOSTIC' });
-          if (mode === 'defect' || mode === 'cancelled') Object.assign(result, { completion: 'complete', omitted_paths: [], context_requests: [], reason: '',
-            findings: mode === 'defect' ? [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1,
+          if (['defect', 'selected', 'cancelled'].includes(mode)) Object.assign(result, { completion: 'complete', omitted_paths: [], context_requests: [], reason: '',
+            findings: ['defect', 'selected'].includes(mode) ? [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1,
               severity: 'high', title: 'Changed return value', explanation: 'The new value breaks its caller.', trigger: 'A caller uses the value.',
               consequence: 'The request fails.', evidence: [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1,
                 start_byte: null, end_byte: null, quote: 'after' }] }] : [] });
           data = { object: 'chat.completion', model: 'vendor/reviewer', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(result) } }] };
-        } else if (path.endsWith('/pulls/7')) data = { state: 'open', changed_files: 1, title: 'Review this source',
+        } else if (path.endsWith('/pulls/7')) data = { state: 'open', changed_files: mode === 'selected' ? 2 : 1, title: 'Review this source',
           head: { sha: mode === 'cancelled' && calls ? 'f'.repeat(40) : head }, base: { sha: base, ref: 'main', repo: { id: 1 } } };
-        else if (path.endsWith('/pulls/7/files')) data = [{ filename: 'src/change.js', status: 'modified' }];
+        else if (path.endsWith('/pulls/7/files')) data = [{ filename: 'src/change.js', status: 'modified' }, ...(mode === 'selected' ? [{ filename: 'generated.json', status: 'modified' }] : [])];
         else if (path.includes('/compare/')) data = { merge_base_commit: { sha: base } };
         else if (path.includes('/git/trees/')) {
           const sha = path.split('/').at(-1);
-          data = { tree: sha === treeSha ? [before, caller] : sha === 'd'.repeat(40) ? [after, caller] : sha === 'e'.repeat(40) ? [policy] :
+          data = { tree: sha === treeSha ? [before, caller] : sha === 'd'.repeat(40) ? [after, caller] : sha === 'e'.repeat(40) ? [mode === 'selected' ? selectedPolicy : policy] :
             [{ path: 'src', type: 'tree', mode: '040000', sha: sha === base ? treeSha : 'd'.repeat(40) },
-              ...mode === 'outside' ? [{ path: '.github', type: 'tree', mode: '040000', sha: 'e'.repeat(40) }] : []] };
-        } else if (path.includes('/git/blobs/')) data = blobs.get(path.split('/').at(-1));
+              ...(mode === 'outside' || mode === 'selected') ? [{ path: '.github', type: 'tree', mode: '040000', sha: 'e'.repeat(40) }] : [], ...(mode === 'selected' ? [generated] : [])] };
+        } else if (path.includes('/git/blobs/')) { if (mode === 'selected' && path.endsWith(generated.sha)) throw new Error('Excluded generated blob was fetched'); data = blobs.get(path.split('/').at(-1)); }
         else if (path.includes('/commits/') && path.endsWith('/check-runs')) data = { check_runs: [] };
         else if (path.endsWith('/check-runs') && request.method === 'POST') data = run = { ...body, id: 1, app: { id: 1299545 } };
         else if (path.endsWith('/check-runs/1')) {
@@ -316,9 +329,9 @@ for (const mode of ['recovery', 'absence', 'anchor', 'defect', 'unavailable', 'i
         GITHUB_EVENT_PATH: join(directory, 'event.json'), GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1', GITHUB_TOKEN: 'fixture',
         REVIEW_MODEL: 'vendor/reviewer', REVIEW_MAX_OUTPUT_TOKENS: '8192', GITHUB_STEP_SUMMARY: join(directory, 'summary.md') },
     });
-    assert.equal(process.status, ['defect', 'unavailable', 'incomplete', 'cancelled'].includes(mode) ? 1 : 0, process.stderr);
+    assert.equal(process.status, ['defect', 'selected', 'unavailable', 'incomplete', 'cancelled'].includes(mode) ? 1 : 0, process.stderr);
     const receipt = JSON.parse(process.stdout).reviews[0];
-    assert.equal(receipt.conclusion, mode === 'defect' || mode === 'incomplete' ? 'failure' :
+    assert.equal(receipt.conclusion, ['defect', 'selected', 'incomplete'].includes(mode) ? 'failure' :
       mode === 'unavailable' || mode === 'outside' ? 'neutral' : mode === 'cancelled' ? 'cancelled' : 'success');
     const summary = readFileSync(join(directory, 'summary.md'), 'utf8');
     assert.ok(summary.includes(receipt.conclusion));
@@ -326,6 +339,7 @@ for (const mode of ['recovery', 'absence', 'anchor', 'defect', 'unavailable', 'i
       assert.equal(receipt.applicable, false); assert.match(summary, /Review not required by path policy/); return;
     }
     const results = JSON.parse(readFileSync(join(directory, 'pr-review-results.json')));
+    if (mode === 'selected') { assert.equal(results[0].causal_validation.candidates, 1); assert.equal(results[0].causal_validation.decisions, 1); assert.equal(results[0].findings.length, 1); }
     if (mode === 'recovery' || mode === 'absence') {
       assert.equal(results[0].recovery_diagnostics[0].reason, 'PRIVATE_CLI_DIAGNOSTIC');
       assert.equal(receipt.recovery_sources[0].status, mode === 'absence' ? 'absent' : 'present');

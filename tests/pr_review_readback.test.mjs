@@ -384,7 +384,7 @@ const blockingFindings = count => Array.from({ length: count }, (_, index) => ({
   evidence: [{ path: 'src/change.js', side: 'head', start_line: 1, end_line: 1, start_byte: null, end_byte: null, quote: 'after' }],
 }));
 
-test('inference stopping at inferenceDeadlineMs preserves PUBLISH_RESERVE_MS to publish failure and all annotation batches', async () => {
+test('incomplete inference preserves PUBLISH_RESERVE_MS to publish failure with zero annotations', async () => {
   const realNow = Date.now;
   let clock = 1_000_000;
   Date.now = () => clock;
@@ -428,22 +428,21 @@ test('inference stopping at inferenceDeadlineMs preserves PUBLISH_RESERVE_MS to 
           input_digest: reviewInput.input_digest, reviewer_version: reviewInput.reviewer_version,
           findings: blockingFindings(55), omitted_paths: ['src/change.js'],
           context_requests: [{ path: 'src/caller.js', side: 'head' }],
+          terminal_incomplete: true,
           reason: 'Review inference reached the inference deadline after earlier partitions found blocking defects.',
         };
       },
     });
     assert.equal(seenEngineDeadlineMs, expectedInferenceDeadlineMs);
     assert.equal(receipt.conclusion, 'failure');
-    assert.equal(receipt.findings, 55);
+    assert.equal(receipt.findings, 0, 'incomplete reviews must not publish unadjudicated blockers');
     assert.equal(run.status, 'completed');
     assert.equal(run.conclusion, 'failure');
-    assert.equal(run.output.title, '55 defects require a change; review incomplete');
-    assert.equal(writes.length, 2, '55 annotations must upload in one 50-item batch plus the 5-item terminal PATCH');
-    assert.equal(writes[0].status, undefined);
-    assert.equal(writes[0].output.annotations.length, 50);
-    assert.equal(writes[1].status, 'completed');
-    assert.equal(writes[1].conclusion, 'failure');
-    assert.equal(writes[1].output.annotations.length, 5);
+    assert.equal(run.output.title, 'Review incomplete');
+    assert.equal(writes.length, 1, 'terminal incomplete publication must contain no unadjudicated annotations');
+    assert.equal(writes[0].status, 'completed');
+    assert.equal(writes[0].conclusion, 'failure');
+    assert.deepEqual(writes[0].output.annotations, []);
     assert.equal(persistedPublication.expected.conclusion, 'failure');
     assert.equal(persistedPending, undefined, 'accepted terminal PATCH must clear pending_finish');
   } finally {
@@ -451,7 +450,7 @@ test('inference stopping at inferenceDeadlineMs preserves PUBLISH_RESERVE_MS to 
   }
 });
 
-test('finalizer fails visibly with publish_unverified and settles an in_progress check from pending_finish including annotation batches', async () => {
+test('incomplete inference fails visibly with publish_unverified and finalizer settles pending_finish without annotations', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'review-pending-finish-settle-'));
   const realNow = Date.now;
   let now = 1_000_000;
@@ -482,6 +481,7 @@ test('finalizer fails visibly with publish_unverified and settles an in_progress
           status: 'incomplete', head_sha: reviewInput.head_sha, base_sha: reviewInput.base_sha,
           input_digest: reviewInput.input_digest, reviewer_version: reviewInput.reviewer_version,
           findings: blockingFindings(55), omitted_paths: ['src/change.js'],
+          terminal_incomplete: true,
           reason: 'Partition 2 exceeded deadline.',
         };
       },
@@ -495,7 +495,7 @@ test('finalizer fails visibly with publish_unverified and settles an in_progress
     assert.equal(run().status, 'in_progress');
     assert.equal('publication' in state, false, 'pre-flight deadline failure before terminal PATCH must not record dispatched publication');
     assert.equal(state.pending_finish.conclusion, 'failure');
-    assert.equal(state.pending_finish.output.annotations.length, 55);
+    assert.equal(state.pending_finish.output.annotations.length, 0, 'pending publication must not carry unadjudicated annotations');
 
     const { result, resource } = finalize(directory, run(), state, null);
     assert.equal(result.status, 1, 'finalizer must still fail when primary publication was unverified');
@@ -504,12 +504,11 @@ test('finalizer fails visibly with publish_unverified and settles an in_progress
     assert.match(summary, /publish_unverified/);
     assert.equal(resource.run.status, 'completed', 'finalizer must never leave the Check Run in_progress');
     assert.equal(resource.run.conclusion, 'failure');
-    assert.equal(resource.run.output.title, '55 defects require a change; review incomplete');
-    assert.equal(resource.writes.length, 2, 'finalizer must upload the 50-item batch and the 5-item terminal PATCH');
-    assert.equal(resource.writes[0].output.annotations.length, 50);
-    assert.equal(resource.writes[1].status, 'completed');
-    assert.equal(resource.writes[1].conclusion, 'failure');
-    assert.equal(resource.writes[1].output.annotations.length, 5);
+    assert.equal(resource.run.output.title, 'Review incomplete');
+    assert.equal(resource.writes.length, 1, 'finalizer must settle without unadjudicated annotations');
+    assert.deepEqual(resource.writes[0].output.annotations, []);
+    assert.equal(resource.writes[0].status, 'completed');
+    assert.equal(resource.writes[0].conclusion, 'failure');
     const [persisted] = JSON.parse(readFileSync(join(directory, 'pr-review-state.json'), 'utf8'));
     assert.equal('pending_finish' in persisted, false, 'settled check must clear pending_finish');
     assert.equal(persisted.publication.expected.conclusion, 'failure');

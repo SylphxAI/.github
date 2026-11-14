@@ -1,16 +1,14 @@
 import { createHash } from 'node:crypto'
+import { canonical as identityCanonical, digest as identityDigest } from './identity.mjs'
+import { adjudicationVersion, adjudicationSchema, adjudicationInstruction } from './adjudication.mjs'
 import { readFileSync } from 'node:fs'
 import { contextRequestLimit, resultSchema, validateSchema } from './schema.mjs'
 import { segmentQuote, fileSegments, segmentWindows, changedRanges } from './source.mjs'
 
-export function canonical(value) {
-	if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
-	if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
-	return JSON.stringify(value)
-}
-export const digest = (value) => createHash('sha256').update(canonical(value)).digest('hex')
+export const canonical = identityCanonical
+export const digest = identityDigest
 const instructions = readFileSync(new URL('./reviewer.md', import.meta.url), 'utf8')
-export const reviewerVersion = `sha256:${digest({ instructions, resultSchema })}`
+export const reviewerVersion = `sha256:${digest({ instructions, resultSchema, adjudication: { version: adjudicationVersion, instruction: adjudicationInstruction, schema: adjudicationSchema } })}`
 export const reviewerInstructions = `${instructions}\nReviewer version: ${reviewerVersion}\nResult schema: ${canonical(resultSchema)}\n`
 export { resultSchema }
 export const identityFields = Object.freeze(['repository_id', 'base_sha', 'head_sha', 'input_digest', 'reviewer_version', 'policy_version'])

@@ -74,35 +74,40 @@ test('empty created files and pure renames have honest empty content diffs', () 
 
 test('real-defect result fails while clean result passes', async () => {
   const bad = new Provider();
-  assert.equal((await produceReview({ ...options(bad), engine: async input => complete(input, [finding]) })).conclusion, 'failure');
+  assert.equal((await produceReview({ ...options(bad), engine: Object.assign(async input => complete(input, [finding]), {
+    adjudicate: async ({ input }) => ({ schema_version: 1, repository_id: input.repository_id, base_sha: input.base_sha,
+      head_sha: input.head_sha, input_digest: input.input_digest, reviewer_version: input.reviewer_version, policy_version: input.policy_version,
+      completion: 'complete', reason: 'Fixture explicitly confirmed the complete candidate.',
+      decisions: input.candidates.map(c => ({ candidate_id: c.candidate_id, verdict: 'retain', contradiction: '', proof_evidence: c.finding.evidence.map(e => ({ ...e, start_byte: null, end_byte: null })) })) }),
+  }) })).conclusion, 'failure');
   assert.equal(bad.runs[0].output.annotations[0].path, changed.filename);
   const clean = new Provider();
   assert.equal((await produceReview({ ...options(clean), engine: async input => complete(input) })).conclusion, 'success');
 });
 
-test('incomplete aggregate preserves findings and publishes their real annotation coordinates', async () => {
+test('incomplete aggregate clears provisional findings before persistence and publication', async () => {
   const github = new Provider(); let saved;
   const receipt = await produceReview({ ...options(github), onResult: result => { saved = result; },
     engine: async input => ({ ...complete(input, [finding]), status: 'incomplete', omitted_paths: [changed.filename],
       reason: 'A later source part was unavailable.', parts: { planned: 3, completed: 1 } }) });
   assert.equal(receipt.conclusion, 'failure'); assert.equal(receipt.unavailable, true);
-  assert.equal(saved.findings.length, 1); assert.equal(receipt.findings, 1);
+  assert.equal(saved.findings.length, 0); assert.equal(receipt.findings, 0);
   assert.match(github.runs[0].output.summary, /1\/3 complete/);
   assert.match(github.runs[0].output.title, /incomplete/);
-  assert.equal(github.runs[0].output.annotations[0].start_line, 1);
+  assert.deepEqual(github.runs[0].output.annotations, []);
   const low = new Provider();
   assert.equal((await produceReview({ ...options(low), engine: async input => ({ ...complete(input, [{ ...finding, severity: 'low' }]),
     status: 'incomplete', omitted_paths: [changed.filename], reason: 'Unreviewed source remains.' }) })).conclusion, 'failure');
 });
 
-test('a final head-read failure retains defects while publishing explicit incompleteness', async () => {
+test('a final head-read failure clears provisional defects and publishes explicit incompleteness', async () => {
   const github = new Provider(); let reviewed = false, saved;
   github.current = async () => { if (reviewed) throw new Error('source API unavailable'); return true; };
   const receipt = await produceReview({ ...options(github), onResult: result => { saved = result; },
     engine: async input => { reviewed = true; return complete(input, [finding]); } });
-  assert.equal(receipt.conclusion, 'failure'); assert.equal(receipt.findings, 1);
+  assert.equal(receipt.conclusion, 'neutral'); assert.equal(receipt.findings, 0);
   assert.equal(saved.status, 'incomplete'); assert.match(receipt.reason, /Current head could not be verified/);
-  assert.equal(github.runs[0].output.annotations.length, 1);
+  assert.equal(github.runs[0].output.annotations.length, 0);
 });
 
 test('new head creates a new check and a late old-head result is cancelled', async () => {

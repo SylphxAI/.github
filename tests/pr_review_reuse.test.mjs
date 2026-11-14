@@ -18,6 +18,19 @@ const complete = (input, bad = false) => parseReviewResult(JSON.stringify({ sche
   completion: 'complete', findings: bad ? findings : [], related_evidence: [], binary_reviews: [],
   review_summary: 'Reviewed the complete changed behavior.', omitted_paths: [], context_notes: [], context_requests: [], reason: '' }), input);
 
+// Intentional complete finding fixtures must opt into the producer's typed
+// final adjudication gate; production has no compatibility fallback.
+const withAdjudication = engine => {
+  const review = async input => engine(input);
+  review.adjudicate = async request => { const input = request.input ?? request; return ({ schema_version: 1, repository_id: input.repository_id,
+    base_sha: input.base_sha, head_sha: input.head_sha, input_digest: input.input_digest,
+    reviewer_version: input.reviewer_version, policy_version: input.policy_version,
+    completion: 'complete', reason: 'Fixture explicitly adjudicated supplied candidates.',
+    decisions: (input.candidates ?? []).map(candidate => ({ candidate_id: candidate.candidate_id,
+      verdict: 'retain', contradiction: '', proof_evidence: candidate.finding?.evidence ?? [] })) }); };
+  return review;
+};
+
 // Exercise the shipped check discovery/create/readback adapter, not a fake
 // begin() that decides independently which completed results can be reused.
 function boundary() {
@@ -54,7 +67,7 @@ function boundary() {
 
 for (const conclusion of ['success', 'failure']) test(`same-head same-input completed ${conclusion} reuses the receipt without inference`, async () => {
   const { runs, options } = boundary(); let calls = 0;
-  const opts = { ...options, engine: async input => { calls++; return complete(input, conclusion === 'failure'); } };
+  const opts = { ...options, engine: withAdjudication(async input => { calls++; return complete(input, conclusion === 'failure'); }) };
   const first = await produceReview(opts), observed = [];
   const next = await produceReview({ ...opts, onBegin: run => observed.push(run.id) });
   assert.equal(first.conclusion, conclusion); assert.equal(next.conclusion, conclusion);
@@ -242,9 +255,9 @@ test('simultaneous same-input reviews select the newest verdict despite late old
   };
   const entered = [hold(), hold()], release = [hold(), hold()], inputs = [];
   const work = [0, 1].map(i => produceReview({ ...options, detailsUrl: ownerUrl(i + 1),
-    engine: async input => {
+    engine: withAdjudication(async input => {
       calls++; inputs[i] = input; entered[i].resolve(); await release[i].promise; return complete(input, i === 1);
-    } }));
+    }) }));
   await Promise.all(entered.map(x => x.promise));
   assert.equal(runs.length, 3); assert.equal(calls, 3);
   assert.equal(inputs[0].input_digest, inputs[1].input_digest);
