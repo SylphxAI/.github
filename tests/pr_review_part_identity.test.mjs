@@ -29,7 +29,9 @@ const response = value => ({ ok: true, status: 200, json: async () => ({ object:
   choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: typeof value === 'string' ? value : JSON.stringify(value) } }] }) });
 function engine(reply, byteLimit = byteBudget) {
   const posts = [], attempts = new Map(), logged = [];
-  const review = gatewayReviewer({ token: 'fixture', sleep: async () => {}, ...configuration, identityLog: record => logged.push(record), deadlineMs: Date.now() + 10_000,
+  let clock = 1000;
+  const review = gatewayReviewer({ token: 'fixture', now: () => clock, random: () => 0,
+    sleep: async ms => { clock += ms; }, ...configuration, identityLog: record => logged.push(record), deadlineMs: 100_000,
     fetcher: async (url, request) => {
       if (request.method === 'GET') {
         assert.equal(new URL(url).pathname, '/v1/public/models/vendor/reviewer');
