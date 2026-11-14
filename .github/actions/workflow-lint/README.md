@@ -136,6 +136,48 @@ and an exact alternative declared in `pr_concurrency.py`:
     cancel-in-progress: false
   ```
 
+- `independent-verdict` uses that same run-isolated, noncancelling workflow
+  block in a workflow without `workflow_call`, exactly one job with
+  `if: ${{ always() }}` (or `if: always()`) and no
+  job concurrency, and native locks on **every other job**, including reusable
+  callers. Each work job's group is its literal job ID plus `-` plus the
+  canonical two-PR-event group above; its cancellation expression is the
+  canonical two-PR-event guard. The verdict's `needs` must name every work job
+  exactly once. This keeps an unconditional required verdict outside the lock
+  its replacement needs for admission and cleanup; `github.job` is not used
+  as a concurrency-context value. Work-job IDs must also be distinct ignoring
+  case because GitHub concurrency groups are case insensitive. All caller jobs,
+  including the verdict and reusable callers, must be non-matrix: expanded work
+  siblings would share the same literal group and cancel or evict each other,
+  while a matrix verdict would no longer be a single emitted verdict. Matrices
+  inside an unlocked callee remain allowed. Work-job `if`
+  conditions must retain GitHub's implicit `success()` guard: omit the condition
+  or use expressions without explicit `always`, `success`, `failure` or
+  `cancelled` function calls. The rule conservatively refuses those tokens
+  rather than evaluating their boolean combinations; a surviving work job
+  could otherwise retain the lock needed by replacement cleanup. For example,
+  job `select` uses:
+
+  ```yaml
+  concurrency:
+    group: select-${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
+  ```
+
+  The rule establishes lock coverage, not verdict correctness or runner
+  availability. The consumer must retain non-passing cancellation evidence
+  and its independent cleanup path. The unlocked verdict is **not** natively
+  superseded by these work-job locks; any automated sweep's eligibility,
+  including whether same-head duplicates qualify, remains a separate contract.
+  Every reusable call (including a reusable verdict) must resolve from the
+  supplied workflow inventory to `./.github/workflows/<file>.yml` or `.yaml`.
+  The callee must declare `workflow_call`, contain jobs, and have
+  no workflow-level or job-level `concurrency` declarations and no nested
+  reusable calls. Step-level action uses remain allowed. Missing inventory,
+  missing or malformed callees, external references and any declared callee
+  lock are refused, rather than inferring whether another group can collide.
+  Both full and rule-scoped scans pass the same complete local inventory.
+
 - `base-retarget` admits only the literal `BASE_RETARGET` metadata routing form,
   the `PR metadata` workflow name and the declared non-reusable trigger set.
 - `code-pr-association` admits only the literal `CODE_PR_ASSOCIATION` form,
