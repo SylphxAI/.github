@@ -23,13 +23,17 @@ It fails closed when a check never ran:
   neutral or missing fails).
 
 Each check is judged by its latest run. The gate reads every attempt
-(`filter=all`), and a re-run posts its attempts into the same check suite, so
-within one suite only the newest run of a check name counts: an earlier
-attempt's failure cannot outlive a passing re-run. A run cancelled by a newer
-run of the same workflow on the same commit (concurrency) sits in another
-suite: a run in a superseded check suite does not count, and without
-`actions: read` an older cancelled or stale run yields to a newer run of the
-same name. A required check is judged by its newest run.
+(`filter=all`). A re-run of a workflow run is a new attempt of the same jobs:
+an Actions check run's id is its job id, and the Actions jobs API names each
+job's workflow run and `run_attempt`, so of the jobs of one workflow run that
+share a name, only those of its newest attempt count, and an earlier
+attempt's failure cannot outlive a passing re-run. Independent jobs (matrix
+legs, reusable-workflow jobs) of the same attempt each count on their own,
+even when they share a name. A run cancelled by a newer run of the same
+workflow on the same commit (concurrency) is another workflow run: a run in a
+superseded check suite does not count, and without `actions: read` an older
+cancelled or stale run yields to a newer run of the same name while every
+other run still counts. A required check is judged by its newest run.
 
 It never depends on API budget it does not have: when the token's rate limit
 is spent until after the deadline, the gate fails at once and says so, rather
@@ -39,6 +43,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -68,7 +73,8 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
              allow_none: bool = False,
              suite_events: dict[int, str] | None = None,
              event_name: str = "",
-             suite_names: dict[int, str] | None = None) -> tuple[str, list[str]]:
+             suite_names: dict[int, str] | None = None,
+             job_attempts: dict[int, tuple[int, int]] | None = None) -> tuple[str, list[str]]:
     """Return ('pending'|'fail'|'pass', details) for the given check runs.
 
     By default only GitHub Actions check runs count: other apps post deploy
@@ -88,7 +94,7 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     """
     relevant = latest_runs([r for r in runs if r.get("name") not in ignore
                             and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")],
-                           suite_events)
+                           suite_events, job_attempts)
     pending = [r["name"] for r in relevant if r.get("status") != "completed"]
     pending += [f'workflow has no jobs yet (check suite {s.get("id")})'
                 for s in suites or []
@@ -128,25 +134,29 @@ def _started(r: dict) -> tuple[str, int]:
     return (r.get("started_at") or "", r.get("id") or 0)
 
 
-def latest_runs(runs: list[dict], suite_events: dict[int, str] | None) -> list[dict]:
+def latest_runs(runs: list[dict], suite_events: dict[int, str] | None,
+                job_attempts: dict[int, tuple[int, int]] | None = None) -> list[dict]:
     """Drop runs that a newer run of the same check replaced on this commit.
 
-    A re-run attempt posts into the same check suite, so within one suite only
-    the newest run of a name counts, whatever the older attempt concluded. A
-    run whose check suite is superseded (a later run of the same workflow and
-    event) never counts. Without workflow-run data, an older cancelled or stale
-    run yields to a newer run of the same name; any other older run still
-    counts, since two workflows may each have a job of that name.
+    `job_attempts` maps a check run id (an Actions job id) to its
+    `(workflow run id, run_attempt)`. Of the jobs of one workflow run that
+    share a name, only those of the newest attempt count: that is a re-run.
+    Jobs of the same attempt never replace each other, whatever their names.
+    A run without that identity is never collapsed this way. A run whose check
+    suite is superseded (a later run of the same workflow and event) never
+    counts. Otherwise an older cancelled or stale run yields to a newer run of
+    the same name; any other older run still counts, since two workflows may
+    each have a job of that name.
     """
-    attempt: dict[tuple[int, str], dict] = {}
-    for r in runs:
-        suite = (r.get("check_suite") or {}).get("id")
-        if suite is not None:
-            key = (suite, r.get("name"))
-            if key not in attempt or _started(r) > _started(attempt[key]):
-                attempt[key] = r
-    runs = [r for r in runs if (r.get("check_suite") or {}).get("id") is None
-            or attempt[((r.get("check_suite") or {}).get("id"), r.get("name"))] is r]
+    if job_attempts:
+        newest_attempt: dict[tuple[int, str], int] = {}
+        for r in runs:
+            identity = job_attempts.get(r.get("id"))
+            if identity:
+                key = (identity[0], r.get("name"))
+                newest_attempt[key] = max(newest_attempt.get(key, 0), identity[1])
+        runs = [r for r in runs if (identity := job_attempts.get(r.get("id"))) is None
+                or identity[1] == newest_attempt[(identity[0], r.get("name"))]]
     if suite_events:
         runs = [r for r in runs if suite_events.get((r.get("check_suite") or {}).get("id")) != "superseded"]
     newest: dict[str, dict] = {}
@@ -251,6 +261,45 @@ def fetch_suite_events(repo: str, sha: str, token: str,
     return suite_events(workflow_runs)
 
 
+def workflow_run_id(run: dict) -> int | None:
+    """The Actions workflow run id in a check run's details URL, if any."""
+    match = re.search(r"/actions/runs/(\d+)/job/\d+", run.get("details_url") or "")
+    return int(match.group(1)) if match else None
+
+
+def fetch_job_attempts(repo: str, runs: list[dict], token: str, ignore: set[str]) -> dict[int, tuple[int, int]] | None:
+    """check run id -> (workflow run id, run_attempt) for every attempt of the
+    workflow runs that hold a repeated check name; None when unreadable (no
+    `actions: read`), so no run is treated as a re-run of another."""
+    counts: dict[str, int] = {}
+    for r in runs:
+        if r.get("name") not in ignore:
+            counts[r["name"]] = counts.get(r["name"], 0) + 1
+    run_ids = sorted({rid for r in runs if counts.get(r.get("name"), 0) > 1
+                      and (rid := workflow_run_id(r)) is not None})
+    attempts: dict[int, tuple[int, int]] = {}
+    try:
+        for rid in run_ids:
+            page = 1
+            while True:
+                data = _get(f"https://api.github.com/repos/{repo}/actions/runs/{rid}/jobs"
+                            f"?filter=all&per_page=100&page={page}", token)
+                jobs = data.get("jobs", [])
+                for job in jobs:
+                    if job.get("id") and job.get("run_id") == rid and job.get("run_attempt"):
+                        attempts[job["id"]] = (rid, int(job["run_attempt"]))
+                if not jobs or page * 100 >= data.get("total_count", 0):
+                    break
+                page += 1
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 404):
+            print("::warning::cannot read workflow jobs (grant actions: read); "
+                  "a failed attempt counts even after a passing re-run", flush=True)
+            return None
+        raise
+    return attempts
+
+
 def suite_events(workflow_runs: list[dict]) -> dict[int, str]:
     """check_suite_id -> event. A run superseded by a later run of the same
     workflow and event on the commit maps to "superseded": a workflow that
@@ -279,14 +328,16 @@ def main() -> int:
             suites = fetch_suites(repo, sha, token)
             runs = fetch(repo, sha, token)
             names: dict[int, str] = {}
+            repeated = needs_suite_events(runs, ignore)
             events = (fetch_suite_events(repo, sha, token, names)
-                      if needs_workflow_events(suites) or needs_suite_events(runs, ignore) else None)
+                      if needs_workflow_events(suites) or repeated else None)
+            attempts = fetch_job_attempts(repo, runs, token, ignore) if repeated else None
             state, detail = evaluate(runs, ignore,
                                      os.environ.get("CI_OK_ALL_APPS", "false") != "true",
                                      suites, required,
                                      os.environ.get("CI_OK_ALLOW_NONE_ON_PR", "false") == "true"
                                      and os.environ.get("EVENT_NAME") == "pull_request",
-                                     events, os.environ.get("EVENT_NAME", ""), names)
+                                     events, os.environ.get("EVENT_NAME", ""), names, attempts)
         except RateLimited as exc:
             if exc.reset >= deadline:
                 print(f"::error::{exc}, past this gate's deadline: ci-ok cannot read the checks "
