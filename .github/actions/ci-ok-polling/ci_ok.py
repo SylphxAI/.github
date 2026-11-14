@@ -167,14 +167,21 @@ def latest_runs(runs: list[dict], suite_events: dict[int, str] | None,
             or r.get("conclusion") not in ("cancelled", "stale")]
 
 
-def needs_suite_events(runs: list[dict], ignore: set[str]) -> bool:
-    """True when a check has more than one run and one of them is bad: only
-    the workflow runs tell a superseded run from a second workflow's job."""
+def needs_suite_events(runs: list[dict], ignore: set[str],
+                       required: frozenset[str] | set[str] = frozenset()) -> bool:
+    """True when a check has more than one run and one of them could fail the
+    gate: only workflow runs and job attempts tell a superseded run or attempt
+    from a second workflow's job."""
     names: dict[str, int] = {}
     for r in runs:
-        if r.get("name") not in ignore:
-            names[r["name"]] = names.get(r["name"], 0) + 1
-    return any(names.get(r.get("name"), 0) > 1 and r.get("conclusion") in BAD for r in runs)
+        name = r.get("name")
+        if name and name not in ignore:
+            names[name] = names.get(name, 0) + 1
+    return any(names.get(r.get("name"), 0) > 1
+               and (r.get("conclusion") in BAD
+                    or (r.get("name") in required and r.get("status") == "completed"
+                        and r.get("conclusion") != "success"))
+               for r in runs)
 
 
 def rate_limited(exc: urllib.error.HTTPError, now: float | None = None) -> float | None:
@@ -273,8 +280,9 @@ def fetch_job_attempts(repo: str, runs: list[dict], token: str, ignore: set[str]
     `actions: read`), so no run is treated as a re-run of another."""
     counts: dict[str, int] = {}
     for r in runs:
-        if r.get("name") not in ignore:
-            counts[r["name"]] = counts.get(r["name"], 0) + 1
+        name = r.get("name")
+        if name and name not in ignore:
+            counts[name] = counts.get(name, 0) + 1
     run_ids = sorted({rid for r in runs if counts.get(r.get("name"), 0) > 1
                       and (rid := workflow_run_id(r)) is not None})
     attempts: dict[int, tuple[int, int]] = {}
@@ -328,7 +336,7 @@ def main() -> int:
             suites = fetch_suites(repo, sha, token)
             runs = fetch(repo, sha, token)
             names: dict[int, str] = {}
-            repeated = needs_suite_events(runs, ignore)
+            repeated = needs_suite_events(runs, ignore, required)
             events = (fetch_suite_events(repo, sha, token, names)
                       if needs_workflow_events(suites) or repeated else None)
             attempts = fetch_job_attempts(repo, runs, token, ignore) if repeated else None

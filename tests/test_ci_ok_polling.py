@@ -475,6 +475,160 @@ class ExistingPollingProtectionsTest(unittest.TestCase):
         self.assertEqual(ci_ok.poll_interval(20, remaining=None), 20)
         self.assertEqual(ci_ok.poll_interval(20, remaining=150), 60)
 
+    def test_partial_failed_rerun_keeps_unretried_sibling_jobs_and_passes(self) -> None:
+        def check(name, rid, status="completed", conclusion="success", started="01:00:00"):
+            return dict(run(name, status=status, conclusion=conclusion), id=rid, check_suite={"id": 1},
+                        started_at=f"2026-11-14T{started}Z",
+                        details_url=f"https://github.com/o/r/actions/runs/77/job/{rid}")
+
+        snapshot = [
+            check("lint", 100, conclusion="success", started="01:00:00"),
+            check("stack", 101, conclusion="failure", started="01:00:05"),
+            check("stack", 102, conclusion="success", started="01:05:00"),
+        ]
+        pages = {
+            "https://api.github.com/repos/o/r/actions/runs?head_sha=abc&per_page=100": {
+                "workflow_runs": [{"check_suite_id": 1, "id": 77, "path": ".github/workflows/ci.yml",
+                                   "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"}],
+            },
+            "https://api.github.com/repos/o/r/actions/runs/77/jobs?filter=all&per_page=100&page=1": {
+                "total_count": 3,
+                "jobs": [
+                    {"id": 100, "run_id": 77, "run_attempt": 1},
+                    {"id": 101, "run_id": 77, "run_attempt": 1},
+                    {"id": 102, "run_id": 77, "run_attempt": 2},
+                ],
+            },
+        }
+        env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+               "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1", "CI_OK_REQUIRED": "stack"}
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                mock.patch.object(ci_ok, "fetch_suites", return_value=[]), \
+                mock.patch.object(ci_ok, "fetch", return_value=snapshot), \
+                mock.patch.object(ci_ok, "_get", side_effect=lambda url, token: pages[url]), \
+                mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 0)
+        self.assertIn("all checks passed: lint, stack", out.getvalue())
+
+    def test_distinct_suites_sharing_job_name_never_mask_failure_with_job_attempts(self) -> None:
+        suite_a_fail = dict(run("stack", conclusion="failure"), id=101, check_suite={"id": 1},
+                            started_at="2026-11-14T01:00:00Z")
+        suite_b_attempt1 = dict(run("stack", conclusion="failure"), id=201, check_suite={"id": 2},
+                                started_at="2026-11-14T01:00:00Z")
+        suite_b_attempt2 = dict(run("stack", conclusion="success"), id=202, check_suite={"id": 2},
+                                started_at="2026-11-14T01:05:00Z")
+        attempts = {101: (10, 1), 201: (20, 1), 202: (20, 2)}
+        wr = [{"check_suite_id": 1, "id": 10, "path": ".github/workflows/ci.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"},
+              {"check_suite_id": 2, "id": 20, "path": ".github/workflows/web.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"}]
+        events = ci_ok.suite_events(wr)
+        self.assertEqual(events, {1: "pull_request", 2: "pull_request"})
+        self.assertEqual(
+            ci_ok.evaluate([suite_a_fail, suite_b_attempt1, suite_b_attempt2], set(),
+                           required={"stack"}, suite_events=events, job_attempts=attempts),
+            ("fail", ["stack=failure"]),
+        )
+
+    def test_in_progress_rerun_attempt_keeps_gate_waiting(self) -> None:
+        def check(status, conclusion, rid, started):
+            return dict(run("stack", status=status, conclusion=conclusion), id=rid, check_suite={"id": 1},
+                        started_at=f"2026-11-14T{started}Z",
+                        details_url=f"https://github.com/o/r/actions/runs/77/job/{rid}")
+
+        attempt1_fail = check("completed", "failure", 101, "01:00:00")
+        attempt1_pass = check("completed", "success", 101, "01:00:00")
+        attempt2_queued = check("queued", None, 102, "01:05:00")
+        attempt2_running = check("in_progress", None, 102, "01:05:10")
+        attempt2_pass = check("completed", "success", 102, "01:06:00")
+
+        for pending_run in (attempt2_queued, attempt2_running):
+            self.assertEqual(
+                ci_ok.evaluate([attempt1_fail, pending_run], set(), required={"stack"},
+                               job_attempts={101: (77, 1), 102: (77, 2)}),
+                ("pending", ["stack"]),
+            )
+            self.assertEqual(
+                ci_ok.evaluate([attempt1_pass, pending_run], set(), required={"stack"},
+                               job_attempts={101: (77, 1), 102: (77, 2)}),
+                ("pending", ["stack"]),
+            )
+
+        snapshots = [
+            [attempt1_fail, attempt2_queued],
+            [attempt1_fail, attempt2_running],
+            [attempt1_fail, attempt2_pass],
+            [attempt1_fail, attempt2_pass],
+        ]
+        jobs_payload = {
+            "total_count": 2,
+            "jobs": [{"id": 101, "run_id": 77, "run_attempt": 1},
+                     {"id": 102, "run_id": 77, "run_attempt": 2}],
+        }
+        runs_payload = {
+            "workflow_runs": [{"check_suite_id": 1, "id": 77, "path": ".github/workflows/ci.yml",
+                               "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"}],
+        }
+
+        def fake_get(url, _token):
+            return jobs_payload if "/jobs" in url else runs_payload
+
+        env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+               "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1", "CI_OK_REQUIRED": "stack"}
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                mock.patch.object(ci_ok, "fetch_suites", return_value=[]), \
+                mock.patch.object(ci_ok, "fetch", side_effect=snapshots), \
+                mock.patch.object(ci_ok, "_get", side_effect=fake_get), \
+                mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 0)
+        self.assertEqual(out.getvalue().count("waiting on: stack"), 2)
+        self.assertIn("all checks passed: stack", out.getvalue())
+
+    def test_required_check_non_success_first_attempt_waits_for_rerun_attempt(self) -> None:
+        def check(status, conclusion, rid, started):
+            return dict(run("stack", status=status, conclusion=conclusion), id=rid, check_suite={"id": 1},
+                        started_at=f"2026-11-14T{started}Z",
+                        details_url=f"https://github.com/o/r/actions/runs/77/job/{rid}")
+
+        for first_conclusion in ("skipped", "neutral"):
+            with self.subTest(first_conclusion=first_conclusion):
+                attempt1 = check("completed", first_conclusion, 101, "01:00:00")
+                attempt2_running = check("in_progress", None, 102, "01:05:00")
+                attempt2_pass = check("completed", "success", 102, "01:06:00")
+                self.assertFalse(ci_ok.needs_suite_events([attempt1, attempt2_running], set()))
+                self.assertTrue(ci_ok.needs_suite_events([attempt1, attempt2_running], set(), required={"stack"}))
+
+                jobs_payload = {
+                    "total_count": 2,
+                    "jobs": [{"id": 101, "run_id": 77, "run_attempt": 1},
+                             {"id": 102, "run_id": 77, "run_attempt": 2}],
+                }
+                runs_payload = {
+                    "workflow_runs": [{"check_suite_id": 1, "id": 77, "path": ".github/workflows/ci.yml",
+                                       "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"}],
+                }
+
+                def fake_get(url, _token):
+                    return jobs_payload if "/jobs" in url else runs_payload
+
+                env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+                       "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1", "CI_OK_REQUIRED": "stack"}
+                out = io.StringIO()
+                with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                        mock.patch.object(ci_ok, "fetch_suites", return_value=[]), \
+                        mock.patch.object(ci_ok, "fetch", side_effect=[
+                            [attempt1, attempt2_running],
+                            [attempt1, attempt2_pass],
+                            [attempt1, attempt2_pass],
+                        ]), \
+                        mock.patch.object(ci_ok, "_get", side_effect=fake_get), \
+                        mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+                    self.assertEqual(ci_ok.main(), 0)
+                self.assertEqual(out.getvalue().count("waiting on: stack"), 1)
+                self.assertIn("all checks passed: stack", out.getvalue())
+
 
 
 
