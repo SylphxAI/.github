@@ -76,7 +76,18 @@ async function publish(reply, { current, deadlineMs, source: suppliedSource } = 
     files: Object.keys(source).map(filename => ({ filename, status: 'modified' })) },
     trigger: { kind: 'workflow_dispatch', id: '1', generation: '1' }, detailsUrl: 'https://example.com/1',
     createReviewInput, engineVersion: 'test', deadlineMs,
-    engine: async input => { posts.push(input); return parseReviewResult(JSON.stringify(reply(input, posts.length)), input); },
+    engine: Object.assign(async input => { posts.push(input); return parseReviewResult(JSON.stringify(reply(input, posts.length)), input); }, {
+      adjudicate: async ({ input }) => ({
+        schema_version: 1, repository_id: input.repository_id, base_sha: input.base_sha, head_sha: input.head_sha,
+        input_digest: input.input_digest, reviewer_version: input.reviewer_version, policy_version: input.policy_version,
+        completion: 'complete', reason: 'Fixture explicitly adjudicated supplied candidates.',
+        decisions: (input.candidates ?? []).map(candidate => {
+          const proof = candidate.finding?.evidence?.find(e => e.path === candidate.finding.path && e.side === candidate.finding.side)
+            ?? candidate.finding?.evidence?.[0];
+          return { candidate_id: candidate.candidate_id, verdict: proof ? 'retain' : 'discard', contradiction: '', proof_evidence: proof ? [proof] : [] };
+        }),
+      }),
+    }),
   });
   return { receipt, run: runs[0], reads, posts };
 }
@@ -176,18 +187,14 @@ test('partition and synthesis observations retain notes and cross-file anchors f
   assert.match(result.context_notes.join('\n'), /Outside the change/);
 });
 
-test('an incomplete finding can be reassessed by a final verdict but is not erased by final unavailability', async () => {
+test('an incomplete finding is cleared before any final verdict and remains non-blocking', async () => {
   for (const final of ['complete', 'unavailable']) {
     const { receipt, run, posts } = await publish(input => input.context_recovery !== 'exhausted'
       ? { ...incomplete(input), findings: [finding([evidence('change.js', 'after')])] }
       : { ...wire(input, []), ...(final === 'unavailable' ? { completion: final, omitted_paths: ['change.js'], reason: 'Gateway unavailable.' } : {}) });
     assert.equal(posts.length, 2);
-    assert.equal(receipt.conclusion, final === 'complete' ? 'success' : 'failure');
-    assert.equal(run.output.annotations.length, final === 'complete' ? 0 : 1);
-    if (final === 'unavailable') {
-      assert.equal(run.output.annotations[0].start_line, 1);
-      assert.match(receipt.reason, /Final verdict unavailable/);
-    }
+    assert.equal(receipt.conclusion, final === 'complete' ? 'success' : 'neutral');
+    assert.equal(run.output.annotations.length, 0);
   }
 });
 

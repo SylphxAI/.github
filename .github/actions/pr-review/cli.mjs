@@ -127,6 +127,14 @@ async function main() {
       (reviewer ??= gatewayReviewer({ token: read(authPath).inferenceToken,
         model: env.REVIEW_MODEL, maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
         reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs: engineDeadlineMs, current: () => github.current(target, { deadlineMs: engineDeadlineMs }) }))(input);
+    engine.adjudicate = async ({ input, deadlineMs: gateDeadline }) => {
+      const review = reviewer ?? gatewayReviewer({ token: read(authPath).inferenceToken, model: env.REVIEW_MODEL,
+        maxOutputTokens: env.REVIEW_MAX_OUTPUT_TOKENS ? Number(env.REVIEW_MAX_OUTPUT_TOKENS) : undefined,
+        reasoningEffort: env.REVIEW_REASONING_EFFORT, deadlineMs: gateDeadline ?? deadlineMs,
+        current: () => github.current(target, { deadlineMs: gateDeadline ?? deadlineMs }) });
+      reviewer ??= review;
+      return review.adjudicate({ input, deadlineMs: gateDeadline });
+    };
     const receipt = await produceReview({ github, target, trigger, engine, createReviewInput, engineVersion: reviewerVersion, deadlineMs,
       detailsUrl: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
       onResult: result => {

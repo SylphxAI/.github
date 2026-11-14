@@ -1,6 +1,7 @@
 import { reviewerInstructions, resultSchema, parseReviewResult, unavailable, sourceValidationReasons, identityFields, requestIdentity, digest } from './contract.mjs';
 import { fetchWithRetry } from './retry.mjs';
 import { reviewPartitions } from './partition.mjs';
+import { adjudicationSchema, adjudicationInstruction } from './adjudication.mjs';
 
 export function reviewRequest(input, { model, maxOutputTokens, reasoningEffort }) {
   // Each part/recovery/synthesis has its own seal. The overall source_digest
@@ -13,6 +14,17 @@ export function reviewRequest(input, { model, maxOutputTokens, reasoningEffort }
     response_format: { type: 'json_schema', json_schema: { name: 'pr_review', strict: true, schema } },
     ...(maxOutputTokens === undefined ? {} : { max_completion_tokens: maxOutputTokens }),
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+  });
+}
+
+export function adjudicationRequest(input, { model, maxOutputTokens, reasoningEffort }) {
+  const schema = { ...adjudicationSchema, properties: { ...adjudicationSchema.properties,
+    ...Object.fromEntries(['repository_id','base_sha','head_sha','input_digest','reviewer_version','policy_version'].map(key => [key, { ...adjudicationSchema.properties[key], enum: [input[key]] }])),
+  } };
+  return JSON.stringify({ model, stream: false, store: false,
+    messages: [{ role: 'system', content: adjudicationInstruction }, { role: 'user', content: JSON.stringify(input) }],
+    response_format: { type: 'json_schema', json_schema: { name: 'pr_review_adjudication', strict: true, schema } },
+    ...(maxOutputTokens === undefined ? {} : { max_completion_tokens: maxOutputTokens }), ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   });
 }
 
@@ -50,7 +62,7 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
   const configuration = { model, maxOutputTokens, reasoningEffort };
   const retryOptions = { fetcher, deadlineMs, wait: sleep, now, random };
   const completedParts = new Map(), identities = [];
-  return async input => {
+  const review = async input => {
     let budget;
     try {
       const remaining = deadlineMs - now();
@@ -78,6 +90,31 @@ export function gatewayReviewer({ token, model, apiOrigin = 'https://api.sylphx.
     const result = await reviewPartitions(input, { execute, requestBytes, byteBudget: budget.request_byte_limit, current, completedParts });
     return { ...result, budget, request_bytes: sizes, identity_diagnostics: [...identities], ...(invalidResult ? { invalid_result: invalidResult } : {}) };
   };
+
+  review.adjudicate = async ({ input, deadlineMs: gateDeadline = deadlineMs }) => {
+    const remaining = gateDeadline - now();
+    if (!(remaining > 0)) return { status: 'incomplete', reason: 'Review deadline expired before adjudication.' };
+    let budget;
+    try {
+      const metadataUrl = new URL(`/v1/public/models/${model.split('/').map(encodeURIComponent).join('/')}`, origin);
+      const response = await fetchWithRetry(metadataUrl, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(Math.min(30_000, remaining)), headers: { accept: 'application/json' } }, { ...retryOptions, deadlineMs: gateDeadline, timeoutMs: 30_000 });
+      if (!response.ok) return { status: 'incomplete', reason: 'Review model metadata unavailable for adjudication.' };
+      budget = contextBudget(await response.json(), model, maxOutputTokens);
+    } catch { return { status: 'incomplete', reason: 'Review model context metadata unavailable for adjudication.' }; }
+    if (!(gateDeadline > now())) return { status: 'incomplete', reason: 'Final adjudication deadline expired.' };
+    const body = adjudicationRequest(input, configuration), bytes = Buffer.byteLength(body);
+    if (bytes > budget.request_byte_limit) return { status: 'incomplete', reason: 'Adjudication source and candidates exceed the qualified model context.' };
+    try {
+      const response = await fetchWithRetry(new URL('/v1/chat/completions', origin), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(Math.max(1, gateDeadline - now())), headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body }, { ...retryOptions, deadlineMs: gateDeadline });
+      const payload = await response.json();
+      if (!(gateDeadline > now())) return { status: 'incomplete', reason: 'Final adjudication deadline expired.' };
+      if (!response.ok) return { status: 'incomplete', reason: `Adjudication gateway refused HTTP ${response.status}.` };
+      const choice = payload.choices?.[0];
+      if (payload.object !== 'chat.completion' || payload.model !== model || payload.choices?.length !== 1 || choice?.finish_reason !== 'stop' || choice.message?.role !== 'assistant' || typeof choice.message.content !== 'string' || choice.message.refusal || choice.message.tool_calls?.length) return { status: 'incomplete', reason: 'Adjudication returned no valid model result.' };
+      try { return JSON.parse(choice.message.content); } catch { return { status: 'incomplete', reason: 'Adjudication returned invalid JSON.' }; }
+    } catch { return { status: 'incomplete', reason: 'Adjudication transport failed.' }; }
+  };
+  return review;
 
   async function infer(input, originalBody, byteLimit) {
     let requestBody = originalBody;

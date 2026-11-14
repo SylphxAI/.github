@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { recoverContext } from './recovery.mjs';
+import { buildCandidates, adjudicationRequest, validateAdjudication, applyAdjudication, adjudicationVersion } from './adjudication.mjs';
 
 export function parsePolicy(content) {
   const parsed = spawnSync('python3', [fileURLToPath(new URL('../_shared/review_policy.py', import.meta.url))],
@@ -108,6 +109,55 @@ export function validateResult(result, input) {
   return result;
 }
 
+async function finalAdjudication({ github, target, input, result, engine, deadlineMs }) {
+  // A candidate from an incomplete original or recovery pass is not an
+  // authoritative blocker. Do not let the final gate resurrect it; preserve
+  // the incomplete state and publish zero findings.
+  const partsIncomplete = result.parts && Number.isInteger(result.parts.planned) &&
+    Number.isInteger(result.parts.completed) && result.parts.completed < result.parts.planned;
+  if (result.status !== 'complete' || result.terminal_incomplete || result.terminal_invalid || partsIncomplete) {
+    return { ...result, status: 'incomplete', findings: [], reason: result.reason || 'Original or recovered review context is incomplete.',
+      causal_validation: { version: adjudicationVersion, status: 'incomplete', candidates: result.findings?.length ?? 0, decisions: 0 } };
+  }
+  const candidates = buildCandidates(result, input);
+  if (!candidates.length) return result;
+  const files = [];
+  try {
+    if (await github.current(target, { deadlineMs }) !== true) throw new Unavailable('Pinned head could not be verified before final adjudication.');
+    const requireTime = () => { if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) throw new Unavailable('Final adjudication deadline expired.'); };
+    requireTime();
+    const selectedPaths = new Set(input.files.flatMap(file => [file.path, file.previous_path].filter(Boolean)));
+    const selected = target.files.filter(file => [file.filename, file.previous_filename].filter(Boolean).some(path => selectedPaths.has(path)));
+    if (!selected.length) throw new Unavailable('No reviewed source population is available for final adjudication.');
+    for (const file of selected) {
+      const beforePath = file.previous_filename ?? file.filename;
+      const before = file.status === 'added' ? null : await github.source(beforePath, target.base_sha, false, { allowBinary: true, deadlineMs });
+      const after = file.status === 'removed' ? null : await github.source(file.filename, target.head_sha, false, { allowBinary: true, deadlineMs });
+      const encode = (content, path, side) => content === null ? { path, side, absent: true, content: null } : Buffer.isBuffer(content) ? { path, side, binary: true, bytes: content.length, sha256: digest(content), content: null } : { path, side, binary: false, bytes: Buffer.byteLength(content), sha256: digest(content), content };
+      const encodedBefore = encode(before, beforePath, 'base'), encodedAfter = encode(after, file.filename, 'head');
+      if (encodedBefore.binary || encodedAfter.binary) throw new Unavailable('Required adjudication source is binary and cannot prove a blocker.');
+      files.push(encodedBefore, encodedAfter);
+    }
+    const context = (input.context ?? []).map(c => ({ path: c.path, side: c.side ?? 'context', content: typeof c.content === 'string' ? c.content : null, ...(typeof c.content === 'string' ? { bytes: Buffer.byteLength(c.content), sha256: digest(c.content) } : { unavailable: true }) }));
+    if (context.some(c => c.unavailable)) throw new Unavailable('Required recovered context is unavailable for final adjudication.');
+    if (await github.current(target, { deadlineMs }) !== true) throw new Unavailable('Pinned head changed before final adjudication.');
+    requireTime();
+    const wire = adjudicationRequest(input, candidates, { files, context });
+    // The dedicated gateway callback serializes this object in the actual model request.
+    const value = typeof engine.adjudicate === 'function' ? await engine.adjudicate({ input: wire, deadlineMs }) : { status: 'incomplete', reason: 'Final adjudication transport is unavailable.' };
+    requireTime();
+    const checked = validateAdjudication(value, input, candidates, { files, context });
+    if (!checked.ok) return { ...result, status: 'incomplete', findings: [], reason: checked.reason, causal_validation: { version: adjudicationVersion, status: 'incomplete', candidates: candidates.length, decisions: 0 } };
+    const currentAfter = await github.current(target, { deadlineMs });
+    if (currentAfter !== true) return { ...result, status: 'incomplete', findings: [], reason: 'Pinned head could not be verified after final adjudication.', causal_validation: { version: adjudicationVersion, status: 'incomplete', candidates: candidates.length, decisions: value.decisions.length } };
+    requireTime();
+    return applyAdjudication(result, value, candidates);
+  } catch (error) {
+    if (githubTerminalFailure(error)) throw error;
+    return { ...result, status: 'incomplete', findings: [], reason: error instanceof Unavailable ? error.message : 'Final adjudication source collection failed.', causal_validation: { version: adjudicationVersion, status: 'incomplete', candidates: candidates.length, decisions: 0 } };
+  }
+}
+
 function outputFor(result, input) {
   const blocking = result.findings.filter(f => ['critical', 'high', 'medium'].includes(f.severity));
   const summary = [`Head: \`${input.head_sha}\``, `Reviewer: \`${input.reviewer_version}\``,
@@ -207,20 +257,28 @@ export async function produceReview({ github, target, trigger, detailsUrl, engin
         started_at: run.started_at, observed_at: observedAt, elapsed_ms: Date.now() - started };
     }
     const reviewed = await recoverContext({ input: initialInput, github, target, allowContext: collected.allowContext,
-      execute: input => engine(input, externalId, { deadlineMs: inferenceDeadlineMs }), createReviewInput, validateResult, onResult, deadlineMs: inferenceDeadlineMs });
+      // Recovery observations are provisional. Only the final authoritative result
+      // may cross the persistence/publication callback boundary.
+      execute: input => engine(input, externalId, { deadlineMs: inferenceDeadlineMs }), createReviewInput, validateResult, deadlineMs: inferenceDeadlineMs });
     const input = reviewed.input;
     let result = reviewed.result;
     let current;
-    try { current = await github.current(target, { deadlineMs }); }
+    try {
+      current = await github.current(target, { deadlineMs });
+      if (current !== true && current !== false) throw new Unavailable('Current head response is unreadable.');
+    }
     catch (error) {
       if (githubTerminalFailure(error)) throw error;
       result = { ...result, status: 'incomplete', terminal_incomplete: false, terminal_invalid: false, reason: 'Current head could not be verified after source review.' };
-      await onResult?.(result);
     }
     if (current === false) {
+      result = { ...result, status: 'incomplete', findings: [], reason: 'Head superseded before final adjudication.' };
+      await onResult?.(result);
       const receipt = await finish('cancelled', { title: 'Head superseded', summary: `Old head \`${target.head_sha}\` was superseded. The new head needs its own review.` });
       return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion: 'cancelled', elapsed_ms: Date.now() - started };
     }
+    result = await finalAdjudication({ github, target, input, result, engine, deadlineMs: inferenceDeadlineMs });
+    await onResult?.(result);
     const { conclusion, output } = outputFor(result, input);
     const receipt = await finish(conclusion, output);
     return { check_run_id: receipt.id, head_sha: target.head_sha, conclusion, findings: result.findings.length,
