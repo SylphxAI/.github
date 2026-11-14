@@ -327,6 +327,90 @@ class ExistingPollingProtectionsTest(unittest.TestCase):
         self.assertTrue(ci_ok.needs_suite_events([old, new], set()))
         self.assertFalse(ci_ok.needs_suite_events([new, run("a")], set()))
 
+    def test_rerun_attempt_replaces_an_earlier_attempt_of_the_same_job(self) -> None:
+        # infra#5544: a desk push (synchronize) and a PR body edit (edited) started two
+        # runs of one workflow in the same second. Concurrency cancelled one's lanes and
+        # its verdict failed; a re-run of that workflow run (attempt 2) passed.
+        def r(name, conclusion, rid, suite, started):
+            return dict(run(name, conclusion=conclusion), id=rid, check_suite={"id": suite},
+                        started_at=f"2026-11-14T{started}Z")
+        runs = [
+            r("shared-path-window", "success", 132284041671, 1, "01:39:43"),
+            r("shared-path-source", "success", 132283913994, 1, "01:39:09"),
+            r("shared-path-window", "success", 132279221387, 2, "01:24:34"),
+            r("shared-path-source", "success", 132278855047, 2, "01:23:48"),
+            r("shared-path-window", "failure", 132278591557, 1, "01:22:43"),
+            r("shared-path-source", "cancelled", 132278588228, 1, "01:22:03"),
+        ]
+        rerun, other = 43540159632, 43540160281
+        attempts = {132278588228: (rerun, 1), 132278591557: (rerun, 1),
+                    132283913994: (rerun, 2), 132284041671: (rerun, 2),
+                    132278855047: (other, 1), 132279221387: (other, 1)}
+        required = {"shared-path-window"}
+        both = ("pass", ["shared-path-source", "shared-path-source", "shared-path-window", "shared-path-window"])
+        # The jobs API identifies the failed run as attempt 1 of the re-run workflow run.
+        self.assertEqual(ci_ok.evaluate(runs, set(), required=required, job_attempts=attempts), both)
+        # With workflow runs readable, the same-second run with the lower id is superseded.
+        wr = [{"check_suite_id": 1, "id": rerun, "path": ".github/workflows/shared-path-window.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:22:03Z"},
+              {"check_suite_id": 2, "id": other, "path": ".github/workflows/shared-path-window.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:22:03Z"}]
+        self.assertEqual(ci_ok.evaluate(runs, set(), required=required, suite_events=ci_ok.suite_events(wr)),
+                         ("pass", ["shared-path-source", "shared-path-window"]))
+        # Without either identity, the earlier failure still counts: fail closed.
+        self.assertEqual(ci_ok.evaluate(runs, set(), required=required)[0], "fail")
+        # A failing latest attempt fails, however the earlier attempt ended.
+        flipped = [dict(x, conclusion="failure") if x["id"] == 132284041671 else
+                   dict(x, conclusion="success") if x["id"] == 132278591557 else x for x in runs]
+        self.assertEqual(ci_ok.evaluate(flipped, set(), required=required, job_attempts=attempts),
+                         ("fail", ["shared-path-window=failure", "shared-path-window=failure (required)"]))
+
+    def test_independent_same_name_jobs_of_one_attempt_each_count(self) -> None:
+        # Two jobs of the same workflow run and attempt (matrix legs, reusable-workflow
+        # jobs) may share a name and a check suite; a passing one never hides a failing one.
+        failed = dict(run("build", conclusion="failure"), id=1, check_suite={"id": 7},
+                      started_at="2026-11-14T01:00:00Z")
+        passed = dict(run("build"), id=2, check_suite={"id": 7}, started_at="2026-11-14T01:05:00Z")
+        attempts = {1: (99, 1), 2: (99, 1)}
+        for job_attempts in (attempts, None):
+            self.assertEqual(ci_ok.evaluate([passed, failed], set(), job_attempts=job_attempts),
+                             ("fail", ["build=failure"]))
+
+    def test_cancelled_duplicate_of_another_run_beside_a_success_passes(self) -> None:
+        # pr-metadata: a cancelled run of a superseded workflow run beside the passing one.
+        cancelled = dict(run("pr-metadata", conclusion="cancelled"), id=1, check_suite={"id": 1},
+                         started_at="2026-11-14T01:44:00Z")
+        passed = dict(run("pr-metadata"), id=2, check_suite={"id": 2}, started_at="2026-11-14T01:44:05Z")
+        self.assertEqual(ci_ok.evaluate([passed, cancelled], set(), required={"pr-metadata"},
+                                        job_attempts={1: (10, 1), 2: (11, 1)}), ("pass", ["pr-metadata"]))
+
+    def test_job_attempts_come_from_the_actions_jobs_api(self) -> None:
+        runs = [dict(run("w"), id=5, details_url="https://github.com/o/r/actions/runs/77/job/5"),
+                dict(run("w", conclusion="failure"), id=4, details_url="https://github.com/o/r/actions/runs/77/job/4"),
+                dict(run("single"), id=6, details_url="https://github.com/o/r/actions/runs/78/job/6")]
+        pages = {"https://api.github.com/repos/o/r/actions/runs/77/jobs?filter=all&per_page=100&page=1":
+                 {"total_count": 2, "jobs": [{"id": 4, "run_id": 77, "run_attempt": 1},
+                                             {"id": 5, "run_id": 77, "run_attempt": 2}]}}
+        with mock.patch.object(ci_ok, "_get", side_effect=lambda url, token: pages[url]):
+            self.assertEqual(ci_ok.fetch_job_attempts("o/r", runs, "t", set()), {4: (77, 1), 5: (77, 2)})
+
+    def test_unreadable_jobs_never_collapse_attempts(self) -> None:
+        import email.message, io, urllib.error
+        runs = [dict(run("w"), id=5, details_url="https://github.com/o/r/actions/runs/77/job/5"),
+                dict(run("w", conclusion="failure"), id=4, details_url="https://github.com/o/r/actions/runs/77/job/4")]
+        denied = urllib.error.HTTPError("https://api.github.com/x", 403, "forbidden", email.message.Message(),
+                                        io.BytesIO(b""))
+        with mock.patch.object(ci_ok, "_get", side_effect=denied), contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(ci_ok.fetch_job_attempts("o/r", runs, "t", set()))
+
+    def test_required_check_is_judged_by_its_newest_run(self) -> None:
+        old = dict(run("verdict", conclusion="cancelled"), id=1, check_suite={"id": 1},
+                   started_at="2026-11-14T01:00:00Z")
+        new = dict(run("verdict"), id=2, check_suite={"id": 2}, started_at="2026-11-14T01:01:00Z")
+        self.assertEqual(ci_ok.evaluate([new, old], set(), required={"verdict"}), ("pass", ["verdict"]))
+        self.assertEqual(ci_ok.evaluate([dict(new, conclusion="failure"), old], set(), required={"verdict"}),
+                         ("fail", ["verdict=failure", "verdict=failure (required)"]))
+
     def test_same_named_jobs_of_two_live_workflows_both_count(self) -> None:
         a = dict(run("build", conclusion="failure"), id=1, check_suite={"id": 1}, started_at="2026-10-04T18:00:00Z")
         b = dict(run("build"), id=2, check_suite={"id": 2}, started_at="2026-10-04T18:01:00Z")
@@ -336,6 +420,22 @@ class ExistingPollingProtectionsTest(unittest.TestCase):
                "created_at": "2026-10-04T18:01:00Z"}]
         self.assertEqual(ci_ok.evaluate([a, b], set(), suite_events=ci_ok.suite_events(wr))[0], "fail")
         self.assertEqual(ci_ok.evaluate([a, b], set())[0], "fail")
+
+    def test_same_second_runs_of_the_same_workflow_supersede_by_id(self) -> None:
+        old = dict(run("shared-path-window", conclusion="cancelled"), id=10, check_suite={"id": 1},
+                   started_at="2026-11-12T02:05:36Z")
+        new = dict(run("shared-path-window"), id=20, check_suite={"id": 2},
+                   started_at="2026-11-12T02:05:36Z")
+        wr = [{"check_suite_id": 1, "id": 43138971656, "path": ".github/workflows/shared-path-window.yml", "event": "pull_request",
+               "created_at": "2026-11-12T02:05:36Z"},
+              {"check_suite_id": 2, "id": 43138972745, "path": ".github/workflows/shared-path-window.yml", "event": "pull_request",
+               "created_at": "2026-11-12T02:05:36Z"}]
+        expected = {1: "superseded", 2: "pull_request"}
+        for ordered in (wr, list(reversed(wr))):
+            events = ci_ok.suite_events(ordered)
+            self.assertEqual(events, expected)
+            self.assertEqual(ci_ok.evaluate([old, new, run("a")], set(), suite_events=events),
+                             ("pass", ["a", "shared-path-window"]))
 
     def test_exhausted_api_budget_fails_closed_before_the_deadline(self) -> None:
         import io, email.message, urllib.error
