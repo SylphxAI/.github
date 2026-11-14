@@ -663,19 +663,18 @@ class DistributionTests(unittest.TestCase):
 class StandardFitRegressionTests(unittest.TestCase):
     evaluate = StructuralBoundaryTests.evaluate
 
-    def test_operator_publisher_environment_is_declared_and_missing_schema_refuses(self):
-        source = (ROOT / 'scripts/operator_review_check.py').read_text()
-        declaration = json.loads((ROOT / 'scripts/env.schema.json').read_text())
-        files = {'scripts/operator_review_check.py': source,
-                 '.github/workflows/pr-review.yml': (ROOT / '.github/workflows/pr-review.yml').read_text(),
+    def test_script_environment_is_declared_and_missing_schema_refuses(self):
+        declaration = {'type': 'object', 'properties': {
+            'PUBLISH_TOKEN': {'type': 'string', 'writeOnly': True}}}
+        files = {'scripts/publisher.py': 'import os\ntoken = os.environ["PUBLISH_TOKEN"]\n',
                  'scripts/env.schema.json': json.dumps(declaration)}
         self.assertEqual(self.evaluate(files)['findings'], [])
-        del declaration['properties']['OPS_SECURITY_APP_TOKEN']
+        del declaration['properties']['PUBLISH_TOKEN']
         files['scripts/env.schema.json'] = json.dumps(declaration)
         findings = self.evaluate(files)['findings']
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]['rule'], 'undeclared-setting')
-        self.assertEqual(findings[0]['path'], 'scripts/operator_review_check.py')
+        self.assertEqual(findings[0]['path'], 'scripts/publisher.py')
 
 
     def test_negative_fixture_declarations_are_excluded_but_real_invalid_configs_fail(self):

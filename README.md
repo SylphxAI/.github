@@ -78,5 +78,5 @@ Current scope, source payloads and the migration constraint are in
 [Enterprise repository rules](docs/enterprise-rulesets.md). Merge queues remain
 repository-level policy ([settings](docs/merge-queue-settings.md)).
 
-Canonical operator approvals for the public `.github` and `skills` repositories
-are documented in [Public repository operator review](docs/public-operator-review.md).
+The trusted-main [PR review](docs/pr-review.md) is advisory. This repository
+requires inherited `ci-ok`, repository `pr-metadata`, and the native merge queue.

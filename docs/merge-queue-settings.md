@@ -110,7 +110,10 @@ policy-declared context and an existing required-check rule; it changes only
 that binding and verifies the full resulting object. It preserves all queue,
 review, strictness, bypass and condition fields, including unrelated check drift.
 The unfiltered apply remains full policy convergence, not a narrow adoption
-command. [Public operator review](public-operator-review.md) uses this scoped mode.
+command. For example, `--repo SylphxAI/.github --only-check pr-metadata`
+selects only the Actions metadata binding. That repository inherits `ci-ok` from
+the organization; its trusted-main `Sylphx PR Review` check is advisory, not a
+required context or merge-group projection.
 
 A ruleset inherited from an organization or enterprise ruleset (GraphQL `source`
 not `Repository`) is reported `INHERITED` and never written: REST has no path to

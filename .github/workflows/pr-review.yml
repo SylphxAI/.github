@@ -24,8 +24,7 @@ permissions:
   id-token: write
 
 concurrency:
-  # Every projection is independent; queued merge groups must not evict one another.
-  group: pr-review-${{ github.event.workflow_run.event == 'merge_group' && github.run_id || inputs.merge-group-run != '' && github.run_id || github.event.workflow_run.pull_requests[0].number || inputs.pull-request || github.event.workflow_run.head_sha }}
+  group: pr-review-${{ github.event.workflow_run.pull_requests[0].number || inputs.pull-request || github.event.workflow_run.head_sha }}
   cancel-in-progress: true
 
 jobs:
@@ -50,36 +49,3 @@ jobs:
           reasoning-effort: ${{ vars.SYLPHX_REVIEW_REASONING_EFFORT }}
           max-output-tokens: ${{ vars.SYLPHX_REVIEW_MAX_OUTPUT_TOKENS }}
           github-token: ${{ github.token }}
-
-  operator-projection:
-    # workflow_run is loaded from main; the source merge_group's code and
-    # artifacts are never executed. Access authenticates this exact main wrapper.
-    if: github.ref == 'refs/heads/main' && github.repository == 'SylphxAI/.github' && github.event.repository.visibility == 'public' && ((github.event_name == 'workflow_run' && github.event.workflow_run.event == 'merge_group') || (github.event_name == 'workflow_dispatch' && inputs.merge-group-run != '' && inputs.pull-request == ''))
-    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
-    permissions:
-      actions: read
-      checks: read
-      contents: read
-      pull-requests: read
-      id-token: write
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ github.workflow_sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22.14.0'
-      - name: Obtain canonical App checks-only publisher
-        env:
-          REVIEW_CI_NAME: pr-review-shared
-          REVIEW_TRUST_POLICY: ${{ vars.SYLPHX_REVIEW_TRUST_POLICY }}
-        run: node .github/actions/pr-review/cli.mjs auth
-      - name: Project canonical operator approvals onto the native merge group
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ops_security_merge_group.py
-      - name: Remove ephemeral publisher credentials
-        if: always()
-        run: rm -f "$RUNNER_TEMP/pr-review-auth.json"
