@@ -763,4 +763,195 @@ group records or caller exceptions. A changed, copied, removed or genuinely
 unrecorded constituent refuses automatic migration. Removing unrelated
 unrecorded debt is allowed; it is never grandfathered by this correction.
 An unchanged old malformed record still fails as stale, and corrected records
-subsequently obey the ordinary shrinking ra
+subsequently obey the ordinary shrinking ratchet. The helper writes no baseline
+or evidence on refusal.
+
+A lexical repair can also expose a Rust destination the frozen regex detector
+never recognized at all. During that transition, the helper may add the explicit
+one-time marker
+`# stack-rule-adopted-v1 architecture/C1/project-portability-rust-literals`.
+This is coverage within the same rule, not a new finding identity. The old
+immutable, registered detector source must match the reviewed pre-lexer SHA-256
+in `adoption.py`; lexical-aware, mixed or unknown old sources cannot reopen it.
+Historical capability profiles remain unchanged.
+
+Only exact Rust findings independently present at the base and surviving at the
+head qualify. The old detector must have recognized neither the literal nor an
+equal source span anywhere in that file, even under a different occurrence
+number. Previously recognized but unrecorded debt, diagnostic-context changes,
+other languages, moved or changed literals and extra copies are not eligible.
+The helper and required check use the same eligibility predicate; the required
+check independently derives base and head evidence and requires the explicit
+marker before allowing record growth. That marker cannot be removed or reused;
+subsequent records only shrink. This coverage can combine with the exact rekey
+operation above, but never weakens its constituent-preservation checks. An old
+record whose bytes collide with a different current occurrence is not an
+allowance for that different occurrence.
+
+The existing required stack verdict carries this rule. A caller qualification
+must include one actual failing private-destination change and a clean passing
+change, and demonstrate that failure reaches its required aggregate. This
+lexical check does not certify computed hosts, API publicness, key permissions,
+or all Kubernetes aliases; these remain census and owning-writer review work.
+
+### Recorded decisions
+
+Head scans reject expired decisions without aborting source discovery or baseline
+comparison. Each expired decision emits one `decision_errors` diagnostic with a
+stable id derived from its repository and exact finding scope, covered path and
+line, expiry date and authority link. It is a policy failure, not unreadable
+source or a baselineable finding; expired decisions never exempt source findings.
+Genuinely stale baseline records still fail independently.
+
+Historical base scans still validate every
+record, but discard expired decisions from exemptions and retain the actual
+findings. Removing an expired decision therefore preserves unchanged inherited
+debt; it neither clears the base census nor exempts new violations. The required
+check, offline adoption and relocated-source comparisons use this same base-only
+behavior. Other malformed or unreadable base inputs keep their existing error
+handling.
+
+`.github/architecture-decisions.json` has `version: 1` and a `decisions` array.
+Every entry names `repository`, `path`, `line`, `class`, `rule`, `source_sha256`,
+`owner`, `reason`, `contract`, `expires`, `authority`, `evidence` and
+`reconsideration`. The hash covers the exact file, so changed context cannot
+silently inherit an old decision. Contract, authority and evidence are HTTPS
+links; the reason must be specific. Wildcards, duplicate entries, expired
+entries, wrong repositories and unmatched/stale records fail. A decision
+explains why a static candidate is justified; it cannot authorize a backdoor,
+unauthorized spend or loss of user data.
+
+TOML `min_instances` and Knative `min-scale`/`minScale` above zero need such
+a recorded always-on decision. TOML `[env.NAME]` and `[env] NAME = ...`
+declare environment settings. HPA `minReplicas` and KEDA `minReplicaCount` above zero are checked
+when `conformance.request-driven: "true"` or an HTTP trigger identifies the
+workload as request-driven. Unclassified autoscalers remain a stated limit.
+A CronJob that is the work itself names its contract in
+`conformance.calendar-obligation: "https://...#daily-report"` (or its expiry or
+safety-resync contract). A cron frequency alone is not a calendar obligation.
+Finite transport retry is recognized from finite ranges or an attempts bound
+with progress; a bare `allow` comment does not suppress polling.
+Polling-loop recognition uses explicit infinite loop forms or a retry counter
+that never advances. Trait implementations, collection iteration, finite
+counted loops and conditional event loops are not inferred to be unbounded.
+Self-rearming state-read timers without an exit are polling too; guarded timers
+and animation callbacks are separate paired negatives.
+
+A completed migration can declare `{"completed": true, "retired_routes":
+["/old"]}` in `.github/architecture-migrations.json`. This is an explicit
+migration contract, not a route-deletion instruction inferred from a match.
+
+### Required CI and rollout evidence
+
+The optimistic gate template runs `stack` for every change, including
+configuration-only and documentation-only changes, and requires its successful
+result through the existing `needs-pass` action. This repository uses that same
+required chain. Adoption in another repository means moving its shared pin and
+required workflow together. A merged action or template is not portfolio
+rollout: each included repository still needs a seeded red run and a clean
+green run at its actual required verdict. Delivered customer repositories stay
+excluded. Refresh the repository population across all declared organizations,
+including the declared product organizations, before rollout.
+
+The former standalone proposal in PR #283 is consolidated here: its progress
+polling rules and paired negatives are part of stack-conformance. This delivery
+does not introduce a second `standards-lint` action or a second baseline.
+
+### Pinned repository identities
+
+C3 derives product identities from the dated architecture-map product rows,
+resolved by numeric repository ID in `policy/architecture-repositories.json`;
+the checker contains no hand-maintained product list. Engine, service and tool
+repositories do not become downstream products merely because of their org. The dated paginated census
+covers SylphxAI, Cubeage, EpiowAI and OzyrixLtd
+(653 repository IDs, 122 unarchived at the 2026-11-01 read). TseFamily is a
+personal organization and is excluded from company censuses, baselines and rollouts. Numeric IDs retain identity across canonical
+names. Archived rows remain visible as history and do not seed import rules.
+The policy declares which layers are shared, including Cubeage's platform,
+kit and tycoon engine; Cubeage layers use their own title population.
+
+Refresh from a complete metadata snapshot with
+`scripts/build_architecture_catalog.py --snapshot SNAPSHOT.json --products PRODUCTS.json`; its input
+records each organization's query, page sizes, read time and repository count.
+It rejects missing organizations, count mismatches and duplicate identities.
+The generated file ships with the action's immutable pin. It is a bounded
+identity vocabulary, not an assertion that every repository name is a product
+or that every import has been semantically classified. New aliases appear on
+the next catalog refresh; a name-only rule cannot infer an arbitrary renamed
+crate or a downstream relationship hidden behind a generic interface.
+
+C2 includes the witnessed provider-host forms (Stripe, Nexmo, Apple receipt
+verification, Android Publisher, FCM, fal.ai and Replicate). An owning service
+path permits its own capability's adapter; placing a Stripe call in the Auth
+service does not turn it into a Money adapter. Provider literals in comments,
+documentation and fixtures pass. These are regression candidates for migration,
+not authorization to remove live-user continuity or the existing payment path.
+
+
+## Source relocation provenance
+
+A complete historical product checkout can move under a monorepo prefix without
+becoming new application code or a newly applied database migration. The pinned
+shared checker owns `policy/source-relocations.json`; a caller cannot declare its
+own inherited root. Each reviewed record names the destination repository and
+prefix, original repository, full commit and Git tree, and exact origin URL.
+Review the origin commit/tree through primary GitHub evidence before adding a
+record. This policy is not an archive approval or a declaration that the source
+is safe, supported, deployable, ad-free, or complete across every historical ref.
+
+On first introduction, the entire prefix must equal the registered origin tree,
+including file modes. A content or mode change fails closed. The stack checker
+then evaluates architecture decisions, environment declarations and the original
+shrink-only departure baseline relative to that source root. Findings stay in the
+combined report at their actual monorepo paths with provenance. Existing findings
+remain inherited; new findings, removed decisions, baseline growth, and removed
+ratchet markers still fail normally. Once landed, subsequent changes compare with
+the normal base revision, not a perpetually frozen origin. No nested environment
+settings or decisions leak into the maintained root or another imported root.
+
+The migration guard uses that same verified first-import tree as the immutable
+comparison baseline: byte-identical historical SQL is not a new migration.
+Subsequent SQL edits/deletions remain forbidden, and new destructive migrations
+still require the ordinary expand/contract proof. No SQL is changed or executed.
+Model pins, forced branch updates, agent-runtime ownership, work-engine ownership,
+knowledge/CRM ownership and Keel boundaries continue scanning the full checkout;
+source relocation grants no exemption from those checks. The capability profile
+hashes both the shared primitive and its policy, preserving release provenance.
+
+### Exact generated-dependency projections
+
+A historical source tree may include generated dependency copies that must not
+become a second maintained source. A reviewed `generated_omissions` record in the
+**shared checker release** may name an omitted subtree's immutable Git tree OID,
+upstream repository/revision, and the path and SHA-256 of its generator/file
+manifest. There is no caller-supplied exclusion or baseline waiver.
+
+On the initial import, the checker reconstructs Git tree hashes in memory by
+reinserting just those recorded OIDs into the maintained subtree. The result must
+equal the independently observed **full original Git tree**; every other byte,
+path, executable bit and symlink is exact. The manifest blob must also equal the
+reviewed SHA-256. An omitted path already present, overlapping paths, an invalid
+ancestor, or any mismatch fails closed. The checker does not download dependencies,
+write Git objects, or run a generator. Caller CI separately materializes and tests
+the pinned dependency using its ordinary read-only grants. Reports distinguish
+`exact-origin-projection` from `exact-origin-tree` and `existing-base`.
+
+This is the same visible inherited-source treatment as an exact whole-tree move:
+new SQL/debt after import remains a regression, immutable SQL remains immutable,
+and the full-repository hard guards still run. It is not permission to vend a
+second engine or skip the imported product's executing build/deploy callers.
+
+The initial FMJ projection records origin `2547c8dd53fa79512e92ced1bcf0729071ee992b`,
+full tree `75bbdbf7453e9b94b6c2bdd258360c7f64492e82`, and only generated subtree
+`server/vendor/tycoon-engine` (`85b8e009eaeeb85f159f827e033631cd2fae5b6a`).
+The GitHub commit/tree API read on 2026-11-01 agrees with the retained full-history
+objects. Its dependency manifest describes all 207 generated files from the
+original `0010` layout at the *same* engine revision
+`b73cd985b7dd06c39d57ea0e697878212f2b639d`; this change does not advance that engine.
+
+## Disconnected Rust source
+
+The same action runs the no-build [Rust source reachability check](rust-source-reachability.md).
+It rejects under-crate files with no Cargo/module/include/trybuild consumer.
+This is independent of the stack baseline: only exact reasoned exceptions
+for real templates or preserved vendor inputs are accepted.
