@@ -442,6 +442,7 @@ def review_findings(api, pr, commits):
                 state = 'pending'
                 if orphaned_check(latest, api.repository,
                                   lambda owner_id: api.get(f'actions/runs/{owner_id}'),
+                                  lambda check_id: api.get(f'check-runs/{check_id}'),
                                   os.environ.get('GITHUB_SERVER_URL', 'https://github.com')):
                     state = 'orphaned: review is in_progress but its workflow run completed'
             else:

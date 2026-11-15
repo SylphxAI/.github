@@ -61,9 +61,27 @@ class ReviewVerdictTest(unittest.TestCase):
         check = run(status='in_progress', conclusion=None)
         check['details_url'] = 'https://github.com/example/repo/actions/runs/17'
         self.api.check_runs.return_value = [check]
-        self.api.get.side_effect = lambda path: {'id': 17, 'status': 'completed'} if path == 'actions/runs/17' else pull()
+        self.api.get.side_effect = lambda path: (
+            {'id': 17, 'status': 'completed'} if path == 'actions/runs/17'
+            else {'id': 1, 'status': 'in_progress'} if path == 'check-runs/1'
+            else pull()
+        )
         self.assert_state('orphaned')
         self.api.get.assert_any_call('actions/runs/17')
+        self.api.get.assert_any_call('check-runs/1')
+
+    def test_completed_owner_with_fresh_completed_check_is_not_orphaned(self):
+        check = run(status='in_progress', conclusion=None)
+        check['details_url'] = 'https://github.com/example/repo/actions/runs/17'
+        self.api.check_runs.return_value = [check]
+        self.api.get.side_effect = lambda path: (
+            {'id': 17, 'status': 'completed'} if path == 'actions/runs/17'
+            else {'id': 1, 'status': 'completed', 'conclusion': 'success'} if path == 'check-runs/1'
+            else pull()
+        )
+        self.assert_state('pending')
+        self.api.get.assert_any_call('actions/runs/17')
+        self.api.get.assert_any_call('check-runs/1')
 
     def test_live_owner_is_pending_not_orphaned(self):
         check = run(status='in_progress', conclusion=None)

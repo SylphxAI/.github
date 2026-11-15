@@ -41,35 +41,50 @@ class CheckRunOwnerTests(unittest.TestCase):
                     {'status': 'in_progress', 'details_url': url}, 'example/repo', read))
                 read.assert_not_called()
 
-    def test_only_explicit_completed_matching_owner_is_orphaned(self) -> None:
+    def test_only_explicit_completed_matching_owner_and_unfinished_check_is_orphaned(self) -> None:
         cases = [
-            ({'id': 42, 'status': 'completed'}, True),
-            ({'id': 43, 'status': 'completed'}, False),
-            ({'id': '42', 'status': 'completed'}, False),
-            ({'id': 42, 'status': 'in_progress'}, False),
-            ({'id': 42, 'status': 'queued'}, False),
-            ({'id': 42}, False),
-            (None, False),
-            ([], False),
+            ({'id': 42, 'status': 'completed'}, {'id': 9, 'status': 'in_progress'}, True),
+            ({'id': 42, 'status': 'completed'}, {'id': 9, 'status': 'completed', 'conclusion': 'success'}, False),
+            ({'id': 42, 'status': 'completed'}, {'id': 10, 'status': 'in_progress'}, False),
+            ({'id': 42, 'status': 'completed'}, None, False),
+            ({'id': 43, 'status': 'completed'}, {'id': 9, 'status': 'in_progress'}, False),
+            ({'id': '42', 'status': 'completed'}, {'id': 9, 'status': 'in_progress'}, False),
+            ({'id': 42, 'status': 'in_progress'}, {'id': 9, 'status': 'in_progress'}, False),
+            ({'id': 42, 'status': 'queued'}, {'id': 9, 'status': 'in_progress'}, False),
+            ({'id': 42}, {'id': 9, 'status': 'in_progress'}, False),
+            (None, {'id': 9, 'status': 'in_progress'}, False),
+            ([], {'id': 9, 'status': 'in_progress'}, False),
         ]
-        for result, expected in cases:
-            with self.subTest(result=result):
+        for owner_result, check_result, expected in cases:
+            with self.subTest(owner_result=owner_result, check_result=check_result):
                 self.assertIs(
                     owner.orphaned_check(
-                        {'status': 'in_progress', 'details_url': 'https://github.com/example/repo/actions/runs/42'},
+                        {'id': 9, 'status': 'in_progress',
+                         'details_url': 'https://github.com/example/repo/actions/runs/42'},
                         'example/repo',
-                        lambda _: result,
+                        lambda _: owner_result,
+                        lambda _: check_result,
                     ),
                     expected,
                 )
+        self.assertFalse(owner.orphaned_check(
+            {'id': 9, 'status': 'in_progress',
+             'details_url': 'https://github.com/example/repo/actions/runs/42'},
+            'example/repo',
+            lambda _: {'id': 42, 'status': 'completed'},
+        ))
 
     def test_completed_check_and_enterprise_origin(self) -> None:
-        read = mock.Mock(return_value={'id': 42, 'status': 'completed'})
-        check = {'status': 'completed', 'details_url': 'https://git.example/example/repo/actions/runs/42'}
-        self.assertFalse(owner.orphaned_check(check, 'example/repo', read, 'https://git.example'))
-        read.assert_not_called()
+        read_owner = mock.Mock(return_value={'id': 42, 'status': 'completed'})
+        read_check = mock.Mock(return_value={'id': 9, 'status': 'in_progress'})
+        check = {'id': 9, 'status': 'completed', 'details_url': 'https://git.example/example/repo/actions/runs/42'}
+        self.assertFalse(owner.orphaned_check(check, 'example/repo', read_owner, read_check, 'https://git.example'))
+        read_owner.assert_not_called()
+        read_check.assert_not_called()
         check['status'] = 'in_progress'
-        self.assertTrue(owner.orphaned_check(check, 'example/repo', read, 'https://git.example'))
+        self.assertTrue(owner.orphaned_check(check, 'example/repo', read_owner, read_check, 'https://git.example'))
+        read_owner.assert_called_once_with(42)
+        read_check.assert_called_once_with(9)
 
     def test_review_and_merge_group_gate_deadline_contract(self) -> None:
         load = lambda path: yaml.load((ROOT / path).read_text(), Loader=yaml.BaseLoader)

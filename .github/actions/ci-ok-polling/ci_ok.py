@@ -83,7 +83,7 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
              event_name: str = "",
              suite_names: dict[int, str] | None = None,
              job_attempts: dict[int, tuple[int, int]] | None = None,
-             owner_reader=None, repository: str = "") -> tuple[str, list[str]]:
+             owner_reader=None, check_reader=None, repository: str = "") -> tuple[str, list[str]]:
     """Return ('pending'|'fail'|'pass', details) for the given check runs.
 
     By default only GitHub Actions check runs count: other apps post deploy
@@ -105,12 +105,6 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
                             and (not actions_only or r.get("name") in required or
                  (r.get("app") or {}).get("slug", "github-actions") == "github-actions")],
                            suite_events, job_attempts)
-    if owner_reader is not None:
-        orphaned = [r['name'] + ': orphaned (workflow run completed)' for r in relevant
-                    if orphaned_check(r, repository, owner_reader,
-                                      os.environ.get('GITHUB_SERVER_URL', 'https://github.com'))]
-        if orphaned:
-            return 'fail', sorted(orphaned)
     pending = [r["name"] for r in relevant if r.get("status") != "completed"]
     pending += [f'workflow has no jobs yet (check suite {s.get("id")})'
                 for s in suites or []
@@ -132,7 +126,15 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
         bad += [f'{r["name"]}={r.get("conclusion") or "missing"} (required)'
                 for r in relevant if r["name"] in required and r.get("status") == "completed"
                 and r.get("conclusion") != "success" and r.get("conclusion") not in BAD]
-        return ("fail", sorted(bad)) if bad else ("pending", sorted(pending))
+        if bad:
+            return ("fail", sorted(bad))
+        if owner_reader is not None:
+            orphaned = [r['name'] + ': orphaned (workflow run completed)' for r in relevant
+                        if orphaned_check(r, repository, owner_reader, check_reader,
+                                          os.environ.get('GITHUB_SERVER_URL', 'https://github.com'))]
+            if orphaned:
+                return ('fail', sorted(orphaned))
+        return ("pending", sorted(pending))
     newest: dict[str, dict] = {}
     for r in relevant:
         if r["name"] not in newest or _started(r) > _started(newest[r["name"]]):
@@ -373,12 +375,16 @@ def main() -> int:
                     owners[owner_id] = _get(f'https://api.github.com/repos/{repo}/actions/runs/{owner_id}', token)
                 return owners[owner_id]
 
+            def read_check(check_id):
+                return _get(f'https://api.github.com/repos/{repo}/check-runs/{check_id}', token)
+
             state, detail = evaluate(runs, ignore,
                                      os.environ.get("CI_OK_ALL_APPS", "false") != "true",
                                      suites, required,
                                      os.environ.get("CI_OK_ALLOW_NONE_ON_PR", "false") == "true"
                                      and os.environ.get("EVENT_NAME") == "pull_request",
-                                     events, os.environ.get("EVENT_NAME", ""), names, attempts, read_owner, repo)
+                                     events, os.environ.get("EVENT_NAME", ""), names, attempts,
+                                     read_owner, read_check, repo)
         except RateLimited as exc:
             if exc.reset >= deadline:
                 print(f"::error::{exc}, past this gate's deadline: ci-ok cannot read the checks "

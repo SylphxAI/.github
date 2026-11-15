@@ -18,12 +18,20 @@ def workflow_owner_id(details_url, repository, server_url='https://github.com'):
         return None
 
 
-def orphaned_check(run, repository, read_owner, server_url='https://github.com'):
-    """Only an explicit completed owner establishes an orphan, never a bad URL."""
+def orphaned_check(run, repository, read_owner, read_check=None, server_url='https://github.com'):
+    """Only a completed owner and a freshly re-read unfinished check establish an orphan."""
     if run.get('status') != 'in_progress':
         return False
     owner_id = workflow_owner_id(run.get('details_url'), repository, server_url)
     if owner_id is None:
         return False
     owner = read_owner(owner_id)
-    return isinstance(owner, dict) and owner.get('id') == owner_id and owner.get('status') == 'completed'
+    if not (isinstance(owner, dict) and owner.get('id') == owner_id and owner.get('status') == 'completed'):
+        return False
+    check_id = run.get('id')
+    if read_check is None or not isinstance(check_id, int) or isinstance(check_id, bool):
+        return False
+    fresh = read_check(check_id)
+    if not (isinstance(fresh, dict) and fresh.get('id') == check_id):
+        return False
+    return fresh.get('status') != 'completed'
