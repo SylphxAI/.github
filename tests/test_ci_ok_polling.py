@@ -736,3 +736,45 @@ class OrphanOwnerPollingTests(unittest.TestCase):
         with mock.patch.object(ci_ok, "_deadline", 105),                 mock.patch.object(ci_ok.time, "time", return_value=100),                 mock.patch.object(ci_ok.time, "sleep") as sleep:
             ci_ok.bounded_sleep(1000)
             sleep.assert_called_once_with(5)
+
+
+@pytest.mark.parametrize(
+    "old_conclusion,status,conclusion,expected",
+    [("failure", "completed", "success", "pass"),
+     ("success", "completed", "failure", "fail"),
+     ("failure", "queued", None, "pending"),
+     ("failure", "in_progress", None, "pending")],
+)
+def test_rerun_attempts_across_check_and_job_pages(old_conclusion, status, conclusion, expected):
+    # A replacement can be on a later page in BOTH inventories. Keep attempt
+    # identity authoritative even when timestamps tie or a queued job has none.
+    checks = [dict(run("stack", conclusion=old_conclusion), id=1)]
+    checks += [dict(run(f"check-{i}"), id=i) for i in range(2, 101)]
+    checks += [dict(run("stack", status, conclusion), id=101)]
+    for check in checks:
+        check["details_url"] = f"https://github.com/o/r/actions/runs/77/job/{check['id']}"
+        check["started_at"] = None if check["status"] == "queued" else "2026-11-15T01:00:00Z"
+    jobs = [{"id": check["id"], "run_id": 77,
+             "run_attempt": 2 if check["id"] == 101 else 1} for check in checks]
+    checks_url = "https://api.github.com/repos/o/r/commits/head/check-runs?filter=all&per_page=100&page="
+    jobs_url = "https://api.github.com/repos/o/r/actions/runs/77/jobs?filter=all&per_page=100&page="
+    pages = {
+        checks_url + "1": {"total_count": 101, "check_runs": checks[:100]},
+        checks_url + "2": {"total_count": 101, "check_runs": checks[100:]},
+        jobs_url + "1": {"total_count": 101, "jobs": jobs[:100]},
+        jobs_url + "2": {"total_count": 101, "jobs": jobs[100:]},
+    }
+    with mock.patch.object(ci_ok, "_get", side_effect=lambda url, token: pages[url]) as get:
+        fetched = ci_ok.fetch("o/r", "head", "t")
+        attempts = ci_ok.fetch_job_attempts("o/r", fetched, "t", set())
+    assert fetched == checks
+    assert len(attempts) == 101
+    assert attempts[1] == (77, 1)
+    assert attempts[101] == (77, 2)
+    assert get.call_args_list == [mock.call(url, "t") for url in pages]
+    state, details = ci_ok.evaluate(fetched, set(), job_attempts=attempts)
+    assert state == expected
+    if expected == "pass":
+        assert details == sorted({check["name"] for check in checks})
+    else:
+        assert details == (["stack=failure"] if expected == "fail" else ["stack"])
