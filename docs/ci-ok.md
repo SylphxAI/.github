@@ -193,7 +193,16 @@ with inline verdict logic can use the review-only action inside the required
 - uses: SylphxAI/.github/.github/actions/review-gate@<full-release-sha> # main
 ```
 
-Give that job `contents: read`, `pull-requests: read` and `checks: read`. The
+Give that job `actions: read`, `contents: read`, `pull-requests: read` and `checks: read`. The
 action is a no-op outside `merge_group` and shares the membership resolver and
 review decision with both aggregate actions; it does not add contribution
 metadata or job-result requirements to an inline verdict.
+
+A pending Check Run whose same-repository GitHub Actions workflow owner is
+already completed is an orphan, not a running dependency. Exact-head review
+admission and the legacy polling gate fail it immediately. Owner URLs must
+match the configured GitHub server and repository; missing or unreadable owner
+metadata never establishes success. The caller needs `actions: read` for owner
+metadata. The legacy polling action caps its wait at 14 minutes; callers must
+give the containing job a timeout of at most 15 minutes and use `always()`
+for its terminal verdict.

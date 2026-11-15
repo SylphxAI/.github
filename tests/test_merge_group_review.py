@@ -57,6 +57,21 @@ class ReviewVerdictTest(unittest.TestCase):
         self.api.get.return_value = pull()
         self.api.check_runs.return_value = [run()]
 
+    def test_orphaned_exact_head_review_fails_with_owner_diagnostic(self):
+        check = run(status='in_progress', conclusion=None)
+        check['details_url'] = 'https://github.com/example/repo/actions/runs/17'
+        self.api.check_runs.return_value = [check]
+        self.api.get.side_effect = lambda path: {'id': 17, 'status': 'completed'} if path == 'actions/runs/17' else pull()
+        self.assert_state('orphaned')
+        self.api.get.assert_any_call('actions/runs/17')
+
+    def test_live_owner_is_pending_not_orphaned(self):
+        check = run(status='in_progress', conclusion=None)
+        check['details_url'] = 'https://github.com/example/repo/actions/runs/17'
+        self.api.check_runs.return_value = [check]
+        self.api.get.side_effect = lambda path: {'id': 17, 'status': 'in_progress'} if path == 'actions/runs/17' else pull()
+        self.assert_state('pending')
+
     def verdict(self, pr=None, commits=None):
         return policy.review_findings(self.api, pr or pull(), commits or [commit(HEAD)])
 
@@ -580,7 +595,7 @@ class StandaloneReviewGateTest(unittest.TestCase):
                     continue
                 callers.add((path.name, name))
                 permissions = job.get('permissions', workflow.get('permissions', {}))
-                for scope in ('contents', 'pull-requests', 'checks'):
+                for scope in ('actions', 'contents', 'pull-requests', 'checks'):
                     with self.subTest(workflow=path.name, job=name, scope=scope):
                         self.assertIn(permissions.get(scope), ('read', 'write'))
         self.assertEqual(callers, {('project-control.yml', 'ci-ok'),

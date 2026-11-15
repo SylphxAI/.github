@@ -227,10 +227,10 @@ for (const failure of [404, 503, new Error('private-source-and-credential')]) {
       assert.equal(state.id, 41); assert.equal(reads(), 3); assert.deepEqual(writes.map(w => w.method), ['POST']);
       const { result, resource } = finalize(directory, run(), state, typeof failure === 'number' ? failure : 503);
       assert.equal(result.status, 1, result.stderr); assert.match(result.stderr, /publish_unverified/);
-      assert.equal(resource.run.status, 'completed'); assert.equal(resource.run.conclusion, 'neutral');
+      assert.equal(resource.run.status, 'completed'); assert.equal(resource.run.conclusion, 'failure');
       assert.equal(resource.writes.length, 1); assert.equal(resource.writes[0].output.title, 'Review interrupted');
       const persisted = JSON.parse(readFileSync(join(directory, 'pr-review-state.json'), 'utf8'));
-      assert.equal(persisted[0].publication.expected.conclusion, 'neutral');
+      assert.equal(persisted[0].publication.expected.conclusion, 'failure');
       const again = finalize(directory, resource.run, persisted[0], 404);
       assert.equal(again.result.status, 1); assert.equal(again.resource.writes.length, 0, 'recovery must not resend terminal PATCH');
     } finally { rmSync(directory, { recursive: true, force: true }); }

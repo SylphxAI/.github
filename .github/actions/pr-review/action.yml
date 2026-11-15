@@ -37,7 +37,7 @@ runs:
       env:
         REVIEW_CI_NAME: ${{ inputs.ci-name }}
         REVIEW_TRUST_POLICY: ${{ inputs.trust-policy }}
-      run: node "$GITHUB_ACTION_PATH/cli.mjs" auth
+      run: timeout --kill-after=5s 30s node "$GITHUB_ACTION_PATH/cli.mjs" auth
     - name: Review exact heads
       id: review
       shell: bash
@@ -46,10 +46,10 @@ runs:
         REVIEW_MODEL: ${{ inputs.model }}
         REVIEW_REASONING_EFFORT: ${{ inputs.reasoning-effort }}
         REVIEW_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
-      run: timeout --signal=INT 38m node "$GITHUB_ACTION_PATH/cli.mjs" review
+      run: timeout --signal=INT --kill-after=5s 12m node "$GITHUB_ACTION_PATH/cli.mjs" review
     - name: Settle an interrupted review
       if: always() && steps.auth.outcome == 'success'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
-      run: timeout 2m node "$GITHUB_ACTION_PATH/cli.mjs" finalize
+      run: timeout --kill-after=5s 2m node "$GITHUB_ACTION_PATH/cli.mjs" finalize

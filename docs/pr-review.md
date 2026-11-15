@@ -390,16 +390,18 @@ weaken verbatim validation, prove a root cause, add an inference retry or turn
 unavailable work into a pass. The existing CLI prints and saves the safe receipt,
 so it survives the ephemeral runner without exporting private round diagnostics.
 
-The shared deadline is 35 minutes from review-step start, including event discovery,
+The shared deadline is 11 minutes from review-step start, including event discovery,
 source collection, inference and Check Run publication. Within that budget, the
 producer reserves the final 60 seconds (`PUBLISH_RESERVE_MS`) for post-review
 head verification, annotation batch uploads and terminal Check Run publication,
 bounding source collection, inference and context recovery to the earlier
 inference deadline when the total budget exceeds 60 seconds. The process is stopped at
-38 minutes; the 45-minute wrapper job leaves time for authentication and
+12 minutes; the 15-minute wrapper job leaves time for authentication and
 finalization. The two-minute finalizer has its own 90-second request deadline and
-settles unfinished checks only when no terminal GitHub refusal was
-recorded. A runner loss or hard job termination can prevent the finalizer;
+settles known unfinished checks after a primary read-quota refusal through the
+independent Broker credential. It waits for a reset that fits its deadline. A
+complete terminal Broker write receipt remains authoritative if readback hits
+primary quota; ambiguous writes and other terminal refusals remain fail-closed. A runner loss or hard job termination can prevent the finalizer;
 dispatch the same PR to recover. If publishing credentials cannot be obtained,
 the workflow fails with the exchange reason: it cannot manufacture an App check
 without App authority.

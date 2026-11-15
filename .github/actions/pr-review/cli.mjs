@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { GitHub, APP_ID, CHECK_NAME, Unavailable, PublishUnverified, terminalCheckReceipt, githubTerminalFailure, githubFailureDetails } from './github.mjs';
 import { credentials } from './auth.mjs';
 import { eventTargets } from './events.mjs';
@@ -43,13 +44,21 @@ async function main() {
     return;
   }
   // Bound discovery, collection, publication and recovery as well as inference.
-  const deadlineMs = Date.now() + (command === 'finalize' ? 90_000 : 35 * 60_000);
+  const deadlineMs = Date.now() + (command === 'finalize' ? 90_000 : 11 * 60_000);
   const github = githubFor(read(authPath), deadlineMs);
   if (command === 'finalize') {
     try {
-      if (existsSync(githubFailurePath)) {
-        const failure = read(githubFailurePath);
-        throw new Unavailable(`GitHub terminal failure (${failure.code}): ${JSON.stringify(failure)}`);
+      const failure = existsSync(githubFailurePath) ? read(githubFailurePath) : null;
+      if (failure) {
+        const isChecksEndpoint = typeof failure.endpoint === 'string' && /^\/(?:check-runs(?:\/|$)|commits\/[a-f0-9]{40}\/check-runs$)/.test(failure.endpoint);
+        const fitsFinalizeBudget = failure.classification === 'primary_rate_limit' &&
+          Number.isFinite(failure.retry_at_ms) && failure.retry_at_ms + 35_000 < deadlineMs;
+        if (failure.classification !== 'primary_rate_limit' || (isChecksEndpoint && !fitsFinalizeBudget)) {
+          throw new Unavailable(`GitHub terminal failure (${failure.code}): ${JSON.stringify(failure)}`);
+        }
+        if (isChecksEndpoint && failure.retry_at_ms > Date.now()) {
+          await sleep(failure.retry_at_ms - Date.now());
+        }
       }
       for (const state of existsSync(statePath) ? read(statePath) : []) {
         try {
@@ -83,23 +92,23 @@ async function main() {
               try {
                 if (!validPending) throw new PublishUnverified({ phase: 'finish', check_run_id: id, failure: 'write_unverified' });
                 run = await github.finish(run, state.pending_finish.conclusion, state.pending_finish.output,
-                  { onPublish: rememberPendingSettlement });
+                  { onPublish: rememberPendingSettlement, acceptBrokerReceiptOnPrimaryRateLimit: true });
               } catch (finishError) {
                 if (githubTerminalFailure(finishError) || terminalDispatched) throw finishError;
                 run = await github.finish(run, 'failure', { title: 'Review interrupted',
                   summary: `Head: \`${head_sha}\`\n\nThe workflow could not verify publication of the review result before termination. Dispatch a review to recover.` },
-                { onPublish: rememberPublication });
+                { onPublish: rememberPublication, acceptBrokerReceiptOnPrimaryRateLimit: true });
               }
               process.exitCode = 1;
               const message = `Check ${id}: ${run.conclusion} — ${run.output?.title || 'Review settled during finalization.'} (publish_unverified)`;
               process.stderr.write(`${message}\n`);
               summarize(message);
             } else {
-              await github.finish(run, 'neutral', { title: 'Review interrupted',
+              await github.finish(run, 'failure', { title: 'Review interrupted',
                 summary: `The workflow ended before a complete review was available for head \`${head_sha}\`. Dispatch a review to recover.` },
-              { onPublish: rememberPublication });
+              { onPublish: rememberPublication, acceptBrokerReceiptOnPrimaryRateLimit: true });
               process.exitCode = 1;
-              summarize(`Check ${id}: neutral — Review interrupted before completion.`);
+              summarize(`Check ${id}: failure — Review interrupted before completion.`);
             }
           } else if (!passed(completedReviewReceipt(run))) {
             process.exitCode = 1;

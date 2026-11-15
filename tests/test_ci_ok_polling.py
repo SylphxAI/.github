@@ -644,3 +644,43 @@ def test_empty_startup_failure_wins_over_pending_checks():
     state, detail = ci_ok.evaluate([run("tests", "queued", None)], set(), suites=[suite])
     assert state == "fail"
     assert "workflow failed to start (check suite 7" in detail[0]
+
+
+class OrphanOwnerPollingTests(unittest.TestCase):
+    def test_completed_owner_fails_required_app_without_waiting(self) -> None:
+        check = dict(run("Sylphx PR Review", "in_progress", None), id=42,
+                     app={"id": 1299545, "slug": "sylphx-ai"},
+                     details_url="https://github.com/example/repo/actions/runs/17")
+        for event in ("pull_request", "merge_group"):
+            with self.subTest(event=event):
+                read = mock.Mock(return_value={"id": 17, "status": "completed"})
+                result, reasons = ci_ok.evaluate(
+                    [check], set(), required={"Sylphx PR Review"},
+                    event_name=event, owner_reader=read, repository="example/repo")
+                self.assertEqual(result, "fail")
+                self.assertIn("orphaned", reasons[0])
+                read.assert_called_once_with(17)
+        read = mock.Mock()
+        # Without required or all-apps, a non-GitHub-Actions check is filtered out.
+        self.assertEqual(
+            ci_ok.evaluate([check], set(), owner_reader=read, repository="example/repo")[0],
+            "fail",
+        )
+        read.assert_not_called()
+
+    def test_live_owner_stays_pending_and_owner_errors_cannot_pass(self) -> None:
+        check = dict(run("build", "in_progress", None),
+                     details_url="https://github.com/example/repo/actions/runs/17")
+        self.assertEqual(
+            ci_ok.evaluate([check], set(), owner_reader=lambda _: {"id": 17, "status": "in_progress"},
+                           repository="example/repo")[0],
+            "pending",
+        )
+        with self.assertRaises(OSError):
+            ci_ok.evaluate([check], set(), owner_reader=mock.Mock(side_effect=OSError("unreadable")),
+                           repository="example/repo")
+
+    def test_sleep_cannot_exceed_deadline(self) -> None:
+        with mock.patch.object(ci_ok, "_deadline", 105),                 mock.patch.object(ci_ok.time, "time", return_value=100),                 mock.patch.object(ci_ok.time, "sleep") as sleep:
+            ci_ok.bounded_sleep(1000)
+            sleep.assert_called_once_with(5)
