@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: SylphxAI/.github/.github/actions/ci-ok-polling@<full-release-sha> # main
         with:
-          timeout-minutes: "110"
+          timeout-minutes: "14"
           ignore: advisory-lint
 ```
 

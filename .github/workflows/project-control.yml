@@ -357,6 +357,7 @@ jobs:
 
   template-verdict:
     permissions:
+      actions: read
       contents: read
       pull-requests: read
       checks: read
@@ -389,6 +390,7 @@ jobs:
   # Every required job must run and succeed before the merge gate can pass.
   ci-ok:
     permissions:
+      actions: read
       contents: read
       pull-requests: read
       checks: read

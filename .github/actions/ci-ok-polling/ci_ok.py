@@ -41,6 +41,8 @@ than reading green or polling until it times out; a low budget slows polling.
 """
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
 import json
 import os
 import re
@@ -56,6 +58,12 @@ class RateLimited(Exception):
         super().__init__(f"GitHub API rate limit exhausted until {time.strftime('%H:%M:%SZ', time.gmtime(reset))}")
         self.reset = reset
 
+
+_owner_spec = importlib.util.spec_from_file_location(
+    'check_run_owner', Path(__file__).resolve().parents[1] / 'check_run_owner.py')
+_owner_module = importlib.util.module_from_spec(_owner_spec)
+_owner_spec.loader.exec_module(_owner_module)
+orphaned_check = _owner_module.orphaned_check
 
 BAD = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
 ACTIONS_APP_ID = 15368  # GitHub Actions; the app every required ci-ok check is pinned to
@@ -74,7 +82,8 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
              suite_events: dict[int, str] | None = None,
              event_name: str = "",
              suite_names: dict[int, str] | None = None,
-             job_attempts: dict[int, tuple[int, int]] | None = None) -> tuple[str, list[str]]:
+             job_attempts: dict[int, tuple[int, int]] | None = None,
+             owner_reader=None, check_reader=None, repository: str = "") -> tuple[str, list[str]]:
     """Return ('pending'|'fail'|'pass', details) for the given check runs.
 
     By default only GitHub Actions check runs count: other apps post deploy
@@ -93,7 +102,8 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     waits for its jobs, including replacements of superseded suites.
     """
     relevant = latest_runs([r for r in runs if r.get("name") not in ignore
-                            and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")],
+                            and (not actions_only or r.get("name") in required or
+                 (r.get("app") or {}).get("slug", "github-actions") == "github-actions")],
                            suite_events, job_attempts)
     pending = [r["name"] for r in relevant if r.get("status") != "completed"]
     pending += [f'workflow has no jobs yet (check suite {s.get("id")})'
@@ -116,7 +126,15 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
         bad += [f'{r["name"]}={r.get("conclusion") or "missing"} (required)'
                 for r in relevant if r["name"] in required and r.get("status") == "completed"
                 and r.get("conclusion") != "success" and r.get("conclusion") not in BAD]
-        return ("fail", sorted(bad)) if bad else ("pending", sorted(pending))
+        if bad:
+            return ("fail", sorted(bad))
+        if owner_reader is not None:
+            orphaned = [r['name'] + ': orphaned (workflow run completed)' for r in relevant
+                        if orphaned_check(r, repository, owner_reader, check_reader,
+                                          os.environ.get('GITHUB_SERVER_URL', 'https://github.com'))]
+            if orphaned:
+                return ('fail', sorted(orphaned))
+        return ("pending", sorted(pending))
     newest: dict[str, dict] = {}
     for r in relevant:
         if r["name"] not in newest or _started(r) > _started(newest[r["name"]]):
@@ -202,13 +220,21 @@ def poll_interval(base: int, remaining: int | None) -> int:
 
 
 _budget: dict[str, int | None] = {"remaining": None}
+_deadline: float | None = None
+
+
+def bounded_sleep(seconds):
+    time.sleep(max(0, min(seconds, (_deadline - time.time()) if _deadline is not None else seconds)))
 
 
 def _get(url: str, token: str) -> dict:
+    remaining = _deadline - time.time() if _deadline is not None else 30
+    if remaining <= 0:
+        raise TimeoutError('check inventory deadline expired')
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
+        resp = urllib.request.urlopen(req, timeout=min(30, remaining))
     except urllib.error.HTTPError as exc:
         reset = rate_limited(exc)
         if reset is not None:
@@ -328,8 +354,10 @@ def main() -> int:
         n.strip() for n in os.environ.get("CI_OK_IGNORE", "").split(",") if n.strip()}
     required = {n.strip() for n in os.environ.get("CI_OK_REQUIRED", "").split(",") if n.strip()}
     interval = int(os.environ.get("CI_OK_INTERVAL", "20"))
-    deadline = time.time() + 60 * int(os.environ.get("CI_OK_TIMEOUT_MINUTES", "110"))
-    time.sleep(int(os.environ.get("CI_OK_SETTLE", "45")))  # let every workflow register its runs
+    global _deadline
+    deadline = time.time() + 60 * max(0, min(14, int(os.environ.get("CI_OK_TIMEOUT_MINUTES", "14"))))
+    _deadline = deadline
+    bounded_sleep(int(os.environ.get("CI_OK_SETTLE", "45")))  # let every workflow register its runs
     last, stable = None, 0
     while time.time() < deadline:
         try:
@@ -340,23 +368,34 @@ def main() -> int:
             events = (fetch_suite_events(repo, sha, token, names)
                       if needs_workflow_events(suites) or repeated else None)
             attempts = fetch_job_attempts(repo, runs, token, ignore) if repeated else None
+            owners = {}
+
+            def read_owner(owner_id):
+                if owner_id not in owners:
+                    owners[owner_id] = _get(f'https://api.github.com/repos/{repo}/actions/runs/{owner_id}', token)
+                return owners[owner_id]
+
+            def read_check(check_id):
+                return _get(f'https://api.github.com/repos/{repo}/check-runs/{check_id}', token)
+
             state, detail = evaluate(runs, ignore,
                                      os.environ.get("CI_OK_ALL_APPS", "false") != "true",
                                      suites, required,
                                      os.environ.get("CI_OK_ALLOW_NONE_ON_PR", "false") == "true"
                                      and os.environ.get("EVENT_NAME") == "pull_request",
-                                     events, os.environ.get("EVENT_NAME", ""), names, attempts)
+                                     events, os.environ.get("EVENT_NAME", ""), names, attempts,
+                                     read_owner, read_check, repo)
         except RateLimited as exc:
             if exc.reset >= deadline:
                 print(f"::error::{exc}, past this gate's deadline: ci-ok cannot read the checks "
                       "and fails closed; re-run it after the reset")
                 return 1
             print(f"{exc}; waiting for the reset", flush=True)
-            time.sleep(max(0.0, exc.reset - time.time()) + 5)
+            bounded_sleep(max(0.0, exc.reset - time.time()) + 5)
             continue
         except Exception as exc:  # transient API error: keep waiting
             print(f"check-runs read failed: {exc}", flush=True)
-            time.sleep(interval)
+            bounded_sleep(interval)
             continue
         if state == "fail":
             print("::error::failed checks: " + ", ".join(detail))
@@ -370,7 +409,7 @@ def main() -> int:
             if stable >= 2:  # same complete result twice in a row: nothing late-registered
                 print("all checks passed: " + (", ".join(detail) or "(none)"))
                 return 0
-        time.sleep(poll_interval(interval, _budget["remaining"]))
+        bounded_sleep(poll_interval(interval, _budget["remaining"]))
     print("::error::timed out waiting for checks")
     return 1
 

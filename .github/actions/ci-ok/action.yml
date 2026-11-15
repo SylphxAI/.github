@@ -7,7 +7,7 @@ description: >
   cancelled, failed or unfinished required job fails. Optional dependencies
   may skip but may not fail or be cancelled. No check-inventory polling.
   On merge_group, [review] PRs also require exact-head review success.
-  Requires contents, pull-requests and checks read. See docs/ci-ok.md.
+  Requires actions, contents, pull-requests and checks read. See docs/ci-ok.md.
 
 inputs:
   separate-pr-metadata:

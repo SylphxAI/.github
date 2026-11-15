@@ -17,6 +17,12 @@ import time
 import urllib.error
 import urllib.request
 
+_owner_spec = importlib.util.spec_from_file_location(
+    'check_run_owner', Path(__file__).resolve().parents[1] / 'check_run_owner.py')
+_owner_module = importlib.util.module_from_spec(_owner_spec)
+_owner_spec.loader.exec_module(_owner_module)
+orphaned_check = _owner_module.orphaned_check
+
 ROOT = Path(__file__).resolve().parents[3]
 POLICY = ROOT / 'policy/contribution-policy.json'
 SHA = re.compile(r'[0-9a-f]{40}\Z')
@@ -434,6 +440,11 @@ def review_findings(api, pr, commits):
                          if latest.get('conclusion') == 'success' else 'wrong head')
             elif latest.get('status') != 'completed':
                 state = 'pending'
+                if orphaned_check(latest, api.repository,
+                                  lambda owner_id: api.get(f'actions/runs/{owner_id}'),
+                                  lambda check_id: api.get(f'check-runs/{check_id}'),
+                                  os.environ.get('GITHUB_SERVER_URL', 'https://github.com')):
+                    state = 'orphaned: review is in_progress but its workflow run completed'
             else:
                 state = latest.get('conclusion') or 'missing conclusion'
         else:

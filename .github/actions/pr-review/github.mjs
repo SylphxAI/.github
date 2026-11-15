@@ -152,9 +152,10 @@ export class GitHub {
     this.fetcher = fetcher;
     this.now = now;
     this.wait = wait;
-    this.deadlineMs = deadlineMs ?? now() + 35 * 60_000;
+    this.deadlineMs = deadlineMs ?? now() + 11 * 60_000;
     this.onDiagnostic = onDiagnostic;
     this.sourceTrees = new Map();
+    this.rateFailures = new Map();
   }
 
   async tree(sha, deadlineMs) {
@@ -164,10 +165,19 @@ export class GitHub {
     return tree.tree;
   }
 
-  async request(path, { method = 'GET', body, checks = false, deadlineMs = this.deadlineMs, maxReadAttempts = 4, beforeSend } = {}) {
-    if (this.rateFailure) throw this.rateFailure;
+  async request(path, { method = 'GET', body, checks = false, deadlineMs = this.deadlineMs, maxReadAttempts = 4, beforeSend, rateDeadlineMs = deadlineMs } = {}) {
     const token = checks ? this.checkToken : this.readToken;
     if (!token) throw new Unavailable(`Missing ${checks ? 'checks' : 'source'} credential.`);
+    const latched = this.rateFailures.get(token);
+    if (latched) {
+      const reset = latched.details?.retry_at_ms;
+      const budget = Math.min(rateDeadlineMs, this.deadlineMs);
+      const delay = reset == null ? null : Math.max(0, reset - this.now());
+      if (latched.details?.attempt >= 2 || delay == null || delay + requestTimeoutMs + retryMarginMs >= budget - this.now()) throw latched;
+      if (delay) await this.wait(delay);
+      deadlineMs = budget;
+      this.rateFailures.delete(token);
+    }
     deadlineMs = Math.min(deadlineMs, this.deadlineMs);
     const encodedBody = body === undefined ? undefined : JSON.stringify(body);
     for (let attempt = 0; ; attempt++) {
@@ -202,14 +212,15 @@ export class GitHub {
       if (error.code !== 'rate_limited') throw error;
       // GitHub documents 403/429 rate responses as refusals and explicitly
       // permits retrying the request after its wait. Never retry a lost response.
+      deadlineMs = Math.min(rateDeadlineMs, this.deadlineMs);
       const delay = details.retry_at_ms === null ? null : Math.max(0, details.retry_at_ms - this.now());
       if (attempt || delay === null || delay + requestTimeoutMs + retryMarginMs >= deadlineMs - this.now()) {
-        this.rateFailure = error; // Stop this delivery, including later cleanup calls.
+        this.rateFailures.set(token, error); // Independent credentials remain usable.
         throw error;
       }
       await this.wait(delay);
       if (this.now() + requestTimeoutMs + retryMarginMs >= deadlineMs) {
-        this.rateFailure = error;
+        this.rateFailures.set(token, error);
         throw error;
       }
     }
@@ -324,7 +335,8 @@ export class GitHub {
 
   async reconcile(publication, { deadlineMs = this.deadlineMs } = {}) {
     const { phase, expected } = publication;
-    deadlineMs = Math.min(deadlineMs, this.deadlineMs, this.now() + 10_000);
+    const rateDeadlineMs = Math.min(deadlineMs, this.deadlineMs);
+    deadlineMs = Math.min(rateDeadlineMs, this.now() + 10_000);
     let terminalCause;
     let observed = null, failure = 'deadline', httpStatus = null, attempts = 0;
     const fields = Object.keys(expected);
@@ -332,7 +344,7 @@ export class GitHub {
       attempts++;
       try {
         // This bounded reconciliation loop owns read retries; do not multiply them.
-        const readback = await this.request(`/check-runs/${expected.id}`, { checks: true, deadlineMs, maxReadAttempts: 1 });
+        const readback = await this.request(`/check-runs/${expected.id}`, { checks: true, deadlineMs, rateDeadlineMs, maxReadAttempts: 1 });
         observed = checkProjection(readback, fields);
         if (fields.every(field => JSON.stringify(observed[field]) === JSON.stringify(expected[field]))) return readback;
         failure = 'mismatch'; httpStatus = null;
@@ -350,7 +362,7 @@ export class GitHub {
         JSON.stringify(observed[field]) !== JSON.stringify(expected[field])) }, terminalCause);
   }
 
-  async finish(run, conclusion, output, { onPublish, deadlineMs = this.deadlineMs } = {}) {
+  async finish(run, conclusion, output, { onPublish, deadlineMs = this.deadlineMs, acceptBrokerReceiptOnPrimaryRateLimit = false } = {}) {
     const annotations = Array.isArray(output?.annotations) ? [...output.annotations] : undefined;
     const body = { status: 'completed', conclusion, completed_at: timestamp(), output };
     const publication = terminalCheckReceipt({ ...body,
@@ -361,6 +373,7 @@ export class GitHub {
     // is about to be sent, record publication and clear pending_finish so any
     // dispatched terminal write reconciles read-only.
     await onPublish?.(publication, pending());
+    let accepted;
     try {
       // GitHub admits 50 annotations per request. Intermediate batches stay in
       // progress; only the final request publishes the terminal conclusion.
@@ -373,16 +386,28 @@ export class GitHub {
         await onPublish?.(publication, pending());
       }
       const finalBody = { ...body, output: annotations ? { ...output, annotations } : output };
-      await this.request(`/check-runs/${run.id}`, {
+      accepted = await this.request(`/check-runs/${run.id}`, {
         method: 'PATCH', checks: true, body: finalBody, deadlineMs,
         beforeSend: () => onPublish?.(publication),
       });
+
     } catch (error) {
       throw new PublishUnverified({ phase: 'finish', check_run_id: run.id, attempts: 0,
         failure: 'write_unverified', http_status: error instanceof GitHubHTTPError ? error.status : null,
         expected: publication.expected, observed: null, mismatched_fields: [] }, error);
     }
-    return this.reconcile(publication, { deadlineMs });
+    try { return await this.reconcile(publication, { deadlineMs }); }
+    catch (error) {
+      if (acceptBrokerReceiptOnPrimaryRateLimit) {
+        // A complete Broker write receipt remains authoritative during finalization
+        // when readback hits primary quota; other disagreements still fail closed.
+        const observed = checkProjection(accepted, Object.keys(publication.expected));
+        if (githubFailureDetails(error)?.classification === 'primary_rate_limit' &&
+            Object.keys(publication.expected).every(field =>
+              JSON.stringify(observed[field]) === JSON.stringify(publication.expected[field]))) return accepted;
+      }
+      throw error;
+    }
   }
 }
 

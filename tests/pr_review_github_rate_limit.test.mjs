@@ -457,3 +457,102 @@ for (const reset of [undefined, 'private-token', '-1', '1.5']) for (const retry 
     assert.equal(JSON.stringify(f.diagnostics).includes('private-token'), false);
   });
 }
+
+test('primary source quota cannot poison the independent Broker credential', async () => {
+  const f = fixture([
+    refuse(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '999999' }),
+    ok({ status: 'completed' }),
+  ]);
+  await assert.rejects(f.github.request('/pulls/1'), error => error.classification === 'primary_rate_limit');
+  assert.deepEqual(await f.github.request('/check-runs/7', {
+    method: 'PATCH', checks: true, body: { status: 'completed', conclusion: 'failure' },
+  }), { status: 'completed' });
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(f.waits, []);
+});
+
+test('50-second primary reset fits the 90-second finalizer even beyond normal 10-second readback budget', async () => {
+  const run = {
+    id: 7, app: { id: APP_ID }, head_sha: head, name: CHECK_NAME,
+    status: 'completed', conclusion: 'failure', completed_at: '2026-11-07T03:20:00Z',
+    output: { title: 'Interrupted', summary: 'Review interrupted before completion.' },
+  };
+  const f = fixture([
+    refuse(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1049' }),
+    ok(run),
+  ], { deadlineMs: start + 90_000 });
+  assert.deepEqual(await f.github.reconcile(terminalCheckReceipt(run)), run);
+  assert.deepEqual(f.waits, [50_000]);
+  assert.equal(f.calls.length, 2);
+});
+
+for (const malformed of [false, true]) {
+  test(`only a complete matching terminal Broker receipt survives primary readback quota in finalization: malformed=${malformed}`, async () => {
+    let calls = 0;
+    const github = new GitHub({
+      repository: 'example/repo', readToken: 'source', checkToken: 'check',
+      now: () => start, deadlineMs: start + 90_000, wait: async () => {},
+      fetcher: async (_url, options) => {
+        calls++;
+        if (options.method === 'PATCH') {
+          const body = JSON.parse(options.body);
+          return ok({ ...body, id: 7, app: { id: APP_ID }, head_sha: head,
+            name: CHECK_NAME, ...(malformed ? { conclusion: 'success' } : {}) });
+        }
+        return refuse(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '999999' });
+      },
+    });
+    const operation = github.finish({ id: 7, head_sha: head }, 'failure',
+      { title: 'Interrupted', summary: 'Interrupted' },
+      { acceptBrokerReceiptOnPrimaryRateLimit: true });
+    if (malformed) await assert.rejects(operation, error => error.code === 'publish_unverified');
+    else assert.equal((await operation).conclusion, 'failure');
+    assert.equal(calls, 2, 'one PATCH and one read, never replay terminal writes');
+  });
+}
+
+test('CLI finalize settles via Broker after read-token primary_rate_limit or in-budget checks primary_rate_limit', () => {
+  for (const mode of ['read-token-long', 'checks-in-budget']) {
+    const directory = mkdtempSync(join(tmpdir(), `review-finalize-primary-${mode}-`));
+    try {
+      const state = [{ id: 7, head_sha: head, app: { id: APP_ID }, name: CHECK_NAME, status: 'in_progress' }];
+      writeFileSync(join(directory, 'pr-review-state.json'), JSON.stringify(state));
+      writeFileSync(join(directory, 'pr-review-auth.json'), JSON.stringify({ checkToken: 'private-check-token' }), { mode: 0o600 });
+      const retryAt = mode === 'read-token-long' ? Date.now() + 3_600_000 : Date.now() + 50;
+      writeFileSync(join(directory, 'pr-review-github-failure.json'), JSON.stringify({
+        method: 'GET',
+        endpoint: mode === 'read-token-long' ? '/pulls/7' : '/check-runs/7',
+        status: 403,
+        code: 'rate_limited',
+        classification: 'primary_rate_limit',
+        headers: { 'x-ratelimit-remaining': 0 },
+        retry_at_ms: retryAt,
+        attempt: 1,
+      }));
+      const callsPath = join(directory, 'calls.json');
+      writeFileSync(join(directory, 'preload.mjs'), `import { writeFileSync } from 'node:fs';
+        const calls = [];
+        let run = ${JSON.stringify(state[0])};
+        globalThis.fetch = async (url, request) => {
+          calls.push(request.method + ' ' + new URL(url).pathname);
+          writeFileSync(${JSON.stringify(callsPath)}, JSON.stringify(calls));
+          if (request.method === 'PATCH') {
+            run = { ...run, ...JSON.parse(request.body) };
+            return new Response(JSON.stringify(run), { status: 200 });
+          }
+          return new Response(JSON.stringify(run), { status: 200 });
+        };`);
+      const result = spawnSync('node', ['--import', join(directory, 'preload.mjs'), '.github/actions/pr-review/cli.mjs', 'finalize'], {
+        cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, RUNNER_TEMP: directory, GITHUB_REPOSITORY: 'example/repo', GITHUB_TOKEN: 'private-read-token' },
+      });
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(result.stderr.includes('GitHub terminal failure'), false, result.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(callsPath, 'utf8')), [
+        'GET /repos/example/repo/check-runs/7',
+        'PATCH /repos/example/repo/check-runs/7',
+        'GET /repos/example/repo/check-runs/7',
+      ]);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }
+});

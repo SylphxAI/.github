@@ -644,3 +644,95 @@ def test_empty_startup_failure_wins_over_pending_checks():
     state, detail = ci_ok.evaluate([run("tests", "queued", None)], set(), suites=[suite])
     assert state == "fail"
     assert "workflow failed to start (check suite 7" in detail[0]
+
+
+class OrphanOwnerPollingTests(unittest.TestCase):
+    def test_completed_owner_fails_required_app_without_waiting(self) -> None:
+        check = dict(run("Sylphx PR Review", "in_progress", None), id=42,
+                     app={"id": 1299545, "slug": "sylphx-ai"},
+                     details_url="https://github.com/example/repo/actions/runs/17")
+        for event in ("pull_request", "merge_group"):
+            with self.subTest(event=event):
+                read_owner = mock.Mock(return_value={"id": 17, "status": "completed"})
+                read_check = mock.Mock(return_value={"id": 42, "status": "in_progress"})
+                result, reasons = ci_ok.evaluate(
+                    [check], set(), required={"Sylphx PR Review"},
+                    event_name=event, owner_reader=read_owner, check_reader=read_check,
+                    repository="example/repo")
+                self.assertEqual(result, "fail")
+                self.assertIn("orphaned", reasons[0])
+                read_owner.assert_called_once_with(17)
+                read_check.assert_called_once_with(42)
+        read_owner = mock.Mock()
+        # Without required or all-apps, a non-GitHub-Actions check is filtered out.
+        self.assertEqual(
+            ci_ok.evaluate([check], set(), owner_reader=read_owner, repository="example/repo")[0],
+            "fail",
+        )
+        read_owner.assert_not_called()
+
+    def test_completed_owner_with_fresh_completed_check_is_not_orphaned_and_passes_next_poll(self) -> None:
+        stale_check = dict(run("build", "in_progress", None), id=42,
+                           details_url="https://github.com/example/repo/actions/runs/17")
+        done_check = dict(run("build", "completed", "success"), id=42,
+                          details_url="https://github.com/example/repo/actions/runs/17")
+        self.assertEqual(
+            ci_ok.evaluate(
+                [stale_check], set(),
+                owner_reader=lambda _: {"id": 17, "status": "completed"},
+                check_reader=lambda _: {"id": 42, "status": "completed", "conclusion": "success"},
+                repository="example/repo",
+            ),
+            ("pending", ["build"]),
+        )
+
+        def fake_get(url, _token):
+            if url.endswith("/actions/runs/17"):
+                return {"id": 17, "status": "completed"}
+            if url.endswith("/check-runs/42"):
+                return {"id": 42, "status": "completed", "conclusion": "success"}
+            raise AssertionError(url)
+
+        env = {"REPO": "example/repo", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+               "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1"}
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True),                 mock.patch.object(ci_ok, "fetch_suites", return_value=[]),                 mock.patch.object(ci_ok, "fetch", side_effect=[[stale_check], [done_check], [done_check]]),                 mock.patch.object(ci_ok, "_get", side_effect=fake_get),                 mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 0)
+        self.assertIn("all checks passed: build", out.getvalue())
+
+    def test_known_failure_beats_failing_owner_lookup_without_retry(self) -> None:
+        failed = run("build", "completed", "failure")
+        pending = dict(run("tests", "in_progress", None), id=42,
+                       details_url="https://github.com/example/repo/actions/runs/17")
+        read_owner = mock.Mock(side_effect=OSError("network error"))
+        self.assertEqual(
+            ci_ok.evaluate([failed, pending], set(), owner_reader=read_owner, repository="example/repo"),
+            ("fail", ["build=failure"]),
+        )
+        read_owner.assert_not_called()
+
+        env = {"REPO": "example/repo", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+               "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1"}
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True),                 mock.patch.object(ci_ok, "fetch_suites", return_value=[]),                 mock.patch.object(ci_ok, "fetch", return_value=[failed, pending]) as fetch,                 mock.patch.object(ci_ok, "_get", side_effect=OSError("owner read failed")) as getter,                 mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 1)
+        self.assertEqual(fetch.call_count, 1)
+        getter.assert_not_called()
+        self.assertIn("::error::failed checks: build=failure", out.getvalue())
+
+    def test_live_owner_stays_pending_and_owner_errors_cannot_pass(self) -> None:
+        check = dict(run("build", "in_progress", None), id=42,
+                     details_url="https://github.com/example/repo/actions/runs/17")
+        self.assertEqual(
+            ci_ok.evaluate([check], set(), owner_reader=lambda _: {"id": 17, "status": "in_progress"},
+                           repository="example/repo")[0],
+            "pending",
+        )
+        with self.assertRaises(OSError):
+            ci_ok.evaluate([check], set(), owner_reader=mock.Mock(side_effect=OSError("unreadable")),
+                           repository="example/repo")
+
+    def test_sleep_cannot_exceed_deadline(self) -> None:
+        with mock.patch.object(ci_ok, "_deadline", 105),                 mock.patch.object(ci_ok.time, "time", return_value=100),                 mock.patch.object(ci_ok.time, "sleep") as sleep:
+            ci_ok.bounded_sleep(1000)
+            sleep.assert_called_once_with(5)
