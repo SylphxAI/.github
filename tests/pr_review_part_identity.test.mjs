@@ -27,9 +27,12 @@ const wire = (input, changes = {}) => ({ schema_version: 1, repository_id: input
   review_summary: 'Reviewed every assigned source row, the dependency and changed contract.', related_evidence: [], binary_reviews: [], ...changes });
 const response = value => ({ ok: true, status: 200, json: async () => ({ object: 'chat.completion', model,
   choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: typeof value === 'string' ? value : JSON.stringify(value) } }] }) });
-function engine(reply, byteLimit = byteBudget) {
-  const posts = [], attempts = new Map(), logged = [];
-  const review = gatewayReviewer({ token: 'fixture', sleep: async () => {}, ...configuration, identityLog: record => logged.push(record), deadlineMs: Date.now() + 10_000,
+function engine(reply, byteLimit = byteBudget, deadlineMs = 100_000) {
+  const posts = [], attempts = new Map(), logged = [], waits = [];
+  let clock = 1000;
+  const review = gatewayReviewer({ token: 'fixture', now: () => clock, random: () => 0,
+    sleep: async ms => { waits.push(ms); clock += ms; }, ...configuration,
+    identityLog: record => logged.push(record), deadlineMs,
     fetcher: async (url, request) => {
       if (request.method === 'GET') {
         assert.equal(new URL(url).pathname, '/v1/public/models/vendor/reviewer');
@@ -44,10 +47,10 @@ function engine(reply, byteLimit = byteBudget) {
       const value = reply(part, n, body);
       return value?.error ? { ok: false, status: 429, json: async () => value } : response(value);
     } });
-  return { review, posts, logged };
+  return { review, posts, logged, waits };
 }
-async function publish(reply, { current = () => true, sources = source, byteLimit = byteBudget } = {}) {
-  const { review, posts, logged } = engine(reply, byteLimit), run = { id: 1, name: CHECK_NAME, head_sha: head, app: { id: APP_ID } };
+async function publish(reply, { current = () => true, sources = source, byteLimit = byteBudget, gatewayDeadlineMs } = {}) {
+  const { review, posts, logged, waits } = engine(reply, byteLimit, gatewayDeadlineMs), run = { id: 1, name: CHECK_NAME, head_sha: head, app: { id: APP_ID } };
   const reads = [], saved = [];
   const github = { repository: 'example/repo', current: async () => current(posts), begin: async () => run,
     finish: async (_run, conclusion, output) => Object.assign(run, { conclusion, output }),
@@ -63,7 +66,7 @@ async function publish(reply, { current = () => true, sources = source, byteLimi
     base_sha: base, head_sha: head, files: Object.keys(sources).map(filename => ({ filename, status: 'modified' })) },
     trigger: { kind: 'workflow_dispatch', id: '1', generation: '1' }, createReviewInput,
     engineVersion: 'fixture', engine: review, onResult: result => saved.push(result), deadlineMs: Date.now() + 10_000 });
-  return { receipt, run, posts, reads, saved, logged };
+  return { receipt, run, posts, reads, saved, logged, waits };
 }
 const second = part => part.scope?.kind === 'partition' && part.scope.index === '00000002';
 const needDependency = part => wire(part, { completion: 'incomplete', omitted_paths: part.files.map(f => f.path),
@@ -164,10 +167,22 @@ test('16082 shape: part-2 unsupported evidence is corrected/discarded without lo
 });
 
 test('a real middle-part quota refusal stays neutral and has bounded retries', async () => {
-  const { receipt, posts } = await publish(part => second(part)
+  const { receipt, posts, waits } = await publish(part => second(part)
     ? { error: { code: 'included_capacity_unavailable', message: 'private' } } : wire(part));
   assert.equal(receipt.conclusion, 'neutral');
   assert.equal(posts.length, 5);
+  assert.deepEqual(waits, [2000, 4000, 8000]);
+  assert.match(receipt.reason, /HTTP 429 \(included_capacity_unavailable\)/);
+});
+
+test('a middle-part quota refusal cannot admit a retry beyond the gateway deadline', async () => {
+  const { receipt, posts, waits } = await publish(part => second(part)
+    ? { error: { code: 'included_capacity_unavailable', message: 'private' } } : wire(part), {
+    gatewayDeadlineMs: 10_000,
+  });
+  assert.equal(receipt.conclusion, 'neutral');
+  assert.equal(posts.length, 4);
+  assert.deepEqual(waits, [2000, 4000]);
   assert.match(receipt.reason, /HTTP 429 \(included_capacity_unavailable\)/);
 });
 
