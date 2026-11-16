@@ -19,8 +19,9 @@ The seven-class contract is `SylphxAI/owner` `company/architecture-audit.md`.
   `git stash`, no `--no-verify`. The desk is IO-bound, so run only the narrowest
   test locally and leave full runs to CI.
 - Every change lands through the merge queue with no admin or bypass merge. Arm
-  with `gh pr merge --auto --squash --match-head-commit <sha> <N>`, re-arm
-  after any push, and read back `isInMergeQueue`. Never retry a red queue entry;
+  with `gh pr merge --auto --squash --match-head-commit <sha> <N>` and read back
+  `isInMergeQueue`; an arm stays on through later pushes and enqueues the head
+  whose required checks pass. Never retry a red queue entry;
   quarantine a flaky test. The full procedure is the cloud
   [merge-queue runbook](https://github.com/SylphxAI/cloud/blob/main/docs/runbooks/merge-queue.md).
 - Whoever reviews a PR names who arms it and how; a green, reviewed, unarmed PR
