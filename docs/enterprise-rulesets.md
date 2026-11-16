@@ -121,11 +121,11 @@ the saved organization payload before disabling a defective Enterprise gate.
 
 ## Existing branch integrity
 
-The Enterprise already supplies `agent-native-branch-integrity` on non-default
-branches (`non_fast_forward`), `agent-native-trunk-integrity` on default branches
-(`deletion`, `non_fast_forward`), and `agent-native-queued-trunk-base` for pull
-requests. Their conditions, bypass actors and rule parameters were not rewritten.
-A repository should inherit these rules, not duplicate them.
+The Enterprise supplies `agent-native-trunk-integrity` on default branches
+(`deletion`, `non_fast_forward`) and `agent-native-queued-trunk-base` for pull
+requests. Non-default branches carry no force-push block, so pull request
+branches can be rebased with `--force-with-lease`. A repository should inherit
+these rules, not duplicate them.
 
 ## Primary sources
 
