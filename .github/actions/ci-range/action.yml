@@ -37,10 +37,18 @@ inputs:
     description: >
       One lane per line, `name: pattern pattern ...`. Patterns are fnmatch
       globs over repository paths where `*` also crosses `/`. A lane with no
-      pattern, or with `*`, always runs. A change under `.github/` selects
-      every lane. Omit lanes for range outputs only; `run` is then `{}`.
+      pattern, or with `*`, always runs. Global patterns also select every
+      lane. Omit lanes for range outputs only; `run` is then `{}`.
     required: false
     default: ""
+  global-patterns:
+    description: >
+      Whitespace-separated fnmatch globs over repository-relative paths;
+      `*` also crosses `/`. A matching changed file selects every lane.
+      Defaults to `.github/*`; caller patterns replace that default.
+      Set to an empty string to disable global matching. Without a trusted
+      base, every lane still runs (unless `only` selects named lanes).
+    default: ".github/*"
   only:
     description: >
       Comma-separated lanes to run, whatever the range selected (the verify
@@ -77,6 +85,7 @@ runs:
         PROOF_WORKFLOW: ${{ inputs.proof-workflow }}
         PROOF_BRANCH: ${{ inputs.proof-branch }}
         LANES: ${{ inputs.lanes }}
+        GLOBAL_PATTERNS: ${{ inputs.global-patterns }}
         ONLY: ${{ inputs.only }}
         TOKEN: ${{ inputs.token }}
       run: python3 "$GITHUB_ACTION_PATH/ci_range.py"

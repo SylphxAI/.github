@@ -22,8 +22,10 @@ Lanes come from the caller as `name: pattern pattern ...` lines. A pattern is
 an fnmatch glob over repository paths in which `*` also crosses `/`
 (`crates/*` is everything under crates/); a lone `*` always selects. A lane
 with no patterns always runs. Empty lanes request only the range (run = {}).
-No base, or a change under `.github/`, selects
-every lane: a workflow change can affect any of them.
+No base selects every lane. Global patterns also select every lane when a
+changed path matches. They default to `.github/*`; callers can replace them
+with whitespace-separated fnmatch globs, or disable global matching with an
+empty string. Per-lane matching still applies.
 
 `only` (a dispatch of the verify workflow, by a person or by the red-main
 handler) runs exactly the named lanes, whatever the range selected: naming a
@@ -79,9 +81,13 @@ def lane_name(job: str) -> str:
     return re.sub(r"\s*\(.*\)$", "", job).strip()
 
 
-def select(lanes: dict[str, list[str]], changed: list[str] | None, only: str = "") -> dict[str, bool]:
-    """changed=None means no base: everything runs."""
-    everything = changed is None or any(p.startswith(".github/") for p in changed)
+def select(lanes: dict[str, list[str]], changed: list[str] | None, only: str = "",
+           *, global_patterns: str = ".github/*") -> dict[str, bool]:
+    """Global matches select every lane; no base always does, before `only`."""
+    global_globs = global_patterns.split()
+    everything = changed is None or any(
+        fnmatch.fnmatchcase(path, pattern) for path in changed for pattern in global_globs
+    )
     run = {}
     for name, patterns in lanes.items():
         if everything or not patterns or "*" in patterns:
@@ -185,7 +191,8 @@ def main() -> int:
         print(f"::warning::base {base} is not reachable; every lane runs")
         base = ""
     changed = git("diff", "--name-only", "--no-renames", base, "HEAD").splitlines() if base else None
-    run = select(lanes, changed, os.environ.get("ONLY", ""))
+    run = select(lanes, changed, os.environ.get("ONLY", ""),
+                 global_patterns=os.environ.get("GLOBAL_PATTERNS", ".github/*"))
     with open(os.environ["GITHUB_OUTPUT"], "a") as out:
         out.write(f"base={base}\nrun={json.dumps(run, separators=(',', ':'))}\n")
         out.write(f"changed={'' if changed is None else len(changed)}\n")
