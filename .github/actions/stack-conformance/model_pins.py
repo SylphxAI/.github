@@ -478,6 +478,34 @@ def _token_windows(lowered):
     return merged
 
 
+def _collect_selector_matches(clean, code, suffix, vendors, matches, original_matches):
+    """Scan full clean source for arbitrary provider/unversioned selector values.
+
+    Must run across the entire buffer even when _token_windows() is empty, so
+    explicit selectors naming custom providers or unversioned lines still hit.
+    """
+    is_config = code is None
+    for m in IDENTIFIER.finditer(clean):
+        val = m.group()
+        if not val[-1].isalnum():
+            continue
+        start, end = m.start(), m.end()
+        if val.count("/") == 1 and val.split("/", 1)[0] in vendors:
+            context = clean[clean.rfind("\n", 0, start) + 1:start]
+            if _CONTEXT_MODEL.search(context) and model_selector(clean, start, code):
+                matches[(start, end)] = val
+                original_matches.add((start, end))
+                continue
+        if scalar_model(clean, start, end, is_config) and model_selector(clean, start, code):
+            matches[(start, end)] = val
+    bare_re = _BARE_QUOTED if (not is_config or (suffix == ".json" and not _UNQUOTED_CONFIG_START.search(clean))) else _BARE_CONFIG
+    for m in bare_re.finditer(clean):
+        val = m.group("val")
+        s, e = m.start("val"), m.end("val")
+        if val[-1].isalnum() and scalar_model(clean, s, e, is_config) and model_selector(clean, s, code):
+            matches[(s, e)] = val
+
+
 def scan(tree, repository, aliases, source_views, *, cache=None, shared_views=None):
     findings, unreadable, exemptions = [], [], []
     vendors = VENDOR_NAMESPACES | {alias.split("/", 1)[0] for alias in aliases or ()}
@@ -546,7 +574,8 @@ def scan(tree, repository, aliases, source_views, *, cache=None, shared_views=No
                 cache[cache_key] = ("err", (), (), (dict(row),))
             continue
         clean_lower = clean.lower() if code is not None or clean is not text else lowered
-        windows = _token_windows(clean_lower)
+        # Only use lowered offsets for _token_windows when case folding preserves string length.
+        windows = _token_windows(clean_lower) if len(clean_lower) == len(clean) else ((0, len(clean)),)
         matches = {}
         for ws, we in windows:
             for m in TOKEN.finditer(clean, ws, we):
@@ -554,28 +583,10 @@ def scan(tree, repository, aliases, source_views, *, cache=None, shared_views=No
                 if _VERSIONED_TOKEN.search(val) or val in {"deepseek-chat", "deepseek-reasoner"}:
                     matches[(m.start(), m.end())] = val
         original_matches = set(matches)
-        # Model fields cover vendor families absent from the recognizer, and
-        # arbitrary provider/unversioned lines under an explicit selector.
+        # Model fields cover arbitrary providers and unversioned lines across the
+        # entire file independently of _token_windows().
         if "model" in clean_lower:
-            for m in IDENTIFIER.finditer(clean):
-                val = m.group()
-                if not val[-1].isalnum():
-                    continue
-                start, end = m.start(), m.end()
-                if val.count("/") == 1 and val.split("/", 1)[0] in vendors:
-                    context = clean[clean.rfind("\n", 0, start) + 1:start]
-                    if _CONTEXT_MODEL.search(context) and model_selector(clean, start, code):
-                        matches[(start, end)] = val
-                        original_matches.add((start, end))
-                        continue
-                if scalar_model(clean, start, end, code is None) and model_selector(clean, start, code):
-                    matches[(start, end)] = val
-            bare_re = _BARE_QUOTED if (code is not None or (suffix == ".json" and not _UNQUOTED_CONFIG_START.search(clean))) else _BARE_CONFIG
-            for m in bare_re.finditer(clean):
-                val = m.group("val")
-                s, e = m.start("val"), m.end("val")
-                if val[-1].isalnum() and scalar_model(clean, s, e, code is None) and model_selector(clean, s, code):
-                    matches[(s, e)] = val
+            _collect_selector_matches(clean, code, suffix, vendors, matches, original_matches)
         seen = collections.Counter()
         nonselectors = metadata_ranges(clean, suffix, text) if matches else []
         nonselectors += diagnostic_ranges(repository, path, clean, code) if matches else []

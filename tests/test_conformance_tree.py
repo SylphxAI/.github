@@ -272,6 +272,45 @@ class GitTreeTests(unittest.TestCase):
         self.assertIsNone(sc.model_pins.balanced_end("abc", 0, "{", "}"))
         self.assertEqual(sc.model_pins.balanced_end("{a}}", 0, "{", "}"), 4)
 
+    def test_model_selector_arbitrary_provider_unversioned_and_unicode_parity(self):
+        base = self.commit({
+            "src/custom.ts": 'export const model = "custom-provider/custom-model";\n',
+            "cfg/custom.json": '{"model": "acme-ai/internal-chat"}\n',
+            "cfg/custom.yaml": "model: custom-provider/custom-model\n",
+            "src/bare.ts": 'export const model = "claude";\nexport const backup = {model: "gpt"};\n',
+            "cfg/bare.yaml": "model:\n  claude\n",
+            "src/unicode.ts": 'const note = "İİİ";\nexport const model = "gpt-4o";\nexport const ref = "anthropic/claude-3-5-sonnet";\n',
+        })
+        head = self.commit({
+            "src/custom.ts": 'export const model = "custom-provider/custom-model";\n',
+            "cfg/custom.json": '{"model": "acme-ai/internal-chat"}\n',
+            "cfg/custom.yaml": "model: custom-provider/custom-model\n",
+            "src/bare.ts": 'export const model = "o3";\n',
+            "cfg/bare.yaml": "model:\n  claude\n",
+            "src/unicode.ts": 'const note = "İİİ";\nexport const model = "gpt-4o";\nexport const ref = "anthropic/claude-3-5-sonnet";\n',
+        })
+        blob_cache, model_cache, sv_cache = {}, {}, {}
+        with sc.Tree(str(self.repo), head, blob_cache=blob_cache) as head_tree, sc.Tree(str(self.repo), base, blob_cache=blob_cache) as base_tree:
+            c_base = sc.model_pins.scan(base_tree, "example/app", None, sc.architecture.source_views, cache=model_cache, shared_views=sv_cache)
+            c_head = sc.model_pins.scan(head_tree, "example/app", None, sc.architecture.source_views, cache=model_cache, shared_views=sv_cache)
+            u_base = sc.model_pins.scan(base_tree, "example/app", None, sc.architecture.source_views)
+            u_head = sc.model_pins.scan(head_tree, "example/app", None, sc.architecture.source_views)
+
+        self.assertEqual(c_base, u_base)
+        self.assertEqual(c_head, u_head)
+        base_by_path = {(r["path"], r["model"]): r.get("rule") for r in c_base["findings"]}
+        self.assertEqual(base_by_path[("src/custom.ts", "custom-provider/custom-model")], "model-selector")
+        self.assertEqual(base_by_path[("cfg/custom.json", "acme-ai/internal-chat")], "model-selector")
+        self.assertEqual(base_by_path[("cfg/custom.yaml", "custom-provider/custom-model")], "model-selector")
+        self.assertEqual(base_by_path[("src/bare.ts", "claude")], "model-selector")
+        self.assertEqual(base_by_path[("src/bare.ts", "gpt")], "model-selector")
+        self.assertEqual(base_by_path[("cfg/bare.yaml", "claude")], "model-selector")
+        self.assertIsNone(base_by_path[("src/unicode.ts", "gpt-4o")])
+        self.assertIsNone(base_by_path[("src/unicode.ts", "anthropic/claude-3-5-sonnet")])
+        head_by_path = {(r["path"], r["model"]): r.get("rule") for r in c_head["findings"]}
+        self.assertIn(("src/bare.ts", "o3"), head_by_path)
+        self.assertIsNone(head_by_path[("src/bare.ts", "o3")])
+
 
 if __name__ == "__main__":
     unittest.main()
