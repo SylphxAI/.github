@@ -251,8 +251,13 @@ benchmark or nightly) never makes the trunk red here.
   `watch-limit-minutes` (default 30), whatever the handler's verdict was.
 - [`ci-range`](../.github/actions/ci-range/action.yml): the range and the lane
   selection, the same answer in the gate and in verify. Lanes are
-  `name: path globs`; a change under `.github/` runs every lane. Use its
-  `base` output for affected-only builds (`turbo run --affected` with
+  `name: path globs`. The whitespace-separated `global-patterns` input
+  selects every lane when a changed path matches (fnmatch; `*` crosses `/`).
+  It defaults to `.github/*`, preserving full `.github/` invalidation. Caller
+  patterns replace the default; an empty string disables global matching,
+  not per-lane matching or the all-lanes fallback when no trusted base exists.
+  Explicit `only` keeps its named-lane override. Use its `base` output for
+  affected-only builds (`turbo run --affected` with
   `TURBO_SCM_BASE`, `cargo nextest run -p` on the changed crates, `nx affected
   --base`). A push/dispatch base is the newest first-parent ancestor whose
   authenticated full post-main `verified` job succeeded: GitHub Actions App,
