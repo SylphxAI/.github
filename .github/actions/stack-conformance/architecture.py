@@ -1001,6 +1001,7 @@ def evaluate(tree, repository, changed, today, *, ignore_expired=False, file_cac
     blob_oid_fn = getattr(tree, "blob_oid", None) if (file_cache is not None or shared_views is not None) else None
     retired_key = tuple(retired)
     _cargo_fp_val = None
+    _paths_fp_val = None
 
     def _get_cargo_fp():
         nonlocal _cargo_fp_val
@@ -1009,6 +1010,18 @@ def evaluate(tree, repository, changed, today, *, ignore_expired=False, file_cac
                 (p, blob_oid_fn(p)) for p in paths if p == "Cargo.toml" or p.endswith("/Cargo.toml")
             )
         return _cargo_fp_val
+
+    def _get_paths_fp():
+        nonlocal _paths_fp_val
+        if _paths_fp_val is None:
+            _paths_fp_val = hashlib.sha256("\0".join(paths).encode("utf-8", errors="surrogateescape")).digest()
+        return _paths_fp_val
+
+    def _deps_valid(has_env_reads, dep_reads, dep_cargo_fp, dep_paths_fp, entry_declared):
+        return ((not has_env_reads or entry_declared == declared)
+                and (dep_cargo_fp is None or dep_cargo_fp == _get_cargo_fp())
+                and (dep_paths_fp is None or dep_paths_fp == _get_paths_fp())
+                and (not dep_reads or all(blob_oid_fn(dp) == doid for dp, doid in dep_reads)))
 
     def _make_views(primary_text, primary_oid):
         sv = source_views
@@ -1047,18 +1060,14 @@ def evaluate(tree, repository, changed, today, *, ignore_expired=False, file_cac
                 skipped.append({"path": path, "reason": "protocol compiler output; scan its authored schema instead"})
                 continue
             if kind == "error":
-                _, err_msg, has_env_reads, dep_reads, dep_cargo_fp, entry_declared = entry
-                if ((not has_env_reads or entry_declared == declared)
-                        and (dep_cargo_fp is None or dep_cargo_fp == _get_cargo_fp())
-                        and (not dep_reads or all(blob_oid_fn(dp) == doid for dp, doid in dep_reads))):
+                _, err_msg, has_env_reads, dep_reads, dep_cargo_fp, dep_paths_fp, entry_declared = entry
+                if _deps_valid(has_env_reads, dep_reads, dep_cargo_fp, dep_paths_fp, entry_declared):
                     reviewed.append(path)
                     unreadable.append({"path": path, "reason": err_msg})
                     continue
             elif kind == "ok":
-                _, cached_rows, has_env_reads, dep_reads, dep_cargo_fp, entry_declared = entry
-                if ((not has_env_reads or entry_declared == declared)
-                        and (dep_cargo_fp is None or dep_cargo_fp == _get_cargo_fp())
-                        and (not dep_reads or all(blob_oid_fn(dp) == doid for dp, doid in dep_reads))):
+                _, cached_rows, has_env_reads, dep_reads, dep_cargo_fp, dep_paths_fp, entry_declared = entry
+                if _deps_valid(has_env_reads, dep_reads, dep_cargo_fp, dep_paths_fp, entry_declared):
                     reviewed.append(path)
                     rows = _copy_rows(cached_rows)
                     text = None
@@ -1097,19 +1106,21 @@ def evaluate(tree, repository, changed, today, *, ignore_expired=False, file_cac
         except (ValueError, SyntaxError) as error:
             err_msg = str(error)
             unreadable.append({"path": path, "reason": err_msg})
-            if ckey is not None and not (dep_tree.used_paths and not is_vendor_rs):
+            if ckey is not None:
                 file_cache[ckey] = (
                     "error", err_msg, env_tracker[0],
                     tuple(dep_tree.reads.items()),
                     _get_cargo_fp() if is_vendor_rs else None,
+                    _get_paths_fp() if dep_tree.used_paths else None,
                     declared if env_tracker[0] else None,
                 )
             continue
-        if ckey is not None and not (dep_tree.used_paths and not is_vendor_rs):
+        if ckey is not None:
             file_cache[ckey] = (
                 "ok", _copy_rows(rows), env_tracker[0],
                 tuple(dep_tree.reads.items()),
                 _get_cargo_fp() if is_vendor_rs else None,
+                _get_paths_fp() if dep_tree.used_paths else None,
                 declared if env_tracker[0] else None,
             )
         for row in rows:

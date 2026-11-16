@@ -860,6 +860,48 @@
         ".github/actions/stack-conformance/stack_conformance.py": "e37685a7b27c76c82a67b66d10c1e6588dd8109801cd66f1ca71657cf6e5b471"
       }
     },
+    "6e7639f919da86d2ade468d335444f64524c7fe07015a8078c6548f54f06699f": {
+      "rules": [
+        "architecture/C1/cache-economy",
+        "architecture/C1/deal-randomness",
+        "architecture/C1/privileged-branch",
+        "architecture/C1/project-portability",
+        "architecture/C2/provider-bypass",
+        "architecture/C2/tenant-read-functions",
+        "architecture/C3/bundled-method",
+        "architecture/C3/downstream-config",
+        "architecture/C3/downstream-import",
+        "architecture/C4/competing-default",
+        "architecture/C4/undeclared-setting",
+        "architecture/C5/cron-progress",
+        "architecture/C5/idle-floor",
+        "architecture/C5/polling-loop",
+        "architecture/C5/polling-timer",
+        "architecture/C6/retired-route",
+        "architecture/C6/unexplained-suppression",
+        "architecture/C7/failure-only-verdict",
+        "architecture/C7/merge-only-completion",
+        "force-push",
+        "model-pin",
+        "model-selector"
+      ],
+      "sources": {
+        ".github/actions/stack-conformance/action.yml": "f3f6d2d78a55da4db59430e5797c6f11c36f6da90493ffa6b3bfa900d6addaf6",
+        ".github/actions/stack-conformance/architecture.py": "bfbed79a3b28ad38de9ff90bbd570a69f43b159c0228edb1732c36c76c921b05",
+        ".github/actions/stack-conformance/cache-economy-profiles.json": "111ab4144992210a1e30ecdd596a36f8694046a679645b4bc117ae69702a4e21",
+        ".github/actions/stack-conformance/deal_randomness.py": "b1e84ecdd7953550c7dd7311d7b413000de4daf62e2efff104ad3a70325b7f14",
+        ".github/actions/stack-conformance/model_pins.py": "02b85fd1b98f38169f4651dbe0df31f1a9a8e4ac1ad07244c8783eb23257941e",
+        ".github/actions/stack-conformance/no_force_push.py": "5e39d0215efb495c0755447c1bf85eb58a5265cbe88759b2e3081d5d05de5dfe",
+        ".github/actions/stack-conformance/project_portability.py": "d2305a1a108a5d460a4e03eb9fbed8731815e8cc06383e06fc37c17b75d3ac9e",
+        ".github/actions/stack-conformance/rust_reachability.py": "10fa10fdd4d424677ae682300f8ce28319e72c9e16f9ca2b1d4539b300e3e6e7",
+        ".github/actions/stack-conformance/stack_conformance.py": "56fb4c0ac40b16b21064e5a2b1ee774a783c8c7ee5dc2ab4dd8a2777d55aa130",
+        ".github/actions/stack-conformance/staged_retirement.py": "fb731c4e08f0f563597d5647cdbfd51cc987e73446cac8efb713a3a79a7e5439",
+        ".github/actions/stack-conformance/tenant_reads.py": "9d7773fbae89ba37fb2510686aae0fb11b0b117105a40edc671b0d9a52c9e412",
+        "policy/deal-randomness-scope.json": "8936933d322b886ac22162f2140d681a9555f225db0f39f9e84dbf60d9243650",
+        "policy/source-relocations.json": "f69f1e1d07ffa3a1de389c798f891630e41c1c2544670d267676caddad2389f3",
+        "scripts/source_provenance.py": "87d5f96506606682bdfdaf4420ca62f8ca2126aa14b7cd2af79f5bd5d28f03f6"
+      }
+    },
     "72c12671a1794eb6754333edbf82f59ca227403665ae1705bc9012449cc26e78": {
       "rules": [
         "architecture/C1/cache-economy",
@@ -1340,48 +1382,6 @@
         ".github/actions/stack-conformance/model_pins.py": "f3ff7c5676921ab2457d78c4610e69115f0a670ffe1c2ec98b10d857f076af15",
         ".github/actions/stack-conformance/stack_conformance.py": "092486a47d33e2b4e21641dd023cfcc494f2a2f37415fd10ff2a6e7c7baa6928",
         ".github/actions/stack-conformance/tenant_reads.py": "9d7773fbae89ba37fb2510686aae0fb11b0b117105a40edc671b0d9a52c9e412"
-      }
-    },
-    "eb29bfd15e41109629e9889fa910b65fc373029e84650c0c9ccc7f0923987635": {
-      "rules": [
-        "architecture/C1/cache-economy",
-        "architecture/C1/deal-randomness",
-        "architecture/C1/privileged-branch",
-        "architecture/C1/project-portability",
-        "architecture/C2/provider-bypass",
-        "architecture/C2/tenant-read-functions",
-        "architecture/C3/bundled-method",
-        "architecture/C3/downstream-config",
-        "architecture/C3/downstream-import",
-        "architecture/C4/competing-default",
-        "architecture/C4/undeclared-setting",
-        "architecture/C5/cron-progress",
-        "architecture/C5/idle-floor",
-        "architecture/C5/polling-loop",
-        "architecture/C5/polling-timer",
-        "architecture/C6/retired-route",
-        "architecture/C6/unexplained-suppression",
-        "architecture/C7/failure-only-verdict",
-        "architecture/C7/merge-only-completion",
-        "force-push",
-        "model-pin",
-        "model-selector"
-      ],
-      "sources": {
-        ".github/actions/stack-conformance/action.yml": "f3f6d2d78a55da4db59430e5797c6f11c36f6da90493ffa6b3bfa900d6addaf6",
-        ".github/actions/stack-conformance/architecture.py": "d27ece577d8b53dcb1ed14b967fa512c5e93ba35dfcc505fcd44d09a320dca15",
-        ".github/actions/stack-conformance/cache-economy-profiles.json": "111ab4144992210a1e30ecdd596a36f8694046a679645b4bc117ae69702a4e21",
-        ".github/actions/stack-conformance/deal_randomness.py": "b1e84ecdd7953550c7dd7311d7b413000de4daf62e2efff104ad3a70325b7f14",
-        ".github/actions/stack-conformance/model_pins.py": "02b85fd1b98f38169f4651dbe0df31f1a9a8e4ac1ad07244c8783eb23257941e",
-        ".github/actions/stack-conformance/no_force_push.py": "5e39d0215efb495c0755447c1bf85eb58a5265cbe88759b2e3081d5d05de5dfe",
-        ".github/actions/stack-conformance/project_portability.py": "d2305a1a108a5d460a4e03eb9fbed8731815e8cc06383e06fc37c17b75d3ac9e",
-        ".github/actions/stack-conformance/rust_reachability.py": "10fa10fdd4d424677ae682300f8ce28319e72c9e16f9ca2b1d4539b300e3e6e7",
-        ".github/actions/stack-conformance/stack_conformance.py": "56fb4c0ac40b16b21064e5a2b1ee774a783c8c7ee5dc2ab4dd8a2777d55aa130",
-        ".github/actions/stack-conformance/staged_retirement.py": "fb731c4e08f0f563597d5647cdbfd51cc987e73446cac8efb713a3a79a7e5439",
-        ".github/actions/stack-conformance/tenant_reads.py": "9d7773fbae89ba37fb2510686aae0fb11b0b117105a40edc671b0d9a52c9e412",
-        "policy/deal-randomness-scope.json": "8936933d322b886ac22162f2140d681a9555f225db0f39f9e84dbf60d9243650",
-        "policy/source-relocations.json": "f69f1e1d07ffa3a1de389c798f891630e41c1c2544670d267676caddad2389f3",
-        "scripts/source_provenance.py": "87d5f96506606682bdfdaf4420ca62f8ca2126aa14b7cd2af79f5bd5d28f03f6"
       }
     },
     "ed78e32451035ff5f36eb2926605b2bf502171903f562681e99ea3c306d02b1f": {

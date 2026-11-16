@@ -327,6 +327,58 @@ class GitTreeTests(unittest.TestCase):
             ["duplicate_key.json", "escaped_key.json", "nested_array.json", "taxonomy_array.json", "taxonomy_array.json"],
         )
 
+    def test_vendor_deal_randomness_scope_warning_invalidated_on_new_caller(self):
+        root_cargo = '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nvrng = { path = "vendor/vrng" }\n'
+        vendor_cargo = '[package]\nname = "vrng"\nversion = "0.1.0"\n'
+        vendor_src = "pub fn deal_hand(cards: &mut [u64]) {\n    let rng = SmallRng::seed_from_u64(7);\n    cards.shuffle(rng);\n}\n"
+        caller_src = "pub fn ok() -> u64 { deal_hand() }\n"
+        first = self.commit({
+            "Cargo.toml": root_cargo,
+            "vendor/vrng/Cargo.toml": vendor_cargo,
+            "vendor/vrng/src/lib.rs": vendor_src,
+            "src/caller.rs": caller_src,
+        })
+        second = self.commit({
+            "Cargo.toml": root_cargo,
+            "vendor/vrng/Cargo.toml": vendor_cargo,
+            "vendor/vrng/src/lib.rs": vendor_src,
+            "src/caller.rs": caller_src,
+            "src/new_caller.rs": "pub fn extra() -> u64 { deal_hand() }\n",
+        })
+        digest = lambda s: hashlib.sha256(s.replace("\r\n", "\n").encode()).hexdigest()
+        policy = {
+            "version": 1,
+            "warnings": [{
+                "repository": "example/app",
+                "path": "vendor/vrng/src/lib.rs",
+                "source_sha256": digest(vendor_src),
+                "evidence": {"Cargo.toml": digest(root_cargo)},
+                "caller_pattern": r"\bdeal_hand\b",
+                "callers": {
+                    "src/caller.rs": digest(caller_src),
+                    "vendor/vrng/src/lib.rs": digest(vendor_src),
+                },
+                "reason": "verified single non-gambling caller",
+            }],
+        }
+        today = datetime.date(2026, 11, 16)
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as policy_file:
+            policy_file.write(json.dumps(policy))
+            policy_file.flush()
+            with mock.patch.object(sc.architecture.deal_randomness, "SCOPE_POLICY", pathlib.Path(policy_file.name)):
+                blob_cache, file_cache, sv_cache = {}, {}, {}
+                with sc.Tree(str(self.repo), first, blob_cache=blob_cache) as first_tree, \
+                        sc.Tree(str(self.repo), second, blob_cache=blob_cache) as second_tree:
+                    r_first = sc.architecture.evaluate(first_tree, "example/app", None, today, file_cache=file_cache, shared_views=sv_cache)
+                    r_second_cached = sc.architecture.evaluate(second_tree, "example/app", None, today, file_cache=file_cache, shared_views=sv_cache)
+                    r_second_uncached = sc.architecture.evaluate(second_tree, "example/app", None, today)
+
+        self.assertEqual(r_second_cached, r_second_uncached)
+        first_vendor = [r for r in r_first["findings"] if r["path"] == "vendor/vrng/src/lib.rs" and r["rule"] == "deal-randomness"]
+        second_vendor = [r for r in r_second_cached["findings"] if r["path"] == "vendor/vrng/src/lib.rs" and r["rule"] == "deal-randomness"]
+        self.assertTrue(first_vendor and all(r.get("scope_warning") == "verified single non-gambling caller" for r in first_vendor))
+        self.assertTrue(second_vendor and all(r.get("scope_warning") is None for r in second_vendor))
+
 
 if __name__ == "__main__":
     unittest.main()
