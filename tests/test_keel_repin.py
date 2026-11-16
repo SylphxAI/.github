@@ -866,6 +866,9 @@ elif a[:1] == ["api"] and "/contents/KEEL_PIN" in " ".join(a):
     if sc.get("base_keel_pin"):
         import base64
         print(base64.b64encode((sc["base_keel_pin"] + "\n").encode()).decode())
+elif a[:1] == ["api"] and "/commits?path=" in " ".join(a):
+    if sc.get("base_keel_pin_at"):
+        print(sc["base_keel_pin_at"])
 elif a[:1] == ["api"] and "/commits" in " ".join(a):
     print("\n".join(sc["emails"]))
 elif a[:2] == ["pr", "view"] and "comments" in a:
@@ -1252,17 +1255,25 @@ class SettleLiveTest(unittest.TestCase):
             gh.write_text(FAKE_SETTLE_GH)
             gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
             (base / "scenario.json").write_text(json.dumps({
-                "prs": [], "emails": [BOT], "runs": [], "merged": MERGED_PR, "base_keel_pin": manual_pin,
+                "prs": [], "emails": [BOT], "runs": [], "merged": MERGED_PR,
+                "base_keel_pin": manual_pin, "base_keel_pin_at": "2027-01-15T07:50:00Z",
             }))
             env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
-            now = keel_repin.calendar.timegm((2027, 1, 15, 8, 0, 0))
-            for live_sha, expected in ((manual_pin, 0), ("d" * 40, 1)):
+            within_pr_grace = keel_repin.calendar.timegm((2027, 1, 15, 5, 10, 0))
+            within_base_grace = keel_repin.calendar.timegm((2027, 1, 15, 8, 10, 0))
+            after_grace = keel_repin.calendar.timegm((2027, 1, 15, 9, 0, 0))
+            for live_sha, ts, expected in (
+                (manual_pin, after_grace, 0),
+                ("d" * 40, within_pr_grace, 0),
+                ("d" * 40, within_base_grace, 0),
+                ("d" * 40, after_grace, 1),
+            ):
                 ws = keel_repin.web_smoke()
                 real = ws.live_keel
                 ws.live_keel = lambda url, body=self.version(keel=live_sha): real(url, opener=serving(body))
                 with mock.patch.dict(os.environ, env), mock.patch("builtins.print"), \
                         mock.patch.object(keel_repin, "web_smoke", return_value=ws):
-                    rc = keel_repin.main(["settle", "--owner", "@o/team", "--now", str(now), "--live-url", LIVE_URL])
+                    rc = keel_repin.main(["settle", "--owner", "@o/team", "--now", str(ts), "--live-url", LIVE_URL])
                 self.assertEqual(rc, expected)
             self.assertFalse((base / "comments.txt").exists())
 

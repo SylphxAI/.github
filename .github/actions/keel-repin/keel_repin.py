@@ -1214,7 +1214,7 @@ def newest_merged_repin():
 
 
 def base_keel_pin(repo, base):
-    """Full Keel SHA pinned on the base branch via KEEL_PIN or deps/keel.rev, or None."""
+    """(Full Keel SHA, commit timestamp or None) on the base branch via KEEL_PIN or deps/keel.rev, else (None, None)."""
     import base64
     for path in ("KEEL_PIN", "deps/keel.rev"):
         p = run([*gh_bin(), "api", f"repos/{repo}/contents/{path}?ref={base}", "--jq", ".content // empty"], check=False)
@@ -1225,8 +1225,16 @@ def base_keel_pin(repo, base):
         except Exception:
             continue
         if SHA_RE.fullmatch(text):
-            return text
-    return None
+            commit_at = None
+            cp = run([*gh_bin(), "api", f"repos/{repo}/commits?path={path}&sha={base}&per_page=1",
+                      "--jq", ".[0].commit.committer.date // empty"], check=False)
+            if cp.returncode == 0 and cp.stdout.strip():
+                try:
+                    commit_at = calendar.timegm(time.strptime(cp.stdout.strip(), "%Y-%m-%dT%H:%M:%SZ"))
+                except ValueError:
+                    pass
+            return text, commit_at
+    return None, None
 
 
 def settle_live(args, now):
@@ -1244,11 +1252,15 @@ def settle_live(args, now):
         print(f"#{number} {tag}: settled; {text}")
         return 0
     # If the base branch manually moved Keel past this merged repin PR, judge against the live base pin instead of fail-looping on stale PR state.
-    base_pin = base_keel_pin(repo_name(), args.base)
+    base_pin, base_at = base_keel_pin(repo_name(), args.base)
     if base_pin and base_pin != commit:
         base_ok, base_text = ws.keel_verdict(live, why, base_pin)
         if base_ok:
             print(f"{args.base} ({base_pin[:9]}): settled; {base_text} (supersedes #{number} {tag})")
+            return 0
+        base_age = (now - max(merged_at, base_at or 0)) / 60
+        if base_age < args.live_grace_minutes:
+            print(f"::notice::{args.base} Keel pin {base_pin[:9]} (superseding #{number} {tag}): waiting for the deploy: {base_text}")
             return 0
         print(f"::error::{args.base} Keel pin {base_pin[:9]} (superseding #{number} {tag}) is not settled: {base_text}")
         return 1
