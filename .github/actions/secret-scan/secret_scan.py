@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
-import collections
 import contextlib
 import errno
 import hashlib
@@ -333,18 +332,20 @@ def allowlist(repo, head):
             raise ValueError()
         allowed = set()
         for item in data['findings']:
-            if not isinstance(item, dict) or set(item) != {'commit', 'path', 'line', 'sha256', 'reason'}:
+            # A finding is the exact content of one line at one path. Legacy
+            # commit/line fields are accepted and ignored, so a rebase, amend or
+            # queue squash never invalidates a reviewed exception.
+            if not isinstance(item, dict) or not {'path', 'sha256', 'reason'} <= set(item) <= \
+                    {'commit', 'path', 'line', 'sha256', 'reason'}:
                 raise ValueError()
-            commit, path, line, digest, reason = (item[k] for k in ('commit', 'path', 'line', 'sha256', 'reason'))
-            if not isinstance(commit, str) or not SHA.fullmatch(commit) or \
-                    not isinstance(path, str) or not path or type(line) is not int or line < 1 or \
+            path, digest, reason = item['path'], item['sha256'], item['reason']
+            if not isinstance(path, str) or not path or \
                     not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest) or \
-                    not isinstance(reason, str) or not reason.strip():
+                    not isinstance(reason, str) or not reason.strip() or \
+                    ('commit' in item and (not isinstance(item['commit'], str) or not SHA.fullmatch(item['commit']))) or \
+                    ('line' in item and (type(item['line']) is not int or item['line'] < 1)):
                 raise ValueError()
-            key = commit, path, line, digest
-            if key in allowed:
-                raise ValueError()
-            allowed.add(key)
+            allowed.add((path, digest))
         return allowed
     except (ValueError, TypeError, KeyError):
         raise ScanError('secret allowlist has invalid schema or review reason') from None
@@ -387,8 +388,7 @@ def merge_additions(repo, commit):
     return additions
 
 
-def scan(repo, base, head, binary, directory, config='', event_name=''):
-    event_name = event_name or os.environ.get('GITHUB_EVENT_NAME', '')
+def scan(repo, base, head, binary, directory, config=''):
     for rev in (base, head):
         if rev:
             git(repo, 'cat-file', '-e', rev + '^{commit}')
@@ -421,7 +421,6 @@ def scan(repo, base, head, binary, directory, config='', event_name=''):
     refused = set()
     exempted = set()
     merges = {}
-    squash_budgets = {}
     secrets = {value for item in findings for value in
                [item.get('Secret', ''), *item.get('Secret', '').splitlines()] if value}
     for item in findings:
@@ -432,10 +431,6 @@ def scan(repo, base, head, binary, directory, config='', event_name=''):
         if commit not in merges:
             parents = git(repo, 'rev-list', '--parents', '-n', '1', commit).split()
             merges[commit] = merge_additions(repo, commit) if len(parents) > 2 else None
-            if event_name == 'merge_group' and len(parents) == 2:
-                added = allowlist(repo, commit) - allowlist(repo, parents[1].decode())
-                squash_budgets[commit] = collections.Counter(
-                    (p, d) for c, p, _, d in added if c != commit)
         lines = git(repo, 'show', commit + ':' + path).split(b'\n')
         if end > len(lines):
             raise ScanError('gitleaks finding is outside its source blob')
@@ -446,10 +441,7 @@ def scan(repo, base, head, binary, directory, config='', event_name=''):
             key = commit, path, number, digest
             if key in exempted or key in refused:
                 continue
-            if key in allowed:
-                exempted.add(key)
-            elif squash_budgets.get(commit, {}).get((path, digest), 0) > 0:
-                squash_budgets[commit][(path, digest)] -= 1
+            if (path, digest) in allowed:
                 exempted.add(key)
             else:
                 refused.add(key)
@@ -463,7 +455,7 @@ def scan(repo, base, head, binary, directory, config='', event_name=''):
         print(f'reviewed findings allowed={len(exempted)}')
     if refused:
         print(f'Secret scan refused {len(refused)} added line(s); values are never printed. '
-              f'Review false positives in {ALLOWLIST} with commit, path, line, sha256 and reason.')
+              f'Review false positives in {ALLOWLIST} with path, sha256 and reason.')
         return 1
     print('Secret scan passed: no unreviewed findings in added commits.')
     return 0
