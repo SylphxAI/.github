@@ -127,9 +127,12 @@ export async function recoverContext({ input, github, target, execute, createRev
     if (fresh.length && !allowed.length) return finalizeBudget('generated_policy', 'Requested source is excluded by the base generated policy; deterministic provenance belongs to ci-ok.', nextRoundEstimateMs);
     if (!fresh.length) return finalizeBudget('no_new_context', 'Requested exact-source context was already supplied.', nextRoundEstimateMs);
     if (partRounds >= recoveryLimits.rounds) return finalizeBudget('round_limit', 'Context recovery round limit reached.', nextRoundEstimateMs);
-    if (added + allowed.length > recoveryLimits.files) return finalizeBudget('file_limit', 'Context recovery file limit reached.', nextRoundEstimateMs);
+    const remainingFiles = recoveryLimits.files - added;
+    if (remainingFiles <= 0) return finalizeBudget('file_limit', 'Context recovery file limit reached.', nextRoundEstimateMs);
     const context = [];
-    for (const [key, request] of allowed) {
+    // A batch may cross the total identity bound; collect its permitted prefix
+    // rather than discarding usable allowance. Pinned absence still counts.
+    for (const [key, request] of allowed.slice(0, remainingFiles)) {
       if (Date.now() >= deadlineMs) return stop('deadline', 'Review deadline expired during context recovery.');
       let current;
       try { current = await github.current(target, { deadlineMs }); } catch (error) { if (githubRefusal(error)) throw error; current = null; }

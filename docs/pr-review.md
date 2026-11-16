@@ -119,6 +119,11 @@ The recovery bounds live in `recovery.mjs` and the request schema: at most three
 augmentation rounds, sixteen added source identities (including absence), and one MiB of added text,
 further limited by the qualified request-byte budget. Duplicate requests are
 coalesced; source already supplied in full cannot trigger another augmentation.
+If a deduplicated, policy-allowed batch exceeds the remaining identity allowance,
+the collector takes its prefix in request order up to that allowance, rather than
+discarding the whole batch. Present source and pinned absence each consume one
+identity. The reviewer reassesses that bounded evidence; uncollected requests
+do not count as supplied source or completed review.
 Each genuine augmentation reseals the entire input and re-runs whole-scope
 review, including partitioning and synthesis, using the same configured model,
 output settings and original absolute deadline. The final Check and receipt bind
