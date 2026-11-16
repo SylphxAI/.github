@@ -48,7 +48,7 @@ class PublicHostedRunners(unittest.TestCase):
                         'github.event.pull_request.head.repo.private': {head_private},
                     }
                     self.assertEqual(expression(selector, context),
-                                     {'sylphx-linux-standard' if private else 'ubuntu-latest'})
+                                     {'sylphx-linux-control' if private else 'ubuntu-latest'})
         self.assertEqual(workflow['permissions']['id-token'], 'write')
         action = workflow['jobs']['review']['steps'][-1]
         self.assertEqual(action['uses'], './.github/actions/pr-review')

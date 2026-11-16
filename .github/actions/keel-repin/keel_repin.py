@@ -1185,18 +1185,56 @@ def web_smoke():
 
 
 def newest_merged_repin():
-    """The newest merged repin pull request as (number, tag, commit, merged_at epoch), or None."""
-    out = gh_json(["pr", "list", "--state", "merged", "--limit", "50", "--json", "number,headRefName,body,mergedAt"],
-                  '[.[] | select((.headRefName | startswith("' + BRANCH_PREFIX + '")) and '
-                  '(.headRefName | startswith("' + BRANCH_PREFIX + 'engine-") | not))] | max_by(.mergedAt) // empty')
+    """The newest merged repin pull request moving Keel as (number, tag, commit, merged_at epoch), or None."""
+    out = gh_json(["pr", "list", "--state", "merged", "--limit", "100",
+                   "--search", f"head:{BRANCH_PREFIX}",
+                   "--json", "number,headRefName,body,mergedAt"],
+                  '[.[] | select(.headRefName | startswith("' + BRANCH_PREFIX + '"))] | sort_by(.mergedAt) | reverse')
     if not out.strip():
         return None
-    pr = json.loads(out)
-    m = PIN_IN_BODY.search(pr.get("body") or "")
-    if not m:
-        raise Refused(f"merged repin pull request #{pr['number']} does not name its Keel commit in its body")
-    merged = calendar.timegm(time.strptime(pr["mergedAt"], "%Y-%m-%dT%H:%M:%SZ"))
-    return str(pr["number"]), pr["headRefName"][len(BRANCH_PREFIX):], m.group(1), merged
+    data = json.loads(out)
+    prs = [data] if isinstance(data, dict) else data
+    for pr in prs:
+        branch = pr.get("headRefName") or ""
+        if not branch.startswith(BRANCH_PREFIX):
+            continue
+        head = branch[len(BRANCH_PREFIX):]
+        is_tag = tag_key(head) is not None
+        is_kit = head.startswith("kit-") and bool(SHA_RE.fullmatch(head[4:]))
+        if not is_tag and not is_kit:
+            continue
+        m = PIN_IN_BODY.search(pr.get("body") or "")
+        if not m:
+            if is_tag:
+                raise Refused(f"merged repin pull request #{pr['number']} does not name its Keel commit in its body")
+            continue
+        merged = calendar.timegm(time.strptime(pr["mergedAt"], "%Y-%m-%dT%H:%M:%SZ"))
+        return str(pr["number"]), head, m.group(1), merged
+    return None
+
+
+def base_keel_pin(repo, base):
+    """(Full Keel SHA, commit timestamp or None) on the base branch via KEEL_PIN or deps/keel.rev, else (None, None)."""
+    import base64
+    for path in ("KEEL_PIN", "deps/keel.rev"):
+        p = run([*gh_bin(), "api", f"repos/{repo}/contents/{path}?ref={base}", "--jq", ".content // empty"], check=False)
+        if p.returncode != 0 or not p.stdout.strip():
+            continue
+        try:
+            text = base64.b64decode(p.stdout.strip()).decode("utf-8", errors="replace").strip()
+        except Exception:
+            continue
+        if SHA_RE.fullmatch(text):
+            commit_at = None
+            cp = run([*gh_bin(), "api", f"repos/{repo}/commits?path={path}&sha={base}&per_page=1",
+                      "--jq", ".[0].commit.committer.date // empty"], check=False)
+            if cp.returncode == 0 and cp.stdout.strip():
+                try:
+                    commit_at = calendar.timegm(time.strptime(cp.stdout.strip(), "%Y-%m-%dT%H:%M:%SZ"))
+                except ValueError:
+                    pass
+            return text, commit_at
+    return None, None
 
 
 def settle_live(args, now):
@@ -1213,6 +1251,19 @@ def settle_live(args, now):
     if ok:
         print(f"#{number} {tag}: settled; {text}")
         return 0
+    # If the base branch manually moved Keel past this merged repin PR, judge against the live base pin instead of fail-looping on stale PR state.
+    base_pin, base_at = base_keel_pin(repo_name(), args.base)
+    if base_pin and base_pin != commit:
+        base_ok, base_text = ws.keel_verdict(live, why, base_pin)
+        if base_ok:
+            print(f"{args.base} ({base_pin[:9]}): settled; {base_text} (supersedes #{number} {tag})")
+            return 0
+        base_age = (now - max(merged_at, base_at or 0)) / 60
+        if base_age < args.live_grace_minutes:
+            print(f"::notice::{args.base} Keel pin {base_pin[:9]} (superseding #{number} {tag}): waiting for the deploy: {base_text}")
+            return 0
+        print(f"::error::{args.base} Keel pin {base_pin[:9]} (superseding #{number} {tag}) is not settled: {base_text}")
+        return 1
     if age_min < args.live_grace_minutes:
         print(f"::notice::#{number} {tag}: merged {int(age_min)} minutes ago, waiting for the deploy: {text}")
         return 0
