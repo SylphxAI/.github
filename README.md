@@ -76,5 +76,5 @@ Current scope, source payloads and the migration constraint are in
 [Enterprise repository rules](docs/enterprise-rulesets.md). Merge queues remain
 repository-level policy ([settings](docs/merge-queue-settings.md)).
 
-The trusted-main [PR review](docs/pr-review.md) is advisory. This repository
-requires inherited `ci-ok`, repository `pr-metadata`, and the native merge queue.
+This repository requires inherited `ci-ok`, repository `pr-metadata`, and the
+native merge queue.

@@ -22,11 +22,6 @@ inputs:
       PR-concurrency rule, without actionlint, performance or other contract rules.
       Other values fail rather than skipping lint.
     default: all
-  io-reviewer-secrets:
-    description: >
-      Comma-separated repository secret names allowed only for SHA-pinned
-      shared pr-review jobs on sylphx-linux-io. Empty denies all secrets.
-    default: ""
   contract-mode:
     description: >
       enforce fails all contract violations; report-only warns on legacy
@@ -138,7 +133,6 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         CONTRACT_MODE: ${{ inputs.contract-mode }}
         WORKFLOW_LINT_RULES: ${{ inputs.rules }}
-        IO_REVIEWER_SECRETS: ${{ inputs.io-reviewer-secrets }}
       run: |
         python3 -m pip install --quiet --target "$RUNNER_TEMP/workflow-contract" PyYAML==6.0.3
         PYTHONPATH="$RUNNER_TEMP/workflow-contract" python3 "$GITHUB_ACTION_PATH/contract.py"

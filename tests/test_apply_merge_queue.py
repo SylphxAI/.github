@@ -20,6 +20,14 @@ SPEC.loader.exec_module(amq)
 
 SHIPPED_POLICY = amq.load_policy(ROOT / "policy" / "merge-queue.json")
 POLICY = {**SHIPPED_POLICY, "required_checks": []}
+# Mechanism fixture: scoped targets binding an external App-published status.
+CHECK_POLICY = {**SHIPPED_POLICY, "required_checks": [
+    {"repo": repo, "ruleset": name, "ruleset_id": ruleset_id, "reason": "fixture",
+     "checks": [{"context": "ci-ok", "integration_id": 15368}, {"context": "external-ok", "integration_id": 5155317}]}
+    for repo, name, ruleset_id in (("SylphxAI/cloud", "sylphx-merge-queue", 20321070),
+                                   ("SylphxAI/infra", "infra-main-required-ci", 23689347),
+                                   ("SylphxAI/desk-tools", "sylphx-merge-queue", 24403587))
+] + SHIPPED_POLICY["required_checks"]}
 OLD = {"merge_method": "SQUASH", "grouping_strategy": "ALLGREEN", "max_entries_to_build": 10, "min_entries_to_merge": 1,
        "max_entries_to_merge": 10, "min_entries_to_merge_wait_minutes": 0, "check_response_timeout_minutes": 60}
 
@@ -465,20 +473,16 @@ class ApplyTests(unittest.TestCase):
 class RequiredCheckTests(unittest.TestCase):
     def fake(self):
         return FakeGh({
-            entry["repo"]: ruleset(entry["ruleset_id"], entry["ruleset"], amq.desired_settings(SHIPPED_POLICY, entry["repo"], entry["ruleset"]), reviews=0)
-            for entry in SHIPPED_POLICY["required_checks"]})
+            entry["repo"]: ruleset(entry["ruleset_id"], entry["ruleset"], amq.desired_settings(CHECK_POLICY, entry["repo"], entry["ruleset"]), reviews=0)
+            for entry in CHECK_POLICY["required_checks"]})
 
     def rows(self, gh):
-        return amq.plan([item for org in SHIPPED_POLICY["orgs"] for item in amq.read_org(gh, org)], SHIPPED_POLICY, {})
+        return amq.plan([item for org in CHECK_POLICY["orgs"] for item in amq.read_org(gh, org)], CHECK_POLICY, {})
 
     def test_declared_checks_cover_the_gated_repositories(self):
         self.assertEqual([entry["repo"] for entry in SHIPPED_POLICY["required_checks"]],
-                         ["SylphxAI/cloud", "SylphxAI/infra", "SylphxAI/desk-tools", "SylphxAI/.github",
-                          "SylphxAI/owner", "Cubeage/solar2d-singular-sdk"])
+                         ["SylphxAI/.github", "SylphxAI/owner", "Cubeage/solar2d-singular-sdk"])
         for entry in SHIPPED_POLICY["required_checks"]:
-            expected = [
-                {"context": "ci-ok", "integration_id": 15368},
-                {"context": "review-ok", "integration_id": 5155317}]
             if entry["repo"] == "Cubeage/solar2d-singular-sdk":
                 expected = [{"context": "ci-ok", "integration_id": 15368}]
             if entry["repo"] == "SylphxAI/owner":
@@ -492,11 +496,11 @@ class RequiredCheckTests(unittest.TestCase):
 
     def test_dotgithub_metadata_only_does_not_reintroduce_retired_gates(self):
         repo = "SylphxAI/.github"
-        gh = FakeGh({repo: ruleset(20321046, "sylphx-merge-queue", SHIPPED_POLICY["settings"],
+        gh = FakeGh({repo: ruleset(20321046, "sylphx-merge-queue", CHECK_POLICY["settings"],
                                   checks=("pr-metadata",), reviews=0, extra=True)})
-        fleet = [item for org in SHIPPED_POLICY["orgs"] for item in amq.read_org(gh, org)]
+        fleet = [item for org in CHECK_POLICY["orgs"] for item in amq.read_org(gh, org)]
         amq.enrich_extra_approval(gh, fleet, {}, {repo})
-        rows = amq.plan(fleet, SHIPPED_POLICY, {}, {repo})
+        rows = amq.plan(fleet, CHECK_POLICY, {}, {repo})
         drift = [row for row in rows if row["status"] == "DRIFT"]
         self.assertEqual(len(drift), 1)
         self.assertEqual(drift[0]["changes"], {
@@ -505,11 +509,11 @@ class RequiredCheckTests(unittest.TestCase):
 
     def test_scoped_missing_review_check_is_reported_with_exact_issuer(self):
         rows = [row for row in self.rows(self.fake()) if row["status"] == "DRIFT"]
-        self.assertEqual(len(rows), len(SHIPPED_POLICY["required_checks"]) - 1)
+        self.assertEqual(len(rows), len(CHECK_POLICY["required_checks"]) - 1)
         for row in rows:
             before, after = row["changes"]["required_status_checks"]
             self.assertEqual(before, [{"context": "ci-ok", "integration_id": 15368}])
-            entry = next(e for e in SHIPPED_POLICY["required_checks"] if e["repo"] == row["repo"])
+            entry = next(e for e in CHECK_POLICY["required_checks"] if e["repo"] == row["repo"])
             for check in entry["checks"]:
                 self.assertIn(check, after)
 
@@ -520,50 +524,50 @@ class RequiredCheckTests(unittest.TestCase):
             {"context": "security-review", "integration_id": 77})
         before = copy.deepcopy(gh.rulesets)
         with tempfile.TemporaryDirectory() as directory:
-            result = amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0)
+            result = amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
             self.assertTrue(all(row["result"] == "APPLIED" for row in result))
             checks = gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"]
             self.assertIn({"context": "security-review", "integration_id": 77}, checks)
-            self.assertIn({"context": "review-ok", "integration_id": 5155317}, checks)
+            self.assertIn({"context": "external-ok", "integration_id": 5155317}, checks)
             self.assertEqual(gh.rulesets["SylphxAI/cloud"]["conditions"], before["SylphxAI/cloud"]["conditions"])
             gh.puts.clear()
-            self.assertEqual(amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0), [])
+            self.assertEqual(amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0), [])
             self.assertEqual(gh.puts, [])
             restored = amq.rollback(gh, pathlib.Path(directory), pause=0)
             self.assertTrue(all(row["result"] == "RESTORED" for row in restored))
             for repo, saved in before.items():
                 self.assertEqual(amq.queue_params(gh.rulesets[repo]), amq.queue_params(saved))
-            self.assertIn({"context": "review-ok", "integration_id": 5155317},
+            self.assertIn({"context": "external-ok", "integration_id": 5155317},
                           gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"])
 
     def test_wrong_review_issuer_is_corrected_and_unscoped_ruleset_unchanged(self):
         gh = self.fake()
         gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"].append(
-            {"context": "review-ok", "integration_id": 15368})
+            {"context": "external-ok", "integration_id": 15368})
         gh.rulesets["SylphxAI/janus"] = ruleset(24403813, "janus-main", POLICY["settings"], reviews=0)
         with tempfile.TemporaryDirectory() as directory:
-            amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0)
-        self.assertEqual({repo for repo, _ in gh.puts}, {entry["repo"] for entry in SHIPPED_POLICY["required_checks"] if entry["repo"] != "Cubeage/solar2d-singular-sdk"})
+            amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
+        self.assertEqual({repo for repo, _ in gh.puts}, {entry["repo"] for entry in CHECK_POLICY["required_checks"] if entry["repo"] != "Cubeage/solar2d-singular-sdk"})
         self.assertEqual(gh.rulesets["SylphxAI/janus"]["rules"][1], ruleset(1, "x", POLICY["settings"])["rules"][1])
         checks = gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"]
-        self.assertNotIn({"context": "review-ok", "integration_id": 15368}, checks)
-        self.assertIn({"context": "review-ok", "integration_id": 5155317}, checks)
+        self.assertNotIn({"context": "external-ok", "integration_id": 15368}, checks)
+        self.assertIn({"context": "external-ok", "integration_id": 5155317}, checks)
 
     def test_missing_status_rule_adds_ci_and_review_without_weakening_other_rules(self):
         gh = self.fake()
         gh.rulesets["SylphxAI/cloud"]["rules"].pop(1)
         with tempfile.TemporaryDirectory() as directory:
-            amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0)
+            amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
         added = next(rule for rule in gh.rulesets["SylphxAI/cloud"]["rules"]
                      if rule["type"] == "required_status_checks")
         self.assertEqual(added["parameters"]["required_status_checks"],
-                         SHIPPED_POLICY["required_checks"][0]["checks"])
+                         CHECK_POLICY["required_checks"][0]["checks"])
 
     def test_missing_target_refuses_every_write_and_name_drift_fails_closed(self):
         gh = self.fake()
         del gh.rulesets["SylphxAI/infra"]
         with tempfile.TemporaryDirectory() as directory:
-            result = amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0)
+            result = amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
         self.assertEqual(gh.puts, [])
         self.assertTrue(all(row["result"].startswith("FAILED") for row in result))
         gh.rulesets["SylphxAI/cloud"]["name"] = "renamed"
@@ -574,18 +578,18 @@ class RequiredCheckTests(unittest.TestCase):
         gh = self.fake()
         gh.rulesets["SylphxAI/cloud"] = ruleset(20321070, "sylphx-merge-queue", None, reviews=None)
         with tempfile.TemporaryDirectory() as directory:
-            result = amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0)
+            result = amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
         self.assertTrue(all(row["result"] == "APPLIED" for row in result))
         self.assertIsNone(amq.queue_params(gh.rulesets["SylphxAI/cloud"]))
-        self.assertIn({"context": "review-ok", "integration_id": 5155317},
+        self.assertIn({"context": "external-ok", "integration_id": 5155317},
                       gh.rulesets["SylphxAI/cloud"]["rules"][0]["parameters"]["required_status_checks"])
 
     def test_multiple_old_publishers_converge_to_one_exact_binding(self):
-        old = [{"context": "review-ok", "integration_id": None},
-               {"context": "review-ok", "integration_id": 15368},
+        old = [{"context": "external-ok", "integration_id": None},
+               {"context": "external-ok", "integration_id": 15368},
                {"context": "ci-ok", "integration_id": 15368}]
-        self.assertEqual(amq.merge_checks(old, SHIPPED_POLICY["required_checks"][0]["checks"]),
-                         [{"context": "review-ok", "integration_id": 5155317},
+        self.assertEqual(amq.merge_checks(old, CHECK_POLICY["required_checks"][0]["checks"]),
+                         [{"context": "external-ok", "integration_id": 5155317},
                           {"context": "ci-ok", "integration_id": 15368}])
 
     def test_wrong_issuer_fails_apply_but_queue_only_rollback_preserves_it(self):
@@ -605,7 +609,7 @@ class RequiredCheckTests(unittest.TestCase):
             return result
         gh.rest = wrong_binding
         with tempfile.TemporaryDirectory() as directory:
-            applied = amq.apply(gh, self.rows(gh), SHIPPED_POLICY, pathlib.Path(directory), pause=0)
+            applied = amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
             self.assertTrue(all(row["result"].startswith("FAILED") for row in applied))
             restored = amq.rollback(gh, pathlib.Path(directory), pause=0)
             # Queue-only rollback preserves the live check binding, even if
@@ -785,7 +789,7 @@ class StrictConvergenceTests(unittest.TestCase):
     def test_queue_check_creation_and_binding_correction_include_false(self):
         gh = self.fake()
         rs = gh.rulesets["SylphxAI/example"]
-        checks = [{"context": "ci-ok", "integration_id": 99}, {"context": "review-ok", "integration_id": 77}]
+        checks = [{"context": "ci-ok", "integration_id": 99}, {"context": "external-ok", "integration_id": 77}]
         body = amq.with_rules(rs, POLICY["settings"], 0, False, checks, False)
         self.assertEqual(body["rules"][1]["parameters"]["required_status_checks"], checks)
         self.assertIs(body["rules"][1]["parameters"][amq.STRICT_KEY], False)

@@ -74,7 +74,11 @@ class PlatformRenameTests(unittest.TestCase):
 
     def test_queue_bindings_survive_rename_without_a_phantom_missing_target(self):
         policy = copy.deepcopy(SHIPPED_POLICY)
-        target = next(row for row in policy["required_checks"] if row["repo"] == NAMES[0])
+        # Mechanism fixture: one aliased, scoped target.
+        target = {"repo": NAMES[0], "repo_aliases": [NAMES[1]], "ruleset": "sylphx-merge-queue",
+                  "ruleset_id": 20321070, "reason": "fixture",
+                  "checks": [{"context": "ci-ok", "integration_id": 15368},
+                             {"context": "external-ok", "integration_id": 5155317}]}
         policy["required_checks"] = [target]
         for repo in NAMES:
             with self.subTest(repo=repo):

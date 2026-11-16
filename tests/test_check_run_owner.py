@@ -86,20 +86,8 @@ class CheckRunOwnerTests(unittest.TestCase):
         read_owner.assert_called_once_with(42)
         read_check.assert_called_once_with(9)
 
-    def test_review_and_merge_group_gate_deadline_contract(self) -> None:
+    def test_merge_group_gate_deadline_contract(self) -> None:
         load = lambda path: yaml.load((ROOT / path).read_text(), Loader=yaml.BaseLoader)
-        workflow = load('.github/workflows/pr-review.yml')
-        self.assertTrue(all(int(job['timeout-minutes']) <= 15 for job in workflow['jobs'].values()))
-        action = load('.github/actions/pr-review/action.yml')
-        commands = {step.get('id'): step for step in action['runs']['steps'] if step.get('id')}
-        self.assertIn('12m node', commands['review']['run'])
-        final = next(step for step in action['runs']['steps'] if 'finalize' in step.get('run', ''))
-        self.assertIn('always()', final['if'])
-        self.assertIn('2m node', final['run'])
-        cli = (ROOT / '.github/actions/pr-review/cli.mjs').read_text()
-        github = (ROOT / '.github/actions/pr-review/github.mjs').read_text()
-        self.assertIn('11 * 60_000', cli)
-        self.assertIn('11 * 60_000', github)
         control = load('.github/workflows/project-control.yml')
         self.assertIn('merge_group', control['on'])
         self.assertLessEqual(int(control['jobs']['ci-ok']['timeout-minutes']), 15)

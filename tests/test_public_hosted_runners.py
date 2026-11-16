@@ -66,28 +66,6 @@ class PublicHostedRunners(unittest.TestCase):
                                                    if route.event == 'merge_group'
                                                    else 'sylphx-linux-standard'})
 
-    def test_review_visibility_is_executing_repository_not_producer_or_fork(self):
-        # workflow_run.head_repository / pull_request.head.repo are not the
-        # executing repository and must never choose its billing surface.
-        workflow = yaml.load(WORKFLOWS['pr-review.yml'], Loader=yaml.BaseLoader)
-        selector = workflow['jobs']['review']['runs-on']
-        for event in ('workflow_run', 'workflow_dispatch', 'merge_group', 'pull_request'):
-            for private in (False, True):
-                for head_private in (False, True):
-                    context = {
-                        'github.event_name': {event},
-                        'github.event.repository.private': {private},
-                        'github.event.repository.visibility': {'private' if private else 'public'},
-                        'github.event.workflow_run.head_repository.private': {head_private},
-                        'github.event.pull_request.head.repo.private': {head_private},
-                    }
-                    self.assertEqual(expression(selector, context),
-                                     {'sylphx-linux-control' if private else 'ubuntu-latest'})
-        self.assertEqual(workflow['permissions']['id-token'], 'write')
-        action = workflow['jobs']['review']['steps'][-1]
-        self.assertEqual(action['uses'], './.github/actions/pr-review')
-        self.assertEqual(action['with']['ci-name'], 'pr-review-shared')
-
     def test_rust_call_without_override_has_identical_old_labels(self):
         # Omitting the new input must preserve both size and merge-lane behavior,
         # not replace the old dynamic selector with a fixed standard label.
