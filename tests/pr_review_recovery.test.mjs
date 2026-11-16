@@ -103,6 +103,39 @@ test('bounded new dependencies stop honestly at the original round and file budg
   assert.equal(limited.result.status, 'incomplete');
 });
 
+test('a boundary-spanning batch uses remaining identities after pinned absences without exceeding the file limit', async t => {
+  for (const reverse of [false, true]) for (const complete of [false, true]) await t.test(`${reverse ? 'reversed' : 'forward'} initial batch / ${complete ? 'complete' : 'incomplete'} verdict`, async () => {
+    const requests = Array.from({ length: 17 }, (_, n) => ({ path: `src/dependency-${n}.js`, side: n % 2 ? 'base' : 'head' }));
+    const first = requests.slice(0, 8), second = requests.slice(8);
+    if (reverse) first.reverse();
+    const absent = new Set(requests.slice(0, 2).map(r => r.path)), reads = [], inputs = [];
+    const result = await runRecovery({ github: { current: async () => true, source: async (path, sha, optional) => {
+      reads.push([path, sha, optional]); return absent.has(path) ? null : 'caller\n';
+    } }, execute: async input => {
+      inputs.push(input);
+      if (inputs.length === 1) return missing(input, first);
+      if (inputs.length === 2) return missing(input, [first[0], ...second, second[0]]);
+      return complete ? parsed(input) : missing(input, [first[0], ...second]);
+    } });
+    const collected = [...first, ...second.slice(0, 8)];
+    assert.deepEqual(reads, collected.map(r => [r.path, r.side === 'base' ? base : head, true]));
+    assert.equal(result.input.context.length, 16);
+    assert.equal(result.input.context.filter(c => c.absent).length, 2);
+    assert.deepEqual(result.result.recovery, { rounds: 2, added_files: 16, added_bytes: 98, stop: complete ? 'complete' : 'file_limit' });
+    assert.equal(result.result.status, complete ? 'complete' : 'incomplete');
+    assert.deepEqual(inputs.map(i => i.context.length), complete ? [0, 8, 16] : [0, 8, 16, 16]);
+    assert.notEqual(inputs[0].input_digest, inputs[1].input_digest);
+    assert.notEqual(inputs[1].input_digest, inputs[2].input_digest);
+    assert.equal(result.result.recovery_sources.length, 16);
+    assert.equal(result.result.recovery_sources.filter(s => s.status === 'absent').length, 2);
+    assert.equal(sourceQuote(result.input, requests[0].path, requests[0].side, 1, 1), null);
+    if (!complete) {
+      assert.equal(result.input.context_recovery, 'exhausted');
+      assert.equal(result.result.terminal_incomplete, true);
+    }
+  });
+});
+
 test('unchanged context is side-qualified and exact, including renamed base aliases and partition fragments', () => {
   const input = inputFor([{ path: 'src/caller.js', side: 'base', commit_sha: base, content: 'old caller\n' },
     { path: 'src/caller.js', side: 'head', commit_sha: head, content: 'new caller\n' }]);
