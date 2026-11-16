@@ -312,18 +312,30 @@ def failure_before_cancel(job):
 
 def authenticated_job(run, job, repo):
     """Bind a jobs-API row to this attempt's GitHub Actions check producer."""
+    if not isinstance(run, dict) or not isinstance(job, dict):
+        return False
+    if not all(positive_id(run.get(field)) for field in ("id", "run_attempt", "check_suite_id")):
+        return False
     name = job.get("name")
     check_id = linked_check_id(job, repo)
     if (not isinstance(name, str) or not name.strip()
-            or type(job.get("id")) is not int or job["id"] < 1 or check_id is None
+            or not all(positive_id(job.get(field)) for field in ("id", "run_id", "run_attempt"))
+            or check_id is None
             or job.get("run_id") != run["id"] or job.get("run_attempt") != run.get("run_attempt")
             or not positive_id(run.get("run_attempt")) or job.get("head_sha") != run["head_sha"]):
         return False
     check = api(f"repos/{repo}/check-runs/{check_id}")
-    return (check.get("id") == check_id and check.get("app", {}).get("id") == ACTIONS_APP_ID
-            and check.get("app", {}).get("slug") == "github-actions"
+    if not isinstance(check, dict):
+        return False
+    app, suite = check.get("app"), check.get("check_suite")
+    if (not isinstance(app, dict) or not isinstance(suite, dict)
+            or not positive_id(check.get("id")) or not positive_id(app.get("id"))
+            or not positive_id(suite.get("id"))):
+        return False
+    return (check["id"] == check_id and app["id"] == ACTIONS_APP_ID
+            and app.get("slug") == "github-actions"
             and check.get("head_sha") == run["head_sha"] and check.get("name") == name
-            and check.get("check_suite", {}).get("id") == run["check_suite_id"]
+            and suite["id"] == run["check_suite_id"]
             and check.get("details_url") == f"https://github.com/{repo}/actions/runs/{run['id']}/job/{job['id']}"
             and check.get("status") == job.get("status")
             and check.get("conclusion") == job.get("conclusion"))

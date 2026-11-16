@@ -1,4 +1,4 @@
-"""Public .github CI is free; private callers retain their self-hosted lanes."""
+"""Hosted CI requires a public repository; self-hosted CI works in either visibility."""
 from pathlib import Path
 import sys
 import unittest
@@ -13,6 +13,14 @@ WORKFLOWS = {p.name: p.read_text() for p in (ROOT / '.github/workflows').glob('*
 
 
 class PublicHostedRunners(unittest.TestCase):
+    def assert_public_runner_route(self, route):
+        self.assertEqual(route.errors, ())
+        expected = 'ubuntu-latest'
+        if (route.file, route.job) == ('project-control.yml', 'ci-range-consumer'):
+            expected = ('sylphx-linux-standard-merge' if route.event == 'merge_group'
+                        else 'sylphx-linux-standard')
+        self.assertEqual(route.values, {expected})
+
     def test_all_reachable_own_jobs_are_hosted_only_when_public(self):
         public = runner_evaluations(WORKFLOWS, private=False)
         self.assertTrue(public)
@@ -20,8 +28,7 @@ class PublicHostedRunners(unittest.TestCase):
                         {e.event for e in public})
         for route in public:
             with self.subTest(file=route.file, job=route.job, event=route.event):
-                self.assertEqual(route.errors, ())
-                self.assertEqual(route.values, {'ubuntu-latest'})
+                self.assert_public_runner_route(route)
         private = runner_evaluations(WORKFLOWS, private=True)
         self.assertTrue(private)
         for route in private:
@@ -31,6 +38,33 @@ class PublicHostedRunners(unittest.TestCase):
                 self.assertTrue(all(label.startswith('sylphx-linux-') for label in route.values))
         self.assertEqual(merge_lane_findings(WORKFLOWS, private=False, org='SylphxAI',
                                             check_all_events=True), [])
+
+    def test_other_public_job_cannot_inherit_consumer_self_hosted_exception(self):
+        workflow = yaml.load(WORKFLOWS['project-control.yml'], Loader=yaml.BaseLoader)
+        workflow['jobs']['tests']['runs-on'] = 'sylphx-linux-standard'
+        mutated = {**WORKFLOWS, 'project-control.yml': yaml.safe_dump(workflow)}
+        routes = [route for route in runner_evaluations(mutated, private=False)
+                  if (route.file, route.job) == ('project-control.yml', 'tests')]
+        self.assertTrue(routes)
+        for route in routes:
+            with self.subTest(event=route.event):
+                self.assertEqual(route.errors, ())
+                self.assertEqual(route.values, {'sylphx-linux-standard'})
+                with self.assertRaises(AssertionError):
+                    self.assert_public_runner_route(route)
+
+    def test_ci_range_consumer_always_uses_self_hosted_event_lanes(self):
+        for private in (False, True):
+            routes = [route for route in runner_evaluations(WORKFLOWS, private=private)
+                      if route.file == 'project-control.yml' and route.job == 'ci-range-consumer']
+            self.assertEqual({route.event for route in routes},
+                             {'pull_request', 'merge_group', 'push', 'workflow_dispatch'})
+            for route in routes:
+                with self.subTest(private=private, event=route.event):
+                    self.assertEqual(route.errors, ())
+                    self.assertEqual(route.values, {'sylphx-linux-standard-merge'
+                                                   if route.event == 'merge_group'
+                                                   else 'sylphx-linux-standard'})
 
     def test_review_visibility_is_executing_repository_not_producer_or_fork(self):
         # workflow_run.head_repository / pull_request.head.repo are not the

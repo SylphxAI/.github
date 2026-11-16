@@ -387,6 +387,66 @@ jobs:
       node-version: '22'
       npm-ci: true
 
+  ci-range-consumer:
+    runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select with optional authenticated queue reuse
+        id: range
+        uses: ./.github/actions/ci-range
+        with:
+          lanes: 'proof: *'
+          reuse-workflow: project-control.yml
+          reuse-aggregate: ci-ok
+          reuse-jobs: '{"proof":["tests"]}'
+      - name: Explicit requests always execute
+        id: explicit
+        uses: ./.github/actions/ci-range
+        with:
+          lanes: 'proof: *'
+          only: proof
+          reuse-workflow: project-control.yml
+          reuse-aggregate: ci-ok
+          reuse-jobs: '{"proof":["tests"]}'
+      - name: Check the composite action contract
+        env:
+          SELECTED: ${{ steps.range.outputs.run }}
+          EXECUTE: ${{ steps.range.outputs.execute }}
+          REUSED: ${{ steps.range.outputs.reused }}
+          PROOF: ${{ steps.range.outputs.reuse-proof }}
+          EXPLICIT_EXECUTE: ${{ steps.explicit.outputs.execute }}
+          EXPLICIT_REUSED: ${{ steps.explicit.outputs.reused }}
+          EXPLICIT_PROOF: ${{ steps.explicit.outputs.reuse-proof }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          selected, execute, reused, proof = (json.loads(os.environ[key]) for key in
+                                               ('SELECTED', 'EXECUTE', 'REUSED', 'PROOF'))
+          assert selected == {'proof': True}, selected
+          assert execute == {'proof': not reused['proof']}, (execute, reused)
+          if reused['proof']:
+              assert os.environ['GITHUB_EVENT_NAME'] == 'push'
+              assert proof['sha'] == os.environ['GITHUB_SHA']
+              assert proof['repository'] == os.environ['GITHUB_REPOSITORY']
+              assert proof['lanes'] == {'proof': ['tests']}
+              assert set(proof['jobs']) == {'ci-ok', 'tests'}
+          else:
+              assert proof == {}, proof
+          assert json.loads(os.environ['EXPLICIT_EXECUTE']) == {'proof': True}
+          assert json.loads(os.environ['EXPLICIT_REUSED']) == {'proof': False}
+          assert json.loads(os.environ['EXPLICIT_PROOF']) == {}
+          print(json.dumps({'execute': execute, 'reused': reused, 'proof': proof}, sort_keys=True))
+          PYTHON
+
   # Every required job must run and succeed before the merge gate can pass.
   ci-ok:
     permissions:
@@ -394,7 +454,7 @@ jobs:
       contents: read
       pull-requests: read
       checks: read
-    needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer, rust-node-consumer]
+    needs: [stack, project-control, tests, template-plan, template-verdict, junit-producer, junit-consumer, rust-node-consumer, ci-range-consumer]
     if: always()
     runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     timeout-minutes: 5
@@ -407,4 +467,4 @@ jobs:
         with:
           separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
-          required: stack,project-control,tests,rust-node-consumer,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ (github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run) && 'junit-producer' || 'junit-consumer' }}
+          required: stack,project-control,tests,rust-node-consumer,ci-range-consumer,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ (github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run) && 'junit-producer' || 'junit-consumer' }}

@@ -21,7 +21,10 @@ verify workflow agree on what "changed" means:
 Lanes come from the caller as `name: pattern pattern ...` lines. A pattern is
 an fnmatch glob over repository paths in which `*` also crosses `/`
 (`crates/*` is everything under crates/); a lone `*` always selects. A lane
-with no patterns always runs. Empty lanes request only the range (run = {}).
+with no patterns always runs. Prefix a pattern with `!` to exclude matching
+paths from that lane (exclusions win regardless of order). Exclusions alone
+imply `*`; with exclusions, a lane needs at least one included, nonexcluded
+changed path. Empty lanes request only the range (run = {}).
 No base selects every lane. Global patterns also select every lane when a
 changed path matches. They default to `.github/*`; callers can replace them
 with whitespace-separated fnmatch globs, or disable global matching with an
@@ -90,10 +93,16 @@ def select(lanes: dict[str, list[str]], changed: list[str] | None, only: str = "
     )
     run = {}
     for name, patterns in lanes.items():
-        if everything or not patterns or "*" in patterns:
+        includes = [p for p in patterns if not p.startswith("!")]
+        excludes = [p[1:] for p in patterns if p.startswith("!")]
+        if everything or (not excludes and (not patterns or "*" in patterns)):
             run[name] = True
         else:
-            run[name] = any(fnmatch.fnmatchcase(path, pattern) for path in changed for pattern in patterns)
+            run[name] = any(
+                any(fnmatch.fnmatchcase(path, pattern) for pattern in (includes or ["*"]))
+                and not any(fnmatch.fnmatchcase(path, pattern) for pattern in excludes)
+                for path in changed
+            )
     wanted = {lane_name(x) for x in only.split(",") if x.strip()} & set(lanes)
     if wanted:
         run = {name: name in wanted for name in run}
@@ -193,13 +202,17 @@ def main() -> int:
     changed = git("diff", "--name-only", "--no-renames", base, "HEAD").splitlines() if base else None
     run = select(lanes, changed, os.environ.get("ONLY", ""),
                  global_patterns=os.environ.get("GLOBAL_PATTERNS", ".github/*"))
+    import queue_reuse
+    execute, reused, evidence = queue_reuse.select(event, payload, default_branch, git("rev-parse", "HEAD"), run)
     with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+        for name, value in (("execute", execute), ("reused", reused), ("reuse-proof", evidence)):
+            out.write(f"{name}={json.dumps(value, separators=(',', ':'))}\n")
         out.write(f"base={base}\nrun={json.dumps(run, separators=(',', ':'))}\n")
         out.write(f"changed={'' if changed is None else len(changed)}\n")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     lines = [f"### CI range ({event})", "", f"base: `{base or 'none - every lane runs'}`  head: `{os.environ.get('GITHUB_SHA', '')}`",
-             f"changed files: {'all' if changed is None else len(changed)}", "", "| lane | runs |", "| --- | --- |"]
-    lines += [f"| {name} | {'yes' if selected else 'no'} |" for name, selected in run.items()]
+             f"changed files: {'all' if changed is None else len(changed)}", "", "| lane | selected | reused | executes |", "| --- | --- | --- | --- |"]
+    lines += [f"| {name} | {str(selected).lower()} | {str(reused[name]).lower()} | {str(execute[name]).lower()} |" for name, selected in run.items()]
     print("\n".join(lines))
     if summary:
         with open(summary, "a") as fh:
