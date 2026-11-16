@@ -862,7 +862,9 @@ elif a[:1] == ["api"] and "check-runs" in " ".join(a):
     print("\n".join("\t".join(map(str, r)) for r in sc["runs"]))
 elif a[:1] == ["api"] and "pulls/" in " ".join(a) and "commits" in " ".join(a):
     print("\n".join("\t".join(map(str, c)) for c in sc.get("pr_commits", [])))
-elif a[:1] == ["api"] and "/contents/KEEL_PIN" in " ".join(a):
+elif a[:1] == ["api"] and "pulls/" in " ".join(a) and "/files" in " ".join(a):
+    print("\n".join(sc.get("pr_files", [])))
+elif a[:1] == ["api"] and ("/contents/KEEL_PIN" in " ".join(a) or "/contents/deps/keel.rev" in " ".join(a)):
     if sc.get("base_keel_pin"):
         import base64
         print(base64.b64encode((sc["base_keel_pin"] + "\n").encode()).decode())
@@ -1306,6 +1308,31 @@ class SettleLiveTest(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertNotIn("contents/KEEL_PIN", (base / "gh-calls.txt").read_text())
             self.assertIn(keel_repin.LIVE_MARKER, (base / "comments.txt").read_text())
+
+    def test_truncated_pr_body_still_discovers_pin_via_pull_files(self):
+        manual_pin = "b" * 40
+        truncated_body = MERGED_PR["body"] + "\nFiles changed:\n" + "".join(f"- `crates/c{i:02d}.rs`\n" for i in range(60))
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({
+                "prs": [], "emails": [BOT], "runs": [],
+                "merged": {**MERGED_PR, "body": truncated_body},
+                "pr_files": [*[f"crates/c{i:02d}.rs" for i in range(60)], "deps/keel.rev"],
+                "base_keel_pin": manual_pin, "base_keel_pin_at": "2027-01-15T07:50:00Z",
+            }))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            after_grace = keel_repin.calendar.timegm((2027, 1, 15, 9, 0, 0))
+            ws = keel_repin.web_smoke()
+            real = ws.live_keel
+            ws.live_keel = lambda url: real(url, opener=serving(self.version(keel=manual_pin)))
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"), \
+                    mock.patch.object(keel_repin, "web_smoke", return_value=ws):
+                rc = keel_repin.main(["settle", "--owner", "@o/team", "--now", str(after_grace), "--live-url", LIVE_URL])
+            self.assertEqual(rc, 0)
+            self.assertIn("contents/deps/keel.rev", (base / "gh-calls.txt").read_text())
 
 
 class ActionContractTest(unittest.TestCase):

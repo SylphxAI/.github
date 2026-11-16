@@ -1184,20 +1184,32 @@ def web_smoke():
     return mod
 
 
+def is_pin_path(path):
+    """Whether PATH is a safe repository-relative KEEL_PIN or deps/keel.rev provenance file."""
+    parts = Path(path).parts
+    if ".." in parts or Path(path).is_absolute() or not re.fullmatch(r"[A-Za-z0-9._/-]+", path):
+        return False
+    return Path(path).name == "KEEL_PIN" or parts[-2:] == ("deps", "keel.rev")
+
+
 def repin_pin_paths(body):
     """Tracked provenance pin files named in a repin pull request's Files changed list."""
-    paths = []
-    for path in re.findall(r"(?m)^- `([^`]+)`$", body or ""):
-        parts = Path(path).parts
-        if ".." in parts or Path(path).is_absolute() or not re.fullmatch(r"[A-Za-z0-9._/-]+", path):
-            continue
-        if Path(path).name == "KEEL_PIN" or parts[-2:] == ("deps", "keel.rev"):
-            paths.append(path)
-    return paths
+    return [path for path in re.findall(r"(?m)^- `([^`]+)`$", body or "") if is_pin_path(path)]
+
+
+def merged_pr_pin_paths(repo, number, body):
+    """Complete tracked provenance pin files changed by merged repin PR NUMBER."""
+    p = run([*gh_bin(), "api", "--paginate", f"repos/{repo}/pulls/{number}/files?per_page=100", "--jq", ".[].path"],
+            check=False)
+    if p.returncode == 0 and p.stdout.strip():
+        return [path for path in p.stdout.splitlines() if is_pin_path(path)]
+    if p.returncode != 0:
+        return []
+    return repin_pin_paths(body)
 
 
 def newest_merged_repin():
-    """The newest merged repin pull request moving Keel as (number, tag, commit, merged_at epoch, pin_paths), or None."""
+    """The newest merged repin pull request moving Keel as (number, tag, commit, merged_at epoch, body), or None."""
     out = gh_json(["pr", "list", "--state", "merged", "--limit", "100",
                    "--search", f"head:{BRANCH_PREFIX}",
                    "--json", "number,headRefName,body,mergedAt"],
@@ -1222,7 +1234,7 @@ def newest_merged_repin():
                 raise Refused(f"merged repin pull request #{pr['number']} does not name its Keel commit in its body")
             continue
         merged = calendar.timegm(time.strptime(pr["mergedAt"], "%Y-%m-%dT%H:%M:%SZ"))
-        return str(pr["number"]), head, m.group(1), merged, repin_pin_paths(body)
+        return str(pr["number"]), head, m.group(1), merged, body
     return None
 
 
@@ -1258,7 +1270,7 @@ def settle_live(args, now):
     if merged is None:
         print("::notice::keel-repin settle: no merged repin pull request; the live Keel is not compared")
         return 0
-    number, tag, commit, merged_at, pin_paths = merged
+    number, tag, commit, merged_at, body = merged
     ws = web_smoke()
     live, why = ws.live_keel(args.live_url)
     ok, text = ws.keel_verdict(live, why, commit)
@@ -1267,7 +1279,8 @@ def settle_live(args, now):
         print(f"#{number} {tag}: settled; {text}")
         return 0
     # If the base branch manually moved this repin's pin file after the PR merged, judge against that newer commit.
-    base_pin, base_at = base_keel_pin(repo_name(), args.base, pin_paths)
+    repo = repo_name()
+    base_pin, base_at = base_keel_pin(repo, args.base, merged_pr_pin_paths(repo, number, body))
     if base_pin and base_pin != commit and base_at is not None and base_at > merged_at:
         base_ok, base_text = ws.keel_verdict(live, why, base_pin)
         if base_ok:
