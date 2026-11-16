@@ -75,24 +75,12 @@ repositories. It includes the shared source with the exception described above.
 An unreadable repository or organization listing fails; an acquisition failure
 cannot become a zero-repository pass. All GitHub operations are read-only.
 
-## Scheduled coverage and credentials
+## On-demand use
 
-`.github/workflows/action-pin-drift.yml` runs every Monday at 04:27 UTC and on
-`workflow_dispatch`, using `sylphx-linux-standard`. Both audits pass
-`--public-only` and use the job's read-only `github.token`. Their reports cover
-public, non-archived repositories only. Private callers enforce their own pins
-through `stack-conformance`; the central audit claims no private coverage. An
-authorized local audit can omit `--public-only` to read repositories visible to
-its existing identity.
-
-The obsolete `CUBEAGE_CI_READER_APP_ID` / `CUBEAGE_CI_READER_APP_KEY` mint path
-was removed. Scheduled run
-[40270369197](https://github.com/SylphxAI/.github/actions/runs/40270369197)
-on 2026-10-26 failed at `Mint read-only token` because its `client-id` (or
-deprecated `app-id`) input was empty, skipping the audit. Those App inputs are
-no longer used, and the old App and organization settings are left for their
-owner to clean up. A missing job token fails before acquisition with
-`read-only GitHub token is unavailable`.
+The scheduled action-pin-drift workflow is retired. Renovate already maintains
+shared-action pins; a second periodic audit does not update them. The CLI remains
+available for targeted investigation and for the source-proof reader used by
+other tools. It uses the caller's existing read-only identity.
 
 ## Watch the watcher
 
@@ -132,7 +120,6 @@ waits excluded), so a merely queued or slow run does not read as unhandled. One
 `tests/test_action_pin_drift_check.py` covers full-SHA/comment rules, recent
 feature commits, missing target files, both action metadata extensions, exact
 workflow paths, cached proof, missing acquisition, drift age and public scope.
-It executes both audit shell steps with an empty token to verify clear failure.
 
 `tests/test_shared_pin_provenance_gate.py` executes the real caller CLI against
 complete local Git fixtures: a private caller passes with valid proof; a
