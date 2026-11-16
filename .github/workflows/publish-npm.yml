@@ -151,6 +151,7 @@ jobs:
         id: changesets
         uses: changesets/action@v1
         with:
+          cwd: ${{ inputs.working-directory }}
           version: ${{ inputs.version-command }}
           publish: ${{ inputs.publish-command == 'auto' && 'sylphx-changesets-publish' || inputs.publish-command }}
           commit: "chore(release): version packages"
