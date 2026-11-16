@@ -121,15 +121,43 @@ class SecretScanTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn('reviewed findings allowed=1', output)
 
-    def test_allowlist_does_not_cover_different_path_or_line_or_digest(self):
+    def test_content_allowlist_survives_rebase_amend_and_line_shift(self):
+        self.write('.desk-secret-allowlist.json', json.dumps({'version': 1, 'findings': [{
+            'path': 'settings.txt', 'sha256': hashlib.sha256(self.line.encode()).hexdigest(),
+            'reason': 'Generated descriptor line, not a credential.'}]}))
+        self.add_token()
+        self.assertEqual(self.scan()[0], 0)
+        # Amending changes every commit identity; a shifted line keeps its content.
+        self.write('settings.txt', 'header\n' + self.line + '\n')
+        self.git('add', '-A')
+        self.git('commit', '-q', '--amend', '-m', 'amended fixture')
+        code, output = self.scan()
+        self.assertEqual(code, 0, output)
+        self.assertIn('reviewed findings allowed=1', output)
+
+    def test_allowlist_does_not_cover_different_path_or_digest(self):
         leaked = self.add_token()
-        for field, value in [('path', 'elsewhere.txt'), ('line', 2), ('sha256', '0' * 64)]:
+        for field, value in [('path', 'elsewhere.txt'), ('sha256', '0' * 64)]:
             entry = {'commit': leaked, 'path': 'settings.txt', 'line': 1,
                      'sha256': hashlib.sha256(self.line.encode()).hexdigest(), 'reason': 'Test fixture.'}
             entry[field] = value
             self.write('.desk-secret-allowlist.json', json.dumps({'version': 1, 'findings': [entry]}))
             self.commit('mismatched review ' + field)
             self.assertEqual(self.scan()[0], 1, field)
+
+    def test_allowlist_schema_refuses_missing_reason_or_unknown_field(self):
+        self.add_token()
+        digest = hashlib.sha256(self.line.encode()).hexdigest()
+        for entry in ({'path': 'settings.txt', 'sha256': digest},
+                      {'path': 'settings.txt', 'sha256': digest, 'reason': ' '},
+                      {'path': 'settings.txt', 'sha256': digest, 'reason': 'x', 'scope': 'all'},
+                      {'path': 'settings.txt', 'sha256': digest, 'reason': 'x', 'commit': 'main'}):
+            with self.subTest(entry=entry):
+                self.write('.desk-secret-allowlist.json', json.dumps({'version': 1, 'findings': [entry]}))
+                self.commit('invalid review')
+                code, output = self.scan()
+                self.assertEqual(code, 1)
+                self.assertIn('allowlist', output)
 
     def test_malformed_allowlist_fails_without_echoing_contents(self):
         self.write('.desk-secret-allowlist.json', self.token)
@@ -165,15 +193,14 @@ class SecretScanTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn('reviewed findings allowed=1', output)
 
-        # A second unreviewed copy of the same line in the squashed commit still fails.
+        # A different, unreviewed secret line at the same path in the squash still fails.
         self.git('reset', '--hard', '-q', self.base)
         self.write('.desk-secret-allowlist.json', json.dumps({'version': 1, 'findings': [{
-            'commit': leaked, 'path': 'settings.txt', 'line': 1,
-            'sha256': digest,
+            'path': 'settings.txt', 'sha256': digest,
             'reason': 'Reviewed synthetic fixture before squash.'}]}))
-        self.write('settings.txt', self.line + '\n' + self.line + '\n')
-        duplicate_squash = self.commit('squash with unreviewed duplicate line')
-        self.assertEqual(self.scan(base=self.base, head=duplicate_squash, event='merge_group')[0], 1)
+        self.write('settings.txt', self.line + '\n' + self.line.replace(self.token, self.token[::-1]) + '\n')
+        other_squash = self.commit('squash with a different unreviewed line')
+        self.assertEqual(self.scan(base=self.base, head=other_squash, event='merge_group')[0], 1)
 
     def test_missing_merge_group_range_fails_closed(self):
         code, _ = self.scan(base='0' * 40, event='merge_group')
