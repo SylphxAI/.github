@@ -311,6 +311,22 @@ class GitTreeTests(unittest.TestCase):
         self.assertIn(("src/bare.ts", "o3"), head_by_path)
         self.assertIsNone(head_by_path[("src/bare.ts", "o3")])
 
+    def test_classifier_metadata_array_and_duplicate_key_parity(self):
+        files = {
+            "taxonomy_array.json": '{"taxonomy":{"models":["gpt-4o","claude-3-5-sonnet-20241022"]}}\n',
+            "nested_array.json": '{"match":{"model":[["gpt-4o"]]}}\n',
+            "escaped_key.json": '{"tax_onomy":{"mo\\u0064el":["gpt-4o"]}}\n',
+            "duplicate_key.json": '{"taxonomy":{"models":["gpt-4o"],"models":[]}}\n',
+            "nested_object.json": '{"taxonomy":{"model":{"nested":"gpt-4o"}}}\n',
+        }
+        res = sc.model_pins.scan(sc.DictTree(files), "example/app", None, sc.architecture.source_views)
+        self.assertEqual([r["path"] for r in res["findings"]], ["nested_object.json"])
+        exempt_paths = [r["path"] for r in res["exemptions"]]
+        self.assertEqual(
+            exempt_paths,
+            ["duplicate_key.json", "escaped_key.json", "nested_array.json", "taxonomy_array.json", "taxonomy_array.json"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

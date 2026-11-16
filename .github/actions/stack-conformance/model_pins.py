@@ -279,24 +279,28 @@ def sql_selection(clean, start):
 def _json_has_classifier_model(clean):
     """Fast C-parser precheck before walking offsets with JSONDecoder."""
     try:
-        root = json.loads(clean)
+        # Use tuple as a C-speed marker for JSON objects while keeping duplicate keys.
+        root = json.loads(clean, object_pairs_hook=tuple)
     except (ValueError, RecursionError):
         return True
-    stack = [(root, False)]
+    stack = [(root, False, False)]
     while stack:
-        obj, in_classifier = stack.pop()
-        if isinstance(obj, dict):
-            for key, value in obj.items():
+        obj, in_classifier, last_key_is_model = stack.pop()
+        if isinstance(obj, tuple):
+            for key, value in obj:
                 norm = key.replace("_", "").replace("-", "").lower()
-                if in_classifier and norm in {"model", "models"} and isinstance(value, str):
+                child_is_model = norm in {"model", "models"}
+                if in_classifier and child_is_model and isinstance(value, str):
                     return True
-                child_classifier = in_classifier or (norm in _CLASSIFIER_ANCESTORS)
-                if isinstance(value, (dict, list)):
-                    stack.append((value, child_classifier))
+                if isinstance(value, (tuple, list)):
+                    stack.append((value, in_classifier or (norm in _CLASSIFIER_ANCESTORS), child_is_model))
         elif isinstance(obj, list):
             for item in obj:
-                if isinstance(item, (dict, list)):
-                    stack.append((item, in_classifier))
+                if isinstance(item, str):
+                    if in_classifier and last_key_is_model:
+                        return True
+                elif isinstance(item, (tuple, list)):
+                    stack.append((item, in_classifier, last_key_is_model))
     return False
 
 
@@ -304,12 +308,6 @@ def metadata_ranges(clean, suffix, original=None):
     """Locate classifier membership and weight provenance, leaving defaults visible."""
     ranges = []
     if suffix == ".json":
-        if "\\u" not in clean:
-            lowered = clean.lower()
-            if "model" not in lowered or not (
-                "taxonomy" in lowered or "quota" in lowered or "match" in lowered or "limit" in lowered
-            ):
-                return ranges
         if not _json_has_classifier_model(clean):
             return ranges
         decoder = json.JSONDecoder()
@@ -336,7 +334,7 @@ def metadata_ranges(clean, suffix, original=None):
             if clean[at] == "[":
                 at = space.match(clean, at + 1).end()
                 while clean[at] != "]":
-                    at = space.match(clean, visit(at, in_classifier, False)).end()
+                    at = space.match(clean, visit(at, in_classifier, last_key_is_model)).end()
                     if clean[at] != ",":
                         break
                     at = space.match(clean, at + 1).end()
