@@ -20,7 +20,7 @@ jobs:
     steps:
       # Same source binding as red-main: never execute a producer commit.
       - name: Read canonical run-store consumer
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: SylphxAI/.github
           ref: ${{ job.workflow_sha }}
