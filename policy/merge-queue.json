@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "doc": "docs/merge-queue-settings.md. The one source for merge queue settings, approving review count and explicitly scoped required checks. Applied by scripts/apply_merge_queue.py (dry-run by default). Required checks follow the readiness procedure in that document, including the scoped first-check bootstrap for an existing queue with no required contexts.",
+  "doc": "docs/merge-queue-settings.md. The one source for merge queue settings, approving review count and explicitly scoped required checks. Applied by scripts/apply_merge_queue.py (dry-run by default). Required checks follow the scoped first-check bootstrap in that document for an existing queue with no required contexts.",
   "orgs": [
     "SylphxAI",
     "Cubeage",
@@ -28,7 +28,7 @@
   "review": {
     "required_approving_review_count": 0,
     "require_extra_approval_for_unattributed_changes": false,
-    "note": "Human approving reviews remain at zero. The exact-head, App-bound review-ok status is the independent review gate on explicitly rolled-out repositories. require_extra_approval_for_unattributed_changes adds one approving review when a pull request carries commits GitHub cannot attribute to a user (every desk App's), which would hold every bot pull request for an approval ci-ok already made; the tool converges it to false."
+    "note": "Human approving reviews remain at zero; deterministic CI (ci-ok) is the only merge gate. require_extra_approval_for_unattributed_changes adds one approving review when a pull request carries commits GitHub cannot attribute to a user (every desk App's), which would hold every bot pull request for an approval ci-ok already made; the tool converges it to false."
   },
   "exclude": [
     {
@@ -76,44 +76,13 @@
   ],
   "required_checks": [
     {
-      "repo": "SylphxAI/cloud",
-      "repo_aliases": ["SylphxAI/sylphx"],
-      "ruleset": "sylphx-merge-queue",
-      "ruleset_id": 20321070,
-      "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 }
-      ],
-      "reason": "First review gate rollout: preserve CI and bind independent review to its sole App. Apply only after the documented readiness gates and the cloud contract update."
-    },
-    {
-      "repo": "SylphxAI/infra",
-      "ruleset": "infra-main-required-ci",
-      "ruleset_id": 23689347,
-      "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 }
-      ],
-      "reason": "First review gate rollout after producer installation, backfill, live posting and alert readiness."
-    },
-    {
-      "repo": "SylphxAI/desk-tools",
-      "ruleset": "sylphx-merge-queue",
-      "ruleset_id": 24403587,
-      "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 }
-      ],
-      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
-    },
-    {
       "repo": "SylphxAI/.github",
       "ruleset": "sylphx-merge-queue",
       "ruleset_id": 20321046,
       "checks": [
         { "context": "pr-metadata", "integration_id": 15368 }
       ],
-      "reason": "Match repository ruleset 20321046: require Actions PR metadata, with ci-ok inherited from the organization. Trusted-main Sylphx PR Review remains advisory and is not a merge-queue gate."
+      "reason": "Match repository ruleset 20321046: require Actions PR metadata, with ci-ok inherited from the organization."
     },
     {
       "repo": "SylphxAI/owner",

@@ -29,8 +29,7 @@ Inherited organization or enterprise rulesets are reported and never written.
 The strict flag is converged to false on rulesets carrying a merge queue;
 non-queue rulesets retain their strict flag. The fast gate is reported fleet-wide, but checks are changed
 only on the declared repository/ruleset ID/name targets. Before adding a gate,
-follow the producer/backfill/live-posting/alert readiness procedure in
-docs/merge-queue-settings.md. Rollback restores queue parameters only; required-check
+follow the first-check bootstrap in docs/merge-queue-settings.md. Rollback restores queue parameters only; required-check
 recovery uses the saved before object and a supported ruleset update.
 
 Reads are one GraphQL query per 100 repositories of an organization, then one

@@ -648,7 +648,7 @@ def test_empty_startup_failure_wins_over_pending_checks():
 
 class OrphanOwnerPollingTests(unittest.TestCase):
     def test_completed_owner_fails_required_app_without_waiting(self) -> None:
-        check = dict(run("Sylphx PR Review", "in_progress", None), id=42,
+        check = dict(run("Required App check", "in_progress", None), id=42,
                      app={"id": 1299545, "slug": "sylphx-ai"},
                      details_url="https://github.com/example/repo/actions/runs/17")
         for event in ("pull_request", "merge_group"):
@@ -656,7 +656,7 @@ class OrphanOwnerPollingTests(unittest.TestCase):
                 read_owner = mock.Mock(return_value={"id": 17, "status": "completed"})
                 read_check = mock.Mock(return_value={"id": 42, "status": "in_progress"})
                 result, reasons = ci_ok.evaluate(
-                    [check], set(), required={"Sylphx PR Review"},
+                    [check], set(), required={"Required App check"},
                     event_name=event, owner_reader=read_owner, check_reader=read_check,
                     repository="example/repo")
                 self.assertEqual(result, "fail")

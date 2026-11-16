@@ -1,13 +1,12 @@
 name: ci-ok
 description: >
   Enforces served same-size merge-lane routing and shared contribution metadata policy and scans added commits for
-  secrets, enforces base-policy generated provenance, then requires explicitly named job dependencies to have succeeded.
+  secrets, then requires explicitly named job dependencies to have succeeded.
   Run the calling job with needs for every required job and if always(), and
   pass toJSON(needs) plus the required YAML job IDs. An absent, skipped,
   cancelled, failed or unfinished required job fails. Optional dependencies
   may skip but may not fail or be cancelled. No check-inventory polling.
-  On merge_group, [review] PRs also require exact-head review success.
-  Requires actions, contents, pull-requests and checks read. See docs/ci-ok.md.
+  Requires actions, contents and pull-requests read. See docs/ci-ok.md.
 
 inputs:
   separate-pr-metadata:
@@ -22,7 +21,7 @@ inputs:
     description: Comma-separated YAML job IDs that must be present and have succeeded.
     required: true
   token:
-    description: Token with contents, pull-requests and checks read for metadata, review, secret scanning and base-policy source reads.
+    description: Token with contents and pull-requests read for metadata and secret scanning.
     default: ${{ github.token }}
 
 runs:
@@ -38,19 +37,12 @@ runs:
       env:
         CONTRIBUTION_POLICY_TOKEN: ${{ inputs.token }}
         CONTRIBUTION_POLICY_SCOPE: ${{ inputs.separate-pr-metadata == 'true' && 'commits' || 'all' }}
-      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE" --require-merge-group-review
+      run: python3 "$GITHUB_ACTION_PATH/../contribution-policy/contribution_policy.py" --scope "$CONTRIBUTION_POLICY_SCOPE"
     - name: Scan added commits for secrets
       shell: bash
       env:
         SECRET_SCAN_TOKEN: ${{ inputs.token }}
       run: python3 "$GITHUB_ACTION_PATH/../secret-scan/secret_scan.py" --fetch --pre-merge-only
-    - name: Require generated provenance from base policy
-      shell: bash
-      env:
-        GENERATED_POLICY_TOKEN: ${{ inputs.token }}
-        NEEDS: ${{ inputs.needs }}
-        REQUIRED: ${{ inputs.required }}
-      run: python3 "$GITHUB_ACTION_PATH/generated.py"
     - name: Require successful job dependencies
       shell: bash
       env:

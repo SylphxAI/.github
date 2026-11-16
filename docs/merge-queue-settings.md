@@ -26,8 +26,8 @@ set once per repository, here.
 ## The settings
 
 HEADGREEN: the merge-group head must pass the required checks. The CI check is
-`ci-ok`; explicitly scoped `required_checks` entries also require the independent
-`review-ok` status from the sole review publisher App. The full suite still runs
+`ci-ok`, the only merge gate besides explicitly scoped deterministic
+`required_checks` entries. The full suite still runs
 after the merge ([optimistic-merge.md](optimistic-merge.md)). Values:
 `policy/merge-queue.json`
 `settings`. `max_entries_to_build` is 5 because the shared merge-queue runner
@@ -51,11 +51,8 @@ retain the default deadline.
 ## Required approving reviews: none
 
 Repository `pull_request` rules require zero human approving reviews (policy
-`review`). Independent review is instead the exact-head `review-ok` status,
-bound to the `sylphx-desk-studio` App (integration ID `5155317`). It is posted
-on PR heads and merge-group commits, not implemented as a CI job. An undecided,
-withdrawn or blocking verdict cannot satisfy it. The enterprise ruleset keeps
-zero approving reviews; the status check is required by the repository ruleset.
+`review`), and no human or model review status is required: deterministic CI
+is the merge gate. The enterprise ruleset keeps zero approving reviews.
 
 The same `review` block turns `require_extra_approval_for_unattributed_changes`
 off. That flag adds one approving review when a pull request carries commits
@@ -112,8 +109,7 @@ review, strictness, bypass and condition fields, including unrelated check drift
 The unfiltered apply remains full policy convergence, not a narrow adoption
 command. For example, `--repo SylphxAI/.github --only-check pr-metadata`
 selects only the Actions metadata binding. That repository inherits `ci-ok` from
-the organization; its trusted-main `Sylphx PR Review` check is advisory, not a
-required context or merge-group projection.
+the organization.
 
 A ruleset inherited from an organization or enterprise ruleset (GraphQL `source`
 not `Repository`) is reported `INHERITED` and never written: REST has no path to
@@ -160,46 +156,13 @@ saved before object and restore the affected rule through GitHub's supported
 ruleset update, preserving unrelated intervening changes and reading the
 result back. Do not call a queue-only rollback a required-check recovery.
 
-## Review gate rollout barrier
+## Required-check recovery
 
-The first declared targets are cloud (`20321070`) and infra (`23689347`). The
-policy is desired state, not a claim that a live gate is already enabled. Do
-not apply an entry until all of the following have actual readbacks:
-
-- The reviewed producer is merged and installed by desk-sync.
-- Backfill posted `review-ok=success` on every open canonical-PASS head.
-- Normal posting on PR heads and merge-group commits has run for at least an
-  hour, including undecided and blocking verdicts remaining non-success.
-- The ReviewGate VMRule is live.
-- Cloud's App-binding/runner guard support is landed, and its
-  `.github/branch-protection-contract.json` activation is updated in the same
-  rollout step as the live ruleset.
-
-Guard support must precede enforcement: CI compares the proposed cloud contract
-against live rules, so activating its JSON before the producer/live-rule barrier
-would make CI fail. First land binding-reader and external-status support with
-the existing `ci-ok` floor unchanged. At the barrier, activate `review-ok` and
-its App binding in the cloud contract and apply only cloud and infra. Send heads
-for independent review only after their native CI is green.
-
-After those two readbacks, extend the same policy to .github (`20321046`)
-with its provider-confirmed ruleset name. Every
-rollout keeps the queue and `ci-ok`. No TSV armer, private queue, polling loop
-or synthetic CI job is part of this path.
-
-Rollout progress: cloud and infra were applied on 2026-10-15 and read back
-(`review-ok` present, bound to integration `5155317`), with the pre-change
-rulesets saved in a ruleset-backup directory on the operator host, which is the
-rollback source for every entry of this rollout. .github is
-declared here and applied in the same rollout. The retired work repository is
-archived, so it is an `exclude` entry: the tool never reads or writes it, and a
-repository with no queue left to protect is not given a new required check.
-
-Save a fresh backup directory per rollout. If posting stops or the gate blocks
-approved heads, restore the affected required-check rule from that directory
-through the supported ruleset update and read back the App bindings and CI gate.
-`--rollback` alone restores queue parameters, not required checks. A successful
-PUT alone is not an apply or rollback receipt.
+Save a fresh backup directory per apply. `--rollback` alone restores queue
+parameters, not required checks; restore an affected required-check rule from the
+saved before object through the supported ruleset update and read back the
+bindings. A successful PUT alone is not an apply or rollback receipt. The
+retired work repository is archived and is an `exclude` entry.
 
 
 ## Commands

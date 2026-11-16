@@ -121,7 +121,7 @@ Equivalent rewritten expressions, unknown selectors and arbitrary opt-outs are
 refused with `non-canonical concurrency expression; use the canonical form or
 add a named exception`. No event payload or caller input is assumed absent.
 Workflows without a PR trigger, including `workflow_call`-only definitions and
-`workflow_run` review producers, are outside this rule. Mixed PR/reusable
+`workflow_run` producers, are outside this rule. Mixed PR/reusable
 workflows require the two-PR-event canonical form because callers supply events.
 
 Named exceptions require a column-zero header before `jobs`, a specific reason,
@@ -239,8 +239,7 @@ does not claim to describe base-branch changes introduced after divergence.
 Mandatory merge-group verification over the actual merge-group tree is the
 final merge-safety receipt. A PR that changes YAML and JSON consistently (for
 example deleting a test job) is a CI-configuration change, not generator drift.
-Workflow/action configuration must receive the automated high-risk code review;
-the verifier does not decide whether the requested test policy is appropriate.
+The verifier does not decide whether the requested test policy is appropriate.
 
 The same execution test proved `github.workflow_sha` equals the organization
 rule's pinned source SHA, while `github.sha` identifies the target PR merge.
@@ -268,12 +267,9 @@ in report-only mode. Publishing the checker does not activate this runner pool.
    `github.event.workflow_run.head_repository.full_name == github.repository`.
    Mentioning the comparison in an unrelated OR branch does not qualify.
 5. Job-level permissions explicitly include `contents: read`. Other permitted
-   read scopes are `actions`, `pull-requests`, `checks` and `statuses`. Only the
-   pinned shared `pr-review` action (including a qualifying local checkout) may
-   request `id-token`, `checks`, `statuses` or `pull-requests` write access.
-   Secrets are denied by default, including inherited workflow environment
-   values. `io-reviewer-secrets` names the reviewer token exceptions, separated
-   by commas; only reviewer jobs may use them. Dynamic secret lookup is refused.
+   read scopes are `actions`, `pull-requests`, `checks` and `statuses`; write
+   scopes are refused. Secrets are refused, including inherited workflow
+   environment values and dynamic secret lookup.
 
 Run `python -m unittest discover -s tests -p 'test_*contract.py'` for the workflow
 contract and io prerequisite cases. The permission and expression semantics are

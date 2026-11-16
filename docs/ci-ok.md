@@ -19,7 +19,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      checks: read
     steps:
       - uses: SylphxAI/.github/.github/actions/ci-ok@<full-release-sha> # main
         with:
@@ -46,70 +45,6 @@ GitHub keeps the verdict pending while a needed job runs. `if: always()` lets
 it report failure after a dependency failed or skipped. A cancelled required
 dependency never passes. If the verdict itself is cancelled, it does not publish
 success. The required check must be this verdict job.
-
-## Generated and captured source
-
-The immutable base `.github/review-policy.toml` declares generated paths and the
-YAML job IDs that prove deterministic regeneration or captured-source provenance:
-
-```toml
-version = 2
-[tier0]
-paths = ["docs/**"]
-[review]
-paths = ["src/**", ".github/**"]
-[generated]
-paths = ["generated/**", "captures/**"]
-
-[[generated.provenance]]
-paths = ["generated/**"]
-jobs = ["regenerate"]
-
-[[generated.provenance]]
-paths = ["captures/**"]
-jobs = ["verify-captures"]
-```
-
-For each changed generated path, at least one provenance entry must match. Every
-job from every matching entry must be explicitly listed in both `required` and
-the verdict job's direct `needs`, with `result: success`. Missing declarations,
-omitted required IDs, absent dependencies and skipped, failed, cancelled or
-unfinished jobs fail the verdict. This obligation remains when an explicit
-review path also matches. A successful job must actually validate deterministic
-output against the selected source; the gate verifies its dependency result,
-not the correctness of the job's implementation.
-
-Use the same case-sensitive globs as review: `*` stays inside a path segment,
-`**/` matches zero or more directories, and `?` matches one non-slash character.
-Additions, modifications and deletions count; rename transitions include both
-old and new path identities. The comparison uses full Git tree inventories, not
-the truncated REST compare-files population. The PR's new or edited policy
-cannot remove its base obligation. A missing base policy supplies no generated
-exemption and no generated-proof obligation; an invalid or unreadable base policy
-fails closed.
-
-Native PRs compare the base with the tested merge tree (or tested head), checking
-merge parents against the event's base/head. Merge groups compare their supplied
-base/head; pushes compare `before` with the tested commit. PR-code dispatches
-reuse the contribution check's current-PR/merge binding. Branch creation and
-events without a selected code range have no base declaration to enforce.
-
-No checkout or fetch-depth setting is required. Available local objects are used
-without replacement objects or lazy fetches; otherwise an isolated bare Git
-acquisition reuses the secret scanner's environment-only scoped authentication.
-Only the requested depth-one tips, their trees and the base policy blob are
-needed; full commit ancestry and changed source blobs are unnecessary. The
-acquisition has a 90-second deadline, a 64-MiB per-file Git output/object/pack
-limit, a 16-MiB path-inventory limit and a 128-KiB policy limit. Oversized or
-unreadable populations fail, never truncate. With no generated declarations,
-head acquisition and changed-path enumeration are skipped. Raw Git/API errors,
-credential arguments and source contents never enter public failure diagnostics.
-
-Adopt this rule in the **same immutable shared-pin update** as the caller's
-provenance policy and deterministic-job dependencies. An existing generated
-classification without proof jobs will fail when such files change; a proof job
-that runs only on merge groups cannot establish PR success. No existing action
-inputs are removed or renamed by this rule.
 
 ## Several workflows
 
@@ -150,59 +85,3 @@ race. The dependency graph supplies the completion boundary.
 GitHub's primary contracts: [job dependencies and `always()`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idneeds),
 [the direct `needs` context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#needs-context),
 and [reusable-workflow concurrency](https://docs.github.com/en/actions/reference/reusable-workflows-reference).
-
-## Exact-head review on the merge queue
-
-On `merge_group`, `ci-ok` requires every PR whose current title starts with
-`[review]` to have a completed `Sylphx PR Review` Check Run from App `1299545`,
-with conclusion `success`, on the exact PR head used to build the group.
-There is no override. Missing, pending, neutral, failed or cancelled reviews
-refuse the entire group. A success on an older head does not authorize a new
-head. If several canonical runs exist, the newest run determines the verdict.
-
-The existing contribution-policy resolver reads paginated merge-queue entries
-and intersects their synthetic commits with the immutable group commit range.
-It checks original PR heads and refuses incomplete membership. Entries that
-merged while a later group builds are resolved through commit/PR associations.
-It does not depend on `autoMergeRequest` or infer membership from the queue ref.
-The gate compares group members, their heads and titles again after reading
-review inventories. Membership, head or title movement fails closed. Merge-commit
-queues bind each `[review]` PR head to its synthetic commit’s second parent.
-For a one-parent squash commit, the gate runs `git merge-tree --write-tree
-<synthetic-parent> <reviewed-head>` and requires the result to equal that
-synthetic commit’s tree. The immutable parent identifies the PR’s position even
-in a stacked group; a stable live queue head alone cannot authorize admission.
-Tree mismatches, conflicts, unreadable objects and unsupported commit/position
-shapes fail closed. Non-`[review]` PRs need no tree reconstruction. These bindings
-are enabled only by `--require-merge-group-review`; flag-absent contribution
-checks retain their existing behavior. Read errors and incomplete Check Run
-pagination also fail closed. Failures name the PR number, full head SHA and
-observed review state or binding failure.
-The caller's token now also needs `checks: read`.
-
-Pull-request-event CI is unchanged: review remains asynchronous there. Non-
-`[review]` PRs need no review. This applies even when `separate-pr-metadata` is
-true; that option does not disable merge-group review admission. Callers only
-receive this enforcement after adopting the new immutable action pin.
-
-The shared `needs-pass` verdict enables the same review check. Repositories
-with inline verdict logic can use the review-only action inside the required
-`ci-ok` job without replacing that logic:
-
-```yaml
-- uses: SylphxAI/.github/.github/actions/review-gate@<full-release-sha> # main
-```
-
-Give that job `actions: read`, `contents: read`, `pull-requests: read` and `checks: read`. The
-action is a no-op outside `merge_group` and shares the membership resolver and
-review decision with both aggregate actions; it does not add contribution
-metadata or job-result requirements to an inline verdict.
-
-A pending Check Run whose same-repository GitHub Actions workflow owner is
-already completed is an orphan, not a running dependency. Exact-head review
-admission and the legacy polling gate fail it immediately. Owner URLs must
-match the configured GitHub server and repository; missing or unreadable owner
-metadata never establishes success. The caller needs `actions: read` for owner
-metadata. The legacy polling action caps its wait at 14 minutes; callers must
-give the containing job a timeout of at most 15 minutes and use `always()`
-for its terminal verdict.
