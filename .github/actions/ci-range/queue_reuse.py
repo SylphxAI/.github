@@ -39,7 +39,8 @@ def origin(run, repo, repo_id, workflow, workflow_id, branch, sha):
             raise ValueError("queue run identity unavailable")
     for field in ("repository", "head_repository"):
         identity = run.get(field)
-        if (not isinstance(identity, dict) or identity.get("id") != repo_id
+        if (not isinstance(identity, dict) or not proof.positive_id(identity.get("id"))
+                or identity.get("id") != repo_id
                 or identity.get("full_name") != repo):
             raise ValueError("queue repository identity mismatch")
     if (run.get("event") != "merge_group" or run.get("path") != workflow
@@ -48,8 +49,8 @@ def origin(run, repo, repo_id, workflow, workflow_id, branch, sha):
     head = run.get("head_branch")
     if not isinstance(head, str) or not head.strip():
         raise ValueError("queue target unavailable")
-    prefix = f"gh-readonly-queue/{branch}/"
-    return head.startswith(prefix) and len(head) > len(prefix)
+    directory, separator, generated = head.rpartition("/")
+    return bool(separator and generated and directory == f"gh-readonly-queue/{branch}")
 
 
 def latest(repo, repo_id, workflow, workflow_id, branch, sha):
@@ -76,6 +77,11 @@ def successful_jobs(repo, run, names):
     return jobs, selected
 
 
+def snapshot(value):
+    """JSON equality without Python's bool/int/float identity aliases."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 def receipt(repo, repo_id, branch, sha, workflow, aggregate, mapping):
     meta_path = f"repos/{repo}/actions/workflows/{quote(workflow.rsplit('/', 1)[-1], safe='')}"
     meta = proof.api(meta_path)
@@ -89,7 +95,7 @@ def receipt(repo, repo_id, branch, sha, workflow, aggregate, mapping):
     # The list may have raced a rerun. Read the actual current attempt before
     # inspecting jobs, and fence both this run and the full candidate set later.
     run_path = f"repos/{repo}/actions/runs/{run['id']}"
-    if proof.api(run_path) != run:
+    if snapshot(proof.api(run_path)) != snapshot(run):
         raise ValueError("queue attempt changed before proof")
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         raise ValueError("latest queue attempt is not completed successfully")
@@ -97,11 +103,11 @@ def receipt(repo, repo_id, branch, sha, workflow, aggregate, mapping):
     jobs, selected = successful_jobs(repo, run, names)
     # Complete second censuses, including authentication, reject a changing job
     # set, replacement run or rerun. Never fall back to an older passing run.
-    if successful_jobs(repo, run, names) != (jobs, selected):
+    if snapshot(successful_jobs(repo, run, names)) != snapshot((jobs, selected)):
         raise ValueError("queue jobs changed during proof")
-    if (proof.api(run_path) != run
-            or latest(repo, repo_id, workflow, workflow_id, branch, sha) != run
-            or proof.api(meta_path) != meta):
+    if (snapshot(proof.api(run_path)) != snapshot(run)
+            or snapshot(latest(repo, repo_id, workflow, workflow_id, branch, sha)) != snapshot(run)
+            or snapshot(proof.api(meta_path)) != snapshot(meta)):
         raise ValueError("queue producer changed during proof")
     return dict(repository=repo, repository_id=repo_id, workflow=workflow,
                 workflow_id=workflow_id, branch=branch, sha=sha, run=run["id"],

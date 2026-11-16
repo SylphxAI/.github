@@ -21,7 +21,10 @@ verify workflow agree on what "changed" means:
 Lanes come from the caller as `name: pattern pattern ...` lines. A pattern is
 an fnmatch glob over repository paths in which `*` also crosses `/`
 (`crates/*` is everything under crates/); a lone `*` always selects. A lane
-with no patterns always runs. Empty lanes request only the range (run = {}).
+with no patterns always runs. Prefix a pattern with `!` to exclude matching
+paths from that lane (exclusions win regardless of order). Exclusions alone
+imply `*`; with exclusions, a lane needs at least one included, nonexcluded
+changed path. Empty lanes request only the range (run = {}).
 No base selects every lane. Global patterns also select every lane when a
 changed path matches. They default to `.github/*`; callers can replace them
 with whitespace-separated fnmatch globs, or disable global matching with an
@@ -90,10 +93,16 @@ def select(lanes: dict[str, list[str]], changed: list[str] | None, only: str = "
     )
     run = {}
     for name, patterns in lanes.items():
-        if everything or not patterns or "*" in patterns:
+        includes = [p for p in patterns if not p.startswith("!")]
+        excludes = [p[1:] for p in patterns if p.startswith("!")]
+        if everything or (not excludes and (not patterns or "*" in patterns)):
             run[name] = True
         else:
-            run[name] = any(fnmatch.fnmatchcase(path, pattern) for path in changed for pattern in patterns)
+            run[name] = any(
+                any(fnmatch.fnmatchcase(path, pattern) for pattern in (includes or ["*"]))
+                and not any(fnmatch.fnmatchcase(path, pattern) for pattern in excludes)
+                for path in changed
+            )
     wanted = {lane_name(x) for x in only.split(",") if x.strip()} & set(lanes)
     if wanted:
         run = {name: name in wanted for name in run}

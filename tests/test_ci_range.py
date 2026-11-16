@@ -167,6 +167,32 @@ print(json.dumps(body))
 """
 
 
+class LaneExclusionsTest(unittest.TestCase):
+    def test_exclusions_are_lane_local_and_order_independent(self):
+        for patterns in (("*", "!crates/*", "!Cargo.toml", "!Cargo.lock"),
+                         ("!Cargo.lock", "!crates/*", "*", "!Cargo.toml")):
+            lanes = {"web": list(patterns), "rust": ["crates/*", "Cargo.toml", "Cargo.lock"]}
+            self.assertEqual(ci_range.select(lanes, ["Cargo.lock"]), {"web": False, "rust": True})
+            self.assertEqual(ci_range.select(lanes, ["crates/a/src/lib.rs", "src/app.ts"]),
+                             {"web": True, "rust": True})
+            self.assertEqual(ci_range.select(lanes, ["Cargo.lock"], "web"), {"web": True, "rust": False})
+            self.assertTrue(all(ci_range.select(lanes, None).values()))
+            self.assertTrue(all(ci_range.select(lanes, [".github/workflows/ci.yml"]).values()))
+
+    def test_exclusions_require_a_remaining_path(self):
+        lanes = {"a": ["*", "!docs/*"], "b": ["!docs/*"], "c": ["src/*", "!src/private/*"],
+                 "always": ["*"], "empty": []}
+        self.assertEqual(ci_range.select(lanes, []),
+                         {"a": False, "b": False, "c": False, "always": True, "empty": True})
+        self.assertEqual(ci_range.select(lanes, ["docs/a.md"]),
+                         {"a": False, "b": False, "c": False, "always": True, "empty": True})
+        self.assertEqual(ci_range.select(lanes, ["src/private/key"]),
+                         {"a": True, "b": True, "c": False, "always": True, "empty": True})
+        self.assertEqual(ci_range.select({"a": ["[!x]literal"]}, ["!literal"]), {"a": True})
+        self.assertEqual(ci_range.select({"a": ["*", "!.github/*"]}, [".github/a"],
+                                         global_patterns=""), {"a": False})
+
+
 class MainTest(unittest.TestCase):
     """End to end on a real repository, with a fake forge where a push needs one."""
 
@@ -211,6 +237,23 @@ class MainTest(unittest.TestCase):
             finally:
                 event_path.unlink(missing_ok=True)
                 out.unlink(missing_ok=True)
+
+    def test_lane_exclusions_through_entrypoint(self) -> None:
+        lanes = "web: * !crates/* !Cargo.toml !Cargo.lock\nrust: crates/* Cargo.toml Cargo.lock"
+        for changes, expected in (
+            (("crates/a/src/lib.rs", "Cargo.toml", "Cargo.lock"), {"web": False, "rust": True}),
+            (("crates/a/src/lib.rs", "src/main.ts"), {"web": True, "rust": True}),
+            (("src/main.ts",), {"web": True, "rust": False}),
+            ((".github/workflows/ci.yml", "Cargo.lock"), {"web": True, "rust": True}),
+        ):
+            with self.subTest(changes=changes):
+                outputs, _ = self.run_in_repo("merge_group", lambda b: {"merge_group": {"base_sha": b}},
+                                              lanes=lanes, changes=changes)
+                self.assertEqual(json.loads(outputs["run"]), expected)
+                self.assertEqual(outputs["execute"], outputs["run"])
+        outputs, _ = self.run_in_repo("push", lambda b: {}, verified="unavailable", lanes=lanes,
+                                      changes=("Cargo.lock",))
+        self.assertTrue(all(json.loads(outputs["run"]).values()))
 
     def test_base_only_push_preserves_range_outputs(self) -> None:
         outputs, base = self.run_in_repo("push", lambda b: {}, verified="base", lanes="")

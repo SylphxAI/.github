@@ -34,7 +34,11 @@ if scenario == 'wrong_workflow': run['workflow_id'] = 99
 if scenario == 'wrong_source': run['head_sha'] = 'a'*40
 if scenario == 'wrong_event': run['event'] = 'push'
 if scenario == 'wrong_target': run['head_branch'] = 'gh-readonly-queue/other/pr-3-abc'
+if scenario == 'nested_target': run['head_branch'] = 'gh-readonly-queue/main/release/pr-3-abc'
+if scenario == 'slash_target': run['head_branch'] = 'gh-readonly-queue/main/release/pr-3-abc'
 if scenario == 'empty_target': run['head_branch'] = 'gh-readonly-queue/main/'
+if scenario == 'repo_float': run['repository']['id'] = 7.0
+if scenario == 'head_repo_float': run['head_repository']['id'] = 7.0
 if scenario == 'wrong_repo': run['repository']['id'] = 44
 if scenario == 'wrong_head_repo': run['head_repository']['full_name'] = 'attacker/r'
 if scenario in ('pending', 'failure', 'cancelled'):
@@ -45,6 +49,9 @@ for i, name in enumerate(('gate', 'database', 'database (other)'), 1):
     jobs.append(dict(id=100+i, run_id=40, run_attempt=1, head_sha=sha, name=name,
                      status='completed', conclusion='success',
                      check_run_url=f'https://api.github.com/repos/o/r/check-runs/{200+i}'))
+if scenario == 'job_run_float': jobs[1]['run_id'] = 40.0
+if scenario == 'job_attempt_bool': jobs[1]['run_attempt'] = True
+if scenario == 'job_attempt_float': jobs[1]['run_attempt'] = 1.0
 if scenario == 'job_run': jobs[1]['run_id'] = 41
 if scenario == 'job_attempt': jobs[1]['run_attempt'] = 2
 if scenario == 'job_source': jobs[1]['head_sha'] = 'b'*40
@@ -71,6 +78,9 @@ if '/check-runs/' in path:
                 name=job['name'], check_suite=dict(id=8),
                 details_url=f"https://github.com/o/r/actions/runs/40/job/{job['id']}",
                 status=job['status'], conclusion=job['conclusion'])
+    if scenario == 'check_id_float': body['id'] = float(check_id)
+    if scenario == 'check_app_float': body['app']['id'] = 15368.0
+    if scenario == 'check_suite_float': body['check_suite']['id'] = 8.0
     if scenario == 'check_app': body['app']['id'] = 3
     if scenario == 'check_slug': body['app']['slug'] = 'not-actions'
     if scenario == 'check_suite': body['check_suite']['id'] = 9
@@ -86,8 +96,11 @@ elif '/jobs?' in path:
     if scenario == 'jobs_incomplete': body['total_count'] += 1
 elif path.endswith('/workflows/gate.yml'):
     body = meta
+    if scenario == 'meta_float_drift' and count: body['id'] = 6.0
 elif path.endswith('/runs/40'):
     body = run
+    if scenario == 'detail_float': body['id'] = 40.0
+    if scenario == 'detail_float_drift' and count: body['id'] = 40.0
 elif path.endswith('/runs/41'):
     body = dict(run, id=41, status='completed', conclusion='failure')
     if scenario == 'newer_pending': body.update(status='queued', conclusion=None)
@@ -170,7 +183,7 @@ class ReuseEntrypoint(unittest.TestCase):
 
     def test_unreadable_and_invalid_evidence_runs_real_tests(self):
         cases = '''unreadable absent workflow_id check_suite_id run_attempt wrong_path wrong_workflow wrong_source
-        wrong_event wrong_target empty_target wrong_repo wrong_head_repo pending failure cancelled job_run job_attempt
+        wrong_event wrong_target nested_target empty_target wrong_repo wrong_head_repo pending failure cancelled job_run job_attempt
         job_source job_url job_failure job_cancelled job_skipped job_pending aggregate_failure aggregate_pending
         missing_job missing_aggregate duplicate_job duplicate_aggregate jobs_drift run_drift meta_path meta_inactive
         meta_id meta_drift check_app check_slug check_suite check_source check_name check_url check_conclusion
@@ -178,6 +191,20 @@ class ReuseEntrypoint(unittest.TestCase):
         newer_failure newer_pending newer_cancelled list_drift'''.split()
         for scenario in cases:
             with self.subTest(scenario=scenario): self.refused(scenario)
+
+    def test_numeric_identity_aliases_never_authorize_reuse(self):
+        for scenario in ("repo_float", "head_repo_float", "job_run_float", "job_attempt_bool",
+                         "job_attempt_float", "check_id_float", "check_app_float", "check_suite_float",
+                         "detail_float", "detail_float_drift", "meta_float_drift"):
+            with self.subTest(scenario=scenario): self.refused(scenario)
+
+    def test_slash_in_target_branch_is_bound_exactly(self):
+        out = self.invoke('slash_target',
+                          changes={'repository': {'id':7,'full_name':'o/r','default_branch':'main/release'},
+                                   'ref':'refs/heads/main/release'},
+                          settings={'GITHUB_REF':'refs/heads/main/release'})
+        self.assertTrue(out['reused']['db'])
+        self.assertEqual(out['reuse-proof']['branch'], 'main/release')
 
     def test_schedule_manual_pr_and_queue_never_reuse(self):
         for event in ('schedule','workflow_dispatch','pull_request','merge_group'):

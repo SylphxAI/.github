@@ -37,8 +37,11 @@ inputs:
     description: >
       One lane per line, `name: pattern pattern ...`. Patterns are fnmatch
       globs over repository paths where `*` also crosses `/`. A lane with no
-      pattern, or with `*`, always runs. Global patterns also select every
-      lane. Omit lanes for range outputs only; `run` is then `{}`.
+      pattern, or with `*` and no exclusions, always runs. Prefix `!` to
+      exclude paths from that lane, regardless of pattern order. Exclusions
+      alone imply `*`; with exclusions, at least one included, nonexcluded
+      changed path is required. Global patterns and unknown base still select
+      every lane. Omit lanes for range outputs only; `run` is then `{}`.
     required: false
     default: ""
   global-patterns:

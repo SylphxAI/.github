@@ -256,7 +256,12 @@ benchmark or nightly) never makes the trunk red here.
   It defaults to `.github/*`, preserving full `.github/` invalidation. Caller
   patterns replace the default; an empty string disables global matching,
   not per-lane matching or the all-lanes fallback when no trusted base exists.
-  Explicit `only` keeps its named-lane override. Use its `base` output for
+  Lane-local `!glob` exclusions win regardless of order: `test: * !web/*`
+  selects only included, nonexcluded changed paths. Exclusions alone imply
+  `*`. A lane with exclusions needs at least one matching changed path;
+  positive-only `*` and no-pattern lanes retain always-run behavior, even on
+  an empty diff. Global invalidation and an unknown base still select all
+  lanes. Explicit `only` keeps its named-lane override. Use its `base` output for
   affected-only builds (`turbo run --affected` with
   `TURBO_SCM_BASE`, `cargo nextest run -p` on the changed crates, `nx affected
   --base`). A push/dispatch base is the newest first-parent ancestor whose
@@ -295,6 +300,36 @@ benchmark or nightly) never makes the trunk red here.
   non-proof producer returns `ineligible`; callers must retain handling for
   unknown, never treat it as success or terminal no-action. Destructive revert
   requires authenticated failure plus a trusted authenticated baseline.
+  Queue reuse is a separate, opt-in execution decision, not a trusted baseline.
+  Set `reuse-workflow` to the queue workflow filename, `reuse-aggregate` to its
+  exact aggregate job name, and `reuse-jobs` to a JSON mapping of declared lanes
+  to nonempty arrays of exact queue job names, for example
+  `{"test":["database-tests"]}`. Matrix/reusable-workflow job names must match
+  exactly. The caller must ensure those jobs perform the same work and cover
+  the same inputs, toolchain and environment as the lane being suppressed;
+  source identity alone does not establish workload equivalence.
+
+  Gate optional work with `fromJSON(steps.range.outputs.execute).test` instead
+  of `run`. `run` remains ordinary path/range selection; `execute` subtracts
+  authenticated reuse; `reused` maps every lane to a boolean; `reuse-proof`
+  contains the repository, workflow, run, attempt, exact SHA and job/check
+  identities plus lane mapping, or `{}`. Leave the three reuse inputs empty
+  to retain ordinary behavior.
+
+  Reuse requires a native default-branch push with event, checkout and GitHub
+  source identities agreeing. The newest exact-SHA merge-group run must target
+  that exact branch, belong to the same repository and approved active workflow,
+  and be completed successfully. Its aggregate and every selected mapped job
+  must independently authenticate as successful GitHub Actions checks from that
+  latest attempt. Complete run/job censuses and reread fences reject stale or
+  changing evidence; newer failed, cancelled or pending evidence never exposes
+  an older green run. Missing, malformed, unreadable or mismatched evidence
+  retains real execution. This capability accepts exact commits only, not a
+  different commit with the same tree. Schedule, manual dispatch, PR,
+  merge-group and any nonempty explicit `only` request never consume reuse.
+  Queue evidence never supplies `verified`, erases a post-main failure, or
+  changes `mode: run` semantics.
+
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
   `verified` verdict. Skipped passes; failed fails; a cancelled dependency
   fails too, reported as CANCELLED (naming a superseded push or a stopped run),

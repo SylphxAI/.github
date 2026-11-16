@@ -373,6 +373,23 @@ class ProofTest(unittest.TestCase):
             with patch.object(proof, "paged", return_value=[bad]):
                 self.assertEqual(proof.checked_verdict(row, REPO, "main", "verify.yml"), "unknown")
 
+    def test_numeric_identity_aliases_are_not_authenticated(self):
+        row = run()
+        job, check = objects(row)
+        for field in ("id", "run_id", "run_attempt"):
+            for value in (float(job[field]), True):
+                with self.subTest(job_field=field, value=value), patch.object(proof, "api", return_value=check):
+                    self.assertFalse(proof.authenticated_job(row, dict(job, **{field: value}), REPO))
+        for path in (("id",), ("app", "id"), ("check_suite", "id")):
+            bad = copy.deepcopy(check)
+            target = bad if len(path) == 1 else bad[path[0]]
+            target[path[-1]] = float(target[path[-1]])
+            with self.subTest(check_path=path), patch.object(proof, "api", return_value=bad):
+                self.assertFalse(proof.authenticated_job(row, job, REPO))
+        for bad in (None, [], dict(check, app=None), dict(check, check_suite=[])):
+            with self.subTest(shape=bad), patch.object(proof, "api", return_value=bad):
+                self.assertFalse(proof.authenticated_job(row, job, REPO))
+
     def test_diagnostic_and_merge_group_success_cannot_mask_main_failure(self):
         genuine = run(id=1)
         rows = [genuine, run(id=2, event="workflow_dispatch"), run(id=3, event="merge_group"),
