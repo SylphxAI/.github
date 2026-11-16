@@ -32,6 +32,15 @@ SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "examples", "d
         "target", "dist", "build", ".next"}
 _CARGO = weakref.WeakKeyDictionary()
 SCOPE_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy/deal-randomness-scope.json"
+_EXCLUDED_NAME = re.compile(r"(?:[._-](?:test|spec)|_test)\.")
+_DEAD_BRANCH = re.compile(r"\bif\s*\(\s*false\s*\)\s*\{")
+_USE_RNG = re.compile(r"\buse\s+[^;]*(?:rng|Rng|Random)")
+
+
+def _blank_preserving_newlines(text):
+    if "\n" not in text:
+        return " " * len(text)
+    return "\n".join(" " * len(part) for part in text.split("\n"))
 
 
 def excluded(path):
@@ -39,7 +48,7 @@ def excluded(path):
     # A checked-in runtime engine can live under vendor; its deal source is
     # still checked. Installed third-party packages and test fixtures are not.
     return (bool({part.casefold() for part in p.parts} & SKIP) or p.name.startswith("test_")
-            or bool(re.search(r"(?:[._-](?:test|spec)|_test)\.", p.name)))
+            or bool(_EXCLUDED_NAME.search(p.name)))
 
 
 def words(value):
@@ -84,8 +93,9 @@ def operation(name, signature, body):
 
 def cargo_scope(tree):
     """Conservative path-dependency graph; dev-only oracle code is excluded."""
-    if tree in _CARGO:
-        return _CARGO[tree]
+    owner = getattr(tree, "_cargo_owner", tree)
+    if owner in _CARGO:
+        return _CARGO[owner]
     manifests = {}
     for path in tree.paths():
         if pathlib.PurePosixPath(path).name != "Cargo.toml" or excluded(path):
@@ -134,7 +144,7 @@ def cargo_scope(tree):
             reached.add(target)
             pending.append(target)
     result = (packages, reached)
-    _CARGO[tree] = result
+    _CARGO[owner] = result
     return result
 
 
@@ -298,11 +308,22 @@ def scope_reason(repository, path, text, tree, policy_path=None):
 
 
 def dead_braced_branches(code, matching_end):
-    result = list(code)
-    for match in re.finditer(r"\bif\s*\(\s*false\s*\)\s*\{", code):
-        end = matching_end(code, match.end(), "{", "}")
-        result[match.end():end - 1] = re.sub(r"[^\n]", " ", code[match.end():end - 1])
-    return "".join(result)
+    if "false" not in code:
+        return code
+    parts = []
+    last = 0
+    for match in _DEAD_BRANCH.finditer(code):
+        start = match.end()
+        end = matching_end(code, start, "{", "}")
+        stop = max(start, end - 1)
+        if stop > last:
+            parts.append(code[last:start])
+            parts.append(_blank_preserving_newlines(code[start:stop]))
+            last = stop
+    if not parts:
+        return code
+    parts.append(code[last:])
+    return "".join(parts)
 
 
 def bindings(code, matching_end, inherited_origins=None):
@@ -373,9 +394,18 @@ def scan(path, text, views, named_bodies, matching_end, *, tree=None):
     else:
         code = dead_braced_branches(code, matching_end)
     # Cheap prefilter avoids parsing every animation and generated asset.
-    if not (RANDOM.search(code) or SEED.search(code) or CUSTOM.search(code)
-            or "Collections" in code or "keel_random" in code or "^=" in code
-            or "wrapping_mul" in code or re.search(r"\buse\s+[^;]*(?:rng|Rng|Random)", code)):
+    code_lower = code.lower()
+    has_random = "random" in code_lower
+    has_rng = "rng" in code_lower
+    if not (
+        (has_random and RANDOM.search(code))
+        or (has_rng and SEED.search(code))
+        or ((has_rng or has_random or "xorshift" in code_lower or "xoshiro" in code_lower
+             or "pcg" in code_lower or "splitmix" in code_lower) and CUSTOM.search(code))
+        or "Collections" in code or "keel_random" in code or "^=" in code
+        or "wrapping_mul" in code
+        or ("use" in code and (has_rng or has_random) and _USE_RNG.search(code))
+    ):
         return []
     declarations = (re.sub(r"\b(?:internal|virtual|override|sealed|unsafe|partial)\b",
                            lambda match: " " * len(match.group()), code) if suffix == ".cs" else code)

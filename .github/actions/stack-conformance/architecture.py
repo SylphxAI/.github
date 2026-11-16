@@ -65,10 +65,62 @@ LIMITS = [
 ]
 
 
+_EXCLUDED_NAME = re.compile(r"(?:[._-](?:test|spec)|_test)\.")
+_SOURCE_TOKEN_RS_LEGACY = re.compile(
+    r"//[^\n]*|/\*.*?\*/|\br(\#*)\"[\s\S]*?\"\1|\"(?:\\.|[^\"\\])*\"|\x27(?:\\.|[^\x27\\\n])\x27|`(?:\\.|[^`\\])*`",
+    re.S,
+)
+_SOURCE_TOKEN_OTHER = re.compile(
+    r"//[^\n]*|/\*.*?\*/|\br(\#*)\"[\s\S]*?\"\1|\"(?:\\.|[^\"\\])*\"|\x27(?:\\.|[^\x27\\])*\x27|`(?:\\.|[^`\\])*`",
+    re.S,
+)
+_RS_CFG_TEST_MOD = re.compile(
+    r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{"
+)
+_RS_TEST_FN = re.compile(
+    r"#\[(?:(?:tokio|async_std)::)?test(?:\([^\]]*\))?\]\s*(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+\w+[^;{]*\{"
+)
+_SH_COMMENT = re.compile(r"(?m)^\s*#.*$")
+_PY_ATTEMPT_WHILE = re.compile(r"\battempt\w*\s*<")
+_PY_ATTEMPT_INC = re.compile(r"\battempt\w*\s*\+=\s*[1-9]")
+_SH_WHILE_LOOP = re.compile(r"\bwhile\s+(?:true|:)\s*;?\s*do\b[\s\S]*?\bdone\b")
+_SH_BOUNDED = re.compile(r"\b(?:break|return|exit)\b")
+_LOOP_PATTERNS = {
+    ".rs": re.compile(r"\bwhile\s*(?:\(\s*true\s*\)|true\b|\(?\s*attempt\w*\s*<\s*\d+\s*\)?)\s*\{|\bloop\s*\{"),
+    ".go": re.compile(r"\bwhile\s*(?:\(\s*true\s*\)|true\b|\(?\s*attempt\w*\s*<\s*\d+\s*\)?)\s*\{|\bfor\s*(?:true\s*)?\{"),
+    "other": re.compile(r"\bwhile\s*(?:\(\s*true\s*\)|true\b|\(?\s*attempt\w*\s*<\s*\d+\s*\)?)\s*\{|\bfor\s*\(\s*;\s*;\s*\)\s*\{"),
+}
+_LOOP_BOUNDED = re.compile(r"\b(?:break|return|throw)\b")
+_LOOP_ATTEMPT_INC = re.compile(r"\battempt\w*\s*(?:\+\+|\+=\s*[1-9])")
+_PROVIDER_PART = re.compile(r"(?:^|/)(?:providers?|adapters?)(?:/|$)")
+_BRANCH_RE = re.compile(
+    r"\bif\b[^\n{}:]*?(?:first_party|is_internal|is_loopback|is_private|cluster_local|tenant\w*\s*===?\s*[\"'](?:sylphx|cubeage)[^\"']*[\"'])[^\n{}:]*[{:]",
+    re.I,
+)
+_BRANCH_RET_RE = re.compile(r"\s*return\s+(?:true\b|True\b|Ok\s*\()")
+_PROVIDER_RE = re.compile(
+    r"\b(?:new\s+Stripe|stripe\s*::\s*Client\s*::\s*new|stripe\.Stripe|(?:STRIPE|TWILIO|VONAGE|AUTH0)_(?:SECRET|API|AUTH)[A-Z_]*(?:KEY|TOKEN))\b"
+)
+_ENV_LINE_RE = re.compile(r"getenv|env::var|process\.env|environ")
+_PROVIDER_HOST_RE = re.compile(
+    r'https?://(?:api\.stripe\.com|rest\.nexmo\.com|(?:buy|sandbox)\.itunes\.apple\.com|androidpublisher\.googleapis\.com|fcm\.googleapis\.com|(?:api\.|queue\.)?fal\.ai|api\.replicate\.com)(?=[:/"\x27\s]|$)',
+    re.I,
+)
+_ENV_READS_RE = re.compile(
+    r'''(?:\b(?:std::)?env::var(?:_os)?\s*\(\s*|\bos\.(?:getenv\s*\(|environ(?:\.get\s*\(|\s*\[))\s*|\bprocess\.env\s*\[\s*)["']([A-Z][A-Z0-9_]+)["']|\bprocess\.env\.([A-Z][A-Z0-9_]+)'''
+)
+_SET_INTERVAL_RE = re.compile(r"\bsetInterval\s*\(")
+_SUPPRESSION_RE = re.compile(r"#\s*\[allow\s*\([^)]*\)\]|eslint-disable[^\n]*|#\s*(?:noqa|type:\s*ignore)[^\n]*")
+_SUPPRESSION_REASON_RE = re.compile(r"(?:reason|because)\s*[:=]?\s*\S+(?:\s+\S+){2,}", re.I)
+_MERGE_COMPLETE_RE = re.compile(r"\bif\b[^\n{}:]*\bmerged\b[^\n{}:]*[{:][\s\S]{0,180}?\b(?:settle_completed|mark_complete|complete_goal)\s*\(")
+_MERGE_EVIDENCE_RE = re.compile(r"\b(?:evidence|receipt|deployed|verified)\b")
+_MERGE_NEGATION_RE = re.compile(r"!|\bnot\b|\|\||\bor\b|==\s*(?:false|False|None|null)")
+
+
 def excluded(path):
     p = pathlib.PurePosixPath(path)
     return (bool({part.casefold() for part in p.parts} & SKIP) or p.name.startswith("test_")
-            or bool(re.search(r"(?:[._-](?:test|spec)|_test)\.", p.name)))
+            or bool(_EXCLUDED_NAME.search(p.name)))
 
 
 @functools.lru_cache(maxsize=None)
@@ -97,16 +149,41 @@ def downstream_pattern(repository):
 
 
 def blank(text):
-    return "".join("\n" if c == "\n" else " " for c in text)
+    if "\n" not in text:
+        return " " * len(text)
+    return "\n".join(" " * len(part) for part in text.split("\n"))
+
+
+def _apply_spans(text, spans):
+    if not spans:
+        return text
+    spans.sort()
+    parts = []
+    last = 0
+    append = parts.append
+    for start, end in spans:
+        if end <= last:
+            continue
+        if start > last:
+            append(text[last:start])
+            append(blank(text[start:end]))
+        else:
+            append(blank(text[last:end]))
+        last = end
+    if last < len(text):
+        append(text[last:])
+    return "".join(parts)
 
 
 def source_views(text, suffix, *, test_bodies=False, legacy_rust=False):
     """Return comment-free text and code with literal contents masked; same offsets."""
-    comment_free, code, comments = list(text), list(text), []
+    comments = []
     if suffix == ".py":
+        lines = text.splitlines(keepends=True)
         offsets = [0]
-        for line in text.splitlines(keepends=True):
+        for line in lines:
             offsets.append(offsets[-1] + len(line))
+        clean_spans, code_spans = [], []
         try:
             tokens = tokenize.generate_tokens(io.StringIO(text).readline)
             for token in tokens:
@@ -114,48 +191,60 @@ def source_views(text, suffix, *, test_bodies=False, legacy_rust=False):
                     continue
                 start = offsets[token.start[0] - 1] + token.start[1]
                 end = offsets[token.end[0] - 1] + token.end[1]
-                code[start:end] = blank(text[start:end])
+                code_spans.append((start, end))
                 if token.type == tokenize.COMMENT:
-                    comment_free[start:end] = blank(text[start:end])
+                    clean_spans.append((start, end))
                     comments.append((start, end))
             # A module/function docstring is documentation, not executable text.
             for node in ast.walk(ast.parse(text)):
                 if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-                    lines = text.splitlines(keepends=True)
                     start = offsets[node.lineno - 1] + len(lines[node.lineno - 1].encode()[:node.col_offset].decode())
                     end = offsets[node.end_lineno - 1] + len(lines[node.end_lineno - 1].encode()[:node.end_col_offset].decode())
-                    comment_free[start:end] = blank(text[start:end])
+                    clean_spans.append((start, end))
         except (tokenize.TokenError, IndentationError, SyntaxError):
             raise ValueError("Python could not be parsed; this file is not reviewed clean") from None
+        return _apply_spans(text, clean_spans), _apply_spans(text, code_spans), comments
     else:
-        char_or_string = r"'(?:\\.|[^'\\\n])'" if suffix == ".rs" else r"'(?:\\.|[^'\\])*'"
-        token = re.compile(r'//[^\n]*|/\*.*?\*/|\br(\#*)"[\s\S]*?"\1|"(?:\\.|[^"\\])*"|' + char_or_string + r'|`(?:\\.|[^`\\])*`', re.S)
-        tokens = (project_portability.rust_tokens(text) if suffix == ".rs" and not legacy_rust
-                  else (("comment" if m.group().startswith(("//", "/*")) else "literal", m.start(), m.end())
-                        for m in token.finditer(text)))
+        if suffix == ".rs" and not legacy_rust:
+            tokens = project_portability.rust_tokens(text)
+        else:
+            token = _SOURCE_TOKEN_RS_LEGACY if suffix == ".rs" else _SOURCE_TOKEN_OTHER
+            tokens = (("comment" if text[m.start()] == "/" else "literal", m.start(), m.end())
+                      for m in token.finditer(text))
+        clean_parts, code_parts = [], []
+        last_clean = last_code = 0
+        text_find = text.find
         for kind, start, end in tokens:
-            code[start:end] = blank(text[start:end])
+            masked = (" " * (end - start)) if text_find("\n", start, end) < 0 else blank(text[start:end])
+            code_parts.append(text[last_code:start])
+            code_parts.append(masked)
+            last_code = end
             if kind == "comment":
-                comment_free[start:end] = blank(text[start:end])
+                clean_parts.append(text[last_clean:start])
+                clean_parts.append(masked)
+                last_clean = end
                 comments.append((start, end))
+        code_str = ("".join(code_parts) + text[last_code:]) if code_parts else text
+        comment_free = ("".join(clean_parts) + text[last_clean:]) if clean_parts else text
         if suffix == ".rs" and not test_bodies:
             # Inline test modules are fixtures too; do not hide adjacent production.
-            for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*"
-                                     r"(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{", "".join(code)):
-                end = brace_end("".join(code), match.end())
-                comment_free[match.start():end] = blank(text[match.start():end])
-                code[match.start():end] = blank(text[match.start():end])
-            for match in re.finditer(r"#\[(?:(?:tokio|async_std)::)?test(?:\([^\]]*\))?\]\s*"
-                                     r"(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+\w+[^;{]*\{", "".join(code)):
-                end = brace_end("".join(code), match.end())
-                comment_free[match.start():end] = blank(text[match.start():end])
-                code[match.start():end] = blank(text[match.start():end])
-        if suffix in {".sh", ".bash"}:
-            for match in re.finditer(r"(?m)^\s*#.*$", text):
-                comment_free[match.start():match.end()] = blank(match.group())
-                code[match.start():match.end()] = blank(match.group())
-                comments.append((match.start(), match.end()))
-    return "".join(comment_free), "".join(code), comments
+            if "#[cfg(test)]" in code_str:
+                rs_mod_spans = [(m.start(), brace_end(code_str, m.end())) for m in _RS_CFG_TEST_MOD.finditer(code_str)]
+                if rs_mod_spans:
+                    comment_free = _apply_spans(comment_free, list(rs_mod_spans))
+                    code_str = _apply_spans(code_str, rs_mod_spans)
+            if "#[" in code_str and "test" in code_str:
+                rs_fn_spans = [(m.start(), brace_end(code_str, m.end())) for m in _RS_TEST_FN.finditer(code_str)]
+                if rs_fn_spans:
+                    comment_free = _apply_spans(comment_free, list(rs_fn_spans))
+                    code_str = _apply_spans(code_str, rs_fn_spans)
+        if suffix in {".sh", ".bash"} and "#" in text:
+            sh_spans = [(m.start(), m.end()) for m in _SH_COMMENT.finditer(text)]
+            if sh_spans:
+                comments.extend(sh_spans)
+                comment_free = _apply_spans(comment_free, list(sh_spans))
+                code_str = _apply_spans(code_str, sh_spans)
+        return comment_free, code_str, comments
 
 
 def brace_end(code, start):
@@ -163,11 +252,26 @@ def brace_end(code, start):
 
 
 def matching_end(code, start, opening, closing):
-    depth, end = 1, start
-    while depth and end < len(code):
-        depth += (code[end] == opening) - (code[end] == closing)
-        end += 1
-    return end
+    size = len(code)
+    if start >= size:
+        return start
+    depth = 1
+    pos = start
+    find = code.find
+    next_open = find(opening, pos)
+    next_close = find(closing, pos)
+    while depth:
+        if next_close < 0:
+            return size
+        if 0 <= next_open < next_close:
+            depth += 1
+            pos = next_open + 1
+            next_open = find(opening, pos)
+        else:
+            depth -= 1
+            pos = next_close + 1
+            next_close = find(closing, pos)
+    return pos
 
 
 def loops(clean, code, suffix):
@@ -179,35 +283,29 @@ def loops(clean, code, suffix):
             offsets.append(offsets[-1] + len(line))
         tree = ast.parse(clean)
         for node in ast.walk(tree):
-            retry = isinstance(node, ast.While) and bool(re.search(r"\battempt\w*\s*<", lines[node.lineno - 1]))
+            retry = isinstance(node, ast.While) and bool(_PY_ATTEMPT_WHILE.search(lines[node.lineno - 1]))
             if not (isinstance(node, ast.While) and (retry or isinstance(node.test, ast.Constant)
                     and node.test.value in (True, 1))):
                 continue
             body = clean[offsets[node.lineno - 1]:offsets[node.end_lineno]]
             bounded = (any(isinstance(child, (ast.Break, ast.Return, ast.Raise)) for child in ast.walk(node))
-                       or retry and bool(re.search(r"\battempt\w*\s*\+=\s*[1-9]", body)))
+                       or retry and bool(_PY_ATTEMPT_INC.search(body)))
             yield offsets[node.lineno - 1], offsets[node.end_lineno], bounded
         return
     if suffix in {".sh", ".bash"}:
-        for m in re.finditer(r"\bwhile\s+(?:true|:)\s*;?\s*do\b[\s\S]*?\bdone\b", code):
-            yield m.start(), m.end(), bool(re.search(r"\b(?:break|return|exit)\b", m.group()))
+        for m in _SH_WHILE_LOOP.finditer(code):
+            yield m.start(), m.end(), bool(_SH_BOUNDED.search(m.group()))
         return
-    pattern = r"\bwhile\s*(?:\(\s*true\s*\)|true\b|\(?\s*attempt\w*\s*<\s*\d+\s*\)?)\s*\{"
-    if suffix == ".rs":
-        pattern += r"|\bloop\s*\{"
-    elif suffix == ".go":
-        pattern += r"|\bfor\s*(?:true\s*)?\{"
-    else:
-        pattern += r"|\bfor\s*\(\s*;\s*;\s*\)\s*\{"
-    for m in re.finditer(pattern, code):
+    pattern = _LOOP_PATTERNS.get(suffix, _LOOP_PATTERNS["other"])
+    for m in pattern.finditer(code):
         end = brace_end(code, m.end())
         body = code[m.end():end]
-        bounded = bool(re.search(r"\b(?:break|return|throw)\b", body)
-                       or "attempt" in m.group() and re.search(r"\battempt\w*\s*(?:\+\+|\+=\s*[1-9])", body))
+        bounded = bool(_LOOP_BOUNDED.search(body)
+                       or "attempt" in m.group() and _LOOP_ATTEMPT_INC.search(body))
         yield m.start(), end, bounded
 
 
-def finding(path, text, at, cls, rule, reason, end=None):
+def finding(path, text, at, cls, rule, reason, end=None, *, source_sha=None):
     line = text.count("\n", 0, at) + 1
     # Debt follows the exact violation span, independently of surrounding edits
     # and line movement. Exception evidence still binds the entire source file.
@@ -215,11 +313,13 @@ def finding(path, text, at, cls, rule, reason, end=None):
     finish = end if end is not None else text.find("\n", at)
     if finish == -1:
         finish = len(text)
+    if source_sha is None:
+        source_sha = hashlib.sha256(text.encode(errors="surrogateescape")).hexdigest()
     return {"path": path, "line": line, "column": at - text.rfind("\n", 0, at),
             "end_line": text.count("\n", 0, end or at) + 1,
             "class": cls, "rule": rule, "reason": reason,
             "span_sha256": hashlib.sha256(text[start:finish].encode(errors="surrogateescape")).hexdigest(),
-            "source_sha256": hashlib.sha256(text.encode(errors="surrogateescape")).hexdigest(),
+            "source_sha256": source_sha,
             "contract": CONTRACT + ("#scale" if cls == "C5" else "#hard-lines")}
 
 
@@ -273,12 +373,17 @@ def env_declarations(tree):
     return names
 
 
+@functools.lru_cache(maxsize=16)
+def _service_owner_re(capability):
+    return re.compile(r"^services/" + capability + r"/|crates/sylphx-" + capability + r"/")
+
+
 def owns_provider(repository, path, capability):
     if repository not in PLATFORM:
         return False
-    if re.search(r"(?:^|/)(?:providers?|adapters?)(?:/|$)", path):
+    if _PROVIDER_PART.search(path):
         return True
-    return bool(re.search(r"^services/" + capability + r"/|crates/sylphx-" + capability + r"/", path)
+    return bool(_service_owner_re(capability).search(path)
                 or capability == "money" and path.startswith("kernel/billing/"))
 
 
@@ -322,17 +427,23 @@ def non_economy_cache_context(name, signature, body):
     return bool(authorization or lease)
 
 
-def cache_economy_applicability(repository, path):
-    """Reviewed domain profiles constrain this rule, never unrelated admission."""
+@functools.lru_cache(maxsize=1)
+def _load_cache_economy_profiles():
     policy = json.loads(pathlib.Path(__file__).with_name("cache-economy-profiles.json").read_text())
     if policy.get("version") != 1 or not isinstance(policy.get("repositories"), dict):
         raise ValueError("invalid cache economy domain profiles")
-    profile = policy["repositories"].get(repository)
+    return policy["repositories"]
+
+
+@functools.lru_cache(maxsize=64)
+def _cache_economy_scope(repository):
+    repositories = _load_cache_economy_profiles()
+    profile = repositories.get(repository)
     if profile is None:
-        profile = next((row for row in policy["repositories"].values()
+        profile = next((row for row in repositories.values()
                         if repository in row.get("aliases", [])), None)
     if profile is None:
-        return True
+        return None
     if not isinstance(profile.get("reason"), str) or not profile["reason"].strip():
         raise ValueError("cache economy domain profile requires a reason")
     if profile.get("applicability") == "not-applicable":
@@ -341,7 +452,17 @@ def cache_economy_applicability(repository, path):
         raise ValueError("invalid cache economy domain profile scope")
     if any(not isinstance(pattern, str) or not pattern or pattern.startswith("/") or ".." in pathlib.PurePosixPath(pattern).parts for pattern in profile["include"]):
         raise ValueError("invalid cache economy domain profile paths")
-    return any(fnmatch.fnmatchcase(path, pattern) for pattern in profile["include"])
+    return tuple(profile["include"])
+
+
+def cache_economy_applicability(repository, path):
+    """Reviewed domain profiles constrain this rule, never unrelated admission."""
+    scope = _cache_economy_scope(repository)
+    if scope is None:
+        return True
+    if scope is False:
+        return False
+    return any(fnmatch.fnmatchcase(path, pattern) for pattern in scope)
 
 
 def cache_key_name(name):
@@ -467,24 +588,108 @@ def cache_display_proof(tree, path, text, line):
     return None
 
 
-def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
+def _downstream_trie(downstream):
+    if not (downstream.startswith("(?:") and downstream.endswith(")")):
+        return None
+    body = downstream[3:-1]
+    words = []
+    for branch in body.split("|"):
+        sentinel = branch.replace("[_-]", "\x00")
+        # Bail out cleanly if branch contains unescaped regex constructs.
+        if re.search(r"(?<!\\)[.+*?^$()[\]{}]", sentinel):
+            return None
+        words.append(re.sub(r"\\(.)", r"\1", sentinel))
+    tree = {}
+    for w in words:
+        cur = tree
+        for ch in w:
+            cur = cur.setdefault(ch, {})
+        cur[""] = True
+
+    def render(node):
+        if len(node) == 1 and "" in node:
+            return ""
+        opts = []
+        end = "" in node
+        for ch, sub in sorted(node.items()):
+            if ch == "":
+                continue
+            r = render(sub)
+            esc = r"[_-]" if ch == "\x00" else re.escape(ch)
+            opts.append(esc + r)
+        body_re = opts[0] if len(opts) == 1 else "(?:" + "|".join(opts) + ")"
+        if end:
+            if len(opts) == 1 and len(opts[0]) == 1:
+                body_re += "?"
+            else:
+                body_re = "(?:" + body_re + ")?"
+        return body_re
+
+    return render(tree)
+
+
+@functools.lru_cache(maxsize=64)
+def _compile_downstream(downstream):
+    trie = _downstream_trie(downstream)
+    ds_bound = re.compile(r"[\s\"'@`]" + trie + r"(?=\W|$)") if trie else None
+    ds_org = re.compile(r"[\"'](?:org_|tenant_)[A-Za-z0-9]+[\"']")
+    return (
+        re.compile(r"\b(?:use|import|from)\s+" + downstream + r"(?=\W|$)"),
+        re.compile(r'\b(?:from\s+|require\s*\(\s*)["\x27]@?' + downstream + r'(?=[/"\x27])[^"\x27]*["\x27]'),
+        re.compile(r"\b(?:const|static|let)\b[^\n;=]*=\s*[\"'](?:" + downstream + r"|org_[A-Za-z0-9]+|tenant_[A-Za-z0-9]+)[\"']"),
+        ds_bound,
+        ds_org,
+    )
+
+
+@functools.lru_cache(maxsize=128)
+def _retired_route_re(route):
+    return re.compile(r"\b(?:route|path|add_route)\s*\(\s*[\"']" + re.escape(route) + r"[\"']")
+
+
+_TOML_MASK_RE = re.compile(r'"""[\s\S]*?"""|\x27\x27\x27[\s\S]*?\x27\x27\x27|"(?:\\.|[^"\\])*"|\x27[^\x27]*\x27|#[^\n]*')
+_TOML_IDLE_FLOOR_RE = re.compile(r'(?m)^[^\S\n]*min_instances\s*=\s*([1-9]\d*)\b')
+
+
+def scan_file(path, text, repository, declared, retired_routes, *, tree=None, _views=None, _env_tracker=None):
     suffix = pathlib.PurePosixPath(path).suffix
     if (excluded(path) and deal_randomness.excluded(path)) or not (suffix in SOURCE | CONFIG or project_portability.supported(path)):
         return []
     out = []
-    add = lambda at, cls, rule, why, end=None: out.append(finding(path, text, at, cls, rule, why, end))
+    _source_sha = None
+
+    def _get_source_sha():
+        nonlocal _source_sha
+        if _source_sha is None:
+            _source_sha = hashlib.sha256(text.encode(errors="surrogateescape")).hexdigest()
+        return _source_sha
+
+    add = lambda at, cls, rule, why, end=None: out.append(finding(path, text, at, cls, rule, why, end, source_sha=_get_source_sha()))
+    if _views is None:
+        _local_view_cache = {}
+        sv = source_views
+
+        def views_fn(src_text, src_suffix, *, test_bodies=False, legacy_rust=False):
+            key = (src_text is text, 0 if src_text is text else id(src_text), src_suffix, test_bodies, legacy_rust)
+            res = _local_view_cache.get(key)
+            if res is None:
+                res = sv(src_text, src_suffix, test_bodies=test_bodies, legacy_rust=legacy_rust)
+                _local_view_cache[key] = res
+            return res
+    else:
+        views_fn = _views
     if not excluded(path):
-        portable = project_portability.scan(path, text, source_views)
+        portable = project_portability.scan(path, text, views_fn)
         for at, end, why in portable:
             add(at, "C1", "project-portability", why, end)
         if suffix == ".rs" and portable:
             # Frozen pre-repair recognition is evidence for rekeying old debt,
             # never an alternate detector or an allowance for a new destination.
-            legacy_views = source_views(text, suffix, legacy_rust=True)
+            legacy_views = views_fn(text, suffix, legacy_rust=True)
             legacy = project_portability.scan(path, text, lambda t, s: legacy_views, legacy_rust=True)
             legacy_literals = {(a, b) for a, b, _ in
                                project_portability.literals(legacy_views[0], suffix, legacy_rust=True)}
-            legacy_rows = with_occurrences([finding(path, text, a, "C1", "project-portability", why, b)
+            legacy_rows = with_occurrences([finding(path, text, a, "C1", "project-portability", why, b, source_sha=_get_source_sha())
                                            for a, b, why in legacy])
             legacy_hashes = {row["span_sha256"] for row in legacy_rows}
             for (start, end, _), row in zip(portable, out):
@@ -509,7 +714,7 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
     if suffix not in SOURCE | CONFIG:
         return with_occurrences(out)
     scope_reason = None
-    for at, end, why in deal_randomness.scan(path, text, source_views, named_bodies, matching_end, tree=tree):
+    for at, end, why in deal_randomness.scan(path, text, views_fn, named_bodies, matching_end, tree=tree):
         add(at, "C1", "deal-randomness", why, end)
         scope_reason = scope_reason or deal_randomness.scope_reason(repository, path, text, tree)
         out[-1]["scope_warning"] = scope_reason
@@ -529,11 +734,10 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
                 # This debt belongs to the manifest's production database,
                 # independently of unrelated edits to that manifest.
                 out[-1]["span_sha256"] = hashlib.sha256(("production-database:" + path).encode()).hexdigest()
-            masked = list(text)
-            for m in re.finditer(r'"""[\s\S]*?"""|\x27\x27\x27[\s\S]*?\x27\x27\x27|"(?:\\.|[^"\\])*"|\x27[^\x27]*\x27|#[^\n]*', text):
-                masked[m.start():m.end()] = blank(m.group())
-            for m in re.finditer(r'(?m)^[^\S\n]*min_instances\s*=\s*([1-9]\d*)\b', "".join(masked)):
-                add(m.start(), "C5", "idle-floor", "Positive service idle floor requires a recorded always-on decision with its reason")
+            if "min_instances" in text:
+                masked = _apply_spans(text, [(m.start(), m.end()) for m in _TOML_MASK_RE.finditer(text)])
+                for m in _TOML_IDLE_FLOOR_RE.finditer(masked):
+                    add(m.start(), "C5", "idle-floor", "Positive service idle floor requires a recorded always-on decision with its reason")
         return with_occurrences(out)
     if suffix in CONFIG:
         boundaries = [0] + [m.end() for m in re.finditer(r"(?m)^---[^\S\n]*\n", text)] + [len(text)]
@@ -559,62 +763,73 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
                 if not re.search(r"\.result\s*!=\s*[\"']cancelled[\"']", m.group()):
                     add(offset + m.start(), "C7", "failure-only-verdict", "A failure-only aggregate accepts canceled dependencies")
         return with_occurrences(out)
-    clean, code, comments = source_views(text, suffix)
+    clean, code, comments = views_fn(text, suffix)
     if cache_economy_applicability(repository, path):
         for at, end in economy_cache_reads(clean, code, suffix):
             add(at, "C1", "cache-economy", "Player economy handler reads cached authority; validate balance, grant, reward, purchase or entitlement against authority in the granting transaction", end)
             out[-1]["contract"] = "https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/games.md#hard-lines"
     if suffix == ".java":
         return with_occurrences(out)
+    clean_lower = clean.lower()
     # Require a control-flow token in real code; quoted examples never count.
-    branch = re.compile(r"\bif\b[^\n{}:]*?(?:first_party|is_internal|is_loopback|is_private|cluster_local|tenant\w*\s*===?\s*[\"'](?:sylphx|cubeage)[^\"']*[\"'])[^\n{}:]*[{:]", re.I)
-    for m in branch.finditer(clean):
-        if code[m.start():m.start()+2] != "if":
-            continue
-        end = brace_end(code, m.end()) if m.group().endswith("{") else m.end() + len(clean[m.end():].split("\n\n")[0])
-        body = code[m.end():end]
-        if re.match(r"\s*return\s+(?:true\b|True\b|Ok\s*\()", body):
-            add(m.start(), "C1", "privileged-branch", "First-party identity or network position reaches an unconditional success return", end)
-    provider = re.compile(r"\b(?:new\s+Stripe|stripe\s*::\s*Client\s*::\s*new|stripe\.Stripe|(?:STRIPE|TWILIO|VONAGE|AUTH0)_(?:SECRET|API|AUTH)[A-Z_]*(?:KEY|TOKEN))\b")
-    for m in provider.finditer(clean):
-        capability = "money" if "stripe" in m.group().lower() else "auth" if "AUTH0" in m.group() else "notify"
-        if owns_provider(repository, path, capability):
-            continue
-        # An env name is literal data attached to a real read; constructor must be code.
-        line = clean[clean.rfind("\n", 0, m.start())+1:clean.find("\n", m.end()) if "\n" in clean[m.end():] else len(clean)]
-        if code[m.start():m.end()].strip() or re.search(r"getenv|env::var|process\.env|environ", line):
-            add(m.start(), "C2", "provider-bypass", "Product uses provider capability directly; use its ordinary platform operation")
-    provider_host = re.compile(r'https?://(?:api\.stripe\.com|rest\.nexmo\.com|(?:buy|sandbox)\.itunes\.apple\.com|androidpublisher\.googleapis\.com|fcm\.googleapis\.com|(?:api\.|queue\.)?fal\.ai|api\.replicate\.com)(?=[:/"\x27\s]|$)', re.I)
-    for m in provider_host.finditer(clean):
-        capability = "money" if any(s in m.group().lower() for s in ("stripe", "itunes", "androidpublisher")) else "ai" if any(s in m.group().lower() for s in ("fal.ai", "replicate")) else "notify"
-        if owns_provider(repository, path, capability):
-            continue
-        # Literal host in executable code; comments/docstrings were removed.
-        line_start = clean.rfind("\n", 0, m.start()) + 1
-        if code[line_start:m.start()].strip():
-            add(m.start(), "C2", "provider-bypass", "Product calls an offered capability's provider host directly")
+    if "if" in clean_lower and any(tok in clean_lower for tok in ("first_party", "is_internal", "is_loopback", "is_private", "cluster_local", "tenant")):
+        for m in _BRANCH_RE.finditer(clean):
+            if code[m.start():m.start()+2] != "if":
+                continue
+            end = brace_end(code, m.end()) if m.group().endswith("{") else m.end() + len(clean[m.end():].split("\n\n")[0])
+            body = code[m.end():end]
+            if _BRANCH_RET_RE.match(body):
+                add(m.start(), "C1", "privileged-branch", "First-party identity or network position reaches an unconditional success return", end)
+    if "stripe" in clean_lower or "TWILIO_" in clean or "VONAGE_" in clean or "AUTH0_" in clean:
+        for m in _PROVIDER_RE.finditer(clean):
+            capability = "money" if "stripe" in m.group().lower() else "auth" if "AUTH0" in m.group() else "notify"
+            if owns_provider(repository, path, capability):
+                continue
+            # An env name is literal data attached to a real read; constructor must be code.
+            line = clean[clean.rfind("\n", 0, m.start())+1:clean.find("\n", m.end()) if "\n" in clean[m.end():] else len(clean)]
+            if code[m.start():m.end()].strip() or _ENV_LINE_RE.search(line):
+                add(m.start(), "C2", "provider-bypass", "Product uses provider capability directly; use its ordinary platform operation")
+    if "://" in clean_lower:
+        for m in _PROVIDER_HOST_RE.finditer(clean):
+            capability = "money" if any(s in m.group().lower() for s in ("stripe", "itunes", "androidpublisher")) else "ai" if any(s in m.group().lower() for s in ("fal.ai", "replicate")) else "notify"
+            if owns_provider(repository, path, capability):
+                continue
+            # Literal host in executable code; comments/docstrings were removed.
+            line_start = clean.rfind("\n", 0, m.start()) + 1
+            if code[line_start:m.start()].strip():
+                add(m.start(), "C2", "provider-bypass", "Product calls an offered capability's provider host directly")
     downstream = downstream_pattern(repository)
     if downstream:
-        for m in re.finditer(r"\b(?:use|import|from)\s+" + downstream + r"(?=\W|$)", code):
-            add(m.start(), "C3", "downstream-import", "Shared engine imports downstream company/product behavior")
-        for m in re.finditer(r'\b(?:from\s+|require\s*\(\s*)["\x27]@?' + downstream + r'(?=[/"\x27])[^"\x27]*["\x27]', clean):
-            if code[m.start():m.start()+4].strip():
-                add(m.start(), "C3", "downstream-import", "Shared engine imports a downstream product module")
-        for m in re.finditer(r"\b(?:const|static|let)\b[^\n;=]*=\s*[\"'](?:" + downstream + r"|org_[A-Za-z0-9]+|tenant_[A-Za-z0-9]+)[\"']", clean):
-            if code[m.start():m.start()+3].strip():
-                add(m.start(), "C3", "downstream-config", "Shared engine compiles a downstream identity into executable configuration")
+        r_use, r_from, r_const, ds_bound_re, ds_org_re = _compile_downstream(downstream)
+        has_ds = True if ds_bound_re is None else bool(ds_bound_re.search(clean))
+        if has_ds and ("use" in code or "import" in code or "from" in code):
+            for m in r_use.finditer(code):
+                add(m.start(), "C3", "downstream-import", "Shared engine imports downstream company/product behavior")
+        if has_ds and ("from" in clean or "require" in clean):
+            for m in r_from.finditer(clean):
+                if code[m.start():m.start()+4].strip():
+                    add(m.start(), "C3", "downstream-import", "Shared engine imports a downstream product module")
+        if ("const " in clean or "const\t" in clean or "const\n" in clean
+                or "static " in clean or "static\t" in clean or "static\n" in clean
+                or "let " in clean or "let\t" in clean or "let\n" in clean):
+            if has_ds or (("org_" in clean or "tenant_" in clean) and ds_org_re.search(clean)):
+                for m in r_const.finditer(clean):
+                    if code[m.start():m.start()+3].strip():
+                        add(m.start(), "C3", "downstream-config", "Shared engine compiles a downstream identity into executable configuration")
         if "bundled_skills" in pathlib.PurePosixPath(path).name and clean.strip():
             add(0, "C3", "bundled-method", "Company Skill bodies belong in replaceable configuration, not engine source")
-    reads = re.compile(r'''(?:\b(?:std::)?env::var(?:_os)?\s*\(\s*|\bos\.(?:getenv\s*\(|environ(?:\.get\s*\(|\s*\[))\s*|\bprocess\.env\s*\[\s*)["']([A-Z][A-Z0-9_]+)["']|\bprocess\.env\.([A-Z][A-Z0-9_]+)''')
-    for m in reads.finditer(clean):
-        name = m.group(1) or m.group(2)
-        if not code[m.start():m.start()+2].strip():
-            continue
-        if pathlib.PurePosixPath(path).name == "build.rs" and (name.startswith("CARGO_") or name in {"OUT_DIR", "TARGET", "HOST", "PROFILE", "OPT_LEVEL", "DEBUG", "NUM_JOBS", "RUSTC", "RUSTDOC", "RUSTC_LINKER", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS"}):
-            continue
-        if name not in declared and not name.startswith(("GITHUB_", "RUNNER_")) and name not in {"CI", "HOME", "PATH", "TMPDIR"}:
-            add(m.start(), "C4", "undeclared-setting", "Literal environment read lacks a declaration in the environment schema or sample")
-    if suffix == ".py":
+    if "env::var" in clean or "os.getenv" in clean or "os.environ" in clean or "process.env" in clean:
+        for m in _ENV_READS_RE.finditer(clean):
+            if _env_tracker is not None:
+                _env_tracker[0] = True
+            name = m.group(1) or m.group(2)
+            if not code[m.start():m.start()+2].strip():
+                continue
+            if pathlib.PurePosixPath(path).name == "build.rs" and (name.startswith("CARGO_") or name in {"OUT_DIR", "TARGET", "HOST", "PROFILE", "OPT_LEVEL", "DEBUG", "NUM_JOBS", "RUSTC", "RUSTDOC", "RUSTC_LINKER", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS"}):
+                continue
+            if name not in declared and not name.startswith(("GITHUB_", "RUNNER_")) and name not in {"CI", "HOME", "PATH", "TMPDIR"}:
+                add(m.start(), "C4", "undeclared-setting", "Literal environment read lacks a declaration in the environment schema or sample")
+    if suffix == ".py" and "DEFAULT_" in text:
         defaults = {}
         for node in ast.parse(text).body:
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
@@ -624,43 +839,49 @@ def scan_file(path, text, repository, declared, retired_routes, *, tree=None):
                             at = sum(map(len, clean.splitlines(keepends=True)[:node.lineno-1]))
                             add(at, "C4", "competing-default", "The same unconditional default has conflicting literal authorities")
                         defaults[target.id] = node.value.value
-    for start, end, bounded in loops(text if suffix == ".py" else clean, code, suffix):
-        if bounded:
-            continue
-        if re.search(r"\b(?:sleep\s*\(|sleep\s+\d|(?:fetch|get_status|query|poll|probe|list_items|status)\w*\s*\()", code[start:end], re.I):
-            add(start, "C5", "polling-loop", "An unbounded loop advances by a transport read or sleep instead of an event", end)
-    for m in re.finditer(r"\bsetInterval\s*\(", code):
-        end = matching_end(code, m.end(), "(", ")")
-        if READ.search(code[m.end():end]):
-            add(m.start(), "C5", "polling-timer", "An interval advances ordinary state reads instead of subscribing to events", end)
+    has_loop_hint = ("while" in text) if suffix == ".py" else ("while" in code) if suffix in {".sh", ".bash"} else ("while" in code or "loop" in code) if suffix == ".rs" else ("while" in code or "for" in code)
+    if has_loop_hint:
+        for start, end, bounded in loops(text if suffix == ".py" else clean, code, suffix):
+            if bounded:
+                continue
+            if re.search(r"\b(?:sleep\s*\(|sleep\s+\d|(?:fetch|get_status|query|poll|probe|list_items|status)\w*\s*\()", code[start:end], re.I):
+                add(start, "C5", "polling-loop", "An unbounded loop advances by a transport read or sleep instead of an event", end)
+    if "setInterval" in code:
+        for m in _SET_INTERVAL_RE.finditer(code):
+            end = matching_end(code, m.end(), "(", ")")
+            if READ.search(code[m.end():end]):
+                add(m.start(), "C5", "polling-timer", "An interval advances ordinary state reads instead of subscribing to events", end)
     if suffix in {".ts", ".tsx", ".js", ".mjs", ".cjs"} and "setTimeout" in code:
         for name, header, start, end in named_bodies(clean, code, suffix):
             body = code[start:end]
             rearm = r"\bsetTimeout\s*\(\s*(?:\(\s*\)\s*=>\s*)?" + re.escape(name) + r"\b"
             if READ.search(body) and re.search(rearm, body) and not re.search(r"\b(?:if|return|throw)\b", body):
                 add(header, "C5", "polling-timer", "A timer re-arms a state read without an exit instead of subscribing to events", end)
-    suppressions = re.finditer(r"#\s*\[allow\s*\([^)]*\)\]|eslint-disable[^\n]*|#\s*(?:noqa|type:\s*ignore)[^\n]*", text)
-    for m in suppressions:
-        # A suppression must be an actual comment or Rust attribute, not quoted text.
-        if text[m.start():m.start()+2] != "#[" and not any(start <= m.start() < end for start, end in comments):
-            continue
-        if text[m.start():m.start()+2] == "#[" and not code[m.start():m.start()+2].strip():
-            continue
-        line = text[text.rfind("\n", 0, m.start())+1:text.find("\n", m.end()) if "\n" in text[m.end():] else len(text)]
-        if not re.search(r"(?:reason|because)\s*[:=]?\s*\S+(?:\s+\S+){2,}", line, re.I):
-            add(m.start(), "C6", "unexplained-suppression", "Lint suppression needs its narrow constraint and reason")
+    if "eslint-disable" in text or ("#" in text and ("allow" in text or "noqa" in text or "type:" in text)):
+        for m in _SUPPRESSION_RE.finditer(text):
+            # A suppression must be an actual comment or Rust attribute, not quoted text.
+            if text[m.start():m.start()+2] != "#[" and not any(start <= m.start() < end for start, end in comments):
+                continue
+            if text[m.start():m.start()+2] == "#[" and not code[m.start():m.start()+2].strip():
+                continue
+            line = text[text.rfind("\n", 0, m.start())+1:text.find("\n", m.end()) if "\n" in text[m.end():] else len(text)]
+            if not _SUPPRESSION_REASON_RE.search(line):
+                add(m.start(), "C6", "unexplained-suppression", "Lint suppression needs its narrow constraint and reason")
     for route in retired_routes:
-        for m in re.finditer(r"\b(?:route|path|add_route)\s*\(\s*[\"']" + re.escape(route) + r"[\"']", clean):
+        if route not in clean:
+            continue
+        for m in _retired_route_re(route).finditer(clean):
             if code[m.start():m.start()+4].strip():
                 add(m.start(), "C6", "retired-route", "A completed migration contract marks this still-executable route retired")
-    for m in re.finditer(r"\bif\b[^\n{}:]*\bmerged\b[^\n{}:]*[{:][\s\S]{0,180}?\b(?:settle_completed|mark_complete|complete_goal)\s*\(", code):
-        header = re.split(r"[{:}]", m.group(), maxsplit=1)[0]
-        terms = re.split(r"&&|\band\b", header)
-        positive_evidence = any(re.search(r"\b(?:evidence|receipt|deployed|verified)\b", term)
-                                and not re.search(r"!|\bnot\b|\|\||\bor\b|==\s*(?:false|False|None|null)", term)
-                                for term in terms[1:])
-        if not positive_evidence:
-            add(m.start(), "C7", "merge-only-completion", "Merge-only branch settles delivery without required environment evidence")
+    if "merged" in code and ("settle_completed" in code or "mark_complete" in code or "complete_goal" in code):
+        for m in _MERGE_COMPLETE_RE.finditer(code):
+            header = re.split(r"[{:}]", m.group(), maxsplit=1)[0]
+            terms = re.split(r"&&|\band\b", header)
+            positive_evidence = any(_MERGE_EVIDENCE_RE.search(term)
+                                    and not _MERGE_NEGATION_RE.search(term)
+                                    for term in terms[1:])
+            if not positive_evidence:
+                add(m.start(), "C7", "merge-only-completion", "Merge-only branch settles delivery without required environment evidence")
     unique = {(f["line"], f["column"], f["class"], f["rule"]): f for f in out}
     return with_occurrences(list(unique.values()))
 
@@ -714,7 +935,46 @@ def decisions(text, repository, today, *, ignore_expired=False):
     return active, errors
 
 
-def evaluate(tree, repository, changed, today, *, ignore_expired=False):
+class _DepTrackTree:
+    """Proxy tracking tree reads and path-listing dependencies per scanned file."""
+
+    def __init__(self, tree, oid_fn):
+        self._tree = tree
+        self._cargo_owner = tree
+        self._oid_fn = oid_fn
+        self.reads = {}
+        self.used_paths = False
+
+    def __getattr__(self, name):
+        return getattr(self._tree, name)
+
+    def paths(self):
+        self.used_paths = True
+        return self._tree.paths()
+
+    def read(self, path, **kwargs):
+        self.reads[path] = self._oid_fn(path)
+        return self._tree.read(path, **kwargs)
+
+    def read_model_source(self, path):
+        self.reads[path] = self._oid_fn(path)
+        return self._tree.read_model_source(path)
+
+
+_SURROGATE_EXTS = (".java", ".lua", ".cs", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".m", ".mm", ".php", ".rb")
+
+
+def _copy_rows(rows):
+    copied = []
+    for row in rows:
+        item = dict(row)
+        if "legacy_portability_keys" in item:
+            item["legacy_portability_keys"] = list(item["legacy_portability_keys"])
+        copied.append(item)
+    return copied
+
+
+def evaluate(tree, repository, changed, today, *, ignore_expired=False, file_cache=None, shared_views=None):
     """Pure git-tree input -> report. No network, environment, clock or mutation."""
     declared = env_declarations(tree)
     retired = []
@@ -736,27 +996,122 @@ def evaluate(tree, repository, changed, today, *, ignore_expired=False):
         rescan = True
     if changed is not None and any(p.startswith(".github/") and pathlib.PurePosixPath(p).suffix in {".yml", ".yaml"} for p in changed):
         rescan = True
-    for path in sorted(tree.paths()):
-        if (excluded(path) and deal_randomness.excluded(path)) or not (pathlib.PurePosixPath(path).suffix in SOURCE | CONFIG or project_portability.supported(path)):
-            skipped.append({"path": path, "reason": "fixture/documentation/dependency" if excluded(path) else "unsupported format"})
+    paths = sorted(tree.paths())
+    path_set = set(paths)
+    blob_oid_fn = getattr(tree, "blob_oid", None) if (file_cache is not None or shared_views is not None) else None
+    retired_key = tuple(retired)
+    _cargo_fp_val = None
+
+    def _get_cargo_fp():
+        nonlocal _cargo_fp_val
+        if _cargo_fp_val is None:
+            _cargo_fp_val = tuple(
+                (p, blob_oid_fn(p)) for p in paths if p == "Cargo.toml" or p.endswith("/Cargo.toml")
+            )
+        return _cargo_fp_val
+
+    def _make_views(primary_text, primary_oid):
+        sv = source_views
+        local = {}
+
+        def _views(src_text, src_suffix, *, test_bodies=False, legacy_rust=False):
+            if src_text is primary_text and shared_views is not None and primary_oid is not None:
+                skey = (primary_oid, src_suffix, test_bodies, legacy_rust)
+                res = shared_views.get(skey)
+                if res is None:
+                    res = sv(src_text, src_suffix, test_bodies=test_bodies, legacy_rust=legacy_rust)
+                    shared_views[skey] = res
+                return res
+            lkey = (src_text is primary_text, 0 if src_text is primary_text else id(src_text), src_suffix, test_bodies, legacy_rust)
+            res = local.get(lkey)
+            if res is None:
+                res = sv(src_text, src_suffix, test_bodies=test_bodies, legacy_rust=legacy_rust)
+                local[lkey] = res
+            return res
+
+        return _views
+
+    for path in paths:
+        p = pathlib.PurePosixPath(path)
+        is_excluded = excluded(path)
+        if (is_excluded and deal_randomness.excluded(path)) or not (p.suffix in SOURCE | CONFIG or project_portability.supported(path)):
+            skipped.append({"path": path, "reason": "fixture/documentation/dependency" if is_excluded else "unsupported format"})
             continue
+        oid = blob_oid_fn(path) if blob_oid_fn is not None else None
+        is_vendor_rs = "vendor" in p.parts and path.endswith(".rs")
+        ckey = (path, oid, repository, retired_key) if (file_cache is not None and oid is not None) else None
+        if ckey is not None and ckey in file_cache:
+            entry = file_cache[ckey]
+            kind = entry[0]
+            if kind == "skipped_compiler":
+                skipped.append({"path": path, "reason": "protocol compiler output; scan its authored schema instead"})
+                continue
+            if kind == "error":
+                _, err_msg, has_env_reads, dep_reads, dep_cargo_fp, entry_declared = entry
+                if ((not has_env_reads or entry_declared == declared)
+                        and (dep_cargo_fp is None or dep_cargo_fp == _get_cargo_fp())
+                        and (not dep_reads or all(blob_oid_fn(dp) == doid for dp, doid in dep_reads))):
+                    reviewed.append(path)
+                    unreadable.append({"path": path, "reason": err_msg})
+                    continue
+            elif kind == "ok":
+                _, cached_rows, has_env_reads, dep_reads, dep_cargo_fp, entry_declared = entry
+                if ((not has_env_reads or entry_declared == declared)
+                        and (dep_cargo_fp is None or dep_cargo_fp == _get_cargo_fp())
+                        and (not dep_reads or all(blob_oid_fn(dp) == doid for dp, doid in dep_reads))):
+                    reviewed.append(path)
+                    rows = _copy_rows(cached_rows)
+                    text = None
+                    for row in rows:
+                        lines = None if rescan else changed.get(path, set())
+                        row["changed"] = lines is None or any(row["line"] <= n <= row["end_line"] for n in lines)
+                        if row["rule"] == "cache-economy":
+                            if text is None:
+                                text = tree.read_model_source(path) if path.endswith(_SURROGATE_EXTS) else tree.read(path)
+                            row["decision"] = cache_display_proof(tree, path, text, row["line"])
+                        else:
+                            row["decision"] = next((d for d in allowed if all(d[k] == row[k] for k in ("path", "line", "class", "rule", "source_sha256"))), None)
+                        if row["rule"] in {"tenant-read-functions", "deal-randomness", "project-portability"}:
+                            row["decision"] = None
+                        findings.append(row)
+                    continue
         # Legacy Java plugins contain non-UTF-8 comments. Preserve every byte
         # while recognizing ASCII syntax; other languages still fail unreadable.
-        text = tree.read_model_source(path) if path.endswith((".java", ".lua", ".cs", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".m", ".mm", ".php", ".rb")) else tree.read(path)
+        text = tree.read_model_source(path) if path.endswith(_SURROGATE_EXTS) else tree.read(path)
         if text is None:
             # Deleted paths are outside the head, not unreadable inputs.
-            if path in tree.paths():
+            if path in path_set:
                 unreadable.append({"path": path, "reason": "git blob unreadable"})
             continue
         if source_scope.compiler_generated(text):
             skipped.append({"path": path, "reason": "protocol compiler output; scan its authored schema instead"})
+            if ckey is not None:
+                file_cache[ckey] = ("skipped_compiler",)
             continue
         reviewed.append(path)
+        env_tracker = [False] if ckey is not None else None
+        dep_tree = _DepTrackTree(tree, blob_oid_fn) if ckey is not None else tree
+        views_fn = _make_views(text, oid)
         try:
-            rows = scan_file(path, text, repository, declared, retired, tree=tree)
+            rows = scan_file(path, text, repository, declared, retired, tree=dep_tree, _views=views_fn, _env_tracker=env_tracker)
         except (ValueError, SyntaxError) as error:
-            unreadable.append({"path": path, "reason": str(error)})
+            err_msg = str(error)
+            unreadable.append({"path": path, "reason": err_msg})
+            if ckey is not None and not (dep_tree.used_paths and not is_vendor_rs):
+                file_cache[ckey] = (
+                    "error", err_msg, env_tracker[0],
+                    tuple(dep_tree.reads.items()),
+                    _get_cargo_fp() if is_vendor_rs else None,
+                    declared if env_tracker[0] else None,
+                )
             continue
+        if ckey is not None and not (dep_tree.used_paths and not is_vendor_rs):
+            file_cache[ckey] = (
+                "ok", _copy_rows(rows), env_tracker[0],
+                tuple(dep_tree.reads.items()),
+                _get_cargo_fp() if is_vendor_rs else None,
+                declared if env_tracker[0] else None,
+            )
         for row in rows:
             lines = None if rescan else changed.get(path, set())
             row["changed"] = lines is None or any(row["line"] <= n <= row["end_line"] for n in lines)

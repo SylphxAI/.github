@@ -167,6 +167,111 @@ class GitTreeTests(unittest.TestCase):
                              "Timing is reported without a timing gate.\n\n```json\n" +
                              json.dumps(report, indent=2, sort_keys=True) + "\n```\n")
 
+    def test_shared_blob_cache_and_encoding_parity(self):
+        rev_a = self.commit({
+            "src/a.rs": "fn a() {}\n",
+            "src/raw.rs": b"fn bad() { /* \xff\xfe */ }\n",
+        })
+        rev_b = self.commit({
+            "src/b.rs": "fn b() {}\n",
+        })
+        shared = {}
+        with sc.Tree(str(self.repo), rev_a, blob_cache=shared) as tree_a:
+            self.assertEqual(tree_a.blob_oid("./src/a.rs"), tree_a.blob_oid("src/a.rs"))
+            self.assertEqual(tree_a.read("src/a.rs"), "fn a() {}\n")
+            self.assertIsNone(tree_a.read("src/raw.rs"))
+            self.assertEqual(tree_a.read_model_source("src/raw.rs"), b"fn bad() { /* \xff\xfe */ }\n".decode("utf-8", errors="surrogateescape"))
+        with sc.Tree(str(self.repo), rev_b, blob_cache=shared) as tree_b:
+            self.assertEqual(tree_b.read("src/a.rs"), "fn a() {}\n")
+            self.assertIsNone(tree_b.read("src/raw.rs"))
+            self.assertEqual(tree_b.read_model_source("src/raw.rs"), b"fn bad() { /* \xff\xfe */ }\n".decode("utf-8", errors="surrogateescape"))
+            self.assertIsNone(tree_b._reader)
+            self.assertEqual(tree_b.read("src/b.rs"), "fn b() {}\n")
+            self.assertIsNotNone(tree_b._reader)
+
+    def test_cross_tree_scan_cache_and_invalidation_parity(self):
+        base = self.commit({
+            "src/env.rs": 'fn f() {\n    let _ = std::env::var("FOO");\n    let _ = std::env::var("BAR");\n}\n',
+            "src/models.ts": 'export const model = "openai/gpt-4o";\nexport const clean = "hello";\n',
+            "crate/src/rng.rs": "pub struct WeakRng { pub state: u64 }\nimpl WeakRng { pub fn step(&mut self) -> u64 { self.state ^= self.state << 13; self.state } }\n",
+            "crate/src/deal.rs": "use crate::rng::WeakRng;\npub fn deal_hand() -> u64 { let r = WeakRng::new(); r.next() }\n",
+            "sylphx.toml": '[database.migrations]\nengine="postgres"\n',
+            "ops/tenant-read-functions.json": json.dumps({"functions": ["fn_tenant"]}),
+            "scripts/push.sh": "do_push() { git push \"$@\"; }\ndo_push --force origin main\n",
+            "contracts/spec.json": '{"paths":{"/v1/x":{"model":"claude-3-5-sonnet-20241022"}},"url":"https://api.example.com"}\n',
+            ".env.example": "FOO=1\n",
+        })
+        head = self.commit({
+            ".env.example": "BAR=1\n",
+            "crate/src/rng.rs": "pub struct WeakRng { pub state: u64 }\nimpl WeakRng { pub fn step(&mut self) -> u64 { self.state } }\n",
+            "scripts/push.sh": "do_push() { echo \"$@\"; }\ndo_push --force origin main\n",
+            "contracts/spec.json": '{"paths":{"/v1/x":{"model":"claude-3-5-sonnet-20241022"}},"url":"https://api.example.com"}\n',
+            "src/extra.py": 'model = "gpt-4"\n',
+        })
+        today = datetime.date(2026, 11, 16)
+        blob_cache, model_cache, force_cache, arch_cache, sv_cache = {}, {}, {}, {}, {}
+        with sc.Tree(str(self.repo), head, blob_cache=blob_cache) as head_tree, sc.Tree(str(self.repo), base, blob_cache=blob_cache) as base_tree:
+            changed = sc.added_lines(str(self.repo), base, head)
+            c_m_head = sc.model_pins.scan(head_tree, "example/app", None, sc.architecture.source_views, cache=model_cache, shared_views=sv_cache)
+            c_m_base = sc.model_pins.scan(base_tree, "example/app", None, sc.architecture.source_views, cache=model_cache, shared_views=sv_cache)
+            c_f_head = sc.no_force_push.scan(head_tree, cache=force_cache)
+            c_f_base = sc.no_force_push.scan(base_tree, cache=force_cache)
+            c_a_head = sc.architecture.evaluate(head_tree, "example/app", changed, today, file_cache=arch_cache, shared_views=sv_cache)
+            # Mutate head findings in place (as cmd_check does) before evaluating base.
+            for row in c_a_head["findings"]:
+                row["changed"] = True
+                row["disposition"] = "mutated"
+            c_a_base = sc.architecture.evaluate(base_tree, "example/app", None, today, ignore_expired=True, file_cache=arch_cache, shared_views=sv_cache)
+
+            u_m_head = sc.model_pins.scan(head_tree, "example/app", None, sc.architecture.source_views)
+            u_m_base = sc.model_pins.scan(base_tree, "example/app", None, sc.architecture.source_views)
+            u_f_head = sc.no_force_push.scan(head_tree)
+            u_f_base = sc.no_force_push.scan(base_tree)
+            u_a_head = sc.architecture.evaluate(head_tree, "example/app", changed, today)
+            for row in u_a_head["findings"]:
+                row["changed"] = True
+                row["disposition"] = "mutated"
+            u_a_base = sc.architecture.evaluate(base_tree, "example/app", None, today, ignore_expired=True)
+
+            self.assertEqual(c_m_head, u_m_head)
+            self.assertEqual(c_m_base, u_m_base)
+            self.assertEqual(c_f_head, u_f_head)
+            self.assertEqual(c_f_base, u_f_base)
+            self.assertEqual(c_a_head, u_a_head)
+            self.assertEqual(c_a_base, u_a_base)
+            head_env = {r["line"] for r in c_a_head["findings"] if r["path"] == "src/env.rs"}
+            base_env = {r["line"] for r in c_a_base["findings"] if r["path"] == "src/env.rs"}
+            self.assertEqual(head_env, {2})
+            self.assertEqual(base_env, {3})
+            self.assertTrue(c_f_base["findings"])
+            self.assertFalse(c_f_head["findings"])
+            self.assertIn("crate/src/deal.rs", {r["path"] for r in c_a_base["findings"]})
+            self.assertNotIn("crate/src/deal.rs", {r["path"] for r in c_a_head["findings"]})
+
+    def test_rust_tokens_and_matching_end_parity(self):
+        pp = sc.architecture.project_portability
+        cases = [
+            'let x = br#"/* not comment */" "#; // line comment\nlet c = \'\\u{1F600}\';',
+            '/* outer /* inner */ still comment */ let a: &\'static str = "a\\\\\\"b";',
+            'ar#"quoted"# + cr#"raw"#',
+        ]
+        for src in cases:
+            tokens = list(pp.rust_tokens(src))
+            self.assertTrue(all(src[s:e] for _, s, e in tokens))
+        for broken, err in [
+            ("/* /* */", "unterminated Rust block comment"),
+            ('r#"abc"', "unterminated Rust raw string"),
+            ('"unclosed\\', "unterminated Rust string"),
+        ]:
+            with self.assertRaisesRegex(ValueError, err):
+                list(pp.rust_tokens(broken))
+        self.assertEqual(sc.architecture.matching_end("a{b}c}", 0, "{", "}"), 6)
+        self.assertEqual(sc.architecture.matching_end("abc", 10, "{", "}"), 10)
+        self.assertEqual(sc.architecture.matching_end("abc", 0, "{", "}"), 3)
+        self.assertIsNone(sc.model_pins.balanced_end("abc", 5, "{", "}"))
+        self.assertIsNone(sc.model_pins.balanced_end("abc", 0, "{", "}"))
+        self.assertEqual(sc.model_pins.balanced_end("{a}}", 0, "{", "}"), 4)
+
 
 if __name__ == "__main__":
     unittest.main()
