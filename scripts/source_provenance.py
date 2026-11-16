@@ -173,6 +173,12 @@ class TreeView:
             return None
         return self.tree.read((self.prefix + '/' if self.prefix else '') + path, **kwargs)
 
+    def blob_oid(self, path):
+        if path not in self._path_set:
+            return None
+        getter = getattr(self.tree, 'blob_oid', None)
+        return getter((self.prefix + '/' if self.prefix else '') + path) if getter is not None else None
+
     def read_model_source(self, path):
         return self.read(path, encoding_errors='surrogateescape')
 
@@ -203,15 +209,18 @@ def legacy_errors(head, base, records, baseline, departures, parse_baseline, dec
     return errors
 
 
-def architecture_report(head, base, records, baseline, changed, today, architecture, parse_baseline):
+def architecture_report(head, base, records, baseline, changed, today, architecture, parse_baseline, *, shared_views=None):
     combined = {'findings': [], 'unreadable': [], 'reviewed_paths': [], 'excluded_paths': [], 'decision_errors': []}
     errors = []
+    sub_cache = {}
     for record in records:
         prefix = record['prefix']
         current = TreeView(head, prefix)
         prior = TreeView(base, prefix) if base and record['base_tree'] else current
-        report = architecture.evaluate(current, record['source_repository'], local_changes(changed, prefix), today)
-        previous = architecture.evaluate(prior, record['source_repository'], None, today, ignore_expired=True)
+        report = architecture.evaluate(current, record['source_repository'], local_changes(changed, prefix), today,
+                                       file_cache=sub_cache, shared_views=shared_views)
+        previous = architecture.evaluate(prior, record['source_repository'], None, today, ignore_expired=True,
+                                         file_cache=sub_cache, shared_views=shared_views)
         old = {architecture.baseline_key(row): row for row in previous['findings']}
         def entries(tree):
             return {v for v in parse_baseline(tree.read(baseline)) or () if v.startswith('architecture ')}

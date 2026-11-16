@@ -80,6 +80,51 @@ LIMITS = [
     "Recognizes literal vendor model names in supported source/configuration; computed or encoded model ids need semantic review.",
     "Alias existence and its resolved revision are checked by the catalog/runtime; optional catalog snapshots can tighten admission offline.",
 ]
+_EXCLUDED_NAME = re.compile(r"(?:[._-](?:tests?|spec))\.")
+_FAMILY_HINTS = tuple(family + separator for family in FAMILIES for separator in ("-", "."))
+_FAMILY_STEM_PAIRS = tuple((family, (family + "-", family + ".")) for family in FAMILIES)
+_O_HINT = re.compile(r"(?<![\w.-])o[134](?!\w)")
+_BARE_CORE = (
+    r"(?:" + "|".join(name for name in FAMILIES if name != "tts")
+    + r"|o[134])(?:[.-][a-z0-9][a-z0-9.:-]*)?|tts[.-][a-z0-9][a-z0-9.:-]*"
+)
+_BARE_QUOTED = re.compile(r"[\"'`](?P<val>" + _BARE_CORE + r")", re.I)
+_BARE_CONFIG = re.compile(r"(?:[\"'`]|[:=]\s*)(?P<val>" + _BARE_CORE + r")", re.I)
+_UNQUOTED_CONFIG_START = re.compile(r"[:=]\s*(?!(?:true|false|null)\b)[A-Za-z_]")
+_CFG_TOKENS = {
+    "json_proto": re.compile(r'"""[\s\S]*?"""|\x27\x27\x27[\s\S]*?\x27\x27\x27|"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27|//[^\n]*|/\*.*?\*/', re.S),
+    "sql": re.compile(r'"""[\s\S]*?"""|\x27\x27\x27[\s\S]*?\x27\x27\x27|"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27|--[^\n]*|/\*.*?\*/', re.S),
+    "hash": re.compile(r'"""[\s\S]*?"""|\x27\x27\x27[\s\S]*?\x27\x27\x27|"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27|\#[^\n]*', re.S),
+}
+_SYNONYM_ASSIGN = re.compile(r"\b\w*synonym\w*\s*=\s*$", re.I)
+_SELECTOR_CANDIDATE = re.compile(
+    r"(?:^|[\s.,(\[{])[\"']?(?P<name>[A-Za-z_$][\w$]*)[\"']?\s*"
+    r"(?:\s*:\s*(?:&(?:'static\s+)?str|[A-Za-z_][\w:<>?\[\] &.]*))?"
+    r"\s*(?P<operator>:=|[:=]|\()\s*(?:[\w.]+\s*\(\s*)?"
+    r"(?:\[\s*)?$"
+)
+_SELECTOR_FALLBACK = re.compile(
+    r"\b(?P<name>[A-Za-z_$][\w$]*)\s*[:=]\s*"
+    r"[^;{}\n]*?(?:\?\?|\|\|)\s*$"
+)
+_CAMEL_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
+_SELECTOR_CALL = re.compile(r"(?:(?:language|chat|text|image|embedding|ai|llm|select|set|get|with|resolve)_)?model")
+_SELECTOR_NAME = re.compile(r"(?:^|_)(?:models?|model_(?:id|name|slug))(?:_(?:default|fallback))?$")
+_JSON_SPACE = re.compile(r"\s*")
+_CLASSIFIER_ANCESTORS = frozenset({"taxonomy", "quotatiers", "modellimits", "match"})
+_VERSIONED_TOKEN = re.compile(r"\d|-latest$")
+_CONTEXT_MODEL = re.compile(r"\b\w*model\w*\b", re.I)
+_O_SERIES_MODEL = re.compile(r"o[134]", re.I)
+_SKIP_EXTENSIONS = SOURCE | {
+    ".prefab", ".asset", ".unity", ".scene", ".fbx", ".gltf", ".glb", ".obj",
+    ".png", ".jpg", ".webp", ".svg",
+}
+
+
+def _blank_preserving_newlines(text):
+    if "\n" not in text:
+        return " " * len(text)
+    return "\n".join(" " * len(part) for part in text.split("\n"))
 
 
 def load_aliases(path=None):
@@ -108,7 +153,7 @@ def excluded(path):
             or any(part.casefold().endswith(("-fixtures", "_fixtures")) for part in p.parts[:-1])
             or p.name.startswith(("test_", "tests_", "test-", "tests-", "smoke_", "smoke-"))
             or p.stem in {"test", "tests", "spec", "smoke", "smokes"}
-            or bool(re.search(r"(?:[._-](?:tests?|spec))\.", p.name)))
+            or bool(_EXCLUDED_NAME.search(p.name)))
 
 
 def exemption(repository, path):
@@ -120,15 +165,30 @@ def exemption(repository, path):
 
 def config_view(text, suffix):
     """Mask comments, retaining strings and offsets in data/config formats."""
-    comment = r"--[^\n]*|/\*.*?\*/" if suffix == ".sql" else r"\#[^\n]*"
     if suffix in {".json", ".proto"}:
-        comment = r"//[^\n]*|/\*.*?\*/"
-    token = re.compile(r'"""[\s\S]*?"""|\x27\x27\x27[\s\S]*?\x27\x27\x27|"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27|' + comment, re.S)
-    clean = list(text)
+        if "//" not in text and "/*" not in text:
+            return text
+        token = _CFG_TOKENS["json_proto"]
+    elif suffix == ".sql":
+        if "--" not in text and "/*" not in text:
+            return text
+        token = _CFG_TOKENS["sql"]
+    else:
+        if "#" not in text:
+            return text
+        token = _CFG_TOKENS["hash"]
+    parts = []
+    last = 0
     for m in token.finditer(text):
-        if m.group().startswith(("#", "--", "//", "/*")):
-            clean[m.start():m.end()] = ["\n" if c == "\n" else " " for c in m.group()]
-    return "".join(clean)
+        group = m.group()
+        if group.startswith(("#", "--", "//", "/*")):
+            parts.append(text[last:m.start()])
+            parts.append(_blank_preserving_newlines(group))
+            last = m.end()
+    if not parts:
+        return text
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def scalar_model(clean, start, end, config):
@@ -158,26 +218,27 @@ def model_selector(clean, start, code=None):
     opening = clean.rfind("{", 0, start)
     if opening >= 0:
         view = code if code is not None else clean
-        declaration_start = max(view.rfind(ch, 0, opening) for ch in ";{}\n") + 1
+        nl = view.rfind("\n", 0, opening)
+        lb = view.rfind("{", max(0, nl + 1), opening)
+        rb = view.rfind("}", max(0, nl + 1, lb + 1), opening)
+        sc = view.rfind(";", max(0, nl + 1, lb + 1, rb + 1), opening)
+        declaration_start = max(nl, lb, rb, sc) + 1
         declaration = view[declaration_start:opening]
-        if re.search(r"\b\w*synonym\w*\s*=\s*$", declaration, re.I):
+        if "synonym" in declaration.lower() and _SYNONYM_ASSIGN.search(declaration):
             return False  # Search vocabulary labels do not select a model.
-    boundary = max(clean.rfind(delimiter, 0, start) for delimiter in ";{},")
+    boundary = max(clean.rfind(",", 0, start), clean.rfind("{", 0, start), clean.rfind("}", 0, start))
+    semi = clean.rfind(";", max(0, boundary + 1), start)
+    if semi > boundary:
+        boundary = semi
     prefix = clean[boundary + 1:start].rstrip("\"'` \t\r\n")
     # An array item, fallback, optional wrapper or typed assignment keeps the
     # same selecting field. Stop at a statement/object boundary; quoted values
     # cannot supply selector names for their neighbours.
-    candidate = re.search(
-        r"(?:^|[\s.,(\[{])[\"']?(?P<name>[A-Za-z_$][\w$]*)[\"']?\s*"
-        r"(?:\s*:\s*(?:&(?:'static\s+)?str|[A-Za-z_][\w:<>?\[\] &.]*))?"
-        r"\s*(?P<operator>:=|[:=]|\()\s*(?:[\w.]+\s*\(\s*)?"
-        r"(?:\[\s*)?$", prefix)
+    candidate = _SELECTOR_CANDIDATE.search(prefix)
     if candidate is None:
         # Null-coalescing / environment fallbacks are still hard-coded
         # defaults for the directly assigned model selector.
-        candidate = re.search(
-            r"\b(?P<name>[A-Za-z_$][\w$]*)\s*[:=]\s*"
-            r"[^;{}\n]*?(?:\?\?|\|\|)\s*$", prefix)
+        candidate = _SELECTOR_FALLBACK.search(prefix)
     if candidate is None:
         # Every literal in a declared model list is a selector, including
         # later items whose immediate prefix is another literal and a comma.
@@ -198,13 +259,12 @@ def model_selector(clean, start, code=None):
             if not (clean[at - 1:at] == clean[end:end + 1] in {"\"", "'"}
                     and code[tail:tail + 1] == ":"):
                 return False
-    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", candidate["name"]).lower()
+    name = _CAMEL_BOUNDARY.sub(r"\1_\2", candidate["name"]).lower()
     if name.endswith("models") and not prefix.endswith("["):
         return False  # A family-name policy string is not a selected model.
-    if (candidate.groupdict().get("operator") == "(" and not re.fullmatch(
-                r"(?:(?:language|chat|text|image|embedding|ai|llm|select|set|get|with|resolve)_)?model", name)):
+    if (candidate.groupdict().get("operator") == "(" and not _SELECTOR_CALL.fullmatch(name)):
         return False  # Classifier/parser vocabulary is not a selection call.
-    return bool(re.search(r"(?:^|_)(?:models?|model_(?:id|name|slug))(?:_(?:default|fallback))?$", name))
+    return bool(_SELECTOR_NAME.search(name))
 
 
 def sql_selection(clean, start):
@@ -216,14 +276,44 @@ def sql_selection(clean, start):
     return not clauses or clauses[-1].lower() not in {"where", "on", "having", "when"}
 
 
+def _json_has_classifier_model(clean):
+    """Fast C-parser precheck before walking offsets with JSONDecoder."""
+    try:
+        # Use tuple as a C-speed marker for JSON objects while keeping duplicate keys.
+        root = json.loads(clean, object_pairs_hook=tuple)
+    except (ValueError, RecursionError):
+        return True
+    stack = [(root, False, False)]
+    while stack:
+        obj, in_classifier, last_key_is_model = stack.pop()
+        if isinstance(obj, tuple):
+            for key, value in obj:
+                norm = key.replace("_", "").replace("-", "").lower()
+                child_is_model = norm in {"model", "models"}
+                if in_classifier and child_is_model and isinstance(value, str):
+                    return True
+                if isinstance(value, (tuple, list)):
+                    stack.append((value, in_classifier or (norm in _CLASSIFIER_ANCESTORS), child_is_model))
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, str):
+                    if in_classifier and last_key_is_model:
+                        return True
+                elif isinstance(item, (tuple, list)):
+                    stack.append((item, in_classifier, last_key_is_model))
+    return False
+
+
 def metadata_ranges(clean, suffix, original=None):
     """Locate classifier membership and weight provenance, leaving defaults visible."""
     ranges = []
     if suffix == ".json":
+        if not _json_has_classifier_model(clean):
+            return ranges
         decoder = json.JSONDecoder()
-        space = re.compile(r"\s*")
+        space = _JSON_SPACE
 
-        def visit(at, path):
+        def visit(at, in_classifier, last_key_is_model):
             at = space.match(clean, at).end()
             if clean[at] == "{":
                 at = space.match(clean, at + 1).end()
@@ -232,7 +322,9 @@ def metadata_ranges(clean, suffix, original=None):
                     at = space.match(clean, at).end()
                     if not isinstance(key, str) or clean[at] != ":":
                         raise ValueError("invalid JSON object")
-                    at = space.match(clean, visit(at + 1, path + (key,))).end()
+                    norm = key.replace("_", "").replace("-", "").lower()
+                    child_classifier = in_classifier or (norm in _CLASSIFIER_ANCESTORS)
+                    at = space.match(clean, visit(at + 1, child_classifier, norm in {"model", "models"})).end()
                     if clean[at] != ",":
                         break
                     at = space.match(clean, at + 1).end()
@@ -240,10 +332,9 @@ def metadata_ranges(clean, suffix, original=None):
                     raise ValueError("invalid JSON object")
                 return at + 1
             if clean[at] == "[":
-                at, index = space.match(clean, at + 1).end(), 0
+                at = space.match(clean, at + 1).end()
                 while clean[at] != "]":
-                    at = space.match(clean, visit(at, path + (index,))).end()
-                    index += 1
+                    at = space.match(clean, visit(at, in_classifier, last_key_is_model)).end()
                     if clean[at] != ",":
                         break
                     at = space.match(clean, at + 1).end()
@@ -251,14 +342,12 @@ def metadata_ranges(clean, suffix, original=None):
                     raise ValueError("invalid JSON array")
                 return at + 1
             value, end = decoder.raw_decode(clean, at)
-            keys = [re.sub(r"[_-]", "", key).lower() for key in path if isinstance(key, str)]
-            if (isinstance(value, str) and keys and keys[-1] in {"model", "models"}
-                    and {"taxonomy", "quotatiers", "modellimits", "match"} & set(keys[:-1])):
+            if isinstance(value, str) and last_key_is_model and in_classifier:
                 ranges.append((at, end, "Classifier membership identifies existing models; it selects no request/default."))
             return end
 
         try:
-            if space.match(clean, visit(0, ())).end() != len(clean):
+            if space.match(clean, visit(0, False, False)).end() != len(clean):
                 return []
         except (ValueError, IndexError, RecursionError):
             return []  # No metadata exemption without a complete parsed declaration.
@@ -287,11 +376,26 @@ def metadata_ranges(clean, suffix, original=None):
 
 
 def balanced_end(code, start, opening, closing):
-    depth, end = 1, start
-    while depth and end < len(code):
-        depth += (code[end] == opening) - (code[end] == closing)
-        end += 1
-    return end if not depth else None
+    size = len(code)
+    if start >= size:
+        return None
+    depth = 1
+    pos = start
+    find = code.find
+    next_open = find(opening, pos)
+    next_close = find(closing, pos)
+    while depth:
+        if next_close < 0:
+            return None
+        if 0 <= next_open < next_close:
+            depth += 1
+            pos = next_open + 1
+            next_open = find(opening, pos)
+        else:
+            depth -= 1
+            pos = next_close + 1
+            next_close = find(closing, pos)
+    return pos
 
 
 def diagnostic_ranges(repository, path, clean, code):
@@ -328,9 +432,84 @@ def diagnostic_ranges(repository, path, clean, code):
     return ranges
 
 
-def scan(tree, repository, aliases, source_views):
+def _token_windows(lowered):
+    """Find character ranges around family/o-series needles so TOKEN never scans whole large files."""
+    wins = []
+    size = len(lowered)
+    find = lowered.find
+    for stem, seps in _FAMILY_STEM_PAIRS:
+        if stem not in lowered:
+            continue
+        for needle in seps:
+            idx = find(needle)
+            while idx != -1:
+                s = idx
+                while s > 0 and (lowered[s - 1].isalnum() or lowered[s - 1] in "_./:-"):
+                    s -= 1
+                e = idx + len(needle)
+                while e < size and (lowered[e].isalnum() or lowered[e] in "_./:-"):
+                    e += 1
+                wins.append((max(0, s - 1), min(size, e + 1)))
+                idx = find(needle, idx + 1)
+    for needle in ("o1", "o3", "o4"):
+        idx = find(needle)
+        while idx != -1:
+            if idx == 0 or not (lowered[idx - 1].isalnum() or lowered[idx - 1] in "_.-"):
+                s = idx
+                while s > 0 and (lowered[s - 1].isalnum() or lowered[s - 1] in "_./:-"):
+                    s -= 1
+                e = idx + 2
+                while e < size and (lowered[e].isalnum() or lowered[e] in "_./:-"):
+                    e += 1
+                wins.append((max(0, s - 1), min(size, e + 1)))
+            idx = find(needle, idx + 1)
+    if not wins:
+        return ()
+    wins.sort()
+    merged = [wins[0]]
+    for s, e in wins[1:]:
+        if s <= merged[-1][1]:
+            if e > merged[-1][1]:
+                merged[-1] = (merged[-1][0], e)
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _collect_selector_matches(clean, code, suffix, vendors, matches, original_matches):
+    """Scan full clean source for arbitrary provider/unversioned selector values.
+
+    Must run across the entire buffer even when _token_windows() is empty, so
+    explicit selectors naming custom providers or unversioned lines still hit.
+    """
+    is_config = code is None
+    for m in IDENTIFIER.finditer(clean):
+        val = m.group()
+        if not val[-1].isalnum():
+            continue
+        start, end = m.start(), m.end()
+        if val.count("/") == 1 and val.split("/", 1)[0] in vendors:
+            context = clean[clean.rfind("\n", 0, start) + 1:start]
+            if _CONTEXT_MODEL.search(context) and model_selector(clean, start, code):
+                matches[(start, end)] = val
+                original_matches.add((start, end))
+                continue
+        if scalar_model(clean, start, end, is_config) and model_selector(clean, start, code):
+            matches[(start, end)] = val
+    bare_re = _BARE_QUOTED if (not is_config or (suffix == ".json" and not _UNQUOTED_CONFIG_START.search(clean))) else _BARE_CONFIG
+    for m in bare_re.finditer(clean):
+        val = m.group("val")
+        s, e = m.start("val"), m.end("val")
+        if val[-1].isalnum() and scalar_model(clean, s, e, is_config) and model_selector(clean, s, code):
+            matches[(s, e)] = val
+
+
+def scan(tree, repository, aliases, source_views, *, cache=None, shared_views=None):
     findings, unreadable, exemptions = [], [], []
     vendors = VENDOR_NAMESPACES | {alias.split("/", 1)[0] for alias in aliases or ()}
+    vendor_slashes = tuple(v + "/" for v in vendors)
+    blob_oid_fn = getattr(tree, "blob_oid", None) if (cache is not None or shared_views is not None) else None
+    aliases_key = frozenset(aliases) if aliases is not None else None
     for path in sorted(tree.paths()):
         suffix = pathlib.PurePosixPath(path).suffix
         if excluded(path) or suffix not in SOURCE:
@@ -339,58 +518,82 @@ def scan(tree, repository, aliases, source_views):
         if allowed:
             exemptions.append({"path": path, "reason": allowed["reason"]})
             continue
+        oid = blob_oid_fn(path) if blob_oid_fn is not None else None
+        cache_key = (path, oid, repository, aliases_key) if (cache is not None and oid is not None) else None
+        if cache_key is not None and cache_key in cache:
+            kind, f_rows, e_rows, u_rows = cache[cache_key]
+            for r in f_rows:
+                findings.append(dict(r))
+            for r in e_rows:
+                exemptions.append(dict(r))
+            for r in u_rows:
+                unreadable.append(dict(r))
+            continue
         text = tree.read_model_source(path)
         if text is None:
             unreadable.append({"path": path, "reason": "git blob unreadable"})
             continue
         if source_scope.compiler_generated(text):
-            exemptions.append({"path": path, "reason": "protocol compiler output; scan its authored schema instead"})
+            row = {"path": path, "reason": "protocol compiler output; scan its authored schema instead"}
+            exemptions.append(row)
+            if cache_key is not None:
+                cache[cache_key] = ("ok", (), (dict(row),), ())
             continue
         # Most blobs contain no model-shaped token; they need no parser. This
         # also avoids treating unrelated legacy language syntax as model debt.
         # Literal substring searches run in C and avoid the full boundary regex
         # across large generated protocols and data assets with no candidate.
         lowered = text.lower()
-        if "model" not in lowered and not any(family + separator in lowered for family in FAMILIES for separator in ("-", ".")) and not re.search(
-                r"(?<![\w.-])o[134](?!\w)", lowered) and not any(v + "/" in lowered for v in vendors):
+        if ("model" not in lowered
+                and not any(f in lowered for f in FAMILIES)
+                and not any(vs in lowered for vs in vendor_slashes)
+                and not _O_HINT.search(lowered)):
+            if cache_key is not None:
+                cache[cache_key] = ("empty", (), (), ())
             continue
         try:
             if suffix in {".json", ".toml", ".yaml", ".yml", ".sql", ".proto"}:
                 clean = config_view(text, suffix)
                 code = None
             else:
-                clean, code, _ = source_views(text, suffix)
+                if shared_views is not None and oid is not None:
+                    sv_key = (oid, suffix, False, False)
+                    views_res = shared_views.get(sv_key)
+                    if views_res is None:
+                        views_res = source_views(text, suffix)
+                        shared_views[sv_key] = views_res
+                    clean, code, _ = views_res
+                else:
+                    clean, code, _ = source_views(text, suffix)
         except (ValueError, SyntaxError) as error:
-            unreadable.append({"path": path, "reason": str(error)})
+            row = {"path": path, "reason": str(error)}
+            unreadable.append(row)
+            if cache_key is not None:
+                cache[cache_key] = ("err", (), (), (dict(row),))
             continue
-        matches = {(m.start(), m.end()): m.group() for m in TOKEN.finditer(clean)
-                   if re.search(r"\d|-latest$", m.group()) or m.group() in {"deepseek-chat", "deepseek-reasoner"}}
+        clean_lower = clean.lower() if code is not None or clean is not text else lowered
+        # Only use lowered offsets for _token_windows when case folding preserves string length.
+        windows = _token_windows(clean_lower) if len(clean_lower) == len(clean) else ((0, len(clean)),)
+        matches = {}
+        for ws, we in windows:
+            for m in TOKEN.finditer(clean, ws, we):
+                val = m.group()
+                if _VERSIONED_TOKEN.search(val) or val in {"deepseek-chat", "deepseek-reasoner"}:
+                    matches[(m.start(), m.end())] = val
         original_matches = set(matches)
-        # Model fields cover vendor families absent from the recognizer. A
-        # vendor namespace alone could also be a dependency or repository id.
-        for m in IDENTIFIER.finditer(clean):
-            context = clean[clean.rfind("\n", 0, m.start()) + 1:m.start()]
-            if (m.group().count("/") == 1 and m.group().split("/", 1)[0] in vendors
-                    and m.group()[-1].isalnum()
-                    and re.search(r"\b\w*model\w*\b", context, re.I)
-                    and model_selector(clean, m.start(), code)):
-                matches[(m.start(), m.end())] = m.group()
-        original_matches |= set(matches)
-        # A selecting field supplies the context for arbitrary provider lines
-        # and unversioned families. No provider allowlist determines coverage.
-        for pattern in (IDENTIFIER, BARE_FAMILY):
-            for m in pattern.finditer(clean):
-                if (m.group()[-1].isalnum() and scalar_model(clean, m.start(), m.end(), code is None)
-                        and model_selector(clean, m.start(), code)):
-                    matches[(m.start(), m.end())] = m.group()
+        # Model fields cover arbitrary providers and unversioned lines across the
+        # entire file independently of _token_windows().
+        if "model" in clean_lower:
+            _collect_selector_matches(clean, code, suffix, vendors, matches, original_matches)
         seen = collections.Counter()
         nonselectors = metadata_ranges(clean, suffix, text) if matches else []
         nonselectors += diagnostic_ranges(repository, path, clean, code) if matches else []
+        file_findings, file_exemptions = [], []
         for (start, end), model in sorted(matches.items()):
             metadata = next((reason for begin, finish, reason in nonselectors
                              if begin <= start and end <= finish), None)
             if metadata:
-                exemptions.append({"path": path, "line": clean.count("\n", 0, start) + 1, "reason": metadata})
+                file_exemptions.append({"path": path, "line": clean.count("\n", 0, start) + 1, "reason": metadata})
                 continue
             if suffix == ".sql" and not sql_selection(clean, start):
                 continue
@@ -399,11 +602,9 @@ def scan(tree, repository, aliases, source_views):
             if not scalar_model(clean, start, end, code is None):
                 continue
             if (model.endswith((".tar.bz2", ".tar.gz", ".zip"))
-                    or pathlib.PurePosixPath(model).suffix.lower() in SOURCE | {
-                        ".prefab", ".asset", ".unity", ".scene", ".fbx", ".gltf", ".glb", ".obj",
-                        ".png", ".jpg", ".webp", ".svg"}):
+                    or pathlib.PurePosixPath(model).suffix.lower() in _SKIP_EXTENSIONS):
                 continue
-            if (re.fullmatch(r"o[134]", model.rsplit("/", 1)[-1], re.I)
+            if (_O_SERIES_MODEL.fullmatch(model.rsplit("/", 1)[-1])
                     and not ("/" in model and model.split("/", 1)[0].lower() in vendors)
                     and not model_selector(clean, start, code)):
                 continue  # Short reasoning-model ids also occur as ordinary record ids.
@@ -414,7 +615,11 @@ def scan(tree, repository, aliases, source_views):
                    "model": model, "occurrence": seen[model], "contract": CONTRACT}
             if (start, end) not in original_matches:
                 row["rule"] = SELECTOR_RULE
-            findings.append(row)
+            file_findings.append(row)
+        findings.extend(file_findings)
+        exemptions.extend(file_exemptions)
+        if cache_key is not None:
+            cache[cache_key] = ("ok", [dict(r) for r in file_findings], [dict(r) for r in file_exemptions], ())
     return {"findings": findings, "unreadable": unreadable, "exemptions": exemptions, "limits": LIMITS}
 
 

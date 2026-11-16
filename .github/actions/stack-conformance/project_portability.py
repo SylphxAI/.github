@@ -32,54 +32,90 @@ MOUNT = re.compile(r'/var/run/secrets/kubernetes\.io/serviceaccount(?:/[^\s\"\x2
 # tokens: quotes, SQL strings and comment markers inside them have no effect.
 RUST_RAW = re.compile(r'(?<![\w])(?:br|cr|r)(\#*)"')
 RUST_CHAR = re.compile(r"'(?:[^'\\\n\r\t]|\\(?:[nrt\\0'\"]|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}))'")
+_RUST_SCAN = re.compile(
+    r"//[^\n]*"
+    r"|/\*"
+    r"|(?:br|cr|r)(\#*)\""
+    r"|\"(?:[^\"\\]|\\[\s\S])*\""
+    r"|(?P<unterm>\")"
+    r"|'(?:[^'\\\n\r\t]|\\(?:[nrt\\0'\"]|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}))'"
+)
+_RUST_WORD = re.compile(r"\w")
+_RUST_BLOCK_EDGE = re.compile(r"/\*|\*/")
+_LITERAL_CANDIDATE = re.compile(
+    r'(?i:https?://|\.(?:svc|cluster\.local|sylphx\.internal))'
+    r'|kubernetes\.default'
+    r'|/var/run/secrets/kubernetes\.io/serviceaccount'
+    r'|KUBERNETES_SERVICE_(?:HOST|PORT)'
+)
+_HOST_PREFIX_END = re.compile(r'[\w}$.-]+$')
+_TEMPLATE_PLUS_END = re.compile(r'\+\s*$')
+_KUBE_DEFAULT = re.compile(r'\bkubernetes\.default\b')
+_KUBE_ENV = re.compile(r'KUBERNETES_SERVICE_(?:HOST|PORT)')
+_ENV_FUNC_PREFIX = re.compile(r'\b(?:var|getenv|env|environ|get_env|GetEnvironmentVariable)\b', re.I)
+_NODE_KUBE_ENV = re.compile(r'\bprocess\.env\.KUBERNETES_SERVICE_(?:HOST|PORT)\b')
+_SHELL_HTTP = re.compile(r'https?://[^\s;|&]+')
+_SHORT_HOST = re.compile(r'[a-z][a-z0-9_-]*', re.I)
+_VIEW_SUFFIXES = {'.sh', '.bash', '.rb', '.php', '.lua', '.yaml', '.yml', '.toml'}
+_VIEW_TOKENS = {
+    '.lua': re.compile(LITERAL.pattern + r'|--\[\[[\s\S]*?\]\]|--[^\n]*'),
+    '.php': re.compile(LITERAL.pattern + r'|\#[^\n]*|//[^\n]*|/\*[\s\S]*?\*/'),
+    'default': re.compile(LITERAL.pattern + r'|\#[^\n]*'),
+}
+
+
+def _blank_preserving_newlines(text):
+    if '\n' not in text:
+        return ' ' * len(text)
+    return '\n'.join(' ' * len(part) for part in text.split('\n'))
 
 
 def rust_tokens(text):
     """Yield (kind, start, end) tokens, preserving original source offsets."""
-    at, size = 0, len(text)
-    while at < size:
-        start = at
-        if text.startswith('//', at):
-            at = text.find('\n', at)
-            at = size if at < 0 else at
-            yield 'comment', start, at
-        elif text.startswith('/*', at):
-            at, depth = at + 2, 1
-            while at < size and depth:
-                if text.startswith('/*', at):
-                    depth, at = depth + 1, at + 2
-                elif text.startswith('*/', at):
-                    depth, at = depth - 1, at + 2
-                else:
-                    at += 1
-            if depth:
-                raise ValueError('unterminated Rust block comment')
-            yield 'comment', start, at
-        elif raw := RUST_RAW.match(text, at):
-            close = '"' + raw[1]
-            finish = text.find(close, raw.end())
+    size = len(text)
+    pos = 0
+    search = _RUST_SCAN.search
+    edge_search = _RUST_BLOCK_EDGE.search
+    word_match = _RUST_WORD.match
+    while pos < size:
+        match = search(text, pos)
+        if match is None:
+            break
+        start = match.start()
+        end = match.end()
+        first = text[start]
+        if first == '/':
+            if text[start + 1] == '/':
+                yield 'comment', start, end
+                pos = end
+            else:
+                depth = 1
+                pos = end
+                while depth:
+                    edge = edge_search(text, pos)
+                    if edge is None:
+                        raise ValueError('unterminated Rust block comment')
+                    if text[edge.start()] == '/':
+                        depth += 1
+                    else:
+                        depth -= 1
+                    pos = edge.end()
+                yield 'comment', start, pos
+        elif match.group(1) is not None:
+            if start > 0 and word_match(text, start - 1) is not None:
+                pos = end - 1
+                continue
+            close = '"' + match.group(1)
+            finish = text.find(close, end)
             if finish < 0:
                 raise ValueError('unterminated Rust raw string')
-            at = finish + len(close)
-            yield 'literal', start, at
-        elif text[at] == '"':
-            at += 1
-            while at < size:
-                if text[at] == '\\':
-                    at += 2
-                elif text[at] == '"':
-                    at += 1
-                    break
-                else:
-                    at += 1
-            else:
-                raise ValueError('unterminated Rust string')
-            yield 'literal', start, at
-        elif text[at] == "'" and (char := RUST_CHAR.match(text, at)):
-            at = char.end()
-            yield 'literal', start, at
+            pos = finish + len(close)
+            yield 'literal', start, pos
+        elif match.group('unterm') is not None:
+            raise ValueError('unterminated Rust string')
         else:
-            at += 1
+            yield 'literal', start, end
+            pos = end
 
 
 # This is deliberately not Rust name/type resolution. Only complete, recognized
@@ -103,11 +139,18 @@ BUILTIN_DERIVES = {'Debug', 'Clone', 'Copy', 'PartialEq', 'Eq', 'Hash', 'Default
 class RustContext:
     """Balanced code/literal tokens; exclusions never cover a whole call body."""
 
-    def __init__(self, clean, code):
+    def __init__(self, clean, code, *, _literal_spans=None):
         tokens = [(m.start(), m.end(), m.group()) for m in RUST_CODE_TOKEN.finditer(code)]
-        tokens += [(s, e, '<literal>') for kind, s, e in rust_tokens(clean) if kind == 'literal']
+        if _literal_spans is None:
+            tokens += [(s, e, '<literal>') for kind, s, e in rust_tokens(clean) if kind == 'literal']
+        else:
+            tokens += [(s, e, '<literal>') for s, e, _ in _literal_spans]
         tokens.sort()
-        self.values = [unicodedata.normalize('NFC', v.removeprefix('r#')) for _, _, v in tokens]
+        self.values = [
+            (s if s.isascii() else unicodedata.normalize('NFC', s))
+            for _, _, v in tokens
+            for s in (v.removeprefix('r#'),)
+        ]
         self.literal_index = {s: i for i, (s, _, v) in enumerate(tokens) if v == '<literal>'}
         self.parent, self.close, self.argument_cache, stack = {}, {}, {}, []
         self.valid = True
@@ -123,8 +166,11 @@ class RustContext:
         self.valid = self.valid and not stack
         self.attributes_known = self.valid and self.known_attributes()
         literal_values = [clean[s:e] for s, e, v in tokens if v == '<literal>']
-        self.literal_names = {unicodedata.normalize('NFC', name) for value in literal_values
-                              for name in RUST_IDENTIFIER.findall(value)}
+        self.literal_names = {
+            (name if name.isascii() else unicodedata.normalize('NFC', name))
+            for value in literal_values
+            for name in RUST_IDENTIFIER.findall(value)
+        }
         # Escapes may spell a format capture without any matching source token.
         # Do not claim a closed use set without decoding that additional grammar.
         self.escaped_names = any('\\' in value for value in literal_values)
@@ -310,7 +356,7 @@ def short_service_url(value):
         # Authentication userinfo is not the destination hostname. This also
         # handles Git's configured credential URL without exposing its value.
         host = match.group(1).rsplit('@', 1)[-1].split(':', 1)[0]
-        if re.fullmatch(r'[a-z][a-z0-9_-]*', host, re.I) and host.lower() != 'localhost':
+        if _SHORT_HOST.fullmatch(host) and host.lower() != 'localhost':
             return True
     return False
 
@@ -329,18 +375,27 @@ def destination_host_span(value, start, end):
 def views(text, suffix, source_views):
     # Shell/Ruby/PHP/Lua comments differ from C-family // comments. Preserve
     # quoted and unquoted shell URLs while masking actual comments in place.
-    if suffix in {'.sh', '.bash', '.rb', '.php', '.lua', '.yaml', '.yml', '.toml'}:
-        comment = r'--\[\[[\s\S]*?\]\]|--[^\n]*' if suffix == '.lua' else r'\#[^\n]*'
-        if suffix == '.php':
-            comment += r'|//[^\n]*|/\*[\s\S]*?\*/'
-        tokens = re.compile(LITERAL.pattern + '|' + comment)
-        clean, code = list(text), list(text)
+    if suffix in _VIEW_SUFFIXES:
+        tokens = _VIEW_TOKENS.get(suffix, _VIEW_TOKENS['default'])
+        clean_parts, code_parts = [], []
+        last_clean = last_code = 0
         for match in tokens.finditer(text):
-            blank = ''.join('\n' if c == '\n' else ' ' for c in match.group())
-            code[match.start():match.end()] = blank
+            start, end = match.start(), match.end()
+            masked = _blank_preserving_newlines(match.group())
+            code_parts.append(text[last_code:start])
+            code_parts.append(masked)
+            last_code = end
             if not LITERAL.fullmatch(match.group()):
-                clean[match.start():match.end()] = blank
-        return ''.join(clean), ''.join(code)
+                clean_parts.append(text[last_clean:start])
+                clean_parts.append(masked)
+                last_clean = end
+        if not code_parts:
+            return text, text
+        code_parts.append(text[last_code:])
+        if not clean_parts:
+            return text, ''.join(code_parts)
+        clean_parts.append(text[last_clean:])
+        return ''.join(clean_parts), ''.join(code_parts)
     clean, code, _ = source_views(text, suffix)
     return clean, code
 
@@ -354,42 +409,106 @@ def scan(path, text, source_views, *, legacy_rust=False):
                                              'kubernetes_service_', 'kubernetes.io/serviceaccount')):
         return []
     suffix = pathlib.PurePosixPath(path).suffix
-    clean, code = views(text, suffix, source_views)
-    context = RustContext(clean, code) if suffix == '.rs' and not legacy_rust else None
-    out = []
-    for start, end, value in literals(clean, suffix, legacy_rust=legacy_rust):
-        prefix = clean[max(0, start - 120):start]
-        if ((context is not None and context.non_destination(start)) or
-                (context is None and DIAGNOSTIC.search(prefix))):
-            continue
-        for match in SUFFIX.finditer(value):
-            if not destination_host_span(value, match.start(), match.end()):
-                continue
-            before = value[:match.start()]
-            # A suffix vocabulary or ends_with(".svc") refusal is not a host.
-            # A concatenated suffix or template host still constructs a target.
-            if not re.search(r'[\w}$.-]+$', before) and not re.search(r'\+\s*$', prefix):
-                continue
-            out.append((start, end, 'Runtime source embeds cluster-private DNS; configure a reachable public API origin'))
-            break
+    if (suffix in {'.json', '.xml'}
+            and '//' not in text and '/*' not in text
+            and 'incluster' not in lower and 'loadfromcluster' not in lower
+            and 'kubernetes_service_' not in lower):
+        clean, code = text, ''
+    else:
+        clean, code = views(text, suffix, source_views)
+    use_rust_ctx = suffix == '.rs' and not legacy_rust
+    if not _LITERAL_CANDIDATE.search(clean):
+        out = []
+    else:
+        file_literals = list(literals(clean, suffix, legacy_rust=legacy_rust)) if use_rust_ctx else None
+        if use_rust_ctx:
+            lit_iter = file_literals
+        elif suffix == '.json':
+            json_windows = []
+            fallback_full = False
+            size = len(clean)
+            for m in _LITERAL_CANDIDATE.finditer(clean):
+                ls = clean.rfind('\n', 0, m.start()) + 1
+                le = clean.find('\n', m.end())
+                if le < 0:
+                    le = size
+                if le - ls > 16384 or '"' not in clean[ls:m.start()] or '"' not in clean[m.end():le]:
+                    fallback_full = True
+                    break
+                if json_windows and ls <= json_windows[-1][1]:
+                    if le > json_windows[-1][1]:
+                        json_windows[-1] = (json_windows[-1][0], le)
+                else:
+                    json_windows.append((ls, le))
+            if fallback_full:
+                lit_iter = ((m.start(), m.end(), None) for m in LITERAL.finditer(clean))
+            else:
+                lit_iter = (
+                    (m.start(), m.end(), None)
+                    for ws, we in json_windows
+                    for m in LITERAL.finditer(clean, ws, we)
+                )
         else:
-            if short_service_url(value) or any(destination_host_span(value, m.start(), m.end())
-                    for m in re.finditer(r'\bkubernetes\.default\b', value)):
-                out.append((start, end, 'Runtime source embeds a single-label service or Kubernetes API hostname'))
-            elif MOUNT.search(value):
-                out.append((start, end, 'Runtime source assumes the Kubernetes service-account secret mount'))
-            elif re.search(r'KUBERNETES_SERVICE_(?:HOST|PORT)', value) and (
-                    (context is not None and context.environment_read(start)) or
-                    re.search(r'\b(?:var|getenv|env|environ|get_env|GetEnvironmentVariable)\b', prefix, re.I)):
-                out.append((start, end, 'Runtime source reads an in-cluster Kubernetes endpoint variable'))
-    for match in IN_CLUSTER.finditer(code):
-        out.append((match.start(), match.end(), 'Runtime source explicitly constructs an in-cluster Kubernetes client'))
-    for match in re.finditer(r'\bprocess\.env\.KUBERNETES_SERVICE_(?:HOST|PORT)\b', code):
-        out.append((match.start(), match.end(), 'Runtime source reads an in-cluster Kubernetes endpoint variable'))
-    if suffix in {'.sh', '.bash'}:
-        # Shell destinations need not be quoted. Quoted ones are already masked.
-        for match in re.finditer(r'https?://[^\s;|&]+', code):
-            value = match.group()
-            if any(destination_host_span(value, m.start(), m.end()) for m in SUFFIX.finditer(value)) or short_service_url(value):
-                out.append((match.start(), match.end(), 'Runtime shell command embeds a cluster-private service destination'))
+            lit_iter = ((m.start(), m.end(), None) for m in LITERAL.finditer(clean))
+        context = None
+        out = []
+        for start, end, value in lit_iter:
+            if value is None:
+                if not _LITERAL_CANDIDATE.search(clean, start, end):
+                    continue
+                value = clean[start:end]
+            elif not _LITERAL_CANDIDATE.search(value):
+                continue
+            msg = None
+            is_kube_env = False
+            prefix = None
+            for match in SUFFIX.finditer(value):
+                if not destination_host_span(value, match.start(), match.end()):
+                    continue
+                before = value[:match.start()]
+                # A suffix vocabulary or ends_with(".svc") refusal is not a host.
+                # A concatenated suffix or template host still constructs a target.
+                if not _HOST_PREFIX_END.search(before):
+                    prefix = clean[max(0, start - 120):start]
+                    if not _TEMPLATE_PLUS_END.search(prefix):
+                        continue
+                msg = 'Runtime source embeds cluster-private DNS; configure a reachable public API origin'
+                break
+            if msg is None:
+                if short_service_url(value) or any(destination_host_span(value, m.start(), m.end())
+                        for m in _KUBE_DEFAULT.finditer(value)):
+                    msg = 'Runtime source embeds a single-label service or Kubernetes API hostname'
+                elif MOUNT.search(value):
+                    msg = 'Runtime source assumes the Kubernetes service-account secret mount'
+                elif _KUBE_ENV.search(value):
+                    is_kube_env = True
+                    msg = 'Runtime source reads an in-cluster Kubernetes endpoint variable'
+            if msg is None:
+                continue
+            if prefix is None:
+                prefix = clean[max(0, start - 120):start]
+            if use_rust_ctx:
+                if context is None:
+                    context = RustContext(clean, code, _literal_spans=file_literals)
+                if context.non_destination(start):
+                    continue
+                if is_kube_env and not context.environment_read(start) and not _ENV_FUNC_PREFIX.search(prefix):
+                    continue
+            else:
+                if DIAGNOSTIC.search(prefix):
+                    continue
+                if is_kube_env and not _ENV_FUNC_PREFIX.search(prefix):
+                    continue
+            out.append((start, end, msg))
+    if code:
+        for match in IN_CLUSTER.finditer(code):
+            out.append((match.start(), match.end(), 'Runtime source explicitly constructs an in-cluster Kubernetes client'))
+        for match in _NODE_KUBE_ENV.finditer(code):
+            out.append((match.start(), match.end(), 'Runtime source reads an in-cluster Kubernetes endpoint variable'))
+        if suffix in {'.sh', '.bash'}:
+            # Shell destinations need not be quoted. Quoted ones are already masked.
+            for match in _SHELL_HTTP.finditer(code):
+                value = match.group()
+                if any(destination_host_span(value, m.start(), m.end()) for m in SUFFIX.finditer(value)) or short_service_url(value):
+                    out.append((match.start(), match.end(), 'Runtime shell command embeds a cluster-private service destination'))
     return sorted(set(out))

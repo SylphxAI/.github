@@ -283,12 +283,13 @@ def fetch_missing_blobs(repo, rev, objects):
 class Tree:
     """Read-only view of one git revision."""
 
-    def __init__(self, repo: str, rev: str, progress=None):
+    def __init__(self, repo: str, rev: str, progress=None, blob_cache=None):
         self.repo, self.rev = repo, rev
         self._missing = missing_git_objects(repo, rev)
         self._progress = progress
         self._reads = 0
         self._last_progress = time.monotonic()
+        self._blob_cache = blob_cache if blob_cache is not None else {}
         out = git(repo, "ls-tree", "-r", "-z", rev)
         self._paths = []
         self._blobs = {}
@@ -326,6 +327,11 @@ class Tree:
     def paths(self) -> list[str]:
         return self._paths
 
+    def blob_oid(self, path: str) -> str | None:
+        if path.startswith("./") and not path.endswith("/"):
+            path = posixpath.normpath(path)
+        return self._blobs.get(path)
+
     def read(self, path: str, *, encoding_errors="strict") -> str | None:
         # Git interprets a leading ./ relative to the repository root. The
         # public --baseline argument may use it even though ls-tree never does.
@@ -341,6 +347,11 @@ class Tree:
         if self._progress is not None and now - self._last_progress >= 5:
             self._progress(self._reads)
             self._last_progress = now
+        if encoding_errors in ("strict", "surrogateescape") and oid in self._blob_cache:
+            cached = self._blob_cache[oid]
+            if isinstance(cached, str):
+                return cached
+            return None if encoding_errors == "strict" else cached[1]
         if self._reader is None:
             self._reader = subprocess.Popen(
                 ["git", "-C", self.repo, "cat-file", "--batch"],
@@ -364,13 +375,21 @@ class Tree:
             if len(contents) != int(header[2]) or reader.stdout.read(1) != b"\n":
                 self.close()
                 return None
-            text = contents.decode("utf-8", errors=encoding_errors)
-        except UnicodeDecodeError:
-            text = None
+            try:
+                text = contents.decode("utf-8", errors="strict")
+                self._blob_cache[oid] = text
+                return text
+            except UnicodeDecodeError:
+                surr = contents.decode("utf-8", errors="surrogateescape")
+                self._blob_cache[oid] = (None, surr)
+                if encoding_errors == "strict":
+                    return None
+                if encoding_errors == "surrogateescape":
+                    return surr
+                return contents.decode("utf-8", errors=encoding_errors)
         except (OSError, ValueError):
             self.close()
             return None
-        return text
 
     def read_model_source(self, path):
         # Vendor ids are ASCII. Preserve non-UTF-8 legacy source bytes without
@@ -637,32 +656,45 @@ def keel_game(tree) -> bool:
     return uses_keel
 
 
+_RUST_MASK_TOKEN = re.compile(r'//[^\n]*|/\*|\br(\#*)"|"(?:\\[\s\S]|[^"\\])*"|\'(?:\\.|[^\'\\])\'')
+_RUST_BLOCK_EDGE = re.compile(r"/\*|\*/")
+_KEEL_SKU_RE = re.compile(r"\bstruct\s+(\w*Sku)\b")
+_KEEL_PIXELS_RE = re.compile(
+    r"\bfn\s+(\w+_pixels)\s*(?:<[^{};]*>)?\s*\([^{};]*?\)\s*->\s*"
+    r"(?:(?:std|alloc)\s*::\s*vec\s*::\s*)?Vec\s*<\s*u8\s*>"
+)
+
+
 def rust_code(text: str) -> str:
     """Mask comments and Rust string/character literals while retaining line offsets."""
-    tokens = re.compile(r'//[^\n]*|/\*|\br(\#*)"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'', re.S)
-    chars = list(text)
+    parts = []
+    last = 0
     end = 0
-    while (match := tokens.search(text, end)) is not None:
+    search = _RUST_MASK_TOKEN.search
+    edge_search = _RUST_BLOCK_EDGE.search
+    while (match := search(text, end)) is not None:
+        start = match.start()
         end = match.end()
-        if match.group() == "/*":
+        if text[start:start + 2] == "/*":
             depth = 1
             while depth and end < len(text):
-                if text.startswith("/*", end):
-                    depth += 1
-                    end += 2
-                elif text.startswith("*/", end):
-                    depth -= 1
-                    end += 2
-                else:
-                    end += 1
+                edge = edge_search(text, end)
+                if edge is None:
+                    end = len(text)
+                    break
+                depth += 1 if text[edge.start()] == "/" else -1
+                end = edge.end()
         elif match.group(1) is not None:
             close = '"' + match.group(1)
             stop = text.find(close, end)
             end = len(text) if stop < 0 else stop + len(close)
-        for i in range(match.start(), end):
-            if chars[i] != "\n":
-                chars[i] = " "
-    return "".join(chars)
+        parts.append(text[last:start])
+        parts.append(architecture.blank(text[start:end]))
+        last = end
+    if not parts:
+        return text
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def keel_departures(tree) -> list[str]:
@@ -679,9 +711,6 @@ def keel_departures(tree) -> list[str]:
         if pack_source.dockerfile(path):
             for _, line, stage in pack_source.missing_stages(tree.read(path) or "", path, paths, tree.read):
                 found.append(f"keel-pack-source {path}:{line} {stage}")
-    sku = re.compile(r"\bstruct\s+(\w*Sku)\b")
-    pixels = re.compile(r"\bfn\s+(\w+_pixels)\s*(?:<[^{};]*>)?\s*\([^{};]*?\)\s*->\s*"
-                        r"(?:(?:std|alloc)\s*::\s*vec\s*::\s*)?Vec\s*<\s*u8\s*>")
     for path in sorted(paths):
         if skipped(path):
             continue
@@ -689,8 +718,11 @@ def keel_departures(tree) -> list[str]:
             found.append(f"keel-boilerplate {path}")
         if not path.endswith(".rs") or "src" not in path.split("/"):
             continue
-        code = rust_code(tree.read(path) or "")
-        for kind, pattern in (("keel-local-sku", sku), ("keel-cpu-pixels", pixels)):
+        raw = tree.read(path) or ""
+        if "Sku" not in raw and "_pixels" not in raw:
+            continue
+        code = rust_code(raw)
+        for kind, pattern in (("keel-local-sku", _KEEL_SKU_RE), ("keel-cpu-pixels", _KEEL_PIXELS_RE)):
             for match in pattern.finditer(code):
                 found.append(f"{kind} {path}:{code.count(chr(10), 0, match.start()) + 1} {match.group(1)}")
     return sorted(found)
@@ -1069,235 +1101,253 @@ def cmd_check(args) -> int:
     def reads(count):
         progress(f"read {count} Git blobs ({time.monotonic() - started:.1f}s elapsed)")
     progress("reading the head Git tree")
-    head = Tree(args.repo, args.head, progress=reads)
-    found = departures(head)
-    head_text = head.read(args.baseline)
-    head_baseline = parse_baseline(head_text)
-    head_architecture_adopted = architecture.BASELINE_MARKER in (head.read(args.baseline) or "").splitlines()
-    head_architecture_baseline = {line for line in head_baseline or () if line.startswith("architecture ")}
-    head_model_adopted = model_pins.BASELINE_MARKER in (head.read(args.baseline) or "").splitlines()
-    head_model_baseline = {line for line in head_baseline or () if line.startswith("model-pin ")}
-    head_force_adopted = no_force_push.BASELINE_MARKER in (head_text or "").splitlines()
-    head_force_baseline = {line for line in head_baseline or () if line.startswith("force-push ")}
-    head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline - head_model_baseline - head_force_baseline
-    errors = []
-    pin_report = {"head": None, "mode": "unavailable", "offenders": []}
+    blob_cache = {}
+    head = Tree(args.repo, args.head, progress=reads, blob_cache=blob_cache)
+    base_tree = None
     try:
-        pin_report = adoption.pin_provenance(head, args.repository, getattr(args, "shared_source", None))
-        errors += [f"{row['file']}:{row['line']}: {row['why']}" for row in pin_report["offenders"]]
-        print(f"shared pin proof: {pin_report['mode']}, main anchor {pin_report['head']}")
-    except (OSError, ValueError, ImportError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        errors.append("shared-action pin provenance not reviewed: " + str(error))
-        pin_report["error"] = str(error)
-    for line in sorted(l for l in (head_baseline or ()) if l.startswith(AGENT_RUNTIME)):
-        errors.append(f"'{line}' is in {args.baseline}; an agent-runtime part is allowed only by "
-                      "SylphxAI/.github policy/agent-runtime.json, with an expiry date")
-        head_baseline.discard(line)
-    base_baseline = None
-    base_architecture_baseline = set()
-    base_architecture_adopted = False
-    base_model_baseline = set()
-    base_model_adopted = False
-    base_force_baseline = set()
-    base_force_adopted = False
-    base_text = None
-    if args.base:
-        progress("reading the base Git tree")
-        if not has_rev(args.repo, args.base):
-            subprocess.run(["git", "-C", args.repo, "fetch", "--quiet", "--no-tags",
-                            "--depth=1", "--filter=blob:none", "origin", args.base], check=False)
-        if not has_rev(args.repo, args.base):
-            raise SystemExit("base commit is unavailable; check did not review the change")
-        base_text = Tree(args.repo, args.base).read(args.baseline)
-        base_baseline = parse_baseline(base_text)
-        base_architecture_adopted = architecture.BASELINE_MARKER in (Tree(args.repo, args.base).read(args.baseline) or "").splitlines()
-        if base_baseline is not None:
-            base_architecture_baseline = {line for line in base_baseline if line.startswith("architecture ")}
-            base_baseline -= base_architecture_baseline
-            base_model_baseline = {line for line in base_baseline if line.startswith("model-pin ")}
-            base_model_adopted = model_pins.BASELINE_MARKER in (Tree(args.repo, args.base).read(args.baseline) or "").splitlines()
-            base_baseline -= base_model_baseline
-            base_force_baseline = {line for line in base_baseline if line.startswith("force-push ")}
-            base_force_adopted = no_force_push.BASELINE_MARKER in (base_text or "").splitlines()
-            base_baseline -= base_force_baseline
-            base_baseline = {l for l in base_baseline if not l.startswith(AGENT_RUNTIME)}
-    errors += adoption.baseline_validation(head_text, base_text if args.base else head_text, architecture)
-    introduced = set()
-    if args.base:
+        found = departures(head)
+        head_text = head.read(args.baseline)
+        head_lines = (head_text or "").splitlines()
+        head_baseline = parse_baseline(head_text)
+        head_architecture_adopted = architecture.BASELINE_MARKER in head_lines
+        head_architecture_baseline = {line for line in head_baseline or () if line.startswith("architecture ")}
+        head_model_adopted = model_pins.BASELINE_MARKER in head_lines
+        head_model_baseline = {line for line in head_baseline or () if line.startswith("model-pin ")}
+        head_force_adopted = no_force_push.BASELINE_MARKER in head_lines
+        head_force_baseline = {line for line in head_baseline or () if line.startswith("force-push ")}
+        head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline - head_model_baseline - head_force_baseline
+        errors = []
+        pin_report = {"head": None, "mode": "unavailable", "offenders": []}
         try:
-            introduced = adoption.seed_permissions(Tree(args.repo, args.base), head_text, base_text,
-                (head_architecture_baseline | head_model_baseline | head_force_baseline) - (base_architecture_baseline | base_model_baseline | base_force_baseline),
-                shared_repo=getattr(args, "shared_source", None), source_tree=adoption.PublishedCheckerTree,
-                head_tree=head)
-        except (OSError, ValueError, TypeError, KeyError) as error:
-            errors.append("rule adoption refused: " + str(error))
-    else:
-        # A base-less trunk run validates the committed ratchet against itself.
-        base_architecture_baseline = head_architecture_baseline
-        base_model_baseline = head_model_baseline
-        base_model_adopted = head_model_adopted
-        base_force_baseline = head_force_baseline
-        base_force_adopted = head_force_adopted
-    source_base = Tree(args.repo, args.base, progress=reads) if args.base else None
-    source_roots = source_provenance.roots(args.repo, args.base, args.head, args.repository,
-        getattr(args, "source_provenance_policy", source_provenance.POLICY))
-    outer_head = source_provenance.outer(head, source_roots)
-    outer_base = source_provenance.outer(source_base, source_roots) if source_base else None
-    errors += staged_retirement.check(outer_head, outer_base, head_baseline, base_baseline,
-        departures, decide, baseline=args.baseline, allow_seed=staged_retirement.RULE in introduced)
-    try:
-        found = staged_retirement.findings(head, head_baseline, departures, args.baseline,
-                                           previous_lines=base_baseline)
-    except ValueError:
-        pass  # Invalid records are already refused by the retirement check.
-    errors += source_provenance.legacy_errors(head, source_base, source_roots, args.baseline,
-                                             departures, parse_baseline, decide, staged_retirement)
-    try:
-        aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
-        progress("scanning head vendor model references")
-        models = model_pins.scan(head, args.repository, aliases, architecture.source_views)
-        progress("scanning base vendor model references")
-        base_models = model_pins.scan(Tree(args.repo, args.base, progress=reads), args.repository, aliases,
-                                     architecture.source_views) if args.base else models
-        errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
-                                   base_models["findings"], head_model_adopted, base_model_adopted,
-                                   allow_seed="model-pin" in introduced, seed_rules=introduced)
-        for row in models["unreadable"] + base_models["unreadable"]:
-            errors.append("model policy input not reviewed: " + row["path"] + ": " + row["reason"])
-    except (OSError, ValueError, TypeError) as error:
-        models = {"findings": [], "unreadable": [{"path": str(model_pins.POLICY), "reason": str(error)}]}
-        errors.append("model-alias policy unavailable: " + str(error))
-    progress("scanning head branch-update commands")
-    force_pushes = no_force_push.scan(head)
-    progress("scanning base branch-update commands")
-    base_force_pushes = no_force_push.scan(Tree(args.repo, args.base, progress=reads)) if args.base else force_pushes
-    errors += no_force_push.decide(force_pushes["findings"], head_force_baseline, base_force_baseline,
-                                  base_force_pushes["findings"], head_force_adopted, base_force_adopted,
-                                  allow_seed="force-push" in introduced)
-    for row in force_pushes["unreadable"] + base_force_pushes["unreadable"]:
-        errors.append("branch-update input not reviewed: " + row["path"] + ": " + row["reason"])
-    keel = keel_departures(head)
-    errors += decide_keel(keel)
-    runtime = agent_runtime(head)
-    policy = load_agent_runtime_policy(args.agent_runtime_policy)
-    today = datetime.date.fromisoformat(args.today) if args.today else datetime.datetime.now(
-        datetime.timezone.utc).date()
-    runtime_errors, notices = decide_agent_runtime(runtime, args.repository, policy, today)
-    errors += runtime_errors
-    obligations: list[str] = []
-    knowledge: list[str] = []
-    if args.base:
-        for path in added_sql(args.repo, args.base, args.head):
-            text = head.read(path) or ""
-            obligations += obligation_tables(path, text)
-            knowledge += knowledge_tables(path, text)
-    errors += decide_obligations(obligations)
-    knowledge_errors, knowledge_notices = decide_knowledge(
-        knowledge, args.repository, load_knowledge_policy(args.knowledge_policy), today,
-        present=knowledge_tables_in(head))
-    errors += knowledge_errors
-    notices += knowledge_notices
-    checker_commit = None
-    changed = added_lines(args.repo, args.base, args.head)
-    try:
-        checker_commit = checker_revision()
-        progress("scanning head architecture rules")
-        report = architecture.evaluate(outer_head, args.repository, changed, today)
-    except (ValueError, TypeError, AttributeError) as error:
-        report = {"findings": [], "unreadable": [{"path": "architecture configuration", "reason": str(error)}],
-                  "semantic_census_complete": False, "limits": architecture.LIMITS}
-    try:
-        progress("scanning base architecture rules")
-        base_report = architecture.evaluate(outer_base, args.repository, None, today, ignore_expired=True) if args.base else {"findings": [], "unreadable": []}
-        base_findings = base_report["findings"]
-        if introduced:
-            report["unreadable"] += base_report["unreadable"]
-    except (ValueError, TypeError, AttributeError) as error:
-        base_findings = []
-        if introduced:
-            report["unreadable"].append({"path": "base architecture configuration", "reason": str(error)})
-    previous = {architecture.baseline_key(row): row for row in base_findings}
-    if args.base and any(row["rule"] == "cache-economy" for row in report["findings"]):
+            pin_report = adoption.pin_provenance(head, args.repository, getattr(args, "shared_source", None))
+            errors += [f"{row['file']}:{row['line']}: {row['why']}" for row in pin_report["offenders"]]
+            print(f"shared pin proof: {pin_report['mode']}, main anchor {pin_report['head']}")
+        except (OSError, ValueError, ImportError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            errors.append("shared-action pin provenance not reviewed: " + str(error))
+            pin_report["error"] = str(error)
+        for line in sorted(l for l in (head_baseline or ()) if l.startswith(AGENT_RUNTIME)):
+            errors.append(f"'{line}' is in {args.baseline}; an agent-runtime part is allowed only by "
+                          "SylphxAI/.github policy/agent-runtime.json, with an expiry date")
+            head_baseline.discard(line)
+        base_baseline = None
+        base_architecture_baseline = set()
+        base_architecture_adopted = False
+        base_model_baseline = set()
+        base_model_adopted = False
+        base_force_baseline = set()
+        base_force_adopted = False
+        base_text = None
+        if args.base:
+            progress("reading the base Git tree")
+            if not has_rev(args.repo, args.base):
+                subprocess.run(["git", "-C", args.repo, "fetch", "--quiet", "--no-tags",
+                                "--depth=1", "--filter=blob:none", "origin", args.base], check=False)
+            if not has_rev(args.repo, args.base):
+                raise SystemExit("base commit is unavailable; check did not review the change")
+            base_tree = Tree(args.repo, args.base, progress=reads, blob_cache=blob_cache)
+            base_text = base_tree.read(args.baseline)
+            base_lines = (base_text or "").splitlines()
+            base_baseline = parse_baseline(base_text)
+            base_architecture_adopted = architecture.BASELINE_MARKER in base_lines
+            if base_baseline is not None:
+                base_architecture_baseline = {line for line in base_baseline if line.startswith("architecture ")}
+                base_baseline -= base_architecture_baseline
+                base_model_baseline = {line for line in base_baseline if line.startswith("model-pin ")}
+                base_model_adopted = model_pins.BASELINE_MARKER in base_lines
+                base_baseline -= base_model_baseline
+                base_force_baseline = {line for line in base_baseline if line.startswith("force-push ")}
+                base_force_adopted = no_force_push.BASELINE_MARKER in base_lines
+                base_baseline -= base_force_baseline
+                base_baseline = {l for l in base_baseline if not l.startswith(AGENT_RUNTIME)}
+        errors += adoption.baseline_validation(head_text, base_text if args.base else head_text, architecture)
+        introduced = set()
+        if args.base:
+            try:
+                introduced = adoption.seed_permissions(base_tree, head_text, base_text,
+                    (head_architecture_baseline | head_model_baseline | head_force_baseline) - (base_architecture_baseline | base_model_baseline | base_force_baseline),
+                    shared_repo=getattr(args, "shared_source", None), source_tree=adoption.PublishedCheckerTree,
+                    head_tree=head)
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                errors.append("rule adoption refused: " + str(error))
+        else:
+            # A base-less trunk run validates the committed ratchet against itself.
+            base_architecture_baseline = head_architecture_baseline
+            base_model_baseline = head_model_baseline
+            base_model_adopted = head_model_adopted
+            base_force_baseline = head_force_baseline
+            base_force_adopted = head_force_adopted
+        source_base = base_tree
+        source_roots = source_provenance.roots(args.repo, args.base, args.head, args.repository,
+            getattr(args, "source_provenance_policy", source_provenance.POLICY))
+        outer_head = source_provenance.outer(head, source_roots)
+        outer_base = source_provenance.outer(source_base, source_roots) if source_base else None
+        errors += staged_retirement.check(outer_head, outer_base, head_baseline, base_baseline,
+            departures, decide, baseline=args.baseline, allow_seed=staged_retirement.RULE in introduced)
         try:
-            if adoption.cache_adoption_requested(Tree(args.repo, args.base), head, base_text, head_text):
-                errors += adoption.cache_approval_errors(report["findings"], args.repository)
-        except (OSError, ValueError, TypeError, KeyError) as error:
-            errors.append("cache rule adoption refused: " + str(error))
-    for row in report["findings"]:
-        old = previous.get(architecture.baseline_key(row))
-        if changed is not None:
-            if old and old["decision"] and not row["decision"]:
-                row["changed"] = True
-            elif old:
-                row["changed"] = False
-            elif row["path"] in changed:
-                # An inserted identical span can shift the old occurrence onto
-                # unchanged lines; the newly increased count must still fail.
-                row["changed"] = True
-    if base_architecture_adopted and not head_architecture_adopted:
-        errors.append("architecture ratchet marker cannot be removed")
-    if head_architecture_baseline and not head_architecture_adopted:
-        errors.append("architecture baseline records require " + architecture.BASELINE_MARKER)
-    if head_architecture_baseline or base_architecture_baseline:
+            found = staged_retirement.findings(head, head_baseline, departures, args.baseline,
+                                               previous_lines=base_baseline)
+        except ValueError:
+            pass  # Invalid records are already refused by the retirement check.
+        errors += source_provenance.legacy_errors(head, source_base, source_roots, args.baseline,
+                                                 departures, parse_baseline, decide, staged_retirement)
+        shared_views = {}
+        model_cache = {}
+        force_cache = {}
+        arch_cache = {}
         try:
-            errors += architecture.baseline_errors(report["findings"], head_architecture_baseline,
-                                                    base_architecture_baseline, base_findings, introduced)
-            for row in report["findings"]:
-                if row["baseline_recorded"] and not args.base:
-                    row["changed"] = False
+            aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
+            progress("scanning head vendor model references")
+            models = model_pins.scan(head, args.repository, aliases, architecture.source_views,
+                                     cache=model_cache, shared_views=shared_views)
+            progress("scanning base vendor model references")
+            base_models = model_pins.scan(base_tree, args.repository, aliases, architecture.source_views,
+                                          cache=model_cache, shared_views=shared_views) if args.base else models
+            errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
+                                       base_models["findings"], head_model_adopted, base_model_adopted,
+                                       allow_seed="model-pin" in introduced, seed_rules=introduced)
+            for row in models["unreadable"] + base_models["unreadable"]:
+                errors.append("model policy input not reviewed: " + row["path"] + ": " + row["reason"])
+        except (OSError, ValueError, TypeError) as error:
+            models = {"findings": [], "unreadable": [{"path": str(model_pins.POLICY), "reason": str(error)}]}
+            errors.append("model-alias policy unavailable: " + str(error))
+        progress("scanning head branch-update commands")
+        force_pushes = no_force_push.scan(head, cache=force_cache)
+        progress("scanning base branch-update commands")
+        base_force_pushes = no_force_push.scan(base_tree, cache=force_cache) if args.base else force_pushes
+        errors += no_force_push.decide(force_pushes["findings"], head_force_baseline, base_force_baseline,
+                                      base_force_pushes["findings"], head_force_adopted, base_force_adopted,
+                                      allow_seed="force-push" in introduced)
+        for row in force_pushes["unreadable"] + base_force_pushes["unreadable"]:
+            errors.append("branch-update input not reviewed: " + row["path"] + ": " + row["reason"])
+        keel = keel_departures(head)
+        errors += decide_keel(keel)
+        runtime = agent_runtime(head)
+        policy = load_agent_runtime_policy(args.agent_runtime_policy)
+        today = datetime.date.fromisoformat(args.today) if args.today else datetime.datetime.now(
+            datetime.timezone.utc).date()
+        runtime_errors, notices = decide_agent_runtime(runtime, args.repository, policy, today)
+        errors += runtime_errors
+        obligations: list[str] = []
+        knowledge: list[str] = []
+        if args.base:
+            for path in added_sql(args.repo, args.base, args.head):
+                text = head.read(path) or ""
+                obligations += obligation_tables(path, text)
+                knowledge += knowledge_tables(path, text)
+        errors += decide_obligations(obligations)
+        knowledge_errors, knowledge_notices = decide_knowledge(
+            knowledge, args.repository, load_knowledge_policy(args.knowledge_policy), today,
+            present=knowledge_tables_in(head))
+        errors += knowledge_errors
+        notices += knowledge_notices
+        checker_commit = None
+        changed = added_lines(args.repo, args.base, args.head)
+        try:
+            checker_commit = checker_revision()
+            progress("scanning head architecture rules")
+            report = architecture.evaluate(outer_head, args.repository, changed, today,
+                                           file_cache=arch_cache, shared_views=shared_views)
         except (ValueError, TypeError, AttributeError) as error:
-            report["unreadable"].append({"path": args.baseline, "reason": str(error)})
-    imported, imported_errors = source_provenance.architecture_report(
-        head, source_base, source_roots, args.baseline, changed, today, architecture, parse_baseline)
-    errors += imported_errors
-    for key in ("findings", "unreadable", "reviewed_paths", "excluded_paths", "decision_errors"):
-        report.setdefault(key, []).extend(imported[key])
-    report["source_relocations"] = source_roots
-    report.update({"repository": args.repository, "commit": git(args.repo, "rev-parse", f"{args.head}^{{commit}}").strip(),
-                   "base_commit": git(args.repo, "rev-parse", f"{args.base}^{{commit}}").strip() if args.base else None,
-                   "checker_commit": checker_commit,
-                   "model_pins": models,
-                   "force_pushes": force_pushes,
-                   "legacy_departures": found, "legacy_errors": errors.copy(),
-                   "shared_pin_provenance": pin_report})
-    for row in report["findings"]:
-        row.update({"repository": report["repository"], "commit": report["commit"]})
-        if row["rule"] in {"tenant-read-functions", "deal-randomness", "project-portability"}:
-            row["changed"] = not row.get("source_root_baseline_recorded", architecture.baseline_key(row) in head_architecture_baseline)
-        if row.get("scope_warning"):
-            row["changed"] = False
-            row["disposition"] = "warning"
-            continue
-        row["disposition"] = "justified-exception" if row["decision"] else "regression" if row["changed"] else "inherited"
-        if row["changed"] and not row["decision"]:
-            message = f"{row['class']} {row['rule']}: {row['reason']} ({row['contract']})"
-            print(f"::error file={workflow_escape(row['path'], True)},line={row['line']}::{workflow_escape(message)}")
-            errors.append(message)
-    errors.extend(row["reason"] for row in report.get("decision_errors", []))
-    for row in report["unreadable"]:
-        errors.append("input not reviewed: " + row["path"] + ": " + row["reason"])
-    deal_rows = [row for row in report["findings"] if row["rule"] == "deal-randomness"]
-    report["deal_randomness"] = {"raw_emissions": len(deal_rows), "warnings": sum(row["disposition"] == "warning" for row in deal_rows), "refusals": sum(row["disposition"] == "regression" for row in deal_rows)}
-    report["passed"] = not errors
-    destination = pathlib.Path(getattr(args, "report", "stack-conformance-report.json"))
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    for n in notices:
-        print(f"::notice::{n}")
-    for e in errors:
-        print(f"::error::{workflow_escape(e)}")
-    print(f"{len(found)} departure(s) found, {len(head_baseline or ())} recorded in {args.baseline}; "
-          f"{len(runtime)} agent-runtime part(s) found in {args.repository or 'this repository'}; "
-          f"{len(obligations)} new work-engine table(s) without an owner header; "
-          f"{len(knowledge)} new knowledge or CRM table(s); "
-          f"{len(keel)} Keel game boundary violation(s)")
-    print(f"{len(models['findings'])} vendor model pin(s), {len(head_model_baseline)} recorded in {args.baseline}")
-    print(f"{len(force_pushes['findings'])} forced branch update(s), {len(head_force_baseline)} recorded in {args.baseline}")
-    if errors:
-        print(f"Move the change onto the default stack. A departure is recorded only through a "
-              f"company decision, by the owner of {args.baseline}.")
-        return 1
-    return 0
+            report = {"findings": [], "unreadable": [{"path": "architecture configuration", "reason": str(error)}],
+                      "semantic_census_complete": False, "limits": architecture.LIMITS}
+        try:
+            progress("scanning base architecture rules")
+            base_report = architecture.evaluate(outer_base, args.repository, None, today, ignore_expired=True,
+                                                file_cache=arch_cache, shared_views=shared_views) if args.base else {"findings": [], "unreadable": []}
+            base_findings = base_report["findings"]
+            if introduced:
+                report["unreadable"] += base_report["unreadable"]
+        except (ValueError, TypeError, AttributeError) as error:
+            base_findings = []
+            if introduced:
+                report["unreadable"].append({"path": "base architecture configuration", "reason": str(error)})
+        previous = {architecture.baseline_key(row): row for row in base_findings}
+        if args.base and any(row["rule"] == "cache-economy" for row in report["findings"]):
+            try:
+                if adoption.cache_adoption_requested(base_tree, head, base_text, head_text):
+                    errors += adoption.cache_approval_errors(report["findings"], args.repository)
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                errors.append("cache rule adoption refused: " + str(error))
+        for row in report["findings"]:
+            old = previous.get(architecture.baseline_key(row))
+            if changed is not None:
+                if old and old["decision"] and not row["decision"]:
+                    row["changed"] = True
+                elif old:
+                    row["changed"] = False
+                elif row["path"] in changed:
+                    # An inserted identical span can shift the old occurrence onto
+                    # unchanged lines; the newly increased count must still fail.
+                    row["changed"] = True
+        if base_architecture_adopted and not head_architecture_adopted:
+            errors.append("architecture ratchet marker cannot be removed")
+        if head_architecture_baseline and not head_architecture_adopted:
+            errors.append("architecture baseline records require " + architecture.BASELINE_MARKER)
+        if head_architecture_baseline or base_architecture_baseline:
+            try:
+                errors += architecture.baseline_errors(report["findings"], head_architecture_baseline,
+                                                        base_architecture_baseline, base_findings, introduced)
+                for row in report["findings"]:
+                    if row["baseline_recorded"] and not args.base:
+                        row["changed"] = False
+            except (ValueError, TypeError, AttributeError) as error:
+                report["unreadable"].append({"path": args.baseline, "reason": str(error)})
+        imported, imported_errors = source_provenance.architecture_report(
+            head, source_base, source_roots, args.baseline, changed, today, architecture, parse_baseline,
+            shared_views=shared_views)
+        errors += imported_errors
+        for key in ("findings", "unreadable", "reviewed_paths", "excluded_paths", "decision_errors"):
+            report.setdefault(key, []).extend(imported[key])
+        report["source_relocations"] = source_roots
+        report.update({"repository": args.repository, "commit": git(args.repo, "rev-parse", f"{args.head}^{{commit}}").strip(),
+                       "base_commit": git(args.repo, "rev-parse", f"{args.base}^{{commit}}").strip() if args.base else None,
+                       "checker_commit": checker_commit,
+                       "model_pins": models,
+                       "force_pushes": force_pushes,
+                       "legacy_departures": found, "legacy_errors": errors.copy(),
+                       "shared_pin_provenance": pin_report})
+        for row in report["findings"]:
+            row.update({"repository": report["repository"], "commit": report["commit"]})
+            if row["rule"] in {"tenant-read-functions", "deal-randomness", "project-portability"}:
+                row["changed"] = not row.get("source_root_baseline_recorded", architecture.baseline_key(row) in head_architecture_baseline)
+            if row.get("scope_warning"):
+                row["changed"] = False
+                row["disposition"] = "warning"
+                continue
+            row["disposition"] = "justified-exception" if row["decision"] else "regression" if row["changed"] else "inherited"
+            if row["changed"] and not row["decision"]:
+                message = f"{row['class']} {row['rule']}: {row['reason']} ({row['contract']})"
+                print(f"::error file={workflow_escape(row['path'], True)},line={row['line']}::{workflow_escape(message)}")
+                errors.append(message)
+        errors.extend(row["reason"] for row in report.get("decision_errors", []))
+        for row in report["unreadable"]:
+            errors.append("input not reviewed: " + row["path"] + ": " + row["reason"])
+        deal_rows = [row for row in report["findings"] if row["rule"] == "deal-randomness"]
+        report["deal_randomness"] = {"raw_emissions": len(deal_rows), "warnings": sum(row["disposition"] == "warning" for row in deal_rows), "refusals": sum(row["disposition"] == "regression" for row in deal_rows)}
+        report["passed"] = not errors
+        destination = pathlib.Path(getattr(args, "report", "stack-conformance-report.json"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        for n in notices:
+            print(f"::notice::{n}")
+        for e in errors:
+            print(f"::error::{workflow_escape(e)}")
+        print(f"{len(found)} departure(s) found, {len(head_baseline or ())} recorded in {args.baseline}; "
+              f"{len(runtime)} agent-runtime part(s) found in {args.repository or 'this repository'}; "
+              f"{len(obligations)} new work-engine table(s) without an owner header; "
+              f"{len(knowledge)} new knowledge or CRM table(s); "
+              f"{len(keel)} Keel game boundary violation(s)")
+        print(f"{len(models['findings'])} vendor model pin(s), {len(head_model_baseline)} recorded in {args.baseline}")
+        print(f"{len(force_pushes['findings'])} forced branch update(s), {len(head_force_baseline)} recorded in {args.baseline}")
+        if errors:
+            print(f"Move the change onto the default stack. A departure is recorded only through a "
+                  f"company decision, by the owner of {args.baseline}.")
+            return 1
+        return 0
+    finally:
+        head.close()
+        if base_tree is not None:
+            base_tree.close()
 
 
 def cmd_scan(args) -> int:
