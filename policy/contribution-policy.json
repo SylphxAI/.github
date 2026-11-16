@@ -10,12 +10,15 @@
     "committer": {"name": "GitHub", "email": "noreply@github.com", "login": "web-flow"},
     "authors": [
       {"name": "Kyle Tse", "email": "hi@kylet.se"},
-      {"name": "Kyle Tse", "email": "shtse8@gmail.com"}
+      {"name": "Kyle Tse", "email": "shtse8@gmail.com"},
+      {"name": "renovate[bot]", "email": "29139614+renovate[bot]@users.noreply.github.com"},
+      {"name": "sylphx-ai[bot]", "email": "212550965+sylphx-ai[bot]@users.noreply.github.com"},
+      {"name": "sylphx-builder[bot]", "email": "261101846+sylphx-builder[bot]@users.noreply.github.com"},
+      {"name": "sylphx-desk-studio[bot]", "email": "336710508+sylphx-desk-studio[bot]@users.noreply.github.com"},
+      {"name": "sylphx-desk-services[bot]", "email": "336710515+sylphx-desk-services[bot]@users.noreply.github.com"},
+      {"name": "github-actions[bot]", "email": "41898282+github-actions[bot]@users.noreply.github.com"}
     ]
   },
-  "pull_request_openers": [
-    {"login": "shtse8", "id": 8020099}
-  ],
   "attribution_names": [
     "AI", "LLM", "assistant", "agent", "bot", "Claude", "Codex", "Copilot", "Cursor",
     "ChatGPT", "Gemini", "GPT", "OpenAI", "Anthropic", "Aider", "Devin", "CodeRabbit",

@@ -90,53 +90,13 @@ class ContributionPolicy(unittest.TestCase):
                     item['commit'][role] = identity
                 self.assertEqual(checker.evaluate(pull(), [item], POLICY), [])
 
-    def test_pull_request_opener_must_be_approved_because_it_authors_the_queue_squash(self):
-        cases = [
-            ('approved user', {'login': 'shtse8', 'id': 8020099, 'type': 'User'}, None),
-            ('agent application', {'login': 'sylphx-desk-studio[bot]', 'id': 336710508, 'type': 'Bot'},
-             'unapproved-pr-opener'),
-            ('automation application', {'login': 'sylphx-ai[bot]', 'id': 212550965, 'type': 'Bot'},
-             'unapproved-pr-opener'),
-            ('builder application', {'login': 'sylphx-builder[bot]', 'id': 261101846, 'type': 'Bot'},
-             'unapproved-pr-opener'),
-            ('workflow token', {'login': 'github-actions[bot]', 'id': 41898282, 'type': 'Bot'},
-             'unapproved-pr-opener'),
-            ('login look-alike', {'login': 'shtse8', 'id': 1, 'type': 'User'}, 'unapproved-pr-opener'),
-            ('id look-alike', {'login': 'example', 'id': 8020099, 'type': 'User'}, 'unapproved-pr-opener'),
-        ]
-        for label, user, refused in cases:
-            with self.subTest(case=label):
-                pr = pull()
-                pr['user'] = user
-                findings = checker.evaluate(pr, [commit()], POLICY)
-                if refused:
-                    self.assertEqual(findings, [{'rule': refused, 'location': 'pull-request.user', 'line': 0}])
-                else:
-                    self.assertEqual(findings, [])
-        for user in (None, {'login': 'shtse8'}, {'login': 'shtse8', 'id': '8020099'}):
+    def test_any_pull_request_opener_is_admitted(self):
+        for user in ({'login': 'sylphx-ai[bot]', 'id': 212550965, 'type': 'Bot'},
+                     {'login': 'github-actions[bot]', 'id': 41898282, 'type': 'Bot'}, None):
             with self.subTest(user=user):
                 pr = pull()
-                if user is None:
-                    del pr['user']
-                else:
-                    pr['user'] = user
-                with self.assertRaises(checker.PolicyError):
-                    checker.evaluate(pr, [commit()], POLICY)
-        self.assertEqual(checker.evaluate(None, [commit()], POLICY), [])
-
-    def test_unapproved_opener_prints_the_remedy_at_cli(self):
-        with tempfile.TemporaryDirectory() as directory:
-            snapshot = Path(directory) / 'snapshot.json'
-            pr = pull()
-            pr['user'] = {'login': 'sylphx-desk-services[bot]', 'id': 336710515, 'type': 'Bot'}
-            snapshot.write_text(json.dumps({'pull_request': pr, 'commits': [commit()]}))
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                status = checker.main(['--input', str(snapshot)])
-            self.assertEqual(status, 1)
-            self.assertIn('unapproved-pr-opener at pull-request.user:0', output.getvalue())
-            self.assertIn('reopen this branch as an approved account', output.getvalue())
-            self.assertNotIn('sylphx-desk-services', output.getvalue())
+                pr['user'] = user
+                self.assertEqual(checker.evaluate(pr, [commit()], POLICY), [])
 
     def test_identity_pair_cannot_mix_approved_names_and_emails(self):
         item = commit()
@@ -245,9 +205,13 @@ class ContributionPolicy(unittest.TestCase):
             ('other email', 'Kyle Tse', 'other@example.com', 'GitHub', 'noreply@github.com', 'Improve parser', 'unapproved-author'),
             ('other name', 'Example', 'shtse8@gmail.com', 'GitHub', 'noreply@github.com', 'Improve parser', 'unapproved-author'),
             ('bot author', 'example[bot]', 'shtse8@gmail.com', 'GitHub', 'noreply@github.com', 'Improve parser', 'unapproved-author'),
-            ('automation author', 'sylphx-ai[bot]', '212550965+sylphx-ai[bot]@users.noreply.github.com',
-             'GitHub', 'noreply@github.com', 'Improve parser', 'unapproved-author'),
-            ('builder author', 'sylphx-builder[bot]', '261101846+sylphx-builder[bot]@users.noreply.github.com',
+            ('automation opener squash', 'sylphx-ai[bot]', '212550965+sylphx-ai[bot]@users.noreply.github.com',
+             'GitHub', 'noreply@github.com', 'Improve parser', None),
+            ('builder opener squash', 'sylphx-builder[bot]', '261101846+sylphx-builder[bot]@users.noreply.github.com',
+             'GitHub', 'noreply@github.com', 'Improve parser', None),
+            ('agent opener squash', 'sylphx-desk-studio[bot]', '336710508+sylphx-desk-studio[bot]@users.noreply.github.com',
+             'GitHub', 'noreply@github.com', 'Improve parser', None),
+            ('bot look-alike email', 'sylphx-ai[bot]', '1+sylphx-ai[bot]@users.noreply.github.com',
              'GitHub', 'noreply@github.com', 'Improve parser', 'unapproved-author'),
             ('human committer', 'Kyle Tse', 'shtse8@gmail.com', 'Kyle Tse', 'hi@kylet.se', 'Improve parser', 'unapproved-author'),
             ('wrong committer email', 'Kyle Tse', 'shtse8@gmail.com', 'GitHub', 'other@example.com', 'Improve parser', 'unapproved-author'),
