@@ -39,7 +39,7 @@ jobs:
       RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
       PREVIEW_URL: https://TITLE.pages.dev
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.RUN_SHA }}
           persist-credentials: false
