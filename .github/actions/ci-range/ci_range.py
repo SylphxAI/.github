@@ -193,13 +193,17 @@ def main() -> int:
     changed = git("diff", "--name-only", "--no-renames", base, "HEAD").splitlines() if base else None
     run = select(lanes, changed, os.environ.get("ONLY", ""),
                  global_patterns=os.environ.get("GLOBAL_PATTERNS", ".github/*"))
+    import queue_reuse
+    execute, reused, evidence = queue_reuse.select(event, payload, default_branch, git("rev-parse", "HEAD"), run)
     with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+        for name, value in (("execute", execute), ("reused", reused), ("reuse-proof", evidence)):
+            out.write(f"{name}={json.dumps(value, separators=(',', ':'))}\n")
         out.write(f"base={base}\nrun={json.dumps(run, separators=(',', ':'))}\n")
         out.write(f"changed={'' if changed is None else len(changed)}\n")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     lines = [f"### CI range ({event})", "", f"base: `{base or 'none - every lane runs'}`  head: `{os.environ.get('GITHUB_SHA', '')}`",
-             f"changed files: {'all' if changed is None else len(changed)}", "", "| lane | runs |", "| --- | --- |"]
-    lines += [f"| {name} | {'yes' if selected else 'no'} |" for name, selected in run.items()]
+             f"changed files: {'all' if changed is None else len(changed)}", "", "| lane | selected | reused | executes |", "| --- | --- | --- | --- |"]
+    lines += [f"| {name} | {str(selected).lower()} | {str(reused[name]).lower()} | {str(execute[name]).lower()} |" for name, selected in run.items()]
     print("\n".join(lines))
     if summary:
         with open(summary, "a") as fh:

@@ -214,15 +214,18 @@ class MainTest(unittest.TestCase):
 
     def test_base_only_push_preserves_range_outputs(self) -> None:
         outputs, base = self.run_in_repo("push", lambda b: {}, verified="base", lanes="")
-        self.assertEqual(outputs, {"base": base, "run": "{}", "changed": "1"})
+        self.assertEqual(outputs, {"base": base, "run": "{}", "changed": "1",
+                                   "execute": "{}", "reused": "{}", "reuse-proof": "{}"})
 
     def test_base_only_without_verified_ancestor_keeps_range_unknown(self) -> None:
         outputs, _ = self.run_in_repo("push", lambda b: {}, verified="0" * 40, lanes="")
-        self.assertEqual(outputs, {"base": "", "run": "{}", "changed": ""})
+        self.assertEqual(outputs, {"base": "", "run": "{}", "changed": "",
+                                   "execute": "{}", "reused": "{}", "reuse-proof": "{}"})
 
     def test_base_only_merge_group_preserves_range_outputs(self) -> None:
         outputs, base = self.run_in_repo("merge_group", lambda b: {"merge_group": {"base_sha": b}}, lanes="")
-        self.assertEqual(outputs, {"base": base, "run": "{}", "changed": "1"})
+        self.assertEqual(outputs, {"base": base, "run": "{}", "changed": "1",
+                                   "execute": "{}", "reused": "{}", "reuse-proof": "{}"})
 
     def test_merge_group_selects_by_the_diff(self) -> None:
         outputs, base = self.run_in_repo("merge_group", lambda b: {"merge_group": {"base_sha": b}})

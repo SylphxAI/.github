@@ -56,6 +56,15 @@ inputs:
       failed job names). Names that are not lanes are ignored; if none is a
       lane, the range's selection runs.
     default: ""
+  reuse-workflow:
+    description: "Opt-in queue workflow filename for exact-source reuse on a default-branch push only."
+    default: ""
+  reuse-aggregate:
+    description: "Exact successful aggregate job name in reuse-workflow, separate from lane jobs."
+    default: ""
+  reuse-jobs:
+    description: 'JSON object mapping declared lanes to nonempty arrays of exact queue job names; e.g. {"test":["tests"]}. No matrix or reusable-job name normalization.'
+    default: ""
   token:
     description: Token that can read this repository's workflow runs and check runs.
     default: ${{ github.token }}
@@ -70,6 +79,15 @@ outputs:
   run:
     description: JSON object mapping each lane to true or false.
     value: ${{ steps.range.outputs.run }}
+  execute:
+    description: "JSON lane selection after exact-source reuse; equals run when disabled or unproven."
+    value: ${{ steps.range.outputs.execute }}
+  reused:
+    description: "JSON lane to boolean authenticated queue reuse; never changes the ordinary run output."
+    value: ${{ steps.range.outputs.reused }}
+  reuse-proof:
+    description: "JSON authenticated queue run/attempt/source/job/check identities, or an empty object."
+    value: ${{ steps.range.outputs.reuse-proof }}
   changed:
     description: Number of changed files, or empty when there is no base.
     value: ${{ steps.range.outputs.changed }}
@@ -84,6 +102,9 @@ runs:
         PROOF_IDENTITY: ${{ inputs.proof-run }}
         PROOF_WORKFLOW: ${{ inputs.proof-workflow }}
         PROOF_BRANCH: ${{ inputs.proof-branch }}
+        REUSE_WORKFLOW: ${{ inputs.reuse-workflow }}
+        REUSE_AGGREGATE: ${{ inputs.reuse-aggregate }}
+        REUSE_JOBS: ${{ inputs.reuse-jobs }}
         LANES: ${{ inputs.lanes }}
         GLOBAL_PATTERNS: ${{ inputs.global-patterns }}
         ONLY: ${{ inputs.only }}
