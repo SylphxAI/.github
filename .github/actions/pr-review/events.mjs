@@ -16,7 +16,7 @@ export async function eventTargets(github, eventName, event, generation, { deadl
     // Reconcile the trusted API association, including fork PRs whose webhook
     // pull_requests array may be empty. No artifact is downloaded or executed.
     const associated = await github.pages(`/commits/${run.head_sha}/pulls`, undefined, { deadlineMs });
-    numbers = [...new Set(associated.filter(pr => pr.state === 'open' && pr.head.sha === run.head_sha &&
+    numbers = [...new Set(associated.filter(pr => pr.state === 'open' && !pr.draft && pr.head.sha === run.head_sha &&
       pr.base.repo.id === event.repository.id).map(pr => pr.number))];
     expectedHead = run.head_sha;
     id = `pull-request/${run.head_sha}`;

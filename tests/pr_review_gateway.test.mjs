@@ -286,14 +286,23 @@ test('Broker exchange retries only key_not_yet_propagated within the propagation
 
 test('trusted event resolves fork-safe API associations and ignores unrelated runs', async () => {
   const head = 'b'.repeat(40), base = 'a'.repeat(40);
+  let draftPullRequested = false;
   const github = { repository: 'example/repo', current: async () => true,
-    pages: async path => path.includes('/commits/') ? [{ number: 7, state: 'open', head: { sha: head }, base: { repo: { id: 1 } } }] : [{ filename: 'src/value.js' }],
-    request: async path => path.includes('/compare/') ? { merge_base_commit: { sha: base } } : {
-      state: 'open', changed_files: 1, head: { sha: head }, base: { sha: base, ref: 'main', repo: { id: 1 } },
+    pages: async path => path.includes('/commits/') ? [
+      { number: 6, state: 'open', draft: true, head: { sha: head }, base: { repo: { id: 1 } } },
+      { number: 7, state: 'open', draft: false, head: { sha: head }, base: { repo: { id: 1 } } },
+    ] : [{ filename: 'src/value.js' }],
+    request: async path => {
+      if (path === '/pulls/6') draftPullRequested = true;
+      return path.includes('/compare/') ? { merge_base_commit: { sha: base } } : {
+        state: 'open', changed_files: 1, head: { sha: head }, base: { sha: base, ref: 'main', repo: { id: 1 } },
+      };
     } };
   const event = { repository: { full_name: 'example/repo', id: 1 }, workflow_run: { event: 'pull_request', head_sha: head, id: 42, pull_requests: [] } };
   const targets = await eventTargets(github, 'workflow_run', event, '12');
+  assert.equal(targets.length, 1);
   assert.equal(targets[0].target.number, 7); assert.equal(targets[0].target.head_sha, head);
+  assert.equal(draftPullRequested, false);
   assert.deepEqual(await eventTargets(github, 'workflow_run', { ...event, workflow_run: { ...event.workflow_run, event: 'push' } }, '13'), []);
 });
 

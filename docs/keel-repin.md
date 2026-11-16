@@ -7,8 +7,9 @@ dependence on someone remembering.
 ## The flow
 
 Each title carries one small workflow, `keel-repin.yml` (from `workflow-templates/keel-repin.yml`),
-that runs every 10 minutes on our own runners (so a repin pull request exists within 15 minutes of a
-tag) and calls the `keel-repin` action in three modes:
+that runs every 4 hours on our own runners (`47 */4 * * *`, matching Keel's 4-hour `17 */4 * * *`
+tag cadence, with API-only `poll` and `settle` on `sylphx-linux-control` and `repin` on
+`sylphx-linux-standard`) and calls the `keel-repin` action in three modes:
 
 1. **poll** reads the newest `keel-verified-*` tag. It waits until that release's
    `channel.json` maps the exact tag and peeled source commit to a version and both
@@ -318,6 +319,6 @@ required check green on the exact head and pinned to it; waits on a missing or u
 skipped required check counts as absent; a check nobody has picked up says so and stays open rather
 than turning red; red on a failure, a stranger's commit or a draft means no merge; one comment per
 head and kind; the newest run of a name decides; another App's check does not count; the queue retry;
-the after-merge dispatch), no approve call anywhere, the permission scopes, the 10-minute cadence, and
+the after-merge dispatch), no approve call anywhere, the permission scopes, the 4-hour cadence, and
 no GitHub-hosted runner label. A consumer run:
 `workflow_dispatch` the title's `keel-repin.yml` with `dry_run` true.
