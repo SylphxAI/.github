@@ -1249,13 +1249,17 @@ class SettleLiveTest(unittest.TestCase):
 
     def test_manual_base_pin_supersedes_stale_merged_repin(self):
         manual_pin = "b" * 40
+        merged_with_files = {
+            **MERGED_PR,
+            "body": MERGED_PR["body"] + "\nFiles changed:\n- `KEEL_PIN`\n",
+        }
         with tempfile.TemporaryDirectory() as d:
             base = pathlib.Path(d)
             gh = base / "gh"
             gh.write_text(FAKE_SETTLE_GH)
             gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
             (base / "scenario.json").write_text(json.dumps({
-                "prs": [], "emails": [BOT], "runs": [], "merged": MERGED_PR,
+                "prs": [], "emails": [BOT], "runs": [], "merged": merged_with_files,
                 "base_keel_pin": manual_pin, "base_keel_pin_at": "2027-01-15T07:50:00Z",
             }))
             env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
@@ -1276,6 +1280,32 @@ class SettleLiveTest(unittest.TestCase):
                     rc = keel_repin.main(["settle", "--owner", "@o/team", "--now", str(ts), "--live-url", LIVE_URL])
                 self.assertEqual(rc, expected)
             self.assertFalse((base / "comments.txt").exists())
+
+    def test_unrelated_root_pin_never_supersedes_scoped_repin(self):
+        scoped = {
+            **MERGED_PR,
+            "body": MERGED_PR["body"] + "\nFiles changed:\n- `remaster/deps/keel.rev`\n",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({
+                "prs": [], "emails": [BOT], "runs": [], "merged": scoped,
+                "base_keel_pin": "d" * 40, "base_keel_pin_at": "2027-01-15T07:50:00Z",
+            }))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            after_grace = keel_repin.calendar.timegm((2027, 1, 15, 9, 0, 0))
+            ws = keel_repin.web_smoke()
+            real = ws.live_keel
+            ws.live_keel = lambda url: real(url, opener=serving(self.version(keel="d" * 40)))
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"), \
+                    mock.patch.object(keel_repin, "web_smoke", return_value=ws):
+                rc = keel_repin.main(["settle", "--owner", "@o/team", "--now", str(after_grace), "--live-url", LIVE_URL])
+            self.assertEqual(rc, 1)
+            self.assertNotIn("contents/KEEL_PIN", (base / "gh-calls.txt").read_text())
+            self.assertIn(keel_repin.LIVE_MARKER, (base / "comments.txt").read_text())
 
 
 class ActionContractTest(unittest.TestCase):
