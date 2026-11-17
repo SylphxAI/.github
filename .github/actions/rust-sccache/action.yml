@@ -82,13 +82,13 @@ runs:
     - name: Restore sccache release archive
       id: restore-binary
       if: runner.os == 'Linux' && runner.arch == 'X64'
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ runner.temp }}/pinned-tools/sccache-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
-        key: pinned-release-sccache-linux-x64-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
+        path: ${{ runner.temp }}/pinned-tools/sccache-aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd
+        key: pinned-release-sccache-linux-x64-aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd
     - name: Export the Actions cache service to sccache
       if: inputs.actions-cache != 'false' && runner.os == 'Linux' && runner.arch == 'X64'
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
           // Only a JavaScript action sees these; sccache reads them from the environment.
@@ -100,10 +100,10 @@ runs:
       if: runner.os == 'Linux' && runner.arch == 'X64'
       shell: bash
       env:
-        VERSION: v0.18.0
+        VERSION: v0.19.0
         GITHUB_TOKEN: ${{ github.token }}
-        SHA256: 45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
-        BINARY_SHA256: 973cb15f6a986d84ca334bbed3bbe2eb8f1ee8fd81bf9e115b8539a293bf8d59
+        SHA256: aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd
+        BINARY_SHA256: 0b44834be857e21b026f7db49a7762023fedb5eb5ed60725a66f698d8d79a34b
         S3_ACCESS_KEY: ${{ inputs.s3-access-key }}
         S3_SECRET_KEY: ${{ inputs.s3-secret-key }}
         S3_ENDPOINT: ${{ inputs.s3-endpoint }}
@@ -115,7 +115,7 @@ runs:
         BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
       run: |
         set -euo pipefail
-        dir="$RUNNER_TEMP/pinned-tools/sccache-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
+        dir="$RUNNER_TEMP/pinned-tools/sccache-aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd"
         mkdir -p "$dir"
         name="sccache-$VERSION-x86_64-unknown-linux-musl"
         if [ ! -f "$dir/sccache.tgz" ] && [ -n "${GITHUB_ACTION_PATH:-}" ] && \
@@ -127,7 +127,7 @@ runs:
           if [ ! -f "$dir/sccache.tgz" ]; then
             python3 "$GITHUB_ACTION_PATH/../_shared/release_download.py" \
               --repository mozilla/sccache --tag "$VERSION" --filename "$name.tar.gz" \
-              --asset-id 563130201 --sha256 "$SHA256" --destination "$dir/sccache.tgz.part"
+              --asset-id 671951070 --sha256 "$SHA256" --destination "$dir/sccache.tgz.part"
             echo "$SHA256  $dir/sccache.tgz.part" | sha256sum -c --quiet
             mv "$dir/sccache.tgz.part" "$dir/sccache.tgz"
           else
@@ -146,7 +146,7 @@ runs:
         . "$GITHUB_ACTION_PATH/start.sh"
     - name: Save sccache release archive
       if: runner.os == 'Linux' && runner.arch == 'X64' && steps.restore-binary.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ runner.temp }}/pinned-tools/sccache-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
-        key: pinned-release-sccache-linux-x64-45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
+        path: ${{ runner.temp }}/pinned-tools/sccache-aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd
+        key: pinned-release-sccache-linux-x64-aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd

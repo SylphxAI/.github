@@ -98,7 +98,7 @@ class WorkflowLintReleaseTest(unittest.TestCase):
         action_path = ACTION.parent / tool
         step = next(step for step in yaml.safe_load((action_path / 'action.yml').read_text())['runs']['steps']
                     if 'VERSION' in step.get('env', {}))
-        version = '1.7.12' if name == 'actionlint' else 'sccache 0.18.0'
+        version = '1.7.12' if name == 'actionlint' else 'sccache 0.19.0'
         version_arg = '-version' if name == 'actionlint' else '--version'
         def executable(output):
             return ('#!/bin/bash\nif [ "$1" = ' + version_arg + ' ]; then echo "' + output +
@@ -113,7 +113,7 @@ class WorkflowLintReleaseTest(unittest.TestCase):
         archive = io.BytesIO()
         with tarfile.open(fileobj=archive, mode='w:gz') as bundle:
             member = tarfile.TarInfo(name if name == 'actionlint' else
-                                     'sccache-v0.18.0-x86_64-unknown-linux-musl/sccache')
+                                     'sccache-v0.19.0-x86_64-unknown-linux-musl/sccache')
             member.size, member.mode = len(good), 0o700
             bundle.addfile(member, io.BytesIO(good))
         self.body = archive.getvalue()

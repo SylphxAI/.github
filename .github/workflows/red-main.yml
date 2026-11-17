@@ -617,7 +617,7 @@ jobs:
           fi
       - name: Mint repository-scoped lifecycle token
         id: lifecycle-app
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
           private-key: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
@@ -625,7 +625,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
       - name: Read canonical counted proof helper
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SylphxAI/.github
           ref: ${{ job.workflow_sha }}
@@ -684,7 +684,7 @@ jobs:
       - name: Check out the handler programs
         id: programs
         timeout-minutes: 5
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SylphxAI/.github
           ref: ${{ job.workflow_sha }}
@@ -758,7 +758,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Read canonical run-store consumer
         if: steps.gate.outputs.proceed == 'true'
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SylphxAI/.github
           ref: ${{ job.workflow_sha }}
@@ -847,7 +847,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true' && steps.key.outputs.path == 'app'
         continue-on-error: true
         timeout-minutes: 5
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
           private-key: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}
@@ -1653,7 +1653,7 @@ jobs:
           always() && steps.gate.outputs.proceed == 'true'
           && steps.app-token.outputs.token != ''
         timeout-minutes: 5
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ inputs.app-id || vars.SYLPHX_BUILDER_APP_ID }}
           private-key: ${{ secrets.app-private-key || secrets.SYLPHX_BUILDER_PRIVATE_KEY }}

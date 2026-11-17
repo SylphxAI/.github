@@ -68,13 +68,13 @@ runs:
         echo "root=${RUNNER_TEMP}/keel-tools" >> "$GITHUB_OUTPUT"
         echo "toolchain-root=${KEEL_HOME:-$HOME/.keel}/tools" >> "$GITHUB_OUTPUT"
     - id: restore-keel
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.key.outputs.root }}/keel
         key: ${{ steps.key.outputs.keel-key }}
     - id: restore-bindgen
       if: steps.key.outputs.wasm-bindgen != 'none'
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.key.outputs.root }}/wasm-bindgen
         key: ${{ steps.key.outputs.bindgen-key }}
@@ -95,12 +95,12 @@ runs:
       run: bash "$INSTALLER" install "$ROOT"
     # Saved right after a build, so a later failing step still leaves it for the next run.
     - if: steps.restore-keel.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.key.outputs.root }}/keel
         key: ${{ steps.key.outputs.keel-key }}
     - if: steps.key.outputs.wasm-bindgen != 'none' && steps.restore-bindgen.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.key.outputs.root }}/wasm-bindgen
         key: ${{ steps.key.outputs.bindgen-key }}
@@ -108,7 +108,7 @@ runs:
     # pins: keel setup resolves its own versioned tool directories and verifies
     # checksums on a miss. Never cache credentials, locks or project state.
     - id: restore-toolchain
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.key.outputs.toolchain-root }}
         key: keel-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.keel-key }}-${{ steps.key.outputs.bindgen-key }}
@@ -129,7 +129,7 @@ runs:
     # Persist before packing: even a later title failure must leave these tools
     # available to the next run, not depend on the cache action's success-only post.
     - if: steps.restore-toolchain.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.key.outputs.toolchain-root }}
         key: keel-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.keel-key }}-${{ steps.key.outputs.bindgen-key }}

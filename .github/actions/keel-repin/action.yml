@@ -105,7 +105,7 @@ runs:
     - name: Mint read-only Keel token
       id: keel-token
       if: inputs.mode != 'settle'
-      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
       with:
         app-id: ${{ inputs.reader-app-id }}
         private-key: ${{ inputs.reader-app-key }}
@@ -116,7 +116,7 @@ runs:
     - name: Mint read-only shared-layer token
       id: layer-token
       if: inputs.mode != 'settle' && inputs.layer != 'keel'
-      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
       with:
         app-id: ${{ inputs.reader-app-id }}
         private-key: ${{ inputs.reader-app-key }}
@@ -127,7 +127,7 @@ runs:
     - name: Mint read-only token for the extra repositories
       id: extra-token
       if: inputs.mode == 'repin' && inputs.extra-read-owner != ''
-      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
       with:
         app-id: ${{ inputs.reader-app-id }}
         private-key: ${{ inputs.reader-app-key }}
