@@ -62,7 +62,7 @@ jobs:
       base: ${{ steps.range.outputs.base }}
       run: ${{ steps.range.outputs.run }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.code-merge || github.sha }}
           filter: blob:none
@@ -80,7 +80,7 @@ jobs:
     runs-on: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.code-merge || github.sha }}
       - run: echo "the full test suite; write a JUnit report"
@@ -103,7 +103,7 @@ jobs:
     runs-on: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.code-merge || github.sha }}
       - run: echo "browser, device or release-build lanes"

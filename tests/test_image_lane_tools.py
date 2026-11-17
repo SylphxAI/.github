@@ -69,7 +69,7 @@ class ImageLaneSourceContractTests(unittest.TestCase):
 
     def test_source_fetch_depth_preserves_zero_for_full_history(self) -> None:
         source = self.doc["jobs"]["publish"]["steps"][0]
-        self.assertEqual(source["uses"], "actions/checkout@v4")
+        self.assertRegex(source["uses"], r"^actions/checkout@[0-9a-f]{40}$")
         # A direct input reference preserves 0; an `|| 1` fallback would not.
         self.assertEqual(source["with"]["fetch-depth"], "${{ inputs['source-fetch-depth'] }}")
         self.assertEqual(source["with"]["ref"], "${{ inputs.source-sha || github.sha }}")
