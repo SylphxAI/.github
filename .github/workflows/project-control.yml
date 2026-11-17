@@ -387,7 +387,9 @@ jobs:
 
   ci-range-consumer:
     runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}
-    timeout-minutes: 5
+    # Both independent selections may exhaust the bounded proof ancestor walk.
+    # Budget for both walks plus the required final contract assertions.
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read

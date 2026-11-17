@@ -265,3 +265,30 @@ class ReuseEntrypoint(unittest.TestCase):
         self.assertEqual(out['run'], {'db': False, 'lint': True})
         self.assertEqual(out['execute'], out['run'])
         self.assertEqual(out['reused'], {'db': False, 'lint': False})
+
+
+class ConsumerWorkflowContractTests(unittest.TestCase):
+    def test_both_live_proof_walks_fit_before_required_contract_assertions(self):
+        import yaml
+
+        workflow = yaml.load((ROOT / '.github/workflows/project-control.yml').read_text(),
+                             Loader=yaml.BaseLoader)
+        consumer = workflow['jobs']['ci-range-consumer']
+        # Each independent invocation can exhaust the bounded ancestor walk.
+        self.assertEqual(consumer['timeout-minutes'], '10')
+        actions = [step for step in consumer['steps']
+                   if step.get('uses') == './.github/actions/ci-range']
+        self.assertEqual([step['id'] for step in actions], ['range', 'explicit'])
+        for step in actions:
+            self.assertNotIn('if', step)
+            self.assertNotIn('continue-on-error', step)
+            self.assertEqual(step['with']['reuse-workflow'], 'project-control.yml')
+            self.assertEqual(step['with']['reuse-aggregate'], 'ci-ok')
+            self.assertEqual(json.loads(step['with']['reuse-jobs']), {'proof': ['tests']})
+        self.assertNotIn('only', actions[0]['with'])
+        self.assertEqual(actions[1]['with']['only'], 'proof')
+        contract = consumer['steps'][-1]
+        self.assertEqual(contract['name'], 'Check the composite action contract')
+        self.assertNotIn('if', contract)
+        self.assertNotIn('continue-on-error', contract)
+        self.assertIn('ci-range-consumer', workflow['jobs']['ci-ok']['needs'])
