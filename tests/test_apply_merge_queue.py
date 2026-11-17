@@ -20,6 +20,8 @@ SPEC.loader.exec_module(amq)
 
 SHIPPED_POLICY = amq.load_policy(ROOT / "policy" / "merge-queue.json")
 POLICY = {**SHIPPED_POLICY, "required_checks": []}
+# Cloud carries a per-repository override, so its converged state is the policy plus that override.
+CLOUD = amq.desired_settings(POLICY, "SylphxAI/cloud", "sylphx-merge-queue")
 # Mechanism fixture: scoped targets binding an external App-published status.
 CHECK_POLICY = {**SHIPPED_POLICY, "required_checks": [
     {"repo": repo, "ruleset": name, "ruleset_id": ruleset_id, "reason": "fixture",
@@ -188,7 +190,7 @@ class PlanTests(unittest.TestCase):
     def setUp(self):
         self.fleet = amq.read_org(FakeGh({
             "SylphxAI/desk-tools": ruleset(10, "sylphx-merge-queue", OLD),
-            "SylphxAI/cloud": ruleset(11, "sylphx-merge-queue", {**OLD, **POLICY["settings"]}),
+            "SylphxAI/cloud": ruleset(11, "sylphx-merge-queue", {**OLD, **CLOUD}),
             "SylphxAI/bgca": ruleset(12, "sylphx-merge-queue", OLD),
             "SylphxAI/other": ruleset(13, "sylphx-merge-queue", OLD, checks=("lint",)),
             "SylphxAI/janus": ruleset(14, "ci-must-pass", None),
@@ -240,7 +242,7 @@ class PlanTests(unittest.TestCase):
 
     def test_converged_ruleset_is_ok_and_hands_off_is_excluded(self):
         self.fleet = amq.read_org(FakeGh({
-            "SylphxAI/cloud": ruleset(11, "sylphx-merge-queue", {**OLD, **POLICY["settings"]}, reviews=0),
+            "SylphxAI/cloud": ruleset(11, "sylphx-merge-queue", {**OLD, **CLOUD}, reviews=0),
             "SylphxAI/bgca": ruleset(12, "sylphx-merge-queue", OLD),
         }), "SylphxAI")
         rows = self.rows()

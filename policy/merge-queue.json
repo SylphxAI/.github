@@ -72,6 +72,14 @@
         "check_response_timeout_minutes": 120
       },
       "reason": "The passing native/browser merge-group gate completed 82 minutes after enqueue on 2026-11-02, beyond the 60-minute deadline. Allow 120 minutes with margin and preserve the repository's other existing queue settings and required checks."
+    },
+    {
+      "repo": "SylphxAI/cloud",
+      "ruleset": "sylphx-merge-queue",
+      "settings": {
+        "check_response_timeout_minutes": 120
+      },
+      "reason": "Merge-group CI p90 was 78 minutes (6 of 46 runs over 60, 2026-11-16..17 under peak load); groups past the 60-minute deadline wedged UNMERGEABLE at the queue head. Allow 120 minutes; other queue settings stay at the defaults."
     }
   ],
   "required_checks": [
