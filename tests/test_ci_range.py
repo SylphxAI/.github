@@ -87,9 +87,63 @@ class SelectTest(unittest.TestCase):
 
     def test_empty_global_patterns_preserve_lane_matching(self) -> None:
         lanes = {"workflow": [".github/workflows/*"], "source": ["src/*"]}
-        for patterns in ("", " \n\t"):
+        for patterns in ("", " \n\t", "# comment only\n"):
             self.assertEqual(ci_range.select(lanes, [".github/workflows/other.yml"], global_patterns=patterns),
                              {"workflow": True, "source": False})
+
+    def test_global_exclusions_distinguish_workflows_from_shared_actions_and_toolchains(self) -> None:
+        lanes = ci_range.parse_lanes("""
+        workflows: .github/workflows/*
+        rust: Cargo.toml Cargo.lock rust-toolchain* crates/*
+        migrations: db/migrations/*
+        """)
+        patterns = """
+        .github/*               # shared actions and unclassified .github paths stay global
+        !.github/workflows/*    # workflow-only edits stay in the workflows lane
+        !.github/*.md
+        !.github/ISSUE_TEMPLATE/*
+        !.github/CODEOWNERS
+        """
+        for workflow_only in ([".github/workflows/ci.yml"],
+                              [".github/workflows/release.yml"],
+                              [".github/workflows/ci.yml", ".github/CODEOWNERS"]):
+            with self.subTest(workflow_only=workflow_only):
+                self.assertEqual(ci_range.select(lanes, workflow_only, global_patterns=patterns),
+                                 {"workflows": True, "rust": False, "migrations": False})
+        for metadata_only in ([".github/CODEOWNERS"], [".github/SECURITY.md"],
+                              [".github/ISSUE_TEMPLATE/bug_report.md"]):
+            with self.subTest(metadata_only=metadata_only):
+                self.assertEqual(ci_range.select(lanes, metadata_only, global_patterns=patterns),
+                                 {"workflows": False, "rust": False, "migrations": False})
+        for global_hit in ([".github/actions/setup/action.yml"],
+                           [".github/workflows/ci.yml", ".github/actions/setup/action.yml"],
+                           [".github/scripts/new-helper.py"]):
+            with self.subTest(global_hit=global_hit):
+                self.assertEqual(ci_range.select(lanes, global_hit, global_patterns=patterns),
+                                 {"workflows": True, "rust": True, "migrations": True})
+        self.assertEqual(
+            ci_range.select(lanes, [".github/workflows/ci.yml", "rust-toolchain.toml"], global_patterns=patterns),
+            {"workflows": True, "rust": True, "migrations": False},
+        )
+
+    def test_ordered_global_reinclusion_and_character_classes(self) -> None:
+        lanes = {"workflows": [".github/workflows/*"], "rust": ["crates/*"]}
+        patterns = ".github/* !.github/workflows/* .github/workflows/ci.yml"
+        self.assertEqual(ci_range.select(lanes, [".github/workflows/release.yml"], global_patterns=patterns),
+                         {"workflows": True, "rust": False})
+        self.assertEqual(ci_range.select(lanes, [".github/workflows/ci.yml"], global_patterns=patterns),
+                         {"workflows": True, "rust": True})
+        self.assertEqual(ci_range.select(lanes, [".github/actions/build/action.yml"], global_patterns=patterns),
+                         {"workflows": True, "rust": True})
+        self.assertEqual(ci_range.select({"a": ["src/*"]}, ["!literal"], global_patterns="[!x]literal"),
+                         {"a": True})
+
+    def test_invalid_global_exclusions_fail_closed(self) -> None:
+        for bad in ("!", ".github/* !", "!.github/workflows/*", "!.github/workflows/* .github/*"):
+            for changed in ([".github/workflows/ci.yml"], None):
+                with self.subTest(bad=bad, changed=changed):
+                    with self.assertRaises(ValueError):
+                        ci_range.select(LANES, changed, global_patterns=bad)
 
     def test_global_configuration_cannot_hide_an_unknown_range(self) -> None:
         for patterns in ("", ".github/actions/build/*"):
@@ -305,6 +359,39 @@ class MainTest(unittest.TestCase):
         outputs, _ = self.run_in_repo("merge_group", lambda b: {"merge_group": {"base_sha": b}},
                                       global_patterns="", changes=(".github/workflows/other.yml",))
         self.assertEqual(json.loads(outputs["run"]), {"lint": True, "test": False, "e2e": False})
+
+    def test_excluded_workflows_vs_shared_actions_across_events_in_a_consumer(self) -> None:
+        lanes = "workflows: .github/workflows/*\nrust: Cargo.toml rust-toolchain* crates/*\ndb: db/*"
+        patterns = ".github/* !.github/workflows/*"
+        events = (
+            ("pull_request", lambda b: {"pull_request": {"base": {"sha": b}}}, None),
+            ("merge_group", lambda b: {"merge_group": {"base_sha": b}}, None),
+            ("push", lambda b: {}, "base"),
+        )
+        cases = (
+            ((".github/workflows/ci.yml",), {"workflows": True, "rust": False, "db": False}),
+            ((".github/workflows/ci.yml", "rust-toolchain.toml"), {"workflows": True, "rust": True, "db": False}),
+            ((".github/workflows/ci.yml", ".github/actions/setup/action.yml"), {"workflows": True, "rust": True, "db": True}),
+            ((".github/unknown/config.json",), {"workflows": True, "rust": True, "db": True}),
+        )
+        for event, payload, verified in events:
+            for changes, expected in cases:
+                with self.subTest(event=event, changes=changes):
+                    outputs, base = self.run_in_repo(event, payload, verified=verified, lanes=lanes,
+                                                      global_patterns=patterns, changes=changes)
+                    self.assertEqual(outputs["base"], base)
+                    self.assertEqual(json.loads(outputs["run"]), expected)
+
+    def test_invalid_global_patterns_fail_before_writing_outputs(self) -> None:
+        for bad in ("!", "!.github/workflows/*", ".github/* !"):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
+                output = pathlib.Path(tmp, "output")
+                env = dict(LANES="test: src/*", GITHUB_EVENT_NAME="pull_request",
+                           GITHUB_REPOSITORY="o/r", GITHUB_OUTPUT=str(output), GLOBAL_PATTERNS=bad)
+                with mock.patch.dict(os.environ, env, clear=True):
+                    with self.assertRaises(ValueError):
+                        ci_range.main()
+                self.assertFalse(output.exists())
 
     def test_global_configuration_keeps_unavailable_base_fail_closed(self) -> None:
         for patterns in ("", ".github/actions/build/*"):

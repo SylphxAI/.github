@@ -46,11 +46,18 @@ inputs:
     default: ""
   global-patterns:
     description: >
-      Whitespace-separated fnmatch globs over repository-relative paths;
-      `*` also crosses `/`. A matching changed file selects every lane.
-      Defaults to `.github/*`; caller patterns replace that default.
-      Set to an empty string to disable global matching. Without a trusted
-      base, every lane still runs (unless `only` selects named lanes).
+      Whitespace-separated fnmatch globs over repository-relative paths
+      (`#` starts a line comment; `*` crosses `/`). Patterns are evaluated
+      in order, and the last match wins: prefix `!` after a positive pattern
+      to carve out paths such as `.github/* !.github/workflows/*` so
+      workflow-only edits run only matching workflow/guard lanes while shared
+      `.github/actions/*` and unknown `.github/*` paths still select every
+      lane; append narrower positive globs afterwards to re-include specific
+      workflows. Bare `!` or a leading `!` exclusion without an earlier
+      positive pattern fails closed. Defaults to `.github/*`; caller patterns
+      replace that default, and an empty string disables global matching.
+      Without a trusted base, every lane still runs (unless `only` selects
+      named lanes).
     default: ".github/*"
   only:
     description: >
