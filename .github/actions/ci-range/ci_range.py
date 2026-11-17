@@ -26,9 +26,12 @@ paths from that lane (exclusions win regardless of order). Exclusions alone
 imply `*`; with exclusions, a lane needs at least one included, nonexcluded
 changed path. Empty lanes request only the range (run = {}).
 No base selects every lane. Global patterns also select every lane when a
-changed path matches. They default to `.github/*`; callers can replace them
-with whitespace-separated fnmatch globs, or disable global matching with an
-empty string. Per-lane matching still applies.
+changed path matches. Patterns are evaluated left to right (`#` comments
+ignored): prefix `!` after an earlier positive pattern to exclude paths (for
+example `.github/* !.github/workflows/*`), and append narrower positive globs
+afterwards to re-include specific workflows; bare or leading `!` exclusions
+fail closed. Global patterns default to `.github/*`; callers can replace them
+or disable global matching with an empty string. Per-lane matching still applies.
 
 `only` (a dispatch of the verify workflow, by a person or by the red-main
 handler) runs exactly the named lanes, whatever the range selected: naming a
@@ -84,13 +87,39 @@ def lane_name(job: str) -> str:
     return re.sub(r"\s*\(.*\)$", "", job).strip()
 
 
+def parse_global_patterns(text: str) -> list[tuple[bool, str]]:
+    rules: list[tuple[bool, str]] = []
+    has_positive = False
+    for raw in text.splitlines():
+        for token in raw.split("#", 1)[0].split():
+            if token.startswith("!"):
+                pattern = token[1:]
+                if not pattern:
+                    raise ValueError("global-patterns exclusion '!' requires a pattern")
+                if not has_positive:
+                    raise ValueError(
+                        f"global-patterns exclusion {token!r} requires an earlier positive pattern"
+                    )
+                rules.append((True, pattern))
+            else:
+                has_positive = True
+                rules.append((False, token))
+    return rules
+
+
+def matches_global(path: str, rules: list[tuple[bool, str]]) -> bool:
+    matched = False
+    for negated, pattern in rules:
+        if fnmatch.fnmatchcase(path, pattern):
+            matched = not negated
+    return matched
+
+
 def select(lanes: dict[str, list[str]], changed: list[str] | None, only: str = "",
            *, global_patterns: str = ".github/*") -> dict[str, bool]:
     """Global matches select every lane; no base always does, before `only`."""
-    global_globs = global_patterns.split()
-    everything = changed is None or any(
-        fnmatch.fnmatchcase(path, pattern) for path in changed for pattern in global_globs
-    )
+    rules = parse_global_patterns(global_patterns)
+    everything = changed is None or any(matches_global(path, rules) for path in changed)
     run = {}
     for name, patterns in lanes.items():
         includes = [p for p in patterns if not p.startswith("!")]
@@ -185,6 +214,8 @@ def main() -> int:
             return 0
         raise ValueError("unsupported proof mode")
     lanes = parse_lanes(os.environ["LANES"])
+    global_patterns = os.environ.get("GLOBAL_PATTERNS", ".github/*")
+    parse_global_patterns(global_patterns)
     event = os.environ["GITHUB_EVENT_NAME"]
     payload = json.load(open(os.environ["GITHUB_EVENT_PATH"])) if os.environ.get("GITHUB_EVENT_PATH") else {}
     workflow_file = os.environ.get("GITHUB_WORKFLOW_REF", "").split("@", 1)[0].rsplit("/", 1)[-1]
@@ -201,7 +232,7 @@ def main() -> int:
         base = ""
     changed = git("diff", "--name-only", "--no-renames", base, "HEAD").splitlines() if base else None
     run = select(lanes, changed, os.environ.get("ONLY", ""),
-                 global_patterns=os.environ.get("GLOBAL_PATTERNS", ".github/*"))
+                 global_patterns=global_patterns)
     import queue_reuse
     execute, reused, evidence = queue_reuse.select(event, payload, default_branch, git("rev-parse", "HEAD"), run)
     with open(os.environ["GITHUB_OUTPUT"], "a") as out:

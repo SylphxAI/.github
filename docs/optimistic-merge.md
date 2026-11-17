@@ -252,9 +252,14 @@ benchmark or nightly) never makes the trunk red here.
 - [`ci-range`](../.github/actions/ci-range/action.yml): the range and the lane
   selection, the same answer in the gate and in verify. Lanes are
   `name: path globs`. The whitespace-separated `global-patterns` input
-  selects every lane when a changed path matches (fnmatch; `*` crosses `/`).
-  It defaults to `.github/*`, preserving full `.github/` invalidation. Caller
-  patterns replace the default; an empty string disables global matching,
+  selects every lane when a changed path matches (fnmatch; `*` crosses `/`,
+  `#` starts a line comment). Patterns evaluate left to right so `!glob`
+  after a positive pattern carves out paths (such as
+  `.github/* !.github/workflows/*` to run only workflow/guard lanes when shared
+  `.github/actions/*` and toolchains are untouched) and later positive globs
+  can re-include specific workflows; bare or leading `!` exclusions fail
+  closed. It defaults to `.github/*`, preserving full `.github/` invalidation.
+  Caller patterns replace the default; an empty string disables global matching,
   not per-lane matching or the all-lanes fallback when no trusted base exists.
   Lane-local `!glob` exclusions win regardless of order: `test: * !web/*`
   selects only included, nonexcluded changed paths. Exclusions alone imply
