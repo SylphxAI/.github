@@ -53,6 +53,12 @@ its merge-group CI p90 was 78 minutes, with 6 of 46 runs over 60 minutes, and
 queue heads past the 60-minute deadline sat `UNMERGEABLE`. Its other queue
 parameters stay at the defaults.
 
+Keel, Spiron and Infra have a 120-minute response deadline as well. On
+2026-11-17 the shared control runner lane was starved, merge-group jobs on
+these repositories waited 42+ minutes for a runner, and queue heads went
+`UNMERGEABLE` at 60 minutes with only queued checks. Their other queue
+parameters stay at the defaults.
+
 ## Required approving reviews: none
 
 Repository `pull_request` rules require zero human approving reviews (policy

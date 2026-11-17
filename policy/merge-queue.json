@@ -80,6 +80,30 @@
         "check_response_timeout_minutes": 120
       },
       "reason": "Merge-group CI p90 was 78 minutes (6 of 46 runs over 60, 2026-11-16..17 under peak load); groups past the 60-minute deadline wedged UNMERGEABLE at the queue head. Allow 120 minutes; other queue settings stay at the defaults."
+    },
+    {
+      "repo": "SylphxAI/keel",
+      "ruleset": "sylphx-merge-queue",
+      "settings": {
+        "check_response_timeout_minutes": 120
+      },
+      "reason": "Hands f3d9722e starved the sylphx-linux-control lane on 2026-11-17; merge-group CI on non-cloud repositories ran past 60 minutes and queue heads sat UNMERGEABLE with only queued checks (keel #6300/#6298, spiron #5420; infra groups waited 42+ minutes for a runner). Allow 120 minutes, as for cloud; other queue settings stay at the defaults."
+    },
+    {
+      "repo": "SylphxAI/spiron",
+      "ruleset": "sylphx-merge-queue",
+      "settings": {
+        "check_response_timeout_minutes": 120
+      },
+      "reason": "Hands f3d9722e starved the sylphx-linux-control lane on 2026-11-17; merge-group CI on non-cloud repositories ran past 60 minutes and queue heads sat UNMERGEABLE with only queued checks (keel #6300/#6298, spiron #5420; infra groups waited 42+ minutes for a runner). Allow 120 minutes, as for cloud; other queue settings stay at the defaults."
+    },
+    {
+      "repo": "SylphxAI/infra",
+      "ruleset": "infra-main-required-ci",
+      "settings": {
+        "check_response_timeout_minutes": 120
+      },
+      "reason": "Hands f3d9722e starved the sylphx-linux-control lane on 2026-11-17; merge-group CI on non-cloud repositories ran past 60 minutes and queue heads sat UNMERGEABLE with only queued checks (keel #6300/#6298, spiron #5420; infra groups waited 42+ minutes for a runner). Allow 120 minutes, as for cloud; other queue settings stay at the defaults."
     }
   ],
   "required_checks": [
