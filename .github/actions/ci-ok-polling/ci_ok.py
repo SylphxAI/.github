@@ -348,14 +348,26 @@ def suite_events(workflow_runs: list[dict]) -> dict[int, str]:
             for r in workflow_runs}
 
 
-def main() -> int:
+def main(*, watchdog: bool = False) -> int:
+    try:
+        minutes = min(360, int(os.environ.get("CI_OK_TIMEOUT_MINUTES", "14")))
+        if minutes <= 0:
+            raise ValueError
+    except ValueError:
+        print("::error::timeout-minutes must be a positive whole number of minutes")
+        return 1
+    if watchdog:
+        # Bound the polling process even if an API read stalls. Both invocations
+        # derive their deadline from the same input, default and cap.
+        os.execlp("timeout", "timeout", "--kill-after=5s", f"{minutes}m", sys.executable, __file__)
+
     repo, sha, token = os.environ["REPO"], os.environ["SHA"], os.environ["TOKEN"]
     ignore = {os.environ.get("SELF_NAME", "ci-ok")} | {
         n.strip() for n in os.environ.get("CI_OK_IGNORE", "").split(",") if n.strip()}
     required = {n.strip() for n in os.environ.get("CI_OK_REQUIRED", "").split(",") if n.strip()}
     interval = int(os.environ.get("CI_OK_INTERVAL", "20"))
     global _deadline
-    deadline = time.time() + 60 * max(0, min(14, int(os.environ.get("CI_OK_TIMEOUT_MINUTES", "14"))))
+    deadline = time.time() + 60 * minutes
     _deadline = deadline
     bounded_sleep(int(os.environ.get("CI_OK_SETTLE", "45")))  # let every workflow register its runs
     last, stable = None, 0
@@ -400,6 +412,8 @@ def main() -> int:
         if state == "fail":
             print("::error::failed checks: " + ", ".join(detail))
             return 1
+        if time.time() >= deadline:
+            break
         if state == "pending":
             print(f"waiting on: {', '.join(detail)}", flush=True)
             last, stable = None, 0
@@ -415,4 +429,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if sys.argv[1:] not in ([], ["--watchdog"]):
+        sys.exit("usage: ci_ok.py [--watchdog]")
+    sys.exit(main(watchdog=bool(sys.argv[1:])))

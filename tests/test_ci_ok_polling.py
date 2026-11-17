@@ -78,17 +78,25 @@ def test_nonterminal_conclusion_does_not_create_failure():
     assert ci_ok.evaluate([run("build", "in_progress", "failure")], set()) == ("pending", ["build"])
 
 
-def poll(snapshots):
+def poll(snapshots, *, minutes="2", event="pull_request", interval="20", read_seconds=0):
     """Drive the real main loop with a deterministic clock and API snapshots."""
     env = {"REPO": "owner/repo", "SHA": "head", "TOKEN": "test", "CI_OK_SETTLE": "0",
-           "CI_OK_INTERVAL": "20", "CI_OK_TIMEOUT_MINUTES": "2"}
+           "CI_OK_INTERVAL": interval, "EVENT_NAME": event}
+    if minutes is not None:
+        env["CI_OK_TIMEOUT_MINUTES"] = minutes
+    snapshots = iter(snapshots)
+
+    def read_checks(*args):
+        clock[0] += read_seconds
+        return next(snapshots)
+
     clock = [0]
     output = io.StringIO()
     with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
             mock.patch.object(ci_ok.time, "time", side_effect=lambda: clock[0]), \
             mock.patch.object(ci_ok.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
             mock.patch.object(ci_ok, "fetch_suites", return_value=[]), \
-            mock.patch.object(ci_ok, "fetch", side_effect=snapshots) as fetch, \
+            mock.patch.object(ci_ok, "fetch", side_effect=read_checks) as fetch, \
             contextlib.redirect_stdout(output):
         result = ci_ok.main()
     return result, fetch.call_count, clock[0], output.getvalue()
@@ -128,6 +136,62 @@ def test_a_changed_complete_inventory_resets_success_stability():
 
 def test_a_completed_failure_does_not_wait_for_a_second_complete_poll():
     assert poll([[run("build", conclusion="failure")]])[:3] == (1, 1, 0)
+
+
+class PollingDeadlineTest(unittest.TestCase):
+    def test_default_budget_expires_after_fourteen_minutes(self) -> None:
+        pending = [run("backend-build", "in_progress", None)]
+        result, calls, elapsed, output = poll([pending] * 14, minutes=None, interval="60")
+        self.assertEqual((result, calls, elapsed), (1, 14, 14 * 60))
+        self.assertIn("::error::timed out waiting for checks", output)
+
+    def test_longer_budget_allows_merge_group_backend_build_to_pass(self) -> None:
+        pending = [run("backend-build", "in_progress", None)]
+        passed = [run("backend-build")]
+        result, calls, elapsed, output = poll([pending] * 28 + [passed, passed],
+                                              minutes="35", event="merge_group", interval="60")
+        self.assertEqual((result, calls, elapsed), (0, 30, 29 * 60))
+        self.assertIn("all checks passed: backend-build", output)
+
+    def test_still_pending_at_custom_deadline_fails_closed(self) -> None:
+        pending = [run("backend-build", "in_progress", None)]
+        result, calls, elapsed, output = poll([pending] * 18, minutes="17", interval="60")
+        self.assertEqual((result, calls, elapsed), (1, 17, 17 * 60))
+        self.assertIn("::error::timed out waiting for checks", output)
+
+    def test_second_passing_read_at_deadline_cannot_turn_gate_green(self) -> None:
+        passed = [run("backend-build")]
+        result, calls, elapsed, output = poll([passed, passed], minutes="1", read_seconds=20)
+        self.assertEqual((result, calls, elapsed), (1, 2, 60))
+        self.assertNotIn("all checks passed", output)
+        self.assertIn("::error::timed out waiting for checks", output)
+
+    def test_failure_received_at_deadline_keeps_the_failure_diagnostic(self) -> None:
+        failed = [run("backend-build", conclusion="failure")]
+        result, calls, elapsed, output = poll([failed], minutes="1", read_seconds=60)
+        self.assertEqual((result, calls, elapsed), (1, 1, 60))
+        self.assertIn("::error::failed checks: backend-build", output)
+
+    def test_watchdog_uses_default_override_and_runner_limit(self) -> None:
+        for value, duration in [(None, "14m"), ("35", "35m"), ("361", "360m")]:
+            with self.subTest(value=value):
+                env = {} if value is None else {"CI_OK_TIMEOUT_MINUTES": value}
+                with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                        mock.patch.object(ci_ok.os, "execlp", side_effect=SystemExit) as exec_timeout, \
+                        self.assertRaises(SystemExit):
+                    ci_ok.main(watchdog=True)
+                exec_timeout.assert_called_once_with("timeout", "timeout", "--kill-after=5s", duration,
+                                                     ci_ok.sys.executable, ci_ok.__file__)
+
+    def test_invalid_budget_fails_before_polling_or_starting_watchdog(self) -> None:
+        for value in ("", "0", "-1", "15m", "14.5"):
+            with self.subTest(value=value):
+                output = io.StringIO()
+                with mock.patch.dict(ci_ok.os.environ, {"CI_OK_TIMEOUT_MINUTES": value}, clear=True), \
+                        mock.patch.object(ci_ok.os, "execlp") as exec_timeout, contextlib.redirect_stdout(output):
+                    self.assertEqual(ci_ok.main(watchdog=True), 1)
+                exec_timeout.assert_not_called()
+                self.assertIn("::error::timeout-minutes must be a positive whole number", output.getvalue())
 
 
 class ExistingPollingProtectionsTest(unittest.TestCase):
