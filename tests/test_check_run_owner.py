@@ -95,7 +95,8 @@ class CheckRunOwnerTests(unittest.TestCase):
         polling = load('.github/actions/ci-ok-polling/action.yml')
         self.assertEqual(polling['inputs']['timeout-minutes']['default'], '14')
         terminal = polling['runs']['steps'][-1]
-        self.assertIn('14m python3', terminal['run'])
+        self.assertEqual(terminal['env']['CI_OK_TIMEOUT_MINUTES'], '${{ inputs.timeout-minutes }}')
+        self.assertEqual(terminal['run'], 'python3 "$GITHUB_ACTION_PATH/ci_ok.py" --watchdog')
 
 
 if __name__ == '__main__':
