@@ -45,8 +45,13 @@ HK Mahjong Tycoon's Keel repository has a 120-minute response deadline. On
 the browser job took 75 minutes, including 42 minutes for the Hall panel checks.
 The 60-minute deadline removed the entry before its required `test` check could
 finish. The scoped override allows that measured work plus margin while keeping
-the repository's other queue parameters and required checks. Other repositories
-retain the default deadline.
+the repository's other queue parameters and required checks. Repositories
+without an override retain the default deadline.
+
+Cloud has a 120-minute response deadline too. Under peak load on 2026-11-16..17
+its merge-group CI p90 was 78 minutes, with 6 of 46 runs over 60 minutes, and
+queue heads past the 60-minute deadline sat `UNMERGEABLE`. Its other queue
+parameters stay at the defaults.
 
 ## Required approving reviews: none
 
