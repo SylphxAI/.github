@@ -41,7 +41,7 @@ permissions:
 jobs:
   stack:
     # The shared check participates in this repository's real required verdict.
-    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,7 +54,7 @@ jobs:
           base: ${{ github.event.inputs.code-base || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
 
   project-control:
-    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -252,7 +252,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run
     name: JUnit fixture (${{ matrix.shard }})
     # Standard hosted runners are free only while this repository is public.
-    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -297,7 +297,7 @@ jobs:
     # repository never publishes; pull requests and merge groups diff their
     # own base.
     if: github.event_name != 'push'
-    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-control' }}
     timeout-minutes: 10
     outputs:
       run: ${{ steps.range.outputs.run }}

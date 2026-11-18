@@ -77,7 +77,8 @@ class ReusableRunnerSpend(unittest.TestCase):
 
     def test_existing_self_hosted_input_families_are_preserved_and_hosted_is_ignored(self):
         import yaml
-        for name, key in (('image-lane.yml', 'runner-class'), ('changes.yml', 'runner')):
+        for name, key, fallback in (('image-lane.yml', 'runner-class', 'sylphx-linux-standard'),
+                                    ('changes.yml', 'runner', 'sylphx-linux-control')):
             document = yaml.load(WORKFLOWS[name], Loader=yaml.BaseLoader)
             for job in document['jobs'].values():
                 if 'runs-on' not in job:
@@ -86,7 +87,21 @@ class ReusableRunnerSpend(unittest.TestCase):
                               'sylphx-linux-large-merge', 'sylphx-linux-xlarge',
                               'ubuntu-latest', 'macos-latest', 'ubuntu-24.04-16core', ''):
                     result = expression(job['runs-on'], {'inputs.' + key: {value}})
-                    self.assertEqual(result, {value if value.startswith('sylphx-linux-') else 'sylphx-linux-standard'})
+                    self.assertEqual(result, {value if value.startswith('sylphx-linux-') else fallback})
+
+    def test_changes_default_uses_control_on_every_caller_event(self):
+        caller = f"""on: [{', '.join(EVENTS)}]
+jobs:
+  router:
+    uses: ./.github/workflows/changes.yml
+"""
+        for private in (True, False):
+            routes = runner_evaluations({'caller.yml': caller, 'changes.yml': WORKFLOWS['changes.yml']},
+                                        private=private)
+            self.assertEqual({route.event for route in routes}, set(EVENTS))
+            for route in routes:
+                self.assertEqual(route.errors, ())
+                self.assertEqual(route.values, {'sylphx-linux-control'})
 
     def test_all_reusable_visibility_routes_fail_closed_when_payload_is_absent(self):
         import yaml
@@ -98,7 +113,8 @@ class ReusableRunnerSpend(unittest.TestCase):
                 result = expression(job['runs-on'], {'github.event.repository.visibility': {None},
                                     'inputs.runs-on': {'ubuntu-latest'}, 'inputs.runner-class': {'standard'},
                                     'github.event_name': {'schedule'}})
-                self.assertEqual(result, {'sylphx-linux-standard'})
+                expected = 'sylphx-linux-control' if name == 'junit-consumer.yml' else 'sylphx-linux-standard'
+                self.assertEqual(result, {expected})
 
     def test_guard_rejects_hosted_unknown_and_null_truthiness_selectors(self):
         bad = [

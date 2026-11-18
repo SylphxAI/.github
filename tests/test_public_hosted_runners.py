@@ -39,6 +39,20 @@ class PublicHostedRunners(unittest.TestCase):
         self.assertEqual(merge_lane_findings(WORKFLOWS, private=False, org='SylphxAI',
                                             check_all_events=True), [])
 
+    def test_private_lightweight_guards_use_control_even_without_visibility_payload(self):
+        guards = {('project-control.yml', job) for job in
+                  ('stack', 'project-control', 'template-plan', 'junit-producer')}
+        guards.add(('junit-consumer.yml', 'consume'))
+        for payload in (True, False):
+            routes = [route for route in runner_evaluations(WORKFLOWS, private=True,
+                                                           repository_present=payload)
+                      if (route.file, route.job) in guards]
+            self.assertEqual({(route.file, route.job) for route in routes}, guards)
+            for route in routes:
+                with self.subTest(payload=payload, file=route.file, job=route.job, event=route.event):
+                    self.assertEqual(route.errors, ())
+                    self.assertEqual(route.values, {'sylphx-linux-control'})
+
     def test_other_public_job_cannot_inherit_consumer_self_hosted_exception(self):
         workflow = yaml.load(WORKFLOWS['project-control.yml'], Loader=yaml.BaseLoader)
         workflow['jobs']['tests']['runs-on'] = 'sylphx-linux-standard'
