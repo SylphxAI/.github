@@ -67,7 +67,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22.14.0"
+          node-version: "26.13.1"
       - name: Enforce managed runner defaults
         run: |
           # Larger and GPU hosted runners are banned everywhere (owner#750).
@@ -93,7 +93,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.15.2"
       - name: Check CI policy as a consumer
         uses: ./.github/actions/ci-policy
         with:
@@ -108,7 +108,7 @@ jobs:
       - name: Set up Node for the Vitest consumer
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22.14.0"
+          node-version: "26.13.1"
       - name: Install native Vitest reporter
         run: |
           npm install --prefix "$RUNNER_TEMP/ci-test-runners" --include=optional --ignore-scripts --no-audit --no-fund vitest@4.0.18
@@ -382,7 +382,7 @@ jobs:
     with:
       runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
       workspace: tests/fixtures/rust-node-consumer
-      node-version: '22'
+      node-version: '26.13.1'
       npm-ci: true
 
   ci-range-consumer:
