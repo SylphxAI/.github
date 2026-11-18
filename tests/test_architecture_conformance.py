@@ -329,9 +329,12 @@ class AdversarialContextTests(unittest.TestCase):
             self.assertIn('stack', required.split(','))
             for event, producer_run in [('pull_request', ''), ('merge_group', ''), ('push', ''),
                                         ('workflow_dispatch', ''), ('workflow_dispatch', '123')]:
-                # Resolve the two event selections used by Project control;
-                # GitHub evaluates these before setting the action's inputs.
-                selected_required = required.replace(
+                # Resolve the event selections with no PR-tree proof; GitHub
+                # evaluates these before setting the action's inputs.
+                required_without_proof = required.replace(
+                    "${{ !(github.event_name == 'merge_group' && needs.template-plan.result == 'success' && needs.template-plan.outputs.pr-reused == 'true') && 'rust-node-consumer' || '' }}",
+                    'rust-node-consumer')
+                selected_required = required_without_proof.replace(
                     "${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }}",
                     'template-plan,template-verdict' if event != 'push' else '')
                 selected_required = selected_required.replace(

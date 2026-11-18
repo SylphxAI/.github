@@ -187,6 +187,15 @@ def base_for(event: str, payload: dict, repo: str, workflow_file: str, branch: s
 
 def main() -> int:
     mode = os.environ.get("PROOF_MODE", "range")
+    if mode == 'merge-group':
+        import pr_reuse
+        evidence = pr_reuse.select(git, os.environ)
+        encoded = json.dumps(evidence, separators=(',', ':'))
+        if evidence:
+            print(f'Authenticated identical PR tree: {encoded}')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            out.write(f'pr-reused={str(bool(evidence)).lower()}\npr-reuse-proof={encoded}\n')
+        return 0
     if mode != "range":
         import importlib.util
         from pathlib import Path

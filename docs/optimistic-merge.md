@@ -335,6 +335,31 @@ benchmark or nightly) never makes the trunk red here.
   Queue evidence never supplies `verified`, erases a post-main failure, or
   changes `mode: run` semantics.
 
+  **PR to merge queue (exact tree).** Separately, a gate can call `ci-range`
+  with `mode: merge-group` after checking out the native queue SHA. Give it
+  `pr-reuse-local-workflow` (a local reusable workflow filename),
+  `pr-reuse-job` (the exact Actions leaf name, e.g. `build / Build`), and
+  `pr-reuse-aggregate` (e.g. `ci-ok`). The job needs read access to contents,
+  pull requests, Actions and checks. A native queue ref locates an open PR;
+  reuse requires a same-repository native PR success from the same workflow,
+  and both the leaf and aggregate must be authenticated GitHub Actions checks
+  from its latest exact-head run and attempt. GitHub's local-workflow binding
+  names the PR's synthetic merge checkout; the PR head SHA alone is **not**
+  the checked tree. The merge checkout's tree must equal the queue tree. A
+  different base or a multi-entry group can change the tree even if the head
+  is unchanged. Missing, stale, ambiguous or unreadable proof (including an
+  API timeout) returns `pr-reused=false` and leaves the build required.
+
+  Opt in only for a local reusable leaf that checks out the native event SHA
+  and does the same work on either event, with equivalent runners, pinned
+  toolchains and inputs, and no event-dependent checks, mutable build inputs,
+  artifacts or outputs needed downstream. Use the **same** condition in the
+  job and in the existing aggregate: skip and omit the leaf only for a queue
+  run with a successful proof job and `pr-reused == 'true'`. Keep the
+  aggregate and all other mandatory checks. See Project control's
+  Rust/Node fixture for the wiring. The proof is not a post-main verification,
+  and no other job or repository opts in automatically.
+
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
   `verified` verdict. Skipped passes; failed fails; a cancelled dependency
   fails too, reported as CANCELLED (naming a superseded push or a stopped run),

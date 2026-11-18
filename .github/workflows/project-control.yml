@@ -124,8 +124,8 @@ jobs:
           CI_TEST_REQUIRE_RUNNERS: '1'
           CARGO_TARGET_DIR: ${{ runner.temp }}/consumer-target
         run: python -m unittest discover -s tests
-      - name: Public Artifact image publishing contract
-        run: python -m pytest -q tests/test_artifact_image_publish.py
+      - name: Artifact publishing and PR reuse contracts
+        run: python -m pytest -q tests/test_artifact_image_publish.py tests/test_ci_range_pr_reuse.py
       - name: Prepare Keel tools cache consumer
         run: |
           python3 - <<'PYTHON'
@@ -293,6 +293,11 @@ jobs:
   # here, before any repository pins it (#111). The starters are linted as
   # workflows, placed where a repository keeps them.
   template-plan:
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
     # A push would walk the trunk's history for a `verified` check this
     # repository never publishes; pull requests and merge groups diff their
     # own base.
@@ -301,6 +306,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       run: ${{ steps.range.outputs.run }}
+      pr-reused: ${{ steps.pr-reuse.outcome == 'success' && steps.pr-reuse.outputs.pr-reused == 'true' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -353,6 +359,17 @@ jobs:
             ${{ runner.temp }}/starter/.github/workflows/keel-pin-check.yml
             ${{ runner.temp }}/starter/.github/workflows/pages-publish.yml
 
+      - name: Check for prior Rust verification of the same tree
+        id: pr-reuse
+        if: github.event_name == 'merge_group'
+        continue-on-error: true
+        uses: ./.github/actions/ci-range
+        with:
+          mode: merge-group
+          pr-reuse-local-workflow: rust-ci.yml
+          pr-reuse-job: rust-node-consumer / Rust (fmt, clippy, test)
+          pr-reuse-aggregate: ci-ok
+
   template-verdict:
     permissions:
       actions: read
@@ -375,6 +392,8 @@ jobs:
           required: template-plan
 
   rust-node-consumer:
+    needs: template-plan
+    if: ${{ !cancelled() && !(github.event_name == 'merge_group' && needs.template-plan.result == 'success' && needs.template-plan.outputs.pr-reused == 'true') }}
     permissions:
       contents: read
       id-token: write
@@ -382,6 +401,8 @@ jobs:
     with:
       runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
       workspace: tests/fixtures/rust-node-consumer
+      # Tree reuse requires the same toolchain on PR and queue, not floating stable.
+      toolchain: '1.100.0'
       node-version: '26.13.1'
       npm-ci: true
 
@@ -447,7 +468,7 @@ jobs:
           print(json.dumps({'execute': execute, 'reused': reused, 'proof': proof}, sort_keys=True))
           PYTHON
 
-  # Every required job must run and succeed before the merge gate can pass.
+  # Every required job must succeed. Only a proven identical queue tree can reuse Rust.
   ci-ok:
     permissions:
       actions: read
@@ -467,4 +488,4 @@ jobs:
         with:
           separate-pr-metadata: 'true'
           needs: ${{ toJSON(needs) }}
-          required: stack,project-control,tests,rust-node-consumer,ci-range-consumer,${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ (github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run) && 'junit-producer' || 'junit-consumer' }}
+          required: stack,project-control,tests,ci-range-consumer,${{ !(github.event_name == 'merge_group' && needs.template-plan.result == 'success' && needs.template-plan.outputs.pr-reused == 'true') && 'rust-node-consumer' || '' }},${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }},${{ (github.event_name != 'workflow_dispatch' || !inputs.junit-producer-run) && 'junit-producer' || 'junit-consumer' }}
