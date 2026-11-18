@@ -223,7 +223,7 @@ class NodeDependencies(unittest.TestCase):
         jobs = yaml.safe_load((ROOT / ".github/workflows/project-control.yml").read_text())["jobs"]
         consumer = jobs["rust-node-consumer"]
         self.assertEqual(consumer["uses"], "./.github/workflows/rust-ci.yml")
-        self.assertEqual(consumer["with"]["node-version"], "22")
+        self.assertEqual(consumer["with"]["node-version"], "26.13.1")
         self.assertIs(consumer["with"]["npm-ci"], True)
         self.assertIn("rust-node-consumer", jobs["ci-ok"]["needs"])
         self.assertIn("rust-node-consumer", jobs["ci-ok"]["steps"][-1]["with"]["required"])
