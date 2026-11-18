@@ -286,23 +286,27 @@ def process_commands(text):
             yield [command, *(decode(arg) for arg in args)], at
 
 
-def shell_wrappers(sources):
-    """Resolve ordinary shell functions that forward argv to Git or a wrapper.
+_WRAPPER_MULTILINE = re.compile(r"(?m)^([ \t]*)(?:function\s+)?([A-Za-z_][A-Za-z_0-9]*)\s*\(\)\s*\{([^\n]*\n[\s\S]*?)^\1\}")
+_WRAPPER_INLINE = re.compile(r"(?m)^[ \t]*(?:function\s+)?([A-Za-z_][A-Za-z_0-9]*)\s*\(\)\s*\{([^\n]*)\}")
+_WRAPPER_FORWARD = re.compile(r"\$[@*]")
+_WRAPPER_SHIFT = re.compile(r"(?m)^\s*shift(?:\s+([0-9]+))?\s*(?:;|$)")
+_PY_MAIN = re.compile(r'''if\s+__name__\s*==\s*['"]__main__['"]''')
+_SHELL_PREFIX = re.compile(r"(?m)^[ \t]*(?:RUN|@)[ \t]*")
 
-    Only literal call templates are followed. No repository code is sourced.
-    """
-    definitions = []
-    multiline = re.compile(r"(?m)^([ \t]*)(?:function\s+)?([A-Za-z_][A-Za-z_0-9]*)\s*\(\)\s*\{([^\n]*\n[\s\S]*?)^\1\}")
-    inline = re.compile(r"(?m)^[ \t]*(?:function\s+)?([A-Za-z_][A-Za-z_0-9]*)\s*\(\)\s*\{([^\n]*)\}")
-    for text in sources:
-        definitions += [(m[2], m[3]) for m in multiline.finditer(text)]
-        definitions += [(m[1], m[2]) for m in inline.finditer(text)]
+
+def _extract_wrapper_defs(text):
+    defs = [(m[2], m[3]) for m in _WRAPPER_MULTILINE.finditer(text)]
+    defs += [(m[1], m[2]) for m in _WRAPPER_INLINE.finditer(text)]
+    return defs
+
+
+def _resolve_wrappers(definitions):
     templates = {}
     changed = True
     while changed:
         changed = False
         for name, body in definitions:
-            if name in templates or not re.search(r"\$[@*]", body):
+            if name in templates or not _WRAPPER_FORWARD.search(body):
                 continue
             try:
                 commands = list(executable_commands(body))
@@ -313,11 +317,22 @@ def shell_wrappers(sources):
                 if expanded and expanded[0] == "git" and any(v in {"$@", "$*"} for v in expanded):
                     # A literal shift before forwarding consumes the helper's
                     # own first argument (for example its branch name).
-                    shifts = sum(int(m[1] or 1) for m in re.finditer(r"(?m)^\s*shift(?:\s+([0-9]+))?\s*(?:;|$)", body))
+                    shifts = sum(int(m[1] or 1) for m in _WRAPPER_SHIFT.finditer(body))
                     templates[name] = (expanded, shifts)
                     changed = True
                     break
     return templates
+
+
+def shell_wrappers(sources):
+    """Resolve ordinary shell functions that forward argv to Git or a wrapper.
+
+    Only literal call templates are followed. No repository code is sourced.
+    """
+    definitions = []
+    for text in sources:
+        definitions.extend(_extract_wrapper_defs(text))
+    return _resolve_wrappers(definitions)
 
 
 def expand_wrapper(argv, templates):
@@ -350,9 +365,13 @@ def candidate(path):
         or p.name in {"Makefile", "justfile", "Dockerfile", "package.json"})
 
 
-def scan(tree):
+def scan(tree, *, cache=None):
     findings, unreadable = [], []
     files = {}
+    blob_oid_fn = getattr(tree, "blob_oid", None) if cache is not None else None
+    file_cache = cache.setdefault("files", {}) if cache is not None else None
+    scan_cache = cache.setdefault("scans", {}) if cache is not None else None
+    wrapper_defs = []
     for path in sorted(tree.paths()):
         if not candidate(path):
             continue
@@ -360,20 +379,47 @@ def scan(tree):
         shell = p.suffix in SHELL or p.name in {"Makefile", "justfile", "Dockerfile"}
         workflow = p.suffix in {".yml", ".yaml"}
         package = p.name == "package.json"
+        oid = blob_oid_fn(path) if blob_oid_fn is not None else None
+        fkey = (path, oid, shell, workflow, package) if oid is not None else None
+        if fkey is not None and fkey in file_cache:
+            included, text, fdefs = file_cache[fkey]
+            if not included:
+                continue
+            files[path] = (text, shell, workflow, package, oid)
+            if shell or workflow:
+                wrapper_defs.extend(fdefs)
+            continue
         text = tree.read(path)
         if text is None:
             unreadable.append({"path": path, "reason": "Git blob unavailable"})
             continue
         if p.suffix in SOURCE and not (set(p.parts[:-1]) & {"scripts", "script", "bin", ".github"}
-                or text.startswith("#!") or (p.suffix == ".py" and re.search(r'''if\s+__name__\s*==\s*['"]__main__['"]''', text))):
+                or text.startswith("#!") or (p.suffix == ".py" and _PY_MAIN.search(text))):
+            if fkey is not None:
+                file_cache[fkey] = (False, None, ())
             continue  # A product library method is not repository automation.
-        files[path] = (text, shell, workflow, package)
-    wrappers = shell_wrappers([text for text, shell, workflow, _ in files.values() if shell or workflow])
-    for path, (text, shell, workflow, package) in files.items():
+        fdefs = _extract_wrapper_defs(text) if (shell or workflow) else ()
+        if fkey is not None:
+            file_cache[fkey] = (True, text, fdefs)
+        files[path] = (text, shell, workflow, package, oid)
+        if shell or workflow:
+            wrapper_defs.extend(fdefs)
+    wrappers = _resolve_wrappers(wrapper_defs)
+    wrappers_key = tuple(sorted((k, tuple(v[0]), v[1]) for k, v in wrappers.items())) if scan_cache is not None else None
+    for path, (text, shell, workflow, package, oid) in files.items():
         p = pathlib.PurePosixPath(path)
         # Avoid parsing unrelated files (including old language dialects).
         if "push" not in text and "/git/refs" not in text:
             continue
+        skey = (path, oid, wrappers_key) if (scan_cache is not None and oid is not None) else None
+        if skey is not None and skey in scan_cache:
+            f_rows, err_row = scan_cache[skey]
+            for r in f_rows:
+                findings.append(dict(r))
+            if err_row is not None:
+                unreadable.append(dict(err_row))
+            continue
+        file_findings, err_row = [], None
         try:
             if workflow:
                 commands = (cmd for body, line in workflow_scripts(text) for cmd in executable_commands(body, line))
@@ -383,7 +429,7 @@ def scan(tree):
             elif p.suffix == ".py":
                 commands = python_commands(text)
             elif shell:
-                commands = executable_commands(re.sub(r"(?m)^[ \t]*(?:RUN|@)[ \t]*", "", text))
+                commands = executable_commands(_SHELL_PREFIX.sub("", text))
             else:
                 commands = process_commands(text)
             seen = collections.Counter()
@@ -394,10 +440,15 @@ def scan(tree):
                     continue
                 digest = hashlib.sha256(json.dumps(argv, separators=(",", ":")).encode()).hexdigest()
                 seen[digest] += 1
-                findings.append({"path": path, "line": line, "command_sha256": digest,
-                                 "occurrence": seen[digest], "reason": reason, "contract": CONTRACT})
+                file_findings.append({"path": path, "line": line, "command_sha256": digest,
+                                      "occurrence": seen[digest], "reason": reason, "contract": CONTRACT})
         except (ValueError, TypeError, SyntaxError) as error:
-            unreadable.append({"path": path, "reason": "command syntax not reviewed: " + type(error).__name__})
+            err_row = {"path": path, "reason": "command syntax not reviewed: " + type(error).__name__}
+        findings.extend(file_findings)
+        if err_row is not None:
+            unreadable.append(err_row)
+        if skey is not None:
+            scan_cache[skey] = ([dict(r) for r in file_findings], dict(err_row) if err_row is not None else None)
     return {"findings": findings, "unreadable": unreadable, "limits": LIMITS}
 
 

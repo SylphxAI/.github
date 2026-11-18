@@ -147,9 +147,10 @@ test "$TARGET_REPOSITORY" = "$GITHUB_REPOSITORY" || { echo '::error::red-main ac
         if sid == 'programs':
             step = run_step('Snapshot the pinned handler programs', '''set -euo pipefail
 mkdir -p red-main-programs/.github .red-main-store/.github/actions
-rm -rf red-main-programs/.github/red_main .red-main-store/.github/actions/run-store
+rm -rf red-main-programs/.github/red_main .red-main-store/.github/actions/run-store .red-main-store/.github/actions/_shared
 cp -R "$GITHUB_ACTION_PATH/../../red_main" red-main-programs/.github/
 cp -R "$GITHUB_ACTION_PATH/../run-store" .red-main-store/.github/actions/
+cp -R "$GITHUB_ACTION_PATH/../_shared" .red-main-store/.github/actions/
 ''', id='programs')
         elif sid == 'key':
             step['env'] = {'DECLARED_MODE': '${{ steps.gate.outputs.mode }}'}

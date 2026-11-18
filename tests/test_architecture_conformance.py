@@ -329,9 +329,12 @@ class AdversarialContextTests(unittest.TestCase):
             self.assertIn('stack', required.split(','))
             for event, producer_run in [('pull_request', ''), ('merge_group', ''), ('push', ''),
                                         ('workflow_dispatch', ''), ('workflow_dispatch', '123')]:
-                # Resolve the two event selections used by Project control;
-                # GitHub evaluates these before setting the action's inputs.
-                selected_required = required.replace(
+                # Resolve the event selections with no PR-tree proof; GitHub
+                # evaluates these before setting the action's inputs.
+                required_without_proof = required.replace(
+                    "${{ !(github.event_name == 'merge_group' && needs.template-plan.result == 'success' && needs.template-plan.outputs.pr-reused == 'true') && 'rust-node-consumer' || '' }}",
+                    'rust-node-consumer')
+                selected_required = required_without_proof.replace(
                     "${{ github.event_name != 'push' && 'template-plan,template-verdict' || '' }}",
                     'template-plan,template-verdict' if event != 'push' else '')
                 selected_required = selected_required.replace(
@@ -662,6 +665,20 @@ class DistributionTests(unittest.TestCase):
 
 class StandardFitRegressionTests(unittest.TestCase):
     evaluate = StructuralBoundaryTests.evaluate
+
+    def test_script_environment_is_declared_and_missing_schema_refuses(self):
+        declaration = {'type': 'object', 'properties': {
+            'PUBLISH_TOKEN': {'type': 'string', 'writeOnly': True}}}
+        files = {'scripts/publisher.py': 'import os\ntoken = os.environ["PUBLISH_TOKEN"]\n',
+                 'scripts/env.schema.json': json.dumps(declaration)}
+        self.assertEqual(self.evaluate(files)['findings'], [])
+        del declaration['properties']['PUBLISH_TOKEN']
+        files['scripts/env.schema.json'] = json.dumps(declaration)
+        findings = self.evaluate(files)['findings']
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]['rule'], 'undeclared-setting')
+        self.assertEqual(findings[0]['path'], 'scripts/publisher.py')
+
 
     def test_negative_fixture_declarations_are_excluded_but_real_invalid_configs_fail(self):
         invalid = {'sylphx.toml': 'this is = = not toml\n', 'env.schema.json': '{invalid\n'}

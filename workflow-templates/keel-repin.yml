@@ -1,18 +1,18 @@
 name: Keel repin
 
-# Every 10 minutes, checks Keel's tags with the read-only reader App; on a new keel-verified-*
-# tag that is ahead of this repository's pin it opens the pull request `chore/keel-repin-<tag>`
-# with the workflow token and starts the repository's CI on that branch by workflow_dispatch
-# (SylphxAI/.github docs/keel-repin.md). The `settle` job merges a repin pull request once every
-# required check (CI and the web smoke) succeeded on its exact head commit, and says so on the
-# pull request when one is red.
+# Every 4 hours (offset 30 minutes after Keel's 17 */4 * * * verified-tag cadence), checks
+# Keel's tags with the read-only reader App; on a new keel-verified-* tag that is ahead of this
+# repository's pin it opens the pull request `chore/keel-repin-<tag>` with the workflow token and
+# starts the repository's CI on that branch by workflow_dispatch (SylphxAI/.github docs/keel-repin.md).
+# The `settle` job merges a repin pull request once every required check (CI and the web smoke)
+# succeeded on its exact head commit, and says so on the pull request when one is red.
 # Copy to .github/workflows/keel-repin.yml, replace the commit placeholder with the pinned
 # commit of SylphxAI/.github, and set `check-command`, `ci-workflows`, `required-checks` and
 # `owner` for this repository. Needs the repository setting named in docs/keel-repin.md, and
 # every workflow in `ci-workflows` must list workflow_dispatch.
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "47 */4 * * *"
   workflow_dispatch:
     inputs:
       tag:
@@ -34,7 +34,7 @@ permissions: {}
 
 jobs:
   poll:
-    runs-on: sylphx-linux-standard
+    runs-on: sylphx-linux-control
     timeout-minutes: 10
     permissions:
       contents: read
@@ -43,7 +43,7 @@ jobs:
       needed: ${{ steps.poll.outputs.needed }}
       tag: ${{ steps.poll.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: poll
@@ -64,7 +64,7 @@ jobs:
       pull-requests: write
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: SylphxAI/.github/.github/actions/keel-repin@PINNED_COMMIT_SHA
@@ -78,7 +78,7 @@ jobs:
           ci-workflows: pr-metadata.yml ci.yml
 
   settle:
-    runs-on: sylphx-linux-standard
+    runs-on: sylphx-linux-control
     timeout-minutes: 10
     permissions:
       contents: write

@@ -1,0 +1,296 @@
+"""Release faults through real curl, a local HTTP server and the scanner entrypoint."""
+from __future__ import annotations
+
+import contextlib
+import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location('release_scan', ROOT / '.github/actions/secret-scan/secret_scan.py')
+SCAN = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SCAN)
+RELEASE = SCAN.release_download
+
+
+class ReleaseDownloadTest(unittest.TestCase):
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.root = Path(self.work.name)
+        self.marker = self.root / 'executed'
+        self.token = 'synthetic-bearer-do-not-log'
+        binary = b'#!/bin/sh\nprev=""; for arg; do if [ "$prev" = --report-path ]; then printf "[]" > "$arg"; fi; prev="$arg"; done\ntouch "$EXECUTION_MARKER"\n'
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode='w:gz') as bundle:
+            member = tarfile.TarInfo('gitleaks')
+            member.size = len(binary)
+            member.mode = 0o700
+            bundle.addfile(member, io.BytesIO(binary))
+        self.archive = archive.getvalue()
+        self.digest = hashlib.sha256(self.archive).hexdigest()
+        self.primary, self.fallback, self.body = 504, 200, self.archive
+        self.calls = []
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                owner.calls.append((self.path, dict(self.headers)))
+                primary = '/releases/download/' in self.path
+                status = owner.primary if primary else owner.fallback
+                if not primary and (self.headers.get('Authorization') != 'Bearer ' + owner.token or
+                                    self.headers.get('Accept') != 'application/octet-stream'):
+                    status = 403
+                body = owner.body if status == 200 else owner.token.encode()
+                self.send_response(status)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        git = lambda *args: subprocess.check_output(['git', '-C', str(self.repo), *args], stderr=subprocess.DEVNULL).decode().strip()
+        git('init', '-q', '-b', 'main')
+        git('config', 'user.name', 'Test')
+        git('config', 'user.email', 'test@example.com')
+        git('commit', '-qm', 'base', '--allow-empty')
+        base = git('rev-parse', 'HEAD')
+        git('commit', '-qm', 'head', '--allow-empty')
+        head = git('rev-parse', 'HEAD')
+        self.event = self.root / 'event.json'
+        self.event.write_text(json.dumps({'pull_request': {'base': {'sha': base}, 'head': {'sha': head}}}))
+        original = RELEASE.curl_retry.request
+
+        def local_request(url, destination, **kwargs):
+            # No external network: rewrite only the host, retaining exact routes/headers.
+            path = url.split('/', 3)[3]
+            policy = kwargs['policy']
+            kwargs['policy'] = RELEASE.curl_retry.Policy(policy.attempts, min(policy.budget, 3),
+                                                       min(policy.attempt_time, 3), 0)
+            return original(f'http://127.0.0.1:{self.server.server_port}/' + path, destination, **kwargs)
+
+        self.request_patch = mock.patch.object(RELEASE.curl_retry, 'request', side_effect=local_request)
+        self.request_patch.start()
+        self.addCleanup(self.request_patch.stop)
+
+    def scan(self, token_environment="SECRET_SCAN_TOKEN", prebaked=None):
+        output = io.StringIO()
+        copy_verified = SCAN.verified_binary.copy_verified
+        def local_candidate(path, destination, **kwargs):
+            self.assertEqual(path, '/usr/local/bin/gitleaks')
+            return copy_verified(prebaked or self.root / 'absent-image-binary', destination, **kwargs)
+        with mock.patch.object(sys, 'argv', ['scan', '--repo', str(self.repo)]), \
+                mock.patch.dict(os.environ, GITHUB_EVENT_PATH=str(self.event), GITHUB_EVENT_NAME='pull_request',
+                                EXECUTION_MARKER=str(self.marker),
+                                **{"SECRET_SCAN_TOKEN": "", "GITHUB_TOKEN": "", token_environment: self.token}), \
+                mock.patch.object(SCAN.platform, 'system', return_value='Linux'), \
+                mock.patch.object(SCAN.platform, 'machine', return_value='x86_64'), \
+                mock.patch.dict(SCAN.CHECKSUMS, {'x86_64': ('x64', self.digest)}), \
+                mock.patch.object(SCAN.verified_binary, 'copy_verified', side_effect=local_candidate), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            code = SCAN.main()
+        self.assertNotIn(self.token, output.getvalue())
+        self.assertNotIn('Secret scan could not complete; raw diagnostics withheld', output.getvalue())
+        return code, output.getvalue()
+
+    def scan_with_prebaked(self, mismatch=None):
+        with tarfile.open(fileobj=io.BytesIO(self.archive), mode='r:gz') as archive:
+            original_binary = archive.extractfile('gitleaks').read()
+        def executable(version):
+            return (b'#!/bin/sh\nif [ "$1" = version ]; then echo "' + version.encode() +
+                    b'"; exit; fi\n' + original_binary.split(b'\n', 1)[1])
+        good = executable('8.30.1')
+        content = executable('0.0.0') if mismatch == 'version' else good
+        if mismatch == 'digest':
+            content += b'# changed bytes, same displayed version\n'
+        candidate = self.root / 'image-gitleaks'
+        candidate.write_bytes(content)
+        candidate.chmod(0o700)
+        digest = hashlib.sha256(good if mismatch == 'digest' else content).hexdigest()
+        with mock.patch.dict(SCAN.BINARY_CHECKSUMS, {'x86_64': digest}):
+            return self.scan(prebaked=candidate)
+
+    def test_matching_prebaked_scanner_is_reused_with_zero_network(self):
+        code, output = self.scan_with_prebaked()
+        self.assertEqual(code, 0, output)
+        self.assertTrue(self.marker.is_file())
+        self.assertEqual(self.calls, [])
+
+    def test_wrong_prebaked_digest_or_version_downloads_and_verifies_scanner(self):
+        for mismatch in ('digest', 'version'):
+            with self.subTest(mismatch=mismatch):
+                self.calls.clear()
+                self.marker.unlink(missing_ok=True)
+                code, output = self.scan_with_prebaked(mismatch)
+                self.assertEqual(code, 0, output)
+                self.assertTrue(self.marker.is_file())
+                self.assertTrue(any('/releases/assets/' in path for path, _ in self.calls))
+                self.assertIn('authenticated API asset fallback', output)
+
+    def test_primary_504_api_200_runs_scan_and_records_fallback(self):
+        code, output = self.scan()
+        self.assertEqual(code, 0, output)
+        self.assertTrue(self.marker.is_file())
+        self.assertIn('authenticated API asset fallback', output)
+        self.assertIn('Secret scan passed', output)
+        self.assertTrue(any(path == '/repos/gitleaks/gitleaks/releases/assets/378332058' for path, _ in self.calls))
+
+    def test_fallback_carries_bearer_and_octet_stream_but_primary_does_not(self):
+        self.assertEqual(self.scan()[0], 0)
+        for path, headers in self.calls:
+            if '/releases/assets/' in path:
+                self.assertEqual(headers['Authorization'], 'Bearer ' + self.token)
+                self.assertEqual(headers['Accept'], 'application/octet-stream')
+            else:
+                self.assertNotIn('Authorization', headers)
+
+    def test_job_github_token_alone_authenticates_asset_fallback(self):
+        code, output = self.scan("GITHUB_TOKEN")
+        self.assertEqual(code, 0, output)
+        self.assertTrue(self.marker.is_file())
+        self.assertTrue(any('/releases/assets/' in path and headers.get('Authorization') == 'Bearer ' + self.token
+                            for path, headers in self.calls))
+
+    def test_both_routes_fail_with_stage_http_status_and_class(self):
+        self.fallback = 503
+        code, output = self.scan()
+        self.assertEqual(code, 1)
+        for part in ('stage=gitleaks-install', 'class=ScanError', 'reason=download-http-error', 'HTTP 503'):
+            self.assertIn(part, output)
+        self.assertFalse(self.marker.exists())
+
+    def test_tampered_fallback_fails_checksum_without_executing_binary(self):
+        self.body = self.archive + b'tampered'
+        code, output = self.scan()
+        self.assertEqual(code, 1)
+        self.assertIn('reason=release-checksum-mismatch', output)
+        self.assertFalse(self.marker.exists())
+
+    def test_permanent_primary_refusal_never_falls_back(self):
+        self.primary = 403
+        code, output = self.scan()
+        self.assertEqual(code, 1)
+        self.assertIn('HTTP 403', output)
+        self.assertFalse(any('/releases/assets/' in path for path, _ in self.calls))
+
+    def test_primary_success_does_not_need_fallback(self):
+        self.primary = 200
+        self.assertEqual(self.scan()[0], 0)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_cache_is_verified_and_corrupt_cache_is_not_trusted(self):
+        path = self.root / 'cached.tgz'
+        args = dict(repository='gitleaks/gitleaks', tag='v8.30.1', filename='test.tgz', asset_id=378332058,
+                    sha256=self.digest, token=self.token)
+        path.write_bytes(self.archive)
+        RELEASE.download(path, **args)
+        self.assertEqual(self.calls, [])
+        path.write_bytes(b'corrupt')
+        RELEASE.download(path, **args)
+        self.assertEqual(path.read_bytes(), self.archive)
+        self.assertGreater(len(self.calls), 0)
+
+    def test_token_never_enters_spawned_arguments(self):
+        with mock.patch.object(subprocess, 'Popen', wraps=subprocess.Popen) as processes:
+            self.assertEqual(self.scan()[0], 0)
+        self.assertGreater(len(processes.call_args_list), 0)
+        for call in processes.call_args_list:
+            self.assertNotIn(self.token, repr(call.args))
+
+    def test_fallback_uses_remaining_primary_budget(self):
+        clock = [0]
+        budgets = []
+        def refused(url, destination, **kwargs):
+            budgets.append(kwargs['policy'].budget)
+            clock[0] += 30
+            return RELEASE.curl_retry.Result('504', 0)
+        with mock.patch.object(RELEASE.time, 'monotonic', side_effect=lambda: clock[0]), \
+                mock.patch.object(RELEASE.curl_retry, 'request', side_effect=refused), \
+                self.assertRaises(RELEASE.ReleaseError):
+            RELEASE.download(self.root / 'bounded', repository='gitleaks/gitleaks', tag='v8.30.1',
+                             filename='test.tgz', asset_id=378332058, sha256=self.digest,
+                             token=self.token, budget=45)
+        self.assertEqual(budgets, [30, 15])
+
+    def test_namespaced_release_tag_uses_primary_and_authenticated_fallback(self):
+        for status in (200, 504):
+            with self.subTest(primary_status=status):
+                self.primary = status
+                self.calls.clear()
+                destination = self.root / ('namespaced-' + str(status))
+                RELEASE.download(destination, repository='example/tool', tag='release/v1.2.3+build-4',
+                                 filename='tool.tar.gz', asset_id=123, sha256=self.digest,
+                                 token=self.token)
+                self.assertEqual(destination.read_bytes(), self.archive)
+                self.assertEqual(self.calls[0][0],
+                                 '/example/tool/releases/download/release/v1.2.3+build-4/tool.tar.gz')
+                self.assertEqual(len(self.calls), 1 if status == 200 else 3)
+
+    def test_unsafe_release_tags_and_slash_filenames_never_request_or_publish(self):
+        for tag in ('/release', 'release/', '../v1', 'release/../v1', 'v1..2',
+                    'release?x=1', 'v1#fragment', 'v1\n'):
+            with self.subTest(tag=tag), mock.patch.object(RELEASE.curl_retry, 'request') as request:
+                destination = self.root / 'refused'
+                with self.assertRaisesRegex(RELEASE.ReleaseError, 'invalid-release-identity'):
+                    RELEASE.download(destination, repository='example/tool', tag=tag,
+                                     filename='tool.tar.gz', asset_id=123, sha256=self.digest,
+                                     token=self.token)
+                request.assert_not_called()
+                self.assertFalse(destination.exists())
+                self.assertFalse(destination.with_name('refused.part').exists())
+        with mock.patch.object(RELEASE.curl_retry, 'request') as request:
+            with self.assertRaisesRegex(RELEASE.ReleaseError, 'invalid-release-identity'):
+                RELEASE.download(self.root / 'refused', repository='example/tool', tag='release/v1',
+                                 filename='nested/tool.tar.gz', asset_id=123, sha256=self.digest,
+                                 token=self.token)
+            request.assert_not_called()
+
+    def test_large_pinned_archive_and_oversized_response_through_real_curl(self):
+        self.assertEqual(RELEASE._MAX_ARCHIVE_BYTES, 67_108_864)
+        for size, accepted in ((42_015_139, True), (67_108_865, False)):
+            with self.subTest(size=size):
+                self.primary = 200
+                self.body = b'x' * size
+                destination = self.root / ('large-' + str(size))
+                kwargs = dict(repository='example/tool', tag='v1.2.3', filename='tool.zip',
+                              asset_id=123, sha256=hashlib.sha256(self.body).hexdigest(),
+                              token=self.token)
+                if accepted:
+                    RELEASE.download(destination, **kwargs)
+                    self.assertEqual(destination.stat().st_size, size)
+                    self.assertEqual(hashlib.sha256(destination.read_bytes()).hexdigest(), kwargs['sha256'])
+                else:
+                    with self.assertRaisesRegex(RELEASE.ReleaseError, 'download-network-error'):
+                        RELEASE.download(destination, **kwargs)
+                    self.assertFalse(destination.exists())
+                self.assertFalse(destination.with_name(destination.name + '.part').exists())
+
+    def test_unknown_exception_is_typed_without_exception_text(self):
+        with mock.patch.object(SCAN, 'install', side_effect=RuntimeError(self.token)):
+            code, output = self.scan()
+        self.assertEqual(code, 1)
+        self.assertIn('stage=gitleaks-install', output)
+        self.assertIn('reason=unexpected-error', output)
+
+
+if __name__ == '__main__':
+    unittest.main()

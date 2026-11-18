@@ -78,17 +78,25 @@ def test_nonterminal_conclusion_does_not_create_failure():
     assert ci_ok.evaluate([run("build", "in_progress", "failure")], set()) == ("pending", ["build"])
 
 
-def poll(snapshots):
+def poll(snapshots, *, minutes="2", event="pull_request", interval="20", read_seconds=0):
     """Drive the real main loop with a deterministic clock and API snapshots."""
     env = {"REPO": "owner/repo", "SHA": "head", "TOKEN": "test", "CI_OK_SETTLE": "0",
-           "CI_OK_INTERVAL": "20", "CI_OK_TIMEOUT_MINUTES": "2"}
+           "CI_OK_INTERVAL": interval, "EVENT_NAME": event}
+    if minutes is not None:
+        env["CI_OK_TIMEOUT_MINUTES"] = minutes
+    snapshots = iter(snapshots)
+
+    def read_checks(*args):
+        clock[0] += read_seconds
+        return next(snapshots)
+
     clock = [0]
     output = io.StringIO()
     with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
             mock.patch.object(ci_ok.time, "time", side_effect=lambda: clock[0]), \
             mock.patch.object(ci_ok.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
             mock.patch.object(ci_ok, "fetch_suites", return_value=[]), \
-            mock.patch.object(ci_ok, "fetch", side_effect=snapshots) as fetch, \
+            mock.patch.object(ci_ok, "fetch", side_effect=read_checks) as fetch, \
             contextlib.redirect_stdout(output):
         result = ci_ok.main()
     return result, fetch.call_count, clock[0], output.getvalue()
@@ -128,6 +136,62 @@ def test_a_changed_complete_inventory_resets_success_stability():
 
 def test_a_completed_failure_does_not_wait_for_a_second_complete_poll():
     assert poll([[run("build", conclusion="failure")]])[:3] == (1, 1, 0)
+
+
+class PollingDeadlineTest(unittest.TestCase):
+    def test_default_budget_expires_after_fourteen_minutes(self) -> None:
+        pending = [run("backend-build", "in_progress", None)]
+        result, calls, elapsed, output = poll([pending] * 14, minutes=None, interval="60")
+        self.assertEqual((result, calls, elapsed), (1, 14, 14 * 60))
+        self.assertIn("::error::timed out waiting for checks", output)
+
+    def test_longer_budget_allows_merge_group_backend_build_to_pass(self) -> None:
+        pending = [run("backend-build", "in_progress", None)]
+        passed = [run("backend-build")]
+        result, calls, elapsed, output = poll([pending] * 28 + [passed, passed],
+                                              minutes="35", event="merge_group", interval="60")
+        self.assertEqual((result, calls, elapsed), (0, 30, 29 * 60))
+        self.assertIn("all checks passed: backend-build", output)
+
+    def test_still_pending_at_custom_deadline_fails_closed(self) -> None:
+        pending = [run("backend-build", "in_progress", None)]
+        result, calls, elapsed, output = poll([pending] * 18, minutes="17", interval="60")
+        self.assertEqual((result, calls, elapsed), (1, 17, 17 * 60))
+        self.assertIn("::error::timed out waiting for checks", output)
+
+    def test_second_passing_read_at_deadline_cannot_turn_gate_green(self) -> None:
+        passed = [run("backend-build")]
+        result, calls, elapsed, output = poll([passed, passed], minutes="1", read_seconds=20)
+        self.assertEqual((result, calls, elapsed), (1, 2, 60))
+        self.assertNotIn("all checks passed", output)
+        self.assertIn("::error::timed out waiting for checks", output)
+
+    def test_failure_received_at_deadline_keeps_the_failure_diagnostic(self) -> None:
+        failed = [run("backend-build", conclusion="failure")]
+        result, calls, elapsed, output = poll([failed], minutes="1", read_seconds=60)
+        self.assertEqual((result, calls, elapsed), (1, 1, 60))
+        self.assertIn("::error::failed checks: backend-build", output)
+
+    def test_watchdog_uses_default_override_and_runner_limit(self) -> None:
+        for value, duration in [(None, "14m"), ("35", "35m"), ("361", "360m")]:
+            with self.subTest(value=value):
+                env = {} if value is None else {"CI_OK_TIMEOUT_MINUTES": value}
+                with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                        mock.patch.object(ci_ok.os, "execlp", side_effect=SystemExit) as exec_timeout, \
+                        self.assertRaises(SystemExit):
+                    ci_ok.main(watchdog=True)
+                exec_timeout.assert_called_once_with("timeout", "timeout", "--kill-after=5s", duration,
+                                                     ci_ok.sys.executable, ci_ok.__file__)
+
+    def test_invalid_budget_fails_before_polling_or_starting_watchdog(self) -> None:
+        for value in ("", "0", "-1", "15m", "14.5"):
+            with self.subTest(value=value):
+                output = io.StringIO()
+                with mock.patch.dict(ci_ok.os.environ, {"CI_OK_TIMEOUT_MINUTES": value}, clear=True), \
+                        mock.patch.object(ci_ok.os, "execlp") as exec_timeout, contextlib.redirect_stdout(output):
+                    self.assertEqual(ci_ok.main(watchdog=True), 1)
+                exec_timeout.assert_not_called()
+                self.assertIn("::error::timeout-minutes must be a positive whole number", output.getvalue())
 
 
 class ExistingPollingProtectionsTest(unittest.TestCase):
@@ -327,6 +391,90 @@ class ExistingPollingProtectionsTest(unittest.TestCase):
         self.assertTrue(ci_ok.needs_suite_events([old, new], set()))
         self.assertFalse(ci_ok.needs_suite_events([new, run("a")], set()))
 
+    def test_rerun_attempt_replaces_an_earlier_attempt_of_the_same_job(self) -> None:
+        # infra#5544: a desk push (synchronize) and a PR body edit (edited) started two
+        # runs of one workflow in the same second. Concurrency cancelled one's lanes and
+        # its verdict failed; a re-run of that workflow run (attempt 2) passed.
+        def r(name, conclusion, rid, suite, started):
+            return dict(run(name, conclusion=conclusion), id=rid, check_suite={"id": suite},
+                        started_at=f"2026-11-14T{started}Z")
+        runs = [
+            r("shared-path-window", "success", 132284041671, 1, "01:39:43"),
+            r("shared-path-source", "success", 132283913994, 1, "01:39:09"),
+            r("shared-path-window", "success", 132279221387, 2, "01:24:34"),
+            r("shared-path-source", "success", 132278855047, 2, "01:23:48"),
+            r("shared-path-window", "failure", 132278591557, 1, "01:22:43"),
+            r("shared-path-source", "cancelled", 132278588228, 1, "01:22:03"),
+        ]
+        rerun, other = 43540159632, 43540160281
+        attempts = {132278588228: (rerun, 1), 132278591557: (rerun, 1),
+                    132283913994: (rerun, 2), 132284041671: (rerun, 2),
+                    132278855047: (other, 1), 132279221387: (other, 1)}
+        required = {"shared-path-window"}
+        both = ("pass", ["shared-path-source", "shared-path-source", "shared-path-window", "shared-path-window"])
+        # The jobs API identifies the failed run as attempt 1 of the re-run workflow run.
+        self.assertEqual(ci_ok.evaluate(runs, set(), required=required, job_attempts=attempts), both)
+        # With workflow runs readable, the same-second run with the lower id is superseded.
+        wr = [{"check_suite_id": 1, "id": rerun, "path": ".github/workflows/shared-path-window.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:22:03Z"},
+              {"check_suite_id": 2, "id": other, "path": ".github/workflows/shared-path-window.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:22:03Z"}]
+        self.assertEqual(ci_ok.evaluate(runs, set(), required=required, suite_events=ci_ok.suite_events(wr)),
+                         ("pass", ["shared-path-source", "shared-path-window"]))
+        # Without either identity, the earlier failure still counts: fail closed.
+        self.assertEqual(ci_ok.evaluate(runs, set(), required=required)[0], "fail")
+        # A failing latest attempt fails, however the earlier attempt ended.
+        flipped = [dict(x, conclusion="failure") if x["id"] == 132284041671 else
+                   dict(x, conclusion="success") if x["id"] == 132278591557 else x for x in runs]
+        self.assertEqual(ci_ok.evaluate(flipped, set(), required=required, job_attempts=attempts),
+                         ("fail", ["shared-path-window=failure", "shared-path-window=failure (required)"]))
+
+    def test_independent_same_name_jobs_of_one_attempt_each_count(self) -> None:
+        # Two jobs of the same workflow run and attempt (matrix legs, reusable-workflow
+        # jobs) may share a name and a check suite; a passing one never hides a failing one.
+        failed = dict(run("build", conclusion="failure"), id=1, check_suite={"id": 7},
+                      started_at="2026-11-14T01:00:00Z")
+        passed = dict(run("build"), id=2, check_suite={"id": 7}, started_at="2026-11-14T01:05:00Z")
+        attempts = {1: (99, 1), 2: (99, 1)}
+        for job_attempts in (attempts, None):
+            self.assertEqual(ci_ok.evaluate([passed, failed], set(), job_attempts=job_attempts),
+                             ("fail", ["build=failure"]))
+
+    def test_cancelled_duplicate_of_another_run_beside_a_success_passes(self) -> None:
+        # pr-metadata: a cancelled run of a superseded workflow run beside the passing one.
+        cancelled = dict(run("pr-metadata", conclusion="cancelled"), id=1, check_suite={"id": 1},
+                         started_at="2026-11-14T01:44:00Z")
+        passed = dict(run("pr-metadata"), id=2, check_suite={"id": 2}, started_at="2026-11-14T01:44:05Z")
+        self.assertEqual(ci_ok.evaluate([passed, cancelled], set(), required={"pr-metadata"},
+                                        job_attempts={1: (10, 1), 2: (11, 1)}), ("pass", ["pr-metadata"]))
+
+    def test_job_attempts_come_from_the_actions_jobs_api(self) -> None:
+        runs = [dict(run("w"), id=5, details_url="https://github.com/o/r/actions/runs/77/job/5"),
+                dict(run("w", conclusion="failure"), id=4, details_url="https://github.com/o/r/actions/runs/77/job/4"),
+                dict(run("single"), id=6, details_url="https://github.com/o/r/actions/runs/78/job/6")]
+        pages = {"https://api.github.com/repos/o/r/actions/runs/77/jobs?filter=all&per_page=100&page=1":
+                 {"total_count": 2, "jobs": [{"id": 4, "run_id": 77, "run_attempt": 1},
+                                             {"id": 5, "run_id": 77, "run_attempt": 2}]}}
+        with mock.patch.object(ci_ok, "_get", side_effect=lambda url, token: pages[url]):
+            self.assertEqual(ci_ok.fetch_job_attempts("o/r", runs, "t", set()), {4: (77, 1), 5: (77, 2)})
+
+    def test_unreadable_jobs_never_collapse_attempts(self) -> None:
+        import email.message, io, urllib.error
+        runs = [dict(run("w"), id=5, details_url="https://github.com/o/r/actions/runs/77/job/5"),
+                dict(run("w", conclusion="failure"), id=4, details_url="https://github.com/o/r/actions/runs/77/job/4")]
+        denied = urllib.error.HTTPError("https://api.github.com/x", 403, "forbidden", email.message.Message(),
+                                        io.BytesIO(b""))
+        with mock.patch.object(ci_ok, "_get", side_effect=denied), contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(ci_ok.fetch_job_attempts("o/r", runs, "t", set()))
+
+    def test_required_check_is_judged_by_its_newest_run(self) -> None:
+        old = dict(run("verdict", conclusion="cancelled"), id=1, check_suite={"id": 1},
+                   started_at="2026-11-14T01:00:00Z")
+        new = dict(run("verdict"), id=2, check_suite={"id": 2}, started_at="2026-11-14T01:01:00Z")
+        self.assertEqual(ci_ok.evaluate([new, old], set(), required={"verdict"}), ("pass", ["verdict"]))
+        self.assertEqual(ci_ok.evaluate([dict(new, conclusion="failure"), old], set(), required={"verdict"}),
+                         ("fail", ["verdict=failure", "verdict=failure (required)"]))
+
     def test_same_named_jobs_of_two_live_workflows_both_count(self) -> None:
         a = dict(run("build", conclusion="failure"), id=1, check_suite={"id": 1}, started_at="2026-10-04T18:00:00Z")
         b = dict(run("build"), id=2, check_suite={"id": 2}, started_at="2026-10-04T18:01:00Z")
@@ -336,6 +484,22 @@ class ExistingPollingProtectionsTest(unittest.TestCase):
                "created_at": "2026-10-04T18:01:00Z"}]
         self.assertEqual(ci_ok.evaluate([a, b], set(), suite_events=ci_ok.suite_events(wr))[0], "fail")
         self.assertEqual(ci_ok.evaluate([a, b], set())[0], "fail")
+
+    def test_same_second_runs_of_the_same_workflow_supersede_by_id(self) -> None:
+        old = dict(run("shared-path-window", conclusion="cancelled"), id=10, check_suite={"id": 1},
+                   started_at="2026-11-12T02:05:36Z")
+        new = dict(run("shared-path-window"), id=20, check_suite={"id": 2},
+                   started_at="2026-11-12T02:05:36Z")
+        wr = [{"check_suite_id": 1, "id": 43138971656, "path": ".github/workflows/shared-path-window.yml", "event": "pull_request",
+               "created_at": "2026-11-12T02:05:36Z"},
+              {"check_suite_id": 2, "id": 43138972745, "path": ".github/workflows/shared-path-window.yml", "event": "pull_request",
+               "created_at": "2026-11-12T02:05:36Z"}]
+        expected = {1: "superseded", 2: "pull_request"}
+        for ordered in (wr, list(reversed(wr))):
+            events = ci_ok.suite_events(ordered)
+            self.assertEqual(events, expected)
+            self.assertEqual(ci_ok.evaluate([old, new, run("a")], set(), suite_events=events),
+                             ("pass", ["a", "shared-path-window"]))
 
     def test_exhausted_api_budget_fails_closed_before_the_deadline(self) -> None:
         import io, email.message, urllib.error
@@ -375,6 +539,160 @@ class ExistingPollingProtectionsTest(unittest.TestCase):
         self.assertEqual(ci_ok.poll_interval(20, remaining=None), 20)
         self.assertEqual(ci_ok.poll_interval(20, remaining=150), 60)
 
+    def test_partial_failed_rerun_keeps_unretried_sibling_jobs_and_passes(self) -> None:
+        def check(name, rid, status="completed", conclusion="success", started="01:00:00"):
+            return dict(run(name, status=status, conclusion=conclusion), id=rid, check_suite={"id": 1},
+                        started_at=f"2026-11-14T{started}Z",
+                        details_url=f"https://github.com/o/r/actions/runs/77/job/{rid}")
+
+        snapshot = [
+            check("lint", 100, conclusion="success", started="01:00:00"),
+            check("stack", 101, conclusion="failure", started="01:00:05"),
+            check("stack", 102, conclusion="success", started="01:05:00"),
+        ]
+        pages = {
+            "https://api.github.com/repos/o/r/actions/runs?head_sha=abc&per_page=100": {
+                "workflow_runs": [{"check_suite_id": 1, "id": 77, "path": ".github/workflows/ci.yml",
+                                   "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"}],
+            },
+            "https://api.github.com/repos/o/r/actions/runs/77/jobs?filter=all&per_page=100&page=1": {
+                "total_count": 3,
+                "jobs": [
+                    {"id": 100, "run_id": 77, "run_attempt": 1},
+                    {"id": 101, "run_id": 77, "run_attempt": 1},
+                    {"id": 102, "run_id": 77, "run_attempt": 2},
+                ],
+            },
+        }
+        env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+               "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1", "CI_OK_REQUIRED": "stack"}
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                mock.patch.object(ci_ok, "fetch_suites", return_value=[]), \
+                mock.patch.object(ci_ok, "fetch", return_value=snapshot), \
+                mock.patch.object(ci_ok, "_get", side_effect=lambda url, token: pages[url]), \
+                mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 0)
+        self.assertIn("all checks passed: lint, stack", out.getvalue())
+
+    def test_distinct_suites_sharing_job_name_never_mask_failure_with_job_attempts(self) -> None:
+        suite_a_fail = dict(run("stack", conclusion="failure"), id=101, check_suite={"id": 1},
+                            started_at="2026-11-14T01:00:00Z")
+        suite_b_attempt1 = dict(run("stack", conclusion="failure"), id=201, check_suite={"id": 2},
+                                started_at="2026-11-14T01:00:00Z")
+        suite_b_attempt2 = dict(run("stack", conclusion="success"), id=202, check_suite={"id": 2},
+                                started_at="2026-11-14T01:05:00Z")
+        attempts = {101: (10, 1), 201: (20, 1), 202: (20, 2)}
+        wr = [{"check_suite_id": 1, "id": 10, "path": ".github/workflows/ci.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"},
+              {"check_suite_id": 2, "id": 20, "path": ".github/workflows/web.yml",
+               "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"}]
+        events = ci_ok.suite_events(wr)
+        self.assertEqual(events, {1: "pull_request", 2: "pull_request"})
+        self.assertEqual(
+            ci_ok.evaluate([suite_a_fail, suite_b_attempt1, suite_b_attempt2], set(),
+                           required={"stack"}, suite_events=events, job_attempts=attempts),
+            ("fail", ["stack=failure"]),
+        )
+
+    def test_in_progress_rerun_attempt_keeps_gate_waiting(self) -> None:
+        def check(status, conclusion, rid, started):
+            return dict(run("stack", status=status, conclusion=conclusion), id=rid, check_suite={"id": 1},
+                        started_at=f"2026-11-14T{started}Z",
+                        details_url=f"https://github.com/o/r/actions/runs/77/job/{rid}")
+
+        attempt1_fail = check("completed", "failure", 101, "01:00:00")
+        attempt1_pass = check("completed", "success", 101, "01:00:00")
+        attempt2_queued = check("queued", None, 102, "01:05:00")
+        attempt2_running = check("in_progress", None, 102, "01:05:10")
+        attempt2_pass = check("completed", "success", 102, "01:06:00")
+
+        for pending_run in (attempt2_queued, attempt2_running):
+            self.assertEqual(
+                ci_ok.evaluate([attempt1_fail, pending_run], set(), required={"stack"},
+                               job_attempts={101: (77, 1), 102: (77, 2)}),
+                ("pending", ["stack"]),
+            )
+            self.assertEqual(
+                ci_ok.evaluate([attempt1_pass, pending_run], set(), required={"stack"},
+                               job_attempts={101: (77, 1), 102: (77, 2)}),
+                ("pending", ["stack"]),
+            )
+
+        snapshots = [
+            [attempt1_fail, attempt2_queued],
+            [attempt1_fail, attempt2_running],
+            [attempt1_fail, attempt2_pass],
+            [attempt1_fail, attempt2_pass],
+        ]
+        jobs_payload = {
+            "total_count": 2,
+            "jobs": [{"id": 101, "run_id": 77, "run_attempt": 1},
+                     {"id": 102, "run_id": 77, "run_attempt": 2}],
+        }
+        runs_payload = {
+            "workflow_runs": [{"check_suite_id": 1, "id": 77, "path": ".github/workflows/ci.yml",
+                               "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"}],
+        }
+
+        def fake_get(url, _token):
+            return jobs_payload if "/jobs" in url else runs_payload
+
+        env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+               "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1", "CI_OK_REQUIRED": "stack"}
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                mock.patch.object(ci_ok, "fetch_suites", return_value=[]), \
+                mock.patch.object(ci_ok, "fetch", side_effect=snapshots), \
+                mock.patch.object(ci_ok, "_get", side_effect=fake_get), \
+                mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 0)
+        self.assertEqual(out.getvalue().count("waiting on: stack"), 2)
+        self.assertIn("all checks passed: stack", out.getvalue())
+
+    def test_required_check_non_success_first_attempt_waits_for_rerun_attempt(self) -> None:
+        def check(status, conclusion, rid, started):
+            return dict(run("stack", status=status, conclusion=conclusion), id=rid, check_suite={"id": 1},
+                        started_at=f"2026-11-14T{started}Z",
+                        details_url=f"https://github.com/o/r/actions/runs/77/job/{rid}")
+
+        for first_conclusion in ("skipped", "neutral"):
+            with self.subTest(first_conclusion=first_conclusion):
+                attempt1 = check("completed", first_conclusion, 101, "01:00:00")
+                attempt2_running = check("in_progress", None, 102, "01:05:00")
+                attempt2_pass = check("completed", "success", 102, "01:06:00")
+                self.assertFalse(ci_ok.needs_suite_events([attempt1, attempt2_running], set()))
+                self.assertTrue(ci_ok.needs_suite_events([attempt1, attempt2_running], set(), required={"stack"}))
+
+                jobs_payload = {
+                    "total_count": 2,
+                    "jobs": [{"id": 101, "run_id": 77, "run_attempt": 1},
+                             {"id": 102, "run_id": 77, "run_attempt": 2}],
+                }
+                runs_payload = {
+                    "workflow_runs": [{"check_suite_id": 1, "id": 77, "path": ".github/workflows/ci.yml",
+                                       "event": "pull_request", "created_at": "2026-11-14T01:00:00Z"}],
+                }
+
+                def fake_get(url, _token):
+                    return jobs_payload if "/jobs" in url else runs_payload
+
+                env = {"REPO": "o/r", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+                       "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1", "CI_OK_REQUIRED": "stack"}
+                out = io.StringIO()
+                with mock.patch.dict(ci_ok.os.environ, env, clear=True), \
+                        mock.patch.object(ci_ok, "fetch_suites", return_value=[]), \
+                        mock.patch.object(ci_ok, "fetch", side_effect=[
+                            [attempt1, attempt2_running],
+                            [attempt1, attempt2_pass],
+                            [attempt1, attempt2_pass],
+                        ]), \
+                        mock.patch.object(ci_ok, "_get", side_effect=fake_get), \
+                        mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+                    self.assertEqual(ci_ok.main(), 0)
+                self.assertEqual(out.getvalue().count("waiting on: stack"), 1)
+                self.assertIn("all checks passed: stack", out.getvalue())
+
 
 
 
@@ -390,3 +708,95 @@ def test_empty_startup_failure_wins_over_pending_checks():
     state, detail = ci_ok.evaluate([run("tests", "queued", None)], set(), suites=[suite])
     assert state == "fail"
     assert "workflow failed to start (check suite 7" in detail[0]
+
+
+class OrphanOwnerPollingTests(unittest.TestCase):
+    def test_completed_owner_fails_required_app_without_waiting(self) -> None:
+        check = dict(run("Required App check", "in_progress", None), id=42,
+                     app={"id": 1299545, "slug": "sylphx-ai"},
+                     details_url="https://github.com/example/repo/actions/runs/17")
+        for event in ("pull_request", "merge_group"):
+            with self.subTest(event=event):
+                read_owner = mock.Mock(return_value={"id": 17, "status": "completed"})
+                read_check = mock.Mock(return_value={"id": 42, "status": "in_progress"})
+                result, reasons = ci_ok.evaluate(
+                    [check], set(), required={"Required App check"},
+                    event_name=event, owner_reader=read_owner, check_reader=read_check,
+                    repository="example/repo")
+                self.assertEqual(result, "fail")
+                self.assertIn("orphaned", reasons[0])
+                read_owner.assert_called_once_with(17)
+                read_check.assert_called_once_with(42)
+        read_owner = mock.Mock()
+        # Without required or all-apps, a non-GitHub-Actions check is filtered out.
+        self.assertEqual(
+            ci_ok.evaluate([check], set(), owner_reader=read_owner, repository="example/repo")[0],
+            "fail",
+        )
+        read_owner.assert_not_called()
+
+    def test_completed_owner_with_fresh_completed_check_is_not_orphaned_and_passes_next_poll(self) -> None:
+        stale_check = dict(run("build", "in_progress", None), id=42,
+                           details_url="https://github.com/example/repo/actions/runs/17")
+        done_check = dict(run("build", "completed", "success"), id=42,
+                          details_url="https://github.com/example/repo/actions/runs/17")
+        self.assertEqual(
+            ci_ok.evaluate(
+                [stale_check], set(),
+                owner_reader=lambda _: {"id": 17, "status": "completed"},
+                check_reader=lambda _: {"id": 42, "status": "completed", "conclusion": "success"},
+                repository="example/repo",
+            ),
+            ("pending", ["build"]),
+        )
+
+        def fake_get(url, _token):
+            if url.endswith("/actions/runs/17"):
+                return {"id": 17, "status": "completed"}
+            if url.endswith("/check-runs/42"):
+                return {"id": 42, "status": "completed", "conclusion": "success"}
+            raise AssertionError(url)
+
+        env = {"REPO": "example/repo", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+               "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1"}
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True),                 mock.patch.object(ci_ok, "fetch_suites", return_value=[]),                 mock.patch.object(ci_ok, "fetch", side_effect=[[stale_check], [done_check], [done_check]]),                 mock.patch.object(ci_ok, "_get", side_effect=fake_get),                 mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 0)
+        self.assertIn("all checks passed: build", out.getvalue())
+
+    def test_known_failure_beats_failing_owner_lookup_without_retry(self) -> None:
+        failed = run("build", "completed", "failure")
+        pending = dict(run("tests", "in_progress", None), id=42,
+                       details_url="https://github.com/example/repo/actions/runs/17")
+        read_owner = mock.Mock(side_effect=OSError("network error"))
+        self.assertEqual(
+            ci_ok.evaluate([failed, pending], set(), owner_reader=read_owner, repository="example/repo"),
+            ("fail", ["build=failure"]),
+        )
+        read_owner.assert_not_called()
+
+        env = {"REPO": "example/repo", "SHA": "abc", "TOKEN": "t", "CI_OK_SETTLE": "0",
+               "CI_OK_INTERVAL": "0", "CI_OK_TIMEOUT_MINUTES": "1"}
+        out = io.StringIO()
+        with mock.patch.dict(ci_ok.os.environ, env, clear=True),                 mock.patch.object(ci_ok, "fetch_suites", return_value=[]),                 mock.patch.object(ci_ok, "fetch", return_value=[failed, pending]) as fetch,                 mock.patch.object(ci_ok, "_get", side_effect=OSError("owner read failed")) as getter,                 mock.patch.object(ci_ok.time, "sleep"), contextlib.redirect_stdout(out):
+            self.assertEqual(ci_ok.main(), 1)
+        self.assertEqual(fetch.call_count, 1)
+        getter.assert_not_called()
+        self.assertIn("::error::failed checks: build=failure", out.getvalue())
+
+    def test_live_owner_stays_pending_and_owner_errors_cannot_pass(self) -> None:
+        check = dict(run("build", "in_progress", None), id=42,
+                     details_url="https://github.com/example/repo/actions/runs/17")
+        self.assertEqual(
+            ci_ok.evaluate([check], set(), owner_reader=lambda _: {"id": 17, "status": "in_progress"},
+                           repository="example/repo")[0],
+            "pending",
+        )
+        with self.assertRaises(OSError):
+            ci_ok.evaluate([check], set(), owner_reader=mock.Mock(side_effect=OSError("unreadable")),
+                           repository="example/repo")
+
+    def test_sleep_cannot_exceed_deadline(self) -> None:
+        with mock.patch.object(ci_ok, "_deadline", 105),                 mock.patch.object(ci_ok.time, "time", return_value=100),                 mock.patch.object(ci_ok.time, "sleep") as sleep:
+            ci_ok.bounded_sleep(1000)
+            sleep.assert_called_once_with(5)

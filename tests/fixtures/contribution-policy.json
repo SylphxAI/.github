@@ -50,5 +50,8 @@
   {"name":"foreign committer","committer":{"name":"Example","email":"example@example.com"},"rule":"unapproved-committer"},
   {"name":"unknown bot","author":{"name":"example[bot]","email":"example@users.noreply.github.com"},"rule":"unapproved-author"},
   {"name":"merge committer is not an author","author":{"name":"GitHub","email":"noreply@github.com"},"rule":"unapproved-author"},
-  {"name":"bot wrong email","author":{"name":"sylphx-ai[bot]","email":"example@users.noreply.github.com"},"rule":"unapproved-author"}
+  {"name":"bot wrong email","author":{"name":"sylphx-ai[bot]","email":"example@users.noreply.github.com"},"rule":"unapproved-author"},
+  {"name":"builder bot approved commit","author":{"name":"sylphx-builder[bot]","email":"261101846+sylphx-builder[bot]@users.noreply.github.com"},"committer":{"name":"sylphx-builder[bot]","email":"261101846+sylphx-builder[bot]@users.noreply.github.com"},"message":"test(site): re-capture the goldens in the CI image\n\nGoldens-Update: verify","pass":true},
+  {"name":"builder bot wrong email","author":{"name":"sylphx-builder[bot]","email":"example@users.noreply.github.com"},"rule":"unapproved-author"},
+  {"name":"builder bot wrong committer email","committer":{"name":"sylphx-builder[bot]","email":"example@users.noreply.github.com"},"rule":"unapproved-committer"}
 ]

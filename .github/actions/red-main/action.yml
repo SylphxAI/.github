@@ -418,9 +418,10 @@ runs:
     run: |
       set -euo pipefail
       mkdir -p red-main-programs/.github .red-main-store/.github/actions
-      rm -rf red-main-programs/.github/red_main .red-main-store/.github/actions/run-store
+      rm -rf red-main-programs/.github/red_main .red-main-store/.github/actions/run-store .red-main-store/.github/actions/_shared
       cp -R "$GITHUB_ACTION_PATH/../../red_main" red-main-programs/.github/
       cp -R "$GITHUB_ACTION_PATH/../run-store" .red-main-store/.github/actions/
+      cp -R "$GITHUB_ACTION_PATH/../_shared" .red-main-store/.github/actions/
     id: programs
     env:
       TRUNK: ${{ inputs.trunk || github.event.repository.default_branch || 'main' }}

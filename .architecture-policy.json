@@ -1,0 +1,4 @@
+{
+  "mechanism_roots": [".github/actions", ".github/workflows", "scripts"],
+  "forbidden_literals": ["主腦", "樞紐", "執行器", "domain-facts"]
+}

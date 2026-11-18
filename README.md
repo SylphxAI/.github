@@ -43,8 +43,6 @@ Use one from another repository with
 | [setup-changesets-publisher](.github/actions/setup-changesets-publisher/action.yml) | Installs the Changesets publish command used by release workflows |
 
 Reusable workflows are in [.github/workflows](.github/workflows); the CI fast-path recipe (`changes.yml`, `cache-toolchain`, `ci-fast-path` starter) is [docs/ci-template.md](docs/ci-template.md).
-[disarm-auto-merge-on-push](docs/disarm-automerge-on-push.md) clears an
-arm predating a new push without dequeuing an entry already on that head.
 
 The image lane accepts `source-sha` for post-verification dispatches. Pass the
 verified commit both as `source-sha` and `tag`; checkout and build evidence bind
@@ -77,3 +75,6 @@ rule remains organization-level because the Enterprise API refused the candidate
 Current scope, source payloads and the migration constraint are in
 [Enterprise repository rules](docs/enterprise-rulesets.md). Merge queues remain
 repository-level policy ([settings](docs/merge-queue-settings.md)).
+
+This repository requires inherited `ci-ok`, repository `pr-metadata`, and the
+native merge queue.

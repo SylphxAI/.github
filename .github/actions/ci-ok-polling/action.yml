@@ -44,8 +44,11 @@ inputs:
       runs in full on merge_group. The merge group still fails when none ran.
     default: "false"
   timeout-minutes:
-    description: Give up after this many minutes.
-    default: "110"
+    description: >-
+      Polling budget in whole minutes, capped at 360. For a longer budget,
+      also raise the caller job timeout to leave time for setup, metadata
+      checks and secret scanning before polling.
+    default: "14"
   all-apps:
     description: "Also wait for check runs from other apps (deploy and preview statuses). Default: GitHub Actions only."
     default: "false"
@@ -76,4 +79,4 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         CI_OK_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         CI_OK_ALL_APPS: ${{ inputs.all-apps }}
-      run: python3 "$GITHUB_ACTION_PATH/ci_ok.py"
+      run: python3 "$GITHUB_ACTION_PATH/ci_ok.py" --watchdog

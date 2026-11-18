@@ -28,12 +28,21 @@ permissions:
 jobs:
   ci-ok:
     runs-on: sylphx-linux-control
+    timeout-minutes: 40
     steps:
       - uses: SylphxAI/.github/.github/actions/ci-ok-polling@<full-release-sha> # main
         with:
-          timeout-minutes: "110"
+          timeout-minutes: "35"
           ignore: advisory-lint
 ```
+
+The default polling budget stays at 14 minutes. For checks that need longer,
+set the action's `timeout-minutes` input and the job's `timeout-minutes` separately,
+as above. The polling budget includes the initial delay and the two polls
+needed to confirm success. It is capped at 360 minutes and fails closed on
+expiry. The job budget must also leave time for runner setup, metadata checks,
+and secret scanning before polling. A lower job timeout still ends the job
+first. Update the pinned SHA to pick up support for longer budgets.
 
 Existing polling callers change the action path and immutable SHA. Keep their
 existing inputs: `job-name` (default `ci-ok`) excludes the calling check,

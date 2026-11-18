@@ -19,9 +19,9 @@ on:
         type: string
         default: '["**", "!**/*.md", "!LICENSE*", "!.github/ISSUE_TEMPLATE/**", "!.github/workflows/**", "!.github/actions/**"]'
       runner:
-        description: Self-hosted sylphx-linux-* label; other values use standard.
+        description: Self-hosted sylphx-linux-* label; omitted or other values use control.
         type: string
-        default: sylphx-linux-standard
+        default: sylphx-linux-control
     outputs:
       code:
         description: '"true" when a code file changed (or the diff could not be computed).'
@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   changes:
-    runs-on: ${{ startsWith(inputs.runner, 'sylphx-linux-') && inputs.runner || 'sylphx-linux-standard' }}
+    runs-on: ${{ startsWith(inputs.runner, 'sylphx-linux-') && inputs.runner || 'sylphx-linux-control' }}
     timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code || steps.all.outputs.value }}
@@ -52,7 +52,7 @@ jobs:
       # A merge group has no pull request to ask, so diff its commits locally.
       - if: github.event_name == 'merge_group'
         continue-on-error: true
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.code-merge || github.sha }}
           fetch-depth: 0
@@ -60,7 +60,7 @@ jobs:
       - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         id: kinds
         continue-on-error: true
-        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           base: ${{ github.event.merge_group.base_sha }}
           ref: ${{ github.event.merge_group.head_sha }}
@@ -76,7 +76,7 @@ jobs:
       - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         id: filter
         continue-on-error: true
-        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           base: ${{ github.event.merge_group.base_sha }}
           ref: ${{ github.event.merge_group.head_sha }}

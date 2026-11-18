@@ -368,31 +368,19 @@ def scan_io_job(document, name, node, add, routes):
     permissions = fields(job.get("permissions"))
     if scalar(permissions.get("contents")) != "read":
         fail(job.get("permissions") or node, "declare job-level minimal permissions with contents: read")
-    reviewer = any(re.fullmatch(
-        r"(?:SylphxAI/\.github/|\./(?:[^/]+/)*)\.github/actions/pr-review(?:@[0-9a-fA-F]{40})?",
-        scalar(fields(step).get("uses"))) for step in steps)
     for permission, value in permissions.items():
         level = scalar(value)
-        allowed = (permission in {"contents", "actions", "pull-requests", "checks", "statuses"}
-                   and level in {"read", "none"})
-        allowed |= (reviewer and permission in {"id-token", "checks", "statuses", "pull-requests"}
-                    and level == "write")
-        if not allowed:
-            fail(value, f"permission {permission}: {level} is outside minimal reviewer permissions")
+        if not (permission in {"contents", "actions", "pull-requests", "checks", "statuses"}
+                and level in {"read", "none"}):
+            fail(value, f"permission {permission}: {level} is outside minimal io permissions")
 
-    allowed_secrets = {name.upper() for name in re.split(
-        r"[\s,]+", os.environ.get("IO_REVIEWER_SECRETS", "")) if name}
     # Workflow env/defaults are inherited, so scan them as well as the full job.
     nodes = [node, fields(document).get("env"), fields(document).get("defaults")]
     for scope in nodes:
         text = node_text(scope)
-        for expression in re.findall(r"\$\{\{(.*?)\}\}", text, re.S):
-            remainder = re.sub(r"\bsecrets\s*\.\s*([A-Za-z_][A-Za-z_0-9]*)",
-                lambda m: "" if reviewer and m[1].upper() in allowed_secrets else m[0],
-                expression, flags=re.I)
-            if re.search(r"\bsecrets\b", remainder, re.I):
-                fail(scope, "repository secrets are forbidden except configured reviewer token names")
-                break
+        if any(re.search(r"\bsecrets\b", expression, re.I)
+               for expression in re.findall(r"\$\{\{(.*?)\}\}", text, re.S)):
+            fail(scope, "repository secrets are forbidden on io jobs")
 
 
 def scan_dir(root, rules="all"):

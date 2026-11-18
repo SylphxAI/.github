@@ -27,6 +27,24 @@ fail closed. Flushed phase labels and elapsed times distinguish these failures
 without printing command arguments, remote addresses, blob bodies or raw
 subprocess diagnostics. No target code is executed.
 
+Release installation first reuses a checksum-verified local archive, then tries
+GitHub's release-download route. A transient transport failure, HTTP 429 or 5xx
+uses the pinned release asset ID through the authenticated GitHub API with
+Accept: application/octet-stream. The fallback requires the existing job token;
+credentials stay in curl's stdin configuration and are not sent to the primary
+route. Redirects retain curl's cross-origin Authorization stripping. Both routes
+and all retries share a 120-second budget. HTTP 401, 403 and 404 remain terminal.
+The archive's pinned SHA-256 is verified before any executable is installed.
+The same helper serves rust-sccache, whose Actions archive cache is also
+re-verified before extraction.
+
+A failed scan reports a code-owned stage, error class and typed reason.
+Release HTTP failures additionally report the numeric HTTP status and curl exit
+code. Exception values, response bodies, URLs and subprocess stderr stay private.
+The release-download tests exercise primary 504 recovery, authenticated fallback
+headers, total upstream failure and tampered bytes through real curl, a local
+HTTP server and the complete scanner entrypoint; they contact no GitHub endpoint.
+
 For pull requests the range is `pull_request.base.sha..pull_request.head.sha`;
 for merge groups it is `merge_group.base_sha..merge_group.head_sha`. Every commit
 in that range is checked, including a secret removed in a later commit. Only
@@ -46,16 +64,14 @@ removed when the scan exits, and never uploaded as an artifact.
 The aggregate gate deliberately ignores `.gitleaks.toml`, `.gitleaksignore` and
 `gitleaks:allow` comments from the scanned repository. Use the same exact,
 reasoned format as the publication guard: `.desk-secret-allowlist.json` at the
-scanned head. Each entry must identify one specific finding:
+scanned head. Each entry identifies the exact content of one line at one path:
 
 ```json
 {
   "version": 1,
   "findings": [
     {
-      "commit": "<full commit SHA that introduced the line>",
       "path": "tests/example.txt",
-      "line": 12,
       "sha256": "<64 lowercase hex characters from the finding>",
       "reason": "Nonfunctional provider example used by this detector test."
     }
@@ -64,9 +80,11 @@ scanned head. Each entry must identify one specific finding:
 ```
 
 The reason must be nonempty. There are no wildcards, path-wide exceptions or
-value-wide exceptions: a different commit, path, line or digest is a new finding.
-For a multiline finding each reported added line needs its own entry. Commit
-the exception in a later commit so it can name the immutable introducing commit.
+value-wide exceptions: a different path or line content is a new finding.
+Commits and line numbers are not part of the identity, so a rebase, amend, line
+shift or queue squash keeps a reviewed exception valid, and the entry can be
+committed with the line it covers. Legacy `commit` and `line` fields are accepted
+and ignored. For a multiline finding each reported added line needs its own entry.
 Never copy the suspected credential into a reason, PR discussion or log. A real
 credential must be revoked and removed; an exception is for a reviewed false
 positive. Review changes to this file as security policy changes.

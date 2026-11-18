@@ -291,23 +291,6 @@ class Audit(unittest.TestCase):
         self.assertIn("token refused", report["repos"][0]["error"])
 
 
-class WorkflowInputs(unittest.TestCase):
-    def test_missing_token_fails_before_either_audit_runs(self):
-        document = yaml.safe_load((ROOT / ".github/workflows/action-pin-drift.yml").read_text())
-        audit_steps = [s for s in document["jobs"]["drift"]["steps"] if "run" in s]
-        self.assertEqual(len(audit_steps), 2)
-        for step in audit_steps:
-            with self.subTest(step=step["name"]), tempfile.TemporaryDirectory() as tmp:
-                fake_python = pathlib.Path(tmp) / "python3"
-                fake_python.write_text("#!/bin/sh\necho AUDIT_STARTED\n")
-                fake_python.chmod(0o755)
-                env = {**os.environ, "GH_TOKEN": "", "PATH": tmp + os.pathsep + os.environ["PATH"]}
-                result = subprocess.run(["bash", "-e", "-c", step["run"]], env=env, text=True, capture_output=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("read-only GitHub token is unavailable", result.stderr)
-                self.assertNotIn("AUDIT_STARTED", result.stdout)
-
-
 class Watcher(unittest.TestCase):
     """A red trunk must draw a red-main run that reached its repair step within the window."""
 

@@ -22,11 +22,6 @@ inputs:
       PR-concurrency rule, without actionlint, performance or other contract rules.
       Other values fail rather than skipping lint.
     default: all
-  io-reviewer-secrets:
-    description: >
-      Comma-separated repository secret names allowed only for SHA-pinned
-      shared pr-review jobs on sylphx-linux-io. Empty denies all secrets.
-    default: ""
   contract-mode:
     description: >
       enforce fails all contract violations; report-only warns on legacy
@@ -62,7 +57,7 @@ runs:
     - name: Restore actionlint release archive
       id: restore-binary
       if: inputs.rules == 'all'
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         key: pinned-release-actionlint-linux-x64-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -70,23 +65,34 @@ runs:
       shell: bash
       env:
         VERSION: 1.7.12
+        GITHUB_TOKEN: ${{ github.token }}
         SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        BINARY_SHA256: c872d6db8c6bf83a8eaa704fc93999f027d55dffbc63b8a6abdccb47df5f4cd4
         IGNORE: ${{ inputs.ignore }}
         ARGS: ${{ inputs.args }}
       run: |
         set -euo pipefail
         dir="$RUNNER_TEMP/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
         mkdir -p "$dir"
-        if [ ! -f "$dir/a.tgz" ]; then
-          curl --retry 5 --retry-connrefused --retry-max-time 180 --connect-timeout 20 --max-time 120 -sSfL -o "$dir/a.tgz.part" \
-            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
-          echo "$SHA256  $dir/a.tgz.part" | sha256sum -c --quiet
-          mv "$dir/a.tgz.part" "$dir/a.tgz"
+        if [ ! -f "$dir/a.tgz" ] && [ -n "${GITHUB_ACTION_PATH:-}" ] && \
+            python3 "$GITHUB_ACTION_PATH/../_shared/verified_binary.py" \
+              --candidate /usr/local/bin/actionlint --destination "$dir/actionlint" \
+              --sha256 "${BINARY_SHA256:-}" --version "$VERSION" --version-arg=-version; then
+          : # The private binary has the exact release identity; no download.
         else
-          echo "actionlint release archive from cache"
+          if [ ! -f "$dir/a.tgz" ]; then
+            python3 "$GITHUB_ACTION_PATH/../_shared/release_download.py" \
+              --repository rhysd/actionlint --tag "v$VERSION" \
+              --filename "actionlint_${VERSION}_linux_amd64.tar.gz" \
+              --asset-id 384924896 --sha256 "$SHA256" --destination "$dir/a.tgz.part"
+            echo "$SHA256  $dir/a.tgz.part" | sha256sum -c --quiet
+            mv "$dir/a.tgz.part" "$dir/a.tgz"
+          else
+            echo "actionlint release archive from cache"
+          fi
+          echo "$SHA256  $dir/a.tgz" | sha256sum -c --quiet
+          tar -xzf "$dir/a.tgz" -C "$dir" actionlint
         fi
-        echo "$SHA256  $dir/a.tgz" | sha256sum -c --quiet
-        tar -xzf "$dir/a.tgz" -C "$dir" actionlint
         bin="$dir/actionlint"
         # shellcheck and pyflakes integrations are off: they depend on what the
         # runner image happens to carry, and a gate must not.
@@ -102,7 +108,7 @@ runs:
         "$bin" "${argv[@]}"
     - name: Save actionlint release archive
       if: inputs.rules == 'all' && steps.restore-binary.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/pinned-tools/actionlint-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         key: pinned-release-actionlint-linux-x64-8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -127,7 +133,6 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         CONTRACT_MODE: ${{ inputs.contract-mode }}
         WORKFLOW_LINT_RULES: ${{ inputs.rules }}
-        IO_REVIEWER_SECRETS: ${{ inputs.io-reviewer-secrets }}
       run: |
         python3 -m pip install --quiet --target "$RUNNER_TEMP/workflow-contract" PyYAML==6.0.3
         PYTHONPATH="$RUNNER_TEMP/workflow-contract" python3 "$GITHUB_ACTION_PATH/contract.py"

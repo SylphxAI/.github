@@ -293,6 +293,47 @@ class ExchangeTests(unittest.TestCase):
                 self.assertEqual(wire, [])
                 self.assertNotIn('token=ghs_install', output)
 
+    def test_explicit_permissions_allow_only_implicit_metadata_read(self):
+        requested = {'contents': 'read', 'actions': 'read'}
+        for read_only, endpoint in (('false', ':exchangeToken'), ('true', ':exchangeReadToken')):
+            for issued in (requested, {**requested, 'metadata': 'read'}):
+                with self.subTest(read_only=read_only, issued=issued):
+                    code, log, output, wire = run_script(
+                        replies(**{endpoint: grant(permissions=issued)}),
+                        env(READ_ONLY=read_only, PERMISSIONS=json.dumps(requested)))
+                    self.assertEqual(code, 0, log)
+                    self.assertIn('token=ghs_install\n', output)
+                    self.assertIn('permissions=' + json.dumps(issued, separators=(',', ':')), output)
+                    self.assertIn('repositories=' + json.dumps([REPO], separators=(',', ':')), output)
+                    body = json.loads(json.loads(wire[3]['config'].split('data = ')[1]))
+                    self.assertEqual(body, {'repositories': [REPO], 'permissions': requested})
+                    self.assertEqual(len(wire), 4)
+            for issued in (
+                {**requested, 'checks': 'read'},
+                {**requested, 'metadata': 'write'},
+                {**requested, 'metadata': 'admin'},
+                {**requested, 'actions': 'write'},
+                {**requested, 'contents': 'admin'},
+                {'contents': 'read', 'metadata': 'read'},
+                {}, None,
+            ):
+                with self.subTest(read_only=read_only, issued=issued):
+                    code, log, output, wire = run_script(
+                        replies(**{endpoint: grant(permissions=issued)}),
+                        env(READ_ONLY=read_only, PERMISSIONS=json.dumps(requested)))
+                    self.assertEqual(code, 1, log)
+                    self.assertNotIn('token=ghs_install', output)
+                    self.assertIn('token=\nfailure=', output)
+                    self.assertEqual(len(wire), 4)
+
+    def test_explicit_metadata_permission_stays_exact(self):
+        requested = {'contents': 'write', 'metadata': 'write'}
+        code, log, output, _ = run_script(
+            replies(**{':exchangeToken': grant(permissions={**requested, 'metadata': 'read'})}),
+            env(PERMISSIONS=json.dumps(requested)))
+        self.assertEqual(code, 1, log)
+        self.assertNotIn('token=ghs_install', output)
+
     def test_missing_runtime_oidc_is_not_replaced_by_aliases(self):
         step = action()['runs']['steps'][0]
         self.assertNotIn('ACTIONS_ID_TOKEN_REQUEST_TOKEN', step['env'])

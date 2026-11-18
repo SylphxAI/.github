@@ -862,6 +862,15 @@ elif a[:1] == ["api"] and "check-runs" in " ".join(a):
     print("\n".join("\t".join(map(str, r)) for r in sc["runs"]))
 elif a[:1] == ["api"] and "pulls/" in " ".join(a) and "commits" in " ".join(a):
     print("\n".join("\t".join(map(str, c)) for c in sc.get("pr_commits", [])))
+elif a[:1] == ["api"] and "pulls/" in " ".join(a) and "/files" in " ".join(a):
+    print("\n".join(sc.get("pr_files", [])))
+elif a[:1] == ["api"] and ("/contents/KEEL_PIN" in " ".join(a) or "/contents/deps/keel.rev" in " ".join(a)):
+    if sc.get("base_keel_pin"):
+        import base64
+        print(base64.b64encode((sc["base_keel_pin"] + "\n").encode()).decode())
+elif a[:1] == ["api"] and "/commits?path=" in " ".join(a):
+    if sc.get("base_keel_pin_at"):
+        print(sc["base_keel_pin_at"])
 elif a[:1] == ["api"] and "/commits" in " ".join(a):
     print("\n".join(sc["emails"]))
 elif a[:2] == ["pr", "view"] and "comments" in a:
@@ -1230,6 +1239,101 @@ class SettleLiveTest(unittest.TestCase):
                 self.assertEqual(keel_repin.main(["settle"]), 0)
             self.assertNotIn("merged", (base / "gh-calls.txt").read_text())
 
+    def test_non_repin_merged_branch_does_not_block_settle_live(self):
+        merged = [
+            {"number": 9, "headRefName": "chore/keel-repin-smoke-checks-20261015", "mergedAt": "2027-01-16T05:00:00Z", "body": "smoke fix"},
+            {"number": 8, "headRefName": "chore/keel-repin-kit-" + "a" * 40, "mergedAt": "2027-01-15T12:00:00Z",
+             "body": "Moves the cubeage-kit pin to `kit-" + "a" * 40 + "`.\n"},
+            MERGED_PR,
+        ]
+        rcs, comments = self.settle(self.version(keel=PINNED), merged=merged)
+        self.assertEqual((rcs, comments), ([0], ""))
+
+    def test_manual_base_pin_supersedes_stale_merged_repin(self):
+        manual_pin = "b" * 40
+        merged_with_files = {
+            **MERGED_PR,
+            "body": MERGED_PR["body"] + "\nFiles changed:\n- `KEEL_PIN`\n",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({
+                "prs": [], "emails": [BOT], "runs": [], "merged": merged_with_files,
+                "base_keel_pin": manual_pin, "base_keel_pin_at": "2027-01-15T07:50:00Z",
+            }))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            within_pr_grace = keel_repin.calendar.timegm((2027, 1, 15, 5, 10, 0))
+            within_base_grace = keel_repin.calendar.timegm((2027, 1, 15, 8, 10, 0))
+            after_grace = keel_repin.calendar.timegm((2027, 1, 15, 9, 0, 0))
+            for live_sha, ts, expected in (
+                (manual_pin, after_grace, 0),
+                ("d" * 40, within_pr_grace, 0),
+                ("d" * 40, within_base_grace, 0),
+                ("d" * 40, after_grace, 1),
+            ):
+                ws = keel_repin.web_smoke()
+                real = ws.live_keel
+                ws.live_keel = lambda url, body=self.version(keel=live_sha): real(url, opener=serving(body))
+                with mock.patch.dict(os.environ, env), mock.patch("builtins.print"), \
+                        mock.patch.object(keel_repin, "web_smoke", return_value=ws):
+                    rc = keel_repin.main(["settle", "--owner", "@o/team", "--now", str(ts), "--live-url", LIVE_URL])
+                self.assertEqual(rc, expected)
+            self.assertFalse((base / "comments.txt").exists())
+
+    def test_unrelated_root_pin_never_supersedes_scoped_repin(self):
+        scoped = {
+            **MERGED_PR,
+            "body": MERGED_PR["body"] + "\nFiles changed:\n- `remaster/deps/keel.rev`\n",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({
+                "prs": [], "emails": [BOT], "runs": [], "merged": scoped,
+                "base_keel_pin": "d" * 40, "base_keel_pin_at": "2027-01-15T07:50:00Z",
+            }))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            after_grace = keel_repin.calendar.timegm((2027, 1, 15, 9, 0, 0))
+            ws = keel_repin.web_smoke()
+            real = ws.live_keel
+            ws.live_keel = lambda url: real(url, opener=serving(self.version(keel="d" * 40)))
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"), \
+                    mock.patch.object(keel_repin, "web_smoke", return_value=ws):
+                rc = keel_repin.main(["settle", "--owner", "@o/team", "--now", str(after_grace), "--live-url", LIVE_URL])
+            self.assertEqual(rc, 1)
+            self.assertNotIn("contents/KEEL_PIN", (base / "gh-calls.txt").read_text())
+            self.assertIn(keel_repin.LIVE_MARKER, (base / "comments.txt").read_text())
+
+    def test_truncated_pr_body_still_discovers_pin_via_pull_files(self):
+        manual_pin = "b" * 40
+        truncated_body = MERGED_PR["body"] + "\nFiles changed:\n" + "".join(f"- `crates/c{i:02d}.rs`\n" for i in range(60))
+        with tempfile.TemporaryDirectory() as d:
+            base = pathlib.Path(d)
+            gh = base / "gh"
+            gh.write_text(FAKE_SETTLE_GH)
+            gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+            (base / "scenario.json").write_text(json.dumps({
+                "prs": [], "emails": [BOT], "runs": [],
+                "merged": {**MERGED_PR, "body": truncated_body},
+                "pr_files": [*[f"crates/c{i:02d}.rs" for i in range(60)], "deps/keel.rev"],
+                "base_keel_pin": manual_pin, "base_keel_pin_at": "2027-01-15T07:50:00Z",
+            }))
+            env = {"KEEL_REPIN_GH": str(gh), "FAKE_DIR": str(base), "GITHUB_REPOSITORY": "o/title"}
+            after_grace = keel_repin.calendar.timegm((2027, 1, 15, 9, 0, 0))
+            ws = keel_repin.web_smoke()
+            real = ws.live_keel
+            ws.live_keel = lambda url: real(url, opener=serving(self.version(keel=manual_pin)))
+            with mock.patch.dict(os.environ, env), mock.patch("builtins.print"), \
+                    mock.patch.object(keel_repin, "web_smoke", return_value=ws):
+                rc = keel_repin.main(["settle", "--owner", "@o/team", "--now", str(after_grace), "--live-url", LIVE_URL])
+            self.assertEqual(rc, 0)
+            self.assertIn("contents/deps/keel.rev", (base / "gh-calls.txt").read_text())
+
 
 class ActionContractTest(unittest.TestCase):
     def test_manifest_and_guards(self):
@@ -1263,13 +1367,13 @@ class ActionContractTest(unittest.TestCase):
         self.assertEqual(wf["jobs"]["poll"]["permissions"], {"contents": "read", "pull-requests": "read"})
         self.assertEqual(wf["jobs"]["repin"]["permissions"], {"contents": "write", "pull-requests": "write", "actions": "write"})
         self.assertEqual(wf["jobs"]["settle"]["permissions"], {"contents": "write", "pull-requests": "write", "checks": "read", "actions": "write"})
-        # A cadence that meets "a repin pull request within 15 minutes of a tag".
-        self.assertEqual(wf[True]["schedule"], [{"cron": "*/10 * * * *"}])
+        # A cadence matched to Keel's 4-hour tag schedule, with API-only jobs on control runners.
+        self.assertEqual(wf[True]["schedule"], [{"cron": "47 */4 * * *"}])
 
     def test_template_runs_on_our_runners_only(self):
         text = (ROOT / "workflow-templates" / "keel-repin.yml").read_text()
         labels = re.findall(r"(?m)^\s*runs-on:\s*(.+)$", text)
-        self.assertEqual(labels, ["sylphx-linux-standard"] * 3)
+        self.assertEqual(labels, ["sylphx-linux-control", "sylphx-linux-standard", "sylphx-linux-control"])
         self.assertNotRegex(text, r"(ubuntu|windows|macos)-(latest|slim|\d)")
 
     def test_the_only_merge_is_pinned_to_the_judged_head(self):

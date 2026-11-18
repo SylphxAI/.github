@@ -9,6 +9,7 @@
 #      gateway's largest entry), RUN_STORE_RETRY_DELAY (backoff base seconds, default 2),
 #      RUN_STORE_REQUEST_BUDGET (per-request total seconds, default 120),
 #      RUN_STORE_REQUEST_MAX_TIME (transfer attempt seconds, default 30),
+#      RUN_STORE_OIDC_MAX_TIME (OIDC attempt seconds, default 30),
 #      ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_ID_TOKEN_REQUEST_TOKEN,
 #      GITHUB_OUTPUT, RUNNER_TEMP.
 # Out: key, found, bytes, unavailable in $GITHUB_OUTPUT.
@@ -122,7 +123,7 @@ curl_url() {
 
 # --- token: the job's OIDC token for a BuildCache run token ----------------
 exchange() {
-  local url network max sep oidc_url code rc jwt
+  local url network max oidc_max sep oidc_url code rc jwt
   local url_re='^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*/?$'
   if [ "${RUN_STORE_MANUAL:-false}" = true ]; then
     [ "$MODE" = get ] || { reason="manual credentials are read only"; return 2; }
@@ -136,6 +137,10 @@ exchange() {
   network="${BUILD_CACHE_NETWORK:-public}"
   max="${BUILD_CACHE_MAX_TIME:-10}"
   [[ "$max" =~ ^[0-9]{1,3}$ ]] || max=10
+  oidc_max="${RUN_STORE_OIDC_MAX_TIME:-30}"
+  if ! [[ "$oidc_max" =~ ^[0-9]{1,3}$ ]] || [ "$oidc_max" -lt 1 ]; then
+    oidc_max=30
+  fi
   if ! [[ "$url" =~ $url_re ]]; then reason="build-cache-url is not an http(s) URL"; return 2; fi
   url="${url%/}"
   if [ "$network" != public ] && [ "$network" != cluster ]; then
@@ -157,7 +162,7 @@ exchange() {
   oidc_url="${ACTIONS_ID_TOKEN_REQUEST_URL}${sep}audience=sylphx-build-cache"
   rc=0
   code="$( { printf 'header = "Authorization: Bearer %s"\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"; curl_url "$oidc_url"; } \
-    | http_request run-store-oidc "$max" -K - -o "$work/tok")" || rc=$?
+    | http_request run-store-oidc "$oidc_max" -K - -o "$work/tok")" || rc=$?
   if [ "$rc" -ne 0 ]; then reason="OIDC token request: curl exit $rc"; return 1; fi
   if [ "$code" != 200 ]; then reason="OIDC token request: HTTP $code"; return 1; fi
   if ! jwt="$(json_field "$work/tok" value)"; then reason="OIDC token request: invalid response"; return 1; fi

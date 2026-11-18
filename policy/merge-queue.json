@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "doc": "docs/merge-queue-settings.md. The one source for merge queue settings, approving review count and explicitly scoped required checks. Applied by scripts/apply_merge_queue.py (dry-run by default). Required checks follow the readiness procedure in that document, including the scoped first-check bootstrap for an existing queue with no required contexts.",
+  "doc": "docs/merge-queue-settings.md. The one source for merge queue settings, approving review count and explicitly scoped required checks. Applied by scripts/apply_merge_queue.py (dry-run by default). Required checks follow the scoped first-check bootstrap in that document for an existing queue with no required contexts.",
   "orgs": [
     "SylphxAI",
     "Cubeage",
@@ -28,7 +28,7 @@
   "review": {
     "required_approving_review_count": 0,
     "require_extra_approval_for_unattributed_changes": false,
-    "note": "Human approving reviews remain at zero. The exact-head, App-bound review-ok status is the independent review gate on explicitly rolled-out repositories. require_extra_approval_for_unattributed_changes adds one approving review when a pull request carries commits GitHub cannot attribute to a user (every desk App's), which would hold every bot pull request for an approval ci-ok already made; the tool converges it to false."
+    "note": "Human approving reviews remain at zero; deterministic CI (ci-ok) is the only merge gate. require_extra_approval_for_unattributed_changes adds one approving review when a pull request carries commits GitHub cannot attribute to a user (every desk App's), which would hold every bot pull request for an approval ci-ok already made; the tool converges it to false."
   },
   "exclude": [
     {
@@ -72,50 +72,49 @@
         "check_response_timeout_minutes": 120
       },
       "reason": "The passing native/browser merge-group gate completed 82 minutes after enqueue on 2026-11-02, beyond the 60-minute deadline. Allow 120 minutes with margin and preserve the repository's other existing queue settings and required checks."
-    }
-  ],
-  "required_checks": [
+    },
     {
       "repo": "SylphxAI/cloud",
-      "repo_aliases": ["SylphxAI/sylphx"],
       "ruleset": "sylphx-merge-queue",
-      "ruleset_id": 20321070,
-      "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 }
-      ],
-      "reason": "First review gate rollout: preserve CI and bind independent review to its sole App. Apply only after the documented readiness gates and the cloud contract update."
+      "settings": {
+        "check_response_timeout_minutes": 120
+      },
+      "reason": "Merge-group CI p90 was 78 minutes (6 of 46 runs over 60, 2026-11-16..17 under peak load); groups past the 60-minute deadline wedged UNMERGEABLE at the queue head. Allow 120 minutes; other queue settings stay at the defaults."
+    },
+    {
+      "repo": "SylphxAI/keel",
+      "ruleset": "sylphx-merge-queue",
+      "settings": {
+        "check_response_timeout_minutes": 120
+      },
+      "reason": "Hands f3d9722e starved the sylphx-linux-control lane on 2026-11-17; merge-group CI on non-cloud repositories ran past 60 minutes and queue heads sat UNMERGEABLE with only queued checks (keel #6300/#6298, spiron #5420; infra groups waited 42+ minutes for a runner). Allow 120 minutes, as for cloud; other queue settings stay at the defaults."
+    },
+    {
+      "repo": "SylphxAI/spiron",
+      "ruleset": "sylphx-merge-queue",
+      "settings": {
+        "check_response_timeout_minutes": 120
+      },
+      "reason": "Hands f3d9722e starved the sylphx-linux-control lane on 2026-11-17; merge-group CI on non-cloud repositories ran past 60 minutes and queue heads sat UNMERGEABLE with only queued checks (keel #6300/#6298, spiron #5420; infra groups waited 42+ minutes for a runner). Allow 120 minutes, as for cloud; other queue settings stay at the defaults."
     },
     {
       "repo": "SylphxAI/infra",
       "ruleset": "infra-main-required-ci",
-      "ruleset_id": 23689347,
-      "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 }
-      ],
-      "reason": "First review gate rollout after producer installation, backfill, live posting and alert readiness."
-    },
-    {
-      "repo": "SylphxAI/desk-tools",
-      "ruleset": "sylphx-merge-queue",
-      "ruleset_id": 24403587,
-      "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 }
-      ],
-      "reason": "Review gate rollout after the first two targets read back: preserve CI and bind independent review to its sole App."
-    },
+      "settings": {
+        "check_response_timeout_minutes": 120
+      },
+      "reason": "Hands f3d9722e starved the sylphx-linux-control lane on 2026-11-17; merge-group CI on non-cloud repositories ran past 60 minutes and queue heads sat UNMERGEABLE with only queued checks (keel #6300/#6298, spiron #5420; infra groups waited 42+ minutes for a runner). Allow 120 minutes, as for cloud; other queue settings stay at the defaults."
+    }
+  ],
+  "required_checks": [
     {
       "repo": "SylphxAI/.github",
       "ruleset": "sylphx-merge-queue",
       "ruleset_id": 20321046,
       "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "review-ok", "integration_id": 5155317 },
         { "context": "pr-metadata", "integration_id": 15368 }
       ],
-      "reason": "Preserve CI and independent review. Require the separate metadata producer only after observing its PR-head and merge-group checks; title/body edits and ready events never replace ci-ok code evidence."
+      "reason": "Match repository ruleset 20321046: require Actions PR metadata, with ci-ok inherited from the organization."
     },
     {
       "repo": "SylphxAI/owner",

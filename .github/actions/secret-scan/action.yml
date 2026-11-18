@@ -27,6 +27,7 @@ runs:
     - name: Scan added commits for secrets
       shell: bash
       env:
+        GITHUB_TOKEN: ${{ github.token }}
         GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
         CONFIG_PATH: ${{ inputs.config-path }}
       run: |

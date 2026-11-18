@@ -251,8 +251,23 @@ benchmark or nightly) never makes the trunk red here.
   `watch-limit-minutes` (default 30), whatever the handler's verdict was.
 - [`ci-range`](../.github/actions/ci-range/action.yml): the range and the lane
   selection, the same answer in the gate and in verify. Lanes are
-  `name: path globs`; a change under `.github/` runs every lane. Use its
-  `base` output for affected-only builds (`turbo run --affected` with
+  `name: path globs`. The whitespace-separated `global-patterns` input
+  selects every lane when a changed path matches (fnmatch; `*` crosses `/`,
+  `#` starts a line comment). Patterns evaluate left to right so `!glob`
+  after a positive pattern carves out paths (such as
+  `.github/* !.github/workflows/*` to run only workflow/guard lanes when shared
+  `.github/actions/*` and toolchains are untouched) and later positive globs
+  can re-include specific workflows; bare or leading `!` exclusions fail
+  closed. It defaults to `.github/*`, preserving full `.github/` invalidation.
+  Caller patterns replace the default; an empty string disables global matching,
+  not per-lane matching or the all-lanes fallback when no trusted base exists.
+  Lane-local `!glob` exclusions win regardless of order: `test: * !web/*`
+  selects only included, nonexcluded changed paths. Exclusions alone imply
+  `*`. A lane with exclusions needs at least one matching changed path;
+  positive-only `*` and no-pattern lanes retain always-run behavior, even on
+  an empty diff. Global invalidation and an unknown base still select all
+  lanes. Explicit `only` keeps its named-lane override. Use its `base` output for
+  affected-only builds (`turbo run --affected` with
   `TURBO_SCM_BASE`, `cargo nextest run -p` on the changed crates, `nx affected
   --base`). A push/dispatch base is the newest first-parent ancestor whose
   authenticated full post-main `verified` job succeeded: GitHub Actions App,
@@ -290,6 +305,61 @@ benchmark or nightly) never makes the trunk red here.
   non-proof producer returns `ineligible`; callers must retain handling for
   unknown, never treat it as success or terminal no-action. Destructive revert
   requires authenticated failure plus a trusted authenticated baseline.
+  Queue reuse is a separate, opt-in execution decision, not a trusted baseline.
+  Set `reuse-workflow` to the queue workflow filename, `reuse-aggregate` to its
+  exact aggregate job name, and `reuse-jobs` to a JSON mapping of declared lanes
+  to nonempty arrays of exact queue job names, for example
+  `{"test":["database-tests"]}`. Matrix/reusable-workflow job names must match
+  exactly. The caller must ensure those jobs perform the same work and cover
+  the same inputs, toolchain and environment as the lane being suppressed;
+  source identity alone does not establish workload equivalence.
+
+  Gate optional work with `fromJSON(steps.range.outputs.execute).test` instead
+  of `run`. `run` remains ordinary path/range selection; `execute` subtracts
+  authenticated reuse; `reused` maps every lane to a boolean; `reuse-proof`
+  contains the repository, workflow, run, attempt, exact SHA and job/check
+  identities plus lane mapping, or `{}`. Leave the three reuse inputs empty
+  to retain ordinary behavior.
+
+  Reuse requires a native default-branch push with event, checkout and GitHub
+  source identities agreeing. The newest exact-SHA merge-group run must target
+  that exact branch, belong to the same repository and approved active workflow,
+  and be completed successfully. Its aggregate and every selected mapped job
+  must independently authenticate as successful GitHub Actions checks from that
+  latest attempt. Complete run/job censuses and reread fences reject stale or
+  changing evidence; newer failed, cancelled or pending evidence never exposes
+  an older green run. Missing, malformed, unreadable or mismatched evidence
+  retains real execution. This capability accepts exact commits only, not a
+  different commit with the same tree. Schedule, manual dispatch, PR,
+  merge-group and any nonempty explicit `only` request never consume reuse.
+  Queue evidence never supplies `verified`, erases a post-main failure, or
+  changes `mode: run` semantics.
+
+  **PR to merge queue (exact tree).** Separately, a gate can call `ci-range`
+  with `mode: merge-group` after checking out the native queue SHA. Give it
+  `pr-reuse-local-workflow` (a local reusable workflow filename),
+  `pr-reuse-job` (the exact Actions leaf name, e.g. `build / Build`), and
+  `pr-reuse-aggregate` (e.g. `ci-ok`). The job needs read access to contents,
+  pull requests, Actions and checks. A native queue ref locates an open PR;
+  reuse requires a same-repository native PR success from the same workflow,
+  and both the leaf and aggregate must be authenticated GitHub Actions checks
+  from its latest exact-head run and attempt. GitHub's local-workflow binding
+  names the PR's synthetic merge checkout; the PR head SHA alone is **not**
+  the checked tree. The merge checkout's tree must equal the queue tree. A
+  different base or a multi-entry group can change the tree even if the head
+  is unchanged. Missing, stale, ambiguous or unreadable proof (including an
+  API timeout) returns `pr-reused=false` and leaves the build required.
+
+  Opt in only for a local reusable leaf that checks out the native event SHA
+  and does the same work on either event, with equivalent runners, pinned
+  toolchains and inputs, and no event-dependent checks, mutable build inputs,
+  artifacts or outputs needed downstream. Use the **same** condition in the
+  job and in the existing aggregate: skip and omit the leaf only for a queue
+  run with a successful proof job and `pr-reused == 'true'`. Keep the
+  aggregate and all other mandatory checks. See Project control's
+  Rust/Node fixture for the wiring. The proof is not a post-main verification,
+  and no other job or repository opts in automatically.
+
 - [`needs-pass`](../.github/actions/needs-pass/action.yml): the `ci-ok` and
   `verified` verdict. Skipped passes; failed fails; a cancelled dependency
   fails too, reported as CANCELLED (naming a superseded push or a stopped run),
@@ -308,7 +378,20 @@ benchmark or nightly) never makes the trunk red here.
   `SYLPHX_CI_CACHE_*`) still work until they are retired. Entries are
   prefixed by repository.
 - [`workflow-lint`](../.github/actions/workflow-lint/action.yml): pinned
-  actionlint, the gate's workflow parse. Declare self-hosted runner labels in
+  actionlint, the gate's workflow parse. The Linux x64 archive remains
+  actionlint 1.7.12, SHA-256
+  `8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8`.
+  A transient release-download failure falls back to the pinned GitHub REST
+  asset `rhysd/actionlint/releases/assets/384924896` with the job token and
+  `Accept: application/octet-stream`; both routes share the downloader's
+  120-second budget. Cached and downloaded archives must pass the same checksum
+  before extraction. A permanent 401/403/404, corrupt bytes, or an exhausted
+  fallback remains a failed check, never a lint skip.
+  Installation failures report `stage=release-download` and a bounded reason;
+  check the job token and asset access rather than changing the hash or bypassing
+  workflow lint. The offline regression is
+  `python3 -m unittest discover -s tests -p test_workflow_lint_release.py -v`.
+  Declare self-hosted runner labels in
   `.github/actionlint.yaml` (`self-hosted-runner: labels:`), never with an
   ignore pattern. `ignore` takes one regular expression per line and `args`
   one argument per line, never shell-quoted and never split on spaces:

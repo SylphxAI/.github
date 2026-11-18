@@ -22,11 +22,18 @@ It fails closed when a check never ran:
 - every name in CI_OK_REQUIRED must be present and have succeeded (skipped,
   neutral or missing fails).
 
-Each check is judged by its latest run: the check-runs list keeps the latest
-run per check suite, so a run cancelled by a newer run of the same workflow on
-the same commit (concurrency) is still listed beside the newer one. A run in a
-superseded check suite does not count; without `actions: read`, an older
-cancelled or stale run yields to a newer run of the same name.
+Each check is judged by its latest run. The gate reads every attempt
+(`filter=all`). A re-run of a workflow run is a new attempt of the same jobs:
+an Actions check run's id is its job id, and the Actions jobs API names each
+job's workflow run and `run_attempt`, so of the jobs of one workflow run that
+share a name, only those of its newest attempt count, and an earlier
+attempt's failure cannot outlive a passing re-run. Independent jobs (matrix
+legs, reusable-workflow jobs) of the same attempt each count on their own,
+even when they share a name. A run cancelled by a newer run of the same
+workflow on the same commit (concurrency) is another workflow run: a run in a
+superseded check suite does not count, and without `actions: read` an older
+cancelled or stale run yields to a newer run of the same name while every
+other run still counts. A required check is judged by its newest run.
 
 It never depends on API budget it does not have: when the token's rate limit
 is spent until after the deadline, the gate fails at once and says so, rather
@@ -34,8 +41,11 @@ than reading green or polling until it times out; a low budget slows polling.
 """
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -48,6 +58,12 @@ class RateLimited(Exception):
         super().__init__(f"GitHub API rate limit exhausted until {time.strftime('%H:%M:%SZ', time.gmtime(reset))}")
         self.reset = reset
 
+
+_owner_spec = importlib.util.spec_from_file_location(
+    'check_run_owner', Path(__file__).resolve().parents[1] / 'check_run_owner.py')
+_owner_module = importlib.util.module_from_spec(_owner_spec)
+_owner_spec.loader.exec_module(_owner_module)
+orphaned_check = _owner_module.orphaned_check
 
 BAD = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
 ACTIONS_APP_ID = 15368  # GitHub Actions; the app every required ci-ok check is pinned to
@@ -65,7 +81,9 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
              allow_none: bool = False,
              suite_events: dict[int, str] | None = None,
              event_name: str = "",
-             suite_names: dict[int, str] | None = None) -> tuple[str, list[str]]:
+             suite_names: dict[int, str] | None = None,
+             job_attempts: dict[int, tuple[int, int]] | None = None,
+             owner_reader=None, check_reader=None, repository: str = "") -> tuple[str, list[str]]:
     """Return ('pending'|'fail'|'pass', details) for the given check runs.
 
     By default only GitHub Actions check runs count: other apps post deploy
@@ -84,8 +102,9 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
     waits for its jobs, including replacements of superseded suites.
     """
     relevant = latest_runs([r for r in runs if r.get("name") not in ignore
-                            and (not actions_only or (r.get("app") or {}).get("slug", "github-actions") == "github-actions")],
-                           suite_events)
+                            and (not actions_only or r.get("name") in required or
+                 (r.get("app") or {}).get("slug", "github-actions") == "github-actions")],
+                           suite_events, job_attempts)
     pending = [r["name"] for r in relevant if r.get("status") != "completed"]
     pending += [f'workflow has no jobs yet (check suite {s.get("id")})'
                 for s in suites or []
@@ -107,8 +126,20 @@ def evaluate(runs: list[dict], ignore: set[str], actions_only: bool = True,
         bad += [f'{r["name"]}={r.get("conclusion") or "missing"} (required)'
                 for r in relevant if r["name"] in required and r.get("status") == "completed"
                 and r.get("conclusion") != "success" and r.get("conclusion") not in BAD]
-        return ("fail", sorted(bad)) if bad else ("pending", sorted(pending))
-    concluded = {r["name"]: r.get("conclusion") for r in relevant}
+        if bad:
+            return ("fail", sorted(bad))
+        if owner_reader is not None:
+            orphaned = [r['name'] + ': orphaned (workflow run completed)' for r in relevant
+                        if orphaned_check(r, repository, owner_reader, check_reader,
+                                          os.environ.get('GITHUB_SERVER_URL', 'https://github.com'))]
+            if orphaned:
+                return ('fail', sorted(orphaned))
+        return ("pending", sorted(pending))
+    newest: dict[str, dict] = {}
+    for r in relevant:
+        if r["name"] not in newest or _started(r) > _started(newest[r["name"]]):
+            newest[r["name"]] = r
+    concluded = {name: r.get("conclusion") for name, r in newest.items()}
     for name in sorted(required):
         if concluded.get(name) != "success":
             bad.append(f'{name}={concluded.get(name) or "missing"} (required)')
@@ -121,14 +152,29 @@ def _started(r: dict) -> tuple[str, int]:
     return (r.get("started_at") or "", r.get("id") or 0)
 
 
-def latest_runs(runs: list[dict], suite_events: dict[int, str] | None) -> list[dict]:
+def latest_runs(runs: list[dict], suite_events: dict[int, str] | None,
+                job_attempts: dict[int, tuple[int, int]] | None = None) -> list[dict]:
     """Drop runs that a newer run of the same check replaced on this commit.
 
-    A run whose check suite is superseded (a later run of the same workflow
-    and event) never counts. Without workflow-run data, an older cancelled or
-    stale run yields to a newer run of the same name; any other older run still
-    counts, since two workflows may each have a job of that name.
+    `job_attempts` maps a check run id (an Actions job id) to its
+    `(workflow run id, run_attempt)`. Of the jobs of one workflow run that
+    share a name, only those of the newest attempt count: that is a re-run.
+    Jobs of the same attempt never replace each other, whatever their names.
+    A run without that identity is never collapsed this way. A run whose check
+    suite is superseded (a later run of the same workflow and event) never
+    counts. Otherwise an older cancelled or stale run yields to a newer run of
+    the same name; any other older run still counts, since two workflows may
+    each have a job of that name.
     """
+    if job_attempts:
+        newest_attempt: dict[tuple[int, str], int] = {}
+        for r in runs:
+            identity = job_attempts.get(r.get("id"))
+            if identity:
+                key = (identity[0], r.get("name"))
+                newest_attempt[key] = max(newest_attempt.get(key, 0), identity[1])
+        runs = [r for r in runs if (identity := job_attempts.get(r.get("id"))) is None
+                or identity[1] == newest_attempt[(identity[0], r.get("name"))]]
     if suite_events:
         runs = [r for r in runs if suite_events.get((r.get("check_suite") or {}).get("id")) != "superseded"]
     newest: dict[str, dict] = {}
@@ -139,14 +185,21 @@ def latest_runs(runs: list[dict], suite_events: dict[int, str] | None) -> list[d
             or r.get("conclusion") not in ("cancelled", "stale")]
 
 
-def needs_suite_events(runs: list[dict], ignore: set[str]) -> bool:
-    """True when a check has more than one run and one of them is bad: only
-    the workflow runs tell a superseded run from a second workflow's job."""
+def needs_suite_events(runs: list[dict], ignore: set[str],
+                       required: frozenset[str] | set[str] = frozenset()) -> bool:
+    """True when a check has more than one run and one of them could fail the
+    gate: only workflow runs and job attempts tell a superseded run or attempt
+    from a second workflow's job."""
     names: dict[str, int] = {}
     for r in runs:
-        if r.get("name") not in ignore:
-            names[r["name"]] = names.get(r["name"], 0) + 1
-    return any(names.get(r.get("name"), 0) > 1 and r.get("conclusion") in BAD for r in runs)
+        name = r.get("name")
+        if name and name not in ignore:
+            names[name] = names.get(name, 0) + 1
+    return any(names.get(r.get("name"), 0) > 1
+               and (r.get("conclusion") in BAD
+                    or (r.get("name") in required and r.get("status") == "completed"
+                        and r.get("conclusion") != "success"))
+               for r in runs)
 
 
 def rate_limited(exc: urllib.error.HTTPError, now: float | None = None) -> float | None:
@@ -167,13 +220,21 @@ def poll_interval(base: int, remaining: int | None) -> int:
 
 
 _budget: dict[str, int | None] = {"remaining": None}
+_deadline: float | None = None
+
+
+def bounded_sleep(seconds):
+    time.sleep(max(0, min(seconds, (_deadline - time.time()) if _deadline is not None else seconds)))
 
 
 def _get(url: str, token: str) -> dict:
+    remaining = _deadline - time.time() if _deadline is not None else 30
+    if remaining <= 0:
+        raise TimeoutError('check inventory deadline expired')
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
+        resp = urllib.request.urlopen(req, timeout=min(30, remaining))
     except urllib.error.HTTPError as exc:
         reset = rate_limited(exc)
         if reset is not None:
@@ -233,57 +294,126 @@ def fetch_suite_events(repo: str, sha: str, token: str,
     return suite_events(workflow_runs)
 
 
+def workflow_run_id(run: dict) -> int | None:
+    """The Actions workflow run id in a check run's details URL, if any."""
+    match = re.search(r"/actions/runs/(\d+)/job/\d+", run.get("details_url") or "")
+    return int(match.group(1)) if match else None
+
+
+def fetch_job_attempts(repo: str, runs: list[dict], token: str, ignore: set[str]) -> dict[int, tuple[int, int]] | None:
+    """check run id -> (workflow run id, run_attempt) for every attempt of the
+    workflow runs that hold a repeated check name; None when unreadable (no
+    `actions: read`), so no run is treated as a re-run of another."""
+    counts: dict[str, int] = {}
+    for r in runs:
+        name = r.get("name")
+        if name and name not in ignore:
+            counts[name] = counts.get(name, 0) + 1
+    run_ids = sorted({rid for r in runs if counts.get(r.get("name"), 0) > 1
+                      and (rid := workflow_run_id(r)) is not None})
+    attempts: dict[int, tuple[int, int]] = {}
+    try:
+        for rid in run_ids:
+            page = 1
+            while True:
+                data = _get(f"https://api.github.com/repos/{repo}/actions/runs/{rid}/jobs"
+                            f"?filter=all&per_page=100&page={page}", token)
+                jobs = data.get("jobs", [])
+                for job in jobs:
+                    if job.get("id") and job.get("run_id") == rid and job.get("run_attempt"):
+                        attempts[job["id"]] = (rid, int(job["run_attempt"]))
+                if not jobs or page * 100 >= data.get("total_count", 0):
+                    break
+                page += 1
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 404):
+            print("::warning::cannot read workflow jobs (grant actions: read); "
+                  "a failed attempt counts even after a passing re-run", flush=True)
+            return None
+        raise
+    return attempts
+
+
 def suite_events(workflow_runs: list[dict]) -> dict[int, str]:
     """check_suite_id -> event. A run superseded by a later run of the same
     workflow and event on the commit maps to "superseded": a workflow that
     failed to start once (a transient reusable-workflow or permission fault)
     and then ran on a re-trigger is judged by the later run's check runs."""
-    latest: dict[tuple[str, str], str] = {}
+    latest: dict[tuple[str, str], tuple[str, int]] = {}
     for r in workflow_runs:
         key = (r.get("path", ""), r.get("event", ""))
-        latest[key] = max(latest.get(key, ""), r.get("created_at", ""))
-    return {r["check_suite_id"]: (r.get("event", "") if r.get("created_at", "") >= latest[(r.get("path", ""), r.get("event", ""))]
+        latest[key] = max(latest.get(key, ("", 0)), (r.get("created_at", ""), r.get("id", 0) or 0))
+    return {r["check_suite_id"]: (r.get("event", "") if (r.get("created_at", ""), r.get("id", 0) or 0) >= latest[(r.get("path", ""), r.get("event", ""))]
                                   else "superseded")
             for r in workflow_runs}
 
 
-def main() -> int:
+def main(*, watchdog: bool = False) -> int:
+    try:
+        minutes = min(360, int(os.environ.get("CI_OK_TIMEOUT_MINUTES", "14")))
+        if minutes <= 0:
+            raise ValueError
+    except ValueError:
+        print("::error::timeout-minutes must be a positive whole number of minutes")
+        return 1
+    if watchdog:
+        # Bound the polling process even if an API read stalls. Both invocations
+        # derive their deadline from the same input, default and cap.
+        os.execlp("timeout", "timeout", "--kill-after=5s", f"{minutes}m", sys.executable, __file__)
+
     repo, sha, token = os.environ["REPO"], os.environ["SHA"], os.environ["TOKEN"]
     ignore = {os.environ.get("SELF_NAME", "ci-ok")} | {
         n.strip() for n in os.environ.get("CI_OK_IGNORE", "").split(",") if n.strip()}
     required = {n.strip() for n in os.environ.get("CI_OK_REQUIRED", "").split(",") if n.strip()}
     interval = int(os.environ.get("CI_OK_INTERVAL", "20"))
-    deadline = time.time() + 60 * int(os.environ.get("CI_OK_TIMEOUT_MINUTES", "110"))
-    time.sleep(int(os.environ.get("CI_OK_SETTLE", "45")))  # let every workflow register its runs
+    global _deadline
+    deadline = time.time() + 60 * minutes
+    _deadline = deadline
+    bounded_sleep(int(os.environ.get("CI_OK_SETTLE", "45")))  # let every workflow register its runs
     last, stable = None, 0
     while time.time() < deadline:
         try:
             suites = fetch_suites(repo, sha, token)
             runs = fetch(repo, sha, token)
             names: dict[int, str] = {}
+            repeated = needs_suite_events(runs, ignore, required)
             events = (fetch_suite_events(repo, sha, token, names)
-                      if needs_workflow_events(suites) or needs_suite_events(runs, ignore) else None)
+                      if needs_workflow_events(suites) or repeated else None)
+            attempts = fetch_job_attempts(repo, runs, token, ignore) if repeated else None
+            owners = {}
+
+            def read_owner(owner_id):
+                if owner_id not in owners:
+                    owners[owner_id] = _get(f'https://api.github.com/repos/{repo}/actions/runs/{owner_id}', token)
+                return owners[owner_id]
+
+            def read_check(check_id):
+                return _get(f'https://api.github.com/repos/{repo}/check-runs/{check_id}', token)
+
             state, detail = evaluate(runs, ignore,
                                      os.environ.get("CI_OK_ALL_APPS", "false") != "true",
                                      suites, required,
                                      os.environ.get("CI_OK_ALLOW_NONE_ON_PR", "false") == "true"
                                      and os.environ.get("EVENT_NAME") == "pull_request",
-                                     events, os.environ.get("EVENT_NAME", ""), names)
+                                     events, os.environ.get("EVENT_NAME", ""), names, attempts,
+                                     read_owner, read_check, repo)
         except RateLimited as exc:
             if exc.reset >= deadline:
                 print(f"::error::{exc}, past this gate's deadline: ci-ok cannot read the checks "
                       "and fails closed; re-run it after the reset")
                 return 1
             print(f"{exc}; waiting for the reset", flush=True)
-            time.sleep(max(0.0, exc.reset - time.time()) + 5)
+            bounded_sleep(max(0.0, exc.reset - time.time()) + 5)
             continue
         except Exception as exc:  # transient API error: keep waiting
             print(f"check-runs read failed: {exc}", flush=True)
-            time.sleep(interval)
+            bounded_sleep(interval)
             continue
         if state == "fail":
             print("::error::failed checks: " + ", ".join(detail))
             return 1
+        if time.time() >= deadline:
+            break
         if state == "pending":
             print(f"waiting on: {', '.join(detail)}", flush=True)
             last, stable = None, 0
@@ -293,10 +423,12 @@ def main() -> int:
             if stable >= 2:  # same complete result twice in a row: nothing late-registered
                 print("all checks passed: " + (", ".join(detail) or "(none)"))
                 return 0
-        time.sleep(poll_interval(interval, _budget["remaining"]))
+        bounded_sleep(poll_interval(interval, _budget["remaining"]))
     print("::error::timed out waiting for checks")
     return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if sys.argv[1:] not in ([], ["--watchdog"]):
+        sys.exit("usage: ci_ok.py [--watchdog]")
+    sys.exit(main(watchdog=bool(sys.argv[1:])))

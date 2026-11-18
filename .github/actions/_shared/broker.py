@@ -127,7 +127,9 @@ def exchange(api_url, policy, repository, permissions, read_only=False, ci_name=
     if (result.get('repositories') != [repository]
             or not isinstance(result.get('permissions'), dict)
             or not result['permissions']
-            or (permissions and result['permissions'] != permissions)
+            or (permissions and result['permissions'] != permissions
+                and ('metadata' in permissions
+                     or result['permissions'] != {**permissions, 'metadata': 'read'}))
             or (read_only and any(v != 'read' for v in result['permissions'].values()))
             or not re.fullmatch(r'github-apps/[1-9][0-9]*', result.get('issuer', ''))
             or not re.fullmatch(re.escape(policy) + r'/token_exchanges/[A-Za-z0-9_-]+', result['token_exchange'])

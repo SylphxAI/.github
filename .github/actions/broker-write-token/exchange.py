@@ -22,6 +22,7 @@ def main():
             for key in ('token', 'app-slug', 'issuer', 'connection', 'expire_time', 'token_exchange'):
                 out.write(key.replace('_', '-') + '=' + result[key] + '\n')
             out.write('permissions=' + json.dumps(result['permissions'], separators=(',', ':')) + '\nfailure=\n')
+            out.write('repositories=' + json.dumps(result['repositories'], separators=(',', ':')) + '\n')
     except (ExchangeError, ReadinessError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         # Only our fixed messages are safe. Parsing/network errors carry no reply bodies.
         reason = str(error) if isinstance(error, (ExchangeError, ReadinessError)) else 'invalid credential exchange configuration or response'

@@ -67,6 +67,9 @@ outputs:
   permissions:
     description: Authoritative nonsecret Broker permissions.
     value: ${{ steps.exchange.outputs.permissions }}
+  repositories:
+    description: Authoritative nonsecret Broker repository scope.
+    value: ${{ steps.exchange.outputs.repositories }}
 runs:
   using: composite
   steps:

@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
-import collections
 import contextlib
+import errno
 import hashlib
 import io
 import importlib.util
@@ -21,15 +21,21 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '_shared'))
-import curl_retry
+import release_download
+import verified_binary
 
 VERSION = '8.30.1'
 CHECKSUMS = {
     'x86_64': ('x64', '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'),
     'aarch64': ('arm64', 'e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080'),
+}
+BINARY_CHECKSUMS = {
+    'x86_64': '88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509',
+    'aarch64': '00e91bbe655bd7c47753e8cfe61cb76ea1a5d7e7702fe161ee40102b46b3823b',
 }
 SHA = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 ALLOWLIST = '.desk-secret-allowlist.json'
@@ -39,7 +45,41 @@ DETECTOR_TIMEOUT = 600
 
 
 class ScanError(Exception):
-    """Only constant, value-free messages may cross the output boundary."""
+    """Only code-owned messages, reasons and phases cross the output boundary."""
+
+    def __init__(self, message, *, reason='scan-refused'):
+        super().__init__(message)
+        self.reason = reason
+        self.phase = 'setup'
+
+
+def safe_error(error):
+    """Never format exception types/values, paths, URLs, stderr or response bodies."""
+    if isinstance(error, ScanError):
+        return error
+    if isinstance(error, release_download.ReleaseError):
+        return ScanError(str(error), reason=error.reason)
+    if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+        reason = 'timeout'
+    elif isinstance(error, urllib.error.HTTPError):
+        reason = 'http-error'
+    elif isinstance(error, urllib.error.URLError):
+        reason = 'network-error'
+    elif isinstance(error, FileNotFoundError):
+        reason = 'file-not-found'
+    elif isinstance(error, PermissionError):
+        reason = 'permission-denied'
+    elif isinstance(error, OSError):
+        reason = 'storage-full' if error.errno == errno.ENOSPC else 'os-error'
+    elif isinstance(error, json.JSONDecodeError):
+        reason = 'invalid-json'
+    elif isinstance(error, UnicodeError):
+        reason = 'invalid-encoding'
+    elif isinstance(error, tarfile.TarError):
+        reason = 'invalid-archive'
+    else:
+        reason = 'unexpected-error'
+    return ScanError('Secret scan stopped; exception details withheld.', reason=reason)
 
 
 @contextlib.contextmanager
@@ -49,6 +89,11 @@ def phase(name):
     started = time.monotonic()
     try:
         yield
+    except Exception as error:
+        safe = safe_error(error)
+        if safe.phase == 'setup':
+            safe.phase = name
+        raise safe from None
     finally:
         print(f'Secret scan phase {name}: elapsed {time.monotonic() - started:.3f}s.', flush=True)
 
@@ -88,18 +133,31 @@ def install(directory, version):
     if version != VERSION or platform.system() != 'Linux' or platform.machine() not in CHECKSUMS:
         raise ScanError('secret scan requires the checksum-pinned Linux gitleaks release')
     arch, digest = CHECKSUMS[platform.machine()]
-    url = f'https://github.com/gitleaks/gitleaks/releases/download/v{VERSION}/gitleaks_{VERSION}_linux_{arch}.tar.gz'
+    binary = directory / 'gitleaks'
+    if verified_binary.copy_verified('/usr/local/bin/gitleaks', binary,
+                                     sha256=BINARY_CHECKSUMS[platform.machine()],
+                                     version=VERSION, version_args=('version',)):
+        return str(binary)
+    asset_id = {'x86_64': 378332058, 'aarch64': 378332057}[platform.machine()]
     try:
-        archive = curl_retry.read(url, label='gitleaks-download',
-                                  curl_args=curl_retry.HTTP_REDIRECTS)
-    except OSError:
-        raise ScanError('gitleaks release download failed; see network diagnostics') from None
+        archive = release_download.download(
+            directory / 'gitleaks.tar.gz', repository='gitleaks/gitleaks', tag='v' + VERSION,
+            filename=f'gitleaks_{VERSION}_linux_{arch}.tar.gz', asset_id=asset_id, sha256=digest,
+            token=os.environ.get('SECRET_SCAN_TOKEN', '') or os.environ.get('GITHUB_TOKEN', '')).read_bytes()
+    except release_download.ReleaseError as error:
+        # Preserve the installer's public refusal type, including direct callers.
+        message = ('gitleaks release checksum mismatch' if error.reason == 'release-checksum-mismatch'
+                   else str(error))
+        raise ScanError(message, reason=error.reason) from None
     if hashlib.sha256(archive).hexdigest() != digest:
-        raise ScanError('gitleaks release checksum mismatch')
+        raise ScanError('gitleaks release checksum mismatch', reason='release-checksum-mismatch')
     with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as bundle:
-        member = bundle.getmember('gitleaks')
+        try:
+            member = bundle.getmember('gitleaks')
+        except KeyError:
+            raise ScanError('gitleaks release has no executable', reason='release-executable-missing') from None
         if not member.isfile():
-            raise ScanError('gitleaks release has no regular executable')
+            raise ScanError('gitleaks release has no regular executable', reason='release-executable-invalid')
         binary = directory / 'gitleaks'
         binary.write_bytes(bundle.extractfile(member).read())
         binary.chmod(0o700)
@@ -274,18 +332,20 @@ def allowlist(repo, head):
             raise ValueError()
         allowed = set()
         for item in data['findings']:
-            if not isinstance(item, dict) or set(item) != {'commit', 'path', 'line', 'sha256', 'reason'}:
+            # A finding is the exact content of one line at one path. Legacy
+            # commit/line fields are accepted and ignored, so a rebase, amend or
+            # queue squash never invalidates a reviewed exception.
+            if not isinstance(item, dict) or not {'path', 'sha256', 'reason'} <= set(item) <= \
+                    {'commit', 'path', 'line', 'sha256', 'reason'}:
                 raise ValueError()
-            commit, path, line, digest, reason = (item[k] for k in ('commit', 'path', 'line', 'sha256', 'reason'))
-            if not isinstance(commit, str) or not SHA.fullmatch(commit) or \
-                    not isinstance(path, str) or not path or type(line) is not int or line < 1 or \
+            path, digest, reason = item['path'], item['sha256'], item['reason']
+            if not isinstance(path, str) or not path or \
                     not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest) or \
-                    not isinstance(reason, str) or not reason.strip():
+                    not isinstance(reason, str) or not reason.strip() or \
+                    ('commit' in item and (not isinstance(item['commit'], str) or not SHA.fullmatch(item['commit']))) or \
+                    ('line' in item and (type(item['line']) is not int or item['line'] < 1)):
                 raise ValueError()
-            key = commit, path, line, digest
-            if key in allowed:
-                raise ValueError()
-            allowed.add(key)
+            allowed.add((path, digest))
         return allowed
     except (ValueError, TypeError, KeyError):
         raise ScanError('secret allowlist has invalid schema or review reason') from None
@@ -328,8 +388,7 @@ def merge_additions(repo, commit):
     return additions
 
 
-def scan(repo, base, head, binary, directory, config='', event_name=''):
-    event_name = event_name or os.environ.get('GITHUB_EVENT_NAME', '')
+def scan(repo, base, head, binary, directory, config=''):
     for rev in (base, head):
         if rev:
             git(repo, 'cat-file', '-e', rev + '^{commit}')
@@ -362,7 +421,6 @@ def scan(repo, base, head, binary, directory, config='', event_name=''):
     refused = set()
     exempted = set()
     merges = {}
-    squash_budgets = {}
     secrets = {value for item in findings for value in
                [item.get('Secret', ''), *item.get('Secret', '').splitlines()] if value}
     for item in findings:
@@ -373,10 +431,6 @@ def scan(repo, base, head, binary, directory, config='', event_name=''):
         if commit not in merges:
             parents = git(repo, 'rev-list', '--parents', '-n', '1', commit).split()
             merges[commit] = merge_additions(repo, commit) if len(parents) > 2 else None
-            if event_name == 'merge_group' and len(parents) == 2:
-                added = allowlist(repo, commit) - allowlist(repo, parents[1].decode())
-                squash_budgets[commit] = collections.Counter(
-                    (p, d) for c, p, _, d in added if c != commit)
         lines = git(repo, 'show', commit + ':' + path).split(b'\n')
         if end > len(lines):
             raise ScanError('gitleaks finding is outside its source blob')
@@ -387,10 +441,7 @@ def scan(repo, base, head, binary, directory, config='', event_name=''):
             key = commit, path, number, digest
             if key in exempted or key in refused:
                 continue
-            if key in allowed:
-                exempted.add(key)
-            elif squash_budgets.get(commit, {}).get((path, digest), 0) > 0:
-                squash_budgets[commit][(path, digest)] -= 1
+            if (path, digest) in allowed:
                 exempted.add(key)
             else:
                 refused.add(key)
@@ -404,7 +455,7 @@ def scan(repo, base, head, binary, directory, config='', event_name=''):
         print(f'reviewed findings allowed={len(exempted)}')
     if refused:
         print(f'Secret scan refused {len(refused)} added line(s); values are never printed. '
-              f'Review false positives in {ALLOWLIST} with commit, path, line, sha256 and reason.')
+              f'Review false positives in {ALLOWLIST} with path, sha256 and reason.')
         return 1
     print('Secret scan passed: no unreviewed findings in added commits.')
     return 0
@@ -446,13 +497,12 @@ def main():
                 with phase('commit-metadata-fetch'):
                     env = fetch(repo, remote, base, head, os.environ.get('SECRET_SCAN_TOKEN', ''))
                 os.environ.update(env)
-            binary = args.gitleaks or install(directory, args.version)
+            with phase('gitleaks-install'):
+                binary = args.gitleaks or install(directory, args.version)
             return scan(repo, base, head, binary, directory, str(Path(args.config).resolve()) if args.config else '')
-    except ScanError as error:
-        print('::error::' + str(error))
-    except Exception:
-        # JSON, subprocess, filesystem and download exceptions may carry values.
-        print('::error::Secret scan could not complete; raw diagnostics withheld.')
+    except Exception as error:
+        safe = safe_error(error)
+        print(f'::error::Secret scan stage={safe.phase} class=ScanError reason={safe.reason}: {safe}')
     return 1
 
 
