@@ -22,7 +22,7 @@ description: >
 
 inputs:
   mode:
-    description: "range (default), or run to authenticate a post-main run's verified verdict."
+    description: "range (default), run for a post-main verified verdict, or merge-group for an exact-tree PR proof."
     default: range
   proof-run:
     description: "Run id for mode=run; empty selects the newest full push of the approved workflow."
@@ -75,6 +75,15 @@ inputs:
   reuse-jobs:
     description: 'JSON object mapping declared lanes to nonempty arrays of exact queue job names; e.g. {"test":["tests"]}. No matrix or reusable-job name normalization.'
     default: ""
+  pr-reuse-local-workflow:
+    description: Same-repository reusable workflow filename called by the job in mode=merge-group.
+    default: ""
+  pr-reuse-job:
+    description: Exact Actions job name of the local reusable leaf, including the caller name and slash.
+    default: ""
+  pr-reuse-aggregate:
+    description: Exact Actions job name of the required PR aggregate.
+    default: ""
   token:
     description: Token that can read this repository's workflow runs and check runs.
     default: ${{ github.token }}
@@ -98,6 +107,12 @@ outputs:
   reuse-proof:
     description: "JSON authenticated queue run/attempt/source/job/check identities, or an empty object."
     value: ${{ steps.range.outputs.reuse-proof }}
+  pr-reused:
+    description: True only for an authenticated successful PR leaf and aggregate on the exact queue tree.
+    value: ${{ steps.range.outputs.pr-reused }}
+  pr-reuse-proof:
+    description: JSON PR tree/run/attempt/job/check identities in mode=merge-group, or an empty object.
+    value: ${{ steps.range.outputs.pr-reuse-proof }}
   changed:
     description: Number of changed files, or empty when there is no base.
     value: ${{ steps.range.outputs.changed }}
@@ -115,6 +130,9 @@ runs:
         REUSE_WORKFLOW: ${{ inputs.reuse-workflow }}
         REUSE_AGGREGATE: ${{ inputs.reuse-aggregate }}
         REUSE_JOBS: ${{ inputs.reuse-jobs }}
+        PR_REUSE_LOCAL_WORKFLOW: ${{ inputs.pr-reuse-local-workflow }}
+        PR_REUSE_JOB: ${{ inputs.pr-reuse-job }}
+        PR_REUSE_AGGREGATE: ${{ inputs.pr-reuse-aggregate }}
         LANES: ${{ inputs.lanes }}
         GLOBAL_PATTERNS: ${{ inputs.global-patterns }}
         ONLY: ${{ inputs.only }}
