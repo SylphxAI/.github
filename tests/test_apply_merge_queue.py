@@ -483,18 +483,38 @@ class RequiredCheckTests(unittest.TestCase):
 
     def test_declared_checks_cover_the_gated_repositories(self):
         self.assertEqual([entry["repo"] for entry in SHIPPED_POLICY["required_checks"]],
-                         ["SylphxAI/.github", "SylphxAI/owner", "Cubeage/solar2d-singular-sdk"])
+                         ["SylphxAI/.github", "Cubeage/solar2d-singular-sdk"])
         for entry in SHIPPED_POLICY["required_checks"]:
             if entry["repo"] == "Cubeage/solar2d-singular-sdk":
                 expected = [{"context": "ci-ok", "integration_id": 15368}]
-            if entry["repo"] == "SylphxAI/owner":
-                # owner's plain-language workflow produces always-loaded on its pull request heads; no other repository does.
-                expected = [
-                    {"context": "ci-ok", "integration_id": 15368},
-                    {"context": "always-loaded", "integration_id": 15368}]
             if entry["repo"] == "SylphxAI/.github":
                 expected = [{"context": "pr-metadata", "integration_id": 15368}]
             self.assertEqual(entry["checks"], expected)
+
+    def test_tier1_and_tier2_merge_queue_settings(self):
+        self.assertEqual(SHIPPED_POLICY["settings"], {
+            "merge_method": "SQUASH",
+            "grouping_strategy": "HEADGREEN",
+            "max_entries_to_build": 5,
+            "min_entries_to_merge": 2,
+            "max_entries_to_merge": 5,
+            "min_entries_to_merge_wait_minutes": 1,
+            "check_response_timeout_minutes": 20,
+        })
+        tier1 = {
+            "merge_method": "SQUASH",
+            "grouping_strategy": "HEADGREEN",
+            "max_entries_to_build": 8,
+            "min_entries_to_merge": 4,
+            "max_entries_to_merge": 8,
+            "min_entries_to_merge_wait_minutes": 2,
+            "check_response_timeout_minutes": 60,
+        }
+        for repo, rs_name in (("SylphxAI/cloud", "sylphx-merge-queue"),
+                              ("SylphxAI/infra", "infra-main-required-ci"),
+                              ("SylphxAI/spiron", "sylphx-merge-queue"),
+                              ("SylphxAI/keel", "sylphx-merge-queue")):
+            self.assertEqual(amq.desired_settings(SHIPPED_POLICY, repo, rs_name), tier1)
 
     def test_dotgithub_metadata_only_does_not_reintroduce_retired_gates(self):
         repo = "SylphxAI/.github"
@@ -915,3 +935,104 @@ class CheckOnlyAdoptionTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     amq.main(['--only-check', self.context, *args], gh=gh)
                 self.assertEqual((gh.queries, gh.puts), (0, []))
+
+
+class EmptyRequiredChecksPruningTests(unittest.TestCase):
+    def test_empty_required_status_checks_rule_is_pruned_and_idempotent(self):
+        rs = ruleset(70, "sylphx-merge-queue", POLICY["settings"], checks=(), reviews=0)
+        gh = FakeGh({"SylphxAI/example": rs})
+        fleet = amq.read_org(gh, "SylphxAI")
+        amq.enrich_extra_approval(gh, fleet, {}, set())
+        rows = amq.plan(fleet, POLICY, {})
+        row = next(r for r in rows if r["id"] == 70)
+        self.assertEqual(row["status"], "DRIFT")
+        self.assertEqual(row["changes"], {"empty_required_status_checks": [[], None]})
+        with tempfile.TemporaryDirectory() as directory:
+            result = amq.apply(gh, rows, POLICY, pathlib.Path(directory), pause=0)
+            self.assertEqual([r["result"] for r in result], ["APPLIED"])
+            self.assertEqual([r["type"] for r in gh.rulesets["SylphxAI/example"]["rules"]],
+                             ["merge_queue", "pull_request"])
+            fleet2 = amq.read_org(gh, "SylphxAI")
+            amq.enrich_extra_approval(gh, fleet2, {}, set())
+            rows2 = amq.plan(fleet2, POLICY, {})
+            self.assertEqual(next(r for r in rows2 if r["id"] == 70)["status"], "OK")
+            self.assertEqual(amq.apply(gh, rows2, POLICY, pathlib.Path(directory), pause=0), [])
+
+    def test_standalone_empty_required_status_checks_ruleset_is_not_emptied(self):
+        rs = ruleset(71, "ci-ok", None, checks=(), reviews=None)
+        body = amq.with_rules(rs, POLICY["settings"], 0, False, [])
+        self.assertEqual([r["type"] for r in body["rules"]], ["required_status_checks"])
+
+
+class BypassAuditTests(unittest.TestCase):
+    class AuditGh(FakeGh):
+        def __init__(self, repos, enterprises=None, org_rulesets=None, **kw):
+            super().__init__(repos, **kw)
+            self.enterprises = enterprises or {}
+            self.org_rulesets = org_rulesets or {}
+
+        def rest(self, path: str, method: str = "GET", body: dict | None = None):
+            parts = path.split("/")
+            if parts[0] == "enterprises" and len(parts) == 3 and parts[2] == "rulesets":
+                return copy.deepcopy(self.enterprises.get(parts[1], []))
+            if parts[0] == "enterprises" and len(parts) == 4 and parts[2] == "rulesets":
+                return copy.deepcopy(next(r for r in self.enterprises[parts[1]] if str(r["id"]) == parts[3]))
+            if parts[0] == "orgs" and len(parts) == 3 and parts[2] == "rulesets":
+                return copy.deepcopy(self.org_rulesets.get(parts[1], []))
+            if parts[0] == "orgs" and len(parts) == 4 and parts[2] == "rulesets":
+                return copy.deepcopy(next(r for r in self.org_rulesets[parts[1]] if str(r["id"]) == parts[3]))
+            return super().rest(path, method, body)
+
+    def run_audit(self, gh, *extra):
+        out = io.StringIO()
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as policy_file:
+            json.dump(POLICY, policy_file)
+            policy_file.flush()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                rc = amq.main(["--policy", policy_file.name, "--audit-bypasses", "--json", *extra], gh=gh)
+        return rc, json.loads(out.getvalue()) if out.getvalue().strip() else []
+
+    def test_clean_bypass_actors_passes(self):
+        gh = self.AuditGh(
+            {"SylphxAI/example": ruleset(10, "sylphx-merge-queue", POLICY["settings"], reviews=0)},
+            enterprises={"acme": [{"id": 1, "name": "ent-base", "source_type": "Enterprise",
+                                   "enforcement": "active", "bypass_actors": []}]},
+            org_rulesets={"SylphxAI": [{"id": 2, "name": "org-ci", "source_type": "Organization",
+                                        "enforcement": "active", "bypass_actors": []}]},
+        )
+        rc, rows = self.run_audit(gh, "--enterprise", "acme", "--org", "SylphxAI", "--repo", "SylphxAI/example")
+        self.assertEqual(rc, 0)
+        self.assertEqual([r["status"] for r in rows], ["OK", "OK", "OK"])
+
+    def test_redacted_or_missing_bypass_actors_fails_closed(self):
+        for bad_value in ("OMIT", None):
+            with self.subTest(bad_value=bad_value):
+                rs = ruleset(10, "sylphx-merge-queue", POLICY["settings"], reviews=0)
+                if bad_value == "OMIT":
+                    rs.pop("bypass_actors")
+                else:
+                    rs["bypass_actors"] = None
+                gh = self.AuditGh({"SylphxAI/example": rs})
+                rc, rows = self.run_audit(gh, "--repo", "SylphxAI/example")
+                self.assertEqual(rc, 1)
+                self.assertEqual(rows[0]["status"], "UNREADABLE")
+
+    def test_non_empty_bypass_actors_fails_closed(self):
+        rs = ruleset(10, "sylphx-merge-queue", POLICY["settings"], reviews=0)
+        rs["bypass_actors"] = [{"actor_id": 999, "actor_type": "Integration", "bypass_mode": "always"}]
+        gh = self.AuditGh({"SylphxAI/example": rs})
+        rc, rows = self.run_audit(gh, "--repo", "SylphxAI/example")
+        self.assertEqual(rc, 1)
+        self.assertEqual(rows[0]["status"], "VIOLATION")
+        self.assertIn("Integration 999 (always)", amq.render_bypass_audit(rows))
+
+    def test_empty_audit_population_fails_closed(self):
+        gh = self.AuditGh({})
+        rc, rows = self.run_audit(gh, "--repo", "SylphxAI/nonexistent")
+        self.assertEqual((rc, rows), (1, []))
+
+    def test_403_stops_bypass_audit(self):
+        gh = self.AuditGh({"SylphxAI/example": ruleset(10, "sylphx-merge-queue", POLICY["settings"], reviews=0)},
+                          fail={"SylphxAI/example": amq.Forbidden("HTTP 403")})
+        rc, _ = self.run_audit(gh, "--repo", "SylphxAI/example")
+        self.assertEqual(rc, 2)
