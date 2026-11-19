@@ -112,6 +112,48 @@
     "ffc4f19f76fc5ab1ed34f97707321cd698be8019": "2c4da75821fe6685d540bb8800db9156b765fa8c2acc2a4c5b63547bd9e5e3df"
   },
   "profiles": {
+    "0027e5737a11b524efc86dfe749e352759d2910aef3ae72038c5c96f6ee5f6c4": {
+      "sources": {
+        ".github/actions/stack-conformance/action.yml": "f3f6d2d78a55da4db59430e5797c6f11c36f6da90493ffa6b3bfa900d6addaf6",
+        ".github/actions/stack-conformance/stack_conformance.py": "9b975b3ac7dc8f341be7553380f028d9385b60127663616c84b5bd4aecd696a1",
+        ".github/actions/stack-conformance/architecture.py": "bfbed79a3b28ad38de9ff90bbd570a69f43b159c0228edb1732c36c76c921b05",
+        ".github/actions/stack-conformance/model_pins.py": "02b85fd1b98f38169f4651dbe0df31f1a9a8e4ac1ad07244c8783eb23257941e",
+        ".github/actions/stack-conformance/tenant_reads.py": "9d7773fbae89ba37fb2510686aae0fb11b0b117105a40edc671b0d9a52c9e412",
+        ".github/actions/stack-conformance/no_force_push.py": "5e39d0215efb495c0755447c1bf85eb58a5265cbe88759b2e3081d5d05de5dfe",
+        ".github/actions/stack-conformance/cache-economy-profiles.json": "111ab4144992210a1e30ecdd596a36f8694046a679645b4bc117ae69702a4e21",
+        ".github/actions/stack-conformance/deal_randomness.py": "b1e84ecdd7953550c7dd7311d7b413000de4daf62e2efff104ad3a70325b7f14",
+        ".github/actions/stack-conformance/project_portability.py": "d2305a1a108a5d460a4e03eb9fbed8731815e8cc06383e06fc37c17b75d3ac9e",
+        ".github/actions/stack-conformance/rust_reachability.py": "10fa10fdd4d424677ae682300f8ce28319e72c9e16f9ca2b1d4539b300e3e6e7",
+        "policy/deal-randomness-scope.json": "8936933d322b886ac22162f2140d681a9555f225db0f39f9e84dbf60d9243650",
+        "scripts/source_provenance.py": "87d5f96506606682bdfdaf4420ca62f8ca2126aa14b7cd2af79f5bd5d28f03f6",
+        "policy/source-relocations.json": "f69f1e1d07ffa3a1de389c798f891630e41c1c2544670d267676caddad2389f3",
+        ".github/actions/stack-conformance/staged_retirement.py": "e5a4cc31b42a5f4250fae29c6570195d1d87c0a583cd54742a3b66f026b186ea"
+      },
+      "rules": [
+        "architecture/C1/cache-economy",
+        "architecture/C1/deal-randomness",
+        "architecture/C1/privileged-branch",
+        "architecture/C1/project-portability",
+        "architecture/C2/provider-bypass",
+        "architecture/C2/tenant-read-functions",
+        "architecture/C3/bundled-method",
+        "architecture/C3/downstream-config",
+        "architecture/C3/downstream-import",
+        "architecture/C4/competing-default",
+        "architecture/C4/undeclared-setting",
+        "architecture/C5/cron-progress",
+        "architecture/C5/idle-floor",
+        "architecture/C5/polling-loop",
+        "architecture/C5/polling-timer",
+        "architecture/C6/retired-route",
+        "architecture/C6/unexplained-suppression",
+        "architecture/C7/failure-only-verdict",
+        "architecture/C7/merge-only-completion",
+        "force-push",
+        "model-pin",
+        "model-selector"
+      ]
+    },
     "006d6b7d206bd4a5b8447f4663cc8f34a6669057ec66dbda1dfcefab0b277365": {
       "rules": [
         "architecture/C1/cache-economy",
