@@ -510,8 +510,8 @@ def migrate_portability_records(original, base_findings, head_findings, architec
 def plan_adoption(base_tree, head_tree, repository, *, shared_repo, today, baseline=".github/stack-departures.txt"):
     """Return baseline text, introduced rules and evidence; never mutate either tree."""
     sc = _checker()
-    original = base_tree.read(baseline)
-    if head_tree.read(baseline) != original:
+    original = sc.read_baseline(base_tree, baseline)
+    if sc.read_baseline(head_tree, baseline) != original:
         raise ValueError("candidate baseline differs from base; preserve original bytes before adoption")
     errors = baseline_validation(original, original, sc.architecture)
     if errors:

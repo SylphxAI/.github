@@ -33,11 +33,17 @@ def records(lines):
     return result
 
 
+def _is_baseline_path(path, baseline):
+    normalized = posixpath.normpath(baseline) if baseline.startswith("./") and not baseline.endswith("/") else baseline
+    stem = normalized[:-4] if normalized.endswith(".txt") else normalized
+    return path == normalized or (path.startswith(stem + ".d/") and path.endswith(".txt"))
+
+
 def inputs(tree, settings, baseline):
     parent = posixpath.dirname(settings)
     stem = parent + "/" if parent else ""
     return {path[len(stem):]: identity for path, identity in tree.entries().items()
-            if path.startswith(stem) and path != baseline}
+            if path.startswith(stem) and not _is_baseline_path(path, baseline)}
 
 
 def digest(entries):
