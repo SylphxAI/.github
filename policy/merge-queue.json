@@ -11,10 +11,10 @@
     "merge_method": "SQUASH",
     "grouping_strategy": "HEADGREEN",
     "max_entries_to_build": 5,
-    "min_entries_to_merge": 1,
-    "max_entries_to_merge": 20,
-    "min_entries_to_merge_wait_minutes": 0,
-    "check_response_timeout_minutes": 60
+    "min_entries_to_merge": 2,
+    "max_entries_to_merge": 5,
+    "min_entries_to_merge_wait_minutes": 1,
+    "check_response_timeout_minutes": 20
   },
   "queue_required_status_checks": {
     "strict_required_status_checks_policy": false,
@@ -55,7 +55,10 @@
       "settings": {
         "grouping_strategy": "ALLGREEN",
         "max_entries_to_build": 10,
-        "max_entries_to_merge": 10
+        "min_entries_to_merge": 1,
+        "max_entries_to_merge": 10,
+        "min_entries_to_merge_wait_minutes": 0,
+        "check_response_timeout_minutes": 60
       },
       "reason": "Preserve the existing queue settings read on 2026-11-02 while adopting the Android compilation and package gate; this rollout changes required checks, not queue capacity or grouping."
     },
@@ -74,36 +77,74 @@
       "reason": "The passing native/browser merge-group gate completed 82 minutes after enqueue on 2026-11-02, beyond the 60-minute deadline. Allow 120 minutes with margin and preserve the repository's other existing queue settings and required checks."
     },
     {
+      "repo": "Cubeage/hk-mahjong-tycoon",
+      "ruleset": "sylphx-merge-queue",
+      "settings": {
+        "merge_method": "MERGE",
+        "grouping_strategy": "HEADGREEN",
+        "max_entries_to_build": 2,
+        "min_entries_to_merge": 1,
+        "max_entries_to_merge": 10,
+        "min_entries_to_merge_wait_minutes": 0,
+        "check_response_timeout_minutes": 240
+      },
+      "reason": "Unity Android/iOS and backend merge-group gates run beyond the 20-minute Tier-2 deadline; preserve the game repository's live merge method, build concurrency and 240-minute deadline."
+    },
+    {
+      "repo": "Cubeage/cubeage-native-sdk",
+      "ruleset": "sylphx-merge-queue",
+      "settings": {
+        "check_response_timeout_minutes": 60
+      },
+      "reason": "Measured Android and iOS merge-group CI ran 20 to 34 minutes on attempt 1 (2026-11-18), above the 20-minute Tier-2 deadline. Keep a 60-minute deadline while adopting Tier-2 batching."
+    },
+    {
       "repo": "SylphxAI/cloud",
       "ruleset": "sylphx-merge-queue",
       "settings": {
-        "check_response_timeout_minutes": 120
+        "max_entries_to_build": 8,
+        "min_entries_to_merge": 4,
+        "max_entries_to_merge": 8,
+        "min_entries_to_merge_wait_minutes": 2,
+        "check_response_timeout_minutes": 60
       },
-      "reason": "Merge-group CI p90 was 78 minutes (6 of 46 runs over 60, 2026-11-16..17 under peak load); groups past the 60-minute deadline wedged UNMERGEABLE at the queue head. Allow 120 minutes; other queue settings stay at the defaults."
+      "reason": "Tier-1 high-concurrency monorepo: batch 4 to 8 entries with a 2-minute collection window and 8 concurrent HEADGREEN builds. Keep a 60-minute transition deadline until p90 gate latency stays at or below 5 minutes."
     },
     {
       "repo": "SylphxAI/keel",
       "ruleset": "sylphx-merge-queue",
       "settings": {
-        "check_response_timeout_minutes": 120
+        "max_entries_to_build": 8,
+        "min_entries_to_merge": 4,
+        "max_entries_to_merge": 8,
+        "min_entries_to_merge_wait_minutes": 2,
+        "check_response_timeout_minutes": 60
       },
-      "reason": "Hands f3d9722e starved the sylphx-linux-control lane on 2026-11-17; merge-group CI on non-cloud repositories ran past 60 minutes and queue heads sat UNMERGEABLE with only queued checks (keel #6300/#6298, spiron #5420; infra groups waited 42+ minutes for a runner). Allow 120 minutes, as for cloud; other queue settings stay at the defaults."
+      "reason": "Tier-1 high-concurrency monorepo: batch 4 to 8 entries with a 2-minute collection window and 8 concurrent HEADGREEN builds. Keep a 60-minute transition deadline until p90 gate latency stays at or below 5 minutes."
     },
     {
       "repo": "SylphxAI/spiron",
       "ruleset": "sylphx-merge-queue",
       "settings": {
-        "check_response_timeout_minutes": 120
+        "max_entries_to_build": 8,
+        "min_entries_to_merge": 4,
+        "max_entries_to_merge": 8,
+        "min_entries_to_merge_wait_minutes": 2,
+        "check_response_timeout_minutes": 60
       },
-      "reason": "Hands f3d9722e starved the sylphx-linux-control lane on 2026-11-17; merge-group CI on non-cloud repositories ran past 60 minutes and queue heads sat UNMERGEABLE with only queued checks (keel #6300/#6298, spiron #5420; infra groups waited 42+ minutes for a runner). Allow 120 minutes, as for cloud; other queue settings stay at the defaults."
+      "reason": "Tier-1 high-concurrency monorepo: batch 4 to 8 entries with a 2-minute collection window and 8 concurrent HEADGREEN builds. Keep a 60-minute transition deadline until p90 gate latency stays at or below 5 minutes."
     },
     {
       "repo": "SylphxAI/infra",
       "ruleset": "infra-main-required-ci",
       "settings": {
-        "check_response_timeout_minutes": 120
+        "max_entries_to_build": 8,
+        "min_entries_to_merge": 4,
+        "max_entries_to_merge": 8,
+        "min_entries_to_merge_wait_minutes": 2,
+        "check_response_timeout_minutes": 60
       },
-      "reason": "Hands f3d9722e starved the sylphx-linux-control lane on 2026-11-17; merge-group CI on non-cloud repositories ran past 60 minutes and queue heads sat UNMERGEABLE with only queued checks (keel #6300/#6298, spiron #5420; infra groups waited 42+ minutes for a runner). Allow 120 minutes, as for cloud; other queue settings stay at the defaults."
+      "reason": "Tier-1 high-concurrency monorepo: batch 4 to 8 entries with a 2-minute collection window and 8 concurrent HEADGREEN builds. Keep a 60-minute transition deadline until p90 gate latency stays at or below 5 minutes."
     }
   ],
   "required_checks": [
@@ -115,16 +156,6 @@
         { "context": "pr-metadata", "integration_id": 15368 }
       ],
       "reason": "Match repository ruleset 20321046: require Actions PR metadata, with ci-ok inherited from the organization."
-    },
-    {
-      "repo": "SylphxAI/owner",
-      "ruleset": "require-review",
-      "ruleset_id": 24462493,
-      "checks": [
-        { "context": "ci-ok", "integration_id": 15368 },
-        { "context": "always-loaded", "integration_id": 15368 }
-      ],
-      "reason": "always-loaded is owner's plain-language check on the files every agent loads (.github/workflows/plain-language.yml): owner has reported it on pull request heads since 2026-10-19, so its producer is observed where it is required. ci-ok comes from owner's Rulings workflow. The check is added only after this entry lands; the policy tool never adds it to a repository whose workflows do not produce it."
     },
     {
       "repo": "Cubeage/solar2d-singular-sdk",

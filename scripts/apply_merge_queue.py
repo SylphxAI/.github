@@ -17,14 +17,19 @@ without --apply.
   scripts/apply_merge_queue.py --apply --backup-dir DIR [--repo ORG/NAME ...]
   scripts/apply_merge_queue.py --rollback DIR      # put the saved merge_queue parameters back
   scripts/apply_merge_queue.py --check             # exit 1 when any ruleset drifts
+  scripts/apply_merge_queue.py --audit-bypasses [--enterprise SLUG ...] [--org ORG ...]
 
 What it manages: merge_queue parameters, the pull_request approving review
-count and extra-approval flag, and the App bindings of explicitly scoped policy
-required_checks. `require_extra_approval_for_unattributed_changes` adds one
-approving review when a pull request carries commits GitHub cannot attribute to
-a user (every desk App's), so it would hold every bot pull request for an
-approval `ci-ok` already made; the policy converges it to false. Required checks
-are additive: unrelated checks and every other ruleset field are preserved.
+count and extra-approval flag, empty required_status_checks rule removal, and
+the App bindings of explicitly scoped policy required_checks.
+`require_extra_approval_for_unattributed_changes` adds one approving review when
+a pull request carries commits GitHub cannot attribute to a user (every desk
+App's), so it would hold every bot pull request for an approval `ci-ok` already
+made; the policy converges it to false. Empty `required_status_checks: []` rules
+inside a ruleset carrying another rule enforce nothing and are pruned. Non-empty
+required checks are additive: unrelated checks and every other ruleset field are
+preserved. `--audit-bypasses` reads REST ruleset details and fails closed when
+`bypass_actors` is missing/redacted or non-empty.
 Inherited organization or enterprise rulesets are reported and never written.
 The strict flag is converged to false on rulesets carrying a merge queue;
 non-queue rulesets retain their strict flag. The fast gate is reported fleet-wide, but checks are changed
@@ -372,9 +377,12 @@ def plan(fleet: list[dict], policy: dict, skip: dict[str, str], only: set[str] |
         checks = desired_checks(policy, item["repo"], item["id"], item["ruleset"])
         current = item.get("required_checks") or []
         wanted = merge_checks(current, checks)
-        if checks and wanted != current:
+        prune_empty_checks = item["live"] is not None and item["required"] == [] and not checks
+        if prune_empty_checks:
+            changes["empty_required_status_checks"] = [[], None]
+        elif checks and wanted != current:
             changes["required_status_checks"] = [current, wanted]
-        if item["live"] is not None and item["required"] is not None:
+        if item["live"] is not None and item["required"] is not None and not prune_empty_checks:
             strict = policy["queue_required_status_checks"][STRICT_KEY]
             if item["strict"] is not strict:
                 changes[STRICT_KEY] = [item["strict"], strict]
@@ -466,10 +474,12 @@ def with_rules(ruleset: dict, settings: dict, review_count: int, extra_approval:
         elif rule["type"] == "required_status_checks":
             has_checks = True
             params = rule.get("parameters") or {}
+            merged = merge_checks(params.get("required_status_checks", []), checks)
+            if not merged and any(other["type"] != "required_status_checks" for other in body["rules"]):
+                continue
             if strict is not None:
                 params = {**params, STRICT_KEY: strict}
-            rule = {**rule, "parameters": {**params, "required_status_checks":
-                    merge_checks(params.get("required_status_checks", []), checks)}}
+            rule = {**rule, "parameters": {**params, "required_status_checks": merged}}
         rules.append(rule)
     if checks and not has_checks:
         rules.append({"type": "required_status_checks", "parameters": {
@@ -583,6 +593,99 @@ def rollback(gh, backup_dir: Path, pause: float | None = None) -> list[dict]:
     return results
 
 
+# --- bypass audit ---------------------------------------------------------------------
+
+
+def audit_bypass_actors(scope: str, ruleset: dict) -> dict:
+    """Audit one REST ruleset detail for bypass_actors; fail closed when unreadable."""
+    row = {
+        "scope": scope,
+        "id": ruleset.get("id"),
+        "ruleset": ruleset.get("name"),
+        "source_type": ruleset.get("source_type"),
+        "enforcement": ruleset.get("enforcement"),
+    }
+    if "bypass_actors" not in ruleset or ruleset["bypass_actors"] is None:
+        row.update(status="UNREADABLE", bypass_actors=None,
+                   reason="bypass_actors missing or redacted; token lacks ruleset-editor visibility")
+        return row
+    actors = ruleset["bypass_actors"]
+    if not isinstance(actors, list):
+        row.update(status="UNREADABLE", bypass_actors=None,
+                   reason=f"unexpected bypass_actors type: {type(actors).__name__}")
+        return row
+    if actors:
+        row.update(status="VIOLATION", bypass_actors=actors,
+                   reason=f"{len(actors)} bypass actor(s) configured")
+        return row
+    row.update(status="OK", bypass_actors=[], reason="")
+    return row
+
+
+def audit_bypasses(gh, fleet: list[dict], skip: dict[str, str], only: set[str],
+                   enterprises: list[str] | None = None, orgs: list[str] | None = None) -> list[dict]:
+    """Read REST ruleset details and fail closed on redacted or non-empty bypass_actors."""
+    rows: list[dict] = []
+
+    def inspect_detail(scope: str, path: str, rid: int | None, name: str | None, source_type: str | None) -> None:
+        try:
+            detail = gh.rest(path)
+        except Forbidden:
+            raise
+        except (RuntimeError, ValueError, OSError) as exc:
+            rows.append({
+                "scope": scope, "id": rid, "ruleset": name, "source_type": source_type,
+                "enforcement": None, "status": "UNREADABLE", "bypass_actors": None,
+                "reason": f"ruleset detail unreadable: {exc}",
+            })
+            return
+        rows.append(audit_bypass_actors(scope, detail))
+
+    for ent in enterprises or []:
+        listing = gh.rest(f"enterprises/{ent}/rulesets")
+        for rs in listing:
+            if rs.get("source_type") not in (None, "Enterprise"):
+                continue
+            inspect_detail(f"enterprise:{ent}", f"enterprises/{ent}/rulesets/{rs['id']}",
+                           rs.get("id"), rs.get("name"), rs.get("source_type") or "Enterprise")
+
+    for org in orgs or []:
+        listing = gh.rest(f"orgs/{org}/rulesets")
+        for rs in listing:
+            if rs.get("source_type") != "Organization":
+                continue
+            inspect_detail(f"org:{org}", f"orgs/{org}/rulesets/{rs['id']}",
+                           rs.get("id"), rs.get("name"), "Organization")
+
+    for item in sorted(fleet, key=lambda i: (i["repo"], i["ruleset"])):
+        if item["id"] is None or item["repo"] in skip or (only and item["repo"] not in only):
+            continue
+        inspect_detail(item["repo"], f"repos/{item['repo']}/rulesets/{item['id']}",
+                       item["id"], item["ruleset"], "Repository")
+
+    return rows
+
+
+def _format_bypass_actor(actor: dict) -> str:
+    aid = actor.get("actor_id")
+    suffix = "" if aid is None else f" {aid}"
+    return f"{actor.get('actor_type')}{suffix} ({actor.get('bypass_mode') or 'always'})"
+
+
+def render_bypass_audit(rows: list[dict]) -> str:
+    lines = []
+    for r in rows:
+        lines.append(f"{r['status']:<10} {r['scope']} / {r['ruleset']} (#{r['id']})")
+        if r["status"] == "VIOLATION":
+            actors = ", ".join(_format_bypass_actor(a) for a in (r.get("bypass_actors") or []))
+            lines.append(f"             bypass_actors: {actors}")
+        elif r["status"] == "UNREADABLE":
+            lines.append(f"             unreadable: {r['reason']}")
+    count = lambda s: sum(1 for r in rows if r["status"] == s)
+    lines.append(f"audited {len(rows)}: ok {count('OK')}, violation {count('VIOLATION')}, unreadable {count('UNREADABLE')}")
+    return "\n".join(lines)
+
+
 # --- main -----------------------------------------------------------------------------
 
 
@@ -595,12 +698,16 @@ def main(argv: list[str] | None = None, gh=None) -> int:
     mode.add_argument("--dry-run", action="store_true", help="print the diff, write nothing (the default)")
     mode.add_argument("--apply", action="store_true", help="write the drifted rulesets")
     mode.add_argument("--rollback", metavar="DIR", help="put the merge_queue parameters saved in DIR by --apply back")
+    mode.add_argument("--audit-bypasses", action="store_true",
+                      help="audit bypass_actors via REST and fail closed if redacted or non-empty")
+    ap.add_argument("--enterprise", action="append", default=[], help="enterprise slug to include in --audit-bypasses (repeatable)")
+    ap.add_argument("--org", action="append", default=[], help="organization login to include in --audit-bypasses (repeatable)")
     ap.add_argument("--backup-dir", help="where --apply saves each ruleset before writing it (required with --apply)")
     ap.add_argument("--check", action="store_true", help="exit 1 when any ruleset drifts")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
-    if args.only_check is not None and (len(args.repo) != 1 or args.rollback):
-        ap.error("--only-check requires exactly one --repo and cannot be used with --rollback")
+    if args.only_check is not None and (len(args.repo) != 1 or args.rollback or args.audit_bypasses):
+        ap.error("--only-check requires exactly one --repo and cannot be used with --rollback or --audit-bypasses")
     gh = gh or Gh()
     try:
         if args.rollback:
@@ -627,6 +734,10 @@ def main(argv: list[str] | None = None, gh=None) -> int:
                 raise
             except (RuntimeError, ValueError, OSError) as exc:
                 skip[repo] = f"delivery properties unreadable: {exc}"
+        if args.audit_bypasses:
+            audit_rows = audit_bypasses(gh, fleet, skip, only, args.enterprise, args.org)
+            print(json.dumps(audit_rows, indent=2) if args.json else render_bypass_audit(audit_rows))
+            return 1 if not audit_rows or any(r["status"] != "OK" for r in audit_rows) else 0
         enrich_extra_approval(gh, fleet, skip, only)
         rows = plan(fleet, policy, skip, only or None, args.only_check)
         if args.apply:

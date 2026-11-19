@@ -29,10 +29,12 @@ HEADGREEN: the merge-group head must pass the required checks. The CI check is
 `ci-ok`, the only merge gate besides explicitly scoped deterministic
 `required_checks` entries. The full suite still runs
 after the merge ([optimistic-merge.md](optimistic-merge.md)). Values:
-`policy/merge-queue.json`
-`settings`. `max_entries_to_build` is 5 because the shared merge-queue runner
-pool bounds build concurrency (the cloud merge-queue runbook records the
-measurements); change a number in the policy file in a pull request, then apply.
+`policy/merge-queue.json` `settings`.
+
+The fleet default is Tier-2 (`SQUASH`, `HEADGREEN`, `max_entries_to_build: 5`,
+`min_entries_to_merge: 2`, `max_entries_to_merge: 5`,
+`min_entries_to_merge_wait_minutes: 1`, `check_response_timeout_minutes: 20`).
+Change a number in the policy file in a pull request, then apply.
 
 A repository that needs another value lists an `overrides` entry with its ruleset
 name and a reason; `fast_gate_overrides` does the same for a ruleset gated by
@@ -40,24 +42,26 @@ another check (cloud's `deploy/pins` branch by `pin-ok`). `exclude` lists
 repositories never read or written; the hands-off repositories of
 `policy/optimistic-merge.json` are always excluded.
 
-HK Mahjong Tycoon's Keel repository has a 120-minute response deadline. On
-2026-11-02 its passing merge-group checks completed 82 minutes after enqueue:
-the browser job took 75 minutes, including 42 minutes for the Hall panel checks.
-The 60-minute deadline removed the entry before its required `test` check could
-finish. The scoped override allows that measured work plus margin while keeping
-the repository's other queue parameters and required checks. Repositories
-without an override retain the default deadline.
+Tier-1 high-concurrency monorepos (`SylphxAI/cloud`, `SylphxAI/infra`,
+`SylphxAI/spiron`, `SylphxAI/keel`) override the default to batch 4 to 8 entries
+with a 2-minute collection window (`max_entries_to_build: 8`,
+`min_entries_to_merge: 4`, `max_entries_to_merge: 8`,
+`min_entries_to_merge_wait_minutes: 2`) and keep a 60-minute transition deadline
+until p90 gate latency stays at or below 5 minutes.
 
-Cloud has a 120-minute response deadline too. Under peak load on 2026-11-16..17
-its merge-group CI p90 was 78 minutes, with 6 of 46 runs over 60 minutes, and
-queue heads past the 60-minute deadline sat `UNMERGEABLE`. Its other queue
-parameters stay at the defaults.
+Slow native/game repositories carry explicit overrides:
 
-Keel, Spiron and Infra have a 120-minute response deadline as well. On
-2026-11-17 the shared control runner lane was starved, merge-group jobs on
-these repositories waited 42+ minutes for a runner, and queue heads went
-`UNMERGEABLE` at 60 minutes with only queued checks. Their other queue
-parameters stay at the defaults.
+- `Cubeage/hk-mahjong-tycoon-keel` keeps a 120-minute response deadline (measured
+  82-minute native/browser merge-group gate on 2026-11-02) and its existing
+  `ALLGREEN` build/merge limits of 10.
+- `Cubeage/hk-mahjong-tycoon` preserves its live `MERGE` method,
+  `max_entries_to_build: 2`, `max_entries_to_merge: 10`, and 240-minute deadline
+  for Unity/Android/iOS and backend merge-group gates.
+- `Cubeage/cubeage-native-sdk` keeps a 60-minute response deadline (measured
+  Android/iOS merge-group runs of 20 to 34 minutes on 2026-11-18).
+- `Cubeage/solar2d-singular-sdk` preserves its existing `ALLGREEN` grouping,
+  build/merge limits of 10, `min_entries_to_merge: 1`, `wait: 0`, and 60-minute
+  timeout.
 
 ## Required approving reviews: none
 
@@ -182,9 +186,16 @@ retired work repository is archived and is an `exclude` entry.
 scripts/apply_merge_queue.py --dry-run                    # diff of every ruleset (the default)
 scripts/apply_merge_queue.py --repo SylphxAI/.github      # one repository
 scripts/apply_merge_queue.py --check                      # exit 1 on any drift (for a schedule)
+scripts/apply_merge_queue.py --audit-bypasses --enterprise sylphxai --org SylphxAI  # fail closed on redacted or non-empty bypass_actors
 scripts/apply_merge_queue.py --apply --backup-dir DIR     # write; saves each ruleset in DIR first
 scripts/apply_merge_queue.py --rollback DIR               # put the saved merge_queue parameters back
 ```
+
+Empty `required_status_checks: []` rules inside a ruleset carrying another rule
+(such as `merge_queue`) enforce no checks and are pruned on apply.
+`--audit-bypasses` inspects REST ruleset details and exits non-zero whenever
+`bypass_actors` is non-empty or omitted/redacted by a token lacking editor
+visibility.
 
 Reads are one GraphQL query per 100 repositories plus one custom-property read
 per selected, non-excluded repository, and one ruleset-detail read per selected,
@@ -199,7 +210,6 @@ for each run. `--rollback` reads each ruleset as it is now and puts back only th
 saved `merge_queue` parameters, so any other edit made since the apply stays.
 The organizations are SylphxAI, Cubeage, EpiowAI and OzyrixLtd (read with the
 same login as the optimistic-merge audit); `Cubeage/cubeage-platform` and the
-hands-off repositories are excluded. `cloud` also pins its queue in
-`.github/branch-protection-contract.json`, which its guard compares with the live
-ruleset; when this policy changes a value for cloud, change that file in the
-same step.
+hands-off repositories are excluded. `SylphxAI/cloud`'s
+`.github/branch-protection-contract.json` delegates queue capacity and grouping
+parameters here and checks only required `ci-ok` and merge-queue enforcement.
