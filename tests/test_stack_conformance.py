@@ -859,6 +859,55 @@ class GitTest(unittest.TestCase):
             sc.main(["all", self.repo])
         self.assertIn("Products fully on our own stack (stack conformance): 1 of 1 (100%)", out.getvalue())
 
+    def test_sharded_baseline_dir_migration_and_ratchet(self):
+        """A repository can shard .github/stack-departures.txt into
+        .github/stack-departures.d/*.txt while preserving the strict
+        no-growth, no-stale, no-duplicate ratchet."""
+        self.assertTrue(sc.blob_candidate(".github/stack-departures.d/crates.txt"))
+        self.assertEqual(sc.baseline_shard_dir(".github/stack-departures.txt"), ".github/stack-departures.d")
+
+        dep_a = "migrations apps/a/sylphx.toml drizzle"
+        dep_b = "migrations apps/b/sylphx.toml prisma"
+        base = self.commit({
+            "apps/a/sylphx.toml": TOML.format(engine="drizzle", dockerfile="none"),
+            "apps/b/sylphx.toml": TOML.format(engine="prisma", dockerfile="none"),
+            sc.BASELINE: f"# header\n{dep_a}\n{dep_b}\n",
+        })
+        self.assertEqual(self.check(base, base)[0], 0)
+
+        # Clean migration from monolithic baseline to sharded .d/*.txt passes.
+        self.git("rm", sc.BASELINE)
+        sharded = self.commit({
+            ".github/stack-departures.d/00-headers.txt": "# header\n",
+            ".github/stack-departures.d/apps-a.txt": dep_a + "\n",
+            ".github/stack-departures.d/apps-b.txt": dep_b + "\n",
+        })
+        rc, out = self.check(base, sharded)
+        self.assertEqual(rc, 0, out)
+
+        # Duplicate record across two different shards is rejected.
+        dup = self.commit({".github/stack-departures.d/apps-b.txt": dep_b + "\n" + dep_a + "\n"})
+        rc, out = self.check(sharded, dup)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("duplicate baseline record", out)
+
+        # Smuggling a new departure into a shard is rejected.
+        grown = self.commit({
+            ".github/stack-departures.d/apps-b.txt": dep_b + "\n",
+            "apps/c/sylphx.toml": TOML.format(engine="prisma", dockerfile="none"),
+            ".github/stack-departures.d/apps-c.txt": "migrations apps/c/sylphx.toml prisma\n",
+        })
+        rc, out = self.check(sharded, grown)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("baseline grew", out)
+
+        # Fixing one departure and deleting its shard passes cleanly.
+        self.git("rm", "apps/c/sylphx.toml", ".github/stack-departures.d/apps-c.txt",
+                 ".github/stack-departures.d/apps-b.txt")
+        shrunk = self.commit({"apps/b/sylphx.toml": TOML.format(engine="atlas", dockerfile="none")})
+        rc, out = self.check(sharded, shrunk)
+        self.assertEqual(rc, 0, out)
+
 
 if __name__ == "__main__":
     unittest.main()

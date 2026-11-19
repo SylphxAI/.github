@@ -96,6 +96,34 @@ except ModuleNotFoundError:  # Python < 3.11: the regex reader below is enough.
 
 BASELINE = ".github/stack-departures.txt"
 
+
+def baseline_shard_dir(baseline: str) -> str:
+    """Companion directory for sharded baseline files (e.g. .github/stack-departures.d)."""
+    normalized = posixpath.normpath(baseline) if baseline.startswith("./") and not baseline.endswith("/") else baseline
+    stem = normalized[:-4] if normalized.endswith(".txt") else normalized
+    return stem + ".d"
+
+
+def baseline_shard_paths(tree, baseline: str) -> list[str]:
+    """Sorted .txt shard paths under the companion .d directory."""
+    prefix = baseline_shard_dir(baseline) + "/"
+    return sorted(p for p in tree.paths() if p.startswith(prefix) and p.endswith(".txt"))
+
+
+def read_baseline(tree, baseline: str) -> str | None:
+    """Read monolithic baseline file, companion .d/*.txt shards, or their union."""
+    parts: list[str] = []
+    monolithic = tree.read(baseline)
+    if monolithic is not None:
+        parts.append(monolithic)
+    for shard in baseline_shard_paths(tree, baseline):
+        text = tree.read(shard)
+        if text is not None:
+            parts.append(text)
+    if not parts:
+        return None
+    return "\n".join(parts)
+
 _architecture_spec = importlib.util.spec_from_file_location(
     "architecture", pathlib.Path(__file__).with_name("architecture.py"))
 architecture = importlib.util.module_from_spec(_architecture_spec)
@@ -240,7 +268,9 @@ def blob_candidate(path):
     # its read domain includes test/docs sources other scans may exclude.
     if no_force_push.candidate(path):
         return True
-    if path == BASELINE or path.startswith(".github/") and p.suffix in {".yml", ".yaml", ".json"}:
+    if (path == BASELINE
+            or (path.startswith(baseline_shard_dir(BASELINE) + "/") and p.suffix == ".txt")
+            or (path.startswith(".github/") and p.suffix in {".yml", ".yaml", ".json"})):
         return True
     if not model_pins.excluded(path) and p.suffix in model_pins.SOURCE:
         return True
@@ -1106,7 +1136,7 @@ def cmd_check(args) -> int:
     base_tree = None
     try:
         found = departures(head)
-        head_text = head.read(args.baseline)
+        head_text = read_baseline(head, args.baseline)
         head_lines = (head_text or "").splitlines()
         head_baseline = parse_baseline(head_text)
         head_architecture_adopted = architecture.BASELINE_MARKER in head_lines
@@ -1145,7 +1175,7 @@ def cmd_check(args) -> int:
             if not has_rev(args.repo, args.base):
                 raise SystemExit("base commit is unavailable; check did not review the change")
             base_tree = Tree(args.repo, args.base, progress=reads, blob_cache=blob_cache)
-            base_text = base_tree.read(args.baseline)
+            base_text = read_baseline(base_tree, args.baseline)
             base_lines = (base_text or "").splitlines()
             base_baseline = parse_baseline(base_text)
             base_architecture_adopted = architecture.BASELINE_MARKER in base_lines
