@@ -4,7 +4,7 @@ The economy cache rule concerns player balances, grants, rewards, purchases and
 entitlements. Infrastructure caches, credential permissions and queue leases do
 not become player economy authority because a function contains `claim` or
 `grant`. Reviewed repository domains live in the checker's immutable
-`cache-economy-profiles.json`: Spiron has no player economy; Cloud is checked in
+`cache-economy-profiles.json`: Spiron has no player economy; Sylphx is checked in
 Money and entitlement paths. Other rules still scan those repositories. The
 domain policy is included in the checker source fingerprint, and existing cache
 approval and shrinking-baseline checks still apply inside the economy domain.
@@ -100,7 +100,7 @@ Sylphx AI alias of the form `<provider>/<line>-latest`, such as
 alias exists and which dated revision it resolves to. CI checks this naming
 contract offline; a live catalog request cannot change a pull request's result.
 
-The policy follows cloud's
+The policy follows the platform repository’s
 [model identity, naming and price binding ADR](https://github.com/SylphxAI/cloud/blob/2eeaf2605f12ec2aec98b837870eccff5f66c0b0/docs/adr/ADR-01M58DAMBRRTBRYRD3HSQQVD1S-model-identity-naming-and-price-binding.md),
 including the dated-provider-locator amendment in
 [cloud#15331](https://github.com/SylphxAI/cloud/pull/15331). The cited source
@@ -116,11 +116,11 @@ JSON, TOML, YAML, SQL and Protobuf. Variables, method names, comments,
 documentation, tests (including inline Rust tests), fixtures and dependencies
 are excluded. Computed or encoded ids still require semantic review.
 
-Catalog and routing source in cloud owns upstream locators. The reasoned,
+Catalog and routing source in Sylphx owns upstream locators. The reasoned,
 repository-and-path exemptions are declared in `model_pins.py`; every entry
 has an exemption test and a test that the same path in a product still fails.
-Other cloud source is checked normally. No repository-wide exemption is given
-to cloud.
+Other Sylphx source is checked normally. No repository-wide exemption is given
+to Sylphx.
 
 Existing hits use the normal baseline file with a rule-specific adoption marker:
 
@@ -148,7 +148,7 @@ must run stack conformance for source/config changes, not only manifests.
 An optional `model-aliases` action input (`--model-aliases FILE` in the CLI)
 can tighten alias admission to an offline catalog declaration. The JSON shape
 is `version: 1`, `aliases: ["provider/line-latest", ...]`, and
-`source: {repository: "SylphxAI/cloud", commit: "<40-hex>", path: "...",
+`source: {repository: "SylphxAI/sylphx", commit: "<40-hex>", path: "...",
 sha256: "<64-hex>"}`. This mode requires exact declared membership as well as
 the naming contract and fails closed on an unreadable or invalid file. Refresh
 the declaration from the catalog with its immutable provenance; no hand-kept
@@ -236,7 +236,7 @@ The file is the existing database resource PATCH body:
 ```
 
 The platform's [tenant reader declaration
-contract](https://github.com/SylphxAI/cloud/blob/main/docs/runbooks/shared-tenant-read-only.md#declaration)
+contract](https://github.com/SylphxAI/sylphx/blob/main/docs/runbooks/shared-tenant-read-only.md#declaration)
 requires one to 64 distinct exact signatures, lowercase names and plain argument
 types. `args` defaults to an empty string. Unknown fields, duplicate JSON keys,
 duplicate signatures and unreadable or malformed declarations fail explicitly.
@@ -264,7 +264,7 @@ existing exclusion.
 ## Agent-runtime parts
 
 The three-pillar agent runtime and cloud substrate repositories
-(SylphxAI/anyagents, SylphxAI/spiron, SylphxAI/cloud and SylphxAI/sylphx;
+(SylphxAI/anyagents, SylphxAI/spiron and SylphxAI/sylphx;
 see SylphxAI/owner company/architecture-map.md) own multi-agent
 orchestration, single-agent harnesses, session logs, turn loops, agent memory,
 tool gateways, credential custody and egress guards. The check fails any
@@ -283,7 +283,7 @@ change that touches a manifest or SQL file fails until the part has moved onto
 Sylphx Agents and been deleted. An entry whose part is gone is reported as a
 notice; delete it. Extending a date is a pull request here with its reason.
 
-owner_repos (SylphxAI/anyagents, SylphxAI/cloud, SylphxAI/spiron and
+owner_repos (SylphxAI/anyagents, SylphxAI/spiron and
 SylphxAI/sylphx) are not checked for these parts. A delivered customer repository (organization custom property
 `sylphx_delivery` = `delivered`) is not checked at all; the action reads the
 property with the job token, and an unreadable property leaves the check on.
@@ -327,8 +327,8 @@ so adopting needs no baseline; there is no allowance list.
 
 The company's knowledge graph, its memory spaces and its CRM customer graph
 are Sylphx Knowledge, a platform service with one permission space per record
-(SylphxAI/cloud
-[ADR-01M4AJK2TXTJWZ4X5B06HPT0R4](https://github.com/SylphxAI/cloud/blob/main/docs/adr/ADR-01M4AJK2TXTJWZ4X5B06HPT0R4-sylphx-knowledge-permission-aware-graph.md),
+(SylphxAI/sylphx
+[ADR-01M4AJK2TXTJWZ4X5B06HPT0R4](https://github.com/SylphxAI/sylphx/blob/main/docs/adr/ADR-01M4AJK2TXTJWZ4X5B06HPT0R4-sylphx-knowledge-permission-aware-graph.md),
 D6). A product does not hold one of these tables in its own repository. With a
 base, the check reads every `.sql` file the change adds (not a rename, not a
 `*.down.sql`) and fails on:
@@ -356,7 +356,7 @@ one of these tables; it fails with the `knowledge-table` line and the ADR, and
 passes again once the table is recorded for that repository or the file makes
 no such table.
 
-`owner_repos` (SylphxAI/cloud, where the service lives) is not checked for
+`owner_repos` (SylphxAI/sylphx, where the service lives) is not checked for
 these tables. A delivered customer repository (`sylphx_delivery` = `delivered`)
 is not checked at all, as for the agent-runtime parts.
 

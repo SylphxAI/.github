@@ -4,7 +4,7 @@ The merge queue proves a change can land; the full suite proves the trunk
 after it lands. Queue time drops to the fast gate, and only verified commits
 deploy. The rule is owner `standards/dx.md` (Merge queue); the platform
 contract - what `verified` means to Release, what the red-main handler may do -
-is `docs/services/hosting/verified-commits.md` in `SylphxAI/cloud`. This page
+is `docs/services/hosting/verified-commits.md` in `SylphxAI/sylphx`. This page
 is the recipe. One pull request per repository carries all of it, so there is
 no half state.
 
@@ -564,7 +564,7 @@ runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge'
 
 The per-organization serving contract is recorded in
 [`policy/merge-runner-labels.json`](../policy/merge-runner-labels.json), with the
-upstream `SylphxAI/cloud` commit and read time. At that revision, SylphxAI serves
+upstream `SylphxAI/sylphx` commit and read time. At that revision, SylphxAI serves
 small, standard, large, xlarge and 2xlarge; EpiowAI serves standard, large and
 xlarge; OzyrixLtd serves large; Cubeage serves standard. A label existing in
 another organization is not evidence that this organization serves it.

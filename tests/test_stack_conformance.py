@@ -262,7 +262,7 @@ class KeelGameGuardTest(unittest.TestCase):
 
 class AgentRuntimeTest(unittest.TestCase):
     POLICY = {
-        "owner_repos": ["SylphxAI/cloud"],
+        "owner_repos": ["SylphxAI/sylphx"],
         "baseline": [{"repo": "o/app", "departure": "agent-runtime-package crates/eg/Cargo.toml egress-guard",
                       "expires": "2026-11-30"}],
     }
@@ -328,7 +328,7 @@ class AgentRuntimeTest(unittest.TestCase):
 
     def test_the_platform_owner_is_not_checked(self):
         found = ["agent-runtime-table services/agents/m/1.sql session_entries"]
-        self.assertEqual(sc.decide_agent_runtime(found, "SylphxAI/cloud", self.POLICY, self.TODAY), ([], []))
+        self.assertEqual(sc.decide_agent_runtime(found, "SylphxAI/sylphx", self.POLICY, self.TODAY), ([], []))
 
     def test_a_gone_part_is_a_notice(self):
         errors, notices = sc.decide_agent_runtime([], "o/app", self.POLICY, self.TODAY)
@@ -343,7 +343,7 @@ class AgentRuntimePolicyTest(unittest.TestCase):
         policy = json.loads(sc.AGENT_RUNTIME_POLICY.read_text())
         self.assertEqual(
             policy["owner_repos"],
-            ["SylphxAI/anyagents", "SylphxAI/cloud", "SylphxAI/spiron", "SylphxAI/sylphx"],
+            ["SylphxAI/anyagents", "SylphxAI/spiron", "SylphxAI/sylphx"],
         )
         seen = set()
         for entry in policy["baseline"]:
@@ -362,7 +362,7 @@ class AgentRuntimePolicyTest(unittest.TestCase):
         expected = {f"agent-runtime-table {path} {table}"
                     for table in ("agent_memory_docs", "session_entries")}
         self.assertEqual(set(found), expected)
-        for owner_repo in ("SylphxAI/anyagents", "SylphxAI/cloud", "SylphxAI/spiron", "SylphxAI/sylphx"):
+        for owner_repo in ("SylphxAI/anyagents", "SylphxAI/spiron", "SylphxAI/sylphx"):
             self.assertEqual(
                 sc.decide_agent_runtime(found, owner_repo, policy, datetime.date(2026, 12, 1)),
                 ([], []),
@@ -378,7 +378,7 @@ KNOWLEDGE_SQL = "CREATE TABLE knowledge_entities (id uuid PRIMARY KEY, title tex
 class KnowledgeTableGuardTest(unittest.TestCase):
     """test knowledge-table-guard: a new knowledge or CRM table fails, because
     the company's graph and customer records are Sylphx Knowledge
-    (SylphxAI/cloud ADR-01M4AJK2TXTJWZ4X5B06HPT0R4, D6)."""
+    (SylphxAI/sylphx ADR-01M4AJK2TXTJWZ4X5B06HPT0R4, D6)."""
 
     def test_the_named_families_are_found(self):
         cases = {
@@ -406,7 +406,7 @@ class KnowledgeTableGuardTest(unittest.TestCase):
                 self.assertEqual(sc.knowledge_tables("m/1.sql", sql), [])
 
     def test_a_new_table_fails_and_a_recorded_one_passes(self):
-        policy = {"owner_repos": ["SylphxAI/cloud"], "baseline": [
+        policy = {"owner_repos": ["SylphxAI/sylphx"], "baseline": [
             {"repo": "SylphxAI/spiron", "table": "knowledge_entries", "expires": "2026-11-30"}]}
         today = datetime.date(2026, 10, 7)
         errors, _ = sc.decide_knowledge(
@@ -432,9 +432,9 @@ class KnowledgeTableGuardTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
 
     def test_the_platform_owner_is_not_checked(self):
-        policy = {"owner_repos": ["SylphxAI/cloud"], "baseline": []}
+        policy = {"owner_repos": ["SylphxAI/sylphx"], "baseline": []}
         self.assertEqual(sc.decide_knowledge(
-            ["knowledge-table m/1.sql knowledge_nodes"], "SylphxAI/cloud", policy, datetime.date(2026, 10, 7)),
+            ["knowledge-table m/1.sql knowledge_nodes"], "SylphxAI/sylphx", policy, datetime.date(2026, 10, 7)),
             ([], []))
 
     def test_a_gone_table_is_a_notice(self):
@@ -464,7 +464,7 @@ class KnowledgeTablePolicyTest(unittest.TestCase):
 
     def test_policy_file(self):
         policy = json.loads(sc.KNOWLEDGE_POLICY.read_text())
-        self.assertEqual(policy["owner_repos"], ["SylphxAI/cloud", "SylphxAI/sylphx"])
+        self.assertEqual(policy["owner_repos"], ["SylphxAI/sylphx"])
         seen = set()
         for entry in policy["baseline"]:
             self.assertRegex(entry["repo"], r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -622,7 +622,7 @@ class ModelPinTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = pathlib.Path(folder, "aliases.json")
             data = {"version": 1, "aliases": sorted(self.ALIASES),
-                    "source": {"repository": "SylphxAI/cloud", "commit": "a" * 40,
+                    "source": {"repository": "SylphxAI/sylphx", "commit": "a" * 40,
                                "path": "catalog/aliases.json", "sha256": "b" * 64}}
             path.write_text(json.dumps(data))
             self.assertEqual(sc.model_pins.load_aliases(path), self.ALIASES)
@@ -641,7 +641,7 @@ class ModelPinTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.scan({path: pinned}, entry["repository"]), [])
                 self.assertEqual(len(self.scan({path: pinned}, "example/product")), 1)
-        self.assertEqual(len(self.scan({"src/client.rs": 'const MODEL: &str = "gpt-5.1-2025-11-13";'}, "SylphxAI/cloud")), 1)
+        self.assertEqual(len(self.scan({"src/client.rs": 'const MODEL: &str = "gpt-5.1-2025-11-13";'}, "SylphxAI/sylphx")), 1)
 
     def test_duplicates_and_new_versions_cannot_hide_in_a_baseline(self):
         first = self.scan({"src/client.ts": 'call("gpt-5.1-2025-11-13");'})

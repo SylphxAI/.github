@@ -16,7 +16,7 @@ finds four kinds of departure in a git tree:
   solar2d <build.settings>            a retired Solar2D / Corona game project
                                       (build.settings with a sibling main.lua)
 
-and two kinds of agent-runtime part, which only Sylphx Agents owns (SylphxAI/cloud
+and two kinds of agent-runtime part, which only Sylphx Agents owns (SylphxAI/sylphx
 ADR-01M495TCCBZGSQ68A4P4G428H2, D5):
 
   agent-runtime-package <manifest> <name>  a Cargo or npm package named like
@@ -35,7 +35,7 @@ docs/adr/0010, "Guard for the class"):
                                       escalation column
 
 and, in SQL files added since the base, a knowledge-graph or CRM table that
-Sylphx Knowledge owns (SylphxAI/cloud
+Sylphx Knowledge owns (SylphxAI/sylphx
 ADR-01M4AJK2TXTJWZ4X5B06HPT0R4, D6):
 
   knowledge-table <file.sql> <table>  a table named like a knowledge-graph or
@@ -163,7 +163,7 @@ AGENT_RUNTIME_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy" / 
 # date, so the widened rule ships without failing every repository at once.
 KNOWLEDGE_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy" / "knowledge-tables.json"
 
-KNOWLEDGE_DECISION = ("SylphxAI/cloud docs/adr/"
+KNOWLEDGE_DECISION = ("SylphxAI/sylphx docs/adr/"
                       "ADR-01M4AJK2TXTJWZ4X5B06HPT0R4-sylphx-knowledge-permission-aware-graph.md, D6")
 # The names Sylphx Knowledge owns: the knowledge graph (knowledge_*), its
 # short forms and the CRM customer graph (kg_*, crm_*, customer_profiles),
@@ -967,7 +967,8 @@ def decide_agent_runtime(found: list[str], repository: str, policy: dict,
     The platform owner is not checked. Elsewhere a part passes only while
     policy/agent-runtime.json lists it for this repository and its expiry date
     has not passed."""
-    if repository in policy.get("owner_repos", []):
+    owners = policy.get("owner_repos", [])
+    if repository in owners or architecture.canonical_repository(repository) in owners:
         return [], []
     allowed: dict[str, str] = {}
     for entry in policy.get("baseline", []):
@@ -1015,7 +1016,8 @@ def decide_knowledge(found: list[str], repository: str, policy: dict,
     policy/knowledge-tables.json records it for this repository and its expiry
     date has not passed: the instances the widened rule found on the default
     branch when it shipped."""
-    if repository in policy.get("owner_repos", []):
+    owners = policy.get("owner_repos", [])
+    if repository in owners or architecture.canonical_repository(repository) in owners:
         return [], []
     allowed: dict[str, str] = {}
     for entry in policy.get("baseline", []):

@@ -20,13 +20,13 @@ SPEC.loader.exec_module(amq)
 
 SHIPPED_POLICY = amq.load_policy(ROOT / "policy" / "merge-queue.json")
 POLICY = {**SHIPPED_POLICY, "required_checks": []}
-# Cloud carries a per-repository override, so its converged state is the policy plus that override.
-CLOUD = amq.desired_settings(POLICY, "SylphxAI/cloud", "sylphx-merge-queue")
+# The platform carries a per-repository override, so its converged state is the policy plus that override.
+PLATFORM = amq.desired_settings(POLICY, "SylphxAI/sylphx", "sylphx-merge-queue")
 # Mechanism fixture: scoped targets binding an external App-published status.
 CHECK_POLICY = {**SHIPPED_POLICY, "required_checks": [
     {"repo": repo, "ruleset": name, "ruleset_id": ruleset_id, "reason": "fixture",
      "checks": [{"context": "ci-ok", "integration_id": 15368}, {"context": "external-ok", "integration_id": 5155317}]}
-    for repo, name, ruleset_id in (("SylphxAI/cloud", "sylphx-merge-queue", 20321070),
+    for repo, name, ruleset_id in (("SylphxAI/sylphx", "sylphx-merge-queue", 20321070),
                                    ("SylphxAI/infra", "infra-main-required-ci", 23689347),
                                    ("SylphxAI/desk-tools", "sylphx-merge-queue", 24403587))
 ] + SHIPPED_POLICY["required_checks"]}
@@ -190,7 +190,7 @@ class PlanTests(unittest.TestCase):
     def setUp(self):
         self.fleet = amq.read_org(FakeGh({
             "SylphxAI/desk-tools": ruleset(10, "sylphx-merge-queue", OLD),
-            "SylphxAI/cloud": ruleset(11, "sylphx-merge-queue", {**OLD, **CLOUD}),
+            "SylphxAI/sylphx": ruleset(11, "sylphx-merge-queue", {**OLD, **PLATFORM}),
             "SylphxAI/bgca": ruleset(12, "sylphx-merge-queue", OLD),
             "SylphxAI/other": ruleset(13, "sylphx-merge-queue", OLD, checks=("lint",)),
             "SylphxAI/janus": ruleset(14, "ci-must-pass", None),
@@ -204,10 +204,10 @@ class PlanTests(unittest.TestCase):
         # read; the repository's own ruleset is the other entry.
         self.assertEqual(sorted({(i["repo"], i["ruleset"]) for i in self.fleet}),
                          [("SylphxAI/bgca", "agent-native-queued-trunk-base"), ("SylphxAI/bgca", "sylphx-merge-queue"),
-                          ("SylphxAI/cloud", "agent-native-queued-trunk-base"), ("SylphxAI/cloud", "sylphx-merge-queue"),
                           ("SylphxAI/desk-tools", "agent-native-queued-trunk-base"), ("SylphxAI/desk-tools", "sylphx-merge-queue"),
                           ("SylphxAI/janus", "agent-native-queued-trunk-base"), ("SylphxAI/janus", "ci-must-pass"),
-                          ("SylphxAI/other", "agent-native-queued-trunk-base"), ("SylphxAI/other", "sylphx-merge-queue")])
+                          ("SylphxAI/other", "agent-native-queued-trunk-base"), ("SylphxAI/other", "sylphx-merge-queue"),
+                          ("SylphxAI/sylphx", "agent-native-queued-trunk-base"), ("SylphxAI/sylphx", "sylphx-merge-queue")])
         self.assertTrue(all(i["ruleset"] != "agent-native-queued-trunk-base" or i["id"] is None for i in self.fleet))
     def test_only_the_repositorys_own_rulesets_are_read(self):
         gh = FakeGh({})
@@ -217,7 +217,7 @@ class PlanTests(unittest.TestCase):
     def test_required_review_drifts_to_zero(self):
         rows = self.rows()
         self.assertEqual(rows["SylphxAI/desk-tools"]["changes"]["required_approving_review_count"], [1, 0])
-        self.assertEqual(rows["SylphxAI/cloud"]["changes"], {"required_approving_review_count": [1, 0]})
+        self.assertEqual(rows["SylphxAI/sylphx"]["changes"], {"required_approving_review_count": [1, 0]})
 
     def test_a_ruleset_without_a_queue_but_with_a_review_rule_is_converged(self):
         # The bug this guards: the plan loop skipped the review check for a ruleset with no queue, so a new
@@ -242,24 +242,24 @@ class PlanTests(unittest.TestCase):
 
     def test_converged_ruleset_is_ok_and_hands_off_is_excluded(self):
         self.fleet = amq.read_org(FakeGh({
-            "SylphxAI/cloud": ruleset(11, "sylphx-merge-queue", {**OLD, **CLOUD}, reviews=0),
+            "SylphxAI/sylphx": ruleset(11, "sylphx-merge-queue", {**OLD, **PLATFORM}, reviews=0),
             "SylphxAI/bgca": ruleset(12, "sylphx-merge-queue", OLD),
         }), "SylphxAI")
         rows = self.rows()
-        self.assertEqual(rows["SylphxAI/cloud"]["status"], "OK")
+        self.assertEqual(rows["SylphxAI/sylphx"]["status"], "OK")
         self.assertEqual(rows["SylphxAI/bgca"]["status"], "EXCLUDED")
         self.assertEqual(rows["SylphxAI/bgca"]["changes"], {})
 
     def test_archived_retired_repository_is_excluded_and_writes_nothing(self):
         gh = FakeGh({"SylphxAI/work": ruleset(11, "sylphx-merge-queue", OLD),
-                     "SylphxAI/cloud": ruleset(12, "sylphx-merge-queue", OLD)})
+                     "SylphxAI/sylphx": ruleset(12, "sylphx-merge-queue", OLD)})
         rows = {r["repo"]: r for r in amq.plan(amq.read_org(gh, "SylphxAI"), POLICY,
                                                amq.excluded(POLICY, amq.hands_off_repos()))}
         self.assertEqual(rows["SylphxAI/work"]["status"], "EXCLUDED")
         self.assertEqual(rows["SylphxAI/work"]["changes"], {})
         with tempfile.TemporaryDirectory() as directory:
             amq.apply(gh, list(rows.values()), POLICY, pathlib.Path(directory), pause=0)
-        self.assertEqual([repo for repo, _ in gh.puts], ["SylphxAI/cloud"])
+        self.assertEqual([repo for repo, _ in gh.puts], ["SylphxAI/sylphx"])
 
     def test_missing_fast_gate_is_reported_not_written(self):
         row = self.rows()["SylphxAI/other"]
@@ -510,7 +510,7 @@ class RequiredCheckTests(unittest.TestCase):
             "min_entries_to_merge_wait_minutes": 2,
             "check_response_timeout_minutes": 60,
         }
-        for repo, rs_name in (("SylphxAI/cloud", "sylphx-merge-queue"),
+        for repo, rs_name in (("SylphxAI/sylphx", "sylphx-merge-queue"),
                               ("SylphxAI/infra", "infra-main-required-ci"),
                               ("SylphxAI/spiron", "sylphx-merge-queue"),
                               ("SylphxAI/keel", "sylphx-merge-queue")):
@@ -541,17 +541,17 @@ class RequiredCheckTests(unittest.TestCase):
 
     def test_apply_adds_gate_preserves_other_checks_and_queue_rollback_keeps_bindings(self):
         gh = self.fake()
-        cloud = gh.rulesets["SylphxAI/cloud"]
-        cloud["rules"][1]["parameters"]["required_status_checks"].append(
+        platform = gh.rulesets["SylphxAI/sylphx"]
+        platform["rules"][1]["parameters"]["required_status_checks"].append(
             {"context": "security-review", "integration_id": 77})
         before = copy.deepcopy(gh.rulesets)
         with tempfile.TemporaryDirectory() as directory:
             result = amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
             self.assertTrue(all(row["result"] == "APPLIED" for row in result))
-            checks = gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"]
+            checks = gh.rulesets["SylphxAI/sylphx"]["rules"][1]["parameters"]["required_status_checks"]
             self.assertIn({"context": "security-review", "integration_id": 77}, checks)
             self.assertIn({"context": "external-ok", "integration_id": 5155317}, checks)
-            self.assertEqual(gh.rulesets["SylphxAI/cloud"]["conditions"], before["SylphxAI/cloud"]["conditions"])
+            self.assertEqual(gh.rulesets["SylphxAI/sylphx"]["conditions"], before["SylphxAI/sylphx"]["conditions"])
             gh.puts.clear()
             self.assertEqual(amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0), [])
             self.assertEqual(gh.puts, [])
@@ -560,27 +560,27 @@ class RequiredCheckTests(unittest.TestCase):
             for repo, saved in before.items():
                 self.assertEqual(amq.queue_params(gh.rulesets[repo]), amq.queue_params(saved))
             self.assertIn({"context": "external-ok", "integration_id": 5155317},
-                          gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"])
+                          gh.rulesets["SylphxAI/sylphx"]["rules"][1]["parameters"]["required_status_checks"])
 
     def test_wrong_review_issuer_is_corrected_and_unscoped_ruleset_unchanged(self):
         gh = self.fake()
-        gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"].append(
+        gh.rulesets["SylphxAI/sylphx"]["rules"][1]["parameters"]["required_status_checks"].append(
             {"context": "external-ok", "integration_id": 15368})
         gh.rulesets["SylphxAI/janus"] = ruleset(24403813, "janus-main", POLICY["settings"], reviews=0)
         with tempfile.TemporaryDirectory() as directory:
             amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
         self.assertEqual({repo for repo, _ in gh.puts}, {entry["repo"] for entry in CHECK_POLICY["required_checks"] if entry["repo"] != "Cubeage/solar2d-singular-sdk"})
         self.assertEqual(gh.rulesets["SylphxAI/janus"]["rules"][1], ruleset(1, "x", POLICY["settings"])["rules"][1])
-        checks = gh.rulesets["SylphxAI/cloud"]["rules"][1]["parameters"]["required_status_checks"]
+        checks = gh.rulesets["SylphxAI/sylphx"]["rules"][1]["parameters"]["required_status_checks"]
         self.assertNotIn({"context": "external-ok", "integration_id": 15368}, checks)
         self.assertIn({"context": "external-ok", "integration_id": 5155317}, checks)
 
     def test_missing_status_rule_adds_ci_and_review_without_weakening_other_rules(self):
         gh = self.fake()
-        gh.rulesets["SylphxAI/cloud"]["rules"].pop(1)
+        gh.rulesets["SylphxAI/sylphx"]["rules"].pop(1)
         with tempfile.TemporaryDirectory() as directory:
             amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
-        added = next(rule for rule in gh.rulesets["SylphxAI/cloud"]["rules"]
+        added = next(rule for rule in gh.rulesets["SylphxAI/sylphx"]["rules"]
                      if rule["type"] == "required_status_checks")
         self.assertEqual(added["parameters"]["required_status_checks"],
                          CHECK_POLICY["required_checks"][0]["checks"])
@@ -592,19 +592,19 @@ class RequiredCheckTests(unittest.TestCase):
             result = amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
         self.assertEqual(gh.puts, [])
         self.assertTrue(all(row["result"].startswith("FAILED") for row in result))
-        gh.rulesets["SylphxAI/cloud"]["name"] = "renamed"
+        gh.rulesets["SylphxAI/sylphx"]["name"] = "renamed"
         with self.assertRaisesRegex(ValueError, "name differs"):
             self.rows(gh)
 
     def test_required_checks_only_ruleset_is_read_and_converged(self):
         gh = self.fake()
-        gh.rulesets["SylphxAI/cloud"] = ruleset(20321070, "sylphx-merge-queue", None, reviews=None)
+        gh.rulesets["SylphxAI/sylphx"] = ruleset(20321070, "sylphx-merge-queue", None, reviews=None)
         with tempfile.TemporaryDirectory() as directory:
             result = amq.apply(gh, self.rows(gh), CHECK_POLICY, pathlib.Path(directory), pause=0)
         self.assertTrue(all(row["result"] == "APPLIED" for row in result))
-        self.assertIsNone(amq.queue_params(gh.rulesets["SylphxAI/cloud"]))
+        self.assertIsNone(amq.queue_params(gh.rulesets["SylphxAI/sylphx"]))
         self.assertIn({"context": "external-ok", "integration_id": 5155317},
-                      gh.rulesets["SylphxAI/cloud"]["rules"][0]["parameters"]["required_status_checks"])
+                      gh.rulesets["SylphxAI/sylphx"]["rules"][0]["parameters"]["required_status_checks"])
 
     def test_multiple_old_publishers_converge_to_one_exact_binding(self):
         old = [{"context": "external-ok", "integration_id": None},
@@ -928,7 +928,7 @@ class CheckOnlyAdoptionTests(unittest.TestCase):
         self.assertEqual(len(gh.puts), 1)
 
     def test_fleet_wide_or_rollback_check_only_scope_is_rejected(self):
-        for args in ([], ['--repo', self.repo, '--repo', 'SylphxAI/cloud'],
+        for args in ([], ['--repo', self.repo, '--repo', 'SylphxAI/sylphx'],
                      ['--repo', self.repo, '--rollback', 'unused']):
             with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()):
                 gh = FakeGh({self.repo: self.before()})

@@ -48,7 +48,7 @@ def run(repos, *extra, packages=(), readmes=None):
 
 class MissingConsumers(unittest.TestCase):
     def test_all_recorded_is_green(self):
-        code, out, _ = run([USED, repo("site", sylphx_consumer="SylphxAI/cloud platform.projects.toml")])
+        code, out, _ = run([USED, repo("site", sylphx_consumer="SylphxAI/sylphx platform.projects.toml")])
         self.assertEqual(code, 0)
         self.assertIn("0 public SylphxAI repositories", out)
 
@@ -137,7 +137,7 @@ class UndeprecatedPackages(unittest.TestCase):
     def test_live_package_from_archived_repo_is_listed(self):
         packages = [pkg("@sylphx/silk", "git+https://github.com/SylphxAI/silk.git"),
                     pkg("@sylphx/lens", "git+https://github.com/SylphxAI/silk.git", marked=True),
-                    pkg("@sylphx/sdk", "https://github.com/SylphxAI/cloud"),
+                    pkg("@sylphx/sdk", "https://github.com/SylphxAI/sylphx"),
                     pkg("kernox", "https://github.com/SylphxAI/silk", registry="crates")]
         got = prc.undeprecated(packages, "SylphxAI", self.ARCHIVED, no_resolve)
         self.assertEqual([(p["registry"], p["name"], p["repo"]) for p in got],

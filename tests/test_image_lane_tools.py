@@ -505,7 +505,7 @@ class ImageLaneNoArtifactTests(unittest.TestCase):
     Artifact storage is a metered org quota (GB-hours per billing cycle). The
     lane once moved multi-GiB OCI layouts compile -> publish as artifacts; on
     2026-10-06 the quota was spent and every platform image build failed at
-    upload ("Artifact storage quota has been hit", SylphxAI/cloud runs
+    upload ("Artifact storage quota has been hit", SylphxAI/sylphx runs
     37478912835 and 37478912897). One job now builds, pushes and reads back.
     """
 

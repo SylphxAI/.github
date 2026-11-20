@@ -36,7 +36,7 @@ git diff --unified=0 --no-color --no-ext-diff "$range" -- . \
       $ok{$file} //= allowed($file);
       unless ($ok{$file}) {
         my $level = $ENV{MODE} eq "warn" ? "warning" : "error";
-        print "::${level} file=${file},line=${line}::chat-senders: $1 is a direct chat sender; send through Notify (cloud ADR notify-chat-channel), or add the path to the allow-list in SylphxAI/.github if it is chat administration, a conversational agent or platform paging\n";
+        print "::${level} file=${file},line=${line}::chat-senders: $1 is a direct chat sender; send through Notify (SylphxAI/sylphx ADR notify-chat-channel), or add the path to the allow-list in SylphxAI/.github if it is chat administration, a conversational agent or platform paging\n";
         $found++;
       }
     }

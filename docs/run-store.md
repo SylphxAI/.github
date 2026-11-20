@@ -9,7 +9,7 @@ the accrued hours back. CI therefore never depends on it.
 
 The bytes go to the platform's BuildCache gateway, the store our CI caches
 already use. The default uses its Turbo door (`{TURBO_API}/v8/artifacts/<key>`);
-an explicit `retention-days` uses `/v1/retained/<key>` (SylphxAI/cloud
+an explicit `retention-days` uses `/v1/retained/<key>` (SylphxAI/sylphx
 `services/build/README.md`). The job's GitHub OIDC token is exchanged
 for a run token scoped by the event: main, the merge queue and schedules write
 the `protected` scope; a pull request or dispatch run writes `dev` and reads

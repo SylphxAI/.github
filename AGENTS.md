@@ -22,8 +22,8 @@ The seven-class contract is `SylphxAI/owner` `company/architecture-audit.md`.
   with `gh pr merge --auto --squash --match-head-commit <sha> <N>` and read back
   `isInMergeQueue`; an arm stays on through later pushes and enqueues the head
   whose required checks pass. Never retry a red queue entry;
-  quarantine a flaky test. The full procedure is the cloud
-  [merge-queue runbook](https://github.com/SylphxAI/cloud/blob/main/docs/runbooks/merge-queue.md).
+  quarantine a flaky test. The full procedure is the platform
+  [merge-queue runbook](https://github.com/SylphxAI/sylphx/blob/main/docs/runbooks/merge-queue.md).
 - Whoever reviews a PR names who arms it and how; a green, reviewed, unarmed PR
   is a defect. A shared workflow change reaches every caller, so it gets the
   same review as a platform change.

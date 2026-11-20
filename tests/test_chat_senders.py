@@ -98,7 +98,7 @@ class ChatSendersTest(unittest.TestCase):
     def test_notify_sender_passes_only_in_its_repository(self) -> None:
         path = "services/notify/crates/notify-api/src/senders.rs"
         line = 'const API: &str = "https://api.telegram.org";\n'
-        self.assertEqual(run_check(line, path, repository="SylphxAI/cloud").returncode, 0)
+        self.assertEqual(run_check(line, path, repository="SylphxAI/sylphx").returncode, 0)
         self.assertEqual(run_check(line, path, repository="SylphxAI/other").returncode, 1)
 
     def test_notify_egress_policy_passes_only_at_its_exact_infra_path(self) -> None:
@@ -129,7 +129,7 @@ class ChatSendersTest(unittest.TestCase):
             ("SylphxAI/work", "src/main.rs"),
             ("SylphxAI/spiron", "crates/spiron-channels/src/telegram_file.rs"),
             ("SylphxAI/spiron", "crates/spiron-api/src/ingress/telegram_webhook_live/part_00.rs"),
-            ("SylphxAI/cloud",
+            ("SylphxAI/sylphx",
              "services/ai/crates/ai-server/src/capabilities/control_plane/interfaces/telegram_operator_bot/wire.rs"),
             ("SylphxAI/infra", "status/worker/index.mjs"),
             ("SylphxAI/infra", "infra/addons/monitoring/backup-alerts/alert-tickets/configmap.yaml"),
@@ -148,7 +148,7 @@ class ChatSendersTest(unittest.TestCase):
     def test_a_malformed_allow_list_row_fails_loudly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bad = pathlib.Path(tmp, "allow.tsv")
-            bad.write_text("SylphxAI/cloud\n")
+            bad.write_text("SylphxAI/sylphx\n")
             result = run_check("x\n", allow=bad)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("allow-list row needs", result.stderr)
@@ -232,7 +232,7 @@ class CompositeStepTest(unittest.TestCase):
     def test_an_allowed_path_passes_every_event(self) -> None:
         for event in ("pull_request", "merge_group", "push"):
             with self.subTest(event=event):
-                result = self.invoke(event, repository="SylphxAI/cloud",
+                result = self.invoke(event, repository="SylphxAI/sylphx",
                                      path="services/notify/src/senders.rs")
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

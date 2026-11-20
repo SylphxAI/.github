@@ -89,6 +89,40 @@ class PublicEntryPointTests(unittest.TestCase):
                         self.assertTrue(row['contract'].startswith('https://github.com/SylphxAI/skills/'))
                         self.assertIsInstance(row['line'], int)
 
+    def test_platform_rename_reads_legacy_decisions_from_base_and_canonical_from_head(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = GitFixture(d)
+            repository = 'SylphxAI/sylphx'
+            decision_file = '.github/architecture-decisions.json'
+            name, body = VIOLATIONS['C5']
+            f.write({name: body})
+            f.commit()
+            result, report = f.check(repository=repository)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            decision = {key: report['findings'][0][key]
+                        for key in ('path', 'line', 'class', 'rule', 'source_sha256')}
+            decision.update(owner='platform', authority='https://example.test/decision',
+                            evidence='https://example.test/proof', contract=a.CONTRACT,
+                            reason='The bounded supervisor owns process shutdown',
+                            reconsideration='When the supervisor contract changes', expires='2026-11-29')
+
+            def set_scope(scope):
+                f.write({decision_file: json.dumps({'version': 1, 'decisions': [decision | {'repository': scope}]})})
+                f.commit()
+
+            set_scope('SylphxAI/cloud')
+            before = f.git('rev-parse', 'HEAD').strip()
+            set_scope(repository)
+            result, report = f.check(base=before, repository=repository)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(report['findings'][0]['decision']['repository'], repository)
+
+            set_scope('SylphxAI/cloud-*')
+            result, _ = f.check(base=before, repository=repository)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('decision scope does not match this repository or contains a wildcard',
+                          result.stdout + result.stderr)
+
     def test_context_header_edit_cannot_hide_unchanged_poll_body(self):
         with tempfile.TemporaryDirectory() as d:
             f = GitFixture(d)
@@ -169,10 +203,10 @@ class StructuralBoundaryTests(unittest.TestCase):
 
     def test_platform_provider_adapter_allowed_but_product_adapter_is_not(self):
         files = {'providers/stripe.ts': 'const client = new Stripe(key);\n'}
-        self.assertEqual(self.evaluate(files, 'SylphxAI/cloud')['findings'], [])
+        self.assertEqual(self.evaluate(files, 'SylphxAI/sylphx')['findings'], [])
         self.assertEqual(self.evaluate(files, 'Cubeage/game')['findings'][0]['class'], 'C2')
         files = {'src/pay.ts': files['providers/stripe.ts']}
-        self.assertTrue(self.evaluate(files, 'SylphxAI/cloud')['findings'])
+        self.assertTrue(self.evaluate(files, 'SylphxAI/sylphx')['findings'])
 
     def test_ui_animation_debounce_frame_and_event_loops_pass(self):
         files = {'web/ui.ts': 'setTimeout(() => animate(), 16);\n'
@@ -740,10 +774,10 @@ class StandardFitRegressionTests(unittest.TestCase):
     def test_real_owning_service_paths_allow_only_their_capability(self):
         for path in ['services/money/crates/money-api/src/stripe.rs', 'kernel/billing/crates/billing-metering/src/stripe.rs']:
             source = 'let key = std::env::var("STRIPE_SECRET_KEY");\nlet base = "https://api.stripe.com/v1";\n'
-            rows = self.evaluate({path: source, '.env.example': 'STRIPE_SECRET_KEY=\n'}, 'SylphxAI/cloud')['findings']
+            rows = self.evaluate({path: source, '.env.example': 'STRIPE_SECRET_KEY=\n'}, 'SylphxAI/sylphx')['findings']
             self.assertEqual(rows, [])
         source = 'let base = "https://api.stripe.com/v1";\n'
-        self.assertEqual(self.evaluate({'services/auth/src/a.rs': source}, 'SylphxAI/cloud')['findings'][0]['class'], 'C2')
+        self.assertEqual(self.evaluate({'services/auth/src/a.rs': source}, 'SylphxAI/sylphx')['findings'][0]['class'], 'C2')
 
     def test_existing_provider_host_bypasses_have_paired_controls(self):
         hosts = ['rest.nexmo.com/sms/json', 'buy.itunes.apple.com/verifyReceipt',
@@ -807,7 +841,7 @@ class CatalogAndDeclarationCorrections(unittest.TestCase):
             'tools/sylphx-gen/src/products.rs': 'pub const PLATFORM: &str = "platform";\n',
             'services/sandboxes/crates/sandboxes-api/src/cell.rs': 'let image = "build";\n',
         }
-        self.assertEqual(self.evaluate(files, 'SylphxAI/cloud')['findings'], [])
+        self.assertEqual(self.evaluate(files, 'SylphxAI/sylphx')['findings'], [])
         self.assertEqual(self.evaluate({'src/a.rs': 'const LEVEL: &str = "info";\n'}, 'Cubeage/cubeage-platform')['findings'], [])
 
     def test_epiow_and_ozyrix_are_engine_consumers(self):

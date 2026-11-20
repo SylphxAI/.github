@@ -72,6 +72,17 @@ class PlatformRenameTests(unittest.TestCase):
         for repo in OTHERS:
             self.assertTrue(a.cache_economy_applicability(repo, "src/credentials.rs"))
 
+    def test_shipped_queue_settings_keep_the_platform_override_on_both_names(self):
+        settings = {**SHIPPED_POLICY['settings'], 'max_entries_to_build': 8,
+                    'min_entries_to_merge': 4, 'max_entries_to_merge': 8,
+                    'min_entries_to_merge_wait_minutes': 2, 'check_response_timeout_minutes': 60}
+        for repo in NAMES + OTHERS:
+            with self.subTest(repo=repo):
+                self.assertEqual(amq.desired_settings(SHIPPED_POLICY, repo, 'sylphx-merge-queue'),
+                                 settings if repo in NAMES else SHIPPED_POLICY['settings'])
+                self.assertEqual(amq.desired_settings(SHIPPED_POLICY, repo, 'unrelated-ruleset'),
+                                 SHIPPED_POLICY['settings'])
+
     def test_queue_bindings_survive_rename_without_a_phantom_missing_target(self):
         policy = copy.deepcopy(SHIPPED_POLICY)
         # Mechanism fixture: one aliased, scoped target.

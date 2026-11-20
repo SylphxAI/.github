@@ -1,6 +1,6 @@
 {
   "source": {
-    "repository": "SylphxAI/cloud",
+    "repository": "SylphxAI/sylphx",
     "path": "contracts/capacity/tiers.toml",
     "sha": "816fd2a1e41de11dfe22d9916903e7f53e34350e",
     "read_utc": "2026-11-02T21:41:23.252613+00:00"

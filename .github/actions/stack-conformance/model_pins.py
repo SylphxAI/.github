@@ -9,13 +9,13 @@ import pathlib
 import re
 from urllib.parse import quote
 
-PLATFORM_REPOSITORIES = frozenset({"SylphxAI/cloud", "SylphxAI/sylphx"})
+PLATFORM_REPOSITORIES = frozenset({"SylphxAI/sylphx", "SylphxAI/cloud"})
 
 POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy/model-aliases.json"
 BASELINE_MARKER = "# model-alias-ratchet-v1"
 SELECTOR_RULE = "model-selector"
 SELECTOR_MARKER = "# stack-rule-adopted-v1 " + SELECTOR_RULE
-CONTRACT = ("https://github.com/SylphxAI/cloud/blob/main/docs/adr/"
+CONTRACT = ("https://github.com/SylphxAI/sylphx/blob/main/docs/adr/"
             "ADR-01M58DAMBRRTBRYRD3HSQQVD1S-model-identity-naming-and-price-binding.md")
 _scope_spec = importlib.util.spec_from_file_location("source_scope", pathlib.Path(__file__).with_name("source_scope.py"))
 source_scope = importlib.util.module_from_spec(_scope_spec)
@@ -34,23 +34,23 @@ SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "docs", "examp
 EXEMPTIONS = [
     {"repository": "SylphxAI/.github", "path": ".github/actions/stack-conformance/model_pins.py",
      "reason": "The static recognizer vocabulary identifies forbidden upstream names and never selects a runtime model."},
-    {"repository": "SylphxAI/cloud", "path": "services/ai/crates/ai-core/src/",
+    {"repository": "SylphxAI/sylphx", "path": "services/ai/crates/ai-core/src/",
      "reason": "AI catalog identity, revision and offering policy owns vendor model identities."},
-    {"repository": "SylphxAI/cloud", "path": "services/ai/crates/ai-server/src/capabilities/control_plane/",
+    {"repository": "SylphxAI/sylphx", "path": "services/ai/crates/ai-server/src/capabilities/control_plane/",
      "reason": "AI catalog ingestion, alias resolution and provider-locator declarations own upstream ids."},
-    {"repository": "SylphxAI/cloud", "path": "services/ai/migrations/",
+    {"repository": "SylphxAI/sylphx", "path": "services/ai/migrations/",
      "reason": "AI catalog migrations declare stored model and offering identities."},
-    {"repository": "SylphxAI/cloud", "path": "services/ai/crates/ai-server/src/bin/ai_dev_seed.rs",
+    {"repository": "SylphxAI/sylphx", "path": "services/ai/crates/ai-server/src/bin/ai_dev_seed.rs",
      "reason": "The development catalog seeder declares model and offering rows, not a product request default."},
-    {"repository": "SylphxAI/cloud", "path": "services/ai/crates/ai-server/src/capabilities/capacity/adapters/grok_quota.rs",
+    {"repository": "SylphxAI/sylphx", "path": "services/ai/crates/ai-server/src/capabilities/capacity/adapters/grok_quota.rs",
      "reason": "The provider quota adapter owns the upstream billing model locator."},
-    {"repository": "SylphxAI/cloud", "path": "services/ai/conformance/",
+    {"repository": "SylphxAI/sylphx", "path": "services/ai/conformance/",
      "reason": "Provider protocol conformance schemas are vendor-contract test fixtures."},
-    {"repository": "SylphxAI/cloud", "path": "contracts/compat/openresponses/",
+    {"repository": "SylphxAI/sylphx", "path": "contracts/compat/openresponses/",
      "reason": "Imported OpenResponses compatibility schemas are upstream contract fixtures."},
-    {"repository": "SylphxAI/cloud", "path": "services/ai/scripts/compliance/openresponses/src/generated/",
+    {"repository": "SylphxAI/sylphx", "path": "services/ai/scripts/compliance/openresponses/src/generated/",
      "reason": "Generated upstream OpenResponses conformance fixtures retain the provider contract's examples."},
-    {"repository": "SylphxAI/cloud", "path": "scripts/ci/verify-fresh-database-bootstrap.sh",
+    {"repository": "SylphxAI/sylphx", "path": "scripts/ci/verify-fresh-database-bootstrap.sh",
      "reason": "The database-bootstrap integration test asserts the catalog's seeded records."},
 ]
 DIAGNOSTIC_LISTS = [

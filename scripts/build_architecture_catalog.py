@@ -14,7 +14,7 @@ ORGANIZATIONS = {'SylphxAI', 'Cubeage', 'EpiowAI', 'OzyrixLtd'}
 # Architectural layers are decisions; consumer names come only from the census.
 LAYERS = {
     **{name: sorted(ORGANIZATIONS)
-       for name in ['SylphxAI/spiron', 'SylphxAI/cloud', 'SylphxAI/sylphx', 'SylphxAI/keel', 'SylphxAI/keel-engine']},
+       for name in ['SylphxAI/spiron', 'SylphxAI/sylphx', 'SylphxAI/keel', 'SylphxAI/keel-engine']},
     **{'Cubeage/' + name: ['Cubeage']
        for name in ['cubeage-platform', 'cubeage-kit', 'tycoon-engine']},
 }
