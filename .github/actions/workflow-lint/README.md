@@ -21,7 +21,8 @@ it exempts neither its job nor another step. Dependency audit policy is unchange
 ```
 
 The default `rules: all` preserves the full lint. A caller adopting only PR
-supersession can use one step in existing CI without enabling other rule families:
+supersession or bounded artifact retention can use one step in existing CI
+without enabling other rule families:
 
 ```yaml
 - uses: SylphxAI/.github/.github/actions/workflow-lint@<commit>
@@ -29,15 +30,23 @@ supersession can use one step in existing CI without enabling other rule familie
     rules: pr-concurrency
 ```
 
-That scope runs only the canonical PR-concurrency checker over all checkout
-workflow files. It does not run actionlint, performance, timeout, failure-masking,
-ci-ok closure, expected-check declaration or runner-routing checks. Existing
-findings in those families are separate debt, not exemptions to this rule.
-Invalid or empty `rules` values fail closed. `contract-mode` does not weaken the
-selected concurrency rule. For an offline scoped check:
+```yaml
+- uses: SylphxAI/.github/.github/actions/workflow-lint@<commit>
+  with:
+    rules: artifact-retention
+```
+
+Each rule-scoped mode runs only its selected checker over checkout workflow
+files (and `.github/actions/**/action.y*ml` for `artifact-retention`). It does
+not run actionlint, performance, timeout, failure-masking, ci-ok closure,
+expected-check declaration or runner-routing checks. Existing findings in those
+families are separate debt, not exemptions to the selected rule. Invalid or
+empty `rules` values fail closed. `contract-mode` does not weaken a rule-scoped
+check. For an offline scoped check:
 
 ```sh
 WORKFLOW_LINT_RULES=pr-concurrency python3 path/to/workflow-lint/contract.py
+WORKFLOW_LINT_RULES=artifact-retention python3 path/to/workflow-lint/contract.py
 ```
 
 With full lint selected, the contract scans `.github/workflows/*.yml` and `*.yaml` in the checkout:
@@ -62,7 +71,7 @@ With full lint selected, the contract scans `.github/workflows/*.yml` and `*.yam
   treats every job as required. Advisory jobs still need timeouts.
 
 `contract-mode: report-only` emits warnings and a count for legacy timeout
-and failure-propagation findings. Gate coverage, enrolled declaration drift, manual approval/maintenance booking and
+and failure-propagation findings. Gate coverage, enrolled declaration drift, manual approval/maintenance booking, bounded `actions/upload-artifact` retention and
 [R8 merge-lane routing](../../../docs/merge-lane.md) remain blocking in either
 mode. R8 follows all workflows in the checkout and their local reusable calls,
 including matrices, input defaults and job conditions, using the same core as
@@ -318,3 +327,56 @@ contract and io prerequisite cases. The permission and expression semantics are
 based on the [GitHub workflow syntax](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions)
 read on 2026-11-06 UTC. Expressions whose io safety cannot be established must
 use the explicit job condition or a conjunction on each io branch.
+
+## Artifact retention
+
+GitHub Actions artifact storage is a metered organization quota (GB-hours per
+billing cycle); once spent, every `actions/upload-artifact` in the organization
+fails until usage drains. Job hand-overs should use
+[`run-store`](../../../docs/run-store.md) instead.
+
+When a workflow (`.github/workflows/*.yml`, `*.yaml`) or local composite action
+(`.github/actions/**/action.yml`, `action.yaml`) invokes
+`actions/upload-artifact` or a sub-action such as `actions/upload-artifact/merge`,
+every step must declare an explicit literal positive integer `with.retention-days`:
+
+- **Default / standard bound:** `1` to `3` days (recommended: `1`).
+- **Fail-closed refusals:** missing `with` or `retention-days`, `retention-days: 0`
+  (which falls back to the 90-day repository/org default), dynamic `${{ ... }}`
+  expressions, non-integers, non-scalars, and duplicate `with` or
+  `retention-days` keys (matched case-insensitively).
+- **Named exception for release/proof artifacts:** a column-zero header comment
+  strictly before `jobs:` (or `runs:` in a composite action) with a specific
+  reason raises the allowed literal integer bound to `30` days:
+
+  ```yaml
+  # artifact-retention: exception release-proof — Signed release bundle retained for review.
+  ```
+
+  Bare markers, generic `exempt` comments, unknown exception names, blank
+  reasons, indented comments, and comments inside `run:` bodies are refused or
+  ignored. Even with `release-proof`, `retention-days` must remain an explicit
+  literal integer from `1` to `30`.
+
+This rule applies across all workflow trigger events (including `push`,
+`schedule`, `workflow_dispatch`, `workflow_call`, `release`, `pull_request`,
+and `merge_group`) and blocks in both `report-only` and `enforce` modes.
+Delivered customer repositories and explicitly excluded hands-off/legacy
+repositories follow the same skip policy as the rest of `workflow-lint`.
+
+### Consumer rollout
+
+Callers pin `SylphxAI/.github` by full commit SHA (`# main`), so merging this
+rule does not break pinned consumer pull requests until their pin advances:
+
+1. Inventory existing workflows offline with
+   `WORKFLOW_LINT_RULES=artifact-retention python3 path/to/workflow-lint/contract.py`.
+2. Migrate job hand-overs to [`run-store`](../../../docs/run-store.md), add
+   `retention-days: 1` (max `3`) to remaining diagnostic uploads, or add the
+   reasoned `release-proof` header with an explicit `1`–`30` bound for genuine
+   release/proof bundles.
+3. Update the repository's `workflow-lint` pin in the same PR (or add a
+   rule-scoped `rules: artifact-retention` step in repositories not yet using
+   full `workflow-lint`).
+
+Tests are `python -m unittest discover -s tests -p test_artifact_retention.py`.

@@ -32,7 +32,9 @@ Native diagnostics never enter compiler stdout or stderr: Unity treats some
 successful child processes' stderr as compiler errors. After each foreground
 Docker launch, the runner wrapper adds the event count and last 40 events to
 the GitHub step summary. Complete files remain under the action's
-`log-directory` output, which an `always()` artifact-upload step can retain.
+`log-directory` output, which an `always()` `run-store` step (or
+`actions/upload-artifact` with `retention-days: 1` and `continue-on-error: true`)
+can retain.
 Each container receives its own writable log-file mount alongside the read-only
 audit library. Logging opens and closes its descriptor within each event; it
 does not hold a descriptor across the observed native call. If a diagnostic

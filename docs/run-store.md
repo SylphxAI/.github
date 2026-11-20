@@ -23,7 +23,7 @@ the `protected` scope; a pull request or dispatch run writes `dev` and reads
 | Files or directories another job of the same run needs | `run-store` put and get |
 | An image | The registry: build and push in one job |
 | Anything cheaper to rebuild than to move | Rebuild in the consuming job |
-| A diagnostic nobody downstream reads | Drop it, or keep `upload-artifact` with `continue-on-error: true` so it never fails a job |
+| A diagnostic nobody downstream reads | Drop it, or keep `upload-artifact` with `retention-days: 1` (max 3) and `continue-on-error: true` so it never exhausts quota or fails a job |
 
 `actions/cache` is not a hand-over: on our self-hosted runners an entry saved
 by one runner class was missed by another in the same run.

@@ -27,6 +27,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "scripts"))
 from merge_lane import WorkflowLoader, contexts, events, merge_lane_findings, runnable, runner_evaluations
 from merge_lane_gate import exempt
 from pr_concurrency import problems as pr_concurrency_problems
+from artifact_retention import (
+    action_problems as artifact_retention_action_problems,
+    workflow_problems as artifact_retention_workflow_problems,
+)
+
+VALID_RULES = ("all", "pr-concurrency", "artifact-retention")
 
 
 class Finding(NamedTuple):
@@ -218,6 +224,8 @@ def scan_workflow(file, text, evaluations=None):
             run = properties.get("run")
             if run is not None and masks_failure(scalar(run)):
                 add(run, f"job {name}: || true hides a required failure")
+    findings.extend(Finding(file, line, problem, True)
+                    for line, problem in artifact_retention_workflow_problems(text))
     return findings
 
 
@@ -383,8 +391,18 @@ def scan_io_job(document, name, node, add, routes):
             fail(scope, "repository secrets are forbidden on io jobs")
 
 
+def _composite_actions(root):
+    folder = root / ".github/actions"
+    actions = {}
+    if folder.is_dir():
+        for path in sorted(folder.rglob("action.y*ml")):
+            if path.is_file() and path.name in ("action.yml", "action.yaml"):
+                actions[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+    return actions
+
+
 def scan_dir(root, rules="all"):
-    if rules not in ("all", "pr-concurrency"):
+    if rules not in VALID_RULES:
         raise ValueError(f"unknown workflow-lint rules: {rules}")
     repository = os.environ.get("GITHUB_REPOSITORY", "")
     entry = exempt(repository, datetime.datetime.now(datetime.timezone.utc).date()) if repository else None
@@ -400,11 +418,21 @@ def scan_dir(root, rules="all"):
                 workflows[path.name] = text
     # Rule-scoped adoption does not execute unrelated rule families. In
     # particular, runner evaluation and ci-ok closure are not prerequisites for
-    # adopting PR supersession on a repository with an existing CI graph.
+    # adopting PR supersession or bounded artifact retention on a repository
+    # with an existing CI graph.
     if rules == "pr-concurrency":
         return [Finding('.github/workflows/' + name, line, problem, True)
                 for name, text in workflows.items()
                 for line, problem in pr_concurrency_problems(text, workflows=workflows)]
+    actions = _composite_actions(root)
+    if rules == "artifact-retention":
+        found = [Finding('.github/workflows/' + name, line, problem, True)
+                 for name, text in workflows.items()
+                 for line, problem in artifact_retention_workflow_problems(text)]
+        found.extend(Finding(rel, line, problem, True)
+                     for rel, text in actions.items()
+                     for line, problem in artifact_retention_action_problems(text))
+        return found
     # The required verdict repeats R8 against immutable source without relying
     # on checkout. Here it also fails early for workflow-lint consumers, even
     # when unrelated legacy contract findings are report-only.
@@ -421,6 +449,9 @@ def scan_dir(root, rules="all"):
         findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations))
         findings.extend(Finding('.github/workflows/' + name, line, problem, True)
                         for line, problem in pr_concurrency_problems(text, workflows=workflows))
+    for rel, text in actions.items():
+        findings.extend(Finding(rel, line, problem, True)
+                        for line, problem in artifact_retention_action_problems(text))
     findings.extend(gate_coverage({'.github/workflows/' + name: text for name, text in workflows.items()}))
     findings.extend(Finding(DECLARATION, 1, problem, True) for problem in check_declaration(root, workflows))
     if entry:
@@ -444,7 +475,7 @@ def exit_code(findings, mode):
 def main():
     mode = os.environ.get("CONTRACT_MODE", "enforce")
     rules = os.environ.get("WORKFLOW_LINT_RULES", "all")
-    if rules not in ("all", "pr-concurrency"):
+    if rules not in VALID_RULES:
         raise ValueError(f"unknown workflow-lint rules: {rules}")
     exit_code([], mode)
     state = delivered(dict(os.environ))
