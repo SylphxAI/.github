@@ -5,7 +5,7 @@ outside [`allow-list.tsv`](allow-list.tsv): `api.telegram.org`,
 `hooks.slack.com`, `slack.com/api/chat.postMessage`, `discord.com/api/webhooks`
 or `discordapp.com/api/webhooks`. A product sends chat messages through Notify,
 which holds the bot token and applies preferences, suppression and receipts
-(cloud `docs/adr/ADR-01M495XFM4158579XRYVC92M6S-notify-chat-channel.md`).
+(SylphxAI/sylphx `docs/adr/ADR-01M495XFM4158579XRYVC92M6S-notify-chat-channel.md`).
 
 ```yaml
 jobs:

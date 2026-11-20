@@ -1,10 +1,9 @@
 {
   "version": 1,
-  "doc": "docs/stack-conformance.md#agent-runtime-parts. Read by .github/actions/stack-conformance. Agent orchestration, single-agent harnesses, sessions, agent memory, tool gateways, credential custody and egress guards belong to the three-pillar runtime and substrate repositories (SylphxAI/anyagents, SylphxAI/spiron, SylphxAI/cloud, SylphxAI/sylphx). A product repository's existing part is listed here with an expiry date; after that date the entry stops applying and every pull request in that repository fails until the part is deleted. Delete an entry when its part is gone; extend a date only with a reason in the pull request.",
+  "doc": "docs/stack-conformance.md#agent-runtime-parts. Read by .github/actions/stack-conformance. Agent orchestration, single-agent harnesses, sessions, agent memory, tool gateways, credential custody and egress guards belong to the three-pillar runtime and substrate repositories (SylphxAI/anyagents, SylphxAI/spiron, SylphxAI/sylphx). A product repository's existing part is listed here with an expiry date; after that date the entry stops applying and every pull request in that repository fails until the part is deleted. Delete an entry when its part is gone; extend a date only with a reason in the pull request.",
   "decision": "SylphxAI/owner company/architecture-map.md#three-pillar-clean-cut-architecture",
   "owner_repos": [
     "SylphxAI/anyagents",
-    "SylphxAI/cloud",
     "SylphxAI/spiron",
     "SylphxAI/sylphx"
   ],

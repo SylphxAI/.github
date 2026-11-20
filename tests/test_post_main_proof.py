@@ -19,7 +19,7 @@ SOURCE = ROOT / ".github/actions/ci-range/post_main.py"
 spec = importlib.util.spec_from_file_location("post_main", SOURCE)
 proof = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proof)
-REPO = "SylphxAI/cloud"
+REPO = "SylphxAI/sylphx"
 SHA = "a" * 40
 
 

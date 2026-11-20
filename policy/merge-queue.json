@@ -99,7 +99,8 @@
       "reason": "Measured Android and iOS merge-group CI ran 20 to 34 minutes on attempt 1 (2026-11-18), above the 20-minute Tier-2 deadline. Keep a 60-minute deadline while adopting Tier-2 batching."
     },
     {
-      "repo": "SylphxAI/cloud",
+      "repo": "SylphxAI/sylphx",
+      "repo_aliases": ["SylphxAI/cloud"],
       "ruleset": "sylphx-merge-queue",
       "settings": {
         "max_entries_to_build": 8,
@@ -169,8 +170,8 @@
   ],
   "fast_gate_overrides": [
     {
-      "repo": "SylphxAI/cloud",
-      "repo_aliases": ["SylphxAI/sylphx"],
+      "repo": "SylphxAI/sylphx",
+      "repo_aliases": ["SylphxAI/cloud"],
       "ruleset": "sylphx-deploy-pins",
       "context": "pin-ok",
       "reason": "The deploy/pins branch is gated by its own check, pin-ok, not by the code gate."

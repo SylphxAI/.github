@@ -25,9 +25,9 @@ STEPS = {step["name"]: step for step in HANDLER["steps"] if "name" in step}
 SHA = "a" * 40
 RUN = dict(id=1, event="push", path=".github/workflows/verify.yml", workflow_id=2,
            head_branch="main", head_sha=SHA, check_suite_id=3, run_attempt=1,
-           repository=dict(id=4, full_name="SylphxAI/cloud"),
-           head_repository=dict(id=4, full_name="SylphxAI/cloud"),
-           html_url="https://github.com/SylphxAI/cloud/actions/runs/1", conclusion="failure")
+           repository=dict(id=4, full_name="SylphxAI/sylphx"),
+           head_repository=dict(id=4, full_name="SylphxAI/sylphx"),
+           html_url="https://github.com/SylphxAI/sylphx/actions/runs/1", conclusion="failure")
 
 FAKE_GH = '''
 import json, os, pathlib, sys
@@ -126,7 +126,7 @@ class UnavailableHandlerTest(unittest.TestCase):
                         RUN_STORE_JUNIT=str(ROOT / ".github/actions/run-store/get-junit.py"),
                         PATH=f"{binaries}:{os.environ['PATH']}",
                         GITHUB_OUTPUT=str(self.root / "output"), GITHUB_RUN_ID="100", GITHUB_RUN_ATTEMPT="1",
-                        TRUNK="main", REPO="SylphxAI/cloud", VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME="verified",
+                        TRUNK="main", REPO="SylphxAI/sylphx", VERIFY_WORKFLOW="verify.yml", VERIFY_CHECK_NAME="verified",
                         EVENT_RUN_ID="1", RUN_ID="1", HEAD_SHA=SHA, SHORT_SHA=SHA[:9],
                         RUN_URL=RUN["html_url"], RUN_FIXTURE=json.dumps(RUN),
                         MODE="notify", ACTIONS_TOKEN="fixture", GH_TOKEN="fixture",
@@ -339,10 +339,10 @@ class UnavailableHandlerTest(unittest.TestCase):
                         created_at="2026-09-30T09:00:00Z")
         job = dict(id=300, run_id=9, run_attempt=1, head_sha=SHA, name="verified",
                    status="completed", conclusion="failure",
-                   check_run_url="https://api.github.com/repos/SylphxAI/cloud/check-runs/30")
+                   check_run_url="https://api.github.com/repos/SylphxAI/sylphx/check-runs/30")
         check = dict(id=30, app=dict(id=15368, slug="github-actions"), head_sha=SHA,
                      name="verified", check_suite=dict(id=3), status="completed", conclusion="failure",
-                     details_url="https://github.com/SylphxAI/cloud/actions/runs/9/job/300")
+                     details_url="https://github.com/SylphxAI/sylphx/actions/runs/9/job/300")
         self.env.update(PREVIOUS_RUN_FIXTURE=json.dumps(previous), JOB_FIXTURE=json.dumps(job),
                         CHECK_FIXTURE=json.dumps(check),
                         HISTORY_FIXTURE=json.dumps(dict(total_count=1, workflow_runs=[previous])),
@@ -404,7 +404,7 @@ class UnavailableHandlerTest(unittest.TestCase):
     def test_preflight_api_exception_returns_unknown_without_skipping_handler(self):
         output = self.root / "preflight-output"
         env = dict(self.env, PROOF_MODE="run", PROOF_IDENTITY="1", PROOF_BRANCH="main",
-                   PROOF_WORKFLOW="verify.yml", GITHUB_REPOSITORY="SylphxAI/cloud",
+                   PROOF_WORKFLOW="verify.yml", GITHUB_REPOSITORY="SylphxAI/sylphx",
                    GITHUB_OUTPUT=str(output), JOBS_UNAVAILABLE="yes")
         result = subprocess.run([sys.executable, str(ROOT / ".github/actions/ci-range/ci_range.py")],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=10)

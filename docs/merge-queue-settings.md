@@ -38,11 +38,11 @@ Change a number in the policy file in a pull request, then apply.
 
 A repository that needs another value lists an `overrides` entry with its ruleset
 name and a reason; `fast_gate_overrides` does the same for a ruleset gated by
-another check (cloud's `deploy/pins` branch by `pin-ok`). `exclude` lists
+another check (the platform's `deploy/pins` branch by `pin-ok`). `exclude` lists
 repositories never read or written; the hands-off repositories of
 `policy/optimistic-merge.json` are always excluded.
 
-Tier-1 high-concurrency monorepos (`SylphxAI/cloud`, `SylphxAI/infra`,
+Tier-1 high-concurrency monorepos (`SylphxAI/sylphx`, `SylphxAI/infra`,
 `SylphxAI/spiron`, `SylphxAI/keel`) override the default to batch 4 to 8 entries
 with a 2-minute collection window (`max_entries_to_build: 8`,
 `min_entries_to_merge: 4`, `max_entries_to_merge: 8`,
@@ -210,6 +210,6 @@ for each run. `--rollback` reads each ruleset as it is now and puts back only th
 saved `merge_queue` parameters, so any other edit made since the apply stays.
 The organizations are SylphxAI, Cubeage, EpiowAI and OzyrixLtd (read with the
 same login as the optimistic-merge audit); `Cubeage/cubeage-platform` and the
-hands-off repositories are excluded. `SylphxAI/cloud`'s
+hands-off repositories are excluded. `SylphxAI/sylphx`'s
 `.github/branch-protection-contract.json` delegates queue capacity and grouping
 parameters here and checks only required `ci-ok` and merge-queue enforcement.

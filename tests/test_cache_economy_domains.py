@@ -26,7 +26,7 @@ class CacheEconomyDomainTests(unittest.TestCase):
                      "kernel/billing/src/rewards.rs", "src/entitlements.rs",
                      "src/entitlement/grants.rs"]:
             with self.subTest(path=path):
-                self.assertTrue(self.rows("SylphxAI/cloud", path, BAD["rs"]))
+                self.assertTrue(self.rows("SylphxAI/sylphx", path, BAD["rs"]))
 
     def test_infrastructure_and_authentication_are_outside_cloud_economy_scope(self):
         cases = [
@@ -37,7 +37,7 @@ class CacheEconomyDomainTests(unittest.TestCase):
         ]
         for path, source in cases:
             with self.subTest(path=path):
-                self.assertFalse(self.rows("SylphxAI/cloud", path, source))
+                self.assertFalse(self.rows("SylphxAI/sylphx", path, source))
 
     def test_non_economy_profile_does_not_skip_other_rules(self):
         rows = a.scan_file("src/auth.ts", "if (first_party) { return true; }",
@@ -46,8 +46,8 @@ class CacheEconomyDomainTests(unittest.TestCase):
 
     def test_profiles_and_money_refusal_through_actual_required_cli(self):
         cases = [("SylphxAI/spiron", "src/claims.rs", 0),
-                 ("SylphxAI/cloud", "src/credentials.rs", 0),
-                 ("SylphxAI/cloud", "services/money/src/shop.rs", 1),
+                 ("SylphxAI/sylphx", "src/credentials.rs", 0),
+                 ("SylphxAI/sylphx", "services/money/src/shop.rs", 1),
                  ("Example/game", "src/shop.rs", 1)]
         for repository, path, expected in cases:
             with self.subTest(repository=repository, path=path), tempfile.TemporaryDirectory() as directory:

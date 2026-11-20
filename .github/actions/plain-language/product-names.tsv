@@ -1,4 +1,4 @@
-# Product and app names that platform repositories (cloud, hands, infra) never contain
+# Product and app names that platform repositories (sylphx, hands, infra) never contain
 # (owner standards/architecture.md, Between products). One case-insensitive Perl regex, a tab, the message.
 # A product's need is met by a capability any customer can configure through the public API.
 # Boundaries are lookarounds on letters and digits, so `_`, `-` and `.` end a name: KALKAS_NAMESPACE matches.

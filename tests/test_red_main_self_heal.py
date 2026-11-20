@@ -66,7 +66,7 @@ def confirm(prev_conclusion: str, prev_rows: str, cur_rows: str) -> str:
 class InfraTest(unittest.TestCase):
     def test_classifier_fetches_annotations_by_linked_check_not_job_id(self):
         fixture = dict(job("cache", ["Restore cache"]), id=300, run_id=1, status="completed",
-                       check_run_url="https://api.github.com/repos/SylphxAI/cloud/check-runs/30")
+                       check_run_url="https://api.github.com/repos/SylphxAI/sylphx/check-runs/30")
         script = '''
 set -euo pipefail
 . "$RUNNER_TEMP/lib.sh"
@@ -85,10 +85,10 @@ classify_run 1
             forge.write_text("#!/usr/bin/env python3\nimport json, os, sys\n"
                              "p=sys.argv[2]\n"
                              "if '/jobs?' in p: print(json.dumps(dict(total_count=1, jobs=[json.loads(os.environ['FIXTURE_JOB'])])))\n"
-                             "elif p == 'repos/SylphxAI/cloud/check-runs/30/annotations?per_page=100&page=1': print(json.dumps([dict(annotation_level='failure', message='Failed to restore: 403 Forbidden')]))\n"
+                             "elif p == 'repos/SylphxAI/sylphx/check-runs/30/annotations?per_page=100&page=1': print(json.dumps([dict(annotation_level='failure', message='Failed to restore: 403 Forbidden')]))\n"
                              "else: sys.exit('unexpected API path: '+p)\n")
             forge.chmod(0o755)
-            env = dict(os.environ, RUNNER_TEMP=directory, REPO="SylphxAI/cloud",
+            env = dict(os.environ, RUNNER_TEMP=directory, REPO="SylphxAI/sylphx",
                        PATH=f"{root}:{os.environ['PATH']}", FIXTURE_JOB=json.dumps(fixture))
             result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

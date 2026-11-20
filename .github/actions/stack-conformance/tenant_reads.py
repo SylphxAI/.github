@@ -5,7 +5,7 @@ import re
 import tomllib
 
 DECLARATION = "ops/tenant-read-functions.json"
-CONTRACT = ("https://github.com/SylphxAI/cloud/blob/main/"
+CONTRACT = ("https://github.com/SylphxAI/sylphx/blob/main/"
             "docs/runbooks/shared-tenant-read-only.md#declaration")
 
 

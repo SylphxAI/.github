@@ -40,7 +40,7 @@ SKIP = {"tests", "test", "fixtures", "__fixtures__", "__tests__", "examples", "d
         "target", "dist", "build", ".next"}
 SOURCE = {".rs", ".py", ".go", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".sh", ".bash", ".java", ".lua", ".cs"}
 CONFIG = {".yml", ".yaml", ".toml"}
-PLATFORM = {"SylphxAI/cloud", "SylphxAI/sylphx"}
+PLATFORM = "SylphxAI/sylphx"
 CATALOG = pathlib.Path(__file__).resolve().parents[3] / "policy/architecture-repositories.json"
 try:
     CATALOG_DATA = json.loads(CATALOG.read_text())
@@ -123,6 +123,11 @@ def excluded(path):
             or bool(_EXCLUDED_NAME.search(p.name)))
 
 
+def canonical_repository(repository):
+    """Normalize only the exact former name of the platform repository."""
+    return PLATFORM if repository == "SylphxAI/cloud" else repository
+
+
 @functools.lru_cache(maxsize=None)
 def downstream_pattern(repository):
     data = CATALOG_DATA
@@ -131,7 +136,7 @@ def downstream_pattern(repository):
     if data.get("version") != 1 or not isinstance(data.get("shared_layers"), dict):
         raise ValueError("invalid pinned repository catalog")
     layers = data["shared_layers"]
-    scope = layers.get(repository)
+    scope = layers.get(canonical_repository(repository))
     if scope is None:
         return None
     tokens = set(scope) | {org.lower() for org in scope}
@@ -139,7 +144,7 @@ def downstream_pattern(repository):
     for product in data["products"]:
         row = repositories[product["repository_id"]]
         org, name = row["full_name"].split("/", 1)
-        if org in scope and row["full_name"] not in layers and not row["archived"]:
+        if org in scope and canonical_repository(row["full_name"]) not in layers and not row["archived"]:
             if name not in {"website", "web", "api", "app", "main", "frontend", "backend"}:
                 tokens.add(name)
             brand = product["product"]
@@ -379,7 +384,7 @@ def _service_owner_re(capability):
 
 
 def owns_provider(repository, path, capability):
-    if repository not in PLATFORM:
+    if canonical_repository(repository) != PLATFORM:
         return False
     if _PROVIDER_PART.search(path):
         return True
@@ -903,7 +908,9 @@ def decisions(text, repository, today, *, ignore_expired=False):
                 or any(not isinstance(v, str) or not v.strip() for k, v in row.items() if k != "line")
                 or type(row.get("line")) is not int or row["line"] < 1):
             raise ValueError("decision must name exact finding, owner, reason, contract and expiry")
-        if row["repository"] != repository or row["class"] not in {f"C{i}" for i in range(1, 8)} or any(c in row["path"] for c in "*?["):
+        if (repository not in {row["repository"], canonical_repository(row["repository"])}
+                or row["class"] not in {f"C{i}" for i in range(1, 8)}
+                or any(c in row["path"] for c in "*?[")):
             raise ValueError("decision scope does not match this repository or contains a wildcard")
         if not re.fullmatch(r"[a-f0-9]{64}", row["source_sha256"]) or len(row["reason"].split()) < 3:
             raise ValueError("decision needs an exact source hash and specific rationale")
@@ -922,12 +929,12 @@ def decisions(text, repository, today, *, ignore_expired=False):
                 # The schema has no authored id; bind a stable diagnostic id to
                 # the exact exemption scope, including repository and source.
                 decision_id = hashlib.sha256(json.dumps(
-                    [repository, *identity], separators=(",", ":")).encode()).hexdigest()
+                    [row["repository"], *identity], separators=(",", ":")).encode()).hexdigest()
                 errors.append({"decision_id": decision_id,
                     **{k: row[k] for k in ("repository", "path", "line", "class", "rule",
                                            "source_sha256", "expires", "authority")},
                     "reason": (f"architecture decision expired: {decision_id} "
-                               f"({repository} {row['class']}/{row['rule']} at "
+                               f"({row['repository']} {row['class']}/{row['rule']} at "
                                f"{row['path']}:{row['line']}) expired on {row['expires']}; "
                                f"authority: {row['authority']}")})
             continue

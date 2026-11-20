@@ -1,35 +1,32 @@
 # Platform repository rename compatibility
 
-The platform repository is GitHub repository ID **1117000933**. Its current
-name is `SylphxAI/cloud`; the authorized destination is `SylphxAI/sylphx`.
-The rename itself is a separate operation after dependent compatibility has
-landed. This repository does not rename it.
+GitHub repository ID **1117000933** was renamed from `SylphxAI/cloud` to
+`SylphxAI/sylphx` on **2026-11-20**. Use `SylphxAI/sylphx` in new policy,
+configuration and links.
 
 ## Shared policy compatibility
 
-The shared actions accept both exact names for the same platform-owned paths:
+- The Tier-1 merge queue settings and the `deploy/pins` gate use the
+  canonical name and keep the exact former name in `repo_aliases`. Alias
+  matching does not replace ruleset name and ID checks.
+- Agent runtime and Knowledge ownership, path-scoped chat senders and model
+  exemptions, and economy-cache coverage keep their existing scope under
+  either name. Historical immutable model catalog sources remain readable.
+- The stack checker accepts the exact former decision scope when the caller
+  is `SylphxAI/sylphx`, so it can read decisions from a pre-rename base. This
+  does not change the finding, source hash, expiry, or other scope checks.
+  New decision entries use the canonical repository name.
+- The architecture catalog keeps its dated product and repository census;
+  it resolves products by repository ID and normalizes the shared-layer
+  name. The force-push audit and recorded run fixtures retain the names
+  GitHub reported when they were captured. The runner-label source points
+  to the same commit, path and read time at its canonical location.
 
-- Agent runtime and Knowledge owner declarations retain their ownership.
-- Notify and the conversational operator bot retain their path-scoped chat
-  sender allowances; unrelated repositories and paths remain rejected.
-- AI catalog/model-selector exemptions and immutable catalog sources accept
-  either name; commit and content-digest requirements remain unchanged.
-- Money and entitlement paths retain economy-cache enforcement; infrastructure
-  and credentials do not accidentally acquire that domain rule after renaming.
-- Merge-queue required checks and the `deploy/pins` gate match explicit
-  `repo_aliases`. A renamed repository does not produce a phantom missing
-  ruleset. Required-check matching still requires the exact ruleset ID and name.
+`tests/test_platform_rename.py` covers both names and rejects unrelated
+repositories, paths and rulesets. The stack-conformance CLI regression also
+checks pre- and post-rename architecture decisions together.
 
-The architecture catalog already accepts both shared-layer names and resolves
-products by numeric repository ID. Its dated population and the force-push
-audit remain historical evidence, not newly renamed snapshots. The runner-label
-source is also an immutable, dated read, not a repository-name authorization.
-
-`tests/test_platform_rename.py` exercises both names, wrong organizations,
-similarly named unrelated repositories, wrong paths and wrong rulesets. It also
-runs the required stack-conformance CLI and the queue apply/readback fixture.
-
-## GitHub Actions sequencing
+## Pre-rename GitHub Actions notes
 
 Read on **2026-11-03 at 15:12:43 UTC**: GitHub's [repository rename
 documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository)
@@ -50,21 +47,12 @@ Preserve currently published image paths independently of the source rename.
 Organization code searches on 2026-11-03 found no old-name executable `uses:`
 consumer in indexed workflow/action/template files. This is an indexed search,
 not a guarantee about unindexed branches or external consumers. A stale example
-exists in `SylphxAI/sylphx-clients/localize-action/README.md`:
+was found in `SylphxAI/sylphx-clients/localize-action/README.md`:
 `SylphxAI/cloud/clients/localize-action@main`. Update that published example
 through its source owner, and inventory all affected live callers again at
 cutover. The existing public `sylphx-clients/localize-action` can provide a
 rename-independent action location once its exact pinned revision is verified.
 
-1. Merge compatibility here and in callers' trust/identity configuration.
-2. Move executable action consumers to an already existing, verified action
-   location, or prepare a coordinated post-rename update. Never point a running
-   workflow at a destination repository that does not yet exist.
-3. Rename repository ID 1117000933, then read its new identity back.
-4. Update source links, current policy names and any deferred `uses:` paths;
-   retain dated historical receipts. Pin updated shared actions to a full SHA
-   followed by `# main`, using the ordinary caller pin updates.
-5. Verify an actual post-rename queue merge and platform release/build/publish/
-   deploy paths. Remove temporary old-name compatibility after callers and
-   trust configuration have moved. The longer failure observation is separate
-   from cutover verification.
+Callers pinned to a pre-rename shared action need their normal full-SHA pin
+update to consume the compatibility fix. Verify a real platform queue merge
+and the platform release/build/publish/deploy paths before retiring aliases.

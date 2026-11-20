@@ -26,7 +26,7 @@ its history. Mark a line that must keep a term, such as a quotation or a
 standard sense, with `plain-language: allow(<reason>; until=YYYY-MM-DD)`. A bare `allow`, a marker
 without a reason, or a past date fails; a bare `allow` is tolerated with a warning until 2026-10-15.
 
-A platform repository (cloud, hands, infra) also runs the product-name list,
+A platform repository (sylphx, hands, infra) also runs the product-name list,
 because platform code never names a product (owner
 `standards/architecture.md`):
 
