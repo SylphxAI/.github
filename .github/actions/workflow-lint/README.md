@@ -332,8 +332,9 @@ use the explicit job condition or a conjunction on each io branch.
 
 GitHub Actions artifact storage is a metered organization quota (GB-hours per
 billing cycle); once spent, every `actions/upload-artifact` in the organization
-fails until usage drains. Job hand-overs should use
-[`run-store`](../../../docs/run-store.md) instead.
+fails until usage drains. For multi-MB CI handoffs, use
+`SylphxAI/.github/.github/actions/run-store` (`build-cache`/Ceph RGW, `$0`
+GitHub storage; see [`docs/run-store.md`](../../../docs/run-store.md)) instead.
 
 When a workflow (`.github/workflows/*.yml`, `*.yaml`) or local composite action
 (`.github/actions/**/action.yml`, `action.yaml`) invokes

@@ -25,6 +25,10 @@ HEADER_MARKER = re.compile(r"^#[ \t]*artifact-retention:[ \t]*(.*)$", re.M | re.
 HEADER_EXCEPTION = re.compile(
     r"^#[ \t]*artifact-retention:[ \t]*exception[ \t]+([\w-]+)(?:[ \t]+—[ \t]*|[ \t]*:[ \t]*)(.*)$"
 )
+RUN_STORE_GUIDANCE = (
+    "use SylphxAI/.github/.github/actions/run-store "
+    "(build-cache/Ceph RGW, $0 GitHub storage) for multi-MB CI handoffs"
+)
 
 
 def _mapping_items(node):
@@ -102,7 +106,7 @@ def _check_steps(steps_node, scope, limit):
             findings.append((
                 uses_node.start_mark.line + 1,
                 f"{scope}: actions/upload-artifact must set explicit integer retention-days "
-                f"(default {DEFAULT_RETENTION_DAYS}, max {MAX_RETENTION_DAYS}) or migrate to run-store",
+                f"(default {DEFAULT_RETENTION_DAYS}, max {MAX_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
             ))
             continue
         if len(with_entries) > 1:
@@ -116,7 +120,7 @@ def _check_steps(steps_node, scope, limit):
             findings.append((
                 with_value.start_mark.line + 1,
                 f"{scope}: actions/upload-artifact must set explicit integer retention-days "
-                f"(default {DEFAULT_RETENTION_DAYS}, max {MAX_RETENTION_DAYS}) or migrate to run-store",
+                f"(default {DEFAULT_RETENTION_DAYS}, max {MAX_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
             ))
             continue
         retention_entries = [
@@ -128,7 +132,7 @@ def _check_steps(steps_node, scope, limit):
             findings.append((
                 uses_node.start_mark.line + 1,
                 f"{scope}: actions/upload-artifact must set explicit integer retention-days "
-                f"(default {DEFAULT_RETENTION_DAYS}, max {MAX_RETENTION_DAYS}) or migrate to run-store",
+                f"(default {DEFAULT_RETENTION_DAYS}, max {MAX_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
             ))
             continue
         if len(retention_entries) > 1:
@@ -143,7 +147,7 @@ def _check_steps(steps_node, scope, limit):
             findings.append((
                 ret_line,
                 f"{scope}: actions/upload-artifact retention-days must be a literal integer "
-                f"from 1 to {limit} (default {DEFAULT_RETENTION_DAYS})",
+                f"from 1 to {limit} (default {DEFAULT_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
             ))
             continue
         raw = ret_node.value
@@ -151,21 +155,23 @@ def _check_steps(steps_node, scope, limit):
             findings.append((
                 ret_line,
                 f"{scope}: actions/upload-artifact retention-days must be a literal integer "
-                f"from 1 to {limit} (default {DEFAULT_RETENTION_DAYS}); dynamic expressions are refused",
+                f"from 1 to {limit} (default {DEFAULT_RETENTION_DAYS}); dynamic expressions are refused; "
+                f"{RUN_STORE_GUIDANCE}",
             ))
             continue
         if raw == "0":
             findings.append((
                 ret_line,
                 f"{scope}: actions/upload-artifact retention-days: 0 uses the 90-day org default; "
-                f"set an explicit literal integer from 1 to {limit} (default {DEFAULT_RETENTION_DAYS})",
+                f"set an explicit literal integer from 1 to {limit} (default {DEFAULT_RETENTION_DAYS}) "
+                f"or {RUN_STORE_GUIDANCE}",
             ))
             continue
         if not POSITIVE_INT.fullmatch(raw):
             findings.append((
                 ret_line,
                 f"{scope}: actions/upload-artifact retention-days must be a literal integer "
-                f"from 1 to {limit} (default {DEFAULT_RETENTION_DAYS})",
+                f"from 1 to {limit} (default {DEFAULT_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
             ))
             continue
         days = int(raw)
@@ -174,14 +180,15 @@ def _check_steps(steps_node, scope, limit):
                 findings.append((
                     ret_line,
                     f"{scope}: actions/upload-artifact retention-days={days} exceeds max "
-                    f"{MAX_EXCEPTION_RETENTION_DAYS} even with release-proof exception",
+                    f"{MAX_EXCEPTION_RETENTION_DAYS} even with release-proof exception; "
+                    f"{RUN_STORE_GUIDANCE}",
                 ))
             else:
                 findings.append((
                     ret_line,
                     f"{scope}: actions/upload-artifact retention-days={days} exceeds max "
                     f"{MAX_RETENTION_DAYS} (default {DEFAULT_RETENTION_DAYS}); lower to 1-{MAX_RETENTION_DAYS}, "
-                    f"migrate to run-store, or declare "
+                    f"{RUN_STORE_GUIDANCE}, or declare "
                     f"'# artifact-retention: exception release-proof — <reason>' "
                     f"(max {MAX_EXCEPTION_RETENTION_DAYS})",
                 ))

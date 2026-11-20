@@ -97,6 +97,8 @@ class ArtifactRetentionWorkflowTests(unittest.TestCase):
                 found = workflow_problems(make_workflow(step))
                 self.assertEqual(len(found), 1)
                 self.assertIn("must set explicit integer retention-days", found[0][1])
+                self.assertIn("SylphxAI/.github/.github/actions/run-store", found[0][1])
+                self.assertIn("build-cache/Ceph RGW, $0 GitHub storage", found[0][1])
 
     def test_zero_retention_days_is_refused_with_org_default_explanation(self):
         for value in ("0", '"0"', "'0'"):
@@ -145,6 +147,8 @@ class ArtifactRetentionWorkflowTests(unittest.TestCase):
                 found = workflow_problems(text)
                 self.assertEqual(len(found), 1)
                 self.assertIn(f"retention-days={days} exceeds max {MAX_RETENTION_DAYS}", found[0][1])
+                self.assertIn("SylphxAI/.github/.github/actions/run-store", found[0][1])
+                self.assertIn("build-cache/Ceph RGW, $0 GitHub storage", found[0][1])
 
     def test_release_proof_exception_allows_up_to_thirty_days_only(self):
         for header in (
