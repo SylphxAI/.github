@@ -47,13 +47,18 @@ inputs:
       The step fails unless the gateway reads back the requested retention.
     default: ""
   build-cache-url:
-    description: BuildCache gateway URL.
-    default: https://build-cache.sylphx.net
+    description: >
+      BuildCache gateway URL. Empty inherits the runner's BUILD_CACHE_URL
+      (cluster LAN on in-Cell runners), falling back to
+      https://build-cache.sylphx.net.
+    default: ""
   build-cache-network:
     description: >
-      Which of the gateway's endpoints the run token is for: `public`, or
-      `cluster` for jobs on the platform's own network.
-    default: public
+      Which of the gateway's endpoints the run token is for (`public`, or
+      `cluster` for jobs on the platform's own network). Empty inherits the
+      runner's BUILD_CACHE_NETWORK (`cluster` on in-Cell runners), falling back
+      to `public`.
+    default: ""
 
 outputs:
   key:
@@ -91,6 +96,6 @@ runs:
         REPO_ID: ${{ github.repository_id }}
         REQUIRED: ${{ inputs.required }}
         RETENTION_DAYS: ${{ inputs.retention-days }}
-        BUILD_CACHE_URL: ${{ inputs.build-cache-url }}
-        BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
+        INPUT_BUILD_CACHE_URL: ${{ inputs.build-cache-url }}
+        INPUT_BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
       run: bash "$GITHUB_ACTION_PATH/run-store.sh"

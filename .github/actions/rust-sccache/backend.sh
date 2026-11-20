@@ -28,7 +28,8 @@
 # The platform-wide `ci-sccache` bucket is never a backend here: it belongs to
 # the platform's own CI, and a repository never holds its key.
 #
-# In: BUILD_CACHE, BUILD_CACHE_URL, BUILD_CACHE_NETWORK, BUILD_CACHE_MAX_TIME
+# In: BUILD_CACHE, INPUT_BUILD_CACHE_URL, INPUT_BUILD_CACHE_NETWORK,
+#     BUILD_CACHE_URL, BUILD_CACHE_NETWORK, BUILD_CACHE_MAX_TIME
 #     (seconds, default 10), ACTIONS_ID_TOKEN_REQUEST_URL,
 #     ACTIONS_ID_TOKEN_REQUEST_TOKEN, S3_ACCESS_KEY, S3_SECRET_KEY, S3_ENDPOINT,
 #     S3_BUCKET, KEY_PREFIX, ACTIONS_CACHE, SKIP_BACKENDS, GITHUB_REPOSITORY_OWNER.
@@ -79,8 +80,13 @@ _buildcache() {
   fi
   # Mask before any other use.
   echo "::add-mask::$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
-  url="${BUILD_CACHE_URL-https://build-cache.sylphx.net}"
-  network="${BUILD_CACHE_NETWORK-public}"
+  if [ -n "${INPUT_BUILD_CACHE_URL:-}" ] || [ -n "${INPUT_BUILD_CACHE_NETWORK:-}" ]; then
+    url="${INPUT_BUILD_CACHE_URL:-https://build-cache.sylphx.net}"
+    network="${INPUT_BUILD_CACHE_NETWORK:-public}"
+  else
+    url="${BUILD_CACHE_URL-https://build-cache.sylphx.net}"
+    network="${BUILD_CACHE_NETWORK-public}"
+  fi
   max="${BUILD_CACHE_MAX_TIME:-10}"
   [[ "$max" =~ ^[0-9]{1,3}$ ]] || max=10
   if ! [[ "$url" =~ $url_re ]]; then

@@ -76,8 +76,10 @@ the job summary and to its `backend` output (`buildcache`, `static`, `gha` or
 
 1. **`buildcache`.** The job requests a GitHub OIDC token (audience
    `sylphx-build-cache`) and exchanges it at the BuildCache gateway
-   (`build-cache-url`, default `https://build-cache.sylphx.net`;
-   `build-cache-network` defaults to `public`, or explicitly `cluster`) for a run token. The gateway
+   (`build-cache-url` and `build-cache-network` inherit the runner's
+   `BUILD_CACHE_URL` and `BUILD_CACHE_NETWORK` when empty — cluster LAN on
+   in-Cell runners — and fall back to `https://build-cache.sylphx.net` and
+   `public` otherwise) for a run token. The gateway
    maps the repository's owner to the organization and scopes the token by
    the event: `merge_group`, `schedule` and a push to `main` write the
    protected scope (and read only it); every other event, pull requests

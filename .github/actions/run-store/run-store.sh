@@ -133,8 +133,13 @@ exchange() {
     return 2
   fi
   mask "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
-  url="${BUILD_CACHE_URL:-https://build-cache.sylphx.net}"
-  network="${BUILD_CACHE_NETWORK:-public}"
+  if [ -n "${INPUT_BUILD_CACHE_URL:-}" ] || [ -n "${INPUT_BUILD_CACHE_NETWORK:-}" ]; then
+    url="${INPUT_BUILD_CACHE_URL:-https://build-cache.sylphx.net}"
+    network="${INPUT_BUILD_CACHE_NETWORK:-public}"
+  else
+    url="${BUILD_CACHE_URL:-https://build-cache.sylphx.net}"
+    network="${BUILD_CACHE_NETWORK:-public}"
+  fi
   max="${BUILD_CACHE_MAX_TIME:-10}"
   [[ "$max" =~ ^[0-9]{1,3}$ ]] || max=10
   oidc_max="${RUN_STORE_OIDC_MAX_TIME:-30}"
