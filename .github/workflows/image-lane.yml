@@ -162,7 +162,7 @@ on:
           removed once they stop passing it.
         required: false
         type: number
-        default: 7
+        default: 1
     outputs:
       image_tag:
         description: "Content tag published for the image."
