@@ -275,6 +275,25 @@ class RustSccacheBackend(unittest.TestCase):
         choose({**self.fake.oidc_env(), "BUILD_CACHE_NETWORK": "cluster"})
         self.assertEqual(json.loads(self.fake.gateway_calls()[0]["body"])["network"], "cluster")
 
+    def test_empty_action_inputs_inherit_runner_cluster_build_cache_env(self) -> None:
+        choose({
+            **self.fake.oidc_env(),
+            "BUILD_CACHE_NETWORK": "cluster",
+            "INPUT_BUILD_CACHE_URL": "",
+            "INPUT_BUILD_CACHE_NETWORK": "",
+        })
+        self.assertEqual(json.loads(self.fake.gateway_calls()[0]["body"])["network"], "cluster")
+
+    def test_explicit_action_input_overrides_runner_cluster_env_without_leaking_cluster(self) -> None:
+        choose({
+            **self.fake.oidc_env(),
+            "BUILD_CACHE_URL": "http://127.0.0.1:1",
+            "BUILD_CACHE_NETWORK": "cluster",
+            "INPUT_BUILD_CACHE_URL": self.fake.base,
+            "INPUT_BUILD_CACHE_NETWORK": "",
+        })
+        self.assertEqual(json.loads(self.fake.gateway_calls()[0]["body"])["network"], "public")
+
     def test_both_tokens_are_masked_before_any_other_output(self) -> None:
         _, out = choose(self.fake.oidc_env())
         lines = out.splitlines()
@@ -625,12 +644,18 @@ class RustSccacheStart(unittest.TestCase):
         self.assertIn("backend=none", self.read("output"))
         self.assertEqual(self.log.exists(), False)
 
-    def test_default_s3_endpoint_is_empty_and_buildcache_is_public(self) -> None:
+    def test_default_s3_endpoint_is_empty_and_buildcache_inherits_runner_env(self) -> None:
         import yaml
 
         action = yaml.safe_load((ACTION / "action.yml").read_text())
         self.assertEqual(action["inputs"]["s3-endpoint"]["default"], "")
-        self.assertEqual(action["inputs"]["build-cache-network"]["default"], "public")
+        self.assertEqual(action["inputs"]["build-cache-url"]["default"], "")
+        self.assertEqual(action["inputs"]["build-cache-network"]["default"], "")
+        step_env = next(step for step in action["runs"]["steps"] if step.get("id") == "sccache")["env"]
+        self.assertNotIn("BUILD_CACHE_URL", step_env)
+        self.assertNotIn("BUILD_CACHE_NETWORK", step_env)
+        self.assertEqual(step_env["INPUT_BUILD_CACHE_URL"], "${{ inputs.build-cache-url }}")
+        self.assertEqual(step_env["INPUT_BUILD_CACHE_NETWORK"], "${{ inputs.build-cache-network }}")
         self.assertNotIn(CLUSTER_HOST, (ACTION / "action.yml").read_text())
 
     def test_actions_cache_service_is_exported_for_static_fallback_too(self) -> None:

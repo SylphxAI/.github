@@ -881,6 +881,46 @@ class RunStoreTest(unittest.TestCase):
         self.assertEqual(out["found"], "true")
         self.assertEqual((dest / "results" / "junit.xml").read_bytes(), b"<testsuite/>")
 
+    def test_empty_action_inputs_inherit_runner_cluster_build_cache_env(self) -> None:
+        import yaml
+
+        action = yaml.safe_load((SCRIPT.parent / "action.yml").read_text())
+        self.assertEqual(action["inputs"]["build-cache-url"]["default"], "")
+        self.assertEqual(action["inputs"]["build-cache-network"]["default"], "")
+        step_env = action["runs"]["steps"][0]["env"]
+        self.assertNotIn("BUILD_CACHE_URL", step_env)
+        self.assertNotIn("BUILD_CACHE_NETWORK", step_env)
+        self.assertEqual(step_env["INPUT_BUILD_CACHE_URL"], "${{ inputs.build-cache-url }}")
+        self.assertEqual(step_env["INPUT_BUILD_CACHE_NETWORK"], "${{ inputs.build-cache-network }}")
+
+        source = self.dir / "cluster.txt"
+        source.write_text("cluster-lan")
+        rc, log, _ = self.run_store(
+            "put",
+            "cluster",
+            source,
+            BUILD_CACHE_NETWORK="cluster",
+            INPUT_BUILD_CACHE_URL="",
+            INPUT_BUILD_CACHE_NETWORK="",
+        )
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(self.fake.token_requests[-1]["network"], "cluster")
+
+    def test_explicit_action_input_overrides_runner_cluster_env(self) -> None:
+        source = self.dir / "override.txt"
+        source.write_text("override-public")
+        rc, log, _ = self.run_store(
+            "put",
+            "override",
+            source,
+            BUILD_CACHE_URL="http://127.0.0.1:1",
+            BUILD_CACHE_NETWORK="cluster",
+            INPUT_BUILD_CACHE_URL=f"http://127.0.0.1:{self.fake.port}",
+            INPUT_BUILD_CACHE_NETWORK="",
+        )
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(self.fake.token_requests[-1]["network"], "public")
+
 
 if __name__ == "__main__":
     unittest.main()

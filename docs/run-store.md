@@ -68,8 +68,8 @@ build:
 | `run-id` | this run | get: read another run's entry (a `workflow_run` or dispatch consumer) |
 | `required` | `true` | get: fail on a miss, or with `false` set `found=false` and continue. put: with `false` a store failure only warns |
 | `retention-days` | empty | put only: an integer from 1 to 30 retains an immutable bundle for that many days from publication. Empty keeps the existing seven-day cache policy |
-| `build-cache-url` | `https://build-cache.sylphx.net` | Gateway URL |
-| `build-cache-network` | `public` | `cluster` for jobs on the platform's network |
+| `build-cache-url` | empty (runner `BUILD_CACHE_URL`, else `https://build-cache.sylphx.net`) | Gateway URL |
+| `build-cache-network` | empty (runner `BUILD_CACHE_NETWORK`, else `public`) | `cluster` for jobs on the platform's network |
 
 Outputs: `key`, `found` (get), `bytes`, `unavailable`, and `retained_until`
 (retained put only, Unix seconds for the root's expiry).

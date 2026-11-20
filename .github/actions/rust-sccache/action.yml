@@ -61,13 +61,18 @@ inputs:
       has no `id-token: write` permission).
     default: "true"
   build-cache-url:
-    description: BuildCache gateway URL.
-    default: https://build-cache.sylphx.net
+    description: >
+      BuildCache gateway URL. Empty inherits the runner's BUILD_CACHE_URL
+      (cluster LAN on in-Cell runners), falling back to
+      https://build-cache.sylphx.net.
+    default: ""
   build-cache-network:
     description: >
-      Which of the gateway's endpoints the run token is for: `public`, or
-      `cluster` for jobs on the platform's own network.
-    default: public
+      Which of the gateway's endpoints the run token is for (`public`, or
+      `cluster` for jobs on the platform's own network). Empty inherits the
+      runner's BUILD_CACHE_NETWORK (`cluster` on in-Cell runners), falling back
+      to `public`.
+    default: ""
 
 outputs:
   backend:
@@ -111,8 +116,8 @@ runs:
         KEY_PREFIX: ${{ inputs.key-prefix }}
         ACTIONS_CACHE: ${{ inputs.actions-cache }}
         BUILD_CACHE: ${{ inputs.build-cache }}
-        BUILD_CACHE_URL: ${{ inputs.build-cache-url }}
-        BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
+        INPUT_BUILD_CACHE_URL: ${{ inputs.build-cache-url }}
+        INPUT_BUILD_CACHE_NETWORK: ${{ inputs.build-cache-network }}
       run: |
         set -euo pipefail
         dir="$RUNNER_TEMP/pinned-tools/sccache-aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd"
