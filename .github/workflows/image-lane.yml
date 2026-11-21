@@ -138,7 +138,7 @@ on:
         description: "Repositories the optional builder credential may read."
         required: false
         type: string
-        default: "cloud,identity"
+        default: "sylphx,identity"
       runner-class:
         description: "Self-hosted sylphx-linux-* class for the compile job; other values use standard."
         required: false
