@@ -82,7 +82,9 @@ jobs:
 
   tests:
     runs-on: ${{ github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'sylphx-linux-standard' }}
-    timeout-minutes: 10
+    # A green full suite took over nine minutes in the merge queue. Leave room
+    # for setup and consumer checks within the queue's 20-minute check deadline.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

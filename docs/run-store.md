@@ -244,15 +244,13 @@ PR and merge-group checks still supply the required merge evidence.
   The consumer also accepts existing unsplit bundles, verifies the assembled
   size and SHA256 before validating/unpacking, and leaves the destination
   untouched for missing or corrupt parts. Partial immutable part collisions
-  fail before a manifest is committed. It retries three times, treats a write the
-  gateway accepted but dropped (`x-build-cache: dropped`, its store was down)
-  as a failure, and reads the entry back with `HEAD` before it succeeds.
-- A get retries three times, a miss included, then fails with the key and run
-  it looked for. A 404 is the only "no entry". While the gateway's object
-  store is down it answers reads `503` (before 2026-10-19 it answered a false
-  `404`), and the step says `store unavailable` and sets the `unavailable`
-  output instead, so a failed get never reads as a producer that did not store
-  the entry.
+  fail before a manifest is committed. A put treats a write the gateway accepted
+  but dropped (`x-build-cache: dropped`, its store was down) as a failure and
+  reads the entry back with `HEAD` before it succeeds.
+- Only HTTP 404 indicates a missing entry or part. A transport failure (even
+  after HTTP 200 headers arrive) or an HTTP 503 sets `unavailable=true` rather
+  than reporting a miss. `required: "false"` warns instead of failing the step.
+  A failed get does not unpack a partial bundle.
 - A get validates every tar member before it writes anything: a name that
   escapes `path` (`..` or absolute), a symlink or hardlink, and a special file
   (fifo, device, socket) are refused, so an untrusted bundle (a pull request's
@@ -272,10 +270,15 @@ Cloudflare ray or hexadecimal request identifier. Response bodies, arbitrary
 headers, URLs and credentials are never printed. These diagnostics do not
 attribute an earlier 413 whose response metadata was not retained.
 
-Network requests have a [shared bounded retry policy](../.github/actions/_shared/network.md):
-at most five attempts within 120 seconds per logical request, with exponential
-backoff and jitter for transient transport errors, HTTP 429 and HTTP 5xx.
-HTTP 401, 403 and 404 are never retried. Failed attempts record DNS, TCP, TLS,
+Network requests use the [shared bounded retry policy](../.github/actions/_shared/network.md):
+at most five attempts per request, with exponential backoff and jitter for
+transient transport errors, HTTP 429 and HTTP 5xx. HTTP 401, 403 and 404 are
+never retried. GET/PUT use a 180-second attempt cap, a 300-second per-request
+budget, and a low-speed abort below 1 byte/second for 30 seconds. A 64 MiB
+part can continue past 30 seconds while making progress. HEAD and token
+requests retain a 120-second budget and shorter attempt caps (HEAD and OIDC
+30 seconds, token mint 10 seconds). The action logs only the selected network
+(`public` or `cluster`), not the gateway URL, when requesting credentials. Failed attempts record DNS, TCP, TLS,
 first-byte and total times plus remote IP and status, never URLs or bodies.
 Accepted uploads are only read back; an uncertain PUT reuses the original key
 and payload and preserves the gateway's immutable-entry behavior.

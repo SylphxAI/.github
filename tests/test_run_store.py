@@ -78,6 +78,7 @@ class Fake:
         self.oidc_replies = []
         self.mint_replies = []
         self.get_replies = []
+        self.part_get_replies = []
         self.lose_put_reply = False
         self.committed_puts = 0
         self.minted = MINTED  # the run token the exchange answers with
@@ -87,14 +88,25 @@ class Fake:
             def log_message(self, *args: object) -> None:
                 pass
 
-            def _reply(self, code: int, body: bytes = b"", headers: dict[str, str] | None = None) -> None:
+            def _reply(self, code: int, body: bytes = b"", headers: dict[str, str] | None = None,
+                       *, paced: bool = False) -> None:
                 self.send_response(code)
                 for k, v in (headers or {}).items():
                     self.send_header(k, v)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                if self.command != "HEAD":
-                    self.wfile.write(body)
+                if self.command == "HEAD":
+                    return
+                try:
+                    if paced:
+                        for offset in range(0, len(body), 512):
+                            if offset:
+                                time.sleep(0.15)
+                            self.wfile.write(body[offset:offset + 512])
+                    else:
+                        self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
             def _fault(self, replies) -> bool:
                 if not replies:
@@ -125,6 +137,20 @@ class Fake:
                 key = self._key()
                 if self._fault(owner.get_replies):
                     return
+                fault = owner.part_get_replies.pop(0) if key.endswith(".part-0") and owner.part_get_replies else None
+                if fault == "no-response":
+                    time.sleep(10)
+                    return
+                if fault == "stalled":
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(owner.store[key])))
+                    self.end_headers()
+                    self.wfile.write(owner.store[key][:128])
+                    time.sleep(10)
+                    return
+                if isinstance(fault, int):
+                    self._reply(fault)
+                    return
                 if owner.read_misses > 0:
                     owner.read_misses -= 1
                     self._reply(404)
@@ -134,7 +160,7 @@ class Fake:
                     if key in owner.retention and not owner.omit_retention:
                         days, until = owner.retention[key]
                         headers.update({"x-build-cache-retention-days": str(days), "x-build-cache-retain-until": str(until)})
-                    self._reply(200, owner.store[key], headers)
+                    self._reply(200, owner.store[key], headers, paced=fault == "paced")
                 else:
                     self._reply(404)
 
@@ -266,11 +292,13 @@ class RunStoreTest(unittest.TestCase):
                 "    try:\n"
                 "        label = sys.argv[sys.argv.index('--label') + 1]\n"
                 "        maximum = sys.argv[sys.argv.index('--max-time') + 1]\n"
+                "        budget = sys.argv[sys.argv.index('--budget') + 1]\n"
+                "        speed = ':'.join(sys.argv[sys.argv.index(opt) + 1] for opt in ('--speed-time', '--speed-limit')) if '--speed-time' in sys.argv else '-'\n"
                 "    except (ValueError, IndexError):\n"
                 "        pass\n"
                 "    else:\n"
                 "        with open(os.environ['RUN_STORE_TEST_TRACE'], 'a') as output:\n"
-                "            output.write(f'{label}:{maximum}\\n')\n"
+                "            output.write(f'{label}:{maximum}:{budget}:{speed}\\n')\n"
                 "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
             )
             wrapper.chmod(0o755)
@@ -288,10 +316,12 @@ class RunStoreTest(unittest.TestCase):
     def test_oidc_deadline_does_not_change_mint_or_transfer_deadlines(self) -> None:
         source = self.dir / "upload.txt"
         source.write_text("payload")
-        for index, (overrides, oidc, mint, transfer) in enumerate((
-            ({}, "30", "10", "30"),
-            ({"RUN_STORE_OIDC_MAX_TIME": "45"}, "45", "10", "30"),
-            ({"BUILD_CACHE_MAX_TIME": "7", "RUN_STORE_REQUEST_MAX_TIME": "17"}, "30", "7", "17"),
+        for index, (overrides, oidc, mint, transfer, head, control_budget, data_budget, stall) in enumerate((
+            ({}, "30", "10", "180", "30", "120", "300", "30"),
+            ({"RUN_STORE_OIDC_MAX_TIME": "45"}, "45", "10", "180", "30", "120", "300", "30"),
+            ({"BUILD_CACHE_MAX_TIME": "7", "RUN_STORE_REQUEST_MAX_TIME": "17",
+              "RUN_STORE_REQUEST_BUDGET": "42", "RUN_STORE_STALL_TIME": "3"},
+             "30", "7", "17", "17", "42", "42", "3"),
         )):
             with self.subTest(overrides=overrides):
                 trace = self.dir / f"trace-{index}"
@@ -300,8 +330,8 @@ class RunStoreTest(unittest.TestCase):
                 self.assertEqual(rc, 0, log)
                 self.assertEqual(
                     trace.read_text().splitlines(),
-                    [f"run-store-oidc:{oidc}", f"run-store-mint:{mint}",
-                     f"run-store-put:{transfer}", f"run-store-head:{transfer}"],
+                    [f"run-store-oidc:{oidc}:{control_budget}:-", f"run-store-mint:{mint}:{control_budget}:-",
+                     f"run-store-put:{transfer}:{data_budget}:{stall}:1", f"run-store-head:{head}:{control_budget}:-"],
                 )
                 trace.write_text("")
                 rc, log, out = self.run_store(
@@ -311,8 +341,9 @@ class RunStoreTest(unittest.TestCase):
                 self.assertEqual(out["found"], "true")
                 self.assertEqual(
                     trace.read_text().splitlines(),
-                    [f"run-store-oidc:{oidc}", f"run-store-mint:{mint}",
-                     f"run-store-get:{transfer}", f"run-store-get:{transfer}"],
+                    [f"run-store-oidc:{oidc}:{control_budget}:-", f"run-store-mint:{mint}:{control_budget}:-",
+                     f"run-store-get:{transfer}:{data_budget}:{stall}:1",
+                     f"run-store-get:{transfer}:{data_budget}:{stall}:1"],
                 )
 
     def test_invalid_oidc_deadlines_fall_back_to_thirty_seconds(self) -> None:
@@ -329,7 +360,7 @@ class RunStoreTest(unittest.TestCase):
                     RUN_STORE_TEST_TRACE=str(trace),
                 )
                 self.assertEqual(rc, 0, log)
-                self.assertEqual(trace.read_text().splitlines()[0], "run-store-oidc:30")
+                self.assertEqual(trace.read_text().splitlines()[0], "run-store-oidc:30:120:-")
 
     def test_oidc_timeouts_twice_then_succeeds_without_reminting(self) -> None:
         self.fake.oidc_replies = ["timeout", "timeout"]
@@ -491,7 +522,7 @@ class RunStoreTest(unittest.TestCase):
         original = self.fake.store.pop(part)
         rc, log, _ = self.run_store("put", "retry-corrupt", src, **args)
         self.assertNotEqual(rc, 0, log)
-        self.assertIn("missing or unreadable", log)
+        self.assertIn("is missing (HTTP 404)", log)
         self.fake.store[part] = b"x" * len(original)
         rc, log, _ = self.run_store("put", "retry-corrupt", src, **args)
         self.assertNotEqual(rc, 0, log)
@@ -633,6 +664,8 @@ class RunStoreTest(unittest.TestCase):
         rc, log, out = self.run_store("get", "parts", dest, RUN_STORE_PART_BYTES="1024")
         self.assertNotEqual(rc, 0)
         self.assertEqual(out["found"], "false")
+        self.assertEqual(out["unavailable"], "false")
+        self.assertIn("bundle part 1 is missing (HTTP 404)", log)
         self.assertFalse(dest.exists())
         self.fake.store[key] = b"x" * len(original)
         dest = self.dir / "corrupt-out"
@@ -640,6 +673,54 @@ class RunStoreTest(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("corrupt parts bundle", log)
         self.assertFalse(dest.exists())
+
+    def test_progressing_part_outlives_the_stall_window(self) -> None:
+        src = self.dir / "paced.bin"
+        src.write_bytes(os.urandom(8192))
+        args = {"RUN_STORE_PART_BYTES": "4096"}
+        rc, log, _ = self.run_store("put", "paced", src, **args)
+        self.assertEqual(rc, 0, log)
+        self.fake.part_get_replies = ["paced"]
+        dest = self.dir / "paced-out"
+        rc, log, out = self.run_store("get", "paced", dest, RUN_STORE_STALL_TIME="1", **args)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(out["found"], "true")
+        self.assertEqual((dest / src.name).read_bytes(), src.read_bytes())
+        self.assertNotIn("curl_exit=28", log)
+
+    def test_stalled_part_is_retried_without_adopting_partial_bytes(self) -> None:
+        src = self.dir / "retried.bin"
+        src.write_bytes(os.urandom(4096))
+        args = {"RUN_STORE_PART_BYTES": "1024"}
+        rc, log, _ = self.run_store("put", "retried", src, **args)
+        self.assertEqual(rc, 0, log)
+        self.fake.part_get_replies = ["stalled"]
+        dest = self.dir / "retry-out"
+        rc, log, out = self.run_store("get", "retried", dest, RUN_STORE_STALL_TIME="1", RUN_STORE_RETRY_DELAY="0.1", **args)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(out["found"], "true")
+        self.assertEqual((dest / src.name).read_bytes(), src.read_bytes())
+        self.assertIn("curl_exit=28", log)
+        self.assertIn("http_code=200 stop=retry", log)
+        self.assertRegex(log, r"retry_in=0\.(10[0-9]|11[0-9]|12[0-5])s")
+
+    def test_unavailable_part_is_not_missing(self) -> None:
+        src = self.dir / "unavailable.bin"
+        src.write_bytes(os.urandom(4096))
+        args = {"RUN_STORE_PART_BYTES": "1024"}
+        rc, log, _ = self.run_store("put", "unavailable", src, **args)
+        self.assertEqual(rc, 0, log)
+        for fault, required, status in (("no-response", "true", 1), ("stalled", "false", 0), (503, "true", 1)):
+            with self.subTest(fault=fault, required=required):
+                self.fake.part_get_replies = [fault] * 5
+                dest = self.dir / f"unavailable-{fault}"
+                rc, log, out = self.run_store("get", "unavailable", dest, REQUIRED=required, RUN_STORE_STALL_TIME="1", **args)
+                self.assertEqual(rc, status, log)
+                self.assertEqual(out["found"], "false")
+                self.assertEqual(out["unavailable"], "true")
+                self.assertIn("store unavailable (reading bundle part 0", log)
+                self.assertNotIn("is missing", log)
+                self.assertFalse(dest.exists())
 
     def test_failed_part_never_commits_root_manifest(self) -> None:
         src = self.dir / "parts.bin"
@@ -905,6 +986,8 @@ class RunStoreTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0, log)
         self.assertEqual(self.fake.token_requests[-1]["network"], "cluster")
+        self.assertIn("::notice::run-store put cluster: build-cache network=cluster", log)
+        self.assertNotIn("http://", log)
 
     def test_explicit_action_input_overrides_runner_cluster_env(self) -> None:
         source = self.dir / "override.txt"
@@ -920,6 +1003,8 @@ class RunStoreTest(unittest.TestCase):
         )
         self.assertEqual(rc, 0, log)
         self.assertEqual(self.fake.token_requests[-1]["network"], "public")
+        self.assertIn("::notice::run-store put override: build-cache network=public", log)
+        self.assertNotIn("http://", log)
 
 
 if __name__ == "__main__":
