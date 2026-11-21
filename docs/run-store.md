@@ -273,12 +273,15 @@ attribute an earlier 413 whose response metadata was not retained.
 Network requests use the [shared bounded retry policy](../.github/actions/_shared/network.md):
 at most five attempts per request, with exponential backoff and jitter for
 transient transport errors, HTTP 429 and HTTP 5xx. HTTP 401, 403 and 404 are
-never retried. GET/PUT use a 180-second attempt cap, a 300-second per-request
-budget, and a low-speed abort below 1 byte/second for 30 seconds. A 64 MiB
-part can continue past 30 seconds while making progress. HEAD and token
-requests retain a 120-second budget and shorter attempt caps (HEAD and OIDC
-30 seconds, token mint 10 seconds). The action logs only the selected network
-(`public` or `cluster`), not the gateway URL, when requesting credentials. Failed attempts record DNS, TCP, TLS,
+never retried. GET and PUT use a 180-second attempt cap and a 300-second
+per-request retry budget. Only GET aborts below 1 byte/second for
+`RUN_STORE_STALL_TIME` seconds (default 30); a download can continue past the
+stall window while making progress. PUT has no low-speed abort: the gateway
+can be silent after receiving the upload while it commits the entry, before
+sending the final response. HEAD and token requests retain a 120-second budget
+and shorter attempt caps (HEAD and OIDC 30 seconds, token mint 10 seconds).
+The action logs only the selected network (`public` or `cluster`), not the
+gateway URL, when requesting credentials. Failed attempts record DNS, TCP, TLS,
 first-byte and total times plus remote IP and status, never URLs or bodies.
 Accepted uploads are only read back; an uncertain PUT reuses the original key
 and payload and preserves the gateway's immutable-entry behavior.

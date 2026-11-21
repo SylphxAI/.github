@@ -9,7 +9,7 @@
 #      gateway's largest entry), RUN_STORE_RETRY_DELAY (backoff base seconds, default 2),
 #      RUN_STORE_REQUEST_BUDGET (total seconds: 300 for GET/PUT, 120 otherwise),
 #      RUN_STORE_REQUEST_MAX_TIME (attempt seconds: 180 for GET/PUT, 30 for HEAD),
-#      RUN_STORE_STALL_TIME (GET/PUT low-speed window seconds, default 30),
+#      RUN_STORE_STALL_TIME (GET low-speed window seconds, default 30),
 #      RUN_STORE_OIDC_MAX_TIME (OIDC attempt seconds, default 30),
 #      ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_ID_TOKEN_REQUEST_TOKEN,
 #      GITHUB_OUTPUT, RUNNER_TEMP.
@@ -219,7 +219,10 @@ request_entry() {
   else
     max="${RUN_STORE_REQUEST_MAX_TIME:-180}"
     budget="${RUN_STORE_REQUEST_BUDGET:-300}"
-    # Catch stalls without imposing the same deadline on streaming bodies.
+  fi
+  if [ "$method" = GET ]; then
+    # Only streaming downloads should use the low-speed window. A PUT can
+    # go quiet after 100 Continue while the gateway commits the uploaded body.
     stall="${RUN_STORE_STALL_TIME:-30}"
     [[ "$stall" =~ ^[1-9][0-9]{0,2}$ ]] || stall=30
     set -- --speed-time "$stall" --speed-limit 1 "$@"
