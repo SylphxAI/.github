@@ -77,9 +77,9 @@ outputs:
     value: ${{ steps.run.outputs.retained_until }}
   unavailable:
     description: >
-      "true" when the cache's object store did not answer: the entry was not
-      read or stored, and a get's `found: false` says nothing about whether
-      the producer wrote it.
+      "true" when an entry request could not complete due to a transport
+      failure or HTTP 503. A get's `found: false` then says nothing about
+      whether the producer wrote the entry.
     value: ${{ steps.run.outputs.unavailable }}
 
 runs:

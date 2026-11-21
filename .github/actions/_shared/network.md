@@ -1,8 +1,8 @@
 # CI network requests
 
-`curl_retry.py` bounds each logical HTTP request to 120 seconds, including
-transfers, retries and backoff. It makes at most five attempts. Token requests
-use a 10-second attempt limit; other reads and transfers use 30 seconds. The
+By default `curl_retry.py` bounds each logical HTTP request to 120 seconds,
+including transfers, retries and backoff, with a 30-second attempt limit. It
+makes at most five attempts. Callers can set their own deadlines. The
 backoff starts at 2 seconds and doubles (2, 4, 8, 16), with 0–25% added jitter.
 Each attempt and wait is capped by the remaining budget. A slow operation can
 therefore exhaust the budget before its fifth attempt.
@@ -46,8 +46,13 @@ The actionlint and sccache release-archive installers already have bounded curl
 retries and are unchanged. API-only clients and object-store bucket/lifecycle
 mutations are not download helpers and are outside this policy's consumers.
 
-Run-store accepts `RUN_STORE_REQUEST_BUDGET`, `RUN_STORE_REQUEST_MAX_TIME` and
-`RUN_STORE_RETRY_DELAY` overrides in seconds. Its token-attempt limit remains
-`BUILD_CACHE_MAX_TIME`. The sccache token helper also accepts
-`BUILD_CACHE_REQUEST_BUDGET` and `BUILD_CACHE_RETRY_DELAY`. Defaults above apply
-when unset. Python 3 and curl are required.
+Run-store GET/PUT use a 180-second attempt cap and a 300-second budget per
+request, including retries and backoff. Curl aborts a transfer below 1
+byte/second for 30 seconds (`RUN_STORE_STALL_TIME`). HEAD uses the shared
+defaults; OIDC and token mint use the same 120-second budget and separate
+attempt limits of 30 seconds (`RUN_STORE_OIDC_MAX_TIME`) and 10 seconds
+(`BUILD_CACHE_MAX_TIME`). Explicit `RUN_STORE_REQUEST_BUDGET`,
+`RUN_STORE_REQUEST_MAX_TIME` (GET/PUT/HEAD only) and `RUN_STORE_RETRY_DELAY`
+overrides still apply. The sccache token helper also accepts
+`BUILD_CACHE_REQUEST_BUDGET` and `BUILD_CACHE_RETRY_DELAY`. Python 3 and curl
+are required.
