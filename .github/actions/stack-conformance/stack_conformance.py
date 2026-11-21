@@ -197,10 +197,12 @@ WEB_FRAMEWORKS = frozenset({
     "next", "astro", "nuxt", "@sveltejs/kit", "@remix-run/node",
     "@remix-run/react", "react-router", "@react-router/node", "vite",
     "@tanstack/react-start", "@tanstack/start", "gatsby", "@angular/core",
-    "vike", "waku",
+    "vike", "waku", "@solidjs/start", "solid-js", "vinxi",
 })
 
-SKIP_DIRS = frozenset({"node_modules", "vendor", "target", "dist", "build", ".next"})
+SKIP_DIRS = frozenset({
+    "node_modules", "vendor", "target", "dist", "build", ".next", ".output", ".vinxi",
+})
 
 JS_RUNTIME_IMAGE = re.compile(r"^(node|nodejs\d*|bun)$")
 

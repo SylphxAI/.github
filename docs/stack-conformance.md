@@ -25,12 +25,15 @@ One line per departure, the same format in the baseline and in the output:
 | --- | --- |
 | `migrations <sylphx.toml> <engine>` | a `sylphx.toml` sets `[database.migrations] engine` to anything but `atlas` |
 | `ts-server <package.json> <package>` | a package's runtime `dependencies` include a TypeScript server framework (`hono`, `express`, `fastify`, `elysia`, `koa`, `@trpc/server`, `@nestjs/core`, `@hapi/hapi`, `h3`) |
-| `bun-node-service <Dockerfile>` | a `dockerfile` named in `sylphx.toml` ends on a Bun or Node image, its command starts Bun or Node (or a shell script), and neither its nearest package nor a package its command names is a web app (`next`, `astro`, `vite`, `@sveltejs/kit`, ...) |
+| `bun-node-service <Dockerfile>` | a `dockerfile` named in `sylphx.toml` ends on a Bun or Node image, its command starts Bun or Node (or a shell script), and neither its nearest package nor a package its command names is a web app (`next`, `astro`, `vite`, `@sveltejs/kit`, `@solidjs/start`, `solid-js`, `vinxi`, ...) |
 | `solar2d <build.settings>` | a retired Solar2D / Corona game project (`build.settings` defining a `settings = { ... }` table with a sibling `main.lua`) |
 
 Web apps, tools and scripts on TypeScript and Bun are the default stack, so a
-Next.js server or a static site is not a departure. Paths under
-`node_modules`, `vendor`, `target`, `dist`, `build` and `.next` are skipped.
+Next.js server, a SolidStart app served by Nitro, or a static site is not a
+`bun-node-service` departure. An explicit runtime dependency on a TypeScript
+server framework still counts as `ts-server`. The stack departure scan skips
+paths under `node_modules`, `vendor`, `target`, `dist`, `build`, `.next`,
+`.output`, and `.vinxi`.
 
 ## Source-bound staged retirement
 
