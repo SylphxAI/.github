@@ -139,14 +139,14 @@ class Fake:
                     return
                 fault = owner.part_get_replies.pop(0) if key.endswith(".part-0") and owner.part_get_replies else None
                 if fault == "no-response":
-                    time.sleep(1.5)
+                    time.sleep(10)
                     return
                 if fault == "stalled":
                     self.send_response(200)
                     self.send_header("Content-Length", str(len(owner.store[key])))
                     self.end_headers()
                     self.wfile.write(owner.store[key][:128])
-                    time.sleep(1.5)
+                    time.sleep(10)
                     return
                 if isinstance(fault, int):
                     self._reply(fault)
