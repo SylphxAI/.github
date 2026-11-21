@@ -30,9 +30,16 @@ runs:
       run: |
         set -euo pipefail
         case "$TOOLCHAIN" in
-          cargo)  paths="~/.cargo/registry/index
-        ~/.cargo/registry/cache
-        ~/.cargo/git/db"; hash="$WD/**/Cargo.lock" ;;
+          cargo)
+            cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+            if [[ "$cargo_home" == *$'\n'* || "$cargo_home" == *$'\r'* ]]; then
+              echo "CARGO_HOME must be a single line" >&2
+              exit 1
+            fi
+            paths="$cargo_home/registry/index
+        $cargo_home/registry/cache
+        $cargo_home/git/db"
+            hash="$WD/**/Cargo.lock" ;;
           bun)    paths="~/.bun/install/cache"; hash="$WD/**/bun.lock*" ;;
           npm)    paths="~/.npm"; hash="$WD/**/package-lock.json" ;;
           pnpm)   paths="~/.local/share/pnpm/store"; hash="$WD/**/pnpm-lock.yaml" ;;
