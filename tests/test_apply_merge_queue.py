@@ -511,10 +511,38 @@ class RequiredCheckTests(unittest.TestCase):
             "check_response_timeout_minutes": 60,
         }
         for repo, rs_name in (("SylphxAI/sylphx", "sylphx-merge-queue"),
-                              ("SylphxAI/infra", "infra-main-required-ci"),
                               ("SylphxAI/spiron", "sylphx-merge-queue"),
                               ("SylphxAI/keel", "sylphx-merge-queue")):
             self.assertEqual(amq.desired_settings(SHIPPED_POLICY, repo, rs_name), tier1)
+
+    def test_infra_merges_without_waiting_for_a_batch_at_existing_capacity(self):
+        repo = "SylphxAI/infra"
+        ruleset_name = "infra-main-required-ci"
+        self.assertEqual(amq.desired_settings(SHIPPED_POLICY, repo, ruleset_name), {
+            "merge_method": "SQUASH",
+            "grouping_strategy": "HEADGREEN",
+            "max_entries_to_build": 8,
+            "min_entries_to_merge": 1,
+            "max_entries_to_merge": 8,
+            "min_entries_to_merge_wait_minutes": 0,
+            "check_response_timeout_minutes": 60,
+        })
+        self.assertEqual(amq.expected_gate(SHIPPED_POLICY, repo, ruleset_name), "ci-ok")
+        self.assertEqual(SHIPPED_POLICY["fast_gate"]["integration_id"], 15368)
+
+    def test_anyagents_merges_without_waiting_for_a_batch_at_higher_capacity(self):
+        repo = "SylphxAI/anyagents"
+        ruleset_name = "anyagents-merge-queue"
+        self.assertEqual(amq.desired_settings(SHIPPED_POLICY, repo, ruleset_name), {
+            "merge_method": "SQUASH",
+            "grouping_strategy": "HEADGREEN",
+            "max_entries_to_build": 12,
+            "min_entries_to_merge": 1,
+            "max_entries_to_merge": 12,
+            "min_entries_to_merge_wait_minutes": 0,
+            "check_response_timeout_minutes": 20,
+        })
+        self.assertEqual(amq.expected_gate(SHIPPED_POLICY, repo, ruleset_name), "ci-ok")
 
     def test_dotgithub_metadata_only_does_not_reintroduce_retired_gates(self):
         repo = "SylphxAI/.github"

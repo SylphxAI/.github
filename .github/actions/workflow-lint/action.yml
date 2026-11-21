@@ -123,10 +123,11 @@ runs:
         set -euo pipefail
         # Decode YAML scalars with one pinned parser, not physical-line guesses.
         # A private target works on externally managed runner Python installs.
-        deps="$RUNNER_TEMP/workflow-lint-pyyaml-6.0.3"
-        if ! PYTHONPATH="$deps" python3 -c 'import yaml; assert yaml.__version__ == "6.0.3"' 2>/dev/null; then
+        # PyYAML 6.0.4 publishes wheels for the Python 3.15 CI runtime.
+        deps="$RUNNER_TEMP/workflow-lint-pyyaml-6.0.4"
+        if ! PYTHONPATH="$deps" python3 -c 'import yaml; assert yaml.__version__ == "6.0.4"' 2>/dev/null; then
           python3 -m pip install --disable-pip-version-check --no-input \
-            --only-binary=:all: --target "$deps" 'PyYAML==6.0.3'
+            --only-binary=:all: --target "$deps" 'PyYAML==6.0.4'
         fi
         PYTHONPATH="$deps" python3 "$GITHUB_ACTION_PATH/perf_gate.py"
     - name: Required workflow contract
@@ -136,5 +137,5 @@ runs:
         CONTRACT_MODE: ${{ inputs.contract-mode }}
         WORKFLOW_LINT_RULES: ${{ inputs.rules }}
       run: |
-        python3 -m pip install --quiet --target "$RUNNER_TEMP/workflow-contract" PyYAML==6.0.3
+        python3 -m pip install --quiet --target "$RUNNER_TEMP/workflow-contract" PyYAML==6.0.4
         PYTHONPATH="$RUNNER_TEMP/workflow-contract" python3 "$GITHUB_ACTION_PATH/contract.py"
