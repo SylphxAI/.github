@@ -68,6 +68,8 @@ class Fake:
         self.failed_part: str | None = None
         self.protected = False
         self.put_sizes: list[int] = []
+        self.put_commit_delays: dict[str, float] = {}
+        self.continued_put_sizes: list[int] = []
         self.retention: dict[str, tuple[int, int]] = {}
         self.omit_retention = False
         self.checksum_override: str | None = None
@@ -94,10 +96,10 @@ class Fake:
                 for k, v in (headers or {}).items():
                     self.send_header(k, v)
                 self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                if self.command == "HEAD":
-                    return
                 try:
+                    self.end_headers()
+                    if self.command == "HEAD":
+                        return
                     if paced:
                         for offset in range(0, len(body), 512):
                             if offset:
@@ -197,10 +199,21 @@ class Fake:
 
             def do_PUT(self) -> None:
                 owner.requests.append(("PUT", self.path, self.headers.get("Authorization")))
+                key = self._key()
+                delay = owner.put_commit_delays.get(key, 0)
+                expects_continue = delay and self.headers.get("Expect") == "100-continue"
+                if expects_continue:
+                    # Opt in only for this request; the other fixtures use HTTP/1.0.
+                    self.protocol_version = "HTTP/1.1"
+                    self.send_response_only(100)
+                    self.end_headers()
                 n = int(self.headers["Content-Length"])
                 body = self.rfile.read(n)
                 owner.put_sizes.append(n)
-                key = self._key()
+                if expects_continue:
+                    owner.continued_put_sizes.append(len(body))
+                if delay:
+                    time.sleep(delay)
                 if owner.failed_part and key.endswith(owner.failed_part):
                     self._reply(413, b"body rejected", owner.failure_headers)
                     return
@@ -331,7 +344,7 @@ class RunStoreTest(unittest.TestCase):
                 self.assertEqual(
                     trace.read_text().splitlines(),
                     [f"run-store-oidc:{oidc}:{control_budget}:-", f"run-store-mint:{mint}:{control_budget}:-",
-                     f"run-store-put:{transfer}:{data_budget}:{stall}:1", f"run-store-head:{head}:{control_budget}:-"],
+                     f"run-store-put:{transfer}:{data_budget}:-", f"run-store-head:{head}:{control_budget}:-"],
                 )
                 trace.write_text("")
                 rc, log, out = self.run_store(
@@ -820,6 +833,55 @@ class RunStoreTest(unittest.TestCase):
         self.assertEqual(out["found"], "true")
         self.assertIn("http_code=503", log)
         self.assertIn("http_code=429", log)
+
+    def test_put_part_survives_silent_commit_after_continue(self) -> None:
+        # A part over 1 MiB makes system curl send Expect: 100-continue.
+        part_bytes = 2 * 1024 * 1024
+        src = self.dir / "payload.bin"
+        payload = os.urandom(part_bytes + 4096)
+        src.write_bytes(payload)
+        key = "run-store.v1.77.4242.slow-commit"
+        part_path = f"/v8/artifacts/{key}.part-0"
+        # Leave room for curl to average the upload burst before detecting low speed.
+        self.fake.put_commit_delays[f"{key}.part-0"] = 12
+        args = {"RUN_STORE_PART_BYTES": str(part_bytes), "RUN_STORE_STALL_TIME": "2"}
+        rc, log, out = self.run_store(
+            "put", "slow-commit", src, RUN_STORE_REQUEST_MAX_TIME="20", RUN_STORE_REQUEST_BUDGET="20", **args
+        )
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(out["unavailable"], "false")
+        self.assertNotIn("curl_exit=28", log)
+        self.assertEqual(self.fake.continued_put_sizes, [part_bytes])
+        self.assertEqual([method for method, path, _ in self.fake.requests if path == part_path], ["PUT", "HEAD"])
+
+        dest = self.dir / "readback"
+        rc, log, out = self.run_store("get", "slow-commit", dest, **args)
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(out["found"], "true")
+        self.assertEqual((dest / src.name).read_bytes(), payload)
+
+    def test_put_part_without_final_response_exhausts_retry_budget(self) -> None:
+        part_bytes = 2 * 1024 * 1024
+        src = self.dir / "payload.bin"
+        src.write_bytes(os.urandom(part_bytes + 4096))
+        key = "run-store.v1.77.4242.no-commit-ack"
+        part = f"{key}.part-0"
+        self.fake.put_commit_delays[part] = 12
+        start = time.monotonic()
+        rc, log, out = self.run_store(
+            "put", "no-commit-ack", src, RUN_STORE_PART_BYTES=str(part_bytes),
+            RUN_STORE_REQUEST_MAX_TIME="1", RUN_STORE_REQUEST_BUDGET="2.5"
+        )
+        self.assertEqual(rc, 1, log)
+        self.assertLess(time.monotonic() - start, 8, log)
+        self.assertEqual(out["unavailable"], "true")
+        self.assertIn("store unavailable", log)
+        self.assertIn("curl exit 28", log)
+        self.assertRegex(log, r"network run-store-put: attempt=1/5 curl_exit=28 .*http_code=100 stop=retry")
+        self.assertRegex(log, r"network run-store-put: .*curl_exit=28 .*stop=budget-exhausted")
+        self.assertGreaterEqual(self.fake.continued_put_sizes.count(part_bytes), 2)
+        self.assertEqual({path for method, path, _ in self.fake.requests if method == "PUT"}, {f"/v8/artifacts/{part}"})
+        self.assertNotIn(key, self.fake.store)
 
     def test_accepted_put_survives_transient_head_503_without_resending_upload(self) -> None:
         src = self.dir / "f.txt"
