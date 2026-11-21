@@ -85,6 +85,26 @@ class RelocationTests(unittest.TestCase):
         self.assertEqual(([], 0), mg.check_range(self.root, self.base, 'HEAD', ['legacy/hk/db'],
             'postgres', repository='Cubeage/combined', provenance_policy=self.policy))
 
+    def test_same_repository_migration_move_inherits_only_the_exact_tree(self):
+        source, dest = 'legacy/hk/db', 'db/migrations'
+        self.record.update(prefix=dest, source_repository=self.record['repository'],
+            source_commit=self.anchor, source_tree=self.git('rev-parse', 'HEAD:' + source),
+            evidence=f"https://github.com/{self.record['repository']}/tree/{self.anchor}")
+        self.save_policy([self.record])
+        (self.root / 'db').mkdir()
+        self.git('mv', source, dest)
+        self.commit()
+
+        def check():
+            return mg.check_range(self.root, self.anchor, 'HEAD', [dest], 'postgres',
+                repository=self.record['repository'], provenance_policy=self.policy)
+
+        self.assertEqual(([], 0), check())
+        self.write(dest + '/0014_historical.sql', 'SELECT 1;\n')
+        self.commit()
+        with self.assertRaisesRegex(ValueError, 'differs from recorded origin tree'):
+            check()
+
     def test_unregistered_or_wrong_destination_gets_no_inheritance(self):
         for row in [{**self.record, 'repository': 'Cubeage/other'}, {**self.record, 'prefix': 'elsewhere'}]:
             self.save_policy([row])

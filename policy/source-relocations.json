@@ -35,6 +35,14 @@
           "dependency_manifest_sha256": "59fe6fde25625a2b02683982b803c386105113b80fb66b9f9a6ca27eda353968"
         }
       ]
+    },
+    {
+      "repository": "EpiowAI/epiow",
+      "prefix": "db/migrations",
+      "source_repository": "EpiowAI/epiow",
+      "source_commit": "c7d1bca5eebf6727502d3d21d07be9727a854211",
+      "source_tree": "e2b913cd107cf4e4927a268fa0cdcb4c8f2a43a2",
+      "evidence": "https://github.com/EpiowAI/epiow/tree/c7d1bca5eebf6727502d3d21d07be9727a854211"
     }
   ]
 }
