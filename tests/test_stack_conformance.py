@@ -814,6 +814,58 @@ class GitTest(unittest.TestCase):
             grown = self.commit({sc.BASELINE: baseline + "model-pin src/other.ts claude-opus-4-5-20251101 1\n"})
             self.assertEqual(self.check(same, grown)[0], 1)
 
+    def test_model_pin_relocation_is_not_adoption(self):
+        old = "apps/web/atlas/migrations/initial seed.sql"
+        new = "db/migrations/initial seed.sql"
+        sql = "INSERT INTO config (model) VALUES ('openai/gpt-4o-mini');\n"
+        marker = sc.model_pins.BASELINE_MARKER + "\n"
+        old_record = "model-pin apps/web/atlas/migrations/initial%20seed.sql openai/gpt-4o-mini 1\n"
+        new_record = "model-pin db/migrations/initial%20seed.sql openai/gpt-4o-mini 1\n"
+        # No shared caller pin: treating a move as adoption would refuse it.
+        base = self.commit({old: sql, sc.BASELINE: marker + old_record})
+        self.git("rm", old)
+        head = self.commit({new: sql, sc.BASELINE: marker + new_record})
+        self.assertEqual(self.git("rev-parse", f"{base}:{old}"), self.git("rev-parse", f"{head}:{new}"))
+        rc, output = self.check(base, head)
+        self.assertEqual(rc, 0, output)
+
+    def test_model_pin_relocation_refuses_unproven_records(self):
+        old, new, copy = "src/old.ts", "src/new.ts", "src/copy.ts"
+        model, other = "openai/gpt-4o-mini", "anthropic/claude-opus-4-5-20251101"
+        source = f'call("{model}");\n'
+        marker = sc.model_pins.BASELINE_MARKER + "\n"
+
+        def record(path, model_id=model, occurrence=1):
+            return f"model-pin {path} {model_id} {occurrence}\n"
+
+        base = self.commit({old: source, sc.BASELINE: marker + record(old)})
+        for case, keep_file, keep_record, extra, contents, new_record in (
+            ("old file kept", True, False, {}, source, record(new)),
+            ("old record kept", False, True, {}, source, record(new)),
+            ("edited blob", False, False, {}, source + "// edit\n", record(new)),
+            ("increased count", False, False, {}, source * 2, record(new) + record(new, occurrence=2)),
+            ("changed model", False, False, {}, source.replace(model, other), record(new, other)),
+            ("two destinations", False, False, {copy: source}, source, record(new) + record(copy)),
+        ):
+            with self.subTest(case=case):
+                self.git("checkout", "--quiet", "--detach", base)
+                if not keep_file:
+                    self.git("rm", old)
+                baseline = marker + (record(old) if keep_record else "") + new_record
+                head = self.commit({new: contents, sc.BASELINE: baseline, **extra})
+                rc, output = self.check(base, head)
+                self.assertEqual(rc, 1, output)
+                self.assertIn("model-pin baseline cannot grow or seed new debt: " + new_record.splitlines()[0],
+                              output)
+
+        self.git("checkout", "--quiet", "--detach", base)
+        unrecorded = self.commit({sc.BASELINE: marker})
+        self.git("rm", old)
+        head = self.commit({new: source, sc.BASELINE: marker + record(new)})
+        rc, output = self.check(unrecorded, head)
+        self.assertEqual(rc, 1, output)
+        self.assertIn("model-pin baseline cannot grow or seed new debt: " + record(new).strip(), output)
+
     def test_legacy_encoded_source_still_checks_ascii_model_ids(self):
         path = pathlib.Path(self.repo, "client.cs")
         path.write_bytes(b'// Legacy text: \x96\nconst string Model = "gpt-5.1-2025-11-13";\n')

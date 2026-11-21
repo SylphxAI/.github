@@ -140,7 +140,12 @@ A record is one path, model id and occurrence number; paths use URL escaping
 for spaces. Moving a line within a file preserves its record, while copying
 the same id creates a new occurrence that fails. First adoption can record
 only hits independently scanned at the base commit. Thereafter the marker
-cannot be removed, records may only shrink, and stale records must be deleted.
+cannot be removed, and stale records must be deleted. An existing record can
+move with its file when Git proves an unambiguous, byte-identical move: the old
+file and record must be removed, the destination must be a new path, and the
+same rule, model ID and occurrence must be found at both revisions. This does
+not admit copies, edits or more occurrences, and does not replace migration
+history checks. Other changes may only remove records.
 This category does not reseed or loosen existing stack or architecture debt.
 `scan --repository ORG/REPO` prints these records with the other categories.
 When checking without a base, the committed baseline is used, as for the

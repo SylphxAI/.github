@@ -631,8 +631,39 @@ def rule_id(row):
     return row.get("rule", "model-pin")
 
 
+def relocated_records(base_tree, head_tree, base_findings, findings, base_records, head_records):
+    """Rekey recorded findings only across unambiguous, exact Git file moves."""
+    removed = base_records - head_records
+    added = head_records - base_records
+    if not (removed and added):
+        return set()
+
+    before, after = base_tree.entries(), head_tree.entries()
+
+    def absent_blobs(source, target):
+        paths = collections.defaultdict(list)
+        for path, entry in source.items():
+            if path not in target and entry[0] in {"100644", "100755"}:
+                paths[entry].append(path)
+        return paths
+
+    old_paths, new_paths = absent_blobs(before, after), absent_blobs(after, before)
+    moves = {old[0]: new_paths[entry][0] for entry, old in old_paths.items()
+             if len(old) == len(new_paths.get(entry, ())) == 1}
+    # The base record must still describe a real finding. Carry its exact rule,
+    # model and occurrence to the one destination, never the rest of the blob's debt.
+    destinations = {(baseline_key(row), rule_id(row)) for row in findings}
+    rekeyed = set()
+    for row in base_findings:
+        if row["path"] in moves and baseline_key(row) in removed:
+            key = baseline_key({**row, "path": moves[row["path"]]})
+            if key in added and (key, rule_id(row)) in destinations:
+                rekeyed.add(key)
+    return rekeyed
+
+
 def decide(findings, head_records, base_records, base_findings, head_adopted, base_adopted,
-           *, allow_seed=False, seed_rules=frozenset()):
+           *, allow_seed=False, seed_rules=frozenset(), relocated=frozenset()):
     actual = {baseline_key(row) for row in findings}
     inherited = {baseline_key(row) for row in base_findings}
     errors = []
@@ -640,7 +671,7 @@ def decide(findings, head_records, base_records, base_findings, head_adopted, ba
         errors.append("model-alias ratchet marker cannot be removed")
     if head_records and not head_adopted:
         errors.append("model-pin baseline records require " + BASELINE_MARKER)
-    allowed = base_records | (inherited if allow_seed and not base_adopted else set())
+    allowed = base_records | relocated | (inherited if allow_seed and not base_adopted else set())
     allowed |= {baseline_key(row) for row in base_findings
                 if rule_id(row) == SELECTOR_RULE and SELECTOR_RULE in seed_rules}
     for key in sorted(head_records - allowed):

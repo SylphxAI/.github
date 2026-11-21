@@ -1199,21 +1199,49 @@ def cmd_check(args) -> int:
                 base_baseline = {l for l in base_baseline if not l.startswith(AGENT_RUNTIME)}
         errors += adoption.baseline_validation(head_text, base_text if args.base else head_text, architecture)
         introduced = set()
-        if args.base:
-            try:
-                introduced = adoption.seed_permissions(base_tree, head_text, base_text,
-                    (head_architecture_baseline | head_model_baseline | head_force_baseline) - (base_architecture_baseline | base_model_baseline | base_force_baseline),
-                    shared_repo=getattr(args, "shared_source", None), source_tree=adoption.PublishedCheckerTree,
-                    head_tree=head)
-            except (OSError, ValueError, TypeError, KeyError) as error:
-                errors.append("rule adoption refused: " + str(error))
-        else:
+        if not args.base:
             # A base-less trunk run validates the committed ratchet against itself.
             base_architecture_baseline = head_architecture_baseline
             base_model_baseline = head_model_baseline
             base_model_adopted = head_model_adopted
             base_force_baseline = head_force_baseline
             base_force_adopted = head_force_adopted
+        shared_views = {}
+        model_cache = {}
+        force_cache = {}
+        arch_cache = {}
+        relocated = set()
+        base_models = None
+        try:
+            aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
+            progress("scanning head vendor model references")
+            models = model_pins.scan(head, args.repository, aliases, architecture.source_views,
+                                     cache=model_cache, shared_views=shared_views)
+            progress("scanning base vendor model references")
+            base_models = model_pins.scan(base_tree, args.repository, aliases, architecture.source_views,
+                                          cache=model_cache, shared_views=shared_views) if args.base else models
+            if base_tree is not None:
+                relocated = model_pins.relocated_records(base_tree, head, base_models["findings"],
+                    models["findings"], base_model_baseline, head_model_baseline)
+            for row in models["unreadable"] + base_models["unreadable"]:
+                errors.append("model policy input not reviewed: " + row["path"] + ": " + row["reason"])
+        except (OSError, ValueError, TypeError) as error:
+            models = {"findings": [], "unreadable": [{"path": str(model_pins.POLICY), "reason": str(error)}]}
+            base_models = None
+            errors.append("model-alias policy unavailable: " + str(error))
+        if args.base:
+            try:
+                introduced = adoption.seed_permissions(base_tree, head_text, base_text,
+                    (head_architecture_baseline | head_model_baseline | head_force_baseline)
+                    - (base_architecture_baseline | base_model_baseline | base_force_baseline | relocated),
+                    shared_repo=getattr(args, "shared_source", None), source_tree=adoption.PublishedCheckerTree,
+                    head_tree=head)
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                errors.append("rule adoption refused: " + str(error))
+        if base_models is not None:
+            errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
+                                       base_models["findings"], head_model_adopted, base_model_adopted,
+                                       allow_seed="model-pin" in introduced, seed_rules=introduced, relocated=relocated)
         source_base = base_tree
         source_roots = source_provenance.roots(args.repo, args.base, args.head, args.repository,
             getattr(args, "source_provenance_policy", source_provenance.POLICY))
@@ -1228,26 +1256,6 @@ def cmd_check(args) -> int:
             pass  # Invalid records are already refused by the retirement check.
         errors += source_provenance.legacy_errors(head, source_base, source_roots, args.baseline,
                                                  departures, parse_baseline, decide, staged_retirement)
-        shared_views = {}
-        model_cache = {}
-        force_cache = {}
-        arch_cache = {}
-        try:
-            aliases = model_pins.load_aliases(getattr(args, "model_aliases", None))
-            progress("scanning head vendor model references")
-            models = model_pins.scan(head, args.repository, aliases, architecture.source_views,
-                                     cache=model_cache, shared_views=shared_views)
-            progress("scanning base vendor model references")
-            base_models = model_pins.scan(base_tree, args.repository, aliases, architecture.source_views,
-                                          cache=model_cache, shared_views=shared_views) if args.base else models
-            errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
-                                       base_models["findings"], head_model_adopted, base_model_adopted,
-                                       allow_seed="model-pin" in introduced, seed_rules=introduced)
-            for row in models["unreadable"] + base_models["unreadable"]:
-                errors.append("model policy input not reviewed: " + row["path"] + ": " + row["reason"])
-        except (OSError, ValueError, TypeError) as error:
-            models = {"findings": [], "unreadable": [{"path": str(model_pins.POLICY), "reason": str(error)}]}
-            errors.append("model-alias policy unavailable: " + str(error))
         progress("scanning head branch-update commands")
         force_pushes = no_force_push.scan(head, cache=force_cache)
         progress("scanning base branch-update commands")
