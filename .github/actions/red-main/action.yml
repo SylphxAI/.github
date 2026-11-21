@@ -762,6 +762,7 @@ runs:
       short_sha=$(cut -c1-9 <<<"$head_sha")
       if ! failed_lanes=$(python3 "$WORK_DIR/proof.py" failed-lanes "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$run_id"); then
         failed_lanes=""
+        state_set incomplete "failed lanes unavailable"
         say "The failed lanes could not be listed; investigation or escalation must recover that evidence."
       fi
       state_set run-id "$run_id"
@@ -803,10 +804,12 @@ runs:
       . "$RUNNER_TEMP/red-main/lib.sh"
       quiet() { state_set quiet "$1"; echo "no action: $1"; exit 0; }
       branch="auto-revert/$SHORT_SHA-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-      open=$(gh api "repos/$REPO/pulls?head=$REPO:$branch&state=open" --jq 'length' 2>/dev/null || echo 0)
+      open=$(gh api "repos/$REPO/pulls?head=$REPO:$branch&state=open" --jq 'length' 2>/dev/null) \
+          || { state_set incomplete "standing revert lookup failed"; open=0; }
       [ "$open" = "0" ] || quiet "an open pull request already stands for $branch"
       label_q=$(enc "repo:$REPO is:pr is:open label:auto-revert")
-      hand_in=$(gh api "search/issues?q=$label_q" --jq '.total_count' 2>/dev/null || echo 0)
+      hand_in=$(gh api "search/issues?q=$label_q" --jq '.total_count' 2>/dev/null) \
+          || { state_set incomplete "standing revert lookup failed"; hand_in=0; }
       # An unarmed revert stays open until a person decides, so its label
       # must not silence a DIFFERENT breakage: that mode is keyed on the
       # culprit-specific standing-revert check in the revert step.
@@ -816,6 +819,7 @@ runs:
       green=$(read_proof sha "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "$HEAD_SHA" "$VERIFY_CHECK_NAME")
       [ "$green" != success ] || quiet "$HEAD_SHA already has an authenticated passing post-main proof"
       if [ "$green" = unknown ]; then
+        state_set incomplete "same-SHA proof unavailable"
         say "**Unverified:** the same-SHA green guard has no available proof; recovery remains active."
       fi
       echo "nothing is already in hand for $SHORT_SHA"
@@ -946,11 +950,12 @@ runs:
         if [ -n "$existing" ]; then
           gh api --method POST "repos/$REPO/issues/$existing/comments" --field body="$body" >/dev/null 2>&1 \
             && say "Escalated on the open infrastructure issue [#$existing](https://github.com/$REPO/issues/$existing)." \
-            || say "**Blocked:** the infrastructure escalation comment was not posted (\`issues: write\`)."
+            || { state_set incomplete "infrastructure escalation failed"; say "**Blocked:** the infrastructure escalation comment was not posted (\`issues: write\`)."; }
         elif gh api --method POST "repos/$REPO/issues" -f title="$TRUNK failed of infrastructure (red-main)" -f body="$body" \
             -f 'labels[]=red-main-infra' -f "labels[]=$OWNER_LABEL" --jq '.number' >"$WORK_DIR/infra-issue" 2>"$WORK_DIR/infra-issue.err"; then
           say "Escalated to the infra owner: [issue #$(cat "$WORK_DIR/infra-issue")](https://github.com/$REPO/issues/$(cat "$WORK_DIR/infra-issue"))."
         else
+          state_set incomplete "infrastructure escalation failed"
           say "**Blocked:** the infrastructure escalation issue was not opened (\`issues: write\`): $(head -c 200 "$WORK_DIR/infra-issue.err" | tr '\n' ' ')."
           echo "::warning::the infrastructure escalation issue could not be opened"
         fi
@@ -1133,6 +1138,7 @@ runs:
       fi
       compare=$(gh api "repos/$REPO/compare/$base...$HEAD_SHA" \
         --jq '.total_commits, (.commits[] | [.sha, (.commit.message | split("\n")[0])] | @tsv)' 2>"$WORK_DIR/compare.err") || {
+        state_set incomplete "candidate comparison failed"
         say "**No action:** the commits between \`$base\` and \`$HEAD_SHA\` could not be listed ($(head -c 200 "$WORK_DIR/compare.err" | tr '\n' ' ')); a person must decide."
         exit 0
       }
@@ -1213,6 +1219,7 @@ runs:
           if [ "$TOKEN_MODE" = yes ]; then
             refs_refused=yes
           else
+            state_set incomplete "candidate ref creation failed"
             say "**No action:** the temporary branch \`$candidate_branch\` could not be created ($(head -c 400 "$WORK_DIR/ref.err" | tr '\n' ' ')); a person must decide."
             exit 0
           fi
@@ -1220,6 +1227,7 @@ runs:
         if [ "$refs_refused" = yes ]; then break; fi
         printf '%s\n' "$candidate_branch" >>"$WORK_DIR/temp-branches"
         if ! candidate_run=$(dispatch "refs/heads/$candidate_branch" 2>"$WORK_DIR/dispatch.err"); then
+          state_set incomplete "candidate dispatch failed"
           say "**No action:** $VERIFY_WORKFLOW could not be dispatched on \`${sha:0:9}\` ($(head -c 200 "$WORK_DIR/dispatch.err" | tr '\n' ' ')); a person must decide."
           exit 0
         fi
@@ -1275,6 +1283,7 @@ runs:
         pending=("${still[@]}")
         [ "${#pending[@]}" -gt 0 ] || break
         if [ "$SECONDS" -ge "$deadline" ]; then
+          state_set incomplete "candidate verification did not finish"
           for sha in "${pending[@]}"; do conclusion_of[$sha]="timeout"; done
           break
         fi
@@ -1298,6 +1307,7 @@ runs:
         fi
         case "$infra_verdict" in
           infra\ *)
+            state_set incomplete "candidate hit infrastructure failure"
             say "**No action:** candidate \`${sha:0:9}\` failed with an infrastructure signature (\`${infra_verdict#infra }\`); a person must look, nothing is reverted."
             exit 0 ;;
         esac
@@ -1322,6 +1332,7 @@ runs:
           if ! python3 "$RUNNER_TEMP/red-main/proof.py" failed-units "$REPO" "$TRUNK" "$VERIFY_WORKFLOW" "${run_of[$sha]}" \
               >"$WORK_DIR/candidate-signatures.tsv" 2>/dev/null; then
             conclusion_of[$sha]=inconclusive
+            state_set incomplete "candidate failure evidence unavailable"
             say "Candidate \`${sha:0:9}\` failed, but its failing jobs could not be read: inconclusive for the traced units."
             continue
           fi
@@ -1453,6 +1464,7 @@ runs:
       culprit=$(state_get culprit)
       revert_all=$(cat "$STATE_DIR/revert-all.json" 2>/dev/null || true)
       if [ -z "$culprit" ] && [ -z "$revert_all" ]; then
+        state_set incomplete "trace result unavailable"
         say "**No action:** the trace named no culprit, so no revert pull request was opened."
         exit 0
       fi
@@ -1503,6 +1515,7 @@ runs:
               say "Commented on pull request #$pr."
             else
               write_refused "$(cat "$WORK_DIR/comment.err")" "pull requests: write" "commenting on pull request #$pr" || true
+              state_set incomplete "notify comment failed"
               say "The comment on pull request #$pr was not posted."
             fi
           done
@@ -1521,7 +1534,8 @@ runs:
             pr=$(jq -r '.number' <<<"$pr_json")
             protected="$protected$pr "
             note="\`$TRUNK\` went red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)) and \`$sha\` from this pull request is a candidate. It is not reverted automatically (${verdict#protected: }): a person decides."
-            gh api --method POST "repos/$REPO/issues/$pr/comments" --field body="$note" >/dev/null 2>&1 || true
+            gh api --method POST "repos/$REPO/issues/$pr/comments" --field body="$note" >/dev/null 2>&1 \
+              || state_set incomplete "protected PR comment failed"
             if [ -n "$OPS_ISSUE" ]; then
               gh api --method POST "repos/$REPO/issues/$OPS_ISSUE/comments" --field body="$note" >/dev/null 2>&1 || true
             fi
@@ -1552,8 +1566,10 @@ runs:
       # this culprit gets a comment and nothing else. A different culprit
       # still opens its own revert and alert.
       if [ "$MODE" = revert_pr_unarmed ]; then
-        open_prs=$(gh pr list --repo "$REPO" --state open --label auto-revert --json number,body,author,isCrossRepository --limit 100 2>/dev/null || echo '[]')
-        open_prs_by_branch=$(gh pr list --repo "$REPO" --state open --search "head:auto-revert/" --json number,body,headRefName,author,isCrossRepository --limit 100 2>/dev/null || echo '[]')
+        open_prs=$(gh pr list --repo "$REPO" --state open --label auto-revert --json number,body,author,isCrossRepository --limit 100 2>/dev/null) \
+          || { state_set incomplete "standing revert lookup failed"; open_prs='[]'; }
+        open_prs_by_branch=$(gh pr list --repo "$REPO" --state open --search "head:auto-revert/" --json number,body,headRefName,author,isCrossRepository --limit 100 2>/dev/null) \
+          || { state_set incomplete "standing revert lookup failed"; open_prs_by_branch='[]'; }
         # Only the handler's own pull requests count: same repository, and
         # authored by the builder App. A fork or collaborator pull request
         # with the culprit sha in its body must not silence the real revert.
@@ -1563,6 +1579,7 @@ runs:
                 and (.author.login == ("app/" + $slug) or .author.login == ($slug + "[bot]")))
             | select((.body // "") | contains($sha))] | .[0].number // empty')
         if [ -n "$standing" ]; then
+          state_set incomplete "standing revert already in hand"
           gh api --method POST "repos/$REPO/issues/$standing/comments" \
             --field body="\`$TRUNK\` is still red at \`$HEAD_SHA\` ([run]($RUN_URL)) for the same culprit \`$first\`. This revert stays open and unarmed; a person decides." \
             >/dev/null 2>&1 || true
@@ -1592,6 +1609,7 @@ runs:
       files_ok=yes
       for sha in "${shas[@]}"; do
         if ! git_c diff --no-renames --name-only -z "$sha^1" "$sha" >"$WORK_DIR/one-commit.z" 2>/dev/null; then
+          state_set incomplete "candidate diff unavailable"
           files_ok=no
           continue
         fi
@@ -1621,7 +1639,7 @@ runs:
         if [ -z "$existing" ]; then
           gh api --method POST "repos/$REPO/issues" -f title="$TRUNK is red: migration culprit ${first:0:9} needs a forward-fix" -f body="$hold_body" \
             -f 'labels[]=red-main-migration-hold' -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
-            || say "**Blocked:** the migration-hold issue was not opened (issues: write)."
+            || { state_set incomplete "migration-hold escalation failed"; say "**Blocked:** the migration-hold issue was not opened (issues: write)."; }
           # Told once: the issue is the record; later red pushes for the
           # same culprit do not repeat the comments.
           if [ -n "$OPS_ISSUE" ]; then
@@ -1636,6 +1654,7 @@ runs:
       fi
       if ! git_c revert --no-edit "${shas[@]}" 2>"$WORK_DIR/revert.err"; then
         git_c revert --abort >/dev/null 2>&1 || true
+        state_set incomplete "revert failed"
         say "**No action:** the revert conflicts with $TRUNK ($(head -c 200 "$WORK_DIR/revert.err" | tr '\n' ' ')); a person must decide."
         exit 0
       fi
@@ -1700,7 +1719,7 @@ runs:
         else
           gh api --method POST "repos/$REPO/issues" -f title="$TRUNK is red: revert #$number awaits a decision" -f body="$alert_body" \
             -f 'labels[]=red-main-revert-pending' -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
-            || say "**Blocked:** the alert issue was not opened (issues: write)."
+            || { state_set incomplete "unarmed revert escalation failed"; say "**Blocked:** the alert issue was not opened (issues: write)."; }
         fi
         if [ -n "$original_number" ]; then
           gh api --method POST "repos/$REPO/issues/$original_number/comments" \
@@ -1715,6 +1734,7 @@ runs:
       if gh pr merge --auto "$number" --repo "$REPO" </dev/null >/dev/null 2>"$WORK_DIR/auto.err"; then
         say "Revert pull request [#$number](https://github.com/$REPO/pull/$number) is armed for auto-merge (no strategy flag: the queue decides)."
       else
+        state_set incomplete "auto-merge was not armed"
         say "Revert pull request [#$number](https://github.com/$REPO/pull/$number) is open; auto-merge was not armed: $(head -c 200 "$WORK_DIR/auto.err" | tr '\n' ' ')"
       fi
       state_set revert-pr "$number"
@@ -1752,6 +1772,7 @@ runs:
       else
         node_id=$(gh api "repos/$REPO/pulls/$number" --jq '.node_id' 2>/dev/null || true)
         if [ -z "$node_id" ]; then
+          state_set incomplete "revert node ID unavailable"
           say "**Blocked:** the pull request's node id could not be read, so the jump was not attempted; auto-merge stays armed."
         else
           jump=yes
@@ -1760,6 +1781,7 @@ runs:
             # A read that fails is not proof of an empty queue: name the
             # permission and leave the enqueue to auto-merge.
             write_refused "$(cat "$WORK_DIR/jump.err")" "pull requests: write" "reading the merge-queue entry" || true
+            state_set incomplete "merge-queue state unavailable"
             say "**Blocked:** the merge-queue state could not be read, so the jump was not attempted; auto-merge stays armed."
             jump=no
           fi
@@ -1774,6 +1796,7 @@ runs:
                 sleep 15
               else
                 write_refused "$(cat "$WORK_DIR/jump.err")" "pull requests: write" "the dequeue before the jump" || true
+                state_set incomplete "dequeue failed"
                 say "**Blocked:** the queue entry could not be dequeued first, so the jump was not attempted; auto-merge stays armed."
                 jump=no
               fi
@@ -1794,6 +1817,7 @@ runs:
               say "The red-main handler jumped the revert to the front of the merge queue under the red-\`$TRUNK\` rule (queue position ${position:--1})."
             else
               write_refused "$(cat "$WORK_DIR/jump.err")" "pull requests: write" "the jump" || true
+              state_set incomplete "queue jump failed"
               say "**Blocked:** the jump was refused, so the revert waits its turn; auto-merge stays armed."
             fi
           fi
@@ -1812,7 +1836,7 @@ runs:
         -f description="red-main handler alert" >/dev/null 2>&1 || true
       gh api --method POST "repos/$REPO/issues" -f title="re-land after auto-revert #$number (${first:0:9})" \
         -f body="$notice Re-land the change once the failure is fixed." -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
-        || say "The follow-up issue was not opened."
+        || { state_set incomplete "re-land issue not opened"; say "The follow-up issue was not opened."; }
       if [ -n "$OPS_ISSUE" ]; then
         gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$notice" >/dev/null 2>&1 || true
       fi
@@ -1921,4 +1945,60 @@ runs:
           -f 'labels[]=red-main-broken' -f "labels[]=$OWNER_LABEL" >/dev/null \
           && echo "alert issue opened" || echo "::warning::the alert issue was not opened (the caller needs issues: write)"
       fi
+    shell: bash
+  - name: Close red-main handler alerts on recovery
+    if: ${{ inputs.mode == 'repair' && (success() && steps.gate.outputs.proceed == 'true' && steps.probe.outcome == 'success'
+      && (steps.verdict.outputs.verdict == 'real' || steps.verdict.outputs.verdict == 'infra') && (steps.key.outputs.write
+      == 'yes' || steps.gate.outputs.mode == 'notify') && (steps.key.outputs.path != 'broker' || steps.broker-token-act.outputs.token
+      != '')) }}
+    env:
+      TRUNK: ${{ inputs.trunk || github.event.repository.default_branch || 'main' }}
+      REPO: ${{ github.repository }}
+      RUN_STORE_JUNIT: ${{ github.workspace }}/.red-main-store/.github/actions/run-store/get-junit.py
+      VERIFY_WORKFLOW: ${{ inputs.verify-workflow }}
+      VERIFY_CHECK_NAME: ${{ inputs.verify-check-name || 'verified' }}
+      MAX_CANDIDATES: ${{ inputs.max-candidates }}
+      LANE_INPUT: ${{ inputs.lane-input }}
+      CANDIDATE_TIMEOUT_MINUTES: ${{ inputs.candidate-timeout-minutes }}
+      REVERT_WINDOW: ${{ inputs.revert-window }}
+      MAX_REVERT_COMMITS: '250'
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    run: |
+      set -uo pipefail
+      state_dir="$RUNNER_TEMP/red-main/state"
+      for marker in quiet blocked grant-failure incomplete; do
+        if [ -f "$state_dir/$marker" ]; then
+          echo "leaving handler alerts open: $marker"
+          exit 0
+        fi
+      done
+      if ! issues=$(timeout 20s gh api --paginate "repos/$REPO/issues?state=open&labels=red-main-broken&per_page=10" \
+          --jq '.[] | select(has("pull_request") | not) | .number'); then
+        echo "::warning::open red-main handler alerts could not be listed"
+        exit 0
+      fi
+      if [ -z "$issues" ]; then
+        echo "no open red-main handler alerts"
+        exit 0
+      fi
+      body="Resolved: the red-main handler completed cleanly on \`$REPO\`: $RUN_URL."
+      while IFS= read -r number; do
+        # Leave time for both writes without hitting the step timeout.
+        if [ "$SECONDS" -ge 240 ]; then
+          echo "::warning::red-main alert cleanup reached its time budget; leaving remaining issues open"
+          break
+        fi
+        if [[ ! "$number" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::warning::red-main alert lookup returned an invalid issue number"
+          continue
+        fi
+        if ! timeout 20s gh api --method POST "repos/$REPO/issues/$number/comments" -f body="$body" >/dev/null; then
+          echo "::warning::the recovery comment on #$number was not posted; leaving it open (the caller needs issues: write)"
+        elif ! timeout 20s gh api --method PATCH "repos/$REPO/issues/$number" -f state=closed -f state_reason=completed >/dev/null; then
+          echo "::warning::the handler alert #$number was not closed (the caller needs issues: write)"
+        else
+          echo "closed red-main handler alert #$number"
+        fi
+      done <<<"$issues"
     shell: bash

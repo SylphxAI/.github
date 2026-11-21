@@ -99,6 +99,15 @@ class CompositeTests(unittest.TestCase):
         self.assertEqual(lifecycle['env']['LIFECYCLE_PY'], generator.load('red-main')['jobs']['lifecycle']['env']['LIFECYCLE_PY'])
         self.assertIn("inputs.simulate-mint-failure == 'true'", by_id['probe']['env']['SIMULATE'])
 
+    def test_red_main_recovery_projection_keeps_caller_token_and_fresh_broker_guard(self):
+        name = 'Close red-main handler alerts on recovery'
+        source = next(step for step in generator.load('red-main')['jobs']['red-main']['steps'] if step.get('name') == name)
+        projected = next(step for step in action('red-main')['runs']['steps'] if step.get('name') == name)
+        self.assertEqual(projected['run'], source['run'])
+        self.assertEqual(projected['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertEqual(projected['if'], "${{ inputs.mode == 'repair' && (" +
+                         source['if'].replace(" && (steps.key.outputs.path != 'app' || steps.app-token-act.outputs.token != '')", '') + ') }}')
+
     def test_top_level_projection_passes_actionlint_when_available(self):
         import shutil
         if not shutil.which('actionlint'):
