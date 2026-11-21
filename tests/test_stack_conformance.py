@@ -21,6 +21,7 @@ sc = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sc)
 
 BUN = "FROM oven/bun:1.4.0-alpine@sha256:abc AS builder\nRUN bun install\nFROM oven/bun:1.4.0-alpine AS runner\nCMD [\"bun\", \"run\", \"src/main.ts\"]\n"
+NITRO = 'FROM node:22-alpine\nCMD ["node", ".output/server/index.mjs"]\n'
 RUST = "FROM rust:1.90 AS build\nFROM gcr.io/distroless/cc-debian12\nCMD [\"/app\"]\n"
 TOML = """
 [project]
@@ -64,6 +65,18 @@ class DeparturesTest(unittest.TestCase):
             "apps/web/package.json": '{"dependencies": {"next": "16"}}',
         })
         self.assertEqual(sc.departures(t), [])
+
+    def test_each_solidstart_dependency_identifies_a_web_app(self):
+        for field, name in (("dependencies", "@solidjs/start"),
+                            ("dependencies", "solid-js"),
+                            ("devDependencies", "vinxi")):
+            with self.subTest(dependency=name):
+                t = sc.DictTree({
+                    "sylphx.toml": TOML.format(engine="atlas", dockerfile="Dockerfile"),
+                    "Dockerfile": NITRO,
+                    "package.json": json.dumps({field: {name: "1"}}),
+                })
+                self.assertEqual(sc.departures(t), [])
 
     def test_final_stage_alias_is_followed(self):
         t = sc.DictTree({
@@ -718,6 +731,42 @@ class GitTest(unittest.TestCase):
         rc, out = self.check(same, grown)
         self.assertEqual(rc, 1)
         self.assertIn("baseline grew", out)
+
+    def test_solidstart_nitro_check_passes_with_generated_output(self):
+        base = self.commit({sc.BASELINE: ""})
+        head = self.commit({
+            "sylphx.toml": TOML.format(engine="atlas", dockerfile="Dockerfile"),
+            "Dockerfile": NITRO,
+            "package.json": json.dumps({"dependencies": {"@solidjs/start": "1", "solid-js": "1"},
+                                        "devDependencies": {"vinxi": "0.5"}}),
+            ".output/server/index.mjs": "export {};\n",
+            # These generated runtime manifests would trip ts-server if scanned.
+            ".output/server/package.json": '{"dependencies": {"h3": "1"}}',
+            ".vinxi/server/package.json": '{"dependencies": {"h3": "1"}}',
+        })
+        rc, out = self.check(base, head)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("0 departure(s) found", out)
+
+    def test_non_web_node_and_bun_checks_fail_closed(self):
+        base = self.commit({sc.BASELINE: ""})
+        for image, dockerfile in (("node", NITRO), ("bun", BUN)):
+            with self.subTest(image=image):
+                head = self.commit({
+                    "sylphx.toml": TOML.format(engine="atlas", dockerfile="Dockerfile"),
+                    "Dockerfile": dockerfile,
+                    "package.json": '{"dependencies": {"postgres": "3"}}',
+                })
+                rc, out = self.check(base, head)
+                self.assertEqual(rc, 1, out)
+                self.assertIn("new departure from the default stack: 'bun-node-service Dockerfile'", out)
+
+    def test_explicit_server_framework_check_fails_even_with_solidstart(self):
+        base = self.commit({sc.BASELINE: ""})
+        head = self.commit({"package.json": '{"dependencies": {"@solidjs/start": "1", "hono": "4"}}'})
+        rc, out = self.check(base, head)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("new departure from the default stack: 'ts-server package.json hono'", out)
 
     def test_model_pin_adoption_preserves_existing_stack_ratchet(self):
         with mock.patch.object(sc.model_pins, "load_aliases", return_value=ModelPinTest.ALIASES):
