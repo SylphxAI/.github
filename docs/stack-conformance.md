@@ -31,7 +31,11 @@ One line per departure, the same format in the baseline and in the output:
 Web apps, tools and scripts on TypeScript and Bun are the default stack, so a
 Next.js server, a SolidStart app served by Nitro, or a static site is not a
 `bun-node-service` departure. An explicit runtime dependency on a TypeScript
-server framework still counts as `ts-server`. The stack departure scan skips
+server framework still counts as `ts-server`. For container commands that
+name a script under a generated directory, such as
+`apps/web/.output/server/index.mjs`, the closest tracked package owns the
+script. An inner package does not inherit a web dependency from its parent.
+The stack departure scan skips
 paths under `node_modules`, `vendor`, `target`, `dist`, `build`, `.next`,
 `.output`, and `.vinxi`.
 

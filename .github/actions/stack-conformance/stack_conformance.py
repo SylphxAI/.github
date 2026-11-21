@@ -593,33 +593,37 @@ def image_name(image: str) -> str:
     return name.split(":", 1)[0].lower()
 
 
-def nearest_package(tree, start: str) -> str | None:
-    paths = set(tree.paths())
+def nearest_package(paths: set[str], start: str, *, include_root: bool = True) -> str | None:
     d = start
-    while True:
-        candidate = posixpath.join(d, "package.json") if d else "package.json"
+    while d or include_root:
+        candidate = posixpath.join(d, "package.json")
         if candidate in paths:
             return candidate
         if not d:
-            return None
+            break
         d = posixpath.dirname(d)
+    return None
 
 
 def service_packages(tree, dockerfile: str, command: list[str]) -> list[str]:
-    """The packages a service image may run: the nearest package.json above
-    the Dockerfile, and the package of each repository path its command names
-    (`bun apps/web/server.js` in a monorepo built from the root)."""
+    """Find the Dockerfile package and the nearest package of each launch path.
+
+    A launch path can include a container prefix and generated directories,
+    as in /app/apps/web/.output/server/index.mjs. Try the longest path first
+    and stop at the closest tracked manifest rather than inheriting its parent.
+    """
     paths = set(tree.paths())
     found = []
-    nearest = nearest_package(tree, posixpath.dirname(dockerfile))
+    nearest = nearest_package(paths, posixpath.dirname(dockerfile))
     if nearest:
         found.append(nearest)
     for word in command[1:]:
         parts = [p for p in word.strip("/").split("/") if p not in ("", ".")]
-        for i in range(len(parts)):
-            d = posixpath.dirname("/".join(parts[i:]))
-            if d and posixpath.join(d, "package.json") in paths:
-                found.append(posixpath.join(d, "package.json"))
+        for i in range(len(parts) - 1):
+            d = "/".join(parts[i:-1])
+            nearest = nearest_package(paths, d, include_root=False)
+            if nearest:
+                found.append(nearest)
                 break
     return found
 

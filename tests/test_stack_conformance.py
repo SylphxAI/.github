@@ -102,6 +102,32 @@ class DeparturesTest(unittest.TestCase):
         })
         self.assertEqual(sc.departures(t), [])
 
+    def test_nested_build_output_uses_the_nearest_web_package(self):
+        for script in ("apps/web/.output/server/index.mjs", "/app/apps/web/.output/server/index.mjs"):
+            with self.subTest(script=script):
+                t = sc.DictTree({
+                    "sylphx.toml": TOML.format(engine="atlas", dockerfile="Dockerfile"),
+                    "Dockerfile": f'FROM node:24\nCMD ["node", "{script}"]\n',
+                    "package.json": '{"workspaces": ["apps/*"]}',
+                    "apps/web/package.json": '{"devDependencies": {"vite": "8"}}',
+                })
+                self.assertEqual(sc.departures(t), [])
+
+    def test_nested_node_service_does_not_inherit_a_framework_from_another_package(self):
+        for script, inner_package in (
+            ("apps/api/.output/server/index.mjs", "apps/api/package.json"),
+            ("apps/web/tools/dist/server.mjs", "apps/web/tools/package.json"),
+        ):
+            with self.subTest(script=script):
+                t = sc.DictTree({
+                    "sylphx.toml": TOML.format(engine="atlas", dockerfile="Dockerfile"),
+                    "Dockerfile": f'FROM node:24\nCMD ["node", "{script}"]\n',
+                    "package.json": '{"workspaces": ["apps/*"]}',
+                    "apps/web/package.json": '{"devDependencies": {"vite": "8"}}',
+                    inner_package: '{"dependencies": {"postgres": "3"}}',
+                })
+                self.assertEqual(sc.departures(t), ["bun-node-service Dockerfile"])
+
     def test_shell_form_command_on_a_bun_base_is_a_service(self):
         t = sc.DictTree({
             "sylphx.toml": TOML.format(engine="atlas", dockerfile="worker/Dockerfile"),
