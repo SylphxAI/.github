@@ -42,12 +42,25 @@ another check (the platform's `deploy/pins` branch by `pin-ok`). `exclude` lists
 repositories never read or written; the hands-off repositories of
 `policy/optimistic-merge.json` are always excluded.
 
-Tier-1 high-concurrency monorepos (`SylphxAI/sylphx`, `SylphxAI/infra`,
-`SylphxAI/spiron`, `SylphxAI/keel`) override the default to batch 4 to 8 entries
+Tier-1 high-concurrency monorepos (`SylphxAI/sylphx`, `SylphxAI/spiron`,
+`SylphxAI/keel`) override the default to batch 4 to 8 entries
 with a 2-minute collection window (`max_entries_to_build: 8`,
 `min_entries_to_merge: 4`, `max_entries_to_merge: 8`,
 `min_entries_to_merge_wait_minutes: 2`) and keep a 60-minute transition deadline
 until p90 gate latency stays at or below 5 minutes.
+
+`SylphxAI/infra` keeps 8 concurrent HEADGREEN builds, a merge limit of 8, and a
+60-minute deadline, but lets a single green entry merge without a collection
+wait. [infra#6081](https://github.com/SylphxAI/infra/pull/6081) measured 182s for
+merge-group CI and 330s for PR CI (down from 943s). Before raising the build
+limit from 8 to 16, measure peak job fan-out and runner headroom by label during
+concurrent merge-group and PR runs. At 28 jobs per group, 16 groups could demand
+448 slots before PR workloads.
+
+`SylphxAI/anyagents` allows 12 concurrent HEADGREEN builds and up to 12 entries
+per merge, with a one-entry minimum, no collection wait, and the default
+20-minute deadline. [anyagents#457](https://github.com/SylphxAI/anyagents/pull/457)
+split Linux into parallel shards and selects checks based on the changed files.
 
 Slow native/game repositories carry explicit overrides:
 
@@ -181,6 +194,10 @@ retired work repository is archived and is an `exclude` entry.
 
 
 ## Commands
+
+Merging a policy PR does not update live rulesets. From the merged revision,
+an operator with repository administration runs the dry-run, reviews the diff,
+and applies it with the same `--repo` scope and a fresh backup directory.
 
 ```sh
 scripts/apply_merge_queue.py --dry-run                    # diff of every ruleset (the default)

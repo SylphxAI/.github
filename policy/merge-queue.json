@@ -140,12 +140,23 @@
       "ruleset": "infra-main-required-ci",
       "settings": {
         "max_entries_to_build": 8,
-        "min_entries_to_merge": 4,
+        "min_entries_to_merge": 1,
         "max_entries_to_merge": 8,
-        "min_entries_to_merge_wait_minutes": 2,
+        "min_entries_to_merge_wait_minutes": 0,
         "check_response_timeout_minutes": 60
       },
-      "reason": "Tier-1 high-concurrency monorepo: batch 4 to 8 entries with a 2-minute collection window and 8 concurrent HEADGREEN builds. Keep a 60-minute transition deadline until p90 gate latency stays at or below 5 minutes."
+      "reason": "SylphxAI/infra#6081 measured 182s for merge-queue CI and 330s for PR CI (down from 943s). Remove the 2-minute collection wait so a green entry can merge alone. Keep 8 concurrent builds, up to 8 entries per merge, and the 60-minute deadline. Raise build concurrency from 8 to 16 only after measuring self-hosted runner headroom under concurrent merge-group and PR workloads."
+    },
+    {
+      "repo": "SylphxAI/anyagents",
+      "ruleset": "anyagents-merge-queue",
+      "settings": {
+        "max_entries_to_build": 12,
+        "min_entries_to_merge": 1,
+        "max_entries_to_merge": 12,
+        "min_entries_to_merge_wait_minutes": 0
+      },
+      "reason": "SylphxAI/anyagents#457 replaced the old 743s macOS and 440s Linux merge-group lanes with change-based checks and parallel Linux shards. Its passing main run measured 15s for console and 81–225s per Linux shard. Allow 12 concurrent builds and up to 12 entries per merge, with no wait for a second green entry."
     }
   ],
   "required_checks": [
