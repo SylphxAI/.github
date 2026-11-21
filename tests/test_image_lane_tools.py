@@ -14,6 +14,7 @@ import importlib.util
 import json
 import io
 import contextlib
+import re
 import tempfile
 import time
 import unittest
@@ -45,6 +46,65 @@ def jwt(claims: dict) -> str:
         return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
     return f"{segment({'alg': 'ES256'})}.{segment(claims)}.signature"
+
+
+STALE_REPOSITORY_TARGET = re.compile(
+    r"(?<![\w.-])(?:SylphxAI/cloud|cloud\s*,\s*identity)(?![\w.-])", re.IGNORECASE
+)
+
+
+def check_repository_targets(source: str, path: Path) -> None:
+    # Inspect YAML scalars (including commands and expressions), not historical
+    # comments or rename compatibility data in policy files and helpers.
+    pending = [yaml.compose(source, Loader=yaml.SafeLoader)]
+    if not isinstance(pending[0], yaml.MappingNode):
+        raise ValueError(f"{path}: expected a YAML mapping")
+    seen = set()
+    while pending:
+        node = pending.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        if isinstance(node, yaml.MappingNode):
+            pending.extend(child for pair in node.value for child in pair)
+        elif isinstance(node, yaml.SequenceNode):
+            pending.extend(node.value)
+        elif match := STALE_REPOSITORY_TARGET.search(node.value):
+            raise ValueError(f"{path}:{node.start_mark.line + 1}: stale repository target {match[0]!r}")
+
+
+class ImageLaneRepositoryTargetTests(unittest.TestCase):
+    def test_builder_repositories_default_is_sylphx_identity(self) -> None:
+        workflow = ROOT / ".github/workflows/image-lane.yml"
+        doc = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        inputs = doc.get("on", doc.get(True))["workflow_call"]["inputs"]
+        self.assertEqual(inputs["builder-repositories"]["default"], "sylphx,identity")
+
+    def test_live_workflow_and_action_yaml_has_no_stale_repository_target(self) -> None:
+        for directory, stem in (
+            (".github/workflows", "*"),
+            (".github/actions", "**/action"),
+            ("workflow-templates", "*"),
+        ):
+            paths = sorted(path for suffix in ("yml", "yaml")
+                           for path in (ROOT / directory).glob(f"{stem}.{suffix}"))
+            self.assertTrue(paths, f"No YAML found in {directory}")
+            for path in paths:
+                with self.subTest(path=path.relative_to(ROOT)):
+                    check_repository_targets(path.read_text(encoding="utf-8"), path.relative_to(ROOT))
+
+    def test_rejects_cloud_identity_default(self) -> None:
+        source = 'inputs:\n  builder-repositories:\n    default: "cloud,identity"\n'
+        with self.assertRaisesRegex(ValueError, r"stale repository target 'cloud,identity'"):
+            check_repository_targets(source, Path("image-lane.yml"))
+
+    def test_rejects_sylphxai_cloud_api_target_but_not_historical_comment(self) -> None:
+        path = Path("action.yml")
+        source = "# SylphxAI/cloud used to be the target\nruns:\n  steps:\n    - run: |\n"
+        check_repository_targets(source + "        gh api repos/SylphxAI/sylphx/installation\n", path)
+        with self.assertRaisesRegex(ValueError, r"stale repository target 'SylphxAI/cloud'"):
+            check_repository_targets(source + "        gh api repos/SylphxAI/cloud/installation\n", path)
+
 
 class ImageLaneSourceContractTests(unittest.TestCase):
     def setUp(self) -> None:
