@@ -169,6 +169,7 @@ printf 'path=broker\npresent=no\nwrite=yes\nmode=%s\n' "$DECLARED_MODE" >>"$GITH
         if 'env' in step or 'run' in step:
             step['env'] = {**job.get('env', {}), **step.get('env', {})}
         # Keep workflow token only as the separate Actions/notice authority.
+        handler_alerts = ('Alert that the red-main handler itself failed', 'Close red-main handler alerts on recovery')
         for key, value in step.get('env', {}).items():
             if key == 'APP_ID':
                 step['env'][key] = ''  # Unused by revert; no global App id assumption.
@@ -179,7 +180,7 @@ printf 'path=broker\npresent=no\nwrite=yes\nmode=%s\n' "$DECLARED_MODE" >>"$GITH
             value = value.replace('steps.app-token.outputs.app-slug || ', '')
             value = value.replace("(steps.app-token.outputs.token != '' || steps.broker-token.outputs.token != '')", "(steps.broker-token.outputs.token != '')")
             value = value.replace('inputs.simulate-mint-failure &&', "inputs.simulate-mint-failure == 'true' &&")
-            if key == 'GH_TOKEN' and sid not in ('gate', 'grant-notice') and name != 'Alert that the red-main handler itself failed':
+            if key == 'GH_TOKEN' and sid not in ('gate', 'grant-notice') and name not in handler_alerts:
                 value = '${{ steps.broker-token-act.outputs.token }}' if sid == 'revert' or name == 'Record what the handler did' else '${{ steps.broker-token.outputs.token }}'
             step['env'][key] = value
         if sid == 'grant-notice':
@@ -190,6 +191,9 @@ printf 'path=broker\npresent=no\nwrite=yes\nmode=%s\n' "$DECLARED_MODE" >>"$GITH
             step['env']['BROKER_ISSUER'] = '${{ steps.broker-token-act.outputs.issuer }}'
             step['env']['APP_SLUG'] = '${{ steps.broker-token-act.outputs.app-slug }}'
             step['run'] = 'export APP_ID="${BROKER_ISSUER#github-apps/}"\n' + step['run']
+        if name == 'Close red-main handler alerts on recovery':
+            # This adapter always selects the Broker and has no App mint step.
+            step['if'] = step['if'].replace(" && (steps.key.outputs.path != 'app' || steps.app-token-act.outputs.token != '')", '')
         if name == 'Record what the handler did':
             # Local record still runs after refresh failure, without API writes.
             step['run'] = step['run'].replace('if [ -s "$WORK_DIR/temp-branches" ]; then', 'if [ -n "$GH_TOKEN" ] && [ -s "$WORK_DIR/temp-branches" ]; then')

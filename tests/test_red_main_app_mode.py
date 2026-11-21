@@ -296,6 +296,7 @@ gha() {{
   esac
 }}
 sleep() {{ SECONDS=$((SECONDS + $1)); }}
+state_set() {{ printf '%s\\n' "$*" >>"{tmp}/summary.md"; }}
 say() {{ printf '%s\\n' "$*" >>"{tmp}/summary.md"; }}
 REPO=o/r WORK_DIR={tmp} CANDIDATE_TIMEOUT_MINUTES={timeout_minutes}
 declare -A run_of=() conclusion_of=()
@@ -350,8 +351,9 @@ class CandidatePollTest(unittest.TestCase):
         self.assertIn("could not be read", out)
 
     def test_a_run_still_running_at_the_deadline_is_a_timeout(self) -> None:
-        code, _out, results = run_poll({"11": [RUNNING], "12": [DONE_OK]}, timeout_minutes=2)
-        self.assertEqual(code, 0)
+        code, out, results = run_poll({"11": [RUNNING], "12": [DONE_OK]}, timeout_minutes=2)
+        self.assertEqual(code, 0, out)
+        self.assertIn("incomplete candidate verification did not finish", out)
         self.assertEqual(results, {"11": "timeout", "12": "success"})
 
 
