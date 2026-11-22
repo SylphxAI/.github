@@ -69,7 +69,8 @@ class ForcePushAdoptionTests(unittest.TestCase):
                  if path.suffix in (".py", ".json") or path.name == "action.yml"}
         scope_path = "policy/deal-randomness-scope.json"
         files[scope_path] = (ROOT / scope_path).read_text()
-        for dependency in ("scripts/source_provenance.py", "policy/source-relocations.json"):
+        for dependency in ("scripts/source_provenance.py", "policy/source-relocations.json",
+                           ".github/actions/auth-surface-guard/check.py"):
             files[dependency] = (ROOT / dependency).read_text()
         tree = sc.DictTree(files)
         source = sc.adoption.source_profile(tree)

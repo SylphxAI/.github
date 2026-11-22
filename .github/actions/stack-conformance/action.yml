@@ -58,6 +58,12 @@ inputs:
   model-aliases:
     description: Optional offline catalog alias declaration to tighten the naming contract. Path in the checked checkout; empty permits <provider>/<line>-latest.
     default: ""
+  auth-surface:
+    description: Opt in to the passwordless auth gate (diff or full); off keeps existing callers unchanged.
+    default: "off"
+  auth-baseline:
+    description: Tracked auth departures file, relative to the repo root (full mode only).
+    default: ""
   token:
     description: Token that reads caller custom properties and public shared-source provenance.
     default: ${{ github.token }}
@@ -78,6 +84,8 @@ runs:
         HEAD_REV: ${{ inputs.head }}
         BASELINE: ${{ inputs.baseline }}
         MODEL_ALIASES: ${{ inputs.model-aliases }}
+        AUTH_SURFACE: ${{ inputs.auth-surface }}
+        AUTH_BASELINE: ${{ inputs.auth-baseline }}
         GH_TOKEN: ${{ inputs.token }}
         STACK_CONFORMANCE_CHECKER_COMMIT: ${{ github.action_ref || github.sha }}
       run: |
@@ -97,4 +105,20 @@ runs:
           model_policy=(--model-aliases "$MODEL_ALIASES")
         fi
         python3 "$GITHUB_ACTION_PATH/stack_conformance.py" check --base "$BASE" --head "$HEAD_REV" --baseline "$BASELINE" --report "$report" "${model_policy[@]}"
+        case "$AUTH_SURFACE" in
+          off)
+            if [ -n "$AUTH_BASELINE" ]; then
+              echo '::error::auth-baseline requires auth-surface: full'
+              exit 2
+            fi
+            ;;
+          diff|full)
+            python3 "$GITHUB_ACTION_PATH/../auth-surface-guard/check.py" --strict \
+              --mode "$AUTH_SURFACE" --base "$BASE" --head "$HEAD_REV" --baseline "$AUTH_BASELINE"
+            ;;
+          *)
+            echo '::error::auth-surface must be off, diff, or full'
+            exit 2
+            ;;
+        esac
         python3 "$GITHUB_ACTION_PATH/rust_reachability.py"
