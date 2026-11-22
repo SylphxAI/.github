@@ -71,8 +71,12 @@ the stale record. The rule adoption helper still handles other categories in
 No organization-specific allowlist is needed. As elsewhere in stack
 conformance, only confirmed delivered customer repositories are skipped.
 
-See [auth-surface-guard](../.github/actions/auth-surface-guard/README.md) for
-recognizer coverage and the continuity exception.
+If unrelated stack checks block first-time adoption, use the
+[standalone auth-surface-guard action](../.github/actions/auth-surface-guard/README.md)
+as a required check on pull requests and merge groups. Its default strict diff
+mode requires the event base commit (or an explicitly supplied base) to be
+available in the checkout. The action README also covers recognizer scope and
+the continuity exception.
 
 ## What counts as a departure
 

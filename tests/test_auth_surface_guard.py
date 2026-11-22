@@ -1,18 +1,22 @@
-"""Unit tests for .github/actions/auth-surface-guard/check.py."""
+"""Unit tests for the auth surface checker and standalone composite."""
 
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
+ACTION = ROOT / ".github/actions/auth-surface-guard"
 SPEC = importlib.util.spec_from_file_location(
     "auth_surface_guard",
-    ROOT / ".github/actions/auth-surface-guard/check.py",
+    ACTION / "check.py",
 )
 assert SPEC is not None and SPEC.loader is not None
 guard = importlib.util.module_from_spec(SPEC)
@@ -43,6 +47,110 @@ class AuthSurfaceGuardTest(unittest.TestCase):
         subprocess.run(["git", "-C", str(repo), "commit", "-qm", message], check=True)
         head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
         return base, head
+
+    def run_action(self, repo, *, event_name="workflow_dispatch", event=None, **overrides):
+        action = yaml.safe_load((ACTION / "action.yml").read_text(encoding="utf-8"))
+        self.assertEqual(action["runs"]["using"], "composite")
+        step, = action["runs"]["steps"]
+        self.assertEqual(step["shell"], "bash")
+        self.assertLessEqual(overrides.keys(), action["inputs"].keys())
+        inputs = {name: metadata["default"] for name, metadata in action["inputs"].items()}
+        inputs.update(root=str(repo), **overrides)
+        context = {"inputs": inputs, "github": {"event": event or {}, "token": ""}}
+
+        # The manifest uses only whole-value, dotted context references. Model
+        # the runner's empty string for missing fields without copying the
+        # composite's event or base-selection logic here.
+        def resolve(value):
+            self.assertIsInstance(value, str)
+            if not value.startswith("${{"):
+                return value
+            self.assertTrue(value.endswith("}}"), value)
+            result = context
+            for key in value[3:-2].strip().split("."):
+                result = result.get(key, {})
+            return "" if result == {} else resolve(result)
+
+        env = {**os.environ, **{key: resolve(value) for key, value in step["env"].items()}}
+        env.update(GITHUB_EVENT_NAME=event_name, GITHUB_ACTION_PATH=str(ACTION))
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+            env=env, text=True, capture_output=True, check=False,
+        )
+
+    def test_action_checks_against_the_current_event_base_not_head_parent(self):
+        repo = self.make_repo()
+        path = "src/app/signup/page.tsx"
+        base, _ = self.commit_files(repo, {path: "export default function Signup() {}\n"})
+        parent, _ = self.commit_files(repo, {"README.md": "# Updated product\n"})
+        events = (
+            ("pull_request", {"pull_request": {"base": {"sha": base}}, "merge_group": {"base_sha": parent}}),
+            ("merge_group", {"merge_group": {"base_sha": base}, "pull_request": {"base": {"sha": parent}}}),
+        )
+        for event_name, event in events:
+            with self.subTest(event_name=event_name):
+                result = self.run_action(repo, event_name=event_name, event=event)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(path, result.stdout)
+                self.assertIn("AUTH-R1", result.stdout)
+
+    def test_action_explicit_base_ref_overrides_alias_and_event_base(self):
+        repo = self.make_repo()
+        base, head = self.commit_files(repo, {"src/app/signup/page.tsx": ""})
+        event = {"pull_request": {"base": {"sha": base}}}
+        for inputs, expected in (({"base-ref": head, "base": base}, 0), ({"base": head}, 0),
+                                 ({"base-ref": "absent-base", "base": head}, 2)):
+            with self.subTest(inputs=inputs):
+                result = self.run_action(repo, event_name="pull_request", event=event, **inputs)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
+    def test_action_strict_fails_closed_for_missing_or_unavailable_base(self):
+        repo = self.make_repo()
+        self.commit_files(repo, {"README.md": "# Updated product\n"})
+        events = (
+            ("pull_request", {"pull_request": {"base": {"sha": "absent-base"}}}),
+            ("merge_group", {"merge_group": {"base_sha": "absent-base"}}),
+            ("pull_request", {}),
+            ("merge_group", {}),
+            ("push", {}),
+        )
+        for event_name, event in events:
+            for mode in ("diff", "full"):
+                with self.subTest(event_name=event_name, event=event, mode=mode):
+                    result = self.run_action(repo, event_name=event_name, event=event, mode=mode)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("explicit base revision is required and must be available", result.stderr)
+
+    def test_action_legacy_diff_is_opt_in_and_uses_head_parent(self):
+        repo = self.make_repo()
+        root_only = self.run_action(repo, strict="false")
+        self.assertEqual(root_only.returncode, 0, root_only.stdout + root_only.stderr)
+        self.assertIn("single-commit history", root_only.stdout)
+        self.commit_files(repo, {"src/app/signup/page.tsx": ""})
+        result = self.run_action(repo, strict="false")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("AUTH-R1", result.stdout)
+        invalid = self.run_action(repo, strict="typo")
+        self.assertEqual(invalid.returncode, 2, invalid.stdout + invalid.stderr)
+        self.assertIn("strict must be true or false", invalid.stdout)
+
+    def test_action_full_audits_inherited_findings_and_accepts_baseline(self):
+        repo = self.make_repo()
+        _, base = self.commit_files(repo, {"src/app/signup/page.tsx": ""})
+        records = self.run_guard(repo, "--mode", "full", "--print-baseline")
+        self.assertEqual(records.returncode, 0, records.stderr)
+        path = ".github/auth-departures.txt"
+        self.commit_files(repo, {path: records.stdout})
+        event = {"merge_group": {"base_sha": base}}
+        diff = self.run_action(repo, event_name="merge_group", event=event)
+        self.assertEqual(diff.returncode, 0, diff.stdout + diff.stderr)
+        full = self.run_action(repo, event_name="merge_group", event=event, mode="full")
+        self.assertEqual(full.returncode, 1, full.stdout + full.stderr)
+        self.assertIn("AUTH-R1", full.stdout)
+        for inputs in ({"base-ref": base}, {"strict": "false"}):
+            with self.subTest(inputs=inputs):
+                result = self.run_action(repo, mode="full", baseline=path, **inputs)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_rejects_standalone_signup_and_forgot_password_routes(self) -> None:
         repo = self.make_repo()

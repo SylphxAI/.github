@@ -7,9 +7,15 @@ description: >
   preserving shared Sylphx Auth / @sylphx/apps implementations and legacy
   live-title continuity (# auth-surface-guard: allow(legacy-continuity)).
 inputs:
-  base:
-    description: Base commit of the change. Legacy diff mode defaults to HEAD^1 when available.
+  base-ref:
+    description: Base Git revision to compare. Defaults to the pull_request or merge_group event base SHA when no explicit base is supplied.
     default: ""
+  base:
+    description: Legacy alias for base-ref. Ignored when base-ref is set.
+    default: ""
+  strict:
+    description: Require an available base revision. Set to 'false' only for legacy diff fallback or a single-revision full audit.
+    default: 'true'
   head:
     description: Head commit of the checked diff.
     default: HEAD
@@ -31,7 +37,11 @@ runs:
     - name: Enforce unified passwordless auth surface contract
       shell: bash
       env:
+        AUTH_GUARD_BASE_REF: ${{ inputs.base-ref }}
         AUTH_GUARD_BASE: ${{ inputs.base }}
+        AUTH_GUARD_PR_BASE: ${{ github.event.pull_request.base.sha }}
+        AUTH_GUARD_MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+        AUTH_GUARD_STRICT: ${{ inputs.strict }}
         AUTH_GUARD_HEAD: ${{ inputs.head }}
         AUTH_GUARD_ROOT: ${{ inputs.root }}
         AUTH_GUARD_MODE: ${{ inputs.mode }}
@@ -46,7 +56,23 @@ runs:
             exit 0
           fi
         fi
+        base="${AUTH_GUARD_BASE_REF:-$AUTH_GUARD_BASE}"
+        if [ -z "$base" ]; then
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) base="$AUTH_GUARD_PR_BASE" ;;
+            merge_group) base="$AUTH_GUARD_MERGE_GROUP_BASE" ;;
+          esac
+        fi
+        strict=()
+        case "$AUTH_GUARD_STRICT" in
+          true) strict=(--strict) ;;
+          false) ;;
+          *)
+            echo '::error::auth-surface-guard: strict must be true or false'
+            exit 2
+            ;;
+        esac
         python3 "$GITHUB_ACTION_PATH/check.py" \
           --root "$AUTH_GUARD_ROOT" \
-          --base "$AUTH_GUARD_BASE" \
-          --head "$AUTH_GUARD_HEAD" --mode "$AUTH_GUARD_MODE" --baseline "$AUTH_GUARD_BASELINE"
+          --base "$base" \
+          --head "$AUTH_GUARD_HEAD" --mode "$AUTH_GUARD_MODE" --baseline "$AUTH_GUARD_BASELINE" "${strict[@]}"
