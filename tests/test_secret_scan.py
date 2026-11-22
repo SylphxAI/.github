@@ -27,6 +27,11 @@ def load():
     return module
 
 
+def rust_annotation(name, type_name, *, before_colon=''):
+    # Construct Rust fixture syntax only in the temporary Git repository.
+    return f'{name}{before_colon}: {type_name}'
+
+
 class SecretScanTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -140,6 +145,72 @@ class SecretScanTest(unittest.TestCase):
         code, output = self.scan()
         self.assertEqual(code, 0, output)
         self.assertNotIn('reviewed findings allowed=', output)
+
+    def test_rust_type_annotations_are_not_credential_assignments(self):
+        field = rust_annotation
+        self.write('src/auth.rs', f'''\
+struct Options {{
+    {field('credentials', 'SigV4Credentials')},
+    {field('creds', 'ScramCredentials')},
+    pub {field('api_key', 'LongLivedAccessKey')},
+    pub {field('token', 'crate::auth::BearerToken')},
+}}
+fn sign({field('token', 'BearerToken')}) {{}}
+fn signer(/* π */ {field('creds', 'ScramCredentials', before_colon=' ')}) {{}}
+fn begin(
+    context: Option<Result<Context, Error>>,
+    {field('credentials', 'ScramCredentials')},
+) {{}}
+''')
+        self.commit('add Rust declarations')
+        code, output = self.scan(fetch=True)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn('reviewed findings allowed=', output)
+
+    def test_explicit_credential_assignment_rule_does_not_ignore_rust_annotations(self):
+        source = 'struct Options { ' + rust_annotation('creds', 'ScramCredentials') + ', }'
+        self.write('src/auth.rs', source + '\n')
+        self.commit('add Rust declaration')
+        policy = self.root / 'config.toml'
+        policy.write_text(load().DEFAULT_POLICY)
+        code, output = self.scan(config=policy)
+        self.assertEqual(code, 1, output)
+        self.assertIn(hashlib.sha256(source.encode()).hexdigest(), output)
+
+    def test_rust_literals_and_lookalikes_still_refuse(self):
+        alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+        value = ''.join(alphabet[b % len(alphabet)] for b in hashlib.shake_256(b'rust literal fixture').digest(36))
+        aws = 'AK' + 'IA' + ''.join('ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'[b % 32] for b in
+                                  hashlib.shake_256(b'aws fixture').digest(16))
+        creds = rust_annotation('creds', 'ScramCredentials')
+        credentials = rust_annotation('credentials', 'ScramCredentials')
+        cases = (
+            ('src/assignment.rs', ['fn build() { let api_key = "' + value + '"; }'], 1),
+            ('src/typed.rs', ['const SECRET: &str = "' + value + '";'], 1),
+            ('src/aws.rs', ['fn build() { let cfg = Config { credentials: "' + aws + '" }; }'], 1),
+            ('src/bare.rs', ['struct Options { credentials: ' + value + ', }'], 1),
+            ('src/quoted.rs', ['fn build() { let cfg = Config { ' + rust_annotation('creds', '"ScramCredentials"') + ' }; }'], 1),
+            ('src/expr.rs', ['fn build() { let cfg = Config { ' + creds + ' }; }'], 1),
+            ('src/raw.rs', ['const EXAMPLE: &str = r#"struct Options {',
+                            '    ' + credentials + ',', '}"#;'], 2),
+            ('src/comments.rs', ['/* struct Options {',
+                                 '    ' + credentials + ',', '} */'], 2),
+            ('src/macro.rs', ['fixture! { struct Options { ' + credentials + ', } }'], 1),
+            ('src/same_line.rs', ['fn sign(' + creds + ') { let api_key = "' + value + '"; }'], 1),
+            ('src/provider.rs', ['fn sign(' + creds + ') { let opaque = "' + self.token + '"; }'], 1),
+            ('auth.yml', [credentials], 1),
+        )
+        for path, lines, _ in cases:
+            self.write(path, '\n'.join(lines) + '\n')
+        head = self.commit('add Rust secret fixtures and non-declarations')
+        code, output = self.scan()
+        self.assertEqual(code, 1, output)
+        for path, lines, line in cases:
+            with self.subTest(path=path):
+                digest = hashlib.sha256(lines[line - 1].encode()).hexdigest()
+                self.assertIn(f'commit {head} path "{path}" line {line} sha256 {digest}', output)
+        for secret in (value, aws):
+            self.assertNotIn(secret, output)
 
     def test_structured_secrets_and_high_entropy_assignments_refuse_in_markdown(self):
         # Generate fake, deterministic values only inside temporary Git fixtures.

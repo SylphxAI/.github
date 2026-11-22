@@ -7,6 +7,7 @@ import ast
 import base64
 import contextlib
 import errno
+from functools import lru_cache
 import hashlib
 import io
 import importlib.util
@@ -24,8 +25,10 @@ import time
 import urllib.error
 import urllib.request
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '_shared'))
+ACTION_DIR = Path(__file__).resolve().parent
+sys.path[:0] = [str(ACTION_DIR), str(ACTION_DIR.parent / '_shared')]
 import release_download
+import rust_annotations
 import verified_binary
 
 VERSION = '8.30.1'
@@ -45,6 +48,19 @@ DETECTOR_TIMEOUT = 600
 
 # Keep pinned provider rules. Replace only the broad generic rule, whose
 # substring keywords and comma/operator alternatives also match prose and code.
+# Reuse the credential field/value and placeholder policy for typed Rust literals.
+CREDENTIAL_FIELD = r"""\b(?:(?i:(?:[a-z][a-z0-9_.-]*[_.-])?(?:password|passwd|pwd|secret(?:[_.-]?key)?|(?:(?:api|access|auth|client|refresh|session|bearer|private|signing|encryption|secret)[_.-]?)?(?:token|key)|(?:api|client)[_.-]?secret|credentials?|creds|auth|access))|[A-Za-z][A-Za-z0-9_.-]*(?:Password|Passwd|Secret|Token|Key|Credentials?|Creds))(?i:[_.-](?:value|literal|string))?"""
+CREDENTIAL_VALUE = r"([A-Za-z0-9_+~!%@#^*=-][A-Za-z0-9_+~!%@#^*.=/\-]{9,})"
+CREDENTIAL_ALLOWLIST = r"""
+description = "Documented placeholders, ordinary identifiers and file or environment references"
+regexes = [
+    '''(?i)^(?:redacted|change[_.-]?me|replace[_.-]?me|(?:your|example|sample|dummy|placeholder)[_.-](?:(?:api|access|client|secret)[_.-])?(?:key|password|secret|token)(?:[_.-]here)?)$''',
+    '''^(?:process\.env|os\.environ|std::env)\.[A-Z_][A-Z0-9_]*$''',
+    '''^(?:[a-z]{2,}(?:[_-][a-z]{2,})+|[A-Z]{2,}(?:_[A-Z]{2,})+)$''',
+    '''^(?:\./)?(?:[a-z][a-z0-9_-]*/)+[a-z][a-z0-9_-]*\.(?:md|toml|yaml|yml|json|txt|py|js|ts|rs|sh)$''',
+]
+"""
+
 DEFAULT_POLICY = r"""
 [extend]
 useDefault = true
@@ -55,18 +71,21 @@ id = "credential-assignment"
 description = "Literal value assigned to a credential field"
 # Match complete credential-field names, including camelCase suffixes and
 # explicit value fields, without treating metadata like TOKEN_ENDPOINT as a key.
-regex = '''\b(?:(?i:(?:[a-z][a-z0-9_.-]*[_.-])?(?:password|passwd|pwd|secret(?:[_.-]?key)?|(?:(?:api|access|auth|client|refresh|session|bearer|private|signing|encryption|secret)[_.-]?)?(?:token|key)|(?:api|client)[_.-]?secret|credentials?|creds|auth|access))|[A-Za-z][A-Za-z0-9_.-]*(?:Password|Passwd|Secret|Token|Key|Credentials?|Creds))(?i:[_.-](?:value|literal|string))?(?:["']\]?|\x60)?[ \t]*(?:=>|:{1,3}=|\?=|=|:)[ \t]*[\x60"']?([A-Za-z0-9_+~!%@#^*=-][A-Za-z0-9_+~!%@#^*.=/\-]{9,})(?:[\x60"'\s;,}\])]|$)'''
+regex = '''@field@(?:["']\]?|\x60)?[ \t]*(?:=>|:{1,3}=|\?=|=|:)[ \t]*[\x60"']?@value@(?:[\x60"'\s;,}\])]|$)'''
 secretGroup = 1
 entropy = 3.5
 
-[[rules.allowlists]]
-description = "Documented placeholders, ordinary identifiers and file or environment references"
-regexes = [
-    '''(?i)^(?:redacted|change[_.-]?me|replace[_.-]?me|(?:your|example|sample|dummy|placeholder)[_.-](?:(?:api|access|client|secret)[_.-])?(?:key|password|secret|token)(?:[_.-]here)?)$''',
-    '''^(?:process\.env|os\.environ|std::env)\.[A-Z_][A-Z0-9_]*$''',
-    '''^(?:[a-z]{2,}(?:[_-][a-z]{2,})+|[A-Z]{2,}(?:_[A-Z]{2,})+)$''',
-    '''^(?:\./)?(?:[a-z][a-z0-9_-]*/)+[a-z][a-z0-9_-]*\.(?:md|toml|yaml|yml|json|txt|py|js|ts|rs|sh)$''',
-]
+[[rules.allowlists]]@allowlist@
+
+[[rules]]
+id = "rust-typed-credential-literal"
+description = "Literal value assigned to a typed Rust credential binding"
+path = '''\.rs$'''
+regex = '''\b(?:const|static(?:[ \t]+mut)?|let(?:[ \t]+mut)?)[ \t]+(?:r#)?@field@[ \t]*:[ \t]*&?[ \t]*(?:str|String)[ \t]*=[ \t]*(?:(?:br|cr|r)#*|[bc])?"@value@"'''
+secretGroup = 1
+entropy = 3.5
+
+[[rules.allowlists]]@allowlist@
 
 # Extend format coverage without changing the other built-in rules.
 [[rules]]
@@ -117,7 +136,7 @@ regex = '''(?i)\b(?:b2|backblaze)[_.-]?(?:(?:application|app|account)[_.-]?)?key
 secretGroup = 1
 entropy = 3
 keywords = ["b2", "backblaze"]
-"""
+""".replace('@field@', CREDENTIAL_FIELD).replace('@value@', CREDENTIAL_VALUE).replace('@allowlist@', CREDENTIAL_ALLOWLIST)
 
 
 class ScanError(Exception):
@@ -471,7 +490,8 @@ def scan(repo, base, head, binary, directory, config=''):
     with phase('changed-blob-acquisition'):
         hydrate_changed_blobs(repo, base, head)
     allowed = allowlist(repo, head)
-    if not config:
+    shared_policy = not config
+    if shared_policy:
         policy = directory / 'gitleaks.toml'
         policy.write_text(DEFAULT_POLICY, encoding='utf-8')
         config = str(policy)
@@ -501,6 +521,25 @@ def scan(repo, base, head, binary, directory, config=''):
     merges = {}
     secrets = {value for item in findings for value in
                [item.get('Secret', ''), *item.get('Secret', '').splitlines()] if value}
+
+    @lru_cache(maxsize=1)
+    def source(commit, path):
+        return git(repo, 'show', commit + ':' + path).split(b'\n')
+
+    @lru_cache(maxsize=1)
+    def rust_spans(commit, path):
+        lines = source(commit, path)
+        if sum(map(len, lines)) + len(lines) - 1 > 1024 * 1024:
+            return (), set()
+        spans = rust_annotations.type_spans(b'\n'.join(lines))
+        starts = []
+        if spans:
+            offset = 0
+            for line in lines:
+                starts.append(offset)
+                offset += len(line.decode('utf-8')) + 1
+        return starts, spans
+
     for item in findings:
         commit, path, start, end = (item[k] for k in ('Commit', 'File', 'StartLine', 'EndLine'))
         if not SHA.fullmatch(commit) or not isinstance(path, str) or not path or \
@@ -509,9 +548,17 @@ def scan(repo, base, head, binary, directory, config=''):
         if commit not in merges:
             parents = git(repo, 'rev-list', '--parents', '-n', '1', commit).split()
             merges[commit] = merge_additions(repo, commit) if len(parents) > 2 else None
-        lines = git(repo, 'show', commit + ':' + path).split(b'\n')
+        lines = source(commit, path)
         if end > len(lines):
             raise ScanError('gitleaks finding is outside its source blob')
+        if shared_policy and path.endswith('.rs') and start == end and item.get('RuleID') == 'credential-assignment':
+            line = lines[start - 1]
+            offsets = rust_annotations.assignment_offsets(item, line)
+            if offsets:
+                starts, spans = rust_spans(commit, path)
+                if starts and tuple(starts[start - 1] + len(line[:offset].decode('utf-8'))
+                                    for offset in offsets) in spans:
+                    continue
         for number in range(start, end + 1):
             if merges[commit] is not None and (path, number) not in merges[commit]:
                 continue
