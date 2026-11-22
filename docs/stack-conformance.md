@@ -26,6 +26,17 @@ cleanup of unchanged legacy code. Missing base history cannot turn the gate
 green. Existing callers are unchanged: upgrading the shared SHA alone leaves
 the new stack input off.
 
+AUTH-R2 still rejects account passwords and ambiguous masked inputs. Keep
+third-party integration credentials masked with `type="password"`: outside
+recognized auth paths and components, the same opening tag must have a literal
+`label` or `aria-label` and a matching `id`, `name`, or simple value binding
+(e.g. `label="Bot token" value={props.botToken}`). Recognized kinds are API
+key, bot token, signing secret, webhook secret, provider token, client secret,
+and access token. Client secrets and access tokens also require explicit
+integration or provider context. Account/password signals, autocomplete other
+than absent or literal `off`, and ambiguous attributes (such as spreads or
+dynamic labels) prevent the exception. These fields need no baseline entry.
+
 For web products, switch to `full` to audit the entire committed tree. For a
 clean repository, omit `auth-baseline`. For an existing product, run these
 commands from its checkout with `SHARED_CHECKOUT` pointing to the adopted

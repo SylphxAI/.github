@@ -121,6 +121,133 @@ class AuthSurfaceGuardTest(unittest.TestCase):
         return subprocess.run([sys.executable, SPEC.origin, '--root', str(repo), *args],
                               text=True, capture_output=True)
 
+    def test_precise_masked_integration_credentials_in_all_modes(self):
+        repo = self.make_repo()
+        base, head = self.commit_files(repo, {
+            'src/dashboard/bots/connect.tsx': '''<Input
+  label="Bot token"
+  type="password"
+  autocomplete="off"
+  value={props.botToken}
+  onInput={(e) => props.onBotTokenChange(e.target.value)}
+  placeholder="synthetic-bot-value"
+  required
+  hint={props.hint}
+/>
+<Input
+  label="Signing secret"
+  type="password"
+  autocomplete="off"
+  value={props.signingSecret}
+  onInput={(e) => props.onSigningSecretChange(e.target.value)}
+  required
+/>
+<Input
+  label="Bot token"
+  type="password"
+  autocomplete="off"
+  value={props.botToken}
+  onInput={(e) => props.onBotTokenChange(e.target.value)}
+  placeholder="synthetic-provider-value"
+  required
+/>
+''',
+            'src/dashboard/wizard.tsx': '''<Input
+  label="Bot token"
+  type="password"
+  autocomplete="off"
+  value={props.draft.botToken}
+  onInput={(e) => props.onChange({ botToken: e.target.value })}
+  placeholder="synthetic-bot-value"
+  hint={props.hint}
+/>
+''',
+            'src/dashboard/integrations/provider.jsx': '''
+<input type={'password'} aria-label="API key" name="providerApiKey" autoComplete={'off'} />
+<input type="password" aria-label="Webhook secret" name="webhook_secret" />
+<input type="password" aria-label="Provider access token" id="provider-access-token" />
+<input type="password" aria-label="Client secret" id="clientSecret" />
+<input type="password" aria-label="Provider token" id="providerToken" />
+''',
+            'src/dashboard/integrations/editor.vue': '<input type="password" aria-label="API key" id="api-key">',
+            'src/dashboard/integrations/editor.svelte': '<input type="password" aria-label="API key" bind:value={apiKey}>',
+        })
+        for mode in (('--mode', 'full'), ('--strict',), ()):
+            with self.subTest(mode=mode):
+                result = self.run_guard(repo, *mode, '--base', base, '--head', head)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('0 violation(s)', result.stdout)
+
+    def test_account_or_ambiguous_password_inputs_in_all_modes(self):
+        repo = self.make_repo()
+        masked = '<Input type="password" label="Bot token" name="botToken" />'
+        paths = {path: masked for path in (
+            'src/app/(auth)/enter/page.tsx', 'src/app/login/page.tsx', 'src/app/sign-in/page.jsx',
+            'src/app/sign-up/page.tsx', 'src/pages/register/index.tsx', 'src/pages/forgot/index.tsx',
+            'src/app/settings/reset/page.tsx', 'src/components/ChangePassword.tsx',
+        )}
+        paths.update({
+            'src/components/Dialog.tsx': f'const LoginForm = () => ({masked});',
+            'src/components/Modal.tsx': f'<SignInForm>{masked}</SignInForm>',
+            'src/settings/Profile.tsx': f'<form onSubmit={{updateAccount}}>{masked}</form>',
+            'src/settings/page.tsx': '<input name="confirmPassword" type="password" />',
+            'src/dashboard/plain.vue': '<input type=password>',
+            'src/dashboard/multiline.svelte': '<input\n  type="password"\n>',
+        })
+        for i, attrs in enumerate((
+            '', 'label="Secret" name="token"', 'label="Bot token"', 'name="botToken"',
+            'label="Bot token" name="apiKey"', 'label="Bot token" name="confirmPassword"',
+            'label="Bot token" name="botToken" id="passwd"',
+            'label="Bot token" name="botToken" onInput={setPassphrase}',
+            'label="Bot token" name="botToken" autoComplete="current-password"',
+            'label="Bot token" name="botToken" autocomplete={"new-password"}',
+            'label="Bot token" name="botToken" autocomplete={mode}',
+            'label="Bot token" name="botToken" placeholder="Account password"',
+            'label="Bot token" name="botToken" value={state[field]}',
+            'label="Bot token" name="botToken" value={authState.botToken}',
+            'label="Bot token" name="botToken" { ...props }',
+            'label="Bot token" name="botToken" label={displayLabel}',
+            'label="Bot token" name="botToken" name="password"',
+            'label={displayLabel} name="botToken"',
+            'label="Access token" name="accessToken"',
+            'label="Bot token" name="botToken" onInput={() => login(input)}',
+            'label="Bot token" name="botToken" hint={`A template`}',
+            'label="Bot token" name="botToken" :autocomplete="mode"',
+            'label="Bot token" name="botToken" data-alias="new&#45;password"',
+        )):
+            paths[f'src/dashboard/field{i}.tsx'] = f'<Input type="password" {attrs} />'
+        paths['src/dashboard/broken.jsx'] = '<Input type="password" name="botToken" label="Bot token"'
+        paths['src/dashboard/later-type.tsx'] = '''<Input
+  label="Bot token > add integration"
+  onInput={(e) => e.target.value}
+  type="password"
+  name="password"
+/>'''
+        base, head = self.commit_files(repo, paths)
+        for mode in (('--mode', 'full'), ('--strict',), ()):
+            with self.subTest(mode=mode):
+                result = self.run_guard(repo, *mode, '--base', base, '--head', head)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertEqual(result.stdout.count('[AUTH-R2]'), len(paths), result.stdout)
+                for path in paths:
+                    self.assertIn(f'{path}:1: [AUTH-R2]', result.stdout)
+
+    def test_diff_reports_a_field_when_only_its_credential_metadata_changes(self):
+        repo = self.make_repo()
+        path = 'src/dashboard/integrations/key.tsx'
+        masked = '<Input\n  type="password"\n  label="API key"\n  value={props.apiKey}\n/>\n'
+        _, base = self.commit_files(repo, {path: masked})
+        _, head = self.commit_files(repo, {path: masked.replace('props.apiKey', 'props.password')})
+        for mode in (('--strict',), ()):
+            result = self.run_guard(repo, *mode, '--base', base, '--head', head)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn(f'{path}:1: [AUTH-R2]', result.stdout)
+
+    def test_existing_password_baseline_digest_is_unchanged(self):
+        text = 'const x = <input\n  id="confirmPassword"\n  type={"password"} />\n'
+        finding, = guard.password_findings('src/settings/Profile.tsx', text)
+        self.assertEqual(finding.identity, '<input\n  id="confirmPassword"\n  type={"password"}')
+
     def test_full_audits_selected_revision_not_index_or_untracked_files(self):
         repo = self.make_repo()
         _, head = self.commit_files(repo, {

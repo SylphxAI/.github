@@ -5,7 +5,7 @@ Checks three source patterns from [The one sign-in flow](https://github.com/Sylp
 | Rule | What it reports |
 | --- | --- |
 | `AUTH-R1` | Standalone signup, sign-up, register, forgot-password, and reset-password route files under recognized app, pages, or routes layouts |
-| `AUTH-R2` | Literal password inputs in TSX, JSX, Vue, and Svelte |
+| `AUTH-R2` | Literal password inputs in TSX, JSX, Vue, and Svelte, except [clearly identified masked integration credentials](../../../docs/stack-conformance.md#passwordless-auth-surface) |
 | `AUTH-R3` | Recognized SMS sign-in identifiers such as `sendSmsOtp` and `signInWithPhone` in covered product source |
 
 Use one **Continue** entry via the shared Sylphx Auth component or hosted portal.

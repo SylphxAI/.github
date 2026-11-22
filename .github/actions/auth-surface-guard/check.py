@@ -9,8 +9,9 @@ Rules enforced in product repositories:
    Sylphx Auth portal.
 2. AUTH-R2 (handwritten-password-input):
    Product web UI files (`*.tsx`, `*.jsx`, `*.vue`, `*.svelte`) must not add
-   handwritten `<input type="password">` fields. Use passwordless Email 6-digit
-   OTP + Passkey (`autocomplete="username webauthn"`) + Social OAuth.
+   handwritten account password fields. Clearly identified third-party
+   credentials may stay masked. Use passwordless Email 6-digit OTP + Passkey
+   (`autocomplete="username webauthn"`) + Social OAuth.
 3. AUTH-R3 (public-web-sms-otp):
    Product web UI and API callers must not add public web SMS OTP sign-in flows
    (`sendSmsOtp`, `verifySmsOtp`, `signInWithPhone`, `signInWithSms`, or SMS OTP
@@ -26,6 +27,7 @@ import argparse
 from collections import Counter
 from dataclasses import dataclass
 import hashlib
+from html import unescape
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -88,6 +90,193 @@ class Finding:
             f"::error file={escape(self.path, property=True)},line={self.line},title={self.rule}::"
             f"{escape(self.path)}:{self.line}: [{self.rule}] {escape(self.message)} "
             f"Fix: {self.remediation}"
+        )
+
+
+# Keep the old match for existing findings so baseline digests do not change.
+INPUT_TAG_RE = re.compile(r"<input(?=\s|/?>|$)", re.IGNORECASE)
+ATTRIBUTE_RE = re.compile(r"\s+([a-z_][\w:-]*)(\s*=\s*)?", re.IGNORECASE | re.ASCII)
+SPACE_RE = re.compile(r"\s*")
+TAG_END_RE = re.compile(r"\s*/?>")
+QUOTED_RE = re.compile(r'''"[^"]*"|'[^']*' ''', re.VERBOSE)
+JS_QUOTED_RE = re.compile(r'''"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*' ''', re.VERBOSE)
+BARE_RE = re.compile(r"[^\s\"'=<>\x60{}]+?(?=\s|/?>|$)")
+JS_DELIMITER_RE = re.compile(r"[{}()\[\]\"'\x60/<]")
+SIMPLE_REF_RE = re.compile(r"[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*", re.ASCII)
+AUTH_COMPONENT_RE = re.compile(
+    r"\b(?:function|class)\s+([\w$]+)|\b(?:const|let|var)\s+([A-Z][\w$]*)|<([A-Z][\w$]*)\b"
+)
+FORM_TAG_RE = re.compile(r"<form(?=\s|/?>)", re.IGNORECASE)
+AUTH_WORDS = {
+    "auth", "authentication", "account", "accounts", "login", "logout", "signin", "signup",
+    "register", "registration", "reset", "forgot", "oauth",
+}
+CREDENTIAL_KINDS = (
+    "api key", "bot token", "signing secret", "webhook secret", "provider token",
+    "client secret", "access token",
+)
+IDENTIFIERS = {"id", "name", "value", "bind:value"}
+LABELS = {"label", "aria-label"}
+
+
+def expression_end(text: str, start: int) -> int | None:
+    """Read balanced braces for simple JSX/Svelte attributes, not JavaScript."""
+    stack = []
+    pairs = {"{": "}", "(": ")", "[": "]"}
+    pos = start
+    while marker := JS_DELIMITER_RE.search(text, pos):
+        token = marker[0]
+        pos = marker.end()
+        if token in pairs:
+            stack.append(pairs[token])
+        elif token in ('"', "'"):
+            string = JS_QUOTED_RE.match(text, marker.start())
+            if not string:
+                return None
+            pos = string.end()
+        elif not stack or token != stack.pop():
+            # No exception based on comments, templates, regexes or nested JSX.
+            return None
+        elif not stack:
+            return pos
+    return None
+
+
+def opening_attributes(text: str, pos: int) -> tuple[int | None, list[tuple[str, str]]]:
+    """Read a whole opening tag, tracking whether any syntax was ambiguous."""
+    attrs = []
+    unambiguous = True
+    while pos < len(text):
+        if end := TAG_END_RE.match(text, pos):
+            return end.end() if unambiguous else None, attrs
+        attr = ATTRIBUTE_RE.match(text, pos)
+        if not attr:
+            pos = SPACE_RE.match(text, pos).end()
+            if text.startswith("{", pos) and (end := expression_end(text, pos)):
+                # Spreads and Svelte shorthand can supply or override metadata.
+                unambiguous = False
+                pos = end
+                continue
+            break
+        name, pos = attr[1].lower(), attr.end()
+        if attr[2] is None:
+            attrs.append((name, ""))
+            continue
+        if text.startswith("{", pos):
+            end = expression_end(text, pos)
+        else:
+            value = QUOTED_RE.match(text, pos) or BARE_RE.match(text, pos)
+            end = value.end() if value else None
+        if end is None:
+            break
+        attrs.append((name, text[pos:end]))
+        pos = end
+    return None, attrs
+
+
+def literal(raw: str) -> str | None:
+    value = raw[1:-1].strip() if raw.startswith("{") else raw
+    if QUOTED_RE.fullmatch(value) and not any(char in value for char in "{}\\"):
+        return unescape(value[1:-1])
+    return None
+
+
+def words(value: str) -> list[str]:
+    value = re.sub(r"([A-Z])([A-Z][a-z])|([a-z0-9])([A-Z])", r"\1\3 \2\4", value)
+    return re.findall(r"[a-z]+|[0-9]+", value.lower())
+
+
+def auth_signal(value: str) -> bool:
+    tokens = words(value)
+    return bool(
+        AUTH_WORDS.intersection(tokens)
+        or re.search(r"\b(?:sign (?:in|up)|log in)\b|password|passwd|passphrase", " ".join(tokens))
+    )
+
+
+def credential_kind(value: str) -> str | None:
+    normalized = " " + " ".join(words(value))
+    return next((kind for kind in CREDENTIAL_KINDS if normalized.endswith(" " + kind)), None)
+
+
+def masked_integration_field(path: str, attrs: list[tuple[str, str]]) -> bool:
+    seen = set()
+    labels = set()
+    identifiers = set()
+    for name, raw in attrs:
+        if name in seen or name.startswith("v-") or (":" in name and name != "bind:value"):
+            return False
+        seen.add(name)
+        value = literal(raw)
+        if name == "type":
+            if value is None or value.lower() != "password":
+                return False
+        elif auth_signal(name) or auth_signal(unescape(raw)) or "\\" in raw:
+            return False
+        elif name == "autocomplete" and (value is None or value.lower() != "off"):
+            return False
+        elif name in LABELS | IDENTIFIERS:
+            if name in {"value", "bind:value"}:
+                ref = raw[1:-1].strip() if raw.startswith("{") else ""
+                value = ref.rsplit(".", 1)[-1] if SIMPLE_REF_RE.fullmatch(ref) else None
+            if value is None:
+                return False
+            if name in LABELS:
+                labels.add(credential_kind(value))
+            elif (kind := credential_kind(value)) is not None:
+                identifiers.add(kind)
+    if len(labels) != 1 or labels != identifiers:
+        return False
+    # A bare access token or client secret could describe the product's own
+    # session. Require independently named integration or provider context.
+    if labels & {"access token", "client secret"}:
+        evidence = " ".join(raw for name, raw in attrs if name in LABELS | IDENTIFIERS)
+        return bool({"provider", "providers", "integration", "integrations"} & set(words(path + " " + evidence)))
+    return True
+
+
+def auth_context(path: str, text: str) -> bool:
+    return (
+        auth_signal(path)
+        or any(auth_signal(next(name for name in m.groups() if name)) for m in AUTH_COMPONENT_RE.finditer(text))
+        or any(auth_signal(name) or auth_signal(unescape(raw))
+               for tag in FORM_TAG_RE.finditer(text) for name, raw in opening_attributes(text, tag.end())[1])
+    )
+
+
+def password_findings(path: str, text: str):
+    if not UI_FILE_RE.search(path):
+        return
+    candidates = {match.start(): match[0] for match in PASSWORD_INPUT_RE.finditer(text)}
+    is_auth = None
+    for tag in INPUT_TAG_RE.finditer(text):
+        end, attrs = opening_attributes(text, tag.end())
+        masked = any(name == "type" and (literal(raw) or raw).lower() == "password" for name, raw in attrs)
+        if not masked:
+            continue  # Any old match survives even if the tag was unparseable.
+        if end and masked_integration_field(path, attrs):
+            if is_auth is None:
+                is_auth = auth_context(path, text)
+            if not is_auth:
+                candidates.pop(tag.start(), None)
+                continue
+        if tag.start() not in candidates:
+            candidates[tag.start()] = text[tag.start():end] if end else text[tag.start():].split("\n", 1)[0]
+    line = 1
+    offset = 0
+    for start, identity in sorted(candidates.items()):
+        line += text.count("\n", offset, start)
+        offset = start
+        yield Finding(
+            path=path,
+            line=line,
+            rule="AUTH-R2",
+            identity=identity,
+            message="Handwritten <input type=\"password\"> in product web UI violates passwordless SSOT Auth.",
+            remediation=(
+                "Replace handwritten password inputs with <SylphxAuth /> (@sylphx/apps) using "
+                "Email 6-digit OTP + Passkey (autocomplete=\"username webauthn\") + Social OAuth."
+            ),
         )
 
 
@@ -175,7 +364,7 @@ def added_lines(root: Path, base: str, head: str):
             yield path, 1, "", True
 
 
-def scan_line(path: str, line_no: int, text: str, *, route: bool = False, password: bool = True) -> list[Finding]:
+def scan_line(path: str, line_no: int, text: str, *, route: bool = False) -> list[Finding]:
     findings = []
     if route and STANDALONE_AUTH_ROUTE_RE.search(path):
         findings.append(
@@ -190,21 +379,6 @@ def scan_line(path: str, line_no: int, text: str, *, route: bool = False, passwo
                     "Remove standalone /signup, /register, /forgot-password, or /reset-password routes and route all "
                     "sign-in/sign-up through the single Continue entry (<SylphxAuth /> from @sylphx/apps "
                     "or the hosted Sylphx Auth portal)."
-                ),
-            )
-        )
-
-    if password and UI_FILE_RE.search(path) and PASSWORD_INPUT_RE.search(text):
-        findings.append(
-            Finding(
-                path=path,
-                line=line_no,
-                rule="AUTH-R2",
-                identity=text,
-                message="Handwritten <input type=\"password\"> in product web UI violates passwordless SSOT Auth.",
-                remediation=(
-                    "Replace handwritten password inputs with <SylphxAuth /> (@sylphx/apps) using "
-                    "Email 6-digit OTP + Passkey (autocomplete=\"username webauthn\") + Social OAuth."
                 ),
             )
         )
@@ -236,8 +410,24 @@ def scan_diff(root: Path, base: str, head: str) -> list[Finding]:
             continue
         findings.extend(scan_line(path, line_no, text, route=is_new_file and path not in reported_routes))
         reported_routes.add(path)
-    return findings
-
+    # R2 uses the same committed-tag recognizer as the strict/full gate.
+    # Preserve legacy R1/R3 and annotation behavior.
+    before, after = tree_entries(root, base), tree_entries(root, head)
+    for path, raw in read_blobs(root, ((p, e) for p, e in after.items() if e != before.get(p)
+                                       and UI_FILE_RE.search(p) and not is_exempt_path(p) and e[0] in REGULAR)):
+        text = raw.decode("utf-8", "surrogateescape")
+        if b"\0" in raw or ALLOW_MARKER in text:
+            continue
+        prior = Counter()
+        if path in before and before[path][0] in REGULAR:
+            (_, old), = read_blobs(root, [(path, before[path])])
+            prior.update(f.identity for f in password_findings(path, old.decode("utf-8", "surrogateescape")))
+        for finding in password_findings(path, text):
+            if prior[finding.identity]:
+                prior[finding.identity] -= 1
+            else:
+                findings.append(finding)
+    return sorted(findings, key=lambda f: (f.path, f.line, f.rule))
 
 
 # Exact records follow the stack force-push ratchet: escaped path, digest,
@@ -292,16 +482,8 @@ def scan_tree(root: Path, entries, paths=None):
             continuity.add(path)
         findings = scan_line(path, 1, "", route=True)
         for line, content in enumerate(lines, 1):
-            findings.extend(scan_line(path, line, content, password=False))
-        if UI_FILE_RE.search(path):
-            # Unlike the legacy added-line recognizer, the committed-tree
-            # audit sees a split opening tag and counts each matching input.
-            line = 1
-            offset = 0
-            for match in PASSWORD_INPUT_RE.finditer(text):
-                line += text.count("\n", offset, match.start())
-                offset = match.start()
-                findings.extend(f for f in scan_line(path, line, match[0]) if f.rule == "AUTH-R2")
+            findings.extend(scan_line(path, line, content))
+        findings.extend(password_findings(path, text))
         occurrences = Counter()
         escaped = quote(path, safe="/._-", errors="surrogateescape")
         for finding in findings:
