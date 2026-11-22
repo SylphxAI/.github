@@ -1,6 +1,7 @@
 """Exercise the shared secret gate against real Git history and gitleaks."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import contextlib
 import importlib.util
@@ -67,7 +68,7 @@ class SecretScanTest(unittest.TestCase):
         self.git('commit', '-qm', message)
         return self.git('rev-parse', 'HEAD')
 
-    def scan(self, base=None, head=None, event='pull_request', fetch=False):
+    def scan(self, base=None, head=None, event='pull_request', fetch=False, config=None):
         base = base or self.base
         head = head or self.git('rev-parse', 'HEAD')
         payload = {'pull_request': {'base': {'sha': base}, 'head': {'sha': head}},
@@ -76,6 +77,8 @@ class SecretScanTest(unittest.TestCase):
         event_path.write_text(json.dumps(payload))
         env = dict(os.environ, GITHUB_EVENT_PATH=str(event_path), GITHUB_EVENT_NAME=event)
         args = [sys.executable, str(SCANNER), '--gitleaks', self.binary]
+        if config is not None:
+            args += ['--config', str(config)]
         if fetch:
             args += ['--fetch', '--remote', str(self.repo)]
         else:
@@ -95,6 +98,128 @@ class SecretScanTest(unittest.TestCase):
         self.assertEqual(code, 1)
         for part in (head, 'settings.txt', 'line 1', hashlib.sha256(self.line.encode()).hexdigest()):
             self.assertIn(part, output)
+
+    def test_prose_identifiers_and_placeholders_pass_without_an_allowlist(self):
+        sha = hashlib.sha1(b'public commit fixture').hexdigest()
+        lines = [
+            'etcd heartbeat tuning',
+            'a capability row of prose',
+            '| etcd heartbeat tuning | Operators may adjust intervals. |',
+            '| Secret scanning | a capability row of prose |',
+            'The token endpoint reuses the existing job token, without a second checkout.',
+            'env.update(SYLPHX_API_KEY=api_key_value, '
+            'SYLPHX_NO_KEYCHAIN="1", SYLPHX_NO_BROWSER="1")',
+            'ACCESS_KEY_NAME = etcd_heartbeat_tuning',
+            'TOKEN_ENDPOINT = internal-credential-exchange',
+            'credential_provider = workload_identity',
+            'revision: ' + sha,
+            'key: docs/architecture/credential-rotation.md',
+            'key: platform/cache/hydration-schema.yaml',
+            'key: internal-credential-exchange',
+            'key: customer_security_configuration',
+            'auth: passkey_enrollment',
+            'token: process.env.RELEASE_API_TOKEN',
+            'token: <REDACTED>',
+            'password: changeme',
+            'secret: example',
+            'token: your-token-here',
+            'secret: ***',
+            'export API_TOKEN=$TOKEN',
+            'export API_TOKEN=' + chr(36) + '{SECRET}',
+            'api_key: ' + chr(36) + '{{ secrets.RELEASE_API_KEY }}',
+            'postgres://user:<REDACTED>@db.example.com/db',
+            'redis://:your-password-here@cache.example.com/0',
+            'https://user:changeme@example.com',
+            'https://example.com/users/alice@example.com',
+            'https://example.com?q=author:alice@example.com',
+            'The new reconcile_pending_deployments step runs on the queue.',
+            'Use the create-passkey-session endpoint for the handshake.',
+        ]
+        self.write('docs/architecture.md', '\n'.join(lines) + '\n')
+        self.commit('write operational notes')
+        code, output = self.scan()
+        self.assertEqual(code, 0, output)
+        self.assertNotIn('reviewed findings allowed=', output)
+
+    def test_structured_secrets_and_high_entropy_assignments_refuse_in_markdown(self):
+        # Generate fake, deterministic values only inside temporary Git fixtures.
+        def sample(label, alphabet, length):
+            octets = hashlib.shake_256(label.encode()).digest(length)
+            return ''.join(alphabet[value % len(alphabet)] for value in octets)
+
+        letters = 'abcdefghijklmnopqrstuvwxyz'
+        alnum = letters + letters.upper() + '0123456789'
+        hex_chars = '0123456789abcdef'
+        upper = letters.upper() + '234567'
+        value = sample('password', alnum, 24)
+        def jwt_segment(raw):
+            return base64.urlsafe_b64encode(raw).decode().rstrip('=')
+
+        jwt = '.'.join(map(jwt_segment, (b'{"alg":"HS256","typ":"JWT"}',
+                                         b'{"sub":"fixture","exp":1111111111}',
+                                         hashlib.sha256(b'not-a-jwt-signature').digest())))
+        hooks = sample('webhook', alnum, 68)
+        cases = {
+            **{prefix: prefix + sample(prefix, alnum, 24) for prefix in ('sk_live_', 'sk_test_', 'rk_live_')},
+            **{prefix: prefix + sample(prefix, alnum, 36) for prefix in ('ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_')},
+            'fine-grained PAT': 'github_' + 'pat_' + sample('fgpat', alnum, 82),
+            **{prefix: prefix + sample(prefix, upper, 16) for prefix in ('AKIA', 'ASIA')},
+            '1Password': 'ops_' + jwt_segment(b'{"fixture":"' + sample('ops', alnum, 215).encode() + b'"}'),
+            'Slack bot': 'xoxb-' + '13579246802-24681357902-' + sample('slack-bot', alnum, 24),
+            'Slack user': 'xoxp-' + '13579246802-24681357902-35792468012-' + sample('slack-user', alnum, 32),
+            'Slack app': 'xapp-' + '1-A13BCD42-12345678901-' + sample('slack-app', alnum, 64),
+            'Resend': 're_' + sample('resend', alnum, 8) + '_' + sample('secret', alnum, 24),
+            'Supabase': 'sbp_' + sample('supabase', hex_chars, 40),
+            'Google API': 'AIza' + sample('google', alnum, 35),
+            'Google OAuth': 'ya29.' + sample('oauth', alnum, 55),
+            'JWT': jwt,
+            'Telegram': '1375429131:' + sample('telegram', alnum, 35),
+            'Discord webhook': 'https://discord.com/api/webhooks/' + '723456789098765432/' + hooks,
+            'Slack webhook': 'https://hooks.slack.com/services/' + 'T' + hooks[:10] + '/B' + hooks[10:20] + '/' + hooks[20:44],
+            'CF token': 'CLOUDFLARE_' + 'API_TOKEN' + '=' + sample('cloudflare', alnum, 40),
+            'CF global key': 'CLOUDFLARE_' + 'API_KEY' + '=' + sample('cloudflare', hex_chars, 37),
+            'Cloudflare origin CA': 'v1.0-' + sample('origin', hex_chars, 24) + '-' + sample('cf', hex_chars, 146),
+            'Backblaze B2': 'B2_APPLICATION_KEY=' + sample('b2', alnum, 31),
+            'PEM header': '-----BEGIN ' + 'OPENSSH PRIVATE KEY-----',
+            'Postgres DSN': 'postgres://reader:' + value + '@db.example.com/warehouse',
+            'Redis DSN': 'redis://:' + value + '@cache.example.com/0',
+            'HTTPS userinfo': 'https://build:' + value + '@packages.example.com',
+            'HTTPS percent encoding': 'https://build:' + value + '%40%21@packages.example.com',
+            'JSON secret assignment': '{"clientSecret": "' + value + '"}',
+            'YAML token assignment': 'api-token: ' + value,
+            'shell password assignment': 'export SERVICE_PASSWORD=' + value,
+            'lowercase API token assignment': 'api_key = "' + sample('lowercase', letters, 32) + '"',
+            'camelCase password': 'dbPassword = "' + value + '"',
+            'PascalCase key': 'ReleaseApiKey = "' + value + '"',
+            'credential abbreviation': 'CREDS = "' + value + '"',
+            'camelCase token': 'botToken: "' + value + '"',
+            'credential value field': 'PASSWORD' + '_VALUE = "' + value + '"',
+            'bracketed field': "conf['auth_token'] = '" + value + "'",
+            'inline code field': chr(96) + 'API_TOKEN' + chr(96) + ': ' + value,
+            'prose with real token': 'The etcd heartbeat tuning procedure used ' + self.token,
+        }
+        lines = list(cases.values())
+        self.write('docs/architecture.md', '\n'.join(lines) + '\n')
+        self.commit('add synthetic credential corpus')
+        code, output = self.scan()
+        self.assertEqual(code, 1, output)
+        for number, (label, line) in enumerate(cases.items(), 1):
+            with self.subTest(format=label):
+                digest = hashlib.sha256(line.encode()).hexdigest()
+                self.assertIn(f'line {number} sha256 {digest}', output)
+                self.assertNotIn(line, output)
+
+    def test_explicit_standalone_config_remains_an_override(self):
+        config = self.root / 'custom.toml'
+        config.write_text('[[rules]]\n' 'id = "fixture"\n' 'regex = "standalone-config-fixture"\n')
+        self.add_token()
+        self.assertEqual(self.scan(config=config)[0], 0)
+        line = 'standalone-config-fixture'
+        self.write('custom.txt', line + '\n')
+        self.commit('exercise caller-specific rule')
+        code, output = self.scan(config=config)
+        self.assertEqual(code, 1, output)
+        self.assertIn(hashlib.sha256(line.encode()).hexdigest(), output)
 
     def test_old_history_and_unchanged_context_pass(self):
         base = self.add_token()

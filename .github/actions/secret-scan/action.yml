@@ -4,8 +4,8 @@ description: >
   context. Runs the gitleaks CLI over ONLY the commits this push / pull request
   / merge group adds, so a pre-existing historical leak (a separate rotation
   track) never makes the gate red on arrival, while any newly introduced secret
-  fails the job. Uses the MIT-licensed gitleaks binary directly (no
-  GITLEAKS_LICENSE, free for orgs).
+  fails the job. Uses the MIT-licensed gitleaks binary with a shared policy
+  for structured credentials and high-entropy literal assignments.
 
   The calling job MUST check out with `fetch-depth: 0` so the commit range is
   resolvable. Findings name commit, path and line, never values. Exact
@@ -17,7 +17,7 @@ inputs:
     required: false
     default: "8.30.1"
   config-path:
-    description: Optional path to a gitleaks config (e.g. .gitleaks.toml). Empty uses gitleaks defaults.
+    description: Optional path to a gitleaks config (e.g. .gitleaks.toml). Empty uses the shared credential policy.
     required: false
     default: ""
 
