@@ -8,16 +8,16 @@ description: >
   live-title continuity (# auth-surface-guard: allow(legacy-continuity)).
 inputs:
   base-ref:
-    description: Base Git revision to compare. Defaults to the pull_request or merge_group event base SHA when no explicit base is supplied.
+    description: Git base for the diff or to verify full-mode inheritance. Defaults to the PR or merge group base SHA, or the push before SHA in diff mode.
     default: ""
   base:
     description: Legacy alias for base-ref. Ignored when base-ref is set.
     default: ""
   strict:
-    description: Require an available base revision. Set to 'false' only for legacy diff fallback or a single-revision full audit.
+    description: Require a base in diff mode and verify inheritance for full-mode waivers. Full mode can audit without a base.
     default: 'true'
   head:
-    description: Head commit of the checked diff.
+    description: Head commit of the diff or full audit.
     default: HEAD
   root:
     description: Repository checkout root to inspect.
@@ -41,6 +41,7 @@ runs:
         AUTH_GUARD_BASE: ${{ inputs.base }}
         AUTH_GUARD_PR_BASE: ${{ github.event.pull_request.base.sha }}
         AUTH_GUARD_MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+        AUTH_GUARD_PUSH_BEFORE: ${{ github.event.before }}
         AUTH_GUARD_STRICT: ${{ inputs.strict }}
         AUTH_GUARD_HEAD: ${{ inputs.head }}
         AUTH_GUARD_ROOT: ${{ inputs.root }}
@@ -61,6 +62,19 @@ runs:
           case "$GITHUB_EVENT_NAME" in
             pull_request) base="$AUTH_GUARD_PR_BASE" ;;
             merge_group) base="$AUTH_GUARD_MERGE_GROUP_BASE" ;;
+            push)
+              if [ "$AUTH_GUARD_MODE" = diff ]; then
+                base="$AUTH_GUARD_PUSH_BEFORE"
+              fi
+              ;;
+          esac
+        fi
+        if [ "$AUTH_GUARD_MODE" = diff ] && [ -z "$base" ]; then
+          case "$GITHUB_EVENT_NAME" in
+            pull_request|merge_group|push)
+              echo '::error::auth-surface-guard: event base revision is required for diff mode'
+              exit 2
+              ;;
           esac
         fi
         strict=()

@@ -75,8 +75,10 @@ If unrelated stack checks block first-time adoption, use the
 [standalone auth-surface-guard action](../.github/actions/auth-surface-guard/README.md)
 as a required check on pull requests and merge groups. Its default strict diff
 mode requires the event base commit (or an explicitly supplied base) to be
-available in the checkout. The action README also covers recognizer scope and
-the continuity exception.
+available in the checkout. Full mode can audit a single commit on push,
+manual, or scheduled runs without a base. Supply a base when a strict audit
+needs to prove that an auth departure is inherited. See the action README
+for event defaults, recognizer scope, and the continuity exception.
 
 ## What counts as a departure
 

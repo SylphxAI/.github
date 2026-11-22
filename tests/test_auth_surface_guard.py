@@ -78,54 +78,65 @@ class AuthSurfaceGuardTest(unittest.TestCase):
             env=env, text=True, capture_output=True, check=False,
         )
 
-    def test_action_checks_against_the_current_event_base_not_head_parent(self):
+    def test_action_diff_uses_the_current_event_base_not_head_parent(self):
         repo = self.make_repo()
         path = "src/app/signup/page.tsx"
         base, _ = self.commit_files(repo, {path: "export default function Signup() {}\n"})
-        parent, _ = self.commit_files(repo, {"README.md": "# Updated product\n"})
-        events = (
-            ("pull_request", {"pull_request": {"base": {"sha": base}}, "merge_group": {"base_sha": parent}}),
-            ("merge_group", {"merge_group": {"base_sha": base}, "pull_request": {"base": {"sha": parent}}}),
-        )
-        for event_name, event in events:
-            with self.subTest(event_name=event_name):
-                result = self.run_action(repo, event_name=event_name, event=event)
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertIn(path, result.stdout)
-                self.assertIn("AUTH-R1", result.stdout)
+        parent, head = self.commit_files(repo, {"README.md": "# Updated product\n"})
+        for event_name in ("pull_request", "merge_group", "push"):
+            for expected, event_base in ((0, parent), (1, base)):
+                with self.subTest(event_name=event_name, expected=expected):
+                    event = {
+                        "pull_request": {"base": {"sha": event_base if event_name == "pull_request" else head}},
+                        "merge_group": {"base_sha": event_base if event_name == "merge_group" else head},
+                        "before": event_base if event_name == "push" else head,
+                    }
+                    result = self.run_action(repo, event_name=event_name, event=event)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                    self.assertIn("diff audit", result.stdout)
+                    if expected:
+                        self.assertIn(path, result.stdout)
+                        self.assertIn("AUTH-R1", result.stdout)
 
     def test_action_explicit_base_ref_overrides_alias_and_event_base(self):
         repo = self.make_repo()
         base, head = self.commit_files(repo, {"src/app/signup/page.tsx": ""})
-        event = {"pull_request": {"base": {"sha": base}}}
-        for inputs, expected in (({"base-ref": head, "base": base}, 0), ({"base": head}, 0),
-                                 ({"base-ref": "absent-base", "base": head}, 2)):
-            with self.subTest(inputs=inputs):
-                result = self.run_action(repo, event_name="pull_request", event=event, **inputs)
-                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+        events = (("pull_request", {"pull_request": {"base": {"sha": base}}}),
+                  ("push", {"before": "0" * 40}), ("schedule", {}), ("workflow_dispatch", {}))
+        for event_name, event in events:
+            for inputs, expected in (({"base-ref": head, "base": base}, 0), ({"base": base}, 1),
+                                     ({"base-ref": "absent-base", "base": head}, 2)):
+                with self.subTest(event_name=event_name, inputs=inputs):
+                    result = self.run_action(repo, event_name=event_name, event=event, **inputs)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
-    def test_action_strict_fails_closed_for_missing_or_unavailable_base(self):
+    def test_action_diff_fails_closed_for_missing_or_unavailable_base(self):
         repo = self.make_repo()
         self.commit_files(repo, {"README.md": "# Updated product\n"})
         events = (
             ("pull_request", {"pull_request": {"base": {"sha": "absent-base"}}}),
             ("merge_group", {"merge_group": {"base_sha": "absent-base"}}),
-            ("pull_request", {}),
-            ("merge_group", {}),
-            ("push", {}),
+            ("push", {"before": "absent-base"}),
+            ("push", {"before": "0" * 40}),
+            ("push", {"before": " "}),
+            ("pull_request", {}), ("merge_group", {}), ("push", {}),
+            ("workflow_dispatch", {}), ("schedule", {}),
         )
         for event_name, event in events:
-            for mode in ("diff", "full"):
-                with self.subTest(event_name=event_name, event=event, mode=mode):
-                    result = self.run_action(repo, event_name=event_name, event=event, mode=mode)
+            # Legacy parent fallback is only for events without a diff base
+            # contract, not a substitute for a missing event range.
+            strict_values = ("true",) if event_name in ("workflow_dispatch", "schedule") else ("true", "false")
+            for strict in strict_values:
+                with self.subTest(event_name=event_name, event=event, strict=strict):
+                    result = self.run_action(repo, event_name=event_name, event=event, mode="diff", strict=strict)
                     self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                    self.assertIn("explicit base revision is required and must be available", result.stderr)
+                    self.assertIn("base revision", result.stdout + result.stderr)
 
-    def test_action_legacy_diff_is_opt_in_and_uses_head_parent(self):
+    def test_action_legacy_diff_is_opt_in_and_requires_head_parent(self):
         repo = self.make_repo()
         root_only = self.run_action(repo, strict="false")
-        self.assertEqual(root_only.returncode, 0, root_only.stdout + root_only.stderr)
-        self.assertIn("single-commit history", root_only.stdout)
+        self.assertEqual(root_only.returncode, 2, root_only.stdout + root_only.stderr)
+        self.assertIn("head parent is unavailable", root_only.stderr)
         self.commit_files(repo, {"src/app/signup/page.tsx": ""})
         result = self.run_action(repo, strict="false")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
@@ -133,6 +144,38 @@ class AuthSurfaceGuardTest(unittest.TestCase):
         invalid = self.run_action(repo, strict="typo")
         self.assertEqual(invalid.returncode, 2, invalid.stdout + invalid.stderr)
         self.assertIn("strict must be true or false", invalid.stdout)
+
+    def test_action_full_with_no_base_audits_entire_selected_head(self):
+        repo = self.make_repo()
+        _, clean = self.commit_files(repo, {"src/entry.tsx": "<SylphxAuth />\n"})
+        self.commit_files(repo, {"src/app/signup/page.tsx": ""})
+        _, violating = self.commit_files(repo, {"README.md": "# Unrelated change\n"})
+        events = [(name, {}) for name in ("push", "workflow_dispatch", "schedule", "pull_request", "merge_group")]
+        events += [("push", {"before": "0" * 40}), ("push", {"before": clean})]
+        for event_name, event in events:
+            for strict in ("true", "false"):
+                for head, code, text in ((clean, 0, "full audit"), (violating, 1, "AUTH-R1"),
+                                         ("missing-head", 2, "head revision")):
+                    with self.subTest(event_name=event_name, event=event, strict=strict, head=head):
+                        result = self.run_action(repo, event_name=event_name, event=event,
+                                                 mode="full", strict=strict, head=head)
+                        self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                        self.assertIn(text, result.stdout + result.stderr)
+
+    def test_action_strict_full_without_base_does_not_trust_head_only_waivers(self):
+        repo = self.make_repo()
+        baseline = ".github/auth-departures.txt"
+        self.commit_files(repo, {
+            "src/app/signup/page.tsx": "",
+            "src/legacy/phone.ts": "// auth-surface-guard: allow(legacy-continuity)\nsendSmsOtp(phone)\n",
+        })
+        records = self.run_guard(repo, "--mode", "full", "--print-baseline")
+        self.assertEqual(records.returncode, 0, records.stderr)
+        self.commit_files(repo, {baseline: records.stdout})
+        result = self.run_action(repo, event_name="push", mode="full", baseline=baseline)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("baseline finding is not inherited: auth-surface AUTH-R1", result.stdout)
+        self.assertIn("[AUTH-R3]", result.stdout)
 
     def test_action_full_audits_inherited_findings_and_accepts_baseline(self):
         repo = self.make_repo()
@@ -458,9 +501,9 @@ class AuthSurfaceGuardTest(unittest.TestCase):
         baseline = '.github/auth-departures.txt'
         base, _ = self.commit_files(repo, {baseline: 'invalid baseline syntax\n'})
         for args, reason in [
-            (('--strict', '--base', 'missing'), 'explicit base'),
+            (('--strict', '--base', 'missing'), 'base revision must be available'),
             (('--strict',), 'explicit base'),
-            (('--mode', 'full', '--base', 'missing'), 'explicit base'),
+            (('--mode', 'full', '--base', 'missing'), 'base revision must be available'),
             (('--mode', 'full', '--head', base, '--baseline', baseline), 'not tracked'),
             (('--mode', 'full', '--baseline', baseline), 'invalid or duplicate'),
             (('--mode', 'full', '--baseline', '../baseline'), 'repository-relative'),

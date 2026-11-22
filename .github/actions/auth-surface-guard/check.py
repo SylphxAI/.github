@@ -520,8 +520,9 @@ def check_tree(root: Path, args, base: str) -> int:
     # Unchanged paths are inherited by blob identity. On changed paths a
     # continuity annotation carries forward only exact, already annotated debt.
     prior = {key for key, finding in found.items() if finding.path not in changed} | inherited.keys()
+    # A strict head-only audit has no evidence for a continuity waiver.
     waived = {key for key, finding in found.items() if finding.path in continuity
-              and (not base or finding.path not in changed
+              and (not base and not args.strict or finding.path not in changed
                    or finding.path in base_continuity and key in prior)}
     if args.print_baseline:
         print("# Auth surface departures; this list may only shrink.")
@@ -539,7 +540,7 @@ def check_tree(root: Path, args, base: str) -> int:
         previous = read_baseline(root, before, str(path), required=False) if base else None
         if previous is not None:
             errors += ["baseline grew: " + key for key in sorted(allowed - previous)]
-        if base:
+        if base or args.strict:
             errors += ["baseline finding is not inherited: " + key for key in sorted(allowed - prior)]
         errors += ["stale baseline entry: " + key for key in sorted(allowed - found.keys())]
     if args.mode == "diff":
@@ -555,14 +556,6 @@ def check_tree(root: Path, args, base: str) -> int:
     return int(bool(violations or errors))
 
 
-def resolve_base(root: Path, base_arg: str, head: str) -> str | None:
-    if base_arg and commit_exists(root, base_arg):
-        return base_arg
-    if commit_exists(root, f"{head}^1"):
-        return f"{head}^1"
-    return None
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")
@@ -571,7 +564,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=("diff", "full"), default="diff")
     parser.add_argument("--baseline", default="", help="tracked departures file (full mode only)")
     parser.add_argument("--print-baseline", action="store_true", help="emit candidate records (full mode only)")
-    parser.add_argument("--strict", action="store_true", help="require a valid explicit base")
+    parser.add_argument("--strict", action="store_true",
+                        help="require an explicit diff base; require inheritance evidence for full-mode waivers")
     args = parser.parse_args(argv)
     if (args.baseline or args.print_baseline) and args.mode != "full":
         parser.error("--baseline and --print-baseline require --mode full")
@@ -583,11 +577,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"auth-surface-guard: head revision '{args.head}' is not available", file=sys.stderr)
         return 2
 
+    base = args.base.strip()
+    if args.base and (not base or base == "0" * 40 or not commit_exists(root, base)):
+        print("auth-surface-guard: base revision must be available (an all-zero SHA is not a base)", file=sys.stderr)
+        return 2
+    if args.mode == "diff" and not base and args.strict:
+        print("auth-surface-guard: explicit base revision is required in strict diff mode", file=sys.stderr)
+        return 2
+
     if args.mode == "full" or args.strict:
-        base = args.base.strip()
-        if (base and not commit_exists(root, base)) or (args.strict and not base):
-            print("auth-surface-guard: explicit base revision is required and must be available", file=sys.stderr)
-            return 2
         try:
             # Bind revision arguments before passing them to other Git commands.
             args.head = git(root, "rev-parse", "--verify", "--end-of-options", f"{args.head}^{{commit}}").decode().strip()
@@ -598,10 +596,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"auth-surface-guard: audit could not complete: {error}", file=sys.stderr)
             return 2
 
-    base = resolve_base(root, args.base.strip(), args.head)
-    if base is None:
-        print("auth-surface-guard: single-commit history without parent; 0 findings")
-        return 0
+    base = base or f"{args.head}^1"
+    if not commit_exists(root, base):
+        print("auth-surface-guard: head parent is unavailable; supply a diff base or use full mode", file=sys.stderr)
+        return 2
 
     findings = scan_diff(root, base, args.head)
     for finding in findings:
