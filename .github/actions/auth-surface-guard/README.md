@@ -27,29 +27,36 @@ available locally. For example:
 ```
 
 The default is `mode: diff` with `strict: 'true'`. The action uses `base-ref`
-first, then the legacy `base` input, then the triggering event's exact base SHA
-(`github.event.pull_request.base.sha` or `github.event.merge_group.base_sha`).
-For other events, supply `base-ref`. The action does not fetch missing commits;
-with strict checking, an empty or unavailable base fails with exit code 2.
-Use `strict: 'false'` only if you deliberately want the legacy diff fallback to
-the head's first parent (or no check in a single-commit checkout).
+first, then the legacy `base` input, then the triggering event's exact base SHA:
+`github.event.pull_request.base.sha`, `github.event.merge_group.base_sha`, or
+`github.event.before` for a push. For other events, supply `base-ref`. The
+action does not fetch missing commits. A missing or unavailable base fails
+with exit code 2, including an all-zero push `before` (for example, a new
+branch). In that case supply an available base or use `mode: full`.
+`strict: 'false'` keeps the legacy diff checker and allows a first-parent
+fallback only on events without an event base contract, when no base is
+provided and the parent is available.
 
 Set `mode: full` to audit the entire committed tree, regardless of which files
-changed. Strict mode still requires a base. To audit just one revision without
-an event base, run on a non-PR/non-queue event with `strict: 'false'` and omit
-both base inputs. Full mode reads tracked Git blobs from the selected head, not
-the index or worktree. To run the equivalent strict audit from the CLI:
+changed. A base is not required, even with `strict: 'true'`. Full mode uses
+tracked Git blobs at the selected head, not the index or worktree. It still
+uses an explicit base or the PR or merge group base when supplied, to prove
+that baseline records and continuity exceptions are inherited. It does not
+use the push `before` SHA automatically. To run a strict head-only audit:
 
 ```sh
 python3 /path/to/shared/.github/actions/auth-surface-guard/check.py \
-  --strict --mode full --base "$BASE_SHA" --head "$HEAD_SHA" \
-  --baseline .github/auth-departures.txt
+  --strict --mode full --head "$HEAD_SHA"
 ```
 
-Omit `--baseline` to require zero findings. Without `--strict` or `--base`, the
-CLI audits one revision against its own baseline; it cannot establish inheritance. With a
-base, a first baseline can contain only exact base-existing findings. Invalid,
-missing, grown, and stale baseline entries fail. A committed empty file is valid.
+In a strict head-only audit, a nonempty baseline and continuity markers
+cannot waive findings: there is no proof of inheritance. To verify inherited
+departures, pass `--base "$BASE_SHA" --baseline .github/auth-departures.txt`.
+With a base, a first baseline can contain only exact base-existing findings.
+An invalid supplied base fails, and invalid, missing, grown, and stale
+baseline entries fail. A committed empty file is valid. A deliberate
+non-strict head-only audit can use its own baseline and continuity exceptions
+but cannot verify inheritance.
 
 Test paths and shared implementation prefixes are out of scope. Full mode and
 the strict diff gate recognize a standalone `//` or `#` comment containing
