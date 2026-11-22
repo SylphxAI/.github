@@ -17,6 +17,52 @@ This is a ratchet in the style of Betterer, scoped like a Backstage Tech
 Insights check: existing debt is recorded once, and new debt fails at the pull
 request instead of being found by a later audit.
 
+## Passwordless auth surface
+
+The optimistic gate runs `auth-surface: diff` in the required `stack` job on
+pull requests and merge groups. It rejects new standalone auth routes, literal
+password fields, and recognized public-web SMS sign-in calls without requiring
+cleanup of unchanged legacy code. Missing base history cannot turn the gate
+green. Existing callers are unchanged: upgrading the shared SHA alone leaves
+the new stack input off.
+
+For web products, switch to `full` to audit the entire committed tree. For a
+clean repository, omit `auth-baseline`. For an existing product, run these
+commands from its checkout with `SHARED_CHECKOUT` pointing to the adopted
+`SylphxAI/.github` revision. Generate records from the target branch's existing
+commit, not from the PR head:
+
+```sh
+BASE_SHA=$(git rev-parse origin/main)
+mkdir -p .github
+python3 "$SHARED_CHECKOUT/.github/actions/auth-surface-guard/check.py" \
+  --mode full --head "$BASE_SHA" --print-baseline > .github/auth-departures.txt
+```
+
+Inspect the records. Commit the baseline and workflow change in the same PR.
+Update the existing required stack step rather than duplicating the auth check
+in lint. Pin a published `SylphxAI/.github` main commit containing the feature:
+
+```yaml
+- uses: SylphxAI/.github/.github/actions/stack-conformance@<published-full-sha> # main
+  with:
+    base: ${{ needs.plan.outputs.base || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.inputs.code-base }}
+    auth-surface: full
+    auth-baseline: .github/auth-departures.txt
+```
+
+The separate auth departures file uses the stack ratchet's escaped path,
+content digest, and occurrence convention. First adoption admits only findings
+that already exist at the event base. Afterward the baseline may only shrink.
+Remove a record in the same PR that fixes the finding, or the audit fails on
+the stale record. The rule adoption helper still handles other categories in
+`stack-departures.txt`; it does not seed the caller's opt-in auth baseline.
+No organization-specific allowlist is needed. As elsewhere in stack
+conformance, only confirmed delivered customer repositories are skipped.
+
+See [auth-surface-guard](../.github/actions/auth-surface-guard/README.md) for
+recognizer coverage and the continuity exception.
+
 ## What counts as a departure
 
 One line per departure, the same format in the baseline and in the output:

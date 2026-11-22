@@ -147,6 +147,15 @@ def source_profile(tree):
             raise ValueError("Rust reachability checker source missing")
         ast.parse(value)
         sources[rust_path] = hashlib.sha256(value.encode()).hexdigest()
+    auth_path = ".github/actions/auth-surface-guard/check.py"
+    if "../auth-surface-guard/check.py" in (texts["action.yml"] or ""):
+        value = tree.read(auth_path)
+        if value is None:
+            raise ValueError("auth surface checker source missing")
+        ast.parse(value)
+        sources[auth_path] = hashlib.sha256(value.encode()).hexdigest()
+        # Auth is conditional on caller inputs and has its own exact baseline.
+        # Do not represent it as an unconditional stack-departures rule.
     scope_path = "policy/deal-randomness-scope.json"
     if deal_path in sources:
         value = tree.read(scope_path)
