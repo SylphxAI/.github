@@ -53,16 +53,19 @@ disabledRules = ["generic-api-key"]
 [[rules]]
 id = "credential-assignment"
 description = "Literal value assigned to a credential field"
-regex = '''(?i)\b(?:[a-z][a-z0-9_.-]*[_.-])?(?:password|passwd|pwd|secret(?:[_.-]?key)?|(?:(?:api|access|auth|client|refresh|session|bearer|private|signing|encryption|secret)[_.-]?)?(?:token|key)|(?:api|client)[_.-]?secret|credentials?)["']?[ \t]*(?:=>|:{1,3}=|\?=|=|:)[ \t]*[\x60"']?([a-z0-9_+~!%@#^*=-][a-z0-9_+~!%@#^*.=/\-]{9,})(?:[\x60"'\s;,}\])]|$)'''
+# Match complete credential-field names, including camelCase suffixes and
+# explicit value fields, without treating metadata like TOKEN_ENDPOINT as a key.
+regex = '''\b(?:(?i:(?:[a-z][a-z0-9_.-]*[_.-])?(?:password|passwd|pwd|secret(?:[_.-]?key)?|(?:(?:api|access|auth|client|refresh|session|bearer|private|signing|encryption|secret)[_.-]?)?(?:token|key)|(?:api|client)[_.-]?secret|credentials?|creds|auth|access))|[A-Za-z][A-Za-z0-9_.-]*(?:Password|Passwd|Secret|Token|Key|Credentials?|Creds))(?i:[_.-](?:value|literal|string))?(?:["']\]?|\x60)?[ \t]*(?:=>|:{1,3}=|\?=|=|:)[ \t]*[\x60"']?([A-Za-z0-9_+~!%@#^*=-][A-Za-z0-9_+~!%@#^*.=/\-]{9,})(?:[\x60"'\s;,}\])]|$)'''
 secretGroup = 1
 entropy = 3.5
 
 [[rules.allowlists]]
-description = "Documented placeholders, environment references and prose file references"
+description = "Documented placeholders, ordinary identifiers and file or environment references"
 regexes = [
     '''(?i)^(?:redacted|change[_.-]?me|replace[_.-]?me|(?:your|example|sample|dummy|placeholder)[_.-](?:(?:api|access|client|secret)[_.-])?(?:key|password|secret|token)(?:[_.-]here)?)$''',
     '''^(?:process\.env|os\.environ|std::env)\.[A-Z_][A-Z0-9_]*$''',
-    '''^(?:docs|scripts)/[a-z_/-]+\.(?:md|toml|yaml|yml|json|txt)$''',
+    '''^(?:[a-z]{2,}(?:[_-][a-z]{2,})+|[A-Z]{2,}(?:_[A-Z]{2,})+)$''',
+    '''^(?:\./)?(?:[a-z][a-z0-9_-]*/)+[a-z][a-z0-9_-]*\.(?:md|toml|yaml|yml|json|txt|py|js|ts|rs|sh)$''',
 ]
 
 # Extend format coverage without changing the other built-in rules.
