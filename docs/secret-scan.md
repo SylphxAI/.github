@@ -70,6 +70,12 @@ also detects private-key headers, URLs containing literal passwords, Telegram
 bot tokens without a field name, Discord webhooks, and additional Resend,
 Supabase, Google OAuth, and Backblaze B2 credential formats.
 
+In Rust files, the shared policy checks each generic assignment finding against
+the committed source. It treats a bare PascalCase name in a recognized struct
+field or function parameter as a type, not a credential. Quoted values,
+credential assignments (including typed string bindings), and provider-rule
+findings still block. This is not a file or line exemption.
+
 Plain prose such as “etcd heartbeat tuning” or “a capability row of prose”,
 ordinary identifiers, revision hashes in metadata, and file references do not
 need exceptions. Use a runtime reference or an obvious placeholder such as
