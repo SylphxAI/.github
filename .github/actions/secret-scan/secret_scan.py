@@ -43,6 +43,79 @@ METADATA_TIMEOUT = 180
 OBJECT_FETCH_TIMEOUT = 600
 DETECTOR_TIMEOUT = 600
 
+# Keep pinned provider rules. Replace only the broad generic rule, whose
+# substring keywords and comma/operator alternatives also match prose and code.
+DEFAULT_POLICY = r"""
+[extend]
+useDefault = true
+disabledRules = ["generic-api-key"]
+
+[[rules]]
+id = "credential-assignment"
+description = "Literal value assigned to a credential field"
+regex = '''(?i)\b(?:[a-z][a-z0-9_.-]*[_.-])?(?:password|passwd|pwd|secret(?:[_.-]?key)?|(?:(?:api|access|auth|client|refresh|session|bearer|private|signing|encryption|secret)[_.-]?)?(?:token|key)|(?:api|client)[_.-]?secret|credentials?)["']?[ \t]*(?:=>|:{1,3}=|\?=|=|:)[ \t]*[\x60"']?([a-z0-9_+~!%@#^*=-][a-z0-9_+~!%@#^*.=/\-]{9,})(?:[\x60"'\s;,}\])]|$)'''
+secretGroup = 1
+entropy = 3.5
+
+[[rules.allowlists]]
+description = "Documented placeholders, environment references and prose file references"
+regexes = [
+    '''(?i)^(?:redacted|change[_.-]?me|replace[_.-]?me|(?:your|example|sample|dummy|placeholder)[_.-](?:(?:api|access|client|secret)[_.-])?(?:key|password|secret|token)(?:[_.-]here)?)$''',
+    '''^(?:process\.env|os\.environ|std::env)\.[A-Z_][A-Z0-9_]*$''',
+    '''^(?:docs|scripts)/[a-z_/-]+\.(?:md|toml|yaml|yml|json|txt)$''',
+]
+
+# Extend format coverage without changing the other built-in rules.
+[[rules]]
+id = "webhook-discord"
+regex = '''https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]{17,20}/[A-Za-z0-9_-]{50,}'''
+keywords = ["/webhooks/"]
+
+[[rules]]
+id = "telegram-token-literal"
+regex = '''\b[0-9]{5,16}:[A-Za-z0-9_-]{35,}'''
+entropy = 3
+
+[[rules]]
+id = "private-key-header"
+regex = '''-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----'''
+keywords = ["private key"]
+
+[[rules]]
+id = "url-password"
+regex = '''(?i)\b(?:https?|postgres(?:ql)?|rediss?|mysql|mongodb(?:\+srv)?|amqps?)://[^\s:/@?#"'<>]*:([^\s/@?#"'<>]+)@[a-z0-9\[]'''
+secretGroup = 1
+keywords = ["://"]
+
+[[rules.allowlists]]
+regexes = ['''(?i)^(?:redacted|change[_.-]?me|example|your[_.-]password(?:[_.-]here)?|\*+|\$[A-Z_][A-Z0-9_]*|\$\{[A-Z_][A-Z0-9_]*\})$''']
+
+[[rules]]
+id = "resend-token"
+regex = '''\bre_[A-Za-z0-9]{8}_[A-Za-z0-9_-]{20,}'''
+entropy = 3
+keywords = ["re_"]
+
+[[rules]]
+id = "supabase-personal-token"
+regex = '''\bsbp_[a-f0-9]{40}\b'''
+entropy = 3
+keywords = ["sbp_"]
+
+[[rules]]
+id = "google-oauth-access-token"
+regex = '''\bya29\.[A-Za-z0-9_-]{20,}'''
+entropy = 3
+keywords = ["ya29."]
+
+[[rules]]
+id = "backblaze-application-key"
+regex = '''(?i)\b(?:b2|backblaze)[_.-]?(?:(?:application|app|account)[_.-]?)?key["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9]{31})(?:["'\s;,}]|$)'''
+secretGroup = 1
+entropy = 3
+keywords = ["b2", "backblaze"]
+"""
+
 
 class ScanError(Exception):
     """Only code-owned messages, reasons and phases cross the output boundary."""
@@ -395,8 +468,10 @@ def scan(repo, base, head, binary, directory, config=''):
     with phase('changed-blob-acquisition'):
         hydrate_changed_blobs(repo, base, head)
     allowed = allowlist(repo, head)
-    policy = directory / 'gitleaks.toml'
-    policy.write_text('[extend]\nuseDefault = true\n')
+    if not config:
+        policy = directory / 'gitleaks.toml'
+        policy.write_text(DEFAULT_POLICY, encoding='utf-8')
+        config = str(policy)
     report = directory / 'findings.json'
     log_range = f'{base}..{head}' if base else f'-1 {head}'
     print('Scanning added commits: ' + log_range, flush=True)
@@ -405,7 +480,7 @@ def scan(repo, base, head, binary, directory, config=''):
             result = subprocess.run([
                 binary, 'git', str(repo), '--log-opts=' +
                 '--full-history --no-ext-diff --no-textconv --unified=0 --no-renames --diff-merges=first-parent ' + log_range,
-                '--config', config or str(policy), '--ignore-gitleaks-allow',
+                '--config', config, '--ignore-gitleaks-allow',
                 '--gitleaks-ignore-path', str(directory / 'no-ignores'),
                 '--no-banner', '--no-color', '--log-level', 'error', '--report-format', 'json', '--report-path', str(report),
             ], cwd=directory, capture_output=True, timeout=DETECTOR_TIMEOUT,

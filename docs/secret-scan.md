@@ -9,7 +9,8 @@ action pin enables the check; callers need no new workflow step or checkout. The
 No license or paid service is used.
 
 The scanner fetches immutable Git objects into a temporary bare repository.
-It runs the checksum-pinned MIT gitleaks 8.30.1 binary with its default rules.
+It runs the checksum-pinned MIT gitleaks 8.30.1 binary with the shared
+credential policy described below.
 It never checks out or executes the target repository's code. Authentication
 uses the existing job token, is scoped to the GitHub server and stays in the
 process environment rather than the repository configuration.
@@ -58,6 +59,22 @@ of the complete added line, excluding its newline. Values and raw subprocess
 output are never printed. A filename containing the detected value is withheld.
 The raw detector report is kept only inside the private temporary directory,
 removed when the scan exits, and never uploaded as an artifact.
+
+## What blocks a change
+
+The shared policy keeps the pinned Gitleaks provider rules and replaces only
+its generic API-key heuristic. A keyword inside an identifier, or text after
+a comma in prose, is not in itself a credential. The replacement looks for a
+credential field, an assignment, and a high-entropy literal value. The policy
+also detects private-key headers, URLs containing literal passwords, Telegram
+bot tokens without a field name, Discord webhooks, and additional Resend,
+Supabase, Google OAuth, and Backblaze B2 credential formats.
+
+Plain prose such as “etcd heartbeat tuning” or “a capability row of prose”,
+ordinary identifiers, revision hashes in metadata, and file references do not
+need exceptions. Use a runtime reference or an obvious placeholder such as
+`<REDACTED>`, `your-token-here`, or `$TOKEN` in examples. This is not a Markdown
+or file-path exemption: a credential in the same document still blocks the scan.
 
 ## Reviewed exceptions
 
