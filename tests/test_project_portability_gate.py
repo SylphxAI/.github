@@ -278,7 +278,8 @@ class ProjectPortabilityGateTests(unittest.TestCase):
         files = {sc.adoption.PREFIX + p.name: p.read_text() for p in action.iterdir() if p.suffix in {'.py', '.json'}}
         files[sc.adoption.PREFIX + 'action.yml'] = (action / 'action.yml').read_text()
         files['policy/deal-randomness-scope.json'] = (ROOT / 'policy/deal-randomness-scope.json').read_text()
-        for dependency in ("scripts/source_provenance.py", "policy/source-relocations.json"):
+        for dependency in ("scripts/source_provenance.py", "policy/source-relocations.json",
+                           ".github/actions/auth-surface-guard/check.py"):
             files[dependency] = (ROOT / dependency).read_text()
         profile = sc.adoption.source_profile(sc.DictTree(files))
         self.assertEqual(sc.adoption.load_registry()['profiles'][sc.adoption.profile_id(profile)], profile)
@@ -290,6 +291,13 @@ class ProjectPortabilityGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Rust reachability checker source missing'):
             sc.adoption.source_profile(sc.DictTree(files))
         files[rust_path] = rust_source
+        auth_path = '.github/actions/auth-surface-guard/check.py'
+        self.assertIn(auth_path, profile['sources'])
+        self.assertNotIn('auth-surface', profile['rules'])
+        auth_source = files.pop(auth_path)
+        with self.assertRaisesRegex(ValueError, 'auth surface checker source missing'):
+            sc.adoption.source_profile(sc.DictTree(files))
+        files[auth_path] = auth_source
         del files[sc.adoption.PREFIX + 'project_portability.py']
         with self.assertRaisesRegex(ValueError, 'project portability checker source missing'):
             sc.adoption.source_profile(sc.DictTree(files))

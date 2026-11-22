@@ -63,7 +63,8 @@ class CacheEconomyDomainTests(unittest.TestCase):
         tree = sc.Tree(str(pathlib.Path(a.__file__).resolve().parents[3]), "HEAD")
         files = {path: tree.read(path) for path in tree.paths()
                  if (path.startswith(sc.adoption.PREFIX) or path in ("policy/deal-randomness-scope.json",
-                            "scripts/source_provenance.py", "policy/source-relocations.json"))
+                            "scripts/source_provenance.py", "policy/source-relocations.json",
+                            ".github/actions/auth-surface-guard/check.py"))
                  and path != policy_path}
         old = sc.adoption.source_profile(sc.DictTree(files))
         self.assertNotIn(policy_path, old["sources"])
