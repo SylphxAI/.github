@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import shared_baseline_check as baseline
@@ -15,7 +17,10 @@ class SharedBaselineTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.repo = Path(directory.name)
+        self.workspace = Path(directory.name)
+        self.repo = self.workspace / "source"
+        self.repo.mkdir()
+        (self.workspace / "baseline-checker").symlink_to(ROOT, target_is_directory=True)
         self.git("init", "-q", "-b", "main")
         self.base = self.commit({"README.md": "# Sample project\n"})
 
@@ -106,3 +111,46 @@ class SharedBaselineTests(unittest.TestCase):
     def test_bad_base_is_not_a_pass(self):
         with self.assertRaises(ValueError):
             self.check(self.base, base="HEAD", public=True)
+
+    def run_workflow_step(self, event_name, head, base=""):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/shared-baseline-check.yml").read_text())
+        step, = [step for step in workflow["jobs"]["baseline"]["steps"] if "run" in step]
+        self.assertEqual(step["env"]["EVENT_NAME"], "${{ github.event_name }}")
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+            cwd=self.workspace, capture_output=True, text=True, timeout=10,
+            env=dict(os.environ, EVENT_NAME=event_name, BASE_SHA=base, HEAD_SHA=head,
+                     IS_PUBLIC="false", MIGRATIONS="", MIGRATION_DIALECT="postgres"),
+        )
+
+    def test_parameterless_dispatch_compares_only_with_checked_out_parent(self):
+        self.commit({"migrations/01.sql": "DROP TABLE retired_accounts;"})
+        head = self.commit({"README.md": "# Updated project\n"})
+        result = self.run_workflow_step("workflow_dispatch", head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_parameterless_dispatch_checks_changes_in_head(self):
+        head = self.commit({"migrations/01.sql": "DROP TABLE retired_accounts;"})
+        result = self.run_workflow_step("workflow_dispatch", head)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("01.sql", result.stdout)
+
+    def test_parameterless_dispatch_without_parent_fails_closed(self):
+        result = self.run_workflow_step("workflow_dispatch", self.base)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not resolve HEAD~1", result.stderr)
+
+    def test_dispatch_keeps_explicit_base_instead_of_using_parent(self):
+        self.commit({"migrations/01.sql": "DROP TABLE retired_accounts;"})
+        head = self.commit({"README.md": "# Updated project\n"})
+        result = self.run_workflow_step("workflow_dispatch", head, self.base)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("01.sql", result.stdout)
+
+    def test_non_dispatch_events_do_not_fall_back_to_existing_parent(self):
+        head = self.commit({"README.md": "# Updated project\n"})
+        for event_name in ("pull_request", "merge_group", "push"):
+            with self.subTest(event_name=event_name):
+                result = self.run_workflow_step(event_name, head)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("could not read the comparison", result.stdout)

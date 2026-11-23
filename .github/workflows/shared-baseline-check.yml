@@ -35,12 +35,19 @@ jobs:
           persist-credentials: false
       - name: Inspect committed changes without executing caller code
         env:
+          EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.inputs.code-base || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           HEAD_SHA: ${{ github.event.inputs.code-merge || github.sha }}
           IS_PUBLIC: ${{ github.event.repository.visibility == 'public' }}
           MIGRATIONS: ${{ inputs.migrations }}
           MIGRATION_DIALECT: ${{ inputs.migration-dialect }}
         run: |
+          if [[ "$EVENT_NAME" == workflow_dispatch && -z "$BASE_SHA" ]]; then
+            if ! BASE_SHA=$(git -C source rev-parse --verify --quiet 'HEAD~1^{commit}'); then
+              echo '::error::Shared baseline could not resolve HEAD~1 for workflow_dispatch; provide code-base or choose a commit with a readable parent.' >&2
+              exit 1
+            fi
+          fi
           flags=()
           if [ "$IS_PUBLIC" = true ]; then flags+=(--public); fi
           if [ "$MIGRATIONS" = false ]; then flags+=(--no-migrations); fi
