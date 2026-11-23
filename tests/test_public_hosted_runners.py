@@ -19,6 +19,8 @@ class PublicHostedRunners(unittest.TestCase):
         if (route.file, route.job) == ('project-control.yml', 'ci-range-consumer'):
             expected = ('sylphx-linux-standard-merge' if route.event == 'merge_group'
                         else 'sylphx-linux-standard')
+        if (route.file, route.job) == ('repository-baseline.yml', 'reconcile'):
+            expected = 'sylphx-linux-control'
         self.assertEqual(route.values, {expected})
 
     def test_all_reachable_own_jobs_are_hosted_only_when_public(self):

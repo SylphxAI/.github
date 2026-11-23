@@ -63,7 +63,7 @@ def quoted_end(sql: str, start: int, dialect: str, line: int) -> int:
     raise SqlError(f"line {line}: unterminated quoted token")
 
 
-def lex(sql: str, dialect: str) -> tuple[list[Token], list[ContractMarker]]:
+def lex(sql: str, dialect: str, *, phased_drop: bool = False) -> tuple[list[Token], list[ContractMarker]]:
     """Keep identifiers/literals distinct from keywords; comments cannot hide SQL.
 
     PostgreSQL supports nested block comments and dollar strings; MySQL supports
@@ -102,10 +102,12 @@ def lex(sql: str, dialect: str) -> tuple[list[Token], list[ContractMarker]]:
         elif (sql.startswith("--", i) and (dialect == "postgres" or i + 2 == len(sql) or sql[i + 2].isspace())) or (dialect == "mysql" and ch == "#"):
             end = sql.find("\n", i)
             end = len(sql) if end < 0 else end
-            comment = sql[i:end]
+            comment = sql[i:end].removesuffix("\r")
             # A marker is a comment on its own line, never text inside a string.
             prefix = sql[sql.rfind("\n", 0, i) + 1:i]
             match = re.fullmatch(r"--[ \t]*contract:[ \t]*(\S.*?)[ \t]*", comment, re.I)
+            if phased_drop and not match:
+                match = re.fullmatch(r"--[ \t]*expand-contract:[ \t]*drop-phase[ \t]+(\S.*?)[ \t]*", comment, re.I)
             if not prefix.strip() and match and re.search(r"\w", match[1]):
                 markers.append(ContractMarker(match[1], len(tokens)))
             i = end
@@ -566,7 +568,8 @@ def routine_kind(stmt: list[Token]) -> str | None:
     return None
 
 
-def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int) -> list[tuple[int, str]]:
+def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int, *,
+                       all_table_drops: bool = False) -> list[tuple[int, str]]:
     opaque = [(stmt[0].line, "opaque procedural body requires a contract reference")]
     if kind == "TRIGGER":
         if dialect == "postgres":
@@ -585,7 +588,7 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
                 if i >= 2 and body[i - 1].value == "."
                 and any(kw(body[i - 2], row) for row in ("NEW", "OLD"))
                 and t.kind == "word" else t for i, t in enumerate(body)]
-        findings = token_violations(body, dialect, nesting + 1)
+        findings = token_violations(body, dialect, nesting + 1, all_table_drops=all_table_drops)
         # Dynamic execution is opaque even in handlers or loop/control prefixes
         # not modeled by the generic procedural-statement recognizer.
         findings.extend((t.line, "procedural or dynamic SQL requires a contract reference")
@@ -634,7 +637,8 @@ def routine_violations(stmt: list[Token], dialect: str, kind: str, nesting: int)
             finite_query_executes(inner, dialect, catalog_format, nesting + 1)
             | check_widening_executes(inner, dialect)
         )
-        return token_violations(inner, dialect, nesting + 1, catalog_format, finite_executes)
+        return token_violations(inner, dialect, nesting + 1, catalog_format, finite_executes,
+                                all_table_drops=all_table_drops)
     return opaque
 
 
@@ -1544,7 +1548,8 @@ def conflict_update(stmt: list[Token], at: int) -> bool:
 def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                      catalog_format: bool = False, finite_executes: set[int] | None = None,
                      historical_tables: set[str] | None = None,
-                     marked_tokens: set[int] | None = None) -> list[tuple[int, str]]:
+                     marked_tokens: set[int] | None = None, *,
+                     all_table_drops: bool = False) -> list[tuple[int, str]]:
     if nesting > 64:
         raise SqlError("procedural body nesting is too deep to inspect")
     findings: list[tuple[int, str]] = []
@@ -1694,7 +1699,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 function_name, _ = name(stmt, at)
                 if function_name.split(".")[-1] == "format":
                     out.append((stmt[0].line, "formatter redefinition requires a contract reference"))
-            out.extend(routine_violations(stmt, dialect, routine, nesting))
+            out.extend(routine_violations(stmt, dialect, routine, nesting, all_table_drops=all_table_drops))
             if routine == "DO":
                 # Executed bodies can remove defaults established outside,
                 # but their local facts never authorize enclosing statements.
@@ -1734,8 +1739,11 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 continue
             first = flat[0]
             safe_drops = ("CONSTRAINT",) if dialect == "postgres" else ("CONSTRAINT", "INDEX", "KEY", "PRIMARY", "FOREIGN", "CHECK")
-            if kw(first, "DROP") and not any(starts(flat[1:], safe) for safe in safe_drops):
-                out.append((first.line, "DROP COLUMN"))
+            if kw(first, "DROP"):
+                if not any(starts(flat[1:], safe) for safe in safe_drops):
+                    out.append((first.line, "DROP COLUMN"))
+                elif all_table_drops:
+                    out.append((first.line, "ALTER TABLE DROP"))
             if starts(flat, "DISCARD", "TABLESPACE") or starts(flat, "CONVERT", "TO", "CHARACTER", "SET"):
                 out.append((first.line, "table data discard or character set conversion"))
             if kw(first, "MODIFY") or kw(first, "CHANGE"):
@@ -2166,6 +2174,36 @@ class Table(NamedTuple):
     options: tuple[tuple[str, str], ...]
     foreign_actions: dict[tuple, int]
     line: int
+
+
+DROP_FINDINGS = {"DROP TABLE", "DROP TEMPORARY TABLE", "DROP COLUMN", "ALTER TABLE DROP",
+                 "opaque procedural body requires a contract reference",
+                 "procedural or dynamic SQL requires a contract reference"}
+
+
+def drop_phase_findings(before: str, after: str, dialect: str) -> list[tuple[int, str]]:
+    """Check new or changed destructive statements without re-gating historical SQL."""
+    def statements(sql):
+        tokens, markers = lex(sql, dialect, phased_drop=True)
+        marked = {id(tokens[m.next_token]) for m in markers if m.next_token < len(tokens)}
+        parsed = sql_statements(tokens, dialect)
+        for stmt in parsed[:-1]:
+            if executed_mode_change(stmt, dialect):
+                raise SqlError("SQL lexical mode change must be the final statement")
+        for stmt in parsed:
+            yield stmt, id(stmt[0]) in marked
+
+    historical = Counter((signature(stmt, exact_words=True), marked) for stmt, marked in statements(before))
+    findings = []
+    for stmt, marked in statements(after):
+        key = signature(stmt, exact_words=True), marked
+        if historical[key]:
+            historical[key] -= 1
+            continue
+        if not marked:
+            findings.extend((line, reason) for line, reason in token_violations(stmt, dialect, all_table_drops=True)
+                            if reason in DROP_FINDINGS)
+    return findings
 
 
 def signature(tokens: list[Token], *, exact_words: bool = False) -> tuple[tuple[str, str], ...]:

@@ -65,10 +65,9 @@ the existing publisher's `pull,push` request.
 
 ## Repository settings
 
-Company repositories delete a pull request's head branch when it merges
-(`delete_branch_on_merge=true`). The policy and the script that applies it are
-in [docs/repository-settings.md](docs/repository-settings.md) and
-[scripts/set-delete-branch-on-merge.sh](scripts/set-delete-branch-on-merge.sh).
+Eligible repositories allow auto-merge, delete merged PR heads, and do not require
+approvals on their default branch. See [repository settings](docs/repository-settings.md)
+and [the reconciler](scripts/reconcile_repo_baseline.py).
 
 Shared branch integrity is inherited from Enterprise. The property-scoped `ci-ok`
 rule remains organization-level because the Enterprise API refused the candidate.

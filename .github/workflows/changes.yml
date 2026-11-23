@@ -23,6 +23,9 @@ on:
         type: string
         default: sylphx-linux-control
     outputs:
+      migrations:
+        description: '"false" only when the file list proves no migration SQL changed.'
+        value: ${{ jobs.changes.outputs.migrations }}
       code:
         description: '"true" when a code file changed (or the diff could not be computed).'
         value: ${{ jobs.changes.outputs.code }}
@@ -42,6 +45,7 @@ jobs:
     runs-on: ${{ github.event.repository.visibility == 'public' && inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || startsWith(inputs.runner, 'sylphx-linux-') && inputs.runner || 'sylphx-linux-control' }}
     timeout-minutes: 5
     outputs:
+      migrations: ${{ steps.kinds.outcome == 'success' && (github.event_name == 'merge_group' || (github.event.pull_request.changed_files > 0 && github.event.pull_request.changed_files < 3000)) && steps.kinds.outputs.migrations || steps.all.outputs.value }}
       code: ${{ steps.filter.outputs.code || steps.all.outputs.value }}
       docs: ${{ steps.kinds.outputs.docs || steps.all.outputs.value }}
       workflows: ${{ steps.kinds.outputs.workflows || steps.all.outputs.value }}
@@ -71,6 +75,8 @@ jobs:
             workflows:
               - '.github/workflows/**'
               - '.github/actions/**'
+            migrations:
+              - '**/migrations*/**/*.[sS][qQ][lL]'
       # `every` makes the "!" patterns exclusions; the default `some` marks a
       # docs-only change as code because "**" matches it.
       - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
