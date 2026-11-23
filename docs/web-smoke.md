@@ -62,9 +62,10 @@ a performance pass. Callers do not copy an event-based budget expression.
    should not gate the merge, keep it standalone and carry
    `# optimistic-merge: gate-external` (audit row R3b).
 
-The job needs `CUBEAGE_CI_READER_APP_ID` and `CUBEAGE_CI_READER_APP_KEY` (the read-only App that can read
-SylphxAI/keel) as the other Keel jobs do. It runs on our own runners only: on a GitHub-hosted runner the
-action stops with an error before it does anything.
+The starter expects `KEEL_READER_APP_ID` and `KEEL_READER_APP_KEY`. Map these to the caller’s
+read-only App installation for `SylphxAI/keel`. The action requires a self-hosted runner.
+The starter explicitly sets an empty `offline-dependencies` list; any localhost-only exceptions
+belong in the title’s own workflow and are not proof of live authentication.
 
 ## Inputs
 
