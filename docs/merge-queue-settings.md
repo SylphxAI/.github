@@ -109,6 +109,13 @@ item in read_org(gh, org)]`, one GraphQL page per organization.
 
 ## What the tool manages
 
+The [repository baseline reconciler](repository-settings.md) also zeroes
+approval gates on the existing default branch. This tool still owns queue and
+explicit check policy across its declared scopes, including its existing
+non-default approval scope. Do not run their write modes concurrently: a
+ruleset PUT replaces its full writable body. Neither tool edits inherited
+rulesets through repository credentials.
+
 The tool manages merge-queue parameters, approving review counts, the
 extra-approval flag and explicitly scoped required-check bindings. `required_checks` names the exact repository,
 ruleset ID and name, a reason, and `{context, integration_id}` checks. Publisher

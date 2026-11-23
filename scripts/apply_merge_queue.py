@@ -31,6 +31,8 @@ required checks are additive: unrelated checks and every other ruleset field are
 preserved. `--audit-bypasses` reads REST ruleset details and fails closed when
 `bypass_actors` is missing/redacted or non-empty.
 Inherited organization or enterprise rulesets are reported and never written.
+The repository baseline can also update default-only approval parameters;
+serialize writes by these two tools (each PUT replaces the ruleset body).
 The strict flag is converged to false on rulesets carrying a merge queue;
 non-queue rulesets retain their strict flag. The fast gate is reported fleet-wide, but checks are changed
 only on the declared repository/ruleset ID/name targets. Before adding a gate,
