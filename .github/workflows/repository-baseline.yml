@@ -1,0 +1,52 @@
+name: Repository baseline
+
+on:
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Apply verified repository baseline changes (default branch only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-baseline
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    # Require the dedicated environment to also allow only the default branch.
+    if: github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+    runs-on: sylphx-linux-control
+    environment: repository-baseline
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reconcile repository baseline
+        shell: bash
+        env:
+          REPO_BASELINE_ORGS: ${{ secrets.REPO_BASELINE_ORGS }}
+          GH_TOKEN: ${{ secrets.REPO_BASELINE_ADMIN_TOKEN }}
+          APPLY_BASELINE: ${{ github.event_name == 'workflow_dispatch' && inputs.apply }}
+          GH_PROMPT_DISABLED: '1'
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" || -z "$REPO_BASELINE_ORGS" ]]; then
+            echo '::error::Configure the dedicated repository baseline environment secrets first.'
+            exit 2
+          fi
+          read -r -a owners <<< "$REPO_BASELINE_ORGS"
+          if [[ ${#owners[@]} -ne 4 || "$REPO_BASELINE_ORGS" == *$'\n'* ]]; then
+            echo '::error::Repository baseline environment must contain all four approved owners on one line.'
+            exit 2
+          fi
+          args=(--summary-only)
+          if [[ "$APPLY_BASELINE" == true ]]; then args+=(--apply); fi
+          python3 scripts/reconcile_repo_baseline.py "${args[@]}"
