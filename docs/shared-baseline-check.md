@@ -13,6 +13,8 @@ output. Here both jobs use the same published commit:
 jobs:
   changes:
     uses: SylphxAI/.github/.github/workflows/changes.yml@<commit-sha> # main
+    with:
+      runner: ubuntu-latest # accepted only for public callers
   shared-baseline:
     needs: changes
     if: github.event.repository.visibility == 'public' || needs.changes.outputs.migrations != 'false'
@@ -21,13 +23,15 @@ jobs:
       migrations: ${{ needs.changes.outputs.migrations }}
 ```
 
-Add `shared-baseline` to the existing `ci-ok` dependency list. The check uses
-a self-hosted runner only. Private and internal repositories do not run the
-public check. If the selector proves there are no changed migration SQL files,
-the migration check does not run. In a nonpublic repository this skips the job
-before runner allocation. If you do not use the selector, omit `needs`, `if`
-and `with`: the checker reads the Git comparison and loads the SQL parser
-only when an applicable file changed. An unreadable comparison fails the job.
+Add `shared-baseline` to the existing `ci-ok` dependency list. The baseline
+uses the standard GitHub-hosted `ubuntu-latest` runner for public repositories
+and `sylphx-linux-control` otherwise. Private and internal repositories do
+not run the public-source check. If the selector proves there are no changed
+migration SQL files, the migration check does not run. In a nonpublic
+repository this skips the job before runner allocation. If you do not use the
+selector, omit `needs`, `if` and `with`: the checker reads the Git comparison
+and loads the SQL parser only when an applicable file changed. An unreadable
+comparison fails the job.
 
 SQL files under a `migrations*` directory are checked for newly introduced or
 changed table and column drops. PostgreSQL is the default; set

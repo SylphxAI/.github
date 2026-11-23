@@ -121,6 +121,25 @@ jobs:
                 self.assertEqual(route.errors, ())
                 self.assertEqual(route.values, {'sylphx-linux-control'})
 
+    def test_shared_baseline_routes_each_caller_event_by_repository_visibility(self):
+        caller = f"""on: [{', '.join(EVENTS)}]
+jobs:
+  baseline:
+    uses: ./.github/workflows/shared-baseline-check.yml
+"""
+        workflows = {'caller.yml': caller, 'shared-baseline-check.yml': WORKFLOWS['shared-baseline-check.yml']}
+        for private, repository_present, label in (
+            (False, True, 'ubuntu-latest'),
+            (True, True, 'sylphx-linux-control'),
+            (False, False, 'sylphx-linux-control'),
+        ):
+            with self.subTest(private=private, repository_present=repository_present):
+                routes = runner_evaluations(workflows, private=private, repository_present=repository_present)
+                self.assertEqual({route.event for route in routes}, set(EVENTS))
+                for route in routes:
+                    self.assertEqual(route.errors, ())
+                    self.assertEqual(route.values, {label})
+
     def test_all_reusable_visibility_routes_fail_closed_when_payload_is_absent(self):
         import yaml
         for name in ('rust-ci.yml', 'junit-consumer.yml', 'publish-npm.yml'):
