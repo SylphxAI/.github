@@ -42,11 +42,6 @@ jobs:
             echo '::error::Configure the dedicated repository baseline environment secrets first.'
             exit 2
           fi
-          read -r -a owners <<< "$REPO_BASELINE_ORGS"
-          if [[ ${#owners[@]} -ne 4 || "$REPO_BASELINE_ORGS" == *$'\n'* ]]; then
-            echo '::error::Repository baseline environment must contain all four approved owners on one line.'
-            exit 2
-          fi
-          args=(--summary-only)
+          args=(--summary-only --require-fleet)
           if [[ "$APPLY_BASELINE" == true ]]; then args+=(--apply); fi
           python3 scripts/reconcile_repo_baseline.py "${args[@]}"
