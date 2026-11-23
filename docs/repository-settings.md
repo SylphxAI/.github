@@ -9,8 +9,10 @@ changes required checks, force-push guards, PR requirements, or thread resolutio
 
 ## Run the reconciler
 
-	scripts/reconcile_repo_baseline.py --org OWNER
-	scripts/reconcile_repo_baseline.py --org OWNER --repo OWNER/NAME --apply
+```bash
+python3 scripts/reconcile_repo_baseline.py --dry-run
+python3 scripts/reconcile_repo_baseline.py --org OWNER --repo OWNER/NAME --apply
+```
 
 Use repeatable `--org` or a space-separated `REPO_BASELINE_ORGS` environment value.
 The default is a dry-run against the approved owners in the merge-queue

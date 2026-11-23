@@ -1,0 +1,48 @@
+name: Shared baseline check
+
+on:
+  workflow_call:
+    inputs:
+      migrations:
+        description: Pass changes.yml's migrations output; only an explicit 'false' skips migration inspection.
+        type: string
+        default: ''
+      migration-dialect:
+        description: Default dialect for unsuffixed migration files (postgres or mysql).
+        type: string
+        default: postgres
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    if: github.event.repository.visibility == 'public' || inputs.migrations != 'false'
+    runs-on: sylphx-linux-control
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.code-merge || github.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ job.workflow_sha }}
+          path: baseline-checker
+          persist-credentials: false
+      - name: Inspect committed changes without executing caller code
+        env:
+          BASE_SHA: ${{ github.event.inputs.code-base || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.inputs.code-merge || github.sha }}
+          IS_PUBLIC: ${{ github.event.repository.visibility == 'public' }}
+          MIGRATIONS: ${{ inputs.migrations }}
+          MIGRATION_DIALECT: ${{ inputs.migration-dialect }}
+        run: |
+          flags=()
+          if [ "$IS_PUBLIC" = true ]; then flags+=(--public); fi
+          if [ "$MIGRATIONS" = false ]; then flags+=(--no-migrations); fi
+          python3 -I baseline-checker/scripts/shared_baseline_check.py \
+            --root source --base "$BASE_SHA" --head "$HEAD_SHA" --dialect "$MIGRATION_DIALECT" "${flags[@]}"
