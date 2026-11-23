@@ -10,7 +10,7 @@ import reconcile_repo_baseline as baseline
 REPO = "example/project"
 ROOT = f"repos/{REPO}"
 CLASSIC = f"{ROOT}/branches/main/protection"
-EFFECTIVE = f"{ROOT}/rules/branches/main"
+EFFECTIVE = f"{ROOT}/rules/branches/main?per_page=100"
 RULESET = f"{ROOT}/rulesets/7"
 
 
@@ -46,6 +46,8 @@ class Fake:
         self.calls.append((path, method, deepcopy(body), etag))
         if (path, method) in self.status:
             return baseline.Response(*self.status[path, method], None)
+        if path == EFFECTIVE:
+            assert paginate
         if path == EFFECTIVE and RULESET not in self.data:
             return baseline.Response(200, deepcopy(self.inherited), None)
         if path == EFFECTIVE:
