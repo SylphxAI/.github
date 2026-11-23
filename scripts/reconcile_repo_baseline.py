@@ -219,7 +219,8 @@ def reconcile(api, repo, apply=False):
             if require(branch_response, dict, "branch").get("name") != branch:
                 raise Unknown("default_branch_identity_changed")
             base = classic(api, protection_path)
-            effective = require(api.request(f"{path}/rules/branches/{encoded}"), list, "effective_rules")
+            effective = require(api.request(f"{path}/rules/branches/{encoded}?per_page=100", paginate=True),
+                                list, "effective_rules")
             if not all(isinstance(rule, dict) and isinstance(rule.get("type"), str) for rule in effective):
                 raise Unknown("effective_rules_invalid")
             if base is None and not effective:
