@@ -52,7 +52,8 @@ DOLLAR = re.compile(r"\$(?:[A-Za-z_][\w]*)?\$")
 
 def quoted_end(sql: str, start: int, dialect: str, line: int) -> int:
     quote, i = sql[start], start + 1
-    escaped = quote != "`" and (dialect == "mysql" or (quote == "'" and start > 0 and sql[start - 1].upper() == "E"))
+    escaped = quote != "`" and (dialect == "mysql" or (
+        dialect == "postgres" and quote == "'" and start > 0 and sql[start - 1].upper() == "E"))
     while i < len(sql):
         if sql[i] == quote:
             if i + 1 < len(sql) and sql[i + 1] == quote:
@@ -67,15 +68,16 @@ def lex(sql: str, dialect: str, *, phased_drop: bool = False) -> tuple[list[Toke
     """Keep identifiers/literals distinct from keywords; comments cannot hide SQL.
 
     PostgreSQL supports nested block comments and dollar strings; MySQL supports
-    backticks, backslash escapes and executable version comments. Inspectable
-    routine bodies are scanned recursively; opaque dynamic SQL is refused.
+    backticks, backslash escapes and executable version comments. SQLite uses
+    bracket-quoted identifiers without escapes. Inspectable routine bodies are
+    scanned recursively; opaque dynamic SQL is refused.
     """
     tokens, markers = [], []
     i, line = 0, 1
     delimiter, client_start = ";", 0
     while i < len(sql):
         ch = sql[i]
-        if ch.isspace():
+        if ch.isspace() or (dialect == "sqlite" and ch == "\ufeff"):
             line += ch == "\n"
             i += 1
         elif (dialect == "mysql" and re.match(r"DELIMITER\b", sql[i:], re.I)
@@ -99,7 +101,7 @@ def lex(sql: str, dialect: str, *, phased_drop: bool = False) -> tuple[list[Toke
             tokens.append(Token(";", "symbol", line, delimiter, i))
             i += len(delimiter)
             client_start = len(tokens)
-        elif (sql.startswith("--", i) and (dialect == "postgres" or i + 2 == len(sql) or sql[i + 2].isspace())) or (dialect == "mysql" and ch == "#"):
+        elif (sql.startswith("--", i) and (dialect != "mysql" or i + 2 == len(sql) or sql[i + 2].isspace())) or (dialect == "mysql" and ch == "#"):
             end = sql.find("\n", i)
             end = len(sql) if end < 0 else end
             comment = sql[i:end].removesuffix("\r")
@@ -145,6 +147,13 @@ def lex(sql: str, dialect: str, *, phased_drop: bool = False) -> tuple[list[Toke
                 i = boundary if i <= boundary < end else end
             tokens.append(Token(sql[start:i], "literal", line, sql[start:i], start))
             line += sql[start:i].count("\n")
+        elif dialect == "sqlite" and ch == "[":
+            end = sql.find("]", i + 1)
+            if end < 0:
+                raise SqlError(f"line {line}: unterminated bracket-quoted identifier")
+            tokens.append(Token(sql[i + 1:end], "identifier", line, sql[i:end + 1], i))
+            line += sql[i:end + 1].count("\n")
+            i = end + 1
         elif ch in "'\"`" or (dialect == "postgres" and ch == "$" and DOLLAR.match(sql, i)):
             start, start_line = i, line
             dollar = DOLLAR.match(sql, i) if ch == "$" else None
@@ -1720,6 +1729,15 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 created.add(table)
         table_at = 2 if starts(stmt, "ALTER", "TABLE") else 3 if starts(stmt, "ALTER", "FOREIGN", "TABLE") else None
         if table_at is None:
+            continue
+        if dialect == "sqlite":
+            # SQLite also accepts legacy single-quoted table names and makes
+            # COLUMN optional. ONLY is not a modifier here; it can be a name.
+            at = table_at + 1
+            if at < len(stmt) and stmt[at].kind == "symbol" and stmt[at].value == ".":
+                at += 2
+            if starts(stmt[at:], "DROP"):
+                out.append((stmt[at].line, "DROP COLUMN"))
             continue
         at = table_at + 2 if starts(stmt[table_at:], "IF", "EXISTS") else table_at
         if at < len(stmt) and kw(stmt[at], "ONLY"):

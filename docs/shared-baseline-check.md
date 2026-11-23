@@ -31,13 +31,29 @@ migration SQL files, the migration check does not run. In a nonpublic
 repository this skips the job before runner allocation. If you do not use the
 selector, omit `needs`, `if` and `with`: the checker reads the Git comparison
 and loads the SQL parser only when an applicable file changed. An unreadable
-comparison fails the job.
+comparison fails the job. Manual and scheduled runs without an explicit base
+compare the checked-out commit with its first parent. If the parent cannot be
+read, the check fails. Manual runs can pass `code-base` to select a different
+base. Push, pull request, and merge queue runs still require a comparison SHA.
 
 SQL files under a `migrations*` directory are checked for newly introduced or
 changed table and column drops. PostgreSQL is the default; set
 `migration-dialect: mysql` for unsuffixed MySQL files. The `.mysql.sql` and
-`.postgresql.sql` suffixes select the dialect per file. Deploy the expand
-release first, and reference its release note immediately above the drop:
+`.postgresql.sql` suffixes always take precedence. To use SQLite for unsuffixed
+files in selected directories, add `sqlite-migration-dirs` to the caller's `with`:
+
+```yaml
+sqlite-migration-dirs: |
+  crates/example/migrations
+  apps/example/migrations
+```
+
+Use one literal repository-relative directory per line, without globs. Only
+migration SQL in those directories and their subdirectories uses SQLite rules;
+similarly named sibling directories keep the default dialect.
+
+Deploy the expand release first, and reference its release note immediately
+above the drop:
 
 ```sql
 -- expand-contract: drop-phase https://example.com/releases/v2

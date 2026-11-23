@@ -11,6 +11,10 @@ on:
         description: Default dialect for unsuffixed migration files (postgres or mysql).
         type: string
         default: postgres
+      sqlite-migration-dirs:
+        description: Repository-relative SQLite migration directories, one literal path per line.
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -41,10 +45,11 @@ jobs:
           IS_PUBLIC: ${{ github.event.repository.visibility == 'public' }}
           MIGRATIONS: ${{ inputs.migrations }}
           MIGRATION_DIALECT: ${{ inputs.migration-dialect }}
+          SQLITE_MIGRATION_DIRS: ${{ inputs.sqlite-migration-dirs }}
         run: |
-          if [[ "$EVENT_NAME" == workflow_dispatch && -z "$BASE_SHA" ]]; then
+          if [[ -z "$BASE_SHA" && ( "$EVENT_NAME" == workflow_dispatch || "$EVENT_NAME" == schedule ) ]]; then
             if ! BASE_SHA=$(git -C source rev-parse --verify --quiet 'HEAD~1^{commit}'); then
-              echo '::error::Shared baseline could not resolve HEAD~1 for workflow_dispatch; provide code-base or choose a commit with a readable parent.' >&2
+              echo "::error::Shared baseline could not resolve HEAD~1 for $EVENT_NAME; fetch full history or run a commit with a readable parent." >&2
               exit 1
             fi
           fi
@@ -52,4 +57,5 @@ jobs:
           if [ "$IS_PUBLIC" = true ]; then flags+=(--public); fi
           if [ "$MIGRATIONS" = false ]; then flags+=(--no-migrations); fi
           python3 -I baseline-checker/scripts/shared_baseline_check.py \
-            --root source --base "$BASE_SHA" --head "$HEAD_SHA" --dialect "$MIGRATION_DIALECT" "${flags[@]}"
+            --root source --base "$BASE_SHA" --head "$HEAD_SHA" --dialect "$MIGRATION_DIALECT" \
+            --sqlite-migration-dirs="$SQLITE_MIGRATION_DIRS" "${flags[@]}"

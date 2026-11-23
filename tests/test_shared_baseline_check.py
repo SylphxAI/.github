@@ -112,7 +112,7 @@ class SharedBaselineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.check(self.base, base="HEAD", public=True)
 
-    def run_workflow_step(self, event_name, head, base=""):
+    def run_workflow_step(self, event_name, head, base="", *, sqlite_dirs=""):
         workflow = yaml.safe_load((ROOT / ".github/workflows/shared-baseline-check.yml").read_text())
         step, = [step for step in workflow["jobs"]["baseline"]["steps"] if "run" in step]
         self.assertEqual(step["env"]["EVENT_NAME"], "${{ github.event_name }}")
@@ -120,37 +120,112 @@ class SharedBaselineTests(unittest.TestCase):
             ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
             cwd=self.workspace, capture_output=True, text=True, timeout=10,
             env=dict(os.environ, EVENT_NAME=event_name, BASE_SHA=base, HEAD_SHA=head,
-                     IS_PUBLIC="false", MIGRATIONS="", MIGRATION_DIALECT="postgres"),
+                     IS_PUBLIC="false", MIGRATIONS="", MIGRATION_DIALECT="postgres",
+                     SQLITE_MIGRATION_DIRS=sqlite_dirs),
         )
 
-    def test_parameterless_dispatch_compares_only_with_checked_out_parent(self):
+    def test_parameterless_events_compare_only_with_checked_out_parent(self):
         self.commit({"migrations/01.sql": "DROP TABLE retired_accounts;"})
         head = self.commit({"README.md": "# Updated project\n"})
-        result = self.run_workflow_step("workflow_dispatch", head)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for event in ("workflow_dispatch", "schedule"):
+            with self.subTest(event=event):
+                result = self.run_workflow_step(event, head)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_parameterless_dispatch_checks_changes_in_head(self):
+    def test_parameterless_events_check_changes_in_head(self):
         head = self.commit({"migrations/01.sql": "DROP TABLE retired_accounts;"})
-        result = self.run_workflow_step("workflow_dispatch", head)
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("01.sql", result.stdout)
+        for event in ("workflow_dispatch", "schedule"):
+            with self.subTest(event=event):
+                result = self.run_workflow_step(event, head)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("01.sql", result.stdout)
 
-    def test_parameterless_dispatch_without_parent_fails_closed(self):
-        result = self.run_workflow_step("workflow_dispatch", self.base)
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("could not resolve HEAD~1", result.stderr)
+    def assert_missing_parent(self, head):
+        for event in ("workflow_dispatch", "schedule"):
+            with self.subTest(event=event):
+                result = self.run_workflow_step(event, head)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"could not resolve HEAD~1 for {event}", result.stderr)
 
-    def test_dispatch_keeps_explicit_base_instead_of_using_parent(self):
+    def test_parameterless_events_without_parent_fail_closed(self):
+        self.assert_missing_parent(self.base)
+
+    def test_parameterless_events_with_shallow_parent_fail_closed(self):
+        head = self.commit({"README.md": "# Updated project\n"})
+        origin = self.repo.rename(self.workspace / "origin")
+        subprocess.run(["git", "clone", "-q", "--depth=1", origin.as_uri(), str(self.repo)], check=True)
+        self.assert_missing_parent(head)
+
+    def test_manual_and_scheduled_events_preserve_explicit_base(self):
         self.commit({"migrations/01.sql": "DROP TABLE retired_accounts;"})
         head = self.commit({"README.md": "# Updated project\n"})
-        result = self.run_workflow_step("workflow_dispatch", head, self.base)
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("01.sql", result.stdout)
+        for event in ("workflow_dispatch", "schedule"):
+            with self.subTest(event=event):
+                result = self.run_workflow_step(event, head, self.base)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("01.sql", result.stdout)
 
-    def test_non_dispatch_events_do_not_fall_back_to_existing_parent(self):
+    def test_comparison_events_do_not_fall_back_to_existing_parent(self):
         head = self.commit({"README.md": "# Updated project\n"})
         for event_name in ("pull_request", "merge_group", "push"):
             with self.subTest(event_name=event_name):
                 result = self.run_workflow_step(event_name, head)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("could not read the comparison", result.stdout)
+
+    def test_sqlite_bracket_quoting_is_opt_in_and_directory_scoped(self):
+        ddl = "ALTER TABLE [drop column] ADD COLUMN [with apostrophe's] TEXT;"
+        head = self.commit({"db/migrations/01.sql": ddl})
+        for sqlite_dirs in ("", "other/migrations", "db/migration", "db/migrations/01.sql"):
+            with self.subTest(sqlite_dirs=sqlite_dirs):
+                result = self.run_workflow_step("push", head, self.base, sqlite_dirs=sqlite_dirs)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("could not inspect changed file", result.stdout)
+        result = self.run_workflow_step("push", head, self.base, sqlite_dirs="elsewhere/migrations\ndb/migrations/")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_sqlite_drops_need_a_statement_scoped_release_reference(self):
+        head = self.commit({"migrations/01.sql":
+                            "--drop checks use SQLite comment rules\n"
+                            "ALTER TABLE [a's table] DROP COLUMN [old value];\n"
+                            "DROP TABLE [another's table];\n"})
+        result = self.run_workflow_step("push", head, self.base, sqlite_dirs="migrations")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('"migrations/01.sql":2: DROP COLUMN', result.stdout)
+        self.assertIn('"migrations/01.sql":3: DROP TABLE', result.stdout)
+        marked = self.commit({"migrations/01.sql":
+                              "-- expand-contract: drop-phase https://example.com/releases/v2\n"
+                              "ALTER TABLE [a's table] DROP COLUMN [old value];\n"
+                              "-- contract: released-expand-v2\n"
+                              "DROP TABLE [another's table];\n"})
+        result = self.run_workflow_step("push", marked, self.base, sqlite_dirs="migrations")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_sqlite_directory_preserves_explicit_dialect_suffixes(self):
+        head = self.commit({"migrations/01.mysql.sql": "/*!50000 DROP TABLE accounts */;",
+                            "migrations/02.postgresql.sql":
+                            "DO $$ BEGIN DROP TABLE accounts; END $$;"})
+        result = self.run_workflow_step("push", head, self.base, sqlite_dirs="migrations")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('"migrations/01.mysql.sql":1: DROP TABLE', result.stdout)
+        self.assertIn('"migrations/02.postgresql.sql":1: DROP TABLE', result.stdout)
+
+    def test_invalid_sqlite_directory_fails_closed(self):
+        result = self.run_workflow_step("push", self.base, self.base, sqlite_dirs="migrations/*")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("repository-relative literal path", result.stderr)
+
+    def test_sqlite_optional_column_keyword_still_requires_a_release_reference(self):
+        head = self.commit({"migrations/02.sql":
+                            "\ufeffALTER TABLE only DROP obsolete;\n"
+                            "ALTER TABLE main.'legacy table' DROP obsolete;\n"})
+        result = self.run_workflow_step("push", head, self.base, sqlite_dirs="migrations")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('"migrations/02.sql":1: DROP COLUMN', result.stdout)
+        self.assertIn('"migrations/02.sql":2: DROP COLUMN', result.stdout)
+
+    def test_sqlite_unterminated_bracket_identifier_fails_closed(self):
+        head = self.commit({"migrations/02.sql": "ALTER TABLE [unfinished DROP obsolete;"})
+        result = self.run_workflow_step("push", head, self.base, sqlite_dirs="migrations")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("could not inspect changed file", result.stdout)

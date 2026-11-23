@@ -85,7 +85,20 @@ def hygiene_findings(before, after, rules):
                 yield line, reason
 
 
-def check(root, base, head, public, migrations, dialect):
+def sqlite_migration_dirs(raw):
+    directories = []
+    for line in raw.splitlines():
+        if not (directory := line.strip()):
+            continue
+        directory = directory.rstrip("/")
+        if (any(part in {"", ".", ".."} for part in directory.split("/"))
+                or any(ch in directory for ch in "*?[]\\")):
+            raise argparse.ArgumentTypeError("expected one repository-relative literal path per line")
+        directories.append(PurePosixPath(directory))
+    return tuple(directories)
+
+
+def check(root, base, head, public, migrations, dialect, sqlite_dirs=()):
     head = revision(root, head)
     base = revision(root, base)
     base = git(root, "merge-base", base, head).decode().strip()
@@ -116,8 +129,14 @@ def check(root, base, head, public, migrations, dialect):
                     from migration_guard import drop_phase_findings
                 finally:
                     sys.path.pop(0)
-                file_dialect = ("mysql" if path.lower().endswith(b".mysql.sql") else
-                                "postgres" if path.lower().endswith(b".postgresql.sql") else dialect)
+                if path.lower().endswith(b".mysql.sql"):
+                    file_dialect = "mysql"
+                elif path.lower().endswith(b".postgresql.sql"):
+                    file_dialect = "postgres"
+                else:
+                    parent = PurePosixPath(os.fsdecode(path)).parent
+                    file_dialect = "sqlite" if any(parent.is_relative_to(directory)
+                                                   for directory in sqlite_dirs) else dialect
                 findings.extend(f"{label}:{line}: {reason}; add a statement-scoped drop-phase "
                                 "reference to the prior release, or defer the drop"
                                 for line, reason in drop_phase_findings(
@@ -135,9 +154,11 @@ def main():
     parser.add_argument("--public", action="store_true")
     parser.add_argument("--no-migrations", action="store_true")
     parser.add_argument("--dialect", choices=("postgres", "mysql"), default="postgres")
+    parser.add_argument("--sqlite-migration-dirs", type=sqlite_migration_dirs, default="")
     args = parser.parse_args()
     try:
-        findings = check(args.root, args.base, args.head, args.public, not args.no_migrations, args.dialect)
+        findings = check(args.root, args.base, args.head, args.public, not args.no_migrations,
+                         args.dialect, args.sqlite_migration_dirs)
     except (OSError, ValueError, subprocess.CalledProcessError):
         print("::error::Shared baseline could not read the comparison; check base and head SHAs and fetch full history.")
         return 1
