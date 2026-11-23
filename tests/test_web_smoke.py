@@ -21,6 +21,18 @@ SPEC = importlib.util.spec_from_file_location("web_smoke", ACTION / "web_smoke.p
 web_smoke = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(web_smoke)
 
+class StarterTemplateTests(unittest.TestCase):
+    def test_caller_credentials_and_no_implicit_offline_exceptions(self):
+        import yaml
+        template = ROOT / "workflow-templates" / "web-smoke.yml"
+        workflow = yaml.safe_load(template.read_text())
+        step = next(step for step in workflow["jobs"]["web-smoke"]["steps"]
+                    if "/web-smoke@" in step.get("uses", ""))
+        self.assertEqual(step["with"]["reader-app-id"], "${{ secrets.KEEL_READER_APP_ID }}")
+        self.assertEqual(step["with"]["reader-app-key"], "${{ secrets.KEEL_READER_APP_KEY }}")
+        self.assertEqual(step["with"]["offline-dependencies"], "")
+
+
 SHA = "a" * 40
 
 # Keel's static host, reduced to what the action needs: serve DIR on PORT.
