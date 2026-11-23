@@ -376,15 +376,22 @@ def run(api, orgs, *, apply=False, selected=(), skips=()):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--org", action="append", help="repeat for multiple owners; otherwise read REPO_BASELINE_ORGS")
+    parser.add_argument("--org", action="append", help="repeat for multiple explicit owners")
     parser.add_argument("--repo", action="append", default=[], help="restrict to a named org/repo (repeatable)")
     parser.add_argument("--apply", action="store_true", help="write changes (default: report only)")
     parser.add_argument("--summary-only", action="store_true", help="omit all owner and repository identifiers")
+    parser.add_argument("--require-fleet", action="store_true", help="require the configured scope to match fleet policy")
     args = parser.parse_args(argv)
-    orgs = args.org or os.environ.get("REPO_BASELINE_ORGS", "").split()
+    configured = args.org or os.environ.get("REPO_BASELINE_ORGS", "").split()
+    if (args.apply or args.require_fleet) and not configured:
+        parser.error("this mode requires explicit owner scope")
+    fleet = json.loads((ROOT / "policy/merge-queue.json").read_text())["orgs"]
+    orgs = configured or fleet
     if (not orgs or not all(OWNER.fullmatch(org) for org in orgs)
             or len({org.lower() for org in orgs}) != len(orgs)):
         parser.error("provide a nonempty, distinct organization list via --org or REPO_BASELINE_ORGS")
+    if args.require_fleet and {org.lower() for org in orgs} != {org.lower() for org in fleet}:
+        parser.error("configured owners do not match fleet policy")
     for repo in args.repo:
         parts = repo.split("/")
         if (len(parts) != 2 or parts[0].lower() not in {org.lower() for org in orgs}

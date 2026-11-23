@@ -13,7 +13,8 @@ changes required checks, force-push guards, PR requirements, or thread resolutio
 	scripts/reconcile_repo_baseline.py --org OWNER --repo OWNER/NAME --apply
 
 Use repeatable `--org` or a space-separated `REPO_BASELINE_ORGS` environment value.
-The default is dry-run. JSON reports each organization and repository, its
+The default is a dry-run against the approved owners in the merge-queue
+policy. Apply always requires explicit owner scope. JSON reports each organization and repository, its
 status, findings, and changed fields. Exit 1 indicates blocked drift or an
 unreadable state; actionable dry-run drift is not an error. Keep detailed JSON
 private. The credential must be authorized for the full approved repository
@@ -38,7 +39,7 @@ Repository baseline runs a weekly dry-run on the self-hosted control runner.
 An explicit `apply=true` dispatch from the default branch can write. Configure
 its protected `repository-baseline` Actions environment to admit only the
 default branch. It expects two environment secrets: `REPO_BASELINE_ORGS` with
-all four approved owners on one line and `REPO_BASELINE_ADMIN_TOKEN` with a
+all approved owners from the merge-queue policy and `REPO_BASELINE_ADMIN_TOKEN` with a
 dedicated credential allowed to enumerate those owners and read/write the
 relevant repository settings. The existing broker action issues single-repo
 tokens; this fleet job does not silently use the workflow token, runner CLI
