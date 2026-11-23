@@ -86,8 +86,26 @@ class ReusableRunnerSpend(unittest.TestCase):
                 for value in ('sylphx-linux-standard', 'sylphx-linux-standard-merge',
                               'sylphx-linux-large-merge', 'sylphx-linux-xlarge',
                               'ubuntu-latest', 'macos-latest', 'ubuntu-24.04-16core', ''):
-                    result = expression(job['runs-on'], {'inputs.' + key: {value}})
+                    result = expression(job['runs-on'], {
+                        'inputs.' + key: {value}, 'github.event.repository.visibility': {None},
+                    })
                     self.assertEqual(result, {value if value.startswith('sylphx-linux-') else fallback})
+
+    def test_changes_hosted_opt_in_requires_affirmatively_public_caller(self):
+        import yaml
+        selector = yaml.load(WORKFLOWS['changes.yml'], Loader=yaml.BaseLoader)['jobs']['changes']['runs-on']
+        for visibility in ('public', 'private', 'internal', 'unknown', None):
+            for label in ('ubuntu-latest', 'ubuntu-24.04-16core', 'macos-latest', 'sylphx-linux-standard', ''):
+                with self.subTest(visibility=visibility, label=label):
+                    expected = 'sylphx-linux-control'
+                    if label == 'ubuntu-latest' and visibility == 'public':
+                        expected = label
+                    elif label == 'sylphx-linux-standard':
+                        expected = label
+                    self.assertEqual(expression(selector, {
+                        'github.event.repository.visibility': {visibility},
+                        'inputs.runner': {label},
+                    }), {expected})
 
     def test_changes_default_uses_control_on_every_caller_event(self):
         caller = f"""on: [{', '.join(EVENTS)}]
