@@ -4,6 +4,7 @@ code, and the end-of-job report warns when cache writes fail or never happen."""
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
@@ -29,20 +30,21 @@ printf '%s' "${code:-000}"
 
 FAKE_SCCACHE = r"""#!/usr/bin/env bash
 case "$*" in
-  *json*) printf '{"stats":{"cache_write_errors":%s,"cache_writes":%s}}' "$WRITE_ERRORS" "$WRITES" ;;
+  *json*) printf '%s' "$JSON_STATS" ;;
   *) printf 'Cache hits                          %s\nCache misses                        %s\nCache hits rate                   0.00 %%\nCache write errors                  %s\n' "$HITS" "$MISSES" "$WRITE_ERRORS" ;;
 esac
 """
 
 
-def run(script: str, bin_script: str, bin_name: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def run(script: str, bin_script: str, bin_name: str, env: dict[str, str]) -> tuple[subprocess.CompletedProcess[str], str]:
     with tempfile.TemporaryDirectory() as tmp:
         fake = pathlib.Path(tmp) / bin_name
         fake.write_text(bin_script)
         fake.chmod(0o755)
         answers = pathlib.Path(tmp) / "answers"
         answers.write_text(env.pop("ANSWERS", ""))
-        return subprocess.run(
+        summary = pathlib.Path(tmp) / "summary"
+        result = subprocess.run(
             ["bash", str(ACTION / script)],
             env={
                 "PATH": f"{tmp}:{os.environ['PATH']}",
@@ -51,19 +53,28 @@ def run(script: str, bin_script: str, bin_name: str, env: dict[str, str]) -> sub
                 "SCCACHE_BUCKET": "ci-sccache-org-a",
                 "AWS_ACCESS_KEY_ID": "KEYID",
                 "AWS_SECRET_ACCESS_KEY": "do-not-print",
+                "GITHUB_STEP_SUMMARY": str(summary),
                 **env,
             },
             capture_output=True,
             text=True,
         )
+        return result, summary.read_text() if summary.exists() else ""
 
 
 def bucket(answers: str) -> subprocess.CompletedProcess[str]:
-    return run("ensure-bucket.sh", FAKE_CURL, "curl", {"ANSWERS": answers})
+    return run("ensure-bucket.sh", FAKE_CURL, "curl", {"ANSWERS": answers})[0]
 
 
-def report(hits: int, misses: int, write_errors: int, writes: int) -> subprocess.CompletedProcess[str]:
-    env = {k: str(v) for k, v in dict(HITS=hits, MISSES=misses, WRITE_ERRORS=write_errors, WRITES=writes).items()}
+def report(
+    hits: int, misses: int, write_errors: int, writes: int, *,
+    mode: str | None = "ReadWrite", **settings: str,
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    stats = {"stats": {"cache_write_errors": write_errors, "cache_writes": writes}}
+    if mode is not None:
+        stats["effective_cache_mode"] = mode
+    env = dict(HITS=str(hits), MISSES=str(misses), WRITE_ERRORS=str(write_errors),
+               JSON_STATS=json.dumps(stats), **settings)
     return run("cache-report.sh", FAKE_SCCACHE, "sccache", env)
 
 
@@ -110,19 +121,57 @@ class EnsureBucket(unittest.TestCase):
 
 class CacheReport(unittest.TestCase):
     def test_write_errors_warn_and_do_not_fail(self) -> None:
-        r = report(0, 592, 592, 0)
+        r, _ = report(0, 592, 592, 0)
         self.assertEqual(r.returncode, 0)
         self.assertIn("::warning::sccache: 592 cache write(s) failed", r.stdout)
 
     def test_misses_without_writes_warn(self) -> None:
-        r = report(10, 5, 0, 0)
+        r, _ = report(10, 5, 0, 0)
         self.assertIn("5 cache miss(es) but 0 writes", r.stdout)
 
     def test_healthy_cache_is_silent(self) -> None:
-        self.assertNotIn("::warning::", report(10, 5, 0, 5).stdout)
+        self.assertNotIn("::warning::", report(10, 5, 0, 5)[0].stdout)
 
     def test_all_hits_is_silent(self) -> None:
-        self.assertNotIn("::warning::", report(20, 0, 0, 0).stdout)
+        self.assertNotIn("::warning::", report(20, 0, 0, 0)[0].stdout)
+
+    def test_confirmed_read_only_keeps_the_counters_without_warning(self) -> None:
+        for backend, setting in (("buildcache", "SCCACHE_WEBDAV_RW_MODE"),
+                                 ("static", "SCCACHE_S3_RW_MODE"),
+                                 ("gha", "SCCACHE_GHA_RW_MODE")):
+            with self.subTest(backend=backend):
+                r, summary = report(76, 1344, 1344, 0, mode="ReadOnly",
+                                    BACKEND=backend, **{setting: "READ_ONLY"})
+                self.assertEqual(r.returncode, 0)
+                self.assertNotIn("::warning::", r.stdout)
+                self.assertIn("1344 refused write(s)", r.stdout)
+                self.assertRegex(summary, r"Cache write errors +1344")
+                self.assertRegex(summary, r"Cache writes +0")
+                self.assertRegex(summary, r"Effective cache mode +ReadOnly")
+                self.assertIn("This job does not warm the cache.", summary)
+
+    def test_read_only_by_policy_without_writes_is_not_a_failure(self) -> None:
+        r, _ = report(2, 5, 0, 0, mode="ReadOnly", BACKEND="buildcache",
+                      SCCACHE_WEBDAV_RW_MODE="READ_ONLY")
+        self.assertNotIn("::warning::", r.stdout)
+
+    def test_write_probe_downgrade_warns_even_on_all_hits(self) -> None:
+        r, _ = report(20, 0, 0, 0, mode="ReadOnly", BACKEND="buildcache",
+                      SCCACHE_WEBDAV_RW_MODE="READ_WRITE")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("::warning::sccache: the server is read-only", r.stdout)
+
+    def test_other_backend_read_only_does_not_hide_downgrade(self) -> None:
+        r, _ = report(4, 1, 1, 0, mode="ReadOnly", BACKEND="gha",
+                      SCCACHE_WEBDAV_RW_MODE="READ_ONLY")
+        self.assertIn("::warning::sccache: the server is read-only", r.stdout)
+
+    def test_unconfirmed_read_only_does_not_mask_write_counter(self) -> None:
+        for mode in (None, "ReadWrite"):
+            with self.subTest(mode=mode):
+                r, _ = report(0, 5, 5, 0, mode=mode, BACKEND="buildcache",
+                              SCCACHE_WEBDAV_RW_MODE="READ_ONLY")
+                self.assertIn("::warning::sccache: 5 cache write(s) failed", r.stdout)
 
 
 if __name__ == "__main__":

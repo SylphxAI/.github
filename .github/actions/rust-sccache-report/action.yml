@@ -2,8 +2,9 @@ name: rust-sccache-report
 description: >
   Run last in a job that used rust-sccache (with `if: always()`): prints the
   sccache stats, adds the hit rate to the job summary, and raises a warning
-  when cache writes fail or never happen, so a cold cache does not go
-  unnoticed. It never fails the job.
+  when a cache expected to be writable fails or never writes. Deliberate
+  read-only operation is reported without a write warning. It never fails
+  the job.
 
 inputs:
   backend:
