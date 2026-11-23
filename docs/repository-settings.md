@@ -40,12 +40,26 @@ inherited or mixed-scope rule remains for its owning authority to resolve.
 Repository baseline runs a weekly dry-run on the self-hosted control runner.
 An explicit `apply=true` dispatch from the default branch can write. Configure
 its protected `repository-baseline` Actions environment to admit only the
-default branch. It expects two environment secrets: `REPO_BASELINE_ORGS` with
-all approved owners from the merge-queue policy and `REPO_BASELINE_ADMIN_TOKEN` with a
-dedicated credential allowed to enumerate those owners and read/write the
-relevant repository settings. The existing broker action issues single-repo
-tokens; this fleet job does not silently use the workflow token, runner CLI
-identity, or another secret. Public job output contains aggregate counts only.
+default branch. Set these three environment secrets:
+
+- `REPO_BASELINE_ORGS`: the space-separated owner list from the merge-queue policy.
+- `REPO_BASELINE_APP_ID`: the dedicated GitHub App's numeric ID.
+- `REPO_BASELINE_APP_PRIVATE_KEY`: the App's PEM private key.
+
+Install the App on **all repositories** in each policy organization, with
+repository permissions **Administration: write**, **Metadata: read**, and
+**Contents: read** (for private-branch lookups). Do not grant Contents write.
+Both the workflow and local CLI use these App credentials; no PAT, workflow
+token or runner CLI login is used. Python 3 and OpenSSL are required. The
+reconciler checks every installation and exchanges its App JWT for one
+installation token per owner before starting reconciliation. A missing or
+unreadable installation, a selected-repository grant, or a failed token
+exchange aborts the run before any repository settings are changed. Each
+token is used only for its own installation inventory and repositories.
+Public job output contains aggregate counts and sanitized errors only.
+The reconciler refuses writes if the installation cannot read the current
+merge settings or default-branch state. Verify a dry-run before dispatching
+with `apply=true`.
 
 The [merge-queue tool](merge-queue-settings.md) still owns queue settings,
 explicit check scope, and its existing off-default review policy. Serialize

@@ -29,19 +29,20 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      # App repository permissions: Administration write, Metadata read, Contents read.
       - name: Reconcile repository baseline
         shell: bash
         env:
           REPO_BASELINE_ORGS: ${{ secrets.REPO_BASELINE_ORGS }}
-          GH_TOKEN: ${{ secrets.REPO_BASELINE_ADMIN_TOKEN }}
+          REPO_BASELINE_APP_ID: ${{ secrets.REPO_BASELINE_APP_ID }}
+          REPO_BASELINE_APP_PRIVATE_KEY: ${{ secrets.REPO_BASELINE_APP_PRIVATE_KEY }}
           APPLY_BASELINE: ${{ github.event_name == 'workflow_dispatch' && inputs.apply }}
-          GH_PROMPT_DISABLED: '1'
         run: |
           set -euo pipefail
-          if [[ -z "$GH_TOKEN" || -z "$REPO_BASELINE_ORGS" ]]; then
+          if [[ -z "$REPO_BASELINE_APP_ID" || -z "$REPO_BASELINE_APP_PRIVATE_KEY" || -z "$REPO_BASELINE_ORGS" ]]; then
             echo '::error::Configure the dedicated repository baseline environment secrets first.'
             exit 2
           fi
           args=(--summary-only --require-fleet)
           if [[ "$APPLY_BASELINE" == true ]]; then args+=(--apply); fi
-          python3 scripts/reconcile_repo_baseline.py "${args[@]}"
+          python3 -I scripts/reconcile_repo_baseline.py "${args[@]}"

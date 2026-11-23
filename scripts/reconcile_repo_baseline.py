@@ -4,17 +4,23 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
+import tempfile
 import time
+from urllib.error import HTTPError
 from urllib.parse import quote
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[1]
 OWNER = re.compile(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38})")
@@ -47,39 +53,125 @@ class Response:
     etag: str | None
 
 
-class GitHub:
-    def request(self, path, method="GET", body=None, etag=None, paginate=False):
-        cmd = ["gh", "api", "--hostname", "github.com", "--method", method, path,
-               "-H", "X-GitHub-Api-Version: 2022-11-28"]
-        if paginate:
-            cmd.extend(["--paginate", "--slurp"])
-        else:
-            cmd.append("--include")
-        if etag:
-            cmd.extend(["-H", f"If-Match: {etag}"])
-        if body is not None:
-            cmd.extend(["--input", "-"])
-        try:
-            proc = subprocess.run(cmd, input=json.dumps(body) if body is not None else None,
-                                  capture_output=True, text=True, timeout=30)
-            if paginate:
-                if proc.returncode:
-                    raise Unknown("inventory_api_failed")
-                pages = json.loads(proc.stdout)
-                if not isinstance(pages, list) or not pages or not all(isinstance(p, list) for p in pages):
-                    raise Unknown("inventory_response_invalid")
-                return Response(200, [item for page in pages for item in page], None)
-            headers, raw = proc.stdout.split("\n\n", 1)
-            status = int(headers.splitlines()[0].split()[1])
-            if proc.returncode and status < 400:
-                raise Unknown("api_request_failed")
-            etag = next((line.partition(":")[2].strip() for line in headers.splitlines()
-                         if line.lower().startswith("etag:")), None)
-            read_json = bool(raw.strip()) and (status < 300 or status == 404)
-            return Response(status, json.loads(raw) if read_json else None, etag)
-        except (OSError, ValueError, IndexError, subprocess.TimeoutExpired) as exc:
-            raise Unknown("api_response_unreadable") from exc
+API_ORIGIN = "https://api.github.com/"
+INSTALLATION_REPOSITORIES = "installation/repositories?per_page=100"
+APP_PERMISSIONS = {"administration": "write", "metadata": "read", "contents": "read"}
 
+
+class NoRedirect(HTTPRedirectHandler):
+    # Never carry an authorization header to a different org or origin.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def github_request(token, path, method="GET", body=None, etag=None, *, paginate=False):
+    opener = build_opener(ProxyHandler({}), NoRedirect())
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    if etag:
+        headers["If-Match"] = etag
+    encoded = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        encoded = json.dumps(body).encode()
+    pages = []
+    page = 1
+    while True:
+        # Use only the presence of rel=next; never follow a server-provided URL.
+        query = ("&" if "?" in path else "?") + f"page={page}" if paginate else ""
+        try:
+            request = Request(API_ORIGIN + path + query, data=encoded, headers=headers, method=method)
+            try:
+                response = opener.open(request, timeout=30)
+            except HTTPError as exc:
+                response = exc
+            with response:
+                status = response.code
+                if (status == 404 and not paginate) or 200 <= status < 300:
+                    raw = response.read()
+                    data = json.loads(raw) if raw.strip() else None
+                else:
+                    data = None
+                etag = response.headers.get("ETag")
+                link = response.headers.get("Link", "")
+        except (OSError, ValueError, HTTPException):
+            # No provider body, request metadata, or exception chain in diagnostics.
+            raise Unknown("api_response_unreadable") from None
+        if not paginate or not 200 <= status < 300:
+            return Response(status, data, etag)
+        if path == INSTALLATION_REPOSITORIES:
+            data = data.get("repositories") if isinstance(data, dict) else None
+        if not isinstance(data, list):
+            raise Unknown("pagination_response_invalid")
+        pages.extend(data)
+        if not re.search(r';\s*rel="next"', link):
+            return Response(status, pages, None)
+        page += 1
+
+
+def app_jwt(app_id, private_key):
+    def b64(raw):
+        return base64.urlsafe_b64encode(raw).rstrip(b"=")
+
+    now = int(time.time())
+    claims = {"iat": now - 60, "exp": now + 480, "iss": app_id}
+    message = b64(b'{"alg":"RS256","typ":"JWT"}') + b"." + b64(json.dumps(claims).encode())
+    try:
+        # Only the public JWT input goes in the anonymous file; the key goes via stdin,
+        # never a command argument, child environment, or named file.
+        with tempfile.TemporaryFile() as payload:
+            payload.write(message)
+            payload.seek(0)
+            fd = payload.fileno()
+            result = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", "/dev/stdin", "-sigopt",
+                 "rsa_padding_mode:pkcs1", f"/dev/fd/{fd}"], input=private_key.encode(),
+                capture_output=True, env={"PATH": os.defpath}, pass_fds=(fd,), timeout=10,
+            )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        raise Unknown("app_jwt_signing_failed") from None
+    if result.returncode or not result.stdout:
+        raise Unknown("app_jwt_signing_failed")
+    return (message + b"." + b64(result.stdout)).decode("ascii")
+
+
+class GitHub:
+    def __init__(self, org, token):
+        self.org = org.lower()
+        self._token = token
+
+    def request(self, path, method="GET", body=None, etag=None, paginate=False):
+        if path != INSTALLATION_REPOSITORIES or method != "GET":
+            resource, _, _ = path.partition("?")
+            parts = resource.split("/")
+            if (len(parts) < 3 or parts[0] != "repos" or parts[1].lower() != self.org
+                    or not REPO.fullmatch(parts[2]) or any(part in (".", "..") for part in parts)):
+                raise Unknown("installation_request_out_of_scope")
+        return github_request(self._token, path, method, body, etag, paginate=paginate)
+
+
+def app_installations(orgs, app_id, private_key):
+    jwt = app_jwt(app_id, private_key)
+    clients = {}
+    for org in orgs:
+        install = require(github_request(jwt, f"orgs/{org}/installation"), dict, "app_installation")
+        account = install.get("account")
+        install_id = install.get("id")
+        if (not isinstance(account, dict) or not isinstance(account.get("login"), str)
+                or account["login"].lower() != org.lower() or install.get("target_type") != "Organization"
+                or type(install_id) is not int or install_id <= 0):
+            raise Unknown("app_installation_identity_invalid")
+        if install.get("repository_selection") != "all":
+            raise Unknown("app_installation_requires_all_repositories")
+        exchange = require(github_request(jwt, f"app/installations/{install_id}/access_tokens", "POST",
+                                          {"permissions": APP_PERMISSIONS}), dict, "app_token_exchange")
+        token = exchange.get("token")
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", token):
+            raise Unknown("app_token_exchange_invalid")
+        if exchange.get("permissions") != APP_PERMISSIONS:
+            raise Unknown("app_token_permissions_invalid")
+        clients[org] = GitHub(org, token)
+    return clients
 
 def require(response, expected, label):
     if not 200 <= response.status < 300:
@@ -319,8 +411,7 @@ def reconcile(api, repo, apply=False):
 
 
 def inventory(api, org):
-    path = f"orgs/{org}/repos?type=all&per_page=100"
-    repos = require(api.request(path, paginate=True), list, "inventory")
+    repos = require(api.request(INSTALLATION_REPOSITORIES, paginate=True), list, "inventory")
     names = {}
     for item in repos:
         full = item.get("full_name") if isinstance(item, dict) else None
@@ -338,16 +429,16 @@ def skip_repos():
             for repo in entry["repos"]}
 
 
-def run(api, orgs, *, apply=False, selected=(), skips=()):
+def run(clients, *, apply=False, selected=(), skips=()):
     report = {"mode": "apply" if apply else "dry-run", "organizations": []}
     selected = {name.lower() for name in selected}
 
-    def one(repo):
+    def one(api, repo):
         if any(fnmatchcase(repo.lower(), pattern) for pattern in skips):
             return {"repo": repo, "status": "skipped", "reason": "explicit_hands_off", "findings": []}
         return reconcile(api, repo, apply)
 
-    for org in orgs:
+    for org, api in clients.items():
         group = {"org": org, "repositories": [], "status": "ok"}
         report["organizations"].append(group)
         try:
@@ -359,10 +450,10 @@ def run(api, orgs, *, apply=False, selected=(), skips=()):
                     raise Unknown("selected_repository_not_visible")
                 repos = [name for name in repos if name.lower() in selected]
             if apply:
-                group["repositories"] = [one(repo) for repo in repos]
+                group["repositories"] = [one(api, repo) for repo in repos]
             else:
                 with ThreadPoolExecutor(max_workers=8) as pool:
-                    group["repositories"] = list(pool.map(one, repos))
+                    group["repositories"] = list(pool.map(lambda repo: one(api, repo), repos))
             statuses = {row["status"] for row in group["repositories"]}
             group["status"] = next((s for s in ("error", "blocked", "applied", "drift") if s in statuses), "ok")
         except Unknown as exc:
@@ -401,7 +492,17 @@ def main(argv=None):
         if (len(parts) != 2 or parts[0].lower() not in {org.lower() for org in orgs}
                 or not REPO.fullmatch(parts[1]) or parts[1] in (".", "..")):
             parser.error("--repo requires org/repo with an explicitly scoped owner")
-    report = run(GitHub(), orgs, apply=args.apply, selected=args.repo, skips=skip_repos())
+    app_id = os.environ.get("REPO_BASELINE_APP_ID", "").strip()
+    key = os.environ.get("REPO_BASELINE_APP_PRIVATE_KEY", "")
+    if not re.fullmatch(r"[1-9][0-9]*", app_id) or not key.strip():
+        parser.error("configure REPO_BASELINE_APP_ID (numeric) and REPO_BASELINE_APP_PRIVATE_KEY")
+    try:
+        # Preflight the entire selected scope before any repository work, even in apply mode.
+        clients = app_installations(orgs, app_id, key)
+    except Unknown as exc:
+        print(f"Repository baseline authentication failed: {exc}", file=sys.stderr)
+        return 1
+    report = run(clients, apply=args.apply, selected=args.repo, skips=skip_repos())
     public = {"mode": report["mode"], "summary": report["summary"]}
     print(json.dumps(public if args.summary_only else report, indent=2, sort_keys=True))
     return int(bool({"error", "blocked"} & report["summary"]["organizations"].keys()))
