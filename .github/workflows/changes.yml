@@ -19,7 +19,7 @@ on:
         type: string
         default: '["**", "!**/*.md", "!LICENSE*", "!.github/ISSUE_TEMPLATE/**", "!.github/workflows/**", "!.github/actions/**"]'
       runner:
-        description: Self-hosted sylphx-linux-* label; omitted or other values use control.
+        description: Self-hosted sylphx-linux-* label, or ubuntu-latest for an affirmatively public caller. Omitted or unsupported values use control.
         type: string
         default: sylphx-linux-control
     outputs:
@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   changes:
-    runs-on: ${{ startsWith(inputs.runner, 'sylphx-linux-') && inputs.runner || 'sylphx-linux-control' }}
+    runs-on: ${{ github.event.repository.visibility == 'public' && inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || startsWith(inputs.runner, 'sylphx-linux-') && inputs.runner || 'sylphx-linux-control' }}
     timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code || steps.all.outputs.value }}

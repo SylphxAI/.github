@@ -19,6 +19,10 @@ the pieces it lacks.
 | [`actions/needs-pass`](../.github/actions/needs-pass/action.yml) | The `ci-ok` verdict: skipped passes, failed or cancelled fails. |
 | `docker/build-push-action` with `cache-from/to: type=gha` | Image builds. |
 
+Public repositories without a Sylphx runner can pass `runner: ubuntu-latest` to `changes.yml`.
+The hosted runner is used only when the caller’s repository visibility is `public`.
+Private, internal and unknown visibility stay self-hosted; the default remains `sylphx-linux-control`.
+
 ## Concurrency
 
 Put this at the workflow level. A new push supersedes the pull request's run; a
