@@ -1,6 +1,7 @@
 """Acceptance fixtures and complete acquisition through the public entry point."""
 import contextlib
 import copy
+import http.client
 import importlib.util
 import io
 import json
@@ -775,20 +776,60 @@ class MetadataTransport(unittest.TestCase):
         self.sleep.assert_not_called()
         self.assert_safe_output()
 
-    def test_graphql_post_503_and_transport_or_json_failures_are_not_retried(self):
+    def test_get_recovers_from_timeout_or_reset_with_the_same_request(self):
+        for failure, kind in (
+                (TimeoutError('read-token'), 'timeout'),
+                (urllib.error.URLError(ConnectionResetError('read-token')), 'connection reset'),
+                (http.client.RemoteDisconnected('read-token'), 'connection reset')):
+            with self.subTest(failure=type(failure).__name__):
+                self.sleep.reset_mock()
+                with mock.patch.object(checker.urllib.request, 'urlopen',
+                                       side_effect=[failure, self.response(pull())]) as opened:
+                    self.assertEqual(self.api.get('pulls/1'), pull())
+                self.assertEqual(opened.call_count, 2)
+                self.assertEqual(opened.call_args_list[0], opened.call_args_list[1])
+                self.sleep.assert_called_once_with(1)
+                self.assertIn(f'GET failed ({kind})', self.output.getvalue())
+                self.assert_safe_output()
+
+    def test_exhausted_transport_and_503_share_budget_and_fail_closed(self):
+        status, report, opened = self.main([self.failure(), TimeoutError('read-token'),
+                                           urllib.error.URLError(ConnectionResetError('read-token'))])
+        self.assertEqual(status, 2)
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['error'], 'GitHub metadata read failed (GET: connection reset)')
+        self.assertEqual(opened.call_count, 3)
+        self.assertEqual(self.sleep.call_args_list, [mock.call(1), mock.call(2)])
+        self.assert_safe_output(report)
+
+    def test_graphql_post_failures_are_not_retried(self):
         with mock.patch.object(checker.urllib.request, 'urlopen', side_effect=self.failure()) as opened:
             with self.assertRaisesRegex(checker.PolicyError, 'HTTP 503'):
                 self.api.queue_entries('main')
         opened.assert_called_once()
         self.assertEqual(opened.call_args.args[0].get_method(), 'POST')
-        for result in (OSError('read-token'), io.BytesIO(b'untrusted-body read-token')):
-            with self.subTest(result=type(result).__name__), \
-                    mock.patch.object(checker.urllib.request, 'urlopen', side_effect=[result]) as opened:
-                with self.assertRaisesRegex(checker.PolicyError, 'metadata read failed'):
-                    self.api.get('pulls/1')
-                opened.assert_called_once()
+        with mock.patch.object(checker.urllib.request, 'urlopen',
+                               side_effect=urllib.error.URLError(TimeoutError('read-token'))) as opened:
+            with self.assertRaisesRegex(checker.PolicyError, r'metadata read failed \(POST: timeout\)'):
+                self.api.queue_entries('main')
+        opened.assert_called_once()
         self.sleep.assert_not_called()
         self.assert_safe_output()
+
+    def test_invalid_response_and_unclassified_io_fail_once_without_exposing_details(self):
+        for result, kind in ((PermissionError('read-token'), 'I/O error'),
+                             (urllib.error.URLError('read-token'), 'I/O error'),
+                             (io.BytesIO(b'untrusted-body read-token'), 'invalid JSON'),
+                             (io.BytesIO(b'\xff'), 'invalid JSON'),
+                             (http.client.BadStatusLine('read-token'), 'invalid HTTP response')):
+            with self.subTest(result=type(result).__name__):
+                status, report, opened = self.main([result])
+                self.assertEqual(status, 2)
+                self.assertFalse(report['passed'])
+                self.assertEqual(report['error'], f'GitHub metadata read failed (GET: {kind})')
+                opened.assert_called_once()
+                self.assert_safe_output(report)
+        self.sleep.assert_not_called()
 
     def test_recovered_metadata_still_refuses_identity_text_and_incomplete_fields(self):
         for label in ('author', 'committer', 'commit-text', 'pull-text', 'incomplete'):

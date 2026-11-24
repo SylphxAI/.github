@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from email.utils import parsedate_to_datetime
+import http.client
 import importlib.util
 import json
 import os
@@ -19,7 +20,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[3]
 POLICY = ROOT / 'policy/contribution-policy.json'
 SHA = re.compile(r'[0-9a-f]{40}\Z')
-GET_503_BACKOFF_SECONDS = (1, 2)
+GET_BACKOFF_SECONDS = (1, 2)
 RETRY_AFTER_LIMIT_SECONDS = 30
 
 
@@ -135,7 +136,10 @@ class GitHub:
                                                   'Accept': 'application/vnd.github+json',
                                                   'Content-Type': 'application/json',
                                                   'X-GitHub-Api-Version': '2022-11-28'})
-        for attempt in range(len(GET_503_BACKOFF_SECONDS) + 1):
+        method = request.get_method()
+        attempts = len(GET_BACKOFF_SECONDS) + 1
+        for attempt in range(attempts):
+            can_retry = method == 'GET' and attempt + 1 < attempts
             try:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     return json.load(response)
@@ -143,7 +147,7 @@ class GitHub:
                 try:
                     body = json.loads(error.read(8192))
                     message = body.get('message', '') if isinstance(body, dict) else ''
-                except (OSError, ValueError, TypeError):
+                except (OSError, ValueError, TypeError, http.client.HTTPException):
                     message = ''
                 finally:
                     error.close()
@@ -151,12 +155,11 @@ class GitHub:
                 rate_limited = headers.get('X-RateLimit-Remaining') == '0' or 'rate limit' in str(message).lower()
                 if error.code == 429 or error.code == 403 and rate_limited:
                     raise PolicyError(f'GitHub metadata read failed (HTTP {error.code}: rate limit exceeded)') from None
-                if request.get_method() == 'GET' and error.code == 503 and not rate_limited and \
-                        attempt < len(GET_503_BACKOFF_SECONDS):
-                    delay = metadata_retry_delay(headers.get('Retry-After'), GET_503_BACKOFF_SECONDS[attempt])
+                if can_retry and error.code == 503 and not rate_limited:
+                    delay = metadata_retry_delay(headers.get('Retry-After'), GET_BACKOFF_SECONDS[attempt])
                     if delay is not None:
                         print('Contribution policy: GitHub metadata GET failed (HTTP 503); '
-                              f'retrying request (attempt {attempt + 2}/{len(GET_503_BACKOFF_SECONDS) + 1}).')
+                              f'retrying request (attempt {attempt + 2}/{attempts}).')
                         time.sleep(delay)
                         continue
                 pulls = re.search(r'/repos/[^/]+/[^/]+/(?:pulls(?:/|\?|$)|commits/[0-9a-f]{40}/pulls(?:\?|$))', url)
@@ -165,8 +168,24 @@ class GitHub:
                         'Resource not accessible by integration', 'Resource not accessible by personal access token'}:
                     raise PolicyError('caller workflow lacks pull-requests: read') from None
                 raise PolicyError(f'GitHub metadata read failed (HTTP {error.code})') from None
-            except (OSError, ValueError):
-                raise PolicyError('GitHub metadata read failed') from None
+            except OSError as error:
+                # urllib may wrap a socket error in URLError. Never log its reason or URL.
+                cause = error.reason if isinstance(error, urllib.error.URLError) else error
+                if isinstance(cause, TimeoutError):
+                    kind = 'timeout'
+                elif isinstance(cause, ConnectionResetError):
+                    kind = 'connection reset'
+                else:
+                    raise PolicyError(f'GitHub metadata read failed ({method}: I/O error)') from None
+                if not can_retry:
+                    raise PolicyError(f'GitHub metadata read failed ({method}: {kind})') from None
+                print(f'Contribution policy: GitHub metadata GET failed ({kind}); '
+                      f'retrying request (attempt {attempt + 2}/{attempts}).')
+                time.sleep(metadata_retry_delay(None, GET_BACKOFF_SECONDS[attempt]))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                raise PolicyError(f'GitHub metadata read failed ({method}: invalid JSON)') from None
+            except (ValueError, http.client.HTTPException):
+                raise PolicyError(f'GitHub metadata read failed ({method}: invalid HTTP response)') from None
 
     def get(self, path):
         repository_url = self.root + '/repos/' + self.repository

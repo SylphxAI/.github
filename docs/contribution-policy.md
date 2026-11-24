@@ -52,18 +52,20 @@ open PR head runs the same policy. Post-merge push events do not recheck old
 history. Missing permissions, missing PR metadata, unreadable Git objects, and
 metadata changing during a read fail the check.
 
-A REST metadata GET that receives HTTP 503 can make at most three attempts with
-unchanged request identity and credentials. The two waits use one- and two-second
-backoff plus up to one second of jitter; each attempt retains the 30-second socket
-timeout. A `Retry-After` delay or HTTP-date is honored as a minimum wait. An invalid
+A REST metadata GET that receives HTTP 503, a socket timeout, or a connection
+reset can make at most three total attempts with unchanged request identity
+and credentials. The two waits use one- and two-second backoff plus up to one
+second of jitter; each attempt retains the 30-second socket timeout. A `Retry-After` delay or HTTP-date is honored as a minimum wait. An invalid
 value or a wait above 30 seconds fails closed instead of retrying early. The
-reader closes each failed response before waiting and reports only the fixed
-status and attempt, never the response body, URL, credentials or header values.
-Exhausted HTTP 503 acquisition still exits 2; successful acquisition still runs
-every metadata, identity and provenance check. Other HTTP statuses, rate-limit
-indicators, transport/JSON errors and GraphQL POST reads are not retried. This
-bounded read recovery never reruns tests, jobs or workflows or replaces their
-evidence.
+reader closes each failed response before waiting and reports only the status
+or fixed error category and the attempt, never the body, URL, credentials, or
+header values.
+Exhausted acquisition still exits 2; successful acquisition still runs every
+metadata, identity and provenance check. Other HTTP statuses, rate-limit
+indicators, other I/O errors, malformed responses, and GraphQL POST reads are
+not retried. Non-status failures report the request method and a fixed error
+category, not raw exception text. This bounded read recovery never reruns
+tests, jobs or workflows or replaces their evidence.
 
 This behavior follows [HTTP 503 and Retry-After semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.6.4)
 (RFC 9110 §§15.6.4 and 10.2.3, read 2026-11-03 at 13:29:52 UTC). The attempt and wait limits are
