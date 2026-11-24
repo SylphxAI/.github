@@ -19,6 +19,9 @@ class PublicHostedRunners(unittest.TestCase):
         if (route.file, route.job) == ('project-control.yml', 'ci-range-consumer'):
             expected = ('sylphx-linux-standard-merge' if route.event == 'merge_group'
                         else 'sylphx-linux-standard')
+        # Maintenance jobs with an explicit self-hosted-only requirement.
+        if (route.file, route.job) == ('actions-cache-prune.yml', 'prune'):
+            expected = 'sylphx-linux-standard'
         if (route.file, route.job) == ('repository-baseline.yml', 'reconcile'):
             expected = 'sylphx-linux-control'
         self.assertEqual(route.values, {expected})
@@ -81,6 +84,17 @@ class PublicHostedRunners(unittest.TestCase):
                     self.assertEqual(route.values, {'sylphx-linux-standard-merge'
                                                    if route.event == 'merge_group'
                                                    else 'sylphx-linux-standard'})
+
+    def test_cache_retention_always_uses_self_hosted_lane(self):
+        workflow = 'actions-cache-prune.yml'
+        for private in (False, True):
+            routes = [route for route in runner_evaluations(WORKFLOWS, private=private)
+                      if route.file == workflow and route.job == 'prune']
+            self.assertEqual({route.event for route in routes}, {'schedule', 'workflow_dispatch'})
+            for route in routes:
+                with self.subTest(private=private, event=route.event):
+                    self.assertEqual(route.errors, ())
+                    self.assertEqual(route.values, {'sylphx-linux-standard'})
 
     def test_rust_call_without_override_has_identical_old_labels(self):
         # Omitting the new input must preserve both size and merge-lane behavior,
