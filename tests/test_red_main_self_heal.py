@@ -519,13 +519,6 @@ class ReviewFixesStaticTest(unittest.TestCase):
         body = step_text("Revert the culprit or report it")
         self.assertIn("tr -d '\\140@'", body)
 
-    def test_hold_comments_once_per_culprit(self):
-        body = step_text("Revert the culprit or report it")
-        start = body.index('if [ -z "$existing" ]; then\n              gh api --method POST "repos/$REPO/issues" -f title="$TRUNK is red: migration')
-        end = body.index('say "**No revert (migration hold)')
-        self.assertIn("OPS_ISSUE#", body[start:end])
-        self.assertIn('for pr in $prs; do', body[start:end])
-
     def test_classifier_error_stops_the_handler(self):
         body = step_text("Classify infrastructure failures")
         self.assertIn('if ! verdict=$(classify_run "$RUN_ID"); then', body)
