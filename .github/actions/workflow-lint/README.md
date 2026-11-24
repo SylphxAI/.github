@@ -348,9 +348,10 @@ values fail. The old release-proof header cannot raise the seven-day cap.
 - **Diagnostics (logs, screenshots, reports):** use `if: failure()`,
   `retention-days: 3`, and `continue-on-error: true`. This skips uploads on
   success and keeps a storage error from obscuring the original failure.
-  The artifact rule rejects any diagnostic `always()` upload without literal
-  `continue-on-error: true`. The full contract still disallows masking failures
-  on required paths outside the narrowly defined failure-only upload.
+  For CI workflows and local composite actions, the artifact rule rejects
+  diagnostic `always()` uploads without literal `continue-on-error: true`.
+  The full contract still disallows masking failures on required paths outside
+  the narrowly defined failure-only upload.
 - **Cross-job handoffs:** use `retention-days: 1`. The handoff exemption from the
   diagnostic check requires the same explicit literal artifact name in an
   `actions/download-artifact` step of a downstream job (via `needs`) in the
@@ -358,6 +359,11 @@ values fail. The old release-proof header cannot raise the seven-day cap.
   and downloads in the same job do not establish a handoff. A composite
   action alone cannot prove a cross-job handoff.
 - **Release binaries (IPA, AAB, APK):** use `retention-days: 3` to `7`.
+  Workflows triggered only by `release`, `workflow_dispatch`, or
+  `workflow_call` can keep a bounded `always()` deliverable or publication
+  receipt. A workflow with any other trigger, or a local reusable workflow
+  reached from such a workflow, still receives the CI diagnostic check.
+  The standalone lint cannot resolve callers in other repositories.
 
 The rule checks all workflow triggers and blocks in both `report-only` and
 `enforce` modes. Confirmed delivered and explicitly hands-off/legacy repositories

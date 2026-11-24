@@ -10,6 +10,8 @@ DOWNLOAD_ARTIFACT = re.compile(r"actions/download-artifact@[^\s]+", re.I)
 # Match calls, not the contents of single-quoted GitHub expression strings.
 ALWAYS = re.compile(r"'(?:[^']|'')*'|(?P<call>(?<![\w.])always\s*\(\s*\))", re.I)
 FAILURE_ONLY = re.compile(r"failure\s*\(\s*\)", re.I)
+DELIVERY_EVENTS = frozenset({"release", "workflow_call", "workflow_dispatch"})
+LOCAL_CALL = re.compile(r"\./\.github/workflows/([^/\\]+\.ya?ml)")
 UPLOAD_GUIDANCE = (
     "use retention-days: 1 for cross-job handoffs, 3–7 for release binaries, "
     "or use SylphxAI/.github/.github/actions/run-store "
@@ -107,7 +109,7 @@ def _handoffs(jobs, steps):
     return handoffs
 
 
-def _check_steps(steps, scope, handoff_names=frozenset()):
+def _check_steps(steps, scope, handoff_names=frozenset(), *, diagnostic_check=True):
     for step in steps:
         uses = step.get("uses")
         if not UPLOAD_ARTIFACT.match(_scalar(uses).strip()):
@@ -130,7 +132,8 @@ def _check_steps(steps, scope, handoff_names=frozenset()):
 
         # With archive: false the uploader uses the filename, not with.name.
         named_archive = "archive" not in inputs or _scalar(inputs["archive"]).lower() == "true"
-        if (named_archive and _artifact_name(inputs) in handoff_names) or _protected(step):
+        if (not diagnostic_check or _protected(step)
+                or (named_archive and _artifact_name(inputs) in handoff_names)):
             continue
         if any(match["call"] for match in ALWAYS.finditer(_condition(step))):
             yield (step["if"].start_mark.line + 1,
@@ -138,12 +141,53 @@ def _check_steps(steps, scope, handoff_names=frozenset()):
                    f"use if: failure(), retention-days: 3 and continue-on-error: true; {UPLOAD_GUIDANCE}")
 
 
-def _workflow_problems(document):
-    jobs = {name: _fields(job) for name, job in _fields(_fields(document).get("jobs")).items()}
+def _trigger_events(node):
+    if isinstance(node, yaml.MappingNode):
+        return set(_fields(node))
+    if isinstance(node, yaml.SequenceNode):
+        return {_scalar(event) for event in node.value}
+    return {_scalar(node)}
+
+
+def _workflow(document):
+    root = _fields(document)
+    triggers = _trigger_events(root.get("on"))
+    delivery_only = bool(triggers) and triggers <= DELIVERY_EVENTS
+    jobs = {name: _fields(job) for name, job in _fields(root.get("jobs")).items()}
+    return delivery_only, jobs
+
+
+def ci_workflows(workflows):
+    """Conservatively propagate CI reachability through local reusable calls."""
+    calls = {}
+    strict = set()
+    for name, text in workflows.items():
+        try:
+            delivery_only, jobs = _workflow(yaml.compose(text, Loader=yaml.SafeLoader))
+        except (AmbiguousMapping, yaml.YAMLError):
+            # The normal manifest scan rejects malformed source.
+            continue
+        if not delivery_only:
+            strict.add(name)
+        calls[name] = {target[1] for job in jobs.values()
+                       if (target := LOCAL_CALL.fullmatch(_scalar(job.get("uses")).strip()))}
+    pending = list(strict)
+    while pending:
+        for callee in calls.get(pending.pop(), ()):
+            if callee not in strict:
+                strict.add(callee)
+                pending.append(callee)
+    return strict
+
+
+def _workflow_problems(document, ci_caller):
+    delivery_only, jobs = _workflow(document)
     steps = {name: [_fields(step) for step in _sequence(job.get("steps"))] for name, job in jobs.items()}
-    handoffs = _handoffs(jobs, steps)
+    diagnostic_check = ci_caller or not delivery_only
+    handoffs = _handoffs(jobs, steps) if diagnostic_check else {}
     for name, job_steps in steps.items():
-        yield from _check_steps(job_steps, f"job {name}", handoffs[name])
+        yield from _check_steps(job_steps, f"job {name}", handoffs.get(name, ()),
+                                diagnostic_check=diagnostic_check)
 
 
 def _action_problems(document):
@@ -164,8 +208,8 @@ def _problems(text, check):
     return findings
 
 
-def workflow_problems(text):
-    return _problems(text, _workflow_problems)
+def workflow_problems(text, *, ci_caller=False):
+    return _problems(text, lambda document: _workflow_problems(document, ci_caller))
 
 
 def action_problems(text):

@@ -13,8 +13,8 @@ description: >
   unlaunched products defer audits to launch. Delivered customer repositories
   skip these rules. Also requires job timeouts, forbids manual approval and
   maintenance-window booking gates, forbids failure masking on required needs
-  paths, and enforces explicit 1–7 day artifact retention and nonblocking
-  always() diagnostic uploads in workflows and local composite actions.
+  paths, and enforces explicit 1–7 day artifact retention in all workflows
+  and local composite actions, plus nonblocking always() diagnostics in CI.
   PR-triggered workflows must supersede per PR while giving non-PR events
   unique run groups, with only named, reasoned literal concurrency exceptions.
   Every PR and merge-group job must reach ci-ok or declare a reasoned advisory

@@ -29,6 +29,7 @@ from merge_lane_gate import exempt
 from pr_concurrency import problems as pr_concurrency_problems
 from artifact_retention import (
     action_problems as artifact_retention_action_problems,
+    ci_workflows as artifact_ci_workflows,
     is_failure_only_diagnostic,
     workflow_problems as artifact_retention_workflow_problems,
 )
@@ -185,7 +186,7 @@ def gate_coverage(workflows):
     return findings
 
 
-def scan_workflow(file, text, evaluations=None):
+def scan_workflow(file, text, evaluations=None, *, artifact_ci_caller=False):
     document = yaml.compose(text, Loader=WorkflowLoader)
     jobs = fields(fields(document).get("jobs"))
     required = required_jobs(jobs)
@@ -227,7 +228,7 @@ def scan_workflow(file, text, evaluations=None):
             if run is not None and masks_failure(scalar(run)):
                 add(run, f"job {name}: || true hides a required failure")
     findings.extend(Finding(file, line, problem, True)
-                    for line, problem in artifact_retention_workflow_problems(text))
+                    for line, problem in artifact_retention_workflow_problems(text, ci_caller=artifact_ci_caller))
     return findings
 
 
@@ -427,10 +428,11 @@ def scan_dir(root, rules="all"):
                 for name, text in workflows.items()
                 for line, problem in pr_concurrency_problems(text, workflows=workflows)]
     actions = _composite_actions(root)
+    artifact_ci = artifact_ci_workflows(workflows)
     if rules == "artifact-retention":
         found = [Finding('.github/workflows/' + name, line, problem, True)
                  for name, text in workflows.items()
-                 for line, problem in artifact_retention_workflow_problems(text)]
+                 for line, problem in artifact_retention_workflow_problems(text, ci_caller=name in artifact_ci)]
         found.extend(Finding(rel, line, problem, True)
                      for rel, text in actions.items()
                      for line, problem in artifact_retention_action_problems(text))
@@ -448,7 +450,8 @@ def scan_dir(root, rules="all"):
     notes = []
     evaluations = runner_evaluations(workflows, private=private)
     for name, text in workflows.items():
-        findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations))
+        findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations,
+                                      artifact_ci_caller=name in artifact_ci))
         findings.extend(Finding('.github/workflows/' + name, line, problem, True)
                         for line, problem in pr_concurrency_problems(text, workflows=workflows))
     for rel, text in actions.items():

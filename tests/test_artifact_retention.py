@@ -155,6 +155,51 @@ class ArtifactRetentionWorkflowTests(unittest.TestCase):
                                                              "retention-days: 7"]), trigger="release")
                 self.assertEqual(workflow_problems(text), [])
 
+    def test_delivery_only_contracts_keep_bounded_always_uploads(self):
+        cases = (
+            ("\n  workflow_call:\n    inputs:\n      title: {type: string}",
+             "store-stills-${{ inputs.title }}", "store-stills/", 7, ""),
+            ("\n  release:\n    types: [published]", "publication-receipt", "receipts/", 7, ""),
+            ("workflow_dispatch", "publication-receipt-${{ github.run_id }}", "receipts/", 7, ""),
+            ("workflow_dispatch", "simulator-capture", "results.enc", 3, "        continue-on-error: true\n"),
+        )
+        for trigger, name, path, days, protection in cases:
+            with self.subTest(trigger=trigger, name=name):
+                step = upload_step(with_block=[f"name: {name}", f"path: {path}", f"retention-days: {days}"])
+                text = make_workflow(step + "        if: always()\n" + protection, trigger=trigger)
+                self.assertEqual(workflow_problems(text), [])
+                self.assertIn("exceeds max 7", workflow_problems(text.replace(f"retention-days: {days}", "retention-days: 8"))[0][1])
+                missing = text.replace(f"          retention-days: {days}\n", "")
+                self.assertIn("must set explicit integer retention-days", workflow_problems(missing)[0][1])
+
+    def test_standard_ci_cannot_use_delivery_event_as_an_exception(self):
+        step = upload_step(with_block=["name: reports", "retention-days: 7"]) + "        if: always()\n"
+        for trigger in ("pull_request", "pull_request_target", "merge_group", "push", "schedule",
+                        "[release, pull_request]", "\n  workflow_dispatch:\n  merge_group:"):
+            with self.subTest(trigger=trigger):
+                found = workflow_problems(make_workflow(step, trigger=trigger))
+                self.assertIn("always() lacks", found[0][1])
+
+    def test_local_reusable_delivery_workflow_inherits_ci_through_nested_calls(self):
+        step = upload_step(with_block=["name: store-export", "retention-days: 7"]) + "        if: always()\n"
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            root = Path(tmp)
+            folder = root / ".github/workflows"
+            folder.mkdir(parents=True)
+            (folder / "deliver.yml").write_text(make_workflow(step, trigger="workflow_call"))
+            (folder / "bridge.yml").write_text(
+                "on: workflow_call\njobs:\n  deliver:\n    uses: ./.github/workflows/deliver.yml\n"
+            )
+            caller = folder / "caller.yml"
+            call = "on: TRIGGER\njobs:\n  bridge:\n    uses: ./.github/workflows/bridge.yml\n"
+            caller.write_text(call.replace("TRIGGER", "workflow_dispatch"))
+            self.assertEqual(contract.scan_dir(root, rules="artifact-retention"), [])
+            caller.write_text(call.replace("TRIGGER", "pull_request"))
+            for rules in ("all", "artifact-retention"):
+                findings = contract.scan_dir(root, rules=rules)
+                self.assertTrue(any(f.file == ".github/workflows/deliver.yml" and f.blocking
+                                    and "always() lacks" in f.problem for f in findings))
+
     def test_unprotected_always_diagnostic_is_blocking(self):
         upload = upload_step(with_block=["name: diagnostics", "path: logs/", "retention-days: 3"])
         for condition in ("always()", "${{ aLwAyS ( ) && !cancelled() }}", "success() || always()"):
