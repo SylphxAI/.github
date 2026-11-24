@@ -7,7 +7,8 @@ backoff starts at 2 seconds and doubles (2, 4, 8, 16), with 0–25% added jitter
 Each attempt and wait is capped by the remaining budget. A slow operation can
 therefore exhaust the budget before its fifth attempt.
 
-Only curl exits 6, 7, 28, 35, 52 and 56, HTTP 429 and HTTP 5xx are retryable.
+Only curl exits 6, 7, 16, 28, 35, 52, 56 and 92, HTTP 429 and HTTP 5xx are
+retryable. Exits 16 and 92 are HTTP/2 framing and stream errors.
 HTTP 401, 403 and 404 are permanent, even when the response body then times
 out. There is no retry of a successful upload or an application-level refusal.
 An uncertain upload reuses the same key, headers and bytes; the gateway's
