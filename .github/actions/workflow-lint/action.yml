@@ -12,15 +12,21 @@ description: >
   launched products audit the default branch on a separate schedule, and
   unlaunched products defer audits to launch. Delivered customer repositories
   skip these rules. Also requires job timeouts, forbids manual approval and
-  maintenance-window booking gates, forbids failure masking on required needs paths, and requires explicit bounded retention-days (default 1, max 3; up to 30 with a named release-proof header exception) on actions/upload-artifact steps across workflows and local composite actions. PR-triggered workflows must supersede per PR while giving non-PR events unique run groups, with only named, reasoned literal concurrency exceptions. Every PR and merge-group job must reach ci-ok or declare a reasoned advisory workflow. Needs a checkout and
+  maintenance-window booking gates, forbids failure masking on required needs
+  paths, and enforces explicit 1–7 day artifact retention in all workflows
+  and local composite actions, plus nonblocking always() diagnostics in CI.
+  PR-triggered workflows must supersede per PR while giving non-PR events
+  unique run groups, with only named, reasoned literal concurrency exceptions.
+  Every PR and merge-group job must reach ci-ok or declare a reasoned advisory
+  workflow. Needs a checkout and
   python3 with pip (the scalar scanner supplies pinned PyYAML). Linux x86_64.
 
 inputs:
   rules:
     description: >
       all runs the existing full lint. pr-concurrency adopts only the canonical
-      PR-concurrency rule, and artifact-retention adopts only the bounded
-      actions/upload-artifact retention-days rule, without actionlint,
+      PR-concurrency rule, and artifact-retention adopts only the artifact
+      retention and diagnostic upload rules, without actionlint,
       performance or other contract rules. Other values fail rather than
       skipping lint.
     default: all
@@ -28,7 +34,9 @@ inputs:
     description: >
       enforce fails all contract violations; report-only warns on legacy
       timeout and failure-masking findings. Manual approval and maintenance-window
-      booking gates, unbounded actions/upload-artifact retention, missing ci-ok coverage and enrolled expected-check declaration drift always fail. Actionlint always fails syntax/reference errors.
+      booking gates, artifact upload violations, missing ci-ok coverage and
+      enrolled expected-check declaration drift always fail. Actionlint always
+      fails syntax/reference errors.
     default: report-only
   ignore:
     description: >

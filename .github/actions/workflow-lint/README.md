@@ -56,7 +56,9 @@ With full lint selected, the contract scans `.github/workflows/*.yml` and `*.yam
   executable jobs instead.
 - Jobs on the transitive `needs` graph of `ci-ok`, a job named `ci-ok`, or a
   job using the shared `needs-pass`/`ci-ok` action cannot set `continue-on-error`
-  except to literal `false`, at job or step level, or run `|| true`.
+  except to literal `false`, at job or step level, or run `|| true`. The only
+  step exception is a 3-day artifact upload that runs exclusively on `failure()`:
+  ignoring an error in that upload cannot mask the failure that triggered it.
 - Every independently triggered `pull_request` or `merge_group` job must be
   in that event's `ci-ok` transitive `needs` closure. The shared `ci-ok` action
   is also recognized under a different job ID, including local action paths.
@@ -71,7 +73,7 @@ With full lint selected, the contract scans `.github/workflows/*.yml` and `*.yam
   treats every job as required. Advisory jobs still need timeouts.
 
 `contract-mode: report-only` emits warnings and a count for legacy timeout
-and failure-propagation findings. Gate coverage, enrolled declaration drift, manual approval/maintenance booking, bounded `actions/upload-artifact` retention and
+and failure-propagation findings. Gate coverage, enrolled declaration drift, manual approval/maintenance booking, `actions/upload-artifact` policy violations and
 [R8 merge-lane routing](../../../docs/merge-lane.md) remain blocking in either
 mode. R8 follows all workflows in the checkout and their local reusable calls,
 including matrices, input defaults and job conditions, using the same core as
@@ -339,43 +341,43 @@ GitHub storage; see [`docs/run-store.md`](../../../docs/run-store.md)) instead.
 When a workflow (`.github/workflows/*.yml`, `*.yaml`) or local composite action
 (`.github/actions/**/action.yml`, `action.yaml`) invokes
 `actions/upload-artifact` or a sub-action such as `actions/upload-artifact/merge`,
-every step must declare an explicit literal positive integer `with.retention-days`:
+every step must set an explicit literal integer `with.retention-days` from
+`1` to `7`. Missing, zero, non-integer, expression-based, or ambiguous
+values fail. The old release-proof header cannot raise the seven-day cap.
 
-- **Default / standard bound:** `1` to `3` days (recommended: `1`).
-- **Fail-closed refusals:** missing `with` or `retention-days`, `retention-days: 0`
-  (which falls back to the 90-day repository/org default), dynamic `${{ ... }}`
-  expressions, non-integers, non-scalars, and duplicate `with` or
-  `retention-days` keys (matched case-insensitively).
-- **Named exception for release/proof artifacts:** a column-zero header comment
-  strictly before `jobs:` (or `runs:` in a composite action) with a specific
-  reason raises the allowed literal integer bound to `30` days:
+- **Diagnostics (logs, screenshots, reports):** use `if: failure()`,
+  `retention-days: 3`, and `continue-on-error: true`. This skips uploads on
+  success and keeps a storage error from obscuring the original failure.
+  For CI workflows and local composite actions, the artifact rule rejects
+  diagnostic `always()` uploads without literal `continue-on-error: true`.
+  The full contract still disallows masking failures on required paths outside
+  the narrowly defined failure-only upload.
+- **Cross-job handoffs:** use `retention-days: 1`. The handoff exemption from the
+  diagnostic check requires the same explicit literal artifact name in an
+  `actions/download-artifact` step of a downstream job (via `needs`) in the
+  same workflow run. Dynamic names, unnamed/wildcard downloads, other runs,
+  and downloads in the same job do not establish a handoff. A composite
+  action alone cannot prove a cross-job handoff.
+- **Release binaries (IPA, AAB, APK):** use `retention-days: 3` to `7`.
+  Workflows triggered only by `release`, `workflow_dispatch`, or
+  `workflow_call` can keep a bounded `always()` deliverable or publication
+  receipt. A workflow with any other trigger, or a local reusable workflow
+  reached from such a workflow, still receives the CI diagnostic check.
+  The standalone lint cannot resolve callers in other repositories.
 
-  ```yaml
-  # artifact-retention: exception release-proof — Signed release bundle retained for review.
-  ```
-
-  Bare markers, generic `exempt` comments, unknown exception names, blank
-  reasons, indented comments, and comments inside `run:` bodies are refused or
-  ignored. Even with `release-proof`, `retention-days` must remain an explicit
-  literal integer from `1` to `30`.
-
-This rule applies across all workflow trigger events (including `push`,
-`schedule`, `workflow_dispatch`, `workflow_call`, `release`, `pull_request`,
-and `merge_group`) and blocks in both `report-only` and `enforce` modes.
-Delivered customer repositories and explicitly excluded hands-off/legacy
-repositories follow the same skip policy as the rest of `workflow-lint`.
+The rule checks all workflow triggers and blocks in both `report-only` and
+`enforce` modes. Confirmed delivered and explicitly hands-off/legacy repositories
+retain their existing exemptions. An unreadable delivery property does not
+skip the artifact rule.
 
 ### Consumer rollout
 
 Callers pin `SylphxAI/.github` by full commit SHA (`# main`), so merging this
-rule does not break pinned consumer pull requests until their pin advances:
-
-1. Inventory existing workflows offline with
+rule does not change pinned consumers until their pin advances:
+1. Inventory workflows and local composite actions offline with
    `WORKFLOW_LINT_RULES=artifact-retention python3 path/to/workflow-lint/contract.py`.
-2. Migrate job hand-overs to [`run-store`](../../../docs/run-store.md), add
-   `retention-days: 1` (max `3`) to remaining diagnostic uploads, or add the
-   reasoned `release-proof` header with an explicit `1`–`30` bound for genuine
-   release/proof bundles.
+2. Use [run-store](../../../docs/run-store.md) for large handoffs and apply the
+   policy above to remaining uploads before advancing the pin.
 3. Update the repository's `workflow-lint` pin in the same PR (or add a
    rule-scoped `rules: artifact-retention` step in repositories not yet using
    full `workflow-lint`).

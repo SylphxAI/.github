@@ -185,13 +185,12 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("job report: || true hides a required failure", found[0].problem)
 
-    def test_delivered_or_unreadable_property_skips(self):
-        for state in (True, None):
-            with patch.dict(contract.os.environ, {"GITHUB_ACTIONS": "true"}, clear=True), \
-                    patch.object(contract, "delivered", return_value=state), \
-                    patch.object(contract, "scan_dir", side_effect=AssertionError("must skip")), \
-                    patch("builtins.print"):
-                self.assertEqual(contract.main(), 0)
+    def test_confirmed_delivered_property_skips(self):
+        with patch.dict(contract.os.environ, {"GITHUB_ACTIONS": "true"}, clear=True), \
+                patch.object(contract, "delivered", return_value=True), \
+                patch.object(contract, "scan_dir", side_effect=AssertionError("must skip")), \
+                patch("builtins.print"):
+            self.assertEqual(contract.main(), 0)
 
     def test_main_reports_then_enforces(self):
         findings = self.scan(workflow(build="    continue-on-error: true\n"))

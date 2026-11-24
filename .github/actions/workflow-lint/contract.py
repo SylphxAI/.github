@@ -29,6 +29,8 @@ from merge_lane_gate import exempt
 from pr_concurrency import problems as pr_concurrency_problems
 from artifact_retention import (
     action_problems as artifact_retention_action_problems,
+    ci_workflows as artifact_ci_workflows,
+    is_failure_only_diagnostic,
     workflow_problems as artifact_retention_workflow_problems,
 )
 
@@ -184,8 +186,8 @@ def gate_coverage(workflows):
     return findings
 
 
-def scan_workflow(file, text, evaluations=None):
-    document = yaml.compose(text, Loader=yaml.BaseLoader)
+def scan_workflow(file, text, evaluations=None, *, artifact_ci_caller=False):
+    document = yaml.compose(text, Loader=WorkflowLoader)
     jobs = fields(fields(document).get("jobs"))
     required = required_jobs(jobs)
     findings = []
@@ -219,13 +221,14 @@ def scan_workflow(file, text, evaluations=None):
             if name not in required:
                 continue
             ignore = properties.get("continue-on-error")
-            if ignore is not None and scalar(ignore).lower() != "false":
+            if (ignore is not None and scalar(ignore).lower() != "false"
+                    and (part is node or not is_failure_only_diagnostic(part))):
                 add(ignore, f"job {name}: continue-on-error can hide a required failure")
             run = properties.get("run")
             if run is not None and masks_failure(scalar(run)):
                 add(run, f"job {name}: || true hides a required failure")
     findings.extend(Finding(file, line, problem, True)
-                    for line, problem in artifact_retention_workflow_problems(text))
+                    for line, problem in artifact_retention_workflow_problems(text, ci_caller=artifact_ci_caller))
     return findings
 
 
@@ -425,10 +428,11 @@ def scan_dir(root, rules="all"):
                 for name, text in workflows.items()
                 for line, problem in pr_concurrency_problems(text, workflows=workflows)]
     actions = _composite_actions(root)
+    artifact_ci = artifact_ci_workflows(workflows)
     if rules == "artifact-retention":
         found = [Finding('.github/workflows/' + name, line, problem, True)
                  for name, text in workflows.items()
-                 for line, problem in artifact_retention_workflow_problems(text)]
+                 for line, problem in artifact_retention_workflow_problems(text, ci_caller=name in artifact_ci)]
         found.extend(Finding(rel, line, problem, True)
                      for rel, text in actions.items()
                      for line, problem in artifact_retention_action_problems(text))
@@ -446,7 +450,8 @@ def scan_dir(root, rules="all"):
     notes = []
     evaluations = runner_evaluations(workflows, private=private)
     for name, text in workflows.items():
-        findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations))
+        findings.extend(scan_workflow('.github/workflows/' + name, text, evaluations,
+                                      artifact_ci_caller=name in artifact_ci))
         findings.extend(Finding('.github/workflows/' + name, line, problem, True)
                         for line, problem in pr_concurrency_problems(text, workflows=workflows))
     for rel, text in actions.items():
@@ -479,9 +484,15 @@ def main():
         raise ValueError(f"unknown workflow-lint rules: {rules}")
     exit_code([], mode)
     state = delivered(dict(os.environ))
-    if state is True or (state is None and os.environ.get("GITHUB_ACTIONS") == "true"):
-        print("workflow-contract: delivered property is delivered or unreadable; skipped")
+    if state is True:
+        print("workflow-contract: delivered customer repository; skipped")
         return 0
+    if state is None and os.environ.get("GITHUB_ACTIONS") == "true":
+        # An unreadable property is not proof of an artifact-policy exemption.
+        print("::warning::workflow-contract: delivered property unreadable; skipping other contract rules")
+        if rules == "pr-concurrency":
+            return 0
+        rules = "artifact-retention"
     findings = scan_dir(pathlib.Path.cwd(), rules=rules)
     for finding in findings:
         level = "error" if finding.blocking or mode == "enforce" else "warning"

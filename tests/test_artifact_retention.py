@@ -20,9 +20,6 @@ contract = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(contract)
 
 from artifact_retention import (
-    DEFAULT_RETENTION_DAYS,
-    MAX_EXCEPTION_RETENTION_DAYS,
-    MAX_RETENTION_DAYS,
     UPLOAD_ARTIFACT,
     action_problems,
     workflow_problems,
@@ -72,7 +69,7 @@ def make_composite(step, *, header="", using="composite"):
 
 
 class ArtifactRetentionWorkflowTests(unittest.TestCase):
-    def test_valid_explicit_retention_days_one_through_three_pass(self):
+    def test_valid_explicit_retention_days_one_through_seven_pass(self):
         for uses in (
             f"actions/upload-artifact@{PIN}",
             "actions/upload-artifact@v4",
@@ -80,7 +77,7 @@ class ArtifactRetentionWorkflowTests(unittest.TestCase):
             f"actions/upload-artifact/merge@{PIN}",
             "actions/upload-artifact/merge@v4",
         ):
-            for value in ("1", "2", "3", '"1"', "'3'"):
+            for value in ("1", "2", "3", "4", "5", "6", "7", '"1"', "'3'"):
                 with self.subTest(uses=uses, value=value):
                     text = make_workflow(upload_step(uses, ["name: diag", "path: out/", f"retention-days: {value}"]))
                     self.assertEqual(workflow_problems(text), [])
@@ -140,89 +137,149 @@ class ArtifactRetentionWorkflowTests(unittest.TestCase):
                 else:
                     self.assertIn("literal integer", found[0][1])
 
-    def test_exceeding_standard_max_requires_release_proof_exception(self):
-        for days in (4, 7, 14, 30, 90):
-            with self.subTest(days=days):
-                text = make_workflow(upload_step(with_block=["name: diag", f"retention-days: {days}"]))
-                found = workflow_problems(text)
-                self.assertEqual(len(found), 1)
-                self.assertIn(f"retention-days={days} exceeds max {MAX_RETENTION_DAYS}", found[0][1])
-                self.assertIn("SylphxAI/.github/.github/actions/run-store", found[0][1])
-                self.assertIn("build-cache/Ceph RGW, $0 GitHub storage", found[0][1])
+    def test_exceeding_seven_fails_even_with_old_release_proof_header(self):
+        for days in (8, 14, 30, 90, 365):
+            for header in ("", HEADER):
+                with self.subTest(days=days, header=header):
+                    text = make_workflow(upload_step(with_block=["name: release", f"retention-days: {days}"]),
+                                         header=header)
+                    found = workflow_problems(text)
+                    self.assertEqual(len(found), 1)
+                    self.assertIn(f"retention-days={days} exceeds max 7", found[0][1])
+                    self.assertIn("SylphxAI/.github/.github/actions/run-store", found[0][1])
 
-    def test_release_proof_exception_allows_up_to_thirty_days_only(self):
-        for header in (
-            HEADER,
-            "# artifact-retention: exception release-proof: Signed iOS release proof.\n",
-            "# artifact-retention: exception release-proof : Signed iOS release proof.\n",
-        ):
-            for days in (1, 3, 4, 7, 14, 30):
-                with self.subTest(header=header, days=days):
-                    text = make_workflow(
-                        upload_step(with_block=["name: proof", f"retention-days: {days}"]),
-                        header=header,
-                    )
-                    self.assertEqual(workflow_problems(text), [])
-        for bad_days in (31, 90, 365):
-            with self.subTest(bad_days=bad_days):
-                text = make_workflow(
-                    upload_step(with_block=["name: proof", f"retention-days: {bad_days}"]),
-                    header=HEADER,
-                )
-                found = workflow_problems(text)
-                self.assertEqual(len(found), 1)
-                self.assertIn(f"exceeds max {MAX_EXCEPTION_RETENTION_DAYS}", found[0][1])
-        # Exception never waives omitted, zero, or dynamic retention-days.
-        for bad_with in (
-            ["name: proof"],
-            ["name: proof", "retention-days: 0"],
-            ["name: proof", "retention-days: ${{ inputs.days }}"],
-        ):
-            with self.subTest(bad_with=bad_with):
-                text = make_workflow(upload_step(with_block=bad_with), header=HEADER)
-                self.assertEqual(len(workflow_problems(text)), 1)
+    def test_release_binaries_with_seven_days_pass(self):
+        for extension in ("ipa", "aab", "apk"):
+            with self.subTest(extension=extension):
+                text = make_workflow(upload_step(with_block=["name: release", f"path: out/app.{extension}",
+                                                             "retention-days: 7"]), trigger="release")
+                self.assertEqual(workflow_problems(text), [])
 
-    def test_invalid_or_spoofed_exception_headers_are_refused(self):
-        invalid_headers = (
-            "# artifact-retention: exempt — generic escape hatch\n",
-            "# artifact-retention: exception unknown-kind — unsupported\n",
-            "# artifact-retention: exception release-proof — \n",
-            "# artifact-retention: exception release-proof — ---\n",
-            "# artifact-retention: exception release-proof:\n",
-            "# ARTIFACT-RETENTION: exception release-proof — wrong case\n",
-            HEADER + "# artifact-retention: exempt — extra bad marker\n",
+    def test_delivery_only_contracts_keep_bounded_always_uploads(self):
+        cases = (
+            ("\n  workflow_call:\n    inputs:\n      title: {type: string}",
+             "store-stills-${{ inputs.title }}", "store-stills/", 7, ""),
+            ("\n  release:\n    types: [published]", "publication-receipt", "receipts/", 7, ""),
+            ("workflow_dispatch", "publication-receipt-${{ github.run_id }}", "receipts/", 7, ""),
+            ("workflow_dispatch", "simulator-capture", "results.enc", 3, "        continue-on-error: true\n"),
         )
-        for bad_header in invalid_headers:
-            with self.subTest(bad_header=bad_header):
-                text = make_workflow(
-                    upload_step(with_block=["name: proof", "retention-days: 14"]),
-                    header=bad_header,
-                )
-                found = workflow_problems(text)
-                self.assertTrue(any("artifact-retention exception must use" in msg for _, msg in found), found)
-                # Invalid header does not grant the extended bound.
-                self.assertTrue(any("exceeds max 3" in msg for _, msg in found), found)
+        for trigger, name, path, days, protection in cases:
+            with self.subTest(trigger=trigger, name=name):
+                step = upload_step(with_block=[f"name: {name}", f"path: {path}", f"retention-days: {days}"])
+                text = make_workflow(step + "        if: always()\n" + protection, trigger=trigger)
+                self.assertEqual(workflow_problems(text), [])
+                self.assertIn("exceeds max 7", workflow_problems(text.replace(f"retention-days: {days}", "retention-days: 8"))[0][1])
+                missing = text.replace(f"          retention-days: {days}\n", "")
+                self.assertIn("must set explicit integer retention-days", workflow_problems(missing)[0][1])
 
-        # Spoofed comments after jobs:, indented, or inside run: bodies never grant an exception.
-        spoofed_cases = (
-            make_workflow(
-                f"      - run: |\n          {HEADER.strip()}\n          echo hi\n"
-                + upload_step(with_block=["name: proof", "retention-days: 14"])
-            ),
-            make_workflow(
-                "      " + HEADER
-                + upload_step(with_block=["name: proof", "retention-days: 14"])
-            ),
-            "on: push\njobs:\n"
-            + HEADER
-            + "  build:\n    runs-on: sylphx-linux-standard\n    timeout-minutes: 5\n    steps:\n"
-            + upload_step(with_block=["name: proof", "retention-days: 14"]),
+    def test_standard_ci_cannot_use_delivery_event_as_an_exception(self):
+        step = upload_step(with_block=["name: reports", "retention-days: 7"]) + "        if: always()\n"
+        for trigger in ("pull_request", "pull_request_target", "merge_group", "push", "schedule",
+                        "[release, pull_request]", "\n  workflow_dispatch:\n  merge_group:"):
+            with self.subTest(trigger=trigger):
+                found = workflow_problems(make_workflow(step, trigger=trigger))
+                self.assertIn("always() lacks", found[0][1])
+
+    def test_local_reusable_delivery_workflow_inherits_ci_through_nested_calls(self):
+        step = upload_step(with_block=["name: store-export", "retention-days: 7"]) + "        if: always()\n"
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            root = Path(tmp)
+            folder = root / ".github/workflows"
+            folder.mkdir(parents=True)
+            (folder / "deliver.yml").write_text(make_workflow(step, trigger="workflow_call"))
+            (folder / "bridge.yml").write_text(
+                "on: workflow_call\njobs:\n  deliver:\n    uses: ./.github/workflows/deliver.yml\n"
+            )
+            caller = folder / "caller.yml"
+            call = "on: TRIGGER\njobs:\n  bridge:\n    uses: ./.github/workflows/bridge.yml\n"
+            caller.write_text(call.replace("TRIGGER", "workflow_dispatch"))
+            self.assertEqual(contract.scan_dir(root, rules="artifact-retention"), [])
+            caller.write_text(call.replace("TRIGGER", "pull_request"))
+            for rules in ("all", "artifact-retention"):
+                findings = contract.scan_dir(root, rules=rules)
+                self.assertTrue(any(f.file == ".github/workflows/deliver.yml" and f.blocking
+                                    and "always() lacks" in f.problem for f in findings))
+
+    def test_unprotected_always_diagnostic_is_blocking(self):
+        upload = upload_step(with_block=["name: diagnostics", "path: logs/", "retention-days: 3"])
+        for condition in ("always()", "${{ aLwAyS ( ) && !cancelled() }}", "success() || always()"):
+            for protection in ("", "        continue-on-error: false\n",
+                               "        continue-on-error: 'true'\n",
+                               "        continue-on-error: ${{ inputs.optional }}\n"):
+                with self.subTest(condition=condition, protection=protection):
+                    step = upload + f"        if: {condition}\n" + protection
+                    for found in (workflow_problems(make_workflow(step)), action_problems(make_composite(step))):
+                        self.assertEqual(len(found), 1)
+                        self.assertIn("always() lacks continue-on-error: true", found[0][1])
+                        self.assertIn("use if: failure(), retention-days: 3 and continue-on-error: true", found[0][1])
+
+    def test_protected_always_passes_artifact_rule_and_quoted_text_is_not_a_call(self):
+        upload = upload_step(with_block=["name: diagnostics", "retention-days: 3"])
+        optional_upload = upload + "        if: always()\n        continue-on-error: true\n"
+        self.assertEqual(workflow_problems(make_workflow(optional_upload)), [])
+        quoted = upload + "        if: ${{ contains('it''s always()', inputs.label) }}\n"
+        self.assertEqual(workflow_problems(make_workflow(quoted)), [])
+
+    def test_failure_only_diagnostic_passes_full_contract_without_weakening_required_steps(self):
+        upload = upload_step(with_block=["name: diagnostics", "retention-days: 3"])
+        step = upload + "        if: ${{ FaIlUrE() }}\n        continue-on-error: true\n"
+        text = make_workflow("      - run: pytest\n" + step)
+        self.assertEqual(workflow_problems(text), [])
+        self.assertEqual(action_problems(make_composite(step)), [])
+        self.assertEqual(contract.scan_workflow(".github/workflows/ci.yml", text, []), [])
+        for bad in (
+            text.replace("FaIlUrE()", "failure() || success()"),
+            text.replace("FaIlUrE()", "always()"),
+            text.replace("FaIlUrE()", "success()"),
+            text.replace("retention-days: 3", "retention-days: 7"),
+            text.replace("- run: pytest", "- run: pytest\n        continue-on-error: true"),
+        ):
+            with self.subTest(bad=bad):
+                findings = contract.scan_workflow(".github/workflows/ci.yml", bad, [])
+                self.assertEqual(contract.exit_code(findings, "enforce"), 1)
+                self.assertTrue(any("hide a required failure" in finding.problem for finding in findings))
+
+    def test_handoff_requires_matching_named_download_in_a_dependent_job(self):
+        upload = upload_step(with_block=["name: bundle", "path: out/", "retention-days: 1"])
+        step = upload + "        if: always()\n"
+        download = ("      - uses: Actions/Download-Artifact@v8\n"
+                    "        with:\n          name: bundle\n")
+        consume = ("  consume:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n" + download)
+        workflow = make_workflow(step) + consume
+        self.assertEqual(workflow_problems(workflow), [])
+        # Transitive dependencies order producers before consumers as well.
+        transitive = workflow.replace("needs: build", "needs: [prepare]") + (
+            "  prepare:\n    needs: build\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n"
         )
-        for text in spoofed_cases:
+        self.assertEqual(workflow_problems(transitive), [])
+        for wrong in (
+            make_workflow(step + download),
+            workflow.replace("    needs: build\n", ""),
+            workflow.replace("name: bundle\n", "name: different\n", 1),
+            workflow.replace("          name: bundle\n", "          pattern: '*'\n", 2),
+            workflow.replace("name: bundle", "name: ${{ matrix.name }}"),
+            workflow + "          run-id: 42\n",
+            workflow + "          repository: other/repo\n",
+            workflow + "          artifact-ids: 42\n",
+            workflow + "          github-token: ${{ github.token }}\n",
+            workflow + "        if: false\n",
+            workflow.replace("          path: out/\n", "          path: out/\n          archive: false\n"),
+        ):
+            with self.subTest(wrong=wrong):
+                found = workflow_problems(wrong)
+                self.assertEqual(len(found), 1)
+                self.assertIn("always() lacks", found[0][1])
+        self.assertIn("exceeds max 7", workflow_problems(workflow.replace("retention-days: 1", "retention-days: 8"))[0][1])
+
+    def test_ambiguous_yaml_fails_closed(self):
+        for text in (
+            make_workflow("      - &upload {uses: actions/upload-artifact@v4, with: {retention-days: 1}}\n"
+                          "      - {<<: *upload, with: {}}\n"),
+            make_workflow("      - {uses: actions/upload-artifact@v4, if: always(), IF: success()}\n"),
+            make_workflow("      - {uses: actions/upload-artifact@v4, with: [}\n"),
+        ):
             with self.subTest(text=text):
-                found = workflow_problems(text)
-                self.assertEqual(len(found), 1)
-                self.assertIn("exceeds max 3", found[0][1])
+                self.assertIn("artifact policy", workflow_problems(text)[0][1])
 
     def test_duplicate_retention_or_with_keys_fail_closed(self):
         dup_case = make_workflow(
@@ -230,7 +287,7 @@ class ArtifactRetentionWorkflowTests(unittest.TestCase):
         )
         found = workflow_problems(dup_case)
         self.assertEqual(len(found), 1)
-        self.assertIn("duplicate retention-days", found[0][1])
+        self.assertIn("duplicate 'retention-days'", found[0][1])
 
         dup_with = (
             "on: push\njobs:\n  build:\n    runs-on: sylphx-linux-standard\n"
@@ -276,7 +333,7 @@ class ArtifactRetentionWorkflowTests(unittest.TestCase):
         flow_ok = "on: push\njobs: {build: {steps: [{uses: 'actions/upload-artifact@v4', with: {name: diag, retention-days: 1}}]}}\n"
         self.assertEqual(workflow_problems(flow_ok), [])
 
-    def test_composite_actions_are_checked_with_same_bounds_and_exceptions(self):
+    def test_composite_actions_are_checked_with_same_bounds(self):
         good = make_composite(upload_step(with_block=["name: diag", "retention-days: 1"]))
         self.assertEqual(action_problems(good), [])
 
@@ -287,9 +344,9 @@ class ArtifactRetentionWorkflowTests(unittest.TestCase):
 
         over = make_composite(upload_step(with_block=["name: proof", "retention-days: 14"]))
         self.assertEqual(len(action_problems(over)), 1)
-        self.assertEqual(action_problems(HEADER + over), [])
+        self.assertEqual(len(action_problems(HEADER + over)), 1)
 
-        # Exception placed after runs: cannot apply.
+        # Old exception text cannot apply, regardless of placement.
         spoofed = "name: Example\nruns:\n" + HEADER + "  using: composite\n  steps:\n" + upload_step(
             with_block=["name: proof", "retention-days: 14"]
         )
@@ -313,7 +370,8 @@ class ArtifactRetentionContractIntegrationTests(unittest.TestCase):
                 + make_workflow(upload_step(with_block=["name: diag"]), trigger="push")
             )
             (act_dir / "action.yml").write_text(
-                make_composite(upload_step(with_block=["name: nested", "retention-days: 7"]))
+                make_composite(upload_step(with_block=["name: nested", "retention-days: 3"])
+                               + "        if: always()\n")
             )
             event = root / "event.json"
             event.write_text('{"repository":{"private":false,"visibility":"public"}}')
@@ -395,7 +453,7 @@ class ArtifactRetentionContractIntegrationTests(unittest.TestCase):
             wf_path.write_text(legacy_ok.replace("retention-days: 1", "retention-days: 14"))
             bad = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(bad.returncode, 1, bad.stdout + bad.stderr)
-            self.assertIn("retention-days=14 exceeds max 3", bad.stdout)
+            self.assertIn("retention-days=14 exceeds max 7", bad.stdout)
 
             for invalid in ("", "typo", "artifact-retention,all"):
                 env["WORKFLOW_LINT_RULES"] = invalid
@@ -440,6 +498,20 @@ class ArtifactRetentionContractIntegrationTests(unittest.TestCase):
                     patch("builtins.print"):
                 self.assertEqual(contract.main(), 0)
 
+    def test_unreadable_delivery_class_does_not_skip_artifact_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifests = root / ".github/workflows"
+            manifests.mkdir(parents=True)
+            (manifests / "ci.yml").write_text(make_workflow(upload_step()))
+            for rules in ("all", "artifact-retention"):
+                with self.subTest(rules=rules), patch.dict(os.environ, {
+                    "GITHUB_ACTIONS": "true", "WORKFLOW_LINT_RULES": rules,
+                }, clear=True), patch.object(contract, "delivered", return_value=None), \
+                        patch.object(contract.pathlib.Path, "cwd", return_value=root), \
+                        patch("builtins.print"):
+                    self.assertEqual(contract.main(), 1)
+
     def test_this_repository_workflows_actions_and_templates_pass_artifact_retention(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(contract.scan_dir(ROOT, rules="artifact-retention"), [])
@@ -461,7 +533,6 @@ class ArtifactRetentionContractIntegrationTests(unittest.TestCase):
                 for step in ((doc.get("runs") or {}).get("steps") or []):
                     uses = str((step or {}).get("uses", "")).strip()
                     self.assertFalse(UPLOAD_ARTIFACT.match(uses), f"{path}: {uses}")
-        self.assertEqual(DEFAULT_RETENTION_DAYS, 1)
 
 
 if __name__ == "__main__":
