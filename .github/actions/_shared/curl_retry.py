@@ -24,7 +24,8 @@ import time
 import urllib.parse
 import urllib.request
 
-TRANSIENT = {6, 7, 28, 35, 52, 56}
+# 16 (CURLE_HTTP2) and 92 (CURLE_HTTP2_STREAM) can clear on a fresh attempt.
+TRANSIENT = {6, 7, 16, 28, 35, 52, 56, 92}
 HTTP_REDIRECTS = ("--location", "--max-redirs", "5", "--proto-redir", "=http,https")
 FIELDS = ("time_namelookup", "time_connect", "time_appconnect",
           "time_starttransfer", "time_total", "remote_ip", "http_code")

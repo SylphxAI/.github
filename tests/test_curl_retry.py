@@ -142,6 +142,38 @@ class CurlRetryTest(unittest.TestCase):
                     self.assertIn(SECRET.encode(), call.kwargs["input"])
                     self.assertIn(QUERY.encode(), call.kwargs["input"])
 
+    def test_http2_errors_replay_the_same_upload_until_success(self):
+        for failures in ((16,), (92,), (28, 92)):
+            with self.subTest(failures=failures):
+                replies = [subprocess.CompletedProcess([], code, b"") for code in failures]
+                replies.append(subprocess.CompletedProcess([], 0,
+                    b"0.001\t0.002\t0.000\t0.003\t0.004\t127.0.0.1\t202"))
+                args = ["-K", "-", "-X", "PUT", "-T", "/unused"]
+                config = b'url = "https://example.test/artifact"\n'
+                with patch.object(net.subprocess, "run", side_effect=replies) as run, \
+                        patch.object(net.time, "monotonic", return_value=0), \
+                        patch.object(net.time, "sleep"), redirect_stderr(io.StringIO()) as log:
+                    result = net.run(args, config=config, label="test-put", policy=net.Policy(base_delay=0))
+                self.assertEqual(result, net.Result("202", 0))
+                self.assertEqual(run.call_count, len(replies))
+                self.assertEqual(log.getvalue().count("stop=retry"), len(failures))
+                for attempt in run.call_args_list:
+                    self.assertEqual(attempt, run.call_args_list[0])
+                    self.assertEqual(attempt.kwargs["input"], config)
+
+    def test_permanent_curl_failure_or_http_refusal_stops_on_first_attempt(self):
+        for code, status in ((22, "400"), (92, "403")):
+            with self.subTest(code=code, status=status):
+                completed = subprocess.CompletedProcess([], code,
+                    f"0.001\t0.002\t0.000\t0.003\t0.004\t127.0.0.1\t{status}".encode())
+                with patch.object(net.subprocess, "run", return_value=completed) as run, \
+                        patch.object(net.time, "sleep") as sleep, redirect_stderr(io.StringIO()) as log:
+                    result = net.run(["-o", "/unused"], label="test-read")
+                self.assertEqual(result, net.Result(status, code))
+                self.assertEqual(run.call_count, 1)
+                sleep.assert_not_called()
+                self.assertIn("stop=permanent", log.getvalue())
+
     def test_exponential_backoff_has_bounded_jitter_and_five_attempts(self):
         now = [0.0]
         sleeps = []
