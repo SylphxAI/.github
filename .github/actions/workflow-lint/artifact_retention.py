@@ -1,38 +1,26 @@
-"""Require explicit bounded retention-days on actions/upload-artifact steps.
-
-GitHub Actions artifact storage is a metered organization quota (GB-hours per
-billing cycle). Omitting retention-days or setting retention-days: 0 falls back
-to the repository/organization default (up to 90 days) and can exhaust the
-organization quota. Prefer run-store for job hand-overs; when an
-actions/upload-artifact step is used, require an explicit literal integer
-retention-days from 1 to 3 (default 1), or up to 30 with a named, reasoned
-header exception for release/proof artifacts.
-"""
+"""Enforce bounded upload retention and nonblocking diagnostic uploads."""
 from __future__ import annotations
 
 import re
 
 import yaml
 
-DEFAULT_RETENTION_DAYS = 1
-MAX_RETENTION_DAYS = 3
-MAX_EXCEPTION_RETENTION_DAYS = 30
-ALLOWED_EXCEPTIONS = frozenset({"release-proof"})
-
 UPLOAD_ARTIFACT = re.compile(r"^actions/upload-artifact(?:/[^@\s]*)?(?:@|\Z)", re.I)
-POSITIVE_INT = re.compile(r"^[1-9][0-9]*\Z")
-HEADER_MARKER = re.compile(r"^#[ \t]*artifact-retention:[ \t]*(.*)$", re.M | re.I)
-HEADER_EXCEPTION = re.compile(
-    r"^#[ \t]*artifact-retention:[ \t]*exception[ \t]+([\w-]+)(?:[ \t]+—[ \t]*|[ \t]*:[ \t]*)(.*)$"
-)
-RUN_STORE_GUIDANCE = (
-    "use SylphxAI/.github/.github/actions/run-store "
+DOWNLOAD_ARTIFACT = re.compile(r"actions/download-artifact@[^\s]+", re.I)
+# Match calls, not the contents of single-quoted GitHub expression strings.
+ALWAYS = re.compile(r"'(?:[^']|'')*'|(?P<call>(?<![\w.])always\s*\(\s*\))", re.I)
+FAILURE_ONLY = re.compile(r"failure\s*\(\s*\)", re.I)
+UPLOAD_GUIDANCE = (
+    "use retention-days: 1 for cross-job handoffs, 3–7 for release binaries, "
+    "or use SylphxAI/.github/.github/actions/run-store "
     "(build-cache/Ceph RGW, $0 GitHub storage) for multi-MB CI handoffs"
 )
 
 
-def _mapping_items(node):
-    return list(node.value) if isinstance(node, yaml.MappingNode) else []
+class AmbiguousMapping(ValueError):
+    def __init__(self, key, problem):
+        self.line = key.start_mark.line + 1
+        super().__init__(problem)
 
 
 def _scalar(node):
@@ -40,186 +28,145 @@ def _scalar(node):
 
 
 def _sequence(node):
-    return list(node.value) if isinstance(node, yaml.SequenceNode) else []
+    return node.value if isinstance(node, yaml.SequenceNode) else []
 
 
-def _field(node, name):
-    for key, value in _mapping_items(node):
-        if isinstance(key, yaml.ScalarNode) and key.value == name:
-            return value
-    return None
+def _fields(node):
+    fields = {}
+    if not isinstance(node, yaml.MappingNode):
+        return fields
+    for key, value in node.value:
+        name = _scalar(key).lower()
+        if not name or name == "<<":
+            raise AmbiguousMapping(key, "artifact policy cannot resolve a non-literal or YAML merge key")
+        if name in fields:
+            raise AmbiguousMapping(key, f"artifact policy cannot resolve duplicate '{name}' keys")
+        fields[name] = value
+    return fields
 
 
-def _header_exception(text, document, body_key):
-    """Parse column-zero header exceptions strictly preceding jobs:/runs:."""
-    cutoff = len(text)
-    if isinstance(document, yaml.MappingNode):
-        for key, _ in document.value:
-            if isinstance(key, yaml.ScalarNode) and key.value == body_key:
-                cutoff = key.start_mark.index
-                break
-    header = text[:cutoff]
-    findings = []
-    has_release_proof = False
-    invalid = False
-    for match in HEADER_MARKER.finditer(header):
-        line_no = header[:match.start()].count("\n") + 1
-        parsed = HEADER_EXCEPTION.fullmatch(match.group(0))
-        if (
-            not parsed
-            or parsed.group(1) not in ALLOWED_EXCEPTIONS
-            or not parsed.group(2).strip(" \t:-—")
-        ):
-            findings.append((
-                line_no,
-                "artifact-retention exception must use "
-                "'# artifact-retention: exception release-proof — <reason>' with a specific reason",
-            ))
-            invalid = True
-        else:
-            has_release_proof = True
-    limit = MAX_EXCEPTION_RETENTION_DAYS if (has_release_proof and not invalid) else MAX_RETENTION_DAYS
-    return limit, findings
+def _condition(step):
+    text = _scalar(step.get("if")).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        return text[3:-2].strip()
+    return text
 
 
-def _check_steps(steps_node, scope, limit):
-    findings = []
-    for step in _sequence(steps_node):
-        items = _mapping_items(step)
-        uses_nodes = [
-            value
-            for key, value in items
-            if isinstance(key, yaml.ScalarNode)
-            and key.value == "uses"
-            and isinstance(value, yaml.ScalarNode)
-            and UPLOAD_ARTIFACT.match(value.value.strip())
-        ]
-        if not uses_nodes:
+def _protected(step):
+    node = step.get("continue-on-error")
+    return (_scalar(node).lower() == "true" and node.style is None
+            and node.tag == "tag:yaml.org,2002:bool")
+
+
+def is_failure_only_diagnostic(node):
+    """A failed diagnostic upload cannot mask the failure that enabled it."""
+    try:
+        step = _fields(node)
+        return (UPLOAD_ARTIFACT.match(_scalar(step.get("uses")).strip()) is not None
+                and FAILURE_ONLY.fullmatch(_condition(step)) is not None
+                and _protected(step)
+                and _scalar(_fields(step.get("with")).get("retention-days")) == "3")
+    except AmbiguousMapping:
+        # The artifact rule reports this; do not relax the failure-masking rule.
+        return False
+
+
+def _artifact_name(inputs):
+    name = _scalar(inputs.get("name")).strip()
+    return name if "${{" not in name else ""
+
+
+def _ancestors(job_id, jobs):
+    pending = [job_id]
+    seen = {job_id}
+    while pending:
+        needs = jobs[pending.pop()].get("needs")
+        for need in _sequence(needs) if isinstance(needs, yaml.SequenceNode) else [needs]:
+            name = _scalar(need).lower()
+            if name in jobs and name not in seen:
+                seen.add(name)
+                pending.append(name)
+                yield name
+
+
+def _handoffs(jobs, steps):
+    """Index named same-run downloads by upstream job and artifact name."""
+    handoffs = {job_id: set() for job_id in jobs}
+    for job_id, job_steps in steps.items():
+        for step in job_steps:
+            if not DOWNLOAD_ARTIFACT.fullmatch(_scalar(step.get("uses")).strip()):
+                continue
+            inputs = _fields(step.get("with"))
+            name = _artifact_name(inputs)
+            if not name or inputs.keys() & {"artifact-ids", "github-token", "repository", "run-id"}:
+                continue
+            if any(_condition(fields).lower() == "false" for fields in (jobs[job_id], step)):
+                continue
+            for producer in _ancestors(job_id, jobs):
+                handoffs[producer].add(name)
+    return handoffs
+
+
+def _check_steps(steps, scope, handoff_names=frozenset()):
+    for step in steps:
+        uses = step.get("uses")
+        if not UPLOAD_ARTIFACT.match(_scalar(uses).strip()):
             continue
-        uses_node = uses_nodes[0]
-        with_entries = [
-            (key, value)
-            for key, value in items
-            if isinstance(key, yaml.ScalarNode) and key.value == "with"
-        ]
-        if not with_entries:
-            findings.append((
-                uses_node.start_mark.line + 1,
-                f"{scope}: actions/upload-artifact must set explicit integer retention-days "
-                f"(default {DEFAULT_RETENTION_DAYS}, max {MAX_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
-            ))
-            continue
-        if len(with_entries) > 1:
-            findings.append((
-                with_entries[1][0].start_mark.line + 1,
-                f"{scope}: actions/upload-artifact declares duplicate 'with' mappings",
-            ))
-            continue
-        with_value = with_entries[0][1]
-        if not isinstance(with_value, yaml.MappingNode):
-            findings.append((
-                with_value.start_mark.line + 1,
-                f"{scope}: actions/upload-artifact must set explicit integer retention-days "
-                f"(default {DEFAULT_RETENTION_DAYS}, max {MAX_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
-            ))
-            continue
-        retention_entries = [
-            (key, value)
-            for key, value in _mapping_items(with_value)
-            if isinstance(key, yaml.ScalarNode) and key.value.lower() == "retention-days"
-        ]
-        if not retention_entries:
-            findings.append((
-                uses_node.start_mark.line + 1,
-                f"{scope}: actions/upload-artifact must set explicit integer retention-days "
-                f"(default {DEFAULT_RETENTION_DAYS}, max {MAX_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
-            ))
-            continue
-        if len(retention_entries) > 1:
-            findings.append((
-                retention_entries[1][0].start_mark.line + 1,
-                f"{scope}: actions/upload-artifact declares duplicate retention-days inputs",
-            ))
-            continue
-        ret_node = retention_entries[0][1]
-        ret_line = ret_node.start_mark.line + 1
-        if not isinstance(ret_node, yaml.ScalarNode):
-            findings.append((
-                ret_line,
-                f"{scope}: actions/upload-artifact retention-days must be a literal integer "
-                f"from 1 to {limit} (default {DEFAULT_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
-            ))
-            continue
-        raw = ret_node.value
-        if "${{" in raw:
-            findings.append((
-                ret_line,
-                f"{scope}: actions/upload-artifact retention-days must be a literal integer "
-                f"from 1 to {limit} (default {DEFAULT_RETENTION_DAYS}); dynamic expressions are refused; "
-                f"{RUN_STORE_GUIDANCE}",
-            ))
-            continue
-        if raw == "0":
-            findings.append((
-                ret_line,
-                f"{scope}: actions/upload-artifact retention-days: 0 uses the 90-day org default; "
-                f"set an explicit literal integer from 1 to {limit} (default {DEFAULT_RETENTION_DAYS}) "
-                f"or {RUN_STORE_GUIDANCE}",
-            ))
-            continue
-        if not POSITIVE_INT.fullmatch(raw):
-            findings.append((
-                ret_line,
-                f"{scope}: actions/upload-artifact retention-days must be a literal integer "
-                f"from 1 to {limit} (default {DEFAULT_RETENTION_DAYS}); {RUN_STORE_GUIDANCE}",
-            ))
-            continue
-        days = int(raw)
-        if days > limit:
-            if limit == MAX_EXCEPTION_RETENTION_DAYS:
-                findings.append((
-                    ret_line,
-                    f"{scope}: actions/upload-artifact retention-days={days} exceeds max "
-                    f"{MAX_EXCEPTION_RETENTION_DAYS} even with release-proof exception; "
-                    f"{RUN_STORE_GUIDANCE}",
-                ))
+        inputs = _fields(step.get("with"))
+        retention = inputs.get("retention-days")
+        raw = _scalar(retention)
+        prefix = f"{scope}: actions/upload-artifact"
+        if retention is None:
+            yield (uses.start_mark.line + 1, f"{prefix} must set explicit integer retention-days from 1 to 7; "
+                   f"omission uses the repository/org default (up to 90 days); {UPLOAD_GUIDANCE}")
+        elif not re.fullmatch(r"[1-7]", raw):
+            if raw == "0":
+                reason = "retention-days: 0 uses the 90-day org default"
+            elif re.fullmatch(r"[1-9][0-9]*", raw):
+                reason = f"retention-days={raw} exceeds max 7"
             else:
-                findings.append((
-                    ret_line,
-                    f"{scope}: actions/upload-artifact retention-days={days} exceeds max "
-                    f"{MAX_RETENTION_DAYS} (default {DEFAULT_RETENTION_DAYS}); lower to 1-{MAX_RETENTION_DAYS}, "
-                    f"{RUN_STORE_GUIDANCE}, or declare "
-                    f"'# artifact-retention: exception release-proof — <reason>' "
-                    f"(max {MAX_EXCEPTION_RETENTION_DAYS})",
-                ))
+                reason = "retention-days must be a literal integer from 1 to 7; dynamic expressions are refused"
+            yield retention.start_mark.line + 1, f"{prefix} {reason}; {UPLOAD_GUIDANCE}"
+
+        # With archive: false the uploader uses the filename, not with.name.
+        named_archive = "archive" not in inputs or _scalar(inputs["archive"]).lower() == "true"
+        if (named_archive and _artifact_name(inputs) in handoff_names) or _protected(step):
+            continue
+        if any(match["call"] for match in ALWAYS.finditer(_condition(step))):
+            yield (step["if"].start_mark.line + 1,
+                   f"{prefix} diagnostic with always() lacks continue-on-error: true; "
+                   f"use if: failure(), retention-days: 3 and continue-on-error: true; {UPLOAD_GUIDANCE}")
+
+
+def _workflow_problems(document):
+    jobs = {name: _fields(job) for name, job in _fields(_fields(document).get("jobs")).items()}
+    steps = {name: [_fields(step) for step in _sequence(job.get("steps"))] for name, job in jobs.items()}
+    handoffs = _handoffs(jobs, steps)
+    for name, job_steps in steps.items():
+        yield from _check_steps(job_steps, f"job {name}", handoffs[name])
+
+
+def _action_problems(document):
+    runs = _fields(_fields(document).get("runs"))
+    if _scalar(runs.get("using")).lower() == "composite":
+        yield from _check_steps((_fields(step) for step in _sequence(runs.get("steps"))), "composite action")
+
+
+def _problems(text, check):
+    findings = []
+    try:
+        findings.extend(check(yaml.compose(text, Loader=yaml.SafeLoader)))
+    except AmbiguousMapping as error:
+        findings.append((error.line, str(error)))
+    except yaml.MarkedYAMLError as error:
+        line = error.problem_mark.line + 1 if error.problem_mark else 1
+        findings.append((line, f"artifact policy could not parse YAML: {error.problem}"))
     return findings
 
 
 def workflow_problems(text):
-    """Return (line, problem) pairs for a workflow file."""
-    document = yaml.compose(text, Loader=yaml.BaseLoader)
-    limit, findings = _header_exception(text, document, "jobs")
-    for top_key, top_value in _mapping_items(document):
-        if _scalar(top_key) != "jobs":
-            continue
-        for job_key, job_node in _mapping_items(top_value):
-            name = _scalar(job_key)
-            for field_key, field_value in _mapping_items(job_node):
-                if _scalar(field_key) == "steps":
-                    findings.extend(_check_steps(field_value, f"job {name}", limit))
-    return findings
+    return _problems(text, _workflow_problems)
 
 
 def action_problems(text):
-    """Return (line, problem) pairs for a composite action manifest."""
-    document = yaml.compose(text, Loader=yaml.BaseLoader)
-    limit, findings = _header_exception(text, document, "runs")
-    for top_key, top_value in _mapping_items(document):
-        if _scalar(top_key) != "runs":
-            continue
-        if _scalar(_field(top_value, "using")).strip().lower() != "composite":
-            continue
-        for field_key, field_value in _mapping_items(top_value):
-            if _scalar(field_key) == "steps":
-                findings.extend(_check_steps(field_value, "composite action", limit))
-    return findings
+    return _problems(text, _action_problems)
