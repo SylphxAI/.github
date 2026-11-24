@@ -522,7 +522,8 @@ leaves the alert open; no parallel writer should edit lifecycle markers.
 - A culprit is traced among the unverified commits at once; when it cannot be
   named with certainty, the whole window is reverted in one pull request. A
   caller that sets `revert-window: false` reverts only a traced culprit and
-  reports a window on its pull requests instead; one whose suite lanes run
+  reports the window once on the ops issue (or a dedicated tracking issue),
+  without commenting on candidate pull requests. A caller whose suite lanes run
   longer than 20 minutes raises `candidate-timeout-minutes` (at most 60), or
   every trace ends inconclusive.
 - The trace window of a unit that breaks inside an already red trunk starts at

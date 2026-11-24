@@ -146,3 +146,75 @@ read_proof() {
 
 # enc <value>: percent-encode a query parameter value.
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
+
+# report_window <fixed outcome> <candidate sha>... (no proven culprit).
+window_lanes() {
+  # Job names are display data, not markup. Discard URLs and strip characters
+  # that can turn job names into mentions, Markdown links or issue references.
+  sed -E 's~(https?://|www\.)[^[:space:],]+~(link removed)~gi; s~/pulls?/[^[:space:],]+~(PR link removed)~gi; s/[^[:alnum:] ._(),:/+-]/ /g' <<<"${FAILED_LANES:-unknown}"
+}
+
+report_window() {
+  local outcome="$1" lanes sha pr run_id ops target body
+  shift
+  lanes=$(window_lanes)
+  run_id=$(state_get run-id)
+  body="Red main at \`$HEAD_SHA\`: no single culprit was proven. $outcome"$'\n\n'
+  body+="Failed lanes: \`${lanes:-unknown}\`."
+  if [[ "$run_id" =~ ^[1-9][0-9]*$ ]]; then
+    body+=" [Verify run](https://github.com/$REPO/actions/runs/$run_id)."
+  fi
+  if [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+    body+=" [Handler run](https://github.com/$REPO/actions/runs/$GITHUB_RUN_ID)."
+  fi
+  body+=$'\n\n'"Candidate commits (not attributed):"
+  for sha in "$@"; do
+    [[ "$sha" =~ ^[a-f0-9]{40}$ ]] || continue
+    body+=$'\n'"- \`$sha\`"
+    if ! pr=$(commit_prs "$sha" '.[0].number // empty'); then
+      state_set incomplete "candidate PR lookup failed"
+      continue
+    fi
+    if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then body+=" (\`PR $pr\`)"; fi
+  done
+  say ""; say "$body"
+  # Keep the step summary without mirroring the report into a commit comment.
+  state_set range-report yes
+  if [ -n "$OPS_ISSUE" ]; then
+    ops=${OPS_ISSUE#\#}
+    # The issues endpoint also accepts PRs, but ops-issue must name an issue.
+    if [[ "$ops" =~ ^[1-9][0-9]*$ ]] \
+        && target=$(gh api "repos/$REPO/issues/$ops" --jq 'has("pull_request") | not') \
+        && [ "$target" = true ] \
+        && gh api --method POST "repos/$REPO/issues/$ops/comments" --field body="$body" >/dev/null; then
+      say "The consolidated report was posted to the ops issue."
+      return 0
+    fi
+  elif upsert_window_issue "$body"; then
+    say "The consolidated report was recorded in the red-main-window issue."
+    return 0
+  fi
+  state_set incomplete "window report could not be published"
+  say "The consolidated report is in the step summary; publishing it requires a readable issue target and issues: write."
+}
+
+upsert_window_issue() {
+  local body existing label slug="${APP_SLUG:-github-actions}"
+  [[ "$slug" =~ ^[a-zA-Z0-9-]+$ ]] || return 1
+  body='<!-- red-main-window:v1 -->'$'\n\n'"$1"
+  # Match only a marked issue from the handler's App or workflow bot. Reuse
+  # it across red runs, including a recurrence after an operator closes it.
+  existing=$(gh api --paginate "repos/$REPO/issues?state=all&labels=red-main-window&per_page=100" \
+    --jq '.[] | select(has("pull_request") | not) | select(.user.login == "'"$slug"'[bot]" or .user.login == "github-actions[bot]") | select((.body // "") | startswith("<!-- red-main-window:v1 -->\n")) | .number') || return 1
+  if [ -n "$existing" ]; then
+    [[ "$existing" =~ ^[1-9][0-9]*$ ]] || return 1
+    gh api --method PATCH "repos/$REPO/issues/$existing" -f body="$body" -f state=open >/dev/null
+  else
+    for label in red-main-window owner:ops; do
+      gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 >/dev/null 2>&1 \
+        || gh api "repos/$REPO/labels/$label" >/dev/null || return 1
+    done
+    gh api --method POST "repos/$REPO/issues" -f title="Red main: unisolated verification window" \
+      -f body="$body" -f 'labels[]=red-main-window' -f 'labels[]=owner:ops' >/dev/null
+  fi
+}

@@ -40,8 +40,8 @@ inputs:
     default: '8'
   revert-window:
     description: Whether a window may be reverted when no single culprit is named (a window wider than max-candidates, or
-      an inconclusive candidate before the first failure). false reverts only a traced culprit; a window is reported on its
-      pull requests and a person decides.
+      an inconclusive candidate before the first failure). false reverts only a traced culprit; a window is reported once
+      to ops (or a tracking issue) and a person decides.
     default: 'true'
   candidate-timeout-minutes:
     description: Shared deadline, in minutes (1-60), for the candidate verify runs of one trace. A candidate still running
@@ -58,8 +58,8 @@ inputs:
     description: Comma-separated pull request numbers that are never reverted by a machine, whatever their labels.
     default: ''
   ops-issue:
-    description: Issue in the calling repository that receives the comment when a protected pull request is the culprit, for
-      its owner to decide. Empty comments on the pull request only.
+    description: Ops issue number in the calling repository for red-main reports. Without it, an unisolated window updates
+      a red-main-window tracking issue. Window reports are also recorded in the step summary.
     default: ''
   simulate-mint-failure:
     description: 'Test hook: fail the grant probe on purpose so the failure notice on `ops-issue` can be checked. Honoured
@@ -949,10 +949,11 @@ runs:
           --jq '[.[] | select(has("pull_request") | not)] | .[0].number // empty' 2>/dev/null || true)
         if [ -n "$existing" ]; then
           gh api --method POST "repos/$REPO/issues/$existing/comments" --field body="$body" >/dev/null 2>&1 \
-            && say "Escalated on the open infrastructure issue [#$existing](https://github.com/$REPO/issues/$existing)." \
+            && state_set report-written yes && say "Escalated on the open infrastructure issue [#$existing](https://github.com/$REPO/issues/$existing)." \
             || { state_set incomplete "infrastructure escalation failed"; say "**Blocked:** the infrastructure escalation comment was not posted (\`issues: write\`)."; }
         elif gh api --method POST "repos/$REPO/issues" -f title="$TRUNK failed of infrastructure (red-main)" -f body="$body" \
             -f 'labels[]=red-main-infra' -f "labels[]=$OWNER_LABEL" --jq '.number' >"$WORK_DIR/infra-issue" 2>"$WORK_DIR/infra-issue.err"; then
+          state_set report-written yes
           say "Escalated to the infra owner: [issue #$(cat "$WORK_DIR/infra-issue")](https://github.com/$REPO/issues/$(cat "$WORK_DIR/infra-issue"))."
         else
           state_set incomplete "infrastructure escalation failed"
@@ -960,7 +961,8 @@ runs:
           echo "::warning::the infrastructure escalation issue could not be opened"
         fi
         if [ -n "$OPS_ISSUE" ]; then
-          gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$body" >/dev/null 2>&1 || true
+          gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$body" >/dev/null 2>&1 \
+            && state_set report-written yes || true
         fi
         exit 0
       fi
@@ -1076,9 +1078,9 @@ runs:
         exit 1
       fi
       # What a window (no single named culprit) becomes: one revert pull
-      # request, or with revert-window false a report on its pull requests.
+      # request, or with revert-window false one consolidated report.
       if [ "$REVERT_WINDOW" = false ]; then
-        window_fate="reported on their pull requests and nothing is reverted (revert-window is false)"
+        window_fate="reported to ops and nothing is reverted (revert-window is false)"
       else
         window_fate="reverted as one pull request"
       fi
@@ -1494,56 +1496,48 @@ runs:
       if [ "$MODE" != "revert" ] && [ "$MODE" != "revert_pr_unarmed" ]; then
         say "Mode is notify: no revert pull request was opened. \`revert\` would revert $count commit(s):"
         for sha in "${shas[@]}"; do say "- \`$sha\`"; done
-        if true; then
-          # Token mode: tell the authors, on the pull request each
-          # candidate landed through, what failed and what is suspected.
-          if [ -n "$culprit" ]; then
-            verdict_line="The trace names this commit as the culprit: it failed and every older unverified commit passed."
-          else
-            verdict_line="This commit is among the unverified commits that may have broken it."
-          fi
-          candidates=""
-          for sha in "${shas[@]}"; do candidates="$candidates- \`$sha\`"$'\n'; done
-          body="\`$TRUNK\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). $verdict_line"$'\n\n'"Candidate commit(s):"$'\n'"$candidates"$'\n'"Nothing was reverted: $not_reverted, so a person decides."
-          : >"$WORK_DIR/notified"
-          for sha in "${shas[@]}"; do
-            pr=$(commit_prs "$sha" '.[0].number // empty')
-            [ -n "$pr" ] || continue
-            if grep -qxF "$pr" "$WORK_DIR/notified"; then continue; fi
-            printf '%s\n' "$pr" >>"$WORK_DIR/notified"
+        if [ -z "$culprit" ]; then
+          report_window "Nothing was reverted: $not_reverted. A person decides." "${shas[@]}"
+        else
+          pr=$(commit_prs "$culprit" '.[0].number // empty')
+          if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
+            body="\`$TRUNK\` went red at \`$HEAD_SHA\`: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). The trace names \`$culprit\` as the culprit: it failed and every older unverified commit passed. Nothing was reverted: $not_reverted."
             if gh api --method POST "repos/$REPO/issues/$pr/comments" --field body="$body" >/dev/null 2>"$WORK_DIR/comment.err"; then
+              state_set report-written yes
               say "Commented on pull request #$pr."
             else
               write_refused "$(cat "$WORK_DIR/comment.err")" "pull requests: write" "commenting on pull request #$pr" || true
               state_set incomplete "notify comment failed"
               say "The comment on pull request #$pr was not posted."
             fi
-          done
+          fi
         fi
         exit 0
       fi
-      # A live-outage or P0 fix, or a pull request on the never-revert list,
-      # is left to a person: comment on it and on the ops issue instead.
+      # A protected candidate blocks the whole revert window, but only
+      # a proven culprit may receive a comment on an original PR.
       protected=""
       for sha in "${shas[@]}"; do
         pr_json=$(commit_prs "$sha" '.[0] | {number: (.number // 0), labels: [(.labels // [])[].name]}')
         [ -n "$pr_json" ] || continue
         verdict=$(python3 "$RUNNER_TEMP/red-main/revert-guard.py" <<<"$pr_json")
         case "$verdict" in
-          protected*)
-            pr=$(jq -r '.number' <<<"$pr_json")
-            protected="$protected$pr "
-            note="\`$TRUNK\` went red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)) and \`$sha\` from this pull request is a candidate. It is not reverted automatically (${verdict#protected: }): a person decides."
-            gh api --method POST "repos/$REPO/issues/$pr/comments" --field body="$note" >/dev/null 2>&1 \
-              || state_set incomplete "protected PR comment failed"
-            if [ -n "$OPS_ISSUE" ]; then
-              gh api --method POST "repos/$REPO/issues/$OPS_ISSUE/comments" --field body="$note" >/dev/null 2>&1 || true
-            fi
-            ;;
+          protected*) protected=$(jq -r '.number' <<<"$pr_json"); break ;;
         esac
       done
       if [ -n "$protected" ]; then
-        say "**No revert:** protected pull request(s) among the candidates (${protected% }); commented for a person to decide."
+        if [ -z "$culprit" ]; then
+          report_window "The window was not reverted because a candidate is protected. A person decides." "${shas[@]}"
+        else
+          note="\`$TRUNK\` went red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). The trace names \`$culprit\` as the culprit. It is not reverted automatically (${verdict#protected: }): a person decides."
+          gh api --method POST "repos/$REPO/issues/$protected/comments" --field body="$note" >/dev/null 2>&1 \
+            || state_set incomplete "protected PR comment failed"
+          if [ -n "$OPS_ISSUE" ]; then
+            gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$note" >/dev/null 2>&1 \
+              && state_set report-written yes || true
+          fi
+        fi
+        say "**No revert:** a candidate is protected; a person decides."
         exit 0
       fi
       # A deploy freeze: inside the configured window a revert is opened
@@ -1580,6 +1574,10 @@ runs:
             | select((.body // "") | contains($sha))] | .[0].number // empty')
         if [ -n "$standing" ]; then
           state_set incomplete "standing revert already in hand"
+          if [ -z "$culprit" ]; then
+            report_window "An open revert pull request already covers the window; a person decides." "${shas[@]}"
+            exit 0
+          fi
           gh api --method POST "repos/$REPO/issues/$standing/comments" \
             --field body="\`$TRUNK\` is still red at \`$HEAD_SHA\` ([run]($RUN_URL)) for the same culprit \`$first\`. This revert stays open and unarmed; a person decides." \
             >/dev/null 2>&1 || true
@@ -1624,16 +1622,16 @@ runs:
           matched=$(printf '%s' "${migration#migration }" | tr -d '\140@')
           why="it changes a migration path (\`$matched\`)"
         fi
+        if [ -z "$culprit" ]; then
+          report_window "Migration hold: the window changes migrations or a candidate diff was unreadable or empty. Forward-fix it." "${shas[@]}"
+          exit 0
+        fi
         for label in red-main-migration-hold "$OWNER_LABEL"; do
           gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
             -f description="red-main handler alert" >/dev/null 2>&1 || true
         done
-        prs=""
-        for sha in "${shas[@]}"; do
-          pr=$(commit_prs "$sha" '.[0].number // empty')
-          [ -z "$pr" ] || prs="$prs #$pr"
-        done
-        hold_body="\`$TRUNK\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit \`$first\`${prs:+ (pull request$prs)} was NOT reverted: $why. Forward-fix it; the handler will not revert a migration. Owner: $OWNER_LABEL."
+        pr=$(commit_prs "$culprit" '.[0].number // empty')
+        hold_body="\`$TRUNK\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit \`$culprit\`${pr:+ (pull request #$pr)} was NOT reverted: $why. Forward-fix it; the handler will not revert a migration. Owner: $OWNER_LABEL."
         existing=$(gh api "repos/$REPO/issues?state=open&labels=red-main-migration-hold&per_page=100" \
           --jq "[.[] | select(has(\"pull_request\") | not) | select(.user.login == (\"$APP_SLUG\" + \"[bot]\")) | select((.body // \"\") | contains(\"$first\"))] | .[0].number // empty" 2>/dev/null || true)
         if [ -z "$existing" ]; then
@@ -1643,11 +1641,13 @@ runs:
           # Told once: the issue is the record; later red pushes for the
           # same culprit do not repeat the comments.
           if [ -n "$OPS_ISSUE" ]; then
-            gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$hold_body" >/dev/null 2>&1 || true
+            gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$hold_body" >/dev/null 2>&1 \
+              && state_set report-written yes || true
           fi
-          for pr in $prs; do
-            gh api --method POST "repos/$REPO/issues/${pr#\#}/comments" --field body="$hold_body" >/dev/null 2>&1 || true
-          done
+          if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
+            gh api --method POST "repos/$REPO/issues/$pr/comments" --field body="$hold_body" >/dev/null 2>&1 \
+              && state_set report-written yes || true
+          fi
         fi
         say "**No revert (migration hold):** $why. An issue labelled \`red-main-migration-hold\` and \`$OWNER_LABEL\` names the culprit; a person forward-fixes."
         exit 0
@@ -1667,12 +1667,15 @@ runs:
       fi
       original=""
       original_number=""
-      if [ "$count" -eq 1 ]; then
+      revert_lanes="${FAILED_LANES:-unknown}"
+      if [ -z "$culprit" ]; then
+        revert_lanes=$(window_lanes)
+      else
         original=$(commit_prs "$first" '.[0] | "#\(.number) \(.title)"')
         original_number=$(commit_prs "$first" '.[0].number // empty')
       fi
       {
-        printf '%s\n' "The verify workflow failed on \`$TRUNK\` at \`$HEAD_SHA\` in lane(s) \`${FAILED_LANES:-unknown}\`."
+        printf '%s\n' "The verify workflow failed on \`$TRUNK\` at \`$HEAD_SHA\` in lane(s) \`$revert_lanes\`."
         printf '%s\n' ""
         printf '%s\n' "- verify run: $RUN_URL"
         if [ -n "$original" ]; then printf '%s\n' "- original pull request: $original"; fi
@@ -1706,6 +1709,10 @@ runs:
         state_set revert-pr "$number"
         say "Revert pull request [#$number](https://github.com/$REPO/pull/$number) is open and NOT armed (\`on_red = revert_pr_unarmed\`): a person decides whether and when it merges."
         alert_body="\`$TRUNK\` is red at \`$HEAD_SHA\` ($VERIFY_WORKFLOW, lane(s) \`${FAILED_LANES:-unknown}\`, [run]($RUN_URL)). Culprit: \`$first\`. A revert pull request, #$number, is open and not armed: it will not merge until a person decides. Merge it, or fix forward."
+        if [ -z "$culprit" ]; then
+          report_window "A revert pull request is open but not armed; a person decides." "${shas[@]}"
+          exit 0
+        fi
         for label in red-main-revert-pending "$OWNER_LABEL"; do
           gh api --method POST "repos/$REPO/labels" -f name="$label" -f color=b60205 \
             -f description="red-main handler alert" >/dev/null 2>&1 || true
@@ -1727,7 +1734,8 @@ runs:
             >/dev/null 2>&1 || true
         fi
         if [ -n "$OPS_ISSUE" ]; then
-          gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$alert_body" >/dev/null 2>&1 || true
+          gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$alert_body" >/dev/null 2>&1 \
+          && state_set report-written yes || true
         fi
         exit 0
       fi
@@ -1766,9 +1774,11 @@ runs:
       done
       if [ "$others" -gt 0 ]; then
         say "Did not jump: another pull request labelled \`queue-jump:red-main\` or \`auto-revert\` moved inside the last 30 minutes, or that window could not be read; the revert waits its turn with auto-merge armed."
-        gh api --method POST "repos/$REPO/issues/$number/comments" \
-          --field body="The red-main handler did not jump this revert: another pull request moved inside the last 30 minutes, and one jump in 30 minutes is the rule. Auto-merge stays armed." \
-          >/dev/null 2>&1 || true
+        if [ -n "$culprit" ]; then
+          gh api --method POST "repos/$REPO/issues/$number/comments" \
+            --field body="The red-main handler did not jump this revert: another pull request moved inside the last 30 minutes, and one jump in 30 minutes is the rule. Auto-merge stays armed." \
+            >/dev/null 2>&1 || true
+        fi
       else
         node_id=$(gh api "repos/$REPO/pulls/$number" --jq '.node_id' 2>/dev/null || true)
         if [ -z "$node_id" ]; then
@@ -1828,7 +1838,11 @@ runs:
           --field body="\`$TRUNK\` went red after this merged: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` ([run]($RUN_URL)). Reverted in #$number; the change can be re-landed once fixed." \
           >/dev/null 2>&1 || say "The comment on the original pull request could not be posted."
       fi
-      # Rule 4: every auto-revert tells the owner and the ops issue (sha,
+      if [ -z "$culprit" ]; then
+        report_window "A revert pull request was opened for the window. Check this handler run for merge status and re-land the change once fixed." "${shas[@]}"
+        exit 0
+      fi
+      # Rule 4: the proven-culprit auto-revert tells the owner and the ops issue (sha,
       # pull request, failing job, run link) and files the follow-up that
       # re-lands the change (a merged pull request cannot be reopened).
       notice="Auto-revert #$number of \`$first\`${original_number:+ (original pull request #$original_number)}: $VERIFY_WORKFLOW failed in lane(s) \`${FAILED_LANES:-unknown}\` at \`$HEAD_SHA\` ([run]($RUN_URL)). Owner: $OWNER_LABEL."
@@ -1836,9 +1850,11 @@ runs:
         -f description="red-main handler alert" >/dev/null 2>&1 || true
       gh api --method POST "repos/$REPO/issues" -f title="re-land after auto-revert #$number (${first:0:9})" \
         -f body="$notice Re-land the change once the failure is fixed." -f "labels[]=$OWNER_LABEL" >/dev/null 2>&1 \
+        && state_set report-written yes \
         || { state_set incomplete "re-land issue not opened"; say "The follow-up issue was not opened."; }
       if [ -n "$OPS_ISSUE" ]; then
-        gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$notice" >/dev/null 2>&1 || true
+        gh api --method POST "repos/$REPO/issues/${OPS_ISSUE#\#}/comments" --field body="$notice" >/dev/null 2>&1 \
+          && state_set report-written yes || true
       fi
     shell: bash
   - name: Record what the handler did
@@ -1902,6 +1918,9 @@ runs:
         echo "no comment: $(cat "$STATE_DIR/quiet")"
         exit 0
       fi
+      # Window reports already have an audit trail and must not fan out
+      # via a second comment carrying raw trace metadata.
+      if [ -f "$STATE_DIR/range-report" ] || [ -f "$STATE_DIR/report-written" ]; then exit 0; fi
       [ -n "$GH_TOKEN" ] || { echo "no fresh Broker token; API writes refused"; exit 0; }
       [ -n "$HEAD_SHA" ] || { echo "no commit to comment on"; exit 0; }
       if gh api --method POST "repos/$REPO/commits/$HEAD_SHA/comments" \
