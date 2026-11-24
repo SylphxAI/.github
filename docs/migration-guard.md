@@ -70,6 +70,9 @@ New migrations are refused for:
   `DROP SCHEMA`, `DROP DATABASE`, `DROP OWNED`, `DROP TYPE`, `DROP DOMAIN`, and
   `TRUNCATE`. Temporary tables and foreign-table column changes are included.
 - `DELETE` or `UPDATE` without a `WHERE` in that mutation's own scope.
+  PostgreSQL `CREATE POLICY ... FOR DELETE` selects an RLS command and is
+  not a row deletion. Separate SQL statements and data-changing CTEs still
+  need their own `WHERE`.
 - Foreign-key `ON DELETE CASCADE`, `ON DELETE SET NULL`, or `ON DELETE SET DEFAULT`
   actions, which allow a future parent deletion to change child data. A `CASCADE`
   inside an explicit top-level `CREATE TABLE` definition passes only when that

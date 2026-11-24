@@ -20,6 +20,32 @@ SPEC.loader.exec_module(guard)
 
 
 class SqlTests(unittest.TestCase):
+    def test_postgres_policy_delete_is_not_dml(self):
+        for sql in (
+            "CREATE POLICY prune ON app.records FOR DELETE USING (id = 42);",
+            "CREATE POLICY prune ON app.records\n"
+            "    FOR /* command selector */ DELETE\n"
+            "    USING (EXISTS (SELECT 1 FROM app.tenants WHERE id = tenant_id));",
+            'CREATE POLICY "delete policy" ON app.records AS PERMISSIVE\n'
+            '    FOR DELETE TO "cleanup role" USING (id = 42);',
+            "ALTER POLICY delete ON app.records TO cleanup_role USING (id = 42);",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(guard.check_sql(sql, "postgres"), [])
+
+    def test_postgres_unbounded_delete_still_requires_its_own_where(self):
+        policy = "CREATE POLICY prune ON app.records FOR DELETE USING (id = 42);"
+        for delete in (
+            "DELETE FROM app.records;",
+            "WITH cte AS (SELECT 1) DELETE /* target */ FROM app.records;",
+            "WITH gone AS (DELETE FROM app.records RETURNING id) SELECT * FROM gone WHERE id = 42;",
+            "MERGE INTO app.records r USING app.retired s ON r.id = s.id WHEN MATCHED THEN DELETE;",
+        ):
+            with self.subTest(delete=delete):
+                self.assertEqual(guard.check_sql(delete, "postgres"), [(1, "DELETE without WHERE")])
+                self.assertEqual(guard.check_sql(policy + "\n" + delete, "postgres"), [(2, "DELETE without WHERE")])
+        self.assertEqual(guard.check_sql(policy + "\nDELETE FROM app.records WHERE id = 42;", "postgres"), [])
+
     def test_foreign_key_delete_actions_have_separate_contract_policy(self):
         for dialect in ("postgres", "mysql"):
             for action in ("RESTRICT", "NO ACTION"):

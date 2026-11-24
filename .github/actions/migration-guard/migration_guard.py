@@ -1673,9 +1673,16 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                 out.append((token.line, "TRUNCATE"))
             if kw(token, "RENAME"):
                 out.append((token.line, "RENAME"))
+            # PostgreSQL DELETE statements always have FROM, even in CTEs
+            # and procedural bodies. FOR DELETE in RLS DDL only names an event.
+            # Keep MERGE's THEN DELETE action guarded, and do not require FROM
+            # in MySQL, whose multi-table syntax can put the targets first.
+            delete = kw(token, "DELETE") and (
+                dialect != "postgres" or starts(tail, "DELETE", "FROM")
+                or (i and kw(scan_stmt[i - 1], "THEN") and has(scan_stmt[:i - 1], "MERGE", "INTO")))
             # Each mutation needs its own top-level WHERE. A WHERE in a nested
             # SELECT, quoted string, or a second statement does not qualify.
-            if (kw(token, "DELETE") or kw(token, "UPDATE")) and not (i and kw(scan_stmt[i - 1], "ON")):
+            if (delete or kw(token, "UPDATE")) and not (i and kw(scan_stmt[i - 1], "ON")):
                 # Stop at the enclosing CTE/subquery boundary as well as the
                 # statement end. A later CTE's WHERE cannot qualify this one.
                 suffix, depth = [], 0
