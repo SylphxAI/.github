@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -103,9 +104,16 @@ class ConformantTest(unittest.TestCase):
         self.assertEqual(failing(rows), set(), rows)
         self.assertEqual({r["status"] for r in rows.values()}, {"PASS"})
 
-    def test_red_main_starter_pins_the_policy_floor(self) -> None:
+    def test_red_main_starter_pin_meets_the_policy_floor(self) -> None:
         pins = audit.uses_refs((STARTERS / "red-main.yml").read_text(), r"\.github/workflows/red-main\.yml")
-        self.assertEqual(pins, [FLOOR])
+        self.assertEqual(len(pins), 1, pins)
+        self.assertRegex(pins[0], r"^[0-9a-f]{40}$")
+        # New starters can adopt a fix before it becomes mandatory for existing callers.
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", FLOOR, pins[0]],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, f"{pins[0]} must meet floor {FLOOR}: {result.stderr}")
 
     def test_tenant_organization_notify_is_conformant(self) -> None:
         self.assertEqual(failing(run_rows(conformant("Cubeage", on_red="notify"))), set())
