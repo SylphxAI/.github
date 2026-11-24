@@ -1,0 +1,65 @@
+name: Actions cache retention
+
+on:
+  schedule:
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Delete eligible caches (default is a read-only dry run)
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      apply:
+        description: Opt in to deletion; otherwise dry-run
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: actions-cache-retention-${{ github.repository_id }}
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    if: >-
+      github.repository_owner == 'SylphxAI' &&
+      github.ref_type == 'branch' &&
+      github.ref_name == github.event.repository.default_branch &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: sylphx-linux-standard
+    timeout-minutes: 17
+    steps:
+      # job.workflow_sha refers to the callee; github.workflow_sha refers to the
+      # caller. Never let a missing identity fall back to caller code on checkout.
+      - name: Require the shared policy revision
+        shell: bash
+        env:
+          POLICY_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [[ ! "$POLICY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Cannot resolve the immutable revision of this workflow.'
+            exit 1
+          fi
+      - name: Check out the policy at the workflow revision (not the caller's code)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SylphxAI/.github
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Prune repository cache entries
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          # An external caller (including a scheduled wrapper) must opt in.
+          APPLY_POLICY: ${{ inputs.apply == true || (github.event_name == 'schedule' && github.repository == 'SylphxAI/.github') }}
+        run: |
+          args=()
+          if [[ "$APPLY_POLICY" == true ]]; then args+=(--apply); fi
+          python3 -I scripts/prune_actions_caches.py "$TARGET_REPOSITORY" "${args[@]}"
