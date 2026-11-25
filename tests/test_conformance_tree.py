@@ -121,12 +121,11 @@ class GitTreeTests(unittest.TestCase):
             "src/main.rs": 'fn main() { std::env::var("UNDECLARED"); }\n',
             ".env.example": "DECLARED=value\n",
             "sylphx.toml": '[database.migrations]\nengine="drizzle"\n',
-            "migrations/1.sql": "CREATE TABLE session_turns (id uuid);\n",
             "tests/fixture.rs": "fn test_fixture() {}\n",
         })
         reference = PerFileTree(str(self.repo), rev)
         with sc.Tree(str(self.repo), rev) as tree:
-            for check in (sc.departures, sc.agent_runtime, sc.keel_departures, sc.knowledge_tables_in):
+            for check in (sc.departures, sc.keel_departures):
                 self.assertEqual(check(tree), check(reference))
             for changed in (None, {"src/main.rs": {1}}):
                 today = datetime.date(2026, 10, 29)

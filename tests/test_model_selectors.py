@@ -113,7 +113,10 @@ class ModelSelectorTests(unittest.TestCase):
         self.assertTrue(models.decide(before, records, set(), before, True, True,
                                      seed_rules={"model-pin"}))
         self.assertEqual(models.decide(before, records, records, before, True, True), [])
-        self.assertTrue(models.decide([], records, records, before, True, True))
+        notices = []
+        self.assertEqual(models.decide([], records, records, before, True, True, notice=notices.append), [])
+        self.assertIn("stale model-pin baseline record", notices[0])
+        self.assertTrue(models.decide(before, records, records, [], True, True))
 
     def test_sql_predicates_do_not_select_the_replacement_model(self):
         for source in ("UPDATE agents SET model_id = NULL WHERE model_id = 'sylphx/executor';",
