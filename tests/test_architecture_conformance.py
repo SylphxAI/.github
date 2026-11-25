@@ -631,9 +631,10 @@ class HistoricalDecisionTests(unittest.TestCase):
                         self.assertIn(detail, error['reason'])
                         self.assertIn(detail, result.stdout)
                     self.assertEqual(result.stdout.count('architecture decision expired:'), 1)
-                    self.assertEqual(len(report['legacy_errors']), int(stale), report['legacy_errors'])
+                    self.assertEqual(report['legacy_errors'], [])
+                    self.assertEqual(len(report['notices']), int(stale))
                     if stale:
-                        self.assertIn('stale architecture baseline record:', report['legacy_errors'][0])
+                        self.assertIn('stale architecture baseline record:', report['notices'][0])
 
     def test_multiple_expired_decisions_each_report_once_and_ids_survive_date_changes(self):
         files, rows = self.files()

@@ -70,7 +70,7 @@ class ProjectPortabilityGateTests(unittest.TestCase):
         f.commit({SOURCE: BAD + BAD})
         self.assertIn('project-portability', f.check(adopted, 1)[0])
         f.commit({SOURCE: SAFE})
-        self.assertIn('stale architecture baseline', f.check(adopted, 1)[0])
+        self.assertIn('stale architecture baseline', f.check(adopted, 0)[0])
         smaller = '\n'.join(line for line in baseline.splitlines() if not line.startswith('architecture C1 project-portability ')) + '\n'
         clean = f.commit({sc.BASELINE: smaller})
         f.check(adopted, 0)

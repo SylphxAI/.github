@@ -194,7 +194,7 @@ def local_changes(changed, prefix):
     return {p[len(stem):]: lines for p, lines in changed.items() if p.startswith(stem)}
 
 
-def legacy_errors(head, base, records, baseline, departures, parse_baseline, decide, retirement=None):
+def legacy_errors(head, base, records, baseline, departures, parse_baseline, decide, retirement=None, *, notice=lambda _: None):
     errors = []
     for row in records:
         current = TreeView(head, row['prefix'])
@@ -202,14 +202,18 @@ def legacy_errors(head, base, records, baseline, departures, parse_baseline, dec
         def legacy(tree):
             parsed = parse_baseline(tree.read(baseline))
             return None if parsed is None else {v for v in parsed if not v.startswith(('architecture ', 'model-pin ', 'force-push '))}
+        def scoped_notice(message):
+            notice(row['prefix'] + ': ' + message)
+        def scoped_decide(found, entries, old, *, previous=None):
+            return decide(found, entries, old, previous=previous, notice=scoped_notice)
         scoped_errors = (retirement.check(current, prior, legacy(current), legacy(prior),
-                         departures, decide, baseline=baseline) if retirement else
-                         decide(departures(current), legacy(current), legacy(prior)))
+                         departures, scoped_decide, baseline=baseline, notice=scoped_notice) if retirement else
+                         scoped_decide(departures(current), legacy(current), legacy(prior), previous=set(departures(prior))))
         errors += [row['prefix'] + ': ' + error for error in scoped_errors]
     return errors
 
 
-def architecture_report(head, base, records, baseline, changed, today, architecture, parse_baseline, *, shared_views=None):
+def architecture_report(head, base, records, baseline, changed, today, architecture, parse_baseline, *, shared_views=None, notice=lambda _: None):
     combined = {'findings': [], 'unreadable': [], 'reviewed_paths': [], 'excluded_paths': [], 'decision_errors': []}
     errors = []
     sub_cache = {}
@@ -228,7 +232,8 @@ def architecture_report(head, base, records, baseline, changed, today, architect
         if architecture.BASELINE_MARKER in (prior.read(baseline) or '').splitlines() and architecture.BASELINE_MARKER not in (current.read(baseline) or '').splitlines():
             errors.append(prefix + ': architecture ratchet marker cannot be removed')
         errors += [prefix + ': ' + error for error in architecture.baseline_errors(
-            report['findings'], head_records, base_records, previous['findings'])]
+            report['findings'], head_records, base_records, previous['findings'],
+            notice=lambda message: notice(prefix + ': ' + message))]
         for row in report['findings']:
             key = architecture.baseline_key(row)
             ancestor = old.get(key)

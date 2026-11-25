@@ -53,8 +53,9 @@ In a strict head-only audit, a nonempty baseline and continuity markers
 cannot waive findings: there is no proof of inheritance. To verify inherited
 departures, pass `--base "$BASE_SHA" --baseline .github/auth-departures.txt`.
 With a base, a first baseline can contain only exact base-existing findings.
-An invalid supplied base fails, and invalid, missing, grown, and stale
-baseline entries fail. A committed empty file is valid. A deliberate
+An invalid supplied base fails, as does an invalid, missing, or grown
+baseline. Stale entries emit notices; they never authorize reintroduced findings.
+A committed empty file is valid. A deliberate
 non-strict head-only audit can use its own baseline and continuity exceptions
 but cannot verify inheritance.
 

@@ -1169,7 +1169,7 @@ def adoption_eligible(row, introduced_rules):
             and not row.get("legacy_portability_literal_seen"))
 
 
-def baseline_errors(findings, head_records, base_records, base_findings, introduced_rules=()):
+def baseline_errors(findings, head_records, base_records, base_findings, introduced_rules=(), *, notice=lambda _: None, has_base=True):
     """The existing stack baseline can track exact inherited architecture debt.
 
     A record never suppresses a regression or replaces an exception decision.
@@ -1181,13 +1181,13 @@ def baseline_errors(findings, head_records, base_records, base_findings, introdu
                  if adoption_eligible(row, introduced_rules)}
                 & {baseline_key(row) for row in findings
                    if adoption_eligible(row, introduced_rules)})
-    errors = ["stale architecture baseline record: " + key for key in sorted(head_records - actual)]
+    for key in sorted(head_records - actual):
+        notice("stale architecture baseline record: " + key + "; consider removing it")
     # Explicit constituent correction is not new destination debt. The old key must
     # independently resolve at the actual base to corrected literal occurrences;
     # those exact path/span/occurrences must survive at the head. Old records must
     # be removed in the same change. No equivalence is inferred from head text.
     replacements = portability_rekeys(base_findings, base_records)
-    actual = {baseline_key(row) for row in findings}
     corrected = {key for members in replacements.values() for key in members}
     existing |= {new for old, members in replacements.items()
                  if (old not in head_records or old in corrected) and members <= actual for new in members}
@@ -1195,7 +1195,11 @@ def baseline_errors(findings, head_records, base_records, base_findings, introdu
     # renumbering. Once it resolves to corrected constituents it is no longer
     # an unconditional allowance, even when its bytes remain an actual key.
     allowed = (base_records - set(replacements)) | existing
-    errors += ["architecture baseline cannot grow or seed new debt: " + key for key in sorted(head_records - allowed)]
+    errors = ["architecture baseline cannot grow or seed new debt: " + key for key in sorted(head_records - allowed)]
+    if has_base:
+        inherited = {baseline_key(row) for row in base_findings}
+        errors += ["stale architecture baseline cannot authorize a reintroduced departure: " + key
+                   for key in sorted((head_records & base_records & actual) - inherited - existing)]
     for row in findings:
         row["baseline_recorded"] = baseline_key(row) in head_records
     return errors

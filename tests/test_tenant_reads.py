@@ -181,7 +181,7 @@ class PublicGuardTests(unittest.TestCase):
         f.check(adopted, 0)
         before_fix = f.git("rev-parse", "HEAD")
         f.commit({reads.DECLARATION: DECLARATION})
-        output, _ = f.check(before_fix, 1)
+        output, _ = f.check(before_fix, 0)
         self.assertIn("stale architecture baseline", output)
         fixed = f.commit({sc.BASELINE: "\n".join(line for line in plan["baseline_text"].splitlines()
                          if not line.startswith("architecture ")) + "\n"})

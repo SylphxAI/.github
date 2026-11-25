@@ -541,8 +541,9 @@ def check_tree(root: Path, args, base: str) -> int:
         if previous is not None:
             errors += ["baseline grew: " + key for key in sorted(allowed - previous)]
         if base or args.strict:
-            errors += ["baseline finding is not inherited: " + key for key in sorted(allowed - prior)]
-        errors += ["stale baseline entry: " + key for key in sorted(allowed - found.keys())]
+            errors += ["baseline finding is not inherited: " + key for key in sorted((allowed & found.keys()) - prior)]
+        for key in sorted(allowed - found.keys()):
+            print("::notice::stale auth baseline entry: " + key + "; consider removing it")
     if args.mode == "diff":
         # Removing the comment exposes the debt, including unchanged lines.
         allowed = {key for key in prior if key in found and found[key].path not in base_continuity}

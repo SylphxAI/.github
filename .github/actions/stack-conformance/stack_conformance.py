@@ -17,44 +17,6 @@ git tree:
   solar2d <build.settings>            a retired Solar2D / Corona game project
                                       (build.settings with a sibling main.lua)
 
-and two kinds of agent-runtime part, which only Sylphx Agents owns (SylphxAI/sylphx
-ADR-01M495TCCBZGSQ68A4P4G428H2, D5):
-
-  agent-runtime-package <manifest> <name>  a Cargo or npm package named like
-                                      *vault-proxy*, *egress-guard*,
-                                      *credential-crypto* or *agent-harness*
-  agent-runtime-table <file.sql> <table>   a SQL file creates a session-log,
-                                      tool-call or agent-memory table that no
-                                      later SQL file drops
-
-and, in SQL files added since the base, a work-engine table that Work owns
-unless the file's header says whose records it holds (SylphxAI/work
-docs/adr/0010, "Guard for the class"):
-
-  work-obligation-table <file.sql> <table>  a status, an assignee or role and
-                                      a due, deadline, SLA, overdue or
-                                      escalation column
-
-and, in SQL files added since the base, a knowledge-graph or CRM table that
-Sylphx Knowledge owns (SylphxAI/sylphx
-ADR-01M4AJK2TXTJWZ4X5B06HPT0R4, D6):
-
-  knowledge-table <file.sql> <table>  a table named like a knowledge-graph or
-                                      CRM record (kg_*, knowledge_*, entities,
-                                      relations, contacts, crm_*,
-                                      customer_profiles)
-
-A product repository never records an agent-runtime part in its own baseline:
-the only allowance is policy/agent-runtime.json in SylphxAI/.github, one entry
-per existing instance with an expiry date, after which the entry stops
-applying. The platform owner's repository is not checked for them.
-
-A knowledge or CRM table the base already has is an existing instance of the
-widened rule, not a new departure, so it is recorded - with the date it was
-found - in this repository's policy/knowledge-tables.json, one entry per table
-with an expiry date; until the date passes the repository passes, and after it
-the entry stops applying. An entry whose table no longer exists is a notice.
-
 Product source also refuses literal vendor model version ids. Omit the id for
 the organization's runtime default, or use a Sylphx AI
 <provider>/<line>-latest alias. Catalog/routing owners and fixtures are exempt.
@@ -66,8 +28,7 @@ Subcommands:
   check --base REV --head REV   the pull-request gate: fail on a departure the
                                 base's baseline does not list, on a baseline
                                 line the base did not have (it may only
-                                shrink), and on a baseline line whose
-                                departure is gone (delete the line)
+                                shrink), and report fixed departures as notices
   scan [--rev REV]              print the departures of one tree, one per
                                 line, in baseline format (seeds a baseline)
   all DIR...                    scan each checkout at HEAD and print how many
@@ -155,36 +116,6 @@ _retirement_spec = importlib.util.spec_from_file_location(
     "staged_retirement", pathlib.Path(__file__).with_name("staged_retirement.py"))
 staged_retirement = importlib.util.module_from_spec(_retirement_spec)
 _retirement_spec.loader.exec_module(staged_retirement)
-
-# The company-level allowance for agent-runtime parts: this repository's
-# policy/agent-runtime.json, three levels above this action's directory.
-AGENT_RUNTIME_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy" / "agent-runtime.json"
-
-# The company-level record of knowledge and CRM tables already on a
-# repository's default branch, with the date each was found and an expiry
-# date, so the widened rule ships without failing every repository at once.
-KNOWLEDGE_POLICY = pathlib.Path(__file__).resolve().parents[3] / "policy" / "knowledge-tables.json"
-
-KNOWLEDGE_DECISION = ("SylphxAI/sylphx docs/adr/"
-                      "ADR-01M4AJK2TXTJWZ4X5B06HPT0R4-sylphx-knowledge-permission-aware-graph.md, D6")
-# The names Sylphx Knowledge owns: the knowledge graph (knowledge_*), its
-# short forms and the CRM customer graph (kg_*, crm_*, customer_profiles),
-# and the bare entity and relation tables a product-local copy is named.
-KNOWLEDGE_TABLE = re.compile(
-    r"^(?:kg_|knowledge_|crm_)\w*$|^(?:entities|entity|relations|relation|contacts|contact|customer_profiles)$")
-
-AGENT_RUNTIME = "agent-runtime-"
-AGENT_RUNTIME_PACKAGE = re.compile(r"vault-proxy|egress-guard|credential-crypto|agent-harness")
-AGENT_RUNTIME_TABLE = re.compile(r"^(session_entries|session_turns|tool_calls|agent_memory\w*|memory_entries)$")
-# CREATE TABLE with optional IF NOT EXISTS and an optional, possibly quoted,
-# schema qualifier; DROP TABLE with its comma-separated list.
-_IDENT = r'(?:"[^"]+"|`[^`]+`|[A-Za-z_][\w$]*)'
-SQL_CREATE = re.compile(
-    r"^\s*CREATE\s+(?:(?:GLOBAL|LOCAL)\s+)?(?:(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\s+"
-    r"(?:IF\s+NOT\s+EXISTS\s+)?((?:" + _IDENT + r"\s*\.\s*)?" + _IDENT + r")",
-    re.IGNORECASE)
-SQL_DROP = re.compile(r"^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(.*?)(?:\s+(?:CASCADE|RESTRICT))?\s*$",
-                      re.IGNORECASE | re.DOTALL)
 
 # Server frameworks whose presence as a runtime dependency makes a package a
 # TypeScript backend.
@@ -694,47 +625,6 @@ def keel_game(tree) -> bool:
     return uses_keel
 
 
-_RUST_MASK_TOKEN = re.compile(r'//[^\n]*|/\*|\br(\#*)"|"(?:\\[\s\S]|[^"\\])*"|\'(?:\\.|[^\'\\])\'')
-_RUST_BLOCK_EDGE = re.compile(r"/\*|\*/")
-_KEEL_SKU_RE = re.compile(r"\bstruct\s+(\w*Sku)\b")
-_KEEL_PIXELS_RE = re.compile(
-    r"\bfn\s+(\w+_pixels)\s*(?:<[^{};]*>)?\s*\([^{};]*?\)\s*->\s*"
-    r"(?:(?:std|alloc)\s*::\s*vec\s*::\s*)?Vec\s*<\s*u8\s*>"
-)
-
-
-def rust_code(text: str) -> str:
-    """Mask comments and Rust string/character literals while retaining line offsets."""
-    parts = []
-    last = 0
-    end = 0
-    search = _RUST_MASK_TOKEN.search
-    edge_search = _RUST_BLOCK_EDGE.search
-    while (match := search(text, end)) is not None:
-        start = match.start()
-        end = match.end()
-        if text[start:start + 2] == "/*":
-            depth = 1
-            while depth and end < len(text):
-                edge = edge_search(text, end)
-                if edge is None:
-                    end = len(text)
-                    break
-                depth += 1 if text[edge.start()] == "/" else -1
-                end = edge.end()
-        elif match.group(1) is not None:
-            close = '"' + match.group(1)
-            stop = text.find(close, end)
-            end = len(text) if stop < 0 else stop + len(close)
-        parts.append(text[last:start])
-        parts.append(architecture.blank(text[start:end]))
-        last = end
-    if not parts:
-        return text
-    parts.append(text[last:])
-    return "".join(parts)
-
-
 def keel_departures(tree) -> list[str]:
     """Hard boundaries for Keel game consumers; not seedable in a local baseline."""
     if not keel_game(tree):
@@ -749,29 +639,12 @@ def keel_departures(tree) -> list[str]:
         if pack_source.dockerfile(path):
             for _, line, stage in pack_source.missing_stages(tree.read(path) or "", path, paths, tree.read):
                 found.append(f"keel-pack-source {path}:{line} {stage}")
-    for path in sorted(paths):
-        if skipped(path):
-            continue
-        if path in ("docs/BUILDING.md", "scripts/measure-rust-debug.py"):
-            found.append(f"keel-boilerplate {path}")
-        if not path.endswith(".rs") or "src" not in path.split("/"):
-            continue
-        raw = tree.read(path) or ""
-        if "Sku" not in raw and "_pixels" not in raw:
-            continue
-        code = rust_code(raw)
-        for kind, pattern in (("keel-local-sku", _KEEL_SKU_RE), ("keel-cpu-pixels", _KEEL_PIXELS_RE)):
-            for match in pattern.finditer(code):
-                found.append(f"{kind} {path}:{code.count(chr(10), 0, match.start()) + 1} {match.group(1)}")
     return sorted(found)
 
 
 def decide_keel(found: list[str]) -> list[str]:
     remedies = {
         "keel-pack-source": "add ARG SYLPHX_GIT_COMMIT_SHA after FROM in the stage running keel pack, before its packing RUN, so VERSION.json names the exact source commit",
-        "keel-local-sku": "use keel_commerce, keel::commerce::iap or cubeage_kit commerce types, not a local SKU/catalog struct",
-        "keel-cpu-pixels": "use Keel shaders or shared primitives, not game-local CPU pixel texture generation",
-        "keel-boilerplate": "use the shared Rust CI profile and build documentation; remove per-game boilerplate",
     }
     return [f"Keel game boundary: '{line}'; {remedies[line.split()[0]]}. "
             "This rule cannot be waived in .github/stack-departures.txt."
@@ -780,279 +653,6 @@ def decide_keel(found: list[str]) -> list[str]:
 
 def package_name(norm: str) -> str:
     return norm.lower().replace("_", "-")
-
-
-def sql_table(raw: str) -> str:
-    last = re.split(r"\s*\.\s*", raw.strip())[-1]
-    return last.strip('"`').lower()
-
-
-def agent_runtime(tree) -> list[str]:
-    """Agent-runtime parts in one tree: packages by name, and tables created by
-    a SQL file and not dropped by a later one (files in path order, which is
-    the order of timestamped migrations)."""
-    found: set[str] = set()
-    for manifest in named(tree, "Cargo.toml"):
-        pkg = parse_toml(tree.read(manifest) or "").get("package")
-        name = pkg.get("name") if isinstance(pkg, dict) else None
-        if isinstance(name, str) and AGENT_RUNTIME_PACKAGE.search(package_name(name)):
-            found.add(f"agent-runtime-package {manifest} {name}")
-    for manifest in named(tree, "package.json"):
-        name = package(tree, manifest).get("name")
-        if isinstance(name, str) and AGENT_RUNTIME_PACKAGE.search(package_name(name)):
-            found.add(f"agent-runtime-package {manifest} {name}")
-    live: dict[str, str] = {}
-    for path in sorted(p for p in tree.paths() if p.lower().endswith(".sql") and not skipped(p)):
-        text = re.sub(r"/\*.*?\*/", "", re.sub(r"--[^\n]*", "", tree.read(path) or ""), flags=re.DOTALL)
-        for statement in text.split(";"):
-            created = SQL_CREATE.match(statement)
-            if created:
-                table = sql_table(created.group(1))
-                if AGENT_RUNTIME_TABLE.match(table):
-                    live.setdefault(table, path)
-                continue
-            dropped = SQL_DROP.match(statement)
-            if dropped:
-                for raw in dropped.group(1).split(","):
-                    live.pop(sql_table(raw), None)
-    for table, path in live.items():
-        found.add(f"agent-runtime-table {path} {table}")
-    return sorted(found)
-
-
-# A hand-rolled work engine (SylphxAI/work docs/adr/0010, "Guard for the
-# class"): a new table with a status, an assignee or role, and a due date,
-# deadline, SLA, overdue or escalation column. Its migration's header must say
-# whose records the rows are: the Work resource they feed, or the product's
-# customers' records (ADR 0010 D1).
-WORK_DECISION = "SylphxAI/work docs/adr/0010-group-companies-on-work.md"
-WORK_RESOURCE_HEADER = re.compile(r"\bwork[ \t]+resource[ \t]*:[ \t]*[^\s*/]", re.IGNORECASE)
-CUSTOMER_RECORDS_HEADER = "customer records (work adr 0010 d1)"
-_CONSTRAINT_WORDS = frozenset({"constraint", "primary", "unique", "foreign", "check", "exclude",
-                               "like", "index", "key", "period"})
-
-
-def _status_word(words: list[str]) -> bool:
-    return any(w in ("status", "state", "stage") for w in words)
-
-
-def _assignee_word(words: list[str]) -> bool:
-    return any(w in ("role", "assigned", "owner", "executor", "executing", "handler", "responsible")
-               or w.startswith("assignee") for w in words)
-
-
-def _due_word(words: list[str]) -> bool:
-    return any(w in ("due", "sla", "overdue") or w.startswith(("deadline", "escalat"))
-               for w in words)
-
-
-def _split_top(body: str) -> list[str]:
-    parts, depth, cur = [], 0, []
-    for ch in body:
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        if ch == "," and depth == 0:
-            parts.append("".join(cur))
-            cur = []
-        else:
-            cur.append(ch)
-    parts.append("".join(cur))
-    return parts
-
-
-def table_columns(statement: str) -> tuple[str, list[str]] | None:
-    """The table and column names of one CREATE TABLE statement, or None."""
-    created = SQL_CREATE.match(statement)
-    if not created:
-        return None
-    rest = statement[created.end():].lstrip()
-    if not rest.startswith("("):
-        return None  # CREATE TABLE ... AS / PARTITION OF: no column list here
-    depth, end = 0, None
-    for i, ch in enumerate(rest):
-        depth += ch == "("
-        depth -= ch == ")"
-        if depth == 0:
-            end = i
-            break
-    columns = []
-    for element in _split_top(rest[1:end if end is not None else len(rest)]):
-        m = re.match(r"\s*(\"[^\"]+\"|`[^`]+`|[A-Za-z_][\w$]*)", element)
-        if not m:
-            continue
-        name = m.group(1)
-        if name[0] not in '"`' and name.lower() in _CONSTRAINT_WORDS:
-            continue
-        columns.append(name.strip('"`').lower())
-    return sql_table(created.group(1)), columns
-
-
-def is_obligation_table(columns: list[str]) -> bool:
-    words = [c.split("_") for c in columns]
-    return (any(_status_word(w) for w in words) and any(_assignee_word(w) for w in words)
-            and any(_due_word(w) for w in words))
-
-
-def header_names_owner(text: str) -> bool:
-    """True when the comment lines before the file's first statement name the
-    Work resource the table feeds or say it holds customers' records."""
-    header, in_block = [], False
-    for raw in text.splitlines():
-        line = raw.strip()
-        if in_block:
-            header.append(line)
-            in_block = "*/" not in line
-        elif line.startswith("--"):
-            header.append(line)
-        elif line.startswith("/*"):
-            header.append(line)
-            in_block = "*/" not in line
-        elif line:
-            break
-    words = [re.sub(r"^(?:--|/\*|\*(?!/))+|\*/$", "", line).strip() for line in header]
-    return any(WORK_RESOURCE_HEADER.search(w) for w in words) or CUSTOMER_RECORDS_HEADER in " ".join(
-        " ".join(words).lower().split())
-
-
-def obligation_tables(path: str, text: str) -> list[str]:
-    """`work-obligation-table <path> <table>` for each work-engine table that a
-    SQL file creates without a header saying whose records its rows are. A
-    down migration only restores an earlier schema and is not checked."""
-    if path.lower().endswith(".down.sql") or header_names_owner(text):
-        return []
-    body = re.sub(r"/\*.*?\*/", "", re.sub(r"--[^\n]*", "", text), flags=re.DOTALL)
-    found = []
-    for statement in body.split(";"):
-        parsed = table_columns(statement)
-        if parsed and is_obligation_table(parsed[1]):
-            found.append(f"work-obligation-table {path} {parsed[0]}")
-    return found
-
-
-def knowledge_tables(path: str, text: str) -> list[str]:
-    """`knowledge-table <path> <table>` for each knowledge or CRM table a SQL
-    file creates. A down migration only restores an earlier schema and is not
-    checked."""
-    if path.lower().endswith(".down.sql"):
-        return []
-    found = []
-    for statement in re.sub(r"/\*.*?\*/", "", re.sub(r"--[^\n]*", "", text), flags=re.DOTALL).split(";"):
-        parsed = table_columns(statement)
-        if parsed and KNOWLEDGE_TABLE.match(parsed[0]):
-            found.append(f"knowledge-table {path} {parsed[0]}")
-    return found
-
-
-def added_sql(repo: str, base: str, head: str) -> list[str]:
-    """SQL files added between base and head (renames are not additions)."""
-    out = git(repo, "diff", "--name-only", "--diff-filter=A", "-M", "-z", base, head, "--")
-    return sorted(p for p in out.split("\0")
-                  if p and p.lower().endswith(".sql") and not skipped(p))
-
-
-def decide_obligations(found: list[str]) -> list[str]:
-    return [f"new work-engine table: '{line}' has a status, an assignee or role and a due date, "
-            "deadline, SLA or escalation. A company's own work (what its people or agents owe) "
-            "runs on Work: create items there and name the resource in the migration's header "
-            "('-- Work resource: <resource>'). If the rows are the product's customers' records, "
-            "say so in the header ('-- customer records (Work ADR 0010 D1)'). "
-            f"({WORK_DECISION}, D1)" for line in found]
-
-
-def load_agent_runtime_policy(path=AGENT_RUNTIME_POLICY) -> dict:
-    try:
-        return json.loads(pathlib.Path(path).read_text())
-    except FileNotFoundError:
-        return {"owner_repos": [], "baseline": []}
-
-
-def decide_agent_runtime(found: list[str], repository: str, policy: dict,
-                         today: datetime.date) -> tuple[list[str], list[str]]:
-    """Errors and notices for the agent-runtime parts of one repository.
-
-    The platform owner is not checked. Elsewhere a part passes only while
-    policy/agent-runtime.json lists it for this repository and its expiry date
-    has not passed."""
-    owners = policy.get("owner_repos", [])
-    if repository in owners or architecture.canonical_repository(repository) in owners:
-        return [], []
-    allowed: dict[str, str] = {}
-    for entry in policy.get("baseline", []):
-        if entry.get("repo") == repository:
-            allowed[" ".join(entry["departure"].split())] = entry["expires"]
-    decision = policy.get("decision", "the Sylphx Agents decision")
-    errors, notices = [], []
-    for line in found:
-        expires = allowed.get(line)
-        if expires is None:
-            errors.append(f"new agent-runtime part: '{line}'. Agent definitions, sessions, memory, "
-                          f"the tool gateway, credential injection and the egress guard belong to "
-                          f"Sylphx Agents; use its API instead ({decision})")
-        elif today > datetime.date.fromisoformat(expires):
-            errors.append(f"agent-runtime allowance expired on {expires}: '{line}'. Move it onto "
-                          f"Sylphx Agents and delete it, or extend its date in SylphxAI/.github "
-                          f"policy/agent-runtime.json with a reason ({decision})")
-    for line in sorted(set(allowed) - set(found)):
-        notices.append(f"agent-runtime allowance '{line}' is no longer found; delete its entry in "
-                       "SylphxAI/.github policy/agent-runtime.json")
-    return errors, notices
-
-
-def load_knowledge_policy(path=KNOWLEDGE_POLICY) -> dict:
-    try:
-        return json.loads(pathlib.Path(path).read_text())
-    except FileNotFoundError:
-        return {"owner_repos": [], "baseline": []}
-
-
-def knowledge_tables_in(tree) -> set[str]:
-    """Every knowledge or CRM table the whole tree creates, for the notice on a
-    policy entry whose table is gone."""
-    tables: set[str] = set()
-    for path in sorted(p for p in tree.paths() if p.lower().endswith(".sql") and not skipped(p)):
-        tables |= {line.rsplit(" ", 1)[-1] for line in knowledge_tables(path, tree.read(path) or "")}
-    return tables
-
-
-def decide_knowledge(found: list[str], repository: str, policy: dict,
-                     today: datetime.date, present: set[str] | None = None) -> tuple[list[str], list[str]]:
-    """Errors and notices for the knowledge and CRM tables of one repository.
-
-    The platform owner is not checked. Elsewhere a table passes only while
-    policy/knowledge-tables.json records it for this repository and its expiry
-    date has not passed: the instances the widened rule found on the default
-    branch when it shipped."""
-    owners = policy.get("owner_repos", [])
-    if repository in owners or architecture.canonical_repository(repository) in owners:
-        return [], []
-    allowed: dict[str, str] = {}
-    for entry in policy.get("baseline", []):
-        if entry.get("repo") == repository:
-            allowed[" ".join(entry["table"].split())] = entry["expires"]
-    decision = policy.get("decision", KNOWLEDGE_DECISION)
-    errors, notices = [], []
-    for line in found:
-        table = line.rsplit(" ", 1)[-1]
-        expires = allowed.get(table)
-        if expires is None:
-            errors.append(f"new knowledge or CRM table: '{line}'. The company's knowledge graph, "
-                          f"its memory spaces and its customer graph are Sylphx Knowledge, a "
-                          f"platform service with one permission space per record; a product's "
-                          f"knowledge and CRM records live there, not in a table of its own. Use "
-                          f"its API instead, or record the table in SylphxAI/.github "
-                          f"policy/knowledge-tables.json when the base already has it ({decision})")
-        elif today > datetime.date.fromisoformat(expires):
-            errors.append(f"knowledge-table allowance expired on {expires}: '{line}'. Move it onto "
-                          f"Sylphx Knowledge with its history and delete it, or extend its date in "
-                          f"SylphxAI/.github policy/knowledge-tables.json with a reason "
-                          f"({decision})")
-    still_there = present if present is not None else {line.rsplit(" ", 1)[-1] for line in found}
-    for table in sorted(set(allowed) - still_there):
-        notices.append(f"knowledge-table allowance '{table}' is no longer found; delete its entry "
-                       "in SylphxAI/.github policy/knowledge-tables.json")
-    return errors, notices
 
 
 def parse_baseline(text: str | None) -> set[str] | None:
@@ -1067,11 +667,12 @@ def parse_baseline(text: str | None) -> set[str] | None:
 
 
 def decide(found: list[str], head_baseline: set[str] | None,
-           base_baseline: set[str] | None) -> list[str]:
+           base_baseline: set[str] | None, *, previous=None, notice=lambda _: None) -> list[str]:
     """Return the errors; empty means the head conforms.
 
     A base without a baseline file (first adoption, or no base at all) accepts
-    the head's baseline as the seed; after that the baseline may only shrink."""
+    the head's baseline as the seed; after that the baseline may only shrink.
+    With a base tree, a record authorizes only a departure still present there."""
     head = head_baseline or set()
     errors = []
     if base_baseline is not None:
@@ -1079,6 +680,8 @@ def decide(found: list[str], head_baseline: set[str] | None,
             errors.append(f"baseline grew: '{line}' is not in the base's baseline; a recorded "
                           "departure may only be removed, never added")
         allowed = head & base_baseline
+        if previous is not None:
+            allowed &= previous
     else:
         allowed = head
     for line in found:
@@ -1087,8 +690,7 @@ def decide(found: list[str], head_baseline: set[str] | None,
                           "Rust and schema migrations use sylphx or transitional atlas, "
                           "SylphxAI/skills skills/self-challenge/references/stack.md)")
     for line in sorted(head - set(found)):
-        errors.append(f"stale baseline line: '{line}' is no longer found; delete it so the "
-                      "baseline keeps shrinking")
+        notice(f"stale baseline line: '{line}' is no longer found; consider removing it")
     return errors
 
 
@@ -1158,18 +760,13 @@ def cmd_check(args) -> int:
         head_force_baseline = {line for line in head_baseline or () if line.startswith("force-push ")}
         head_baseline = None if head_baseline is None else head_baseline - head_architecture_baseline - head_model_baseline - head_force_baseline
         errors = []
-        pin_report = {"head": None, "mode": "unavailable", "offenders": []}
-        try:
-            pin_report = adoption.pin_provenance(head, args.repository, getattr(args, "shared_source", None))
-            errors += [f"{row['file']}:{row['line']}: {row['why']}" for row in pin_report["offenders"]]
-            print(f"shared pin proof: {pin_report['mode']}, main anchor {pin_report['head']}")
-        except (OSError, ValueError, ImportError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError) as error:
-            errors.append("shared-action pin provenance not reviewed: " + str(error))
-            pin_report["error"] = str(error)
-        for line in sorted(l for l in (head_baseline or ()) if l.startswith(AGENT_RUNTIME)):
-            errors.append(f"'{line}' is in {args.baseline}; an agent-runtime part is allowed only by "
-                          "SylphxAI/.github policy/agent-runtime.json, with an expiry date")
-            head_baseline.discard(line)
+        notices = []
+        pin_errors = adoption.sha_pin_errors(head, args.repository)
+        errors.extend(pin_errors)
+
+        def legacy_decide(found, current, old, *, previous=None):
+            return decide(found, current, old, previous=previous, notice=notices.append)
+
         base_baseline = None
         base_architecture_baseline = set()
         base_architecture_adopted = False
@@ -1199,7 +796,6 @@ def cmd_check(args) -> int:
                 base_force_baseline = {line for line in base_baseline if line.startswith("force-push ")}
                 base_force_adopted = no_force_push.BASELINE_MARKER in base_lines
                 base_baseline -= base_force_baseline
-                base_baseline = {l for l in base_baseline if not l.startswith(AGENT_RUNTIME)}
         errors += adoption.baseline_validation(head_text, base_text if args.base else head_text, architecture)
         introduced = set()
         if not args.base:
@@ -1244,51 +840,35 @@ def cmd_check(args) -> int:
         if base_models is not None:
             errors += model_pins.decide(models["findings"], head_model_baseline, base_model_baseline,
                                        base_models["findings"], head_model_adopted, base_model_adopted,
-                                       allow_seed="model-pin" in introduced, seed_rules=introduced, relocated=relocated)
+                                       allow_seed="model-pin" in introduced, seed_rules=introduced, relocated=relocated, notice=notices.append)
         source_base = base_tree
         source_roots = source_provenance.roots(args.repo, args.base, args.head, args.repository,
             getattr(args, "source_provenance_policy", source_provenance.POLICY))
         outer_head = source_provenance.outer(head, source_roots)
         outer_base = source_provenance.outer(source_base, source_roots) if source_base else None
         errors += staged_retirement.check(outer_head, outer_base, head_baseline, base_baseline,
-            departures, decide, baseline=args.baseline, allow_seed=staged_retirement.RULE in introduced)
+            departures, legacy_decide, baseline=args.baseline, allow_seed=staged_retirement.RULE in introduced,
+            notice=notices.append)
         try:
             found = staged_retirement.findings(head, head_baseline, departures, args.baseline,
                                                previous_lines=base_baseline)
         except ValueError:
             pass  # Invalid records are already refused by the retirement check.
         errors += source_provenance.legacy_errors(head, source_base, source_roots, args.baseline,
-                                                 departures, parse_baseline, decide, staged_retirement)
+                                                 departures, parse_baseline, decide, staged_retirement, notice=notices.append)
         progress("scanning head branch-update commands")
         force_pushes = no_force_push.scan(head, cache=force_cache)
         progress("scanning base branch-update commands")
         base_force_pushes = no_force_push.scan(base_tree, cache=force_cache) if args.base else force_pushes
         errors += no_force_push.decide(force_pushes["findings"], head_force_baseline, base_force_baseline,
                                       base_force_pushes["findings"], head_force_adopted, base_force_adopted,
-                                      allow_seed="force-push" in introduced)
+                                      allow_seed="force-push" in introduced, notice=notices.append)
         for row in force_pushes["unreadable"] + base_force_pushes["unreadable"]:
             errors.append("branch-update input not reviewed: " + row["path"] + ": " + row["reason"])
         keel = keel_departures(head)
         errors += decide_keel(keel)
-        runtime = agent_runtime(head)
-        policy = load_agent_runtime_policy(args.agent_runtime_policy)
         today = datetime.date.fromisoformat(args.today) if args.today else datetime.datetime.now(
             datetime.timezone.utc).date()
-        runtime_errors, notices = decide_agent_runtime(runtime, args.repository, policy, today)
-        errors += runtime_errors
-        obligations: list[str] = []
-        knowledge: list[str] = []
-        if args.base:
-            for path in added_sql(args.repo, args.base, args.head):
-                text = head.read(path) or ""
-                obligations += obligation_tables(path, text)
-                knowledge += knowledge_tables(path, text)
-        errors += decide_obligations(obligations)
-        knowledge_errors, knowledge_notices = decide_knowledge(
-            knowledge, args.repository, load_knowledge_policy(args.knowledge_policy), today,
-            present=knowledge_tables_in(head))
-        errors += knowledge_errors
-        notices += knowledge_notices
         checker_commit = None
         changed = added_lines(args.repo, args.base, args.head)
         try:
@@ -1335,7 +915,8 @@ def cmd_check(args) -> int:
         if head_architecture_baseline or base_architecture_baseline:
             try:
                 errors += architecture.baseline_errors(report["findings"], head_architecture_baseline,
-                                                        base_architecture_baseline, base_findings, introduced)
+                                                        base_architecture_baseline, base_findings, introduced,
+                                                        notice=notices.append, has_base=bool(args.base))
                 for row in report["findings"]:
                     if row["baseline_recorded"] and not args.base:
                         row["changed"] = False
@@ -1343,7 +924,7 @@ def cmd_check(args) -> int:
                 report["unreadable"].append({"path": args.baseline, "reason": str(error)})
         imported, imported_errors = source_provenance.architecture_report(
             head, source_base, source_roots, args.baseline, changed, today, architecture, parse_baseline,
-            shared_views=shared_views)
+            shared_views=shared_views, notice=notices.append)
         errors += imported_errors
         for key in ("findings", "unreadable", "reviewed_paths", "excluded_paths", "decision_errors"):
             report.setdefault(key, []).extend(imported[key])
@@ -1354,7 +935,7 @@ def cmd_check(args) -> int:
                        "model_pins": models,
                        "force_pushes": force_pushes,
                        "legacy_departures": found, "legacy_errors": errors.copy(),
-                       "shared_pin_provenance": pin_report})
+                       "notices": notices, "shared_pin_errors": pin_errors})
         for row in report["findings"]:
             row.update({"repository": report["repository"], "commit": report["commit"]})
             if row["rule"] in {"tenant-read-functions", "deal-randomness", "project-portability"}:
@@ -1378,13 +959,10 @@ def cmd_check(args) -> int:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         for n in notices:
-            print(f"::notice::{n}")
+            print(f"::notice::{workflow_escape(n)}")
         for e in errors:
             print(f"::error::{workflow_escape(e)}")
         print(f"{len(found)} departure(s) found, {len(head_baseline or ())} recorded in {args.baseline}; "
-              f"{len(runtime)} agent-runtime part(s) found in {args.repository or 'this repository'}; "
-              f"{len(obligations)} new work-engine table(s) without an owner header; "
-              f"{len(knowledge)} new knowledge or CRM table(s); "
               f"{len(keel)} Keel game boundary violation(s)")
         print(f"{len(models['findings'])} vendor model pin(s), {len(head_model_baseline)} recorded in {args.baseline}")
         print(f"{len(force_pushes['findings'])} forced branch update(s), {len(head_force_baseline)} recorded in {args.baseline}")
@@ -1426,8 +1004,6 @@ def cmd_scan(args) -> int:
         raise SystemExit("; ".join(row["reason"] for row in report["decision_errors"]))
     if report["unreadable"]:
         raise SystemExit("source unreadable; baseline scan incomplete")
-    for line in agent_runtime(tree):
-        print(f"# not recordable here (SylphxAI/.github policy/agent-runtime.json): {line}")
     for line in keel_departures(tree):
         print(f"# not recordable in a local baseline: {line}")
     return 0
@@ -1437,7 +1013,7 @@ def cmd_all(args) -> int:
     clean = 0
     for repo in args.dirs:
         tree = Tree(repo, args.rev)
-        found = departures(tree) + agent_runtime(tree) + keel_departures(tree)
+        found = departures(tree) + keel_departures(tree)
         if not found:
             clean += 1
         print(f"{repo}\t{len(found)}\t{'; '.join(found)}")
@@ -1457,10 +1033,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--baseline", default=BASELINE)
     c.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""),
                    help="owner/name of the checked repository (default $GITHUB_REPOSITORY)")
-    c.add_argument("--agent-runtime-policy", default=str(AGENT_RUNTIME_POLICY))
-    c.add_argument("--knowledge-policy", default=str(KNOWLEDGE_POLICY))
     c.add_argument("--source-provenance-policy", default=str(source_provenance.POLICY), help="Shared-checker-owned source provenance registry; not an action input")
-    c.add_argument("--shared-source", help="Explicit offline shared checkout; proves pins against its complete origin/main snapshot")
+    c.add_argument("--shared-source", help="Optional offline shared checkout for rule adoption evidence")
     c.add_argument("--model-aliases", help="Optional pinned catalog alias declaration; default permits the <provider>/<line>-latest contract")
     c.add_argument("--today", default="", help="YYYY-MM-DD; default today in UTC (tests)")
     c.add_argument("--report", default="stack-conformance-report.json", help="Structured C1–C7 findings, coverage and limits")

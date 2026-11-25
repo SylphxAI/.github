@@ -663,7 +663,7 @@ def relocated_records(base_tree, head_tree, base_findings, findings, base_record
 
 
 def decide(findings, head_records, base_records, base_findings, head_adopted, base_adopted,
-           *, allow_seed=False, seed_rules=frozenset(), relocated=frozenset()):
+           *, allow_seed=False, seed_rules=frozenset(), relocated=frozenset(), notice=lambda _: None):
     actual = {baseline_key(row) for row in findings}
     inherited = {baseline_key(row) for row in base_findings}
     errors = []
@@ -677,11 +677,11 @@ def decide(findings, head_records, base_records, base_findings, head_adopted, ba
     for key in sorted(head_records - allowed):
         errors.append("model-pin baseline cannot grow or seed new debt: " + key)
     for key in sorted(head_records - actual):
-        errors.append("stale model-pin baseline record: " + key + "; remove it")
+        notice("stale model-pin baseline record: " + key + "; remove it")
     for row in findings:
         key = baseline_key(row)
         row["baseline_recorded"] = key in head_records
-        if key not in head_records & allowed:
+        if key not in head_records & allowed & (inherited | relocated):
             errors.append(f"{row['path']}:{row['line']}: vendor model id {row['model']!r} is pinned in source; "
                           "omit the model id to use the organization's runtime default, or write an exact "
                           "Sylphx AI catalog alias of the form <provider>/<line>-latest (" + CONTRACT + ")")
