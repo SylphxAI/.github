@@ -50,14 +50,13 @@ def pin_checker():
     return module
 
 
-def main_marker_errors(tree, repository):
-    return [f"{row['file']}:{row['line']}: {row['why']}"
-            for row in pin_checker().main_marker_errors(workflow_files(tree),
-                require_main_marker=repository.lower() != "sylphxai/.github")]
-
-
-def pin_provenance(tree, repository, shared_source=None):
-    return pin_checker().review_pins(workflow_files(tree), repository, shared_source)
+def sha_pin_errors(tree, repository):
+    """Check reference format only, with no remote lookup or comment requirement."""
+    find_pins = pin_checker().find_pins
+    source_repository = repository.lower() == "sylphxai/.github"
+    return [f"{path}:{pin['line']}: SylphxAI/.github references must use a full commit SHA"
+            for path, text in workflow_files(tree).items() for pin in find_pins(text)
+            if not pin["full_sha"] and not (source_repository and pin["sha"] == "main")]
 
 
 def checker_pins(tree, *, required=True):

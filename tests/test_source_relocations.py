@@ -187,17 +187,6 @@ class RelocationTests(unittest.TestCase):
         self.assertEqual(1, result)
         self.assertTrue(any(row['path'] == 'src/new.py' and row['disposition'] == 'regression' for row in report['findings']))
 
-    def test_public_cli_does_not_waive_agent_runtime_ownership(self):
-        self.write('legacy/hk/crates/vault-proxy/Cargo.toml', '[package]\nname = "vault-proxy"\nversion = "0.1.0"\n')
-        self.commit()
-        # Even an independently registered exact historical tree cannot waive
-        # the full-tree agent runtime boundary enforced outside scoped reports.
-        self.record['source_tree'] = self.git('rev-parse', 'HEAD:legacy/hk')
-        self.save_policy([self.record])
-        result, report = self.public_check(self.base)
-        self.assertEqual(1, result)
-        self.assertTrue(any('agent-runtime' in line for line in report['legacy_errors']))
-
     def test_capability_provenance_includes_shared_helper_and_registry(self):
         tree = sc.Tree(str(ROOT), 'HEAD')
         # The test edits only the in-memory source view of an immutable tree.

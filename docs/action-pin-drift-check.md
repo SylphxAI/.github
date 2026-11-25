@@ -36,34 +36,19 @@ use this exception.
 The central audit and standalone `check` also fail pins more than `DRIFT_DAYS`
 (7) days behind main's committer date. A week allows Renovate to open and land
 its grouped update while exposing stale shared logic within a working week.
-The caller gate enforces format, ancestry and target existence without an age
-limit. It uses the same pure `validate_pin_provenance` validator as the audit;
-`main_marker_errors` remains available for format-only inspection.
+The standalone `workflow-pin-check` action's `shared-only` mode checks
+format, ancestry and target existence without an age limit. The stack action
+checks only SHA format, offline, without requiring `# main` comments.
 
-## Caller gate and local use
-
-The shared `stack-conformance` action checks its caller's own Git objects,
-including private repositories. It uses the existing `github.token` to acquire
-proof from the public shared source, so it needs no cross-repository App or
-private-repository credential. Unavailable proof makes the gate fail and is
-recorded under `shared_pin_provenance` in its JSON report.
-
-Default CLI execution also acquires live proof through `gh`:
+## Local use
 
 ```bash
-python3 .github/actions/stack-conformance/stack_conformance.py check \
-  --repo CALLER --repository ORG/REPO
-python3 scripts/action_pin_drift_check.py check \
-  --dir CALLER --repository ORG/REPO
+python3 scripts/action_pin_drift_check.py check --dir CALLER --repository ORG/REPO
 ```
 
-For explicit offline review, add `--shared-source /path/to/shared-checkout` to
-either command. This requires a complete, nonshallow local shared checkout and
-`refs/remotes/origin/main`; it never substitutes local HEAD for a missing main
-anchor. Output and the caller report identify the proof as an offline
-`origin/main` snapshot and print its full anchor SHA. This proves that snapshot,
-not live freshness. Git lazy fetching is disabled. The published action always
-uses live proof.
+Add `--shared-source /path/to/shared-checkout` for offline review against a
+complete, nonshallow `refs/remotes/origin/main` snapshot. Local `HEAD` is not a
+substitute for that anchor.
 
 ```bash
 python3 scripts/action_pin_drift_check.py audit --org ORG --public-only
@@ -121,11 +106,8 @@ waits excluded), so a merely queued or slow run does not read as unhandled. One
 feature commits, missing target files, both action metadata extensions, exact
 workflow paths, cached proof, missing acquisition, drift age and public scope.
 
-`tests/test_shared_pin_provenance_gate.py` executes the real caller CLI against
-complete local Git fixtures: a private caller passes with valid proof; a
-feature SHA, absent target, unavailable live source and missing offline main
-anchor fail. Source comment and `@main` exceptions still require target and
-ancestry proof. The action entrypoint also rejects a missing token before reads.
+`tests/test_shared_pin_provenance_gate.py` exercises SHA format and token
+compatibility through the stack action shell without remote pin reads.
 
 The watcher tests distinguish a skipped or classification-only Red main run
 from one that reached its repair step inside the response window.

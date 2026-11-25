@@ -92,8 +92,8 @@ class StagedRetirementTests(unittest.TestCase):
         f.commit({sc.BASELINE: result["baseline_text"]})
         f.check(previous, 0)
 
-    def test_plain_record_forged_digest_missing_marker_and_stale_binding_fail(self):
-        for kind in ("plain", "digest", "marker", "stale"):
+    def test_plain_record_forged_digest_and_missing_marker_fail(self):
+        for kind in ("plain", "digest", "marker"):
             with self.subTest(kind=kind):
                 f, adopted, result = self.adopted()
                 text = result["baseline_text"]
@@ -104,10 +104,19 @@ class StagedRetirementTests(unittest.TestCase):
                     text = text.replace(line, "solar2d legacy/build.settings " + "0" * 64)
                 elif kind == "marker":
                     text = text.replace(sc.adoption.RULE_MARKER + r.RULE + "\n", "")
-                else:
-                    f.git("rm", "-r", "legacy")
                 f.commit({sc.BASELINE: text})
                 f.check(adopted, 1)
+
+    def test_complete_retirement_allows_stale_binding_but_not_reactivation(self):
+        f, adopted, _ = self.adopted()
+        f.git("rm", "-r", "legacy")
+        retired = f.commit({"README.md": "retired"})
+        out, _ = f.check(adopted, 0)
+        self.assertIn("::notice::stale retirement binding:", out)
+        f.check(retired, 0)
+        f.git("checkout", adopted, "--", "legacy")
+        f.commit({"README.md": "reactivated"})
+        f.check(retired, 1)
 
     def test_anchor_deletion_keeps_binding_and_visible_finding_until_all_inputs_are_gone(self):
         for anchor in ("legacy/build.settings", "legacy/main.lua"):

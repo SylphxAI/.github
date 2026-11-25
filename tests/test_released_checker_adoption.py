@@ -103,10 +103,8 @@ class ReleasedCheckerAdoptionTests(unittest.TestCase):
                             + sc.architecture.BASELINE_MARKER + "\n"})
             argv = ["check", "--repo", directory, "--base", base,
                     "--repository", "example/app", "--report", directory + "/report.json"]
-            proof = {"head": UNKNOWN, "mode": "test source", "offenders": []}
             for unavailable, expected in ((False, 0), (True, 1)):
                 with self.subTest(unavailable=unavailable), \
-                        mock.patch.object(sc.adoption, "pin_provenance", return_value=proof), \
                         mock.patch.object(sc.adoption, "PublishedCheckerTree",
                             side_effect=ValueError("source unavailable") if unavailable else None,
                             return_value=sc.Tree(str(ROOT), RELEASES[-1])) as reader, \

@@ -138,11 +138,7 @@ jobs:
   # No new departure from the default stack (docs/stack-conformance.md in
   # SylphxAI/.github): a backend service off Rust or a migration engine other
   # than sylphx or transitional atlas fails unless already listed in the shrinking
-  # .github/stack-departures.txt baseline; an agent-runtime part Sylphx Agents owns
-  # fails unless SylphxAI/.github policy/agent-runtime.json allows it until a date;
-  # a new work-engine table needs a header saying whose records it holds; a
-  # knowledge-graph or CRM table fails unless SylphxAI/.github
-  # policy/knowledge-tables.json allows it until a date.
+  # .github/stack-departures.txt baseline. Fixed departures emit notices.
   stack:
     needs: plan
     runs-on: ${{ github.event_name == 'merge_group' && 'sylphx-linux-standard-merge' || 'sylphx-linux-standard' }}

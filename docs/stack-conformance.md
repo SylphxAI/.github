@@ -66,8 +66,7 @@ in lint. Pin a published `SylphxAI/.github` main commit containing the feature:
 The separate auth departures file uses the stack ratchet's escaped path,
 content digest, and occurrence convention. First adoption admits only findings
 that already exist at the event base. Afterward the baseline may only shrink.
-Remove a record in the same PR that fixes the finding, or the audit fails on
-the stale record. The rule adoption helper still handles other categories in
+Fixed findings emit a notice for the stale record; cleanup can land separately. The rule adoption helper still handles other categories in
 `stack-departures.txt`; it does not seed the caller's opt-in auth baseline.
 No organization-specific allowlist is needed. As elsewhere in stack
 conformance, only confirmed delivered customer repositories are skipped.
@@ -134,7 +133,7 @@ work elsewhere in the monorepo.
 At first staging and on later changes, candidate inputs must be an
 identical-value subset of base inputs. New projects, new files, changed bytes,
 renames and mode changes fail, even if a caller recomputes the digest. Deletions
-may update a binding; deleting every bound input removes the record, but keeps the adoption
+may update a binding; deleting every bound input makes the record advisory. Keep the adoption
 marker so it cannot reopen staging. `adoption.py adopt` also refreshes existing
 bindings after deletion-only changes. Findings remain in `legacy_departures` in
 the report while any bound input remains, even after deleting `build.settings`
@@ -148,20 +147,14 @@ architecture, SQL and other guards are unchanged and cannot be waived by this
 record. An exact source relocation carries a committed binding through its
 prefix-rooted view; it does not create permission to seed a new binding.
 
-## Contribution metadata permissions
+## Shared workflow references
 
-The existing shared-pin check follows caller jobs through local/shared reusable
-workflows and composite actions to the contribution metadata step. Each effective
-token permission map must supply `pull-requests: read` (or `write`). A job map
-overrides its workflow default, and a reusable workflow cannot increase its
-caller's grant. Existing contents, OIDC and producer-write scopes stay intact.
-
-A missing grant fails with `caller workflow lacks pull-requests: read`, including
-when inherited from the base. This is an admission error outside the shrinking
-debt baseline: the adoption helper cannot seed or waive it. Fix the actual caller
-and reusable job maps in the install PR. Literal block/inline maps and
-`read-all`/`write-all` are recognized; dynamically generated YAML and aliases
-remain source-review responsibilities.
+The stack action checks SHA format from the caller's Git tree without a
+GitHub API lookup. A `# main` comment is useful for Renovate but not required
+by this action. It does not verify ancestry, targets, or nested pin graphs.
+Use a published commit when updating a pin. The shared source repository
+itself may keep its own `@main` references. Contribution metadata permission
+errors are still enforced by the contribution policy at runtime.
 
 ## Model versions in product source
 
@@ -204,7 +197,7 @@ A record is one path, model id and occurrence number; paths use URL escaping
 for spaces. Moving a line within a file preserves its record, while copying
 the same id creates a new occurrence that fails. First adoption can record
 only hits independently scanned at the base commit. Thereafter the marker
-cannot be removed, and stale records must be deleted. An existing record can
+cannot be removed, and stale records emit notices. An existing record can
 move with its file when Git proves an unambiguous, byte-identical move: the old
 file and record must be removed, the destination must be a new path, and the
 same rule, model ID and occurrence must be found at both revisions. This does
@@ -269,7 +262,7 @@ command digest and occurrence number. Commands and remote URLs are omitted
 from diagnostics because they may contain credentials. Moving a line preserves
 its identity; copying or changing the command creates new debt and fails.
 After adoption, markers cannot be removed, records cannot grow, and stale
-records must be deleted. Neither this rule nor its baseline loosens another
+records emit notices. Neither this rule nor its baseline loosens another
 stack category. `scan` prints records for inspection; its output alone does
 not authorize adoption. A run without a base checks the committed ratchet
 against itself. Unreadable automation inputs fail the check.
@@ -326,8 +319,8 @@ unrelated change unless explicitly adopted through the existing helper under
 manifest's production database, so unrelated manifest edits preserve its debt.
 Missing or unsupported well-formed declarations, including old `functions`
 signature lists, are coverage gaps. Existing gaps can be seeded only from the immutable base during adoption; the
-set then only shrinks. Adding the file requires removing its stale record;
-removing the declaration after that fails and cannot re-add the old debt.
+set then only shrinks. Adding the file makes the old record advisory; reversing the fix fails even if
+the record remains.
 An architecture decision cannot waive this declaration requirement.
 
 This offline check establishes source declaration shape only. It neither
@@ -336,105 +329,6 @@ The scheduled owner catalog observation supplies that separate live verdict.
 It does not infer databases provisioned outside the manifest or dynamically
 generated manifests. Delivered customer repositories retain the action's
 existing exclusion.
-
-## Agent-runtime parts
-
-The three-pillar agent runtime and cloud substrate repositories
-(SylphxAI/anyagents, SylphxAI/spiron and SylphxAI/sylphx;
-see SylphxAI/owner company/architecture-map.md) own multi-agent
-orchestration, single-agent harnesses, session logs, turn loops, agent memory,
-tool gateways, credential custody and egress guards. The check fails any
-product repository that holds one of these parts:
-
-| Line | Found when |
-| --- | --- |
-| `agent-runtime-package <manifest> <name>` | a `Cargo.toml` `[package]` or `package.json` name contains `vault-proxy`, `egress-guard`, `credential-crypto` or `agent-harness` (`_` reads as `-`) |
-| `agent-runtime-table <file.sql> <table>` | a `.sql` file creates `session_entries`, `session_turns`, `tool_calls`, `memory_entries` or an `agent_memory*` table, and no later `.sql` file (in path order, the order of timestamped migrations) drops it |
-
-These lines are never recorded in a repository's own baseline. The only
-allowance is [policy/agent-runtime.json](../policy/agent-runtime.json) here:
-one entry per existing instance, each with an expiry date. Until that date the
-check passes; after it, the entry stops applying and the repository's next
-change that touches a manifest or SQL file fails until the part has moved onto
-Sylphx Agents and been deleted. An entry whose part is gone is reported as a
-notice; delete it. Extending a date is a pull request here with its reason.
-
-owner_repos (SylphxAI/anyagents, SylphxAI/spiron and
-SylphxAI/sylphx) are not checked for these parts. A delivered customer repository (organization custom property
-`sylphx_delivery` = `delivered`) is not checked at all; the action reads the
-property with the job token, and an unreadable property leaves the check on.
-
-The baseline was seeded on 2026-10-06 from `scan` over the default branch of
-every repository with a desk checkout (136 repositories): only SylphxAI/spiron
-has instances. Its expiry, 2026-11-30, leaves room after the agent app's switch
-and cleanup items for their estimate to slip.
-
-## Work-engine tables
-
-A company's own work (what its people and agents owe) runs on Work; a
-product's customers' records (tickets, approvals, cases) stay in the product
-(SylphxAI/work
-[ADR 0010](https://github.com/SylphxAI/work/blob/main/docs/adr/0010-group-companies-on-work.md),
-D1 and "Guard for the class"). With a base, the check reads every `.sql` file
-the change adds (not a rename, not a `*.down.sql`) and fails on:
-
-| Line | Found when |
-| --- | --- |
-| `work-obligation-table <file.sql> <table>` | a `CREATE TABLE` has a status column (`status`, `state`, `stage`, or a name with one of them as a word), an assignee column (`assignee*`, `assigned`, `role`, `owner`, `executor`, `executing`, `handler`, `responsible`) and a due column (`due`, `deadline*`, `sla`, `overdue`, `escalat*`), and the comment lines before the file's first statement say neither whose records they are |
-
-The header is one comment line before the first statement:
-
-```sql
--- Work resource: items (workspace ozyrix, kind operate)
-```
-
-when the rows are the company's own obligations and the migration feeds
-Work, or
-
-```sql
--- customer records (Work ADR 0010 D1)
-```
-
-when they are the product's customers' records. The header makes the D1 test
-a decision the reviewer sees. Tables already on the base are never checked,
-so adopting needs no baseline; there is no allowance list.
-
-## Knowledge and CRM tables
-
-The company's knowledge graph, its memory spaces and its CRM customer graph
-are Sylphx Knowledge, a platform service with one permission space per record
-(SylphxAI/sylphx
-[ADR-01M4AJK2TXTJWZ4X5B06HPT0R4](https://github.com/SylphxAI/sylphx/blob/main/docs/adr/ADR-01M4AJK2TXTJWZ4X5B06HPT0R4-sylphx-knowledge-permission-aware-graph.md),
-D6). A product does not hold one of these tables in its own repository. With a
-base, the check reads every `.sql` file the change adds (not a rename, not a
-`*.down.sql`) and fails on:
-
-| Line | Found when |
-| --- | --- |
-| `knowledge-table <file.sql> <table>` | a `CREATE TABLE` names a knowledge-graph or CRM record: a table whose name starts `kg_`, `knowledge_` or `crm_`, or is `entities`, `entity`, `relations`, `relation`, `contacts`, `contact` or `customer_profiles` |
-
-Tables the base already has are the existing instances of the widened rule.
-They are recorded in [policy/knowledge-tables.json](../policy/knowledge-tables.json),
-one entry per table with the `found` date and an expiry date; until the expiry
-a repository with a recorded table passes, and after it the entry stops
-applying and its next change that touches a SQL file fails until the table has
-moved onto Sylphx Knowledge and been deleted. An entry whose table is gone is
-a notice; delete it. Extending a date is a pull request here with its reason.
-
-The baseline was seeded on 2026-10-07 from a scan of the default branch of
-every repository with a desk checkout: only SylphxAI/spiron has instances
-(`knowledge_entries`, `knowledge_relations` and the `bots_graph.relations`
-projection). Its expiry, 2026-11-30, leaves room after the knowledge migration
-items for their estimate to slip.
-
-The fixture that proves the rule is a SQL file added by a change that creates
-one of these tables; it fails with the `knowledge-table` line and the ADR, and
-passes again once the table is recorded for that repository or the file makes
-no such table.
-
-`owner_repos` (SylphxAI/sylphx, where the service lives) is not checked for
-these tables. A delivered customer repository (`sylphx_delivery` = `delivered`)
-is not checked at all, as for the agent-runtime parts.
 
 ## Cache reads in economy handlers
 
@@ -485,7 +379,7 @@ adoption helper below, with rule marker
 `# stack-rule-adopted-v1 architecture/C1/cache-economy`. Seed only findings
 present at the caller's base while moving its shared-action SHA. Duplicating a
 read, including on the same line, creates another occurrence and fails; removing
-a read requires deleting its stale baseline record. No repository-wide cache
+a read makes its stale baseline record advisory. No repository-wide cache
 allowance or separate baseline format is introduced.
 
 First adoption of this rule also checks `cache-safe-reads.json` in the shared
@@ -498,18 +392,15 @@ those reads before adopting. Existing CI on its current pin keeps its current
 behavior. After adoption, the normal baseline may only shrink; this policy
 does not permit growth, new reads or a repository-wide exception.
 
-## Keel game boundaries
+## Keel pack source identity
 
 A Cargo workspace that depends on `keel`, a `keel-*` crate or `cubeage-kit`
 is a game consumer. The shared engine/commerce owner workspaces themselves
 are excluded by their package declarations, not by a product-name list.
-The same stack check rejects:
+The stack check requires the exact source commit for a Keel web pack:
 
 | Line | Found when |
 | --- | --- |
-| `keel-local-sku <path>:<line> <struct>` | game source declares `struct *Sku` rather than using `keel_commerce`, `keel::commerce::iap` or `cubeage_kit` commerce types |
-| `keel-cpu-pixels <path>:<line> <function>` | game source declares `fn *_pixels(...) -> Vec<u8>` rather than using Keel shaders or shared primitives |
-| `keel-boilerplate <path>` | the game contains `docs/BUILDING.md` or `scripts/measure-rust-debug.py`; the build/debug defaults belong in shared CI |
 | `keel-pack-source <path>:<line> <stage>` | a Docker stage runs a web pack without importing `ARG SYLPHX_GIT_COMMIT_SHA` before its packing `RUN`; add that declaration after the stage's `FROM` |
 
 The platform supplies the exact source commit as a Docker build argument. A
@@ -520,12 +411,7 @@ repin repair uses the same detector. Unrelated build/runtime stages, native
 profiles and pack inspection commands need no web source argument. Script
 generation and arbitrary computed commands remain outside static detection.
 
-Comments and string literals are not source declarations. Importing an engine
-commerce type does not excuse a second local SKU struct. These rules cannot
-be seeded or waived in a game's own departures baseline; no boilerplate-file
-exceptions are approved. Any exception needs a change to this shared check.
-The stack lane runs for every change; it includes source, boilerplate and
-manifests as well as documentation and configuration.
+The pack source check cannot be waived in a game's departures baseline.
 
 ## The rule at a pull request
 
@@ -536,8 +422,8 @@ checkout.
 - A baseline line the base did not have fails: a recorded departure is only
   ever removed. Recording a new one is a company decision, landed by the
   repository's owner as its own change with the departure.
-- A baseline line whose departure is gone fails until the line is deleted, so
-  the baseline stays true and keeps shrinking.
+- A baseline line whose departure is gone emits a notice. It does not
+  authorize restoring the departure after the fix lands.
 - A base with no baseline file (the adopting change) accepts the head's file
   as the seed.
 
@@ -674,7 +560,7 @@ architecture C5 polling-loop src/jobs.rs VIOLATION_SPAN_SHA256 1
 Only findings independently present at the base, for rules absent from every
 old checker pin, can be adopted. After adoption each rule's recorded set may
 only shrink; its marker remains even when the last record is removed. A stale
-record fails until removed. Paths are URL encoded. The span hash survives
+record emits a notice; it cannot authorize a reintroduced finding. Paths are URL encoded. The span hash survives
 unrelated workflow pin edits and line movement; edited violation spans and
 additional identical occurrences fail. The whole-file `source_sha256` remains
 separate and still binds exception decisions to exact file evidence. Legacy
@@ -741,7 +627,7 @@ do not need separate mappings when their local Git objects are available.
 include its content and an optional commit mapping in the bundled registry.
 The required CLI uses the same immutable fingerprint resolution: its explicit
 `--shared-source` checkout when supplied, otherwise the public GitHub source
-reader already used for pin provenance. It verifies complete trees and Git blob
+reader used for rule adoption evidence. It verifies complete trees and Git blob
 identities and never executes historical code. Unavailable source refuses the
 adoption request. Unknown profiles fail only an adoption request. Keep
 rule identities stable; an intentional new rule gets a new identity and its
@@ -838,7 +724,7 @@ the same replacements independently from its actual base. There are no aliases,
 group records or caller exceptions. A changed, copied, removed or genuinely
 unrecorded constituent refuses automatic migration. Removing unrelated
 unrecorded debt is allowed; it is never grandfathered by this correction.
-An unchanged old malformed record still fails as stale, and corrected records
+An old uncorrected record cannot cover a surviving finding, and corrected records
 subsequently obey the ordinary shrinking ratchet. The helper writes no baseline
 or evidence on refusal.
 
@@ -877,7 +763,7 @@ comparison. Each expired decision emits one `decision_errors` diagnostic with a
 stable id derived from its repository and exact finding scope, covered path and
 line, expiry date and authority link. It is a policy failure, not unreadable
 source or a baselineable finding; expired decisions never exempt source findings.
-Genuinely stale baseline records still fail independently.
+A stale baseline record alone does not fail CI.
 
 Historical base scans still validate every
 record, but discard expired decisions from exemptions and retain the actual
@@ -989,8 +875,7 @@ The migration guard uses that same verified first-import tree as the immutable
 comparison baseline: byte-identical historical SQL is not a new migration.
 Subsequent SQL edits/deletions remain forbidden, and new destructive migrations
 still require the ordinary expand/contract proof. No SQL is changed or executed.
-Model pins, forced branch updates, agent-runtime ownership, work-engine ownership,
-knowledge/CRM ownership and Keel boundaries continue scanning the full checkout;
+Model pins, forced branch updates and Keel pack source checks continue scanning the full checkout;
 source relocation grants no exemption from those checks. The capability profile
 hashes both the shared primitive and its policy, preserving release provenance.
 

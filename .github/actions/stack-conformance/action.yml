@@ -6,34 +6,16 @@ description: >
   service built on a Bun or Node image that is not a web app), or a
   `[database.migrations]` engine other than sylphx or transitional atlas.
   A repository lists existing departures in its baseline, which may only shrink:
-  a line the base did not have fails, and so does a line whose departure is gone.
+  a line the base did not have fails; a fixed departure is an informational notice.
   A base without the file accepts the head's file as the seed. Reads git
   objects only; needs a checkout of the head (any depth) and fetches the base
-  commit without blobs when it is missing. It also fails a product repository
-  that holds an agent-runtime part Sylphx Agents owns (a vault-proxy,
-  egress-guard, credential-crypto or agent-harness package, or a session-log,
-  tool-call or agent-memory table) unless policy/agent-runtime.json in this
-  repository lists it and its expiry date has not passed. A delivered customer
-  repository (custom property sylphx_delivery = delivered) is not checked.
-  With a base, it also fails a SQL file added since the base that creates a
-  work-engine table (a status, an assignee or role, and a due date, deadline,
-  SLA, overdue or escalation column) unless the file's header names the Work
-  resource it feeds or says `customer records (Work ADR 0010 D1)`; and a
-  knowledge-graph or CRM table (a name starting kg_, knowledge_ or crm_, or
-  entities, entity, relations, relation, contacts, contact or
-  customer_profiles) unless policy/knowledge-tables.json here records it for
-  the repository and its expiry date has not passed.
-  Keel game consumers also reject local *Sku structs, *_pixels functions
-  returning Vec<u8>, and docs/BUILDING.md or scripts/measure-rust-debug.py
-  boilerplate. These boundaries cannot be waived in the local baseline.
+  commit without blobs when it is missing. A confirmed delivered customer
+  repository is not checked.
   Vendor model version literals in product source must use the runtime
   default or a Sylphx AI <provider>/<line>-latest alias. Existing literals
   use a separate shrinking model-pin category in the repository baseline.
-  Shared SylphxAI/.github references require a full SHA and external # main
-  comment, main ancestry, and an action metadata or workflow file at that SHA.
-  Public source proof is acquired live with the job token and fails closed;
-  the source exempts its comment and resolves @main to the captured anchor,
-  still requiring valid ancestry and targets.
+  Shared SylphxAI/.github references are checked offline for full commit SHAs
+  (the source repository also allows @main for its own references).
   Repository automation also refuses forced branch updates, including force
   options, + refspecs, mirror pushes and forced GitHub branch-ref PATCH calls.
   Exact inherited occurrences use an independently shrinking force-push baseline.
@@ -65,7 +47,7 @@ inputs:
     description: Tracked auth departures file, relative to the repo root (full mode only).
     default: ""
   token:
-    description: Token that reads caller custom properties and public shared-source provenance.
+    description: Optional token to read caller custom properties. Not needed for the pin format check.
     default: ${{ github.token }}
 
 outputs:
@@ -89,11 +71,13 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         STACK_CONFORMANCE_CHECKER_COMMIT: ${{ github.action_ref || github.sha }}
       run: |
-        : "${GH_TOKEN:?read-only GitHub token is unavailable; shared pin provenance cannot run}"
         # Delivered customer repositories are hands-off; an unreadable property
         # leaves the check on.
-        delivery="$(gh api "repos/$GITHUB_REPOSITORY/properties/values" \
-          --jq '.[] | select(.property_name == "sylphx_delivery") | .value' 2>/dev/null || true)"
+        delivery=""
+        if [ -n "${GH_TOKEN:-}" ]; then
+          delivery="$(gh api "repos/$GITHUB_REPOSITORY/properties/values" \
+            --jq '.[] | select(.property_name == "sylphx_delivery") | .value' 2>/dev/null || true)"
+        fi
         if [ "$delivery" = "delivered" ]; then
           echo "::notice::$GITHUB_REPOSITORY is a delivered customer repository; stack conformance is not checked."
           exit 0

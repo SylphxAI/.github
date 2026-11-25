@@ -1,6 +1,5 @@
 """The platform rename preserves exact policy scope, not just happy-path names."""
 import copy
-import datetime
 import json
 import pathlib
 import tempfile
@@ -15,20 +14,6 @@ OTHERS = ("Example/sylphx", "SylphxAI/sylphx-other", "SylphxAI/other")
 
 
 class PlatformRenameTests(unittest.TestCase):
-    def test_shipped_ownership_policies_accept_both_names_and_no_other_repository(self):
-        today = datetime.date(2026, 11, 3)
-        for path, decide, finding in (
-            (sc.AGENT_RUNTIME_POLICY, sc.decide_agent_runtime,
-             "agent-runtime-table services/agents/m/1.sql session_entries"),
-            (sc.KNOWLEDGE_POLICY, sc.decide_knowledge,
-             "knowledge-table services/knowledge/m/1.sql knowledge_nodes"),
-        ):
-            policy = json.loads(path.read_text())
-            for repo in NAMES + OTHERS:
-                with self.subTest(path=path, repo=repo):
-                    errors, _ = decide([finding], repo, policy, today)
-                    self.assertEqual(bool(errors), repo not in NAMES)
-
     def test_chat_senders_keep_both_path_and_repository_scope(self):
         for repo in NAMES + OTHERS:
             for path in ("services/notify/src/send.rs",

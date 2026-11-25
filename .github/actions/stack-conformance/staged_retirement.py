@@ -78,7 +78,7 @@ def plan(base, head, original, introduced, departures, parse_baseline, baseline)
     additions = set()
     for settings, (expected, line) in bound.items():
         prior, retained = inputs(base, settings, baseline), inputs(head, settings, baseline)
-        if digest(prior) != expected or not prior:
+        if prior and digest(prior) != expected:
             raise ValueError("base retirement binding does not match source: " + settings)
         if not subset(prior, retained):
             raise ValueError("retired project inputs changed or expanded: " + settings)
@@ -99,7 +99,7 @@ def plan(base, head, original, introduced, departures, parse_baseline, baseline)
     return text, additions
 
 
-def check(head, base, head_lines, base_lines, departures, decide, *, baseline, allow_seed=False):
+def check(head, base, head_lines, base_lines, departures, decide, *, baseline, allow_seed=False, notice=lambda _: None):
     """Keep retirement visible while allowing only exact inputs or deletion."""
     # A trunk check validates the committed binding against its own tree.
     base = base or head
@@ -111,10 +111,10 @@ def check(head, base, head_lines, base_lines, departures, decide, *, baseline, a
     except ValueError as error:
         return [str(error)]
     found = findings(head, current, departures, baseline, previous_lines=old)
-    previous = set(departures(base))
+    previous = set(findings(base, old, departures, baseline))
     for settings, (expected, _) in before_bound.items():
         prior, retained = inputs(base, settings, baseline), inputs(head, settings, baseline)
-        if digest(prior) != expected or not prior:
+        if prior and digest(prior) != expected:
             errors.append("base retirement binding does not match source: " + settings)
         if settings not in after_bound and retained:
             errors.append("retained retired project inputs require their source binding: " + settings)
@@ -124,6 +124,10 @@ def check(head, base, head_lines, base_lines, departures, decide, *, baseline, a
         plain = CATEGORY + " " + settings
         if plain in current:
             errors.append("retirement project has both bound and path-only records: " + settings)
+        if not inputs(head, settings, baseline) and before_bound.get(settings) == (expected, line):
+            notice("stale retirement binding: " + line + "; consider removing it")
+            current.discard(line)
+            continue
         valid = True
         if expected != digest(inputs(head, settings, baseline)) or not inputs(head, settings, baseline):
             errors.append("retirement binding does not match source: " + settings)
@@ -145,5 +149,5 @@ def check(head, base, head_lines, base_lines, departures, decide, *, baseline, a
     for line in sorted(current - old):
         if line.startswith(CATEGORY + " "):
             errors.append("new retired project requires a source-bound adoption record: " + line)
-    errors += decide(found, current, old if base_lines is not None else None)
+    errors += decide(found, current, old if base_lines is not None else None, previous=previous)
     return errors

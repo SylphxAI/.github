@@ -92,10 +92,7 @@ lists each offender by repository, file and line. It is read-only, and exits 1 o
 `tests/test_workflow_pin_check.py` runs on a fake GitHub: an off-default pin and a missing action on
 main fail with file and line; a valid action or exact reusable workflow on main passes; an unknown
 commit or truncated tree fails; the default branch name is read rather than assumed; and each distinct
-commit's proof is read once. `tests/test_shared_pin_provenance_gate.py` exercises the installed caller
-entrypoint with valid, missing-target and off-main fixtures.
-It also covers nested missing and off-main targets, valid source chains, same-commit reusable
-workflows, self-repository actions, repeated references, and caller-workspace action paths.
+commit's proof is read once.
 `tests/test_shared_pin_action.py` runs the actual installed action shell in shared-only mode with a
 read-only GitHub fixture, including malformed refs, missing comments, incomplete acquisition,
 direct and nested violations, a clean YAML target, and an unrelated private reference.

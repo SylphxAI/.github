@@ -188,17 +188,20 @@ class RatchetTests(unittest.TestCase):
         self.rows = scan("git push -f origin HEAD:pin")["findings"]
         self.records = {guard.baseline_key(row) for row in self.rows}
 
-    def decide(self, rows=None, head=None, base=None, before=None, *, adopted=True, was_adopted=True, seed=False):
+    def decide(self, rows=None, head=None, base=None, before=None, *, adopted=True, was_adopted=True, seed=False, notice=lambda _: None):
         return guard.decide(copy.deepcopy(self.rows if rows is None else rows),
                             self.records if head is None else head,
                             self.records if base is None else base,
                             self.rows if before is None else before,
-                            adopted, was_adopted, allow_seed=seed)
+                            adopted, was_adopted, allow_seed=seed, notice=notice)
 
     def test_exact_inherited_record_passes_and_can_only_shrink(self):
         self.assertEqual(self.decide(), [])
         self.assertEqual(self.decide(rows=[], head=set()), [])
-        self.assertTrue(any("stale" in e for e in self.decide(rows=[])))
+        notices = []
+        self.assertEqual(self.decide(rows=[], notice=notices.append), [])
+        self.assertIn("stale force-push baseline record", notices[0])
+        self.assertTrue(self.decide(before=[]))
 
     def test_first_adoption_only_seeds_exact_base_occurrences(self):
         self.assertEqual(self.decide(base=set(), was_adopted=False, seed=True), [])

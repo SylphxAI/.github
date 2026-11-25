@@ -194,7 +194,10 @@ export function buy() {
         rule = "architecture/C1/cache-economy"
         self.assertFalse(a.baseline_errors([row], {key}, set(), [row], {rule}))
         self.assertTrue(a.baseline_errors([row], {key}, set(), [], {rule}))
-        self.assertTrue(a.baseline_errors([], {key}, {key}, [row], set()))
+        notices = []
+        self.assertEqual(a.baseline_errors([], {key}, {key}, [row], notice=notices.append), [])
+        self.assertIn("stale architecture baseline record", notices[0])
+        self.assertTrue(a.baseline_errors([row], {key}, {key}, []))
         self.assertIn(rule, sc.adoption.current_rules())
 
     def test_inline_rust_test_can_supply_evidence(self):

@@ -104,7 +104,7 @@ class DealRandomnessGateTests(unittest.TestCase):
         f.commit({SOURCE: BAD + BAD})
         self.assertIn("deal-randomness", f.check(adopted, 1)[0])
         f.commit({SOURCE: SAFE})
-        self.assertIn("stale architecture baseline", f.check(adopted, 1)[0])
+        self.assertIn("stale architecture baseline", f.check(adopted, 0)[0])
         records = [line for line in baseline.splitlines() if not line.startswith("architecture C1 deal-randomness ")]
         f.commit({sc.BASELINE: "\n".join(records) + "\n"})
         clean = f.git("rev-parse", "HEAD")

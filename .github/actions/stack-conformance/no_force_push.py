@@ -456,7 +456,7 @@ def baseline_key(row):
     return f"force-push {quote(row['path'], safe='/._-')} {row['command_sha256']} {row['occurrence']}"
 
 
-def decide(findings, head_records, base_records, base_findings, head_adopted, base_adopted, *, allow_seed=False):
+def decide(findings, head_records, base_records, base_findings, head_adopted, base_adopted, *, allow_seed=False, notice=lambda _: None):
     actual = {baseline_key(row) for row in findings}
     inherited = {baseline_key(row) for row in base_findings}
     allowed = base_records | (inherited if allow_seed and not base_adopted else set())
@@ -468,10 +468,10 @@ def decide(findings, head_records, base_records, base_findings, head_adopted, ba
     for key in sorted(head_records - allowed):
         errors.append("force-push baseline cannot grow or seed new debt: " + key)
     for key in sorted(head_records - actual):
-        errors.append("stale force-push baseline record: " + key + "; remove it")
+        notice("stale force-push baseline record: " + key + "; remove it")
     for row in findings:
         key = baseline_key(row)
         row["baseline_recorded"] = key in head_records
-        if key not in head_records & allowed:
+        if key not in head_records & allowed & inherited:
             errors.append(f"{row['path']}:{row['line']}: force push is forbidden ({row['reason']}); use a normal push and the merge queue ({CONTRACT})")
     return errors

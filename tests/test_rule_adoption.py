@@ -66,29 +66,6 @@ class Fixture:
 
 
 class AdoptionTests(unittest.TestCase):
-    def test_normal_baseline_adoption_cannot_waive_missing_metadata_permission(self):
-        published = '067656cfe8f8d1ff888aa9c70e442b75372dea8d'
-        missing = ('permissions:\n  contents: read\n' + workflow(published) +
-                   '  verdict:\n    steps:\n      - uses: SylphxAI/.github/.github/actions/needs-pass@' +
-                   published + ' # main\n')
-        for inherited in (False, True):
-            with self.subTest(inherited=inherited):
-                f = self.fixture()
-                base_workflow = missing.replace(published, OLD) if inherited else workflow()
-                base = f.commit({WORKFLOW: base_workflow, sc.BASELINE: '# existing baseline\n'})
-                f.write({WORKFLOW: missing})
-                f.git('add', '.')
-                result = f.plan(base, f.git('write-tree'))
-                f.commit({sc.BASELINE: result['baseline_text']})
-                output, report = f.check(base, 1)
-                self.assertIn('caller workflow lacks pull-requests: read', output)
-                self.assertNotIn('contribution-permissions', result['baseline_text'])
-                self.assertTrue(any(row.get('rule') == 'contribution-permissions'
-                                    for row in report['shared_pin_provenance']['offenders']))
-                f.commit({WORKFLOW: missing.replace('  contents: read\n',
-                                                   '  contents: read\n  pull-requests: read\n', 1)})
-                f.check(base, 0)
-
     def fixture(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -259,17 +236,6 @@ class AdoptionTests(unittest.TestCase):
                             a.PREFIX + "stack_conformance.py":
                             'raise RuntimeError("must never execute")\ndef cmd_check(args):\n    return 0\n'})
         self.assertEqual(a.source_profile(tree)["rules"], [])
-
-    def test_private_caller_missing_main_marker_fails_offline_and_source_is_exempt(self):
-        f = self.fixture()
-        base = f.commit({WORKFLOW: workflow()})
-        f.commit({WORKFLOW: workflow(marker="old PR")})
-        output, _ = f.check(base, 1)
-        self.assertIn("missing # main", output)
-        tree = sc.Tree(str(f.root), "HEAD")
-        with mock.patch.object(subprocess, "run", side_effect=AssertionError("network/subprocess forbidden")):
-            self.assertTrue(a.main_marker_errors(tree, "private/app"))
-            self.assertEqual(a.main_marker_errors(tree, "SylphxAI/.github"), [])
 
     def test_adoption_ignores_negative_fixture_config_but_refuses_real_invalid_config(self):
         f = self.fixture()

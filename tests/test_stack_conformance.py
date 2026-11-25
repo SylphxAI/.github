@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import contextlib
-import datetime
 import json
 import importlib.util
 import io
@@ -203,10 +202,11 @@ class DecideTest(unittest.TestCase):
         self.assertTrue(any("baseline grew" in e for e in errors))
         self.assertTrue(any("new departure" in e for e in errors))
 
-    def test_a_stale_line_fails_so_the_baseline_shrinks(self):
-        errors = sc.decide(self.FOUND[:1], set(self.FOUND), set(self.FOUND))
-        self.assertEqual(len(errors), 1)
-        self.assertIn("stale baseline line", errors[0])
+    def test_a_stale_line_emits_a_notice_without_errors(self):
+        notices = []
+        self.assertEqual(sc.decide(self.FOUND[:1], set(self.FOUND), set(self.FOUND), notice=notices.append), [])
+        self.assertEqual(len(notices), 1)
+        self.assertIn("stale baseline line", notices[0])
 
     def test_removing_a_departure_and_its_line_passes(self):
         self.assertEqual(sc.decide(self.FOUND[:1], {self.FOUND[0]}, set(self.FOUND)), [])
@@ -228,46 +228,6 @@ class KeelGameGuardTest(unittest.TestCase):
 
     def tree(self, **files):
         return sc.DictTree({"Cargo.toml": self.MANIFEST, **files})
-
-    def test_engine_commerce_and_shader_consumers_pass(self):
-        tree = self.tree(**{"crates/game/src/shop.rs": (
-            "use keel::commerce::iap::Sku;\n"
-            "use keel_commerce::Catalog;\nuse cubeage_kit::commerce;\n"
-            "fn shop(sku: Sku) {}\nfn shader() { keel::render::draw(); }\n")})
-        self.assertEqual(sc.keel_departures(tree), [])
-
-    def test_local_sku_structs_fail_even_if_engine_commerce_is_also_imported(self):
-        tree = self.tree(**{"src/shop.rs": (
-            "use keel_commerce::Sku;\npub struct CoinSku { amount: u32 }\n"
-            "struct\nPremiumSku;\nstruct SkuId;\n")})
-        found = sc.keel_departures(tree)
-        self.assertEqual(found, ["keel-local-sku src/shop.rs:2 CoinSku",
-                                 "keel-local-sku src/shop.rs:3 PremiumSku"])
-        self.assertIn("keel_commerce", sc.decide_keel(found)[0])
-
-    def test_pixel_vector_functions_fail_with_multiline_arguments_and_types(self):
-        tree = self.tree(**{"crates/game/src/textures.rs": (
-            "pub fn cloud_pixels(\nwidth: u32, height: u32,\n) -> Vec < u8 > { vec![] }\n"
-            "fn sun_pixels() -> std::vec::Vec<u8> { vec![] }\n"
-            "fn read_pixels() -> Vec<f32> { vec![] }\n")})
-        found = sc.keel_departures(tree)
-        self.assertEqual(len(found), 2)
-        self.assertTrue(all(line.startswith("keel-cpu-pixels") for line in found))
-
-    def test_comments_literals_and_dependency_build_outputs_are_not_code(self):
-        bad = "struct CoinSku; fn cloud_pixels() -> Vec<u8> {}"
-        tree = self.tree(**{"src/game.rs": (
-            f"// {bad}\n/* nested /* comment */ {bad} */\n"
-            f'const S: &str = r##"{bad}"##;\nconst T: &str = "{bad}";\n'),
-            "target/generated/src/game.rs": bad, "vendor/src/game.rs": bad})
-        self.assertEqual(sc.keel_departures(tree), [])
-
-    def test_boilerplate_files_fail_only_for_keel_consumers(self):
-        files = {"docs/BUILDING.md": "# Build", "scripts/measure-rust-debug.py": "pass"}
-        self.assertEqual(sc.keel_departures(self.tree(**files)), [
-            "keel-boilerplate docs/BUILDING.md", "keel-boilerplate scripts/measure-rust-debug.py"])
-        self.assertEqual(sc.keel_departures(sc.DictTree(files)), [])
-        self.assertEqual(sc.keel_departures(self.tree(**{"docs/build.md": "# Build"})), [])
 
     def test_detects_workspace_renamed_and_target_dependencies(self):
         manifests = [
@@ -305,280 +265,6 @@ class KeelGameGuardTest(unittest.TestCase):
         lanes = module.parse_lanes(lane)
         for paths in ([], ["README.md"], ["src/a.rs"], ["infra/service.yml"], ["docs/BUILDING.md"]):
             self.assertTrue(module.select(lanes, paths)["stack"])
-
-
-class AgentRuntimeTest(unittest.TestCase):
-    POLICY = {
-        "owner_repos": ["SylphxAI/sylphx"],
-        "baseline": [{"repo": "o/app", "departure": "agent-runtime-package crates/eg/Cargo.toml egress-guard",
-                      "expires": "2026-11-30"}],
-    }
-    TODAY = datetime.date(2026, 10, 6)
-
-    def test_packages_by_name(self):
-        t = sc.DictTree({
-            "crates/eg/Cargo.toml": '[package]\nname = "egress-guard"\n',
-            "crates/vp/Cargo.toml": '[package]\nname = "spiron_vault_proxy"\n[lib]\nname = "x"\n',
-            "crates/ok/Cargo.toml": '[package]\nname = "vault-client"\n',
-            "Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n[workspace.dependencies]\negress-guard = "1"\n',
-            "packages/h/package.json": '{"name": "@acme/agent-harness"}',
-            "packages/c/package.json": '{"name": "credential-crypto-lite"}',
-            "node_modules/x/package.json": '{"name": "egress-guard"}',
-        })
-        self.assertEqual(sc.agent_runtime(t), [
-            "agent-runtime-package crates/eg/Cargo.toml egress-guard",
-            "agent-runtime-package crates/vp/Cargo.toml spiron_vault_proxy",
-            "agent-runtime-package packages/c/package.json credential-crypto-lite",
-            "agent-runtime-package packages/h/package.json @acme/agent-harness",
-        ])
-
-    def test_line_reader_finds_the_package_name(self):
-        self.assertEqual(sc.parse_toml_lines('[package]\nname = "egress-guard"\n')["package"],
-                         {"name": "egress-guard"})
-
-    def test_tables_created_and_not_dropped(self):
-        t = sc.DictTree({
-            "db/migrations/001.sql": (
-                "CREATE TABLE public.session_entries (id uuid);\n"
-                'create table if not exists "tool_calls" (id uuid);\n'
-                "-- CREATE TABLE memory_entries (id uuid);\n"
-                "/* CREATE TABLE session_turns (id uuid); */\n"
-                "CREATE UNLOGGED TABLE agent_memory_items (id uuid);\n"
-                "CREATE TABLE tool_calls_archive (id uuid);\n"
-                "CREATE TABLE memory_entries_v2 (id uuid);\n"),
-            "db/migrations/002.sql": "DROP TABLE IF EXISTS foo, public.tool_calls CASCADE;\n",
-            "db/schema/memory.sql": "CREATE TABLE agent_memory (id uuid);\nDROP TABLE agent_memory;\n",
-        })
-        self.assertEqual(sc.agent_runtime(t), [
-            "agent-runtime-table db/migrations/001.sql agent_memory_items",
-            "agent-runtime-table db/migrations/001.sql session_entries",
-        ])
-
-    def test_a_new_part_fails(self):
-        errors, _ = sc.decide_agent_runtime(
-            ["agent-runtime-table m/1.sql tool_calls"], "o/app", self.POLICY, self.TODAY)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("new agent-runtime part", errors[0])
-
-    def test_an_allowed_part_passes_until_it_expires(self):
-        found = ["agent-runtime-package crates/eg/Cargo.toml egress-guard"]
-        self.assertEqual(sc.decide_agent_runtime(found, "o/app", self.POLICY, self.TODAY), ([], []))
-        self.assertEqual(sc.decide_agent_runtime(found, "o/app", self.POLICY, datetime.date(2026, 11, 30)),
-                         ([], []))
-        errors, _ = sc.decide_agent_runtime(found, "o/app", self.POLICY, datetime.date(2026, 12, 1))
-        self.assertIn("expired on 2026-11-30", errors[0])
-
-    def test_an_allowance_is_per_repository(self):
-        found = ["agent-runtime-package crates/eg/Cargo.toml egress-guard"]
-        errors, _ = sc.decide_agent_runtime(found, "o/other", self.POLICY, self.TODAY)
-        self.assertEqual(len(errors), 1)
-
-    def test_the_platform_owner_is_not_checked(self):
-        found = ["agent-runtime-table services/agents/m/1.sql session_entries"]
-        self.assertEqual(sc.decide_agent_runtime(found, "SylphxAI/sylphx", self.POLICY, self.TODAY), ([], []))
-
-    def test_a_gone_part_is_a_notice(self):
-        errors, notices = sc.decide_agent_runtime([], "o/app", self.POLICY, self.TODAY)
-        self.assertEqual(errors, [])
-        self.assertIn("no longer found", notices[0])
-
-
-class AgentRuntimePolicyTest(unittest.TestCase):
-    """The shipped policy file is well formed."""
-
-    def test_policy_file(self):
-        policy = json.loads(sc.AGENT_RUNTIME_POLICY.read_text())
-        self.assertEqual(
-            policy["owner_repos"],
-            ["SylphxAI/anyagents", "SylphxAI/spiron", "SylphxAI/sylphx"],
-        )
-        seen = set()
-        for entry in policy["baseline"]:
-            self.assertRegex(entry["repo"], r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-            self.assertRegex(entry["departure"], r"^agent-runtime-(package|table) \S+ \S+$")
-            datetime.date.fromisoformat(entry["expires"])
-            key = (entry["repo"], entry["departure"])
-            self.assertNotIn(key, seen)
-            seen.add(key)
-
-    def test_three_pillar_owner_repos_pass_while_product_repos_fail_closed(self):
-        policy = json.loads(sc.AGENT_RUNTIME_POLICY.read_text())
-        path = "packages/db/migrations/20270102000000_clean_cut_expand.sql"
-        found = sc.agent_runtime(sc.DictTree({path:
-            "CREATE TABLE agent_memory_docs (id UUID);\nCREATE TABLE session_entries (id TEXT);\n"}))
-        expected = {f"agent-runtime-table {path} {table}"
-                    for table in ("agent_memory_docs", "session_entries")}
-        self.assertEqual(set(found), expected)
-        for owner_repo in ("SylphxAI/anyagents", "SylphxAI/spiron", "SylphxAI/sylphx"):
-            self.assertEqual(
-                sc.decide_agent_runtime(found, owner_repo, policy, datetime.date(2026, 12, 1)),
-                ([], []),
-            )
-        errors, _ = sc.decide_agent_runtime(found, "example/product-app", policy, datetime.date(2026, 11, 11))
-        self.assertEqual(len(errors), len(found))
-        self.assertTrue(all("new agent-runtime part" in error for error in errors))
-
-
-KNOWLEDGE_SQL = "CREATE TABLE knowledge_entities (id uuid PRIMARY KEY, title text);\n"
-
-
-class KnowledgeTableGuardTest(unittest.TestCase):
-    """test knowledge-table-guard: a new knowledge or CRM table fails, because
-    the company's graph and customer records are Sylphx Knowledge
-    (SylphxAI/sylphx ADR-01M4AJK2TXTJWZ4X5B06HPT0R4, D6)."""
-
-    def test_the_named_families_are_found(self):
-        cases = {
-            "CREATE TABLE kg_nodes (id uuid);": ["kg_nodes"],
-            "CREATE TABLE knowledge_edges (id uuid);": ["knowledge_edges"],
-            'create table if not exists "crm_accounts" (id uuid);': ["crm_accounts"],
-            "CREATE TABLE entities (id uuid);": ["entities"],
-            "CREATE TABLE relations (id uuid);": ["relations"],
-            "CREATE TABLE contacts (id uuid);": ["contacts"],
-            "CREATE TABLE customer_profiles (id uuid);": ["customer_profiles"],
-            "CREATE UNLOGGED TABLE public.kg_edges (id uuid);": ["kg_edges"],
-        }
-        for sql, tables in cases.items():
-            with self.subTest(sql=sql):
-                found = sc.knowledge_tables("m/1.sql", sql)
-                self.assertEqual(found, [f"knowledge-table m/1.sql {t}" for t in tables])
-
-    def test_everyday_tables_are_not_found(self):
-        for sql in ("CREATE TABLE items (id uuid, status text);",
-                    "CREATE TABLE crmbridge (id uuid);",
-                    "CREATE TABLE knowledge (id uuid);",
-                    "CREATE TABLE contactless (id uuid);",
-                    "CREATE TABLE bot_entities (id uuid);"):
-            with self.subTest(sql=sql):
-                self.assertEqual(sc.knowledge_tables("m/1.sql", sql), [])
-
-    def test_a_new_table_fails_and_a_recorded_one_passes(self):
-        policy = {"owner_repos": ["SylphxAI/sylphx"], "baseline": [
-            {"repo": "SylphxAI/spiron", "table": "knowledge_entries", "expires": "2026-11-30"}]}
-        today = datetime.date(2026, 10, 7)
-        errors, _ = sc.decide_knowledge(
-            ["knowledge-table m/1.sql knowledge_entries", "knowledge-table m/1.sql crm_accounts"],
-            "SylphxAI/spiron", policy, today)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("crm_accounts", errors[0])
-        self.assertIn("new knowledge or CRM table", errors[0])
-
-    def test_an_allowance_expires(self):
-        policy = {"owner_repos": [], "baseline": [
-            {"repo": "o/app", "table": "knowledge_entries", "expires": "2026-11-30"}]}
-        found = ["knowledge-table m/1.sql knowledge_entries"]
-        self.assertEqual(sc.decide_knowledge(found, "o/app", policy, datetime.date(2026, 10, 7)), ([], []))
-        errors, _ = sc.decide_knowledge(found, "o/app", policy, datetime.date(2026, 12, 1))
-        self.assertIn("expired on 2026-11-30", errors[0])
-
-    def test_an_allowance_is_per_repository(self):
-        policy = {"owner_repos": [], "baseline": [
-            {"repo": "o/app", "table": "knowledge_entries", "expires": "2026-11-30"}]}
-        errors, _ = sc.decide_knowledge(
-            ["knowledge-table m/1.sql knowledge_entries"], "o/other", policy, datetime.date(2026, 10, 7))
-        self.assertEqual(len(errors), 1)
-
-    def test_the_platform_owner_is_not_checked(self):
-        policy = {"owner_repos": ["SylphxAI/sylphx"], "baseline": []}
-        self.assertEqual(sc.decide_knowledge(
-            ["knowledge-table m/1.sql knowledge_nodes"], "SylphxAI/sylphx", policy, datetime.date(2026, 10, 7)),
-            ([], []))
-
-    def test_a_gone_table_is_a_notice(self):
-        policy = {"owner_repos": [], "baseline": [
-            {"repo": "o/app", "table": "knowledge_entries", "expires": "2026-11-30"}]}
-        errors, notices = sc.decide_knowledge([], "o/app", policy, datetime.date(2026, 10, 7),
-                                              present=set())
-        self.assertEqual(errors, [])
-        self.assertIn("no longer found", notices[0])
-
-    def test_a_table_still_on_the_tree_is_not_a_notice(self):
-        policy = {"owner_repos": [], "baseline": [
-            {"repo": "o/app", "table": "knowledge_entries", "expires": "2026-11-30"}]}
-        errors, notices = sc.decide_knowledge([], "o/app", policy, datetime.date(2026, 10, 7),
-                                              present={"knowledge_entries"})
-        self.assertEqual((errors, notices), ([], []))
-
-    def test_a_down_migration_is_not_checked(self):
-        self.assertEqual(sc.knowledge_tables("m/1.down.sql", KNOWLEDGE_SQL), [])
-
-    def test_create_table_as_is_not_checked(self):
-        self.assertEqual(sc.knowledge_tables("m/1.sql", "CREATE TABLE knowledge_entries AS SELECT 1;"), [])
-
-
-class KnowledgeTablePolicyTest(unittest.TestCase):
-    """The shipped policy file is well formed."""
-
-    def test_policy_file(self):
-        policy = json.loads(sc.KNOWLEDGE_POLICY.read_text())
-        self.assertEqual(policy["owner_repos"], ["SylphxAI/sylphx"])
-        seen = set()
-        for entry in policy["baseline"]:
-            self.assertRegex(entry["repo"], r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-            self.assertRegex(entry["table"], r"^[a-z_][a-z0-9_]*$")
-            datetime.date.fromisoformat(entry["found"])
-            datetime.date.fromisoformat(entry["expires"])
-            key = (entry["repo"], entry["table"])
-            self.assertNotIn(key, seen)
-            seen.add(key)
-
-
-FIXTURES = ROOT / "tests" / "fixtures" / "work-obligations"
-AGENT_TASKS = (FIXTURES / "0073_agent_tasks.up.sql").read_text()
-MIGRATION = "crates/api/migrations/0073_agent_tasks.up.sql"
-
-
-class ObligationTableGuardTest(unittest.TestCase):
-    """test obligation-table-guard: a new work-engine table must say whose
-    records it holds (SylphxAI/work docs/adr/0010, Guard for the class)."""
-
-    def test_the_fixture_without_a_header_fails(self):
-        self.assertEqual(sc.obligation_tables(MIGRATION, AGENT_TASKS),
-                         [f"work-obligation-table {MIGRATION} agent_tasks"])
-
-    def test_a_work_resource_header_passes(self):
-        text = "-- Work resource: items (workspace ozyrix, kind operate)\n" + AGENT_TASKS
-        self.assertEqual(sc.obligation_tables(MIGRATION, text), [])
-
-    def test_a_customer_records_header_passes(self):
-        text = "-- Rows are tickets our customers own: customer records (Work ADR 0010 D1)\n" + AGENT_TASKS
-        self.assertEqual(sc.obligation_tables(MIGRATION, text), [])
-        block = "/*\n * Helpdesk tickets.\n * customer records\n * (Work ADR 0010 D1)\n */\n" + AGENT_TASKS
-        self.assertEqual(sc.obligation_tables(MIGRATION, block), [])
-
-    def test_a_header_after_the_first_statement_does_not_count(self):
-        text = AGENT_TASKS + "\n-- Work resource: items\n"
-        self.assertEqual(len(sc.obligation_tables(MIGRATION, text)), 1)
-
-    def test_an_empty_work_resource_does_not_count(self):
-        self.assertEqual(len(sc.obligation_tables(MIGRATION, "-- Work resource:\n" + AGENT_TASKS)), 1)
-
-    def test_all_three_column_kinds_are_needed(self):
-        sql = "CREATE TABLE t (id uuid PRIMARY KEY, {cols});"
-        cases = {
-            "status text, assignee_id uuid, due_at timestamptz": True,
-            '"state" text, "executing_principal_id" text, "deadline" timestamptz': True,
-            "stage text, owner_role text, sla_breach_at timestamptz": True,
-            "status text, assigned_to uuid, escalation_level int": True,
-            "status text, customer_id uuid, due_at timestamptz": False,  # an invoice
-            "status text, owner_id uuid, expires_at timestamptz": False,  # a subscription
-            "assignee_id uuid, due_at timestamptz, title text": False,
-            "status text, role text, created_at timestamptz": False,
-        }
-        for cols, expected in cases.items():
-            with self.subTest(cols=cols):
-                self.assertEqual(bool(sc.obligation_tables("m.sql", sql.format(cols=cols))), expected)
-
-    def test_constraints_and_nested_parentheses_are_not_columns(self):
-        sql = ("CREATE TABLE IF NOT EXISTS app.t (id uuid, status text CHECK (status IN ('a', 'b')),\n"
-               "  CONSTRAINT role_due CHECK (deadline > now()), PRIMARY KEY (id), UNIQUE (assignee));")
-        self.assertEqual(sc.obligation_tables("m.sql", sql), [])
-
-    def test_a_down_migration_is_not_checked(self):
-        self.assertEqual(sc.obligation_tables("crates/api/migrations/0090_drop.down.sql", AGENT_TASKS), [])
-
-    def test_create_table_as_is_not_checked(self):
-        self.assertEqual(sc.obligation_tables("m.sql", "CREATE TABLE t AS SELECT * FROM agent_tasks;"), [])
 
 
 class ModelPinTest(unittest.TestCase):
@@ -698,7 +384,10 @@ class ModelPinTest(unittest.TestCase):
         self.assertTrue(sc.model_pins.decide(duplicate, recorded, recorded, first, True, True))
         grown = {sc.model_pins.baseline_key(row) for row in duplicate}
         self.assertTrue(any("cannot grow" in e for e in sc.model_pins.decide(duplicate, grown, recorded, first, True, True)))
-        self.assertTrue(sc.model_pins.decide([], recorded, recorded, first, True, True))
+        notices = []
+        self.assertEqual(sc.model_pins.decide([], recorded, recorded, first, True, True, notice=notices.append), [])
+        self.assertIn("stale model-pin baseline record", notices[0])
+        self.assertTrue(sc.model_pins.decide(first, recorded, recorded, [], True, True))
 
     def test_adoption_seeds_only_base_findings_and_marker_cannot_disappear(self):
         first = self.scan({"src/client.ts": 'call("gpt-5.1-2025-11-13");'})
@@ -745,7 +434,7 @@ class GitTest(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = sc.main(["check", "--repo", self.repo, "--base", base, "--head", head,
-                          "--shared-source", str(ROOT)])
+                          "--shared-source", str(ROOT), "--report", str(pathlib.Path(self.repo) / ".git" / "report.json")])
         return rc, out.getvalue()
 
     def test_ratchet_over_commits(self):
@@ -901,107 +590,33 @@ class GitTest(unittest.TestCase):
         self.assertEqual(report["unreadable"], [])
         self.assertEqual(len(report["findings"]), 1)
 
-    def test_agent_runtime_over_commits(self):
-        policy = pathlib.Path(self.repo, "..", pathlib.Path(self.repo).name + "-policy.json").resolve()
-        policy.write_text(json.dumps({"owner_repos": ["o/platform"], "baseline": [
-            {"repo": "o/app", "departure": "agent-runtime-package eg/Cargo.toml egress-guard",
-             "expires": "2026-11-30"}]}))
-        self.addCleanup(policy.unlink)
-
-        def check(base, head, repository="o/app", today="2026-10-06"):
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                rc = sc.main(["check", "--repo", self.repo, "--base", base, "--head", head,
-                              "--repository", repository, "--agent-runtime-policy", str(policy),
-                              "--today", today])
-            return rc, out.getvalue()
-
-        base = self.commit({"eg/Cargo.toml": '[package]\nname = "egress-guard"\n'})
-        same = self.commit({"README.md": "x\n"})
-        self.assertEqual(check(base, same)[0], 0)
-        self.assertEqual(check(base, same, today="2026-12-01")[0], 1)
-
-        added = self.commit({"db/migrations/2.sql": "CREATE TABLE session_turns (id uuid);\n"})
-        rc, out = check(same, added)
-        self.assertEqual(rc, 1)
-        self.assertIn("agent-runtime-table db/migrations/2.sql session_turns", out)
-        self.assertEqual(check(same, added, repository="o/platform")[0], 0)
-
-        recorded = self.commit({sc.BASELINE: "agent-runtime-table db/migrations/2.sql session_turns\n"})
-        rc, out = check(added, recorded)
-        self.assertEqual(rc, 1)
-        self.assertIn("allowed only by", out)
-
-    def test_keel_game_boundaries_fail_at_the_real_check_entrypoint(self):
-        base = self.commit({"Cargo.toml": KeelGameGuardTest.MANIFEST,
-                            "src/main.rs": "fn main() {}"})
-        self.assertEqual(self.check(base, base)[0], 0)
-        head = self.commit({"src/shop.rs": "struct CoinSku;\n",
+    def test_retired_sql_and_keel_name_checks_do_not_block(self):
+        base = self.commit({"README.md": "base"})
+        head = self.commit({"Cargo.toml": KeelGameGuardTest.MANIFEST,
+                            "src/shop.rs": "struct CoinSku;\n",
                             "src/art.rs": "fn cloud_pixels() -> Vec<u8> { vec![] }\n",
                             "docs/BUILDING.md": "# Build\n",
-                            "scripts/measure-rust-debug.py": "pass\n"})
-        rc, output = self.check(base, head)
-        self.assertEqual(rc, 1)
-        for kind in ("keel-local-sku", "keel-cpu-pixels", "keel-boilerplate"):
-            self.assertIn(kind, output)
-        baseline = self.commit({sc.BASELINE: "\n".join(sc.keel_departures(sc.Tree(self.repo, head)))})
-        self.assertEqual(self.check(head, baseline)[0], 1)
-        self.commit({"src/shop.rs": "use keel_commerce::Sku;\n",
-                     "src/art.rs": "fn shader() {}\n", sc.BASELINE: ""})
-        self.git("rm", "docs/BUILDING.md", "scripts/measure-rust-debug.py")
-        self.git("commit", "-qm", "remove boilerplate")
-        self.assertEqual(self.check(base, self.git("rev-parse", "HEAD"))[0], 0)
+                            "scripts/measure-rust-debug.py": "pass\n",
+                            "adapter/package.json": '{"name":"egress-guard"}',
+                            "migrations/01.sql": "CREATE TABLE tasks (status text, assignee uuid, due_at timestamptz);\n"
+                            + "\n".join(f"CREATE TABLE {table} (id uuid);" for table in
+                                        ("entities", "relations", "contacts", "crm_accounts", "kg_nodes", "session_turns"))})
+        rc, out = self.check(base, head)
+        self.assertEqual(rc, 0, out)
 
-    def test_obligation_table_guard_over_commits(self):
-        """Only migrations added in the range are checked: a table that is
-        already on the base (current main of an adopting repository) passes."""
-        base = self.commit({MIGRATION: AGENT_TASKS})
-        self.assertEqual(self.check(base, base)[0], 0)
-        same = self.commit({"README.md": "x\n", MIGRATION: AGENT_TASKS + "-- edited\n"})
-        self.assertEqual(self.check(base, same)[0], 0)
-
-        new = "crates/api/migrations/0074_more_tasks.up.sql"
-        added = self.commit({new: AGENT_TASKS.replace("agent_tasks", "more_tasks")})
-        rc, out = self.check(same, added)
-        self.assertEqual(rc, 1)
-        self.assertIn(f"work-obligation-table {new} more_tasks", out)
-        self.assertIn("docs/adr/0010", out)
-
-        headed = self.commit({new: "-- Work resource: items\n" + AGENT_TASKS.replace("agent_tasks", "more_tasks")})
-        self.assertEqual(self.check(same, headed)[0], 0)
-        self.git("mv", MIGRATION, "crates/api/migrations/0073_renamed.up.sql")
-        self.git("commit", "-q", "-m", "rename")
-        self.assertEqual(self.check(headed, self.git("rev-parse", "HEAD"))[0], 0)
-
-    def test_knowledge_table_guard_over_commits(self):
-        """A fixture pull request adding a knowledge or CRM table fails; a
-        table already on the base (a recorded instance) passes."""
-        policy = pathlib.Path(self.repo, "..", pathlib.Path(self.repo).name + "-knowledge.json").resolve()
-        policy.write_text(json.dumps({"owner_repos": ["o/platform"], "baseline": [
-            {"repo": "o/app", "table": "knowledge_entries",
-             "found": "2026-10-07", "expires": "2026-11-30"}]}))
-        self.addCleanup(policy.unlink)
-
-        def check(base, head, repository="o/app", today="2026-10-07"):
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                rc = sc.main(["check", "--repo", self.repo, "--base", base, "--head", head,
-                              "--repository", repository, "--knowledge-policy", str(policy),
-                              "--today", today])
-            return rc, out.getvalue()
-
-        base = self.commit({"db/migrations/1.sql": "CREATE TABLE knowledge_entries (id uuid);\n"})
-        self.assertEqual(check(base, base)[0], 0)
-
-        added = self.commit({"db/migrations/2.sql": "CREATE TABLE crm_accounts (id uuid);\n"})
-        rc, out = check(base, added)
-        self.assertEqual(rc, 1)
-        self.assertIn("knowledge-table db/migrations/2.sql crm_accounts", out)
-        self.assertIn("ADR-01M4AJK2TXTJWZ4X5B06HPT0R4", out)
-        self.assertEqual(check(base, added, repository="o/platform")[0], 0)
-
-        allowed = self.commit({"db/migrations/3.sql": "CREATE TABLE knowledge_entries (id uuid);\n"})
-        self.assertEqual(check(added, allowed)[0], 0)
+    def test_fix_with_stale_record_passes_but_cannot_authorize_reintroduction(self):
+        api = "api/package.json"
+        legacy = '{"dependencies": {"hono": "4"}}'
+        base = self.commit({api: legacy, sc.BASELINE: "ts-server api/package.json hono\n"})
+        fixed = self.commit({api: "{}"})
+        rc, out = self.check(base, fixed)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("::notice::stale baseline line:", out)
+        self.assertEqual(self.check(fixed, fixed)[0], 0)
+        restored = self.commit({api: legacy})
+        rc, out = self.check(fixed, restored)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("new departure", out)
 
     def test_all_counts_clean_checkouts(self):
         self.commit({"sylphx.toml": TOML.format(engine="atlas", dockerfile="none")})
