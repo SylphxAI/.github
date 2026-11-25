@@ -4,9 +4,9 @@ description: >
   skills/self-challenge/references/stack.md): a backend service on a runtime other than Rust (a
   TypeScript server framework as a runtime dependency, or a sylphx.toml
   service built on a Bun or Node image that is not a web app), or a
-  `[database.migrations]` engine other than atlas. Departures a repository
-  already has are listed in its baseline file, which may only shrink: a line
-  the base did not have fails, and so does a line whose departure is gone.
+  `[database.migrations]` engine other than sylphx or transitional atlas.
+  A repository lists existing departures in its baseline, which may only shrink:
+  a line the base did not have fails, and so does a line whose departure is gone.
   A base without the file accepts the head's file as the seed. Reads git
   objects only; needs a checkout of the head (any depth) and fetches the base
   commit without blobs when it is missing. It also fails a product repository

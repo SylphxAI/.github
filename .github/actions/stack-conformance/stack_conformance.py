@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Stack conformance: a ratchet on departures from the company's default stack.
 
-The default stack (SylphxAI/skills skills/self-challenge/references/stack.md) puts every backend
-service in Rust and every first-party schema under Atlas. A repository lists
-the departures it already has in a baseline file (default
-`.github/stack-departures.txt`); the baseline may only shrink. This script
-finds four kinds of departure in a git tree:
+The default stack (SylphxAI/skills skills/self-challenge/references/stack.md)
+puts every backend service in Rust and uses sylphx migrate for first-party
+schemas, with Atlas accepted during the transition. A repository lists its
+existing departures in a baseline file (default `.github/stack-departures.txt`).
+The baseline may only shrink. This script finds four kinds of departure in a
+git tree:
 
-  migrations <sylphx.toml> <engine>   [database.migrations] engine is not atlas
+  migrations <sylphx.toml> <engine>   [database.migrations] engine is neither sylphx nor atlas
   ts-server <package.json> <package>  a TypeScript server framework is a
                                       runtime dependency of a package
   bun-node-service <Dockerfile>       a service built from sylphx.toml runs on
@@ -95,6 +96,7 @@ except ModuleNotFoundError:  # Python < 3.11: the regex reader below is enough.
     tomllib = None
 
 BASELINE = ".github/stack-departures.txt"
+DEFAULT_MIGRATION_ENGINES = frozenset({"sylphx", "atlas"})  # Atlas is transitional.
 
 
 def baseline_shard_dir(baseline: str) -> str:
@@ -634,7 +636,7 @@ def departures(tree) -> list[str]:
         data = parse_toml(tree.read(toml) or "")
         engine = (data.get("database", {}) or {}).get("migrations", {}) or {}
         engine = engine.get("engine") if isinstance(engine, dict) else None
-        if isinstance(engine, str) and engine and engine.lower() != "atlas":
+        if isinstance(engine, str) and engine and engine.lower() not in DEFAULT_MIGRATION_ENGINES:
             found.add(f"migrations {toml} {engine}")
         base = posixpath.dirname(toml)
         for ref in dockerfiles(data):
@@ -1082,7 +1084,8 @@ def decide(found: list[str], head_baseline: set[str] | None,
     for line in found:
         if line not in allowed:
             errors.append(f"new departure from the default stack: '{line}' (backend services are "
-                          "Rust and schema is Atlas, SylphxAI/skills skills/self-challenge/references/stack.md)")
+                          "Rust and schema migrations use sylphx or transitional atlas, "
+                          "SylphxAI/skills skills/self-challenge/references/stack.md)")
     for line in sorted(head - set(found)):
         errors.append(f"stale baseline line: '{line}' is no longer found; delete it so the "
                       "baseline keeps shrinking")

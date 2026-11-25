@@ -11,8 +11,9 @@ approval and shrinking-baseline checks still apply inside the economy domain.
 
 `.github/actions/stack-conformance` fails a change that adds a departure from
 the default stack in SylphxAI/skills `skills/self-challenge/references/stack.md`: backend services in
-Rust, first-party schema under Atlas. Departures a repository already has are
-listed in its baseline, `.github/stack-departures.txt`, which may only shrink.
+Rust and first-party schema migrations with `sylphx migrate`. Atlas is accepted
+during the transition. A repository lists its existing departures in
+`.github/stack-departures.txt`, which may only shrink.
 This is a ratchet in the style of Betterer, scoped like a Backstage Tech
 Insights check: existing debt is recorded once, and new debt fails at the pull
 request instead of being found by a later audit.
@@ -86,7 +87,7 @@ One line per departure, the same format in the baseline and in the output:
 
 | Line | Found when |
 | --- | --- |
-| `migrations <sylphx.toml> <engine>` | a `sylphx.toml` sets `[database.migrations] engine` to anything but `atlas` |
+| `migrations <sylphx.toml> <engine>` | a `sylphx.toml` sets `[database.migrations] engine` to a non-empty string other than `sylphx` or `atlas` (case-insensitive) |
 | `ts-server <package.json> <package>` | a package's runtime `dependencies` include a TypeScript server framework (`hono`, `express`, `fastify`, `elysia`, `koa`, `@trpc/server`, `@nestjs/core`, `@hapi/hapi`, `h3`) |
 | `bun-node-service <Dockerfile>` | a `dockerfile` named in `sylphx.toml` ends on a Bun or Node image, its command starts Bun or Node (or a shell script), and neither its nearest package nor a package its command names is a web app (`next`, `astro`, `vite`, `@sveltejs/kit`, `@solidjs/start`, `solid-js`, `vinxi`, ...) |
 | `solar2d <build.settings>` | a retired Solar2D / Corona game project (`build.settings` defining a `settings = { ... }` table with a sibling `main.lua`) |
@@ -678,8 +679,8 @@ unrelated workflow pin edits and line movement; edited violation spans and
 additional identical occurrences fail. The whole-file `source_sha256` remains
 separate and still binds exception decisions to exact file evidence. Legacy
 v1 architecture baselines fail closed and require an explicit reviewed
-migration; the helper does not silently convert them. Existing Rust/Atlas
-ratchets and central ownership policies retain their behavior.
+migration; the helper does not silently convert them. Existing runtime and
+migration-engine ratchets and central ownership policies still apply.
 
 ### Adopting new rules with a pin bump
 
