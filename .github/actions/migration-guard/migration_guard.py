@@ -2272,6 +2272,20 @@ def pg_named_check(clause: list[Token]):
     return proof_name(clause[2], "postgres"), body, bool(tail)
 
 
+def pg_pin_reference(clause: list[Token], column: str) -> bool:
+    # Allow only the companion FK on the same finite pin, not arbitrary
+    # new key checks hidden inside the replacement ALTER.
+    if not (len(clause) == 18 and starts(clause, "ADD", "CONSTRAINT")
+            and starts(clause[3:], "FOREIGN", "KEY") and kw(clause[8], "REFERENCES")
+            and starts(clause[15:], "ON", "DELETE", "RESTRICT")
+            and all(clause[i].kind == "symbol" and clause[i].value == symbol
+                    for i, symbol in ((5, "("), (7, ")"), (10, "."), (12, "("), (14, ")")))):
+        return False
+    for i in (2, 9, 11, 13):
+        proof_name(clause[i], "postgres")
+    return proof_name(clause[6], "postgres") == column
+
+
 def pg_check_expands(previous: list[str], candidate: list[list[Token]]) -> set[int]:
     """Prove a finite TEXT pin, then recognize replacements on the same ALTER.
 
@@ -2330,8 +2344,7 @@ def pg_check_expands(previous: list[str], candidate: list[list[Token]]) -> set[i
             replacements = [check for check in checks if check]
             if (replacements and any(not check[2] and admits_pin(check[1], pin, "postgres") for check in replacements)
                     and all(admits_pin(check[1], pin, "postgres") for check in replacements)
-                    and all(other is clause or check is not None or starts(other, "ADD", "CONSTRAINT")
-                            and len(other) > 4 and starts(other[3:], "FOREIGN", "KEY")
+                    and all(other is clause or check is not None or pg_pin_reference(other, pin[0])
                             for other, check in zip(clauses, checks))):
                 allowed[table] = id(clause[0])
         elif is_candidate and table in allowed and any(
@@ -2642,6 +2655,15 @@ def sqlite_rebuild_expands(sql: str, previous: list[str], scanned: list[list[Tok
                     raise SqlError("added SQLite foreign key is not backed by the old pin")
             auto = [key for _, origin, _, key in old_keys if origin in {"u", "pk"}]
             keys = tuple(sqlite_unique_keys(db, table))
+            for _, origin, _, prior in old_keys:
+                if origin != "u":
+                    continue
+                # Don't drop an unrelated key. An inline UNIQUE may stay
+                # identical or be widened by the same proved pin columns.
+                if not any(new_origin == "u" and set(prior) <= set(key)
+                           and all(col in pins for col, _, _ in set(key) - set(prior))
+                           for _, new_origin, _, key in keys):
+                    raise SqlError("SQLite rebuild removed an existing unique key")
             for idx, origin, partial, key in keys:
                 if origin == "pk" and key in auto or origin == "c" and ("index", idx) in schema:
                     continue

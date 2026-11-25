@@ -161,6 +161,7 @@ ALTER TABLE public.entries_upgrade RENAME TO entries;
             ("stricter", change(PG_EXPAND, "length(scope_id) > 0", "length(scope_id) > 20")),
             ("unvalidated", change(PG_EXPAND, "CHECK (length(scope_id) > 0);",
                                    "CHECK (length(scope_id) > 0) NOT VALID;")),
+            ("unrelated FK", change(PG_EXPAND, "FOREIGN KEY (scope_id)", "FOREIGN KEY (notes)")),
             ("separate alter", change(PG_EXPAND, "DROP CONSTRAINT entries_default_scope,",
                                       "DROP CONSTRAINT entries_default_scope;\nALTER TABLE public.entries")),
         ):
@@ -217,6 +218,7 @@ ALTER TABLE public.entries_upgrade RENAME TO entries;
     def test_sqlite_rejects_new_restrictions_on_legacy_rows(self):
         for name, old, new in (
             ("new check", "notes TEXT,", "notes TEXT CHECK (length(notes) > 4),"),
+            ("removed unique", ",\n    UNIQUE (scope_id, slug)", ""),
             ("new unique", "UNIQUE (scope_id, slug)", "UNIQUE (scope_id, slug), UNIQUE (status)"),
             ("new unique index on old column", "ALTER TABLE entries ADD COLUMN external_id BIGINT;",
              "CREATE UNIQUE INDEX entries_status_unique ON entries (status);\n"
