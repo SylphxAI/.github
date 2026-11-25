@@ -46,9 +46,17 @@ class DeparturesTest(unittest.TestCase):
         })
         self.assertEqual(sc.departures(t), [])
 
-    def test_non_atlas_engine_is_a_departure(self):
-        t = sc.DictTree({"sylphx.toml": TOML.format(engine="drizzle", dockerfile="none")})
-        self.assertEqual(sc.departures(t), ["migrations sylphx.toml drizzle"])
+    def test_default_migration_engines_are_clean_case_insensitively(self):
+        for engine in ("sylphx", "SYLPHX", "Sylphx", "atlas", "ATLAS"):
+            with self.subTest(engine=engine):
+                t = sc.DictTree({"services/api/sylphx.toml": f'[database.migrations]\nengine = "{engine}"\n'})
+                self.assertEqual(sc.departures(t), [])
+
+    def test_non_default_migration_engines_are_departures(self):
+        for engine in ("drizzle", "prisma", "typeorm"):
+            with self.subTest(engine=engine):
+                t = sc.DictTree({"services/api/sylphx.toml": f'[database.migrations]\nengine = "{engine}"\n'})
+                self.assertEqual(sc.departures(t), [f"migrations services/api/sylphx.toml {engine}"])
 
     def test_bun_service_without_a_web_framework_is_a_departure(self):
         t = sc.DictTree({
@@ -757,6 +765,22 @@ class GitTest(unittest.TestCase):
         rc, out = self.check(same, grown)
         self.assertEqual(rc, 1)
         self.assertIn("baseline grew", out)
+
+    def test_migration_engine_switch_passes_without_a_baseline_departure(self):
+        path = "services/api/sylphx.toml"
+        manifest = '[database.migrations]\nengine = "{}"\n'
+        base = self.commit({path: manifest.format("atlas"), sc.BASELINE: ""})
+        head = self.commit({path: manifest.format("sylphx")})
+        rc, out = self.check(base, head)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("0 departure(s) found", out)
+
+        for engine in ("drizzle", "prisma", "typeorm"):
+            with self.subTest(engine=engine):
+                other = self.commit({path: manifest.format(engine)})
+                rc, out = self.check(head, other)
+                self.assertEqual(rc, 1, out)
+                self.assertIn(f"new departure from the default stack: 'migrations {path} {engine}'", out)
 
     def test_solidstart_nitro_check_passes_with_generated_output(self):
         base = self.commit({sc.BASELINE: ""})
