@@ -3,7 +3,7 @@
 
 Read Git objects rather than working-tree files. Merged migrations are immutable;
 new contracting SQL needs a real line comment `-- contract: <released expand>`.
-No database connection or SQL execution is used.
+The shared drop-phase check may replay SQLite SQL in a disposable memory database.
 """
 from __future__ import annotations
 
@@ -17,9 +17,10 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import sqlite3
 import subprocess
 import sys
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 
 _source_spec = importlib.util.spec_from_file_location(
@@ -1558,7 +1559,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
                      catalog_format: bool = False, finite_executes: set[int] | None = None,
                      historical_tables: set[str] | None = None,
                      marked_tokens: set[int] | None = None, *,
-                     all_table_drops: bool = False) -> list[tuple[int, str]]:
+                     all_table_drops: bool = False,
+                     verified_drops: frozenset[int] | set[int] = frozenset()) -> list[tuple[int, str]]:
     if nesting > 64:
         raise SqlError("procedural body nesting is too deep to inspect")
     findings: list[tuple[int, str]] = []
@@ -1663,7 +1665,8 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             if non_dml_on and grant_start <= i < on_index:
                 continue
             tail = scan_stmt[i:]
-            if any(starts(tail, "DROP", obj) for obj in ("TABLE", "COLUMN", "SCHEMA", "DATABASE")):
+            if (id(token) not in verified_drops
+                    and any(starts(tail, "DROP", obj) for obj in ("TABLE", "COLUMN", "SCHEMA", "DATABASE"))):
                 out.append((token.line, "DROP " + tail[1].value))
             if starts(tail, "DROP", "TEMPORARY", "TABLE"):
                 out.append((token.line, "DROP TEMPORARY TABLE"))
@@ -1767,7 +1770,7 @@ def token_violations(tokens: list[Token], dialect: str, nesting: int = 0,
             if kw(first, "DROP"):
                 if not any(starts(flat[1:], safe) for safe in safe_drops):
                     out.append((first.line, "DROP COLUMN"))
-                elif all_table_drops:
+                elif all_table_drops and id(first) not in verified_drops:
                     out.append((first.line, "ALTER TABLE DROP"))
             if starts(flat, "DISCARD", "TABLESPACE") or starts(flat, "CONVERT", "TO", "CHARACTER", "SET"):
                 out.append((first.line, "table data discard or character set conversion"))
@@ -2206,7 +2209,514 @@ DROP_FINDINGS = {"DROP TABLE", "DROP TEMPORARY TABLE", "DROP COLUMN", "ALTER TAB
                  "procedural or dynamic SQL requires a contract reference"}
 
 
-def drop_phase_findings(before: str, after: str, dialect: str) -> list[tuple[int, str]]:
+def proof_name(token: Token, dialect: str) -> str:
+    """Limit the proof grammar to unambiguous, non-truncating identifiers."""
+    raw = token.raw
+    if token.kind == "word" and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,62}", raw):
+        return raw.lower()
+    if token.kind == "identifier" and raw.startswith('"') and re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]{0,62}', token.value):
+        return token.value if dialect == "postgres" else token.value.lower()
+    raise SqlError("unsupported identifier in expand proof")
+
+
+def proof_literal(token: Token) -> str | None:
+    if token.kind == "literal" and re.fullmatch(r"'[A-Za-z0-9_.-]+'", token.raw):
+        return token.raw[1:-1]
+    return None
+
+
+def equality_pin(expr: list[Token], dialect: str) -> tuple[str, str] | None:
+    if len(expr) == 3 and expr[1].kind == "symbol" and expr[1].value == "=":
+        value = proof_literal(expr[2])
+        if value is not None:
+            return proof_name(expr[0], dialect), value
+    return None
+
+
+def admits_pin(expr: list[Token], pin: tuple[str, str], dialect: str) -> bool:
+    column, literal = pin
+    if equality_pin(expr, dialect) == pin:
+        return True
+    # TEXT equality to a nonempty ASCII literal implies nonempty TEXT. pg_catalog
+    # is PostgreSQL's implicit first lookup for length under default settings.
+    at = 2 if dialect == "postgres" and starts(expr, "PG_CATALOG") and len(expr) > 2 and expr[1].value == "." else 0
+    if (len(expr) == at + 6 and kw(expr[at], "LENGTH")
+            and all(expr[at + i].kind == "symbol" and expr[at + i].value == symbol
+                    for i, symbol in ((1, "("), (3, ")"), (4, ">"))) and kw(expr[-1], "0")):
+        return proof_name(expr[at + 2], dialect) == column
+    if len(expr) >= 4 and kw(expr[1], "IN") and proof_name(expr[0], dialect) == column:
+        body, end = group(expr, 2)
+        parts = split(body, ",")
+        if len(body) != 2 * len(parts) - 1 or any(len(part) != 1 for part in parts):
+            return False
+        values = [proof_literal(part[0]) for part in parts]
+        return end == len(expr) and None not in values and literal in values
+    return False
+
+
+def pg_alter(stmt: list[Token]) -> tuple[tuple[str, str], list[list[Token]]] | None:
+    if not starts(stmt, "ALTER", "TABLE"):
+        return None
+    if len(stmt) < 6 or stmt[3].kind != "symbol" or stmt[3].value != ".":
+        return None
+    return (proof_name(stmt[2], "postgres"), proof_name(stmt[4], "postgres")), split(stmt[5:], ",")
+
+
+def pg_named_check(clause: list[Token]):
+    if not (len(clause) > 4 and starts(clause, "ADD", "CONSTRAINT") and kw(clause[3], "CHECK")):
+        return None
+    body, end = group(clause, 4)
+    tail = clause[end:]
+    if tail and not (len(tail) == 2 and starts(tail, "NOT", "VALID")):
+        raise SqlError("unsupported CHECK declaration in expand proof")
+    return proof_name(clause[2], "postgres"), body, bool(tail)
+
+
+def pg_pin_reference(clause: list[Token], column: str) -> bool:
+    # Allow only the companion FK on the same finite pin, not arbitrary
+    # new key checks hidden inside the replacement ALTER.
+    if not (len(clause) == 18 and starts(clause, "ADD", "CONSTRAINT")
+            and starts(clause[3:], "FOREIGN", "KEY") and kw(clause[8], "REFERENCES")
+            and starts(clause[15:], "ON", "DELETE", "RESTRICT")
+            and all(clause[i].kind == "symbol" and clause[i].value == symbol
+                    for i, symbol in ((5, "("), (7, ")"), (10, "."), (12, "("), (14, ")")))):
+        return False
+    for i in (2, 9, 11, 13):
+        proof_name(clause[i], "postgres")
+    return proof_name(clause[6], "postgres") == column
+
+
+def pg_check_expands(previous: list[str], candidate: list[list[Token]]) -> set[int]:
+    """Prove a finite TEXT pin, then recognize replacements on the same ALTER.
+
+    A NOT VALID pin alone says nothing about existing rows. Accept it only
+    immediately after a fresh column was populated with that exact default.
+    Track identity by qualified table and constraint, never by suffix or line.
+    """
+    pins = {}
+    fresh = None
+    allowed = {}
+    prior = [stmt for body in previous for stmt in sql_statements(lex(body, "postgres")[0], "postgres")]
+    candidate_ids = {id(stmt) for stmt in candidate}
+    for stmt in [*prior, *candidate]:
+        is_candidate = id(stmt) in candidate_ids
+        # Unknown schema control can replace a constraint or change expression
+        # resolution. Even committed SQL is not an authority after such a change.
+        if (any(starts(stmt, *w) for w in (("DO",), ("CALL",), ("EXECUTE",), ("SET",), ("RESET",),
+                                         ("DISCARD",), ("ROLLBACK",), ("ABORT",), ("SAVEPOINT",), ("RELEASE",),
+                                         ("START", "TRANSACTION"), ("BEGIN",), ("COMMIT",), ("END",),
+                                         ("DROP", "SCHEMA"), ("ALTER", "SCHEMA"), ("DROP", "TABLE"),
+                                         ("ALTER", "FOREIGN", "TABLE"), ("CREATE", "CAST"),
+                                         ("CREATE", "OPERATOR"), ("CREATE", "DOMAIN")))
+                or any(t.kind in {"word", "identifier"} and t.value.lower() in {
+                    "search_path", "set_config", "standard_conforming_strings", "event", "inherit", "inherits", "partition"
+                } for t in stmt)
+                or (routine_kind(stmt) == "FUNCTION" and any(t.value.lower() == "length" for t in stmt[:8]))):
+            pins.clear()
+            fresh = None
+            if is_candidate:
+                return set()
+            continue
+        alter = pg_alter(stmt)
+        if alter is None:
+            if starts(stmt, "ALTER", "TABLE"):
+                # The unqualified name could resolve to a tracked table.
+                pins.clear()
+                if is_candidate:
+                    return set()
+            fresh = None
+            continue
+        table, clauses = alter
+        if not clauses:
+            pins.clear()
+        checks = [pg_named_check(clause) for clause in clauses]
+        drops = []
+        for clause in clauses:
+            if starts(clause, "DROP", "CONSTRAINT"):
+                at = 4 if starts(clause[2:], "IF", "EXISTS") else 2
+                if len(clause) > at:
+                    constraint = proof_name(clause[at], "postgres")
+                    pin = pins.get((table, constraint))
+                    if len(clause) == at + 1 or (len(clause) == at + 2 and kw(clause[-1], "RESTRICT")):
+                        drops.append((clause, constraint, pin))
+        if is_candidate and len(drops) == 1 and drops[0][2] is not None:
+            clause, _, pin = drops[0]
+            replacements = [check for check in checks if check]
+            if (replacements and any(not check[2] and admits_pin(check[1], pin, "postgres") for check in replacements)
+                    and all(admits_pin(check[1], pin, "postgres") for check in replacements)
+                    and all(other is clause or check is not None or pg_pin_reference(other, pin[0])
+                            for other, check in zip(clauses, checks))):
+                allowed[table] = id(clause[0])
+        elif is_candidate and table in allowed and any(
+                has(clause, "CHECK") or starts(clause, "VALIDATE") or starts(clause, "ALTER")
+                for clause in clauses):
+            # A later check or column mutation invalidates the obligation proved
+            # for the replacement. Prove the whole replacement in one ALTER.
+            del allowed[table]
+        # No unsupported mutation may leave a stale fact about this table.
+        if not all(check is not None or starts(clause, "ADD", "COLUMN")
+                   for clause, check in zip(clauses, checks)):
+            pins = {key: pin for key, pin in pins.items() if key[0] != table}
+        if len(clauses) == 1 and checks[0]:
+            constraint, expr, _ = checks[0]
+            pin = equality_pin(expr, "postgres")
+            key = table, constraint
+            if pin is not None and fresh == (table, *pin) and key not in pins:
+                pins[key] = pin
+            else:
+                pins.pop(key, None)
+        fresh = None
+        if len(clauses) == 1:
+            col = clauses[0]
+            if (len(col) == 8 and starts(col, "ADD", "COLUMN") and starts(col[3:], "TEXT", "NOT", "NULL", "DEFAULT")
+                    and (literal := proof_literal(col[-1])) is not None):
+                fresh = table, proof_name(col[2], "postgres"), literal
+    return set(allowed.values())
+
+
+def sqlite_statements(sql: str) -> list[list[Token]]:
+    # SQLite's own splitter keeps trigger bodies out of the top-level stream.
+    tokens, _ = lex(sql, "sqlite")
+    result, at, offset = [], 0, 0
+    for i, token in enumerate(tokens):
+        if token.kind == "symbol" and token.value == ";" and sqlite3.complete_statement(sql[offset:token.offset + 1]):
+            if tokens[at:i]:
+                result.append(tokens[at:i])
+            at, offset = i + 1, token.offset + 1
+    if at < len(tokens):
+        raise SqlError("SQLite expand proof requires semicolon-terminated statements")
+    return result
+
+
+def sqlite_name_list(body: list[Token]) -> tuple[str, ...]:
+    parts = split(body, ",")
+    if not parts or any(len(p) != 1 for p in parts) or len(body) != len(parts) * 2 - 1:
+        raise SqlError("SQLite copy must use explicit, unmodified column names")
+    return tuple(proof_name(p[0], "sqlite") for p in parts)
+
+
+def sqlite_copy_plan(statements: list[list[Token]]):
+    """Admit only consecutive CREATE / identity COPY / DROP / same-name RENAME."""
+    plans, additions = {}, set()
+    i = 0
+    while i < len(statements):
+        stmt = statements[i]
+        if starts(stmt, "CREATE", "TABLE") and i + 3 < len(statements) and len(stmt) > 3:
+            tmp = proof_name(stmt[2], "sqlite")
+            _, end = group(stmt, 3)
+            if end != len(stmt) or has(stmt, "ON", "CONFLICT") or has(stmt, "AUTOINCREMENT"):
+                raise SqlError("unsupported SQLite replacement table options")
+            copy, drop, rename = statements[i + 1:i + 4]
+            if not (starts(copy, "INSERT", "INTO") and len(copy) > 3 and proof_name(copy[2], "sqlite") == tmp
+                    and len(drop) == 3 and starts(drop, "DROP", "TABLE")
+                    and len(rename) == 6 and starts(rename, "ALTER", "TABLE")
+                    and starts(rename[3:], "RENAME", "TO") and proof_name(rename[2], "sqlite") == tmp):
+                raise SqlError("SQLite table replacement must use the atomic copy/drop/rename sequence")
+            table = proof_name(drop[2], "sqlite")
+            if table in plans or tmp == table or proof_name(rename[-1], "sqlite") != table:
+                raise SqlError("SQLite replacement must restore one original table name")
+            cols, at = group(copy, 3)
+            if (len(copy) <= at + 3 or not kw(copy[at], "SELECT") or not kw(copy[-2], "FROM")
+                    or proof_name(copy[-1], "sqlite") != table):
+                raise SqlError("SQLite replacement must copy all source rows")
+            columns = sqlite_name_list(cols)
+            if columns != sqlite_name_list(copy[at + 1:-2]):
+                raise SqlError("SQLite replacement must copy columns without changes")
+            plans[table] = tmp, columns
+            i += 4
+            continue
+        if starts(stmt, "ALTER", "TABLE") and len(stmt) == 7 and starts(stmt[3:], "ADD", "COLUMN"):
+            table, col = (proof_name(stmt[k], "sqlite") for k in (2, 5))
+            if stmt[6].kind != "word" or stmt[6].value not in {"TEXT", "INTEGER", "BIGINT", "BLOB", "REAL", "NUMERIC"}:
+                raise SqlError("SQLite rebuild additions must be nullable simple columns")
+            additions.add((table, col))
+        elif not any(starts(stmt, *w) for w in (("CREATE", "INDEX"), ("CREATE", "UNIQUE", "INDEX"), ("CREATE", "TRIGGER"))):
+            raise SqlError("unsupported statement in SQLite rebuild")
+        i += 1
+    return plans, additions
+
+
+def sqlite_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def sqlite_table_shape(sql: str):
+    """Retain all column clauses, including COLLATE and conflict semantics.
+
+    CHECK and REFERENCES are compared separately; uniqueness is read from
+    SQLite's actual key metadata (including collation and expression keys).
+    """
+    tokens, _ = lex(sql, "sqlite")
+    if not starts(tokens, "CREATE", "TABLE") or has(tokens, "ON", "CONFLICT"):
+        raise SqlError("unsupported SQLite table definition")
+    body, end = group(tokens, 3)
+    columns, checks, primary = {}, Counter(), []
+    for part in split(body, ","):
+        if starts(part, "CONSTRAINT"):
+            part = part[2:]
+        if starts(part, "CHECK"):
+            expr, at = group(part, 1)
+            if at != len(part):
+                raise SqlError("unsupported table CHECK declaration")
+            checks[(None, signature(expr))] += 1
+            continue
+        if starts(part, "PRIMARY", "KEY"):
+            primary.append(signature(part))
+            continue
+        if starts(part, "UNIQUE"):
+            _, at = group(part, 1)
+            if at != len(part):
+                raise SqlError("unsupported table UNIQUE declaration")
+            continue
+        if starts(part, "FOREIGN", "KEY"):
+            if has(part, "DEFERRABLE") or has(part, "MATCH"):
+                raise SqlError("unmodeled foreign key options")
+            continue
+        name = proof_name(part[0], "sqlite")
+        stable, at = [], 1
+        while at < len(part):
+            if kw(part[at], "CHECK"):
+                expr, at = group(part, at + 1)
+                checks[(name, signature(expr))] += 1
+                continue
+            if kw(part[at], "REFERENCES"):
+                # Consume only the finite REFERENCES grammar; other clauses
+                # (including a later CHECK/NOT NULL) still get compared.
+                at += 2
+                if at < len(part) and part[at].kind == "symbol" and part[at].value == "(":
+                    _, at = group(part, at)
+                while at < len(part) and starts(part[at:], "ON"):
+                    if starts(part[at + 2:], "SET", "NULL") or starts(part[at + 2:], "SET", "DEFAULT") or starts(part[at + 2:], "NO", "ACTION"):
+                        at += 4
+                    else:
+                        at += 3
+                continue
+            if kw(part[at], "CONSTRAINT") or kw(part[at], "DEFERRABLE") or kw(part[at], "MATCH"):
+                raise SqlError("unmodeled column constraint options")
+            if kw(part[at], "UNIQUE"):
+                at += 1
+                continue
+            if part[at].kind == "symbol" and part[at].value == "(":
+                _, stop = group(part, at)
+                stable.extend(part[at:stop])
+                at = stop
+                continue
+            stable.append(part[at])
+            at += 1
+        columns[name] = stable
+    return columns, checks, primary, signature(tokens[end:])
+
+
+def sqlite_unique_keys(db, table):
+    for _, idx, unique, origin, partial in db.execute("SELECT * FROM pragma_index_list(?)", (table,)):
+        if unique:
+            key = tuple((col, desc, coll) for _, _, col, desc, coll, used in db.execute(
+                "SELECT * FROM pragma_index_xinfo(?)", (idx,)) if used)
+            yield idx, origin, partial, key
+
+
+def sqlite_foreign_keys(db, table):
+    keys = {}
+    for ident, *part in db.execute("SELECT * FROM pragma_foreign_key_list(?)", (table,)):
+        keys.setdefault(ident, []).append(tuple(part))
+    return Counter(tuple(parts) for parts in keys.values())
+
+
+def sqlite_replay(db, sql: str, *, rebuild: bool):
+    db.execute("PRAGMA foreign_keys=" + ("OFF" if rebuild else "ON"))
+    db.execute("BEGIN IMMEDIATE")
+
+    def authorize(action, arg1, arg2, database, trigger):
+        if (action in {sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH,
+                       sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT}
+                or action == sqlite3.SQLITE_FUNCTION and arg2 in {"load_extension", "readfile", "writefile"}
+                or action == sqlite3.SQLITE_CREATE_VTABLE and arg2 != "fts5"):
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_PRAGMA and not (
+                arg1 == "data_version" and arg2 is None or not rebuild and arg1 in {"quick_check", "integrity_check"}):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    db.set_authorizer(authorize)
+    try:
+        # execute() never implicitly commits the transaction like executescript().
+        tokens = sqlite_statements(sql)
+        for stmt in tokens:
+            first, last = stmt[0].offset, stmt[-1]
+            db.execute(sql[first:last.offset + len(last.raw)])
+    finally:
+        db.set_authorizer(None)
+    if (not db.in_transaction or db.execute("PRAGMA foreign_key_check").fetchone() is not None
+            or db.execute("SELECT 1 FROM temp.sqlite_schema LIMIT 1").fetchone() is not None):
+        raise SqlError("invalid SQLite migration transaction, foreign keys, or temporary schema")
+    db.commit()
+
+
+def sqlite_rebuild_expands(sql: str, previous: list[str], scanned: list[list[Token]]) -> set[int]:
+    statements = sqlite_statements(sql)
+    plans, additions = sqlite_copy_plan(statements)
+    if not plans or not previous:
+        return set()
+    db = sqlite3.connect(":memory:")
+    try:
+        db.enable_load_extension(False)
+        db.execute("PRAGMA trusted_schema=OFF")
+        db.execute("PRAGMA temp_store=MEMORY")
+        db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 8_000_000)
+        budget = iter(range(20_000))  # Bound total replay VM steps, not just each statement.
+        db.set_progress_handler(lambda: next(budget, None) is None, 1000)
+        for migration in previous:
+            sqlite_replay(db, migration, rebuild=False)
+        schema = {(kind, name): (table, ddl) for kind, name, table, ddl in db.execute(
+            "SELECT type, name, tbl_name, sql FROM main.sqlite_schema WHERE sql IS NOT NULL")}
+        originals = {name.casefold() for _, name in schema}
+        checked_pins, before = {}, {}
+
+        def attributes(table):
+            return tuple(db.execute("SELECT name, type, [notnull], dflt_value, pk, hidden FROM pragma_table_xinfo(?)", (table,)))
+
+        def rows(table, cols):
+            return Counter(tuple((type(v), v) for v in row) for row in db.execute(
+                "SELECT " + ",".join(map(sqlite_ident, cols)) + " FROM main." + sqlite_ident(table)))
+
+        for table, (tmp, cols) in plans.items():
+            if tmp in originals or ("table", table) not in schema:
+                raise SqlError("ambiguous SQLite rebuild source or temporary name")
+            originals.add(tmp)
+            old_cols = attributes(table)
+            meta = db.execute("SELECT type, wr, strict FROM pragma_table_list WHERE schema='main' AND name=?", (table,)).fetchone()
+            if meta != ("table", 0, 0) or not old_cols or any(col[-1] for col in old_cols):
+                raise SqlError("SQLite rebuild needs an ordinary rowid table with explicit columns")
+            old_names = tuple(col[0] for col in old_cols)
+            key = tuple(sqlite_unique_keys(db, table))
+            alias_pk = any(col[1].upper() == "INTEGER" and col[4] == 1 for col in old_cols) and not any(k[1] == "pk" for k in key)
+            # Accept INTEGER PRIMARY KEY's declared alias, otherwise require a
+            # hidden rowid alias untouched by either CREATE definition.
+            hidden = [col for col in cols if col not in old_names]
+            if (len(cols) != len(set(cols)) or tuple(c for c in cols if c in old_names) != old_names
+                    or (hidden != [] if alias_pk else len(hidden) != 1 or hidden[0] not in {"rowid", "_rowid_", "oid"})):
+                raise SqlError("SQLite rebuild must preserve every column and row identity")
+            before[table] = old_cols, key, sqlite_foreign_keys(db, table), rows(table, cols), hidden
+            old_ddl = schema["table", table][1]
+            if has(lex(old_ddl, "sqlite")[0], "AUTOINCREMENT"):
+                raise SqlError("SQLite rebuild of AUTOINCREMENT is unsupported")
+        sqlite_replay(db, sql, rebuild=True)
+        current = {(kind, name): (table, ddl) for kind, name, table, ddl in db.execute(
+            "SELECT type, name, tbl_name, sql FROM main.sqlite_schema WHERE sql IS NOT NULL")}
+        for key, entry in schema.items():
+            if key[0] != "table" and current.get(key) != entry:
+                raise SqlError("SQLite rebuild changed an existing index, view or trigger")
+        for table, (_, copy) in plans.items():
+            old_attrs, old_keys, old_fks, old_rows, hidden = before[table]
+            new_attrs = attributes(table)
+            old_names = {col[0] for col in old_attrs}
+            new_names = {col[0] for col in new_attrs}
+            if (old_attrs != tuple(col for col in new_attrs if col[0] in old_names)
+                    or set(hidden) & new_names or old_rows != rows(table, copy)):
+                raise SqlError("SQLite rebuild changed existing columns or row values")
+            if any((table, name) not in additions for name in new_names - old_names):
+                raise SqlError("SQLite rebuild supports additions only after the identity copy")
+            old, prior_checks, pk, opts = sqlite_table_shape(schema["table", table][1])
+            new, new_checks, pk2, opts2 = sqlite_table_shape(current["table", table][1])
+            if pk != pk2 or opts != opts2 or any(signature(cols) != signature(new[name]) for name, cols in old.items()):
+                raise SqlError("SQLite rebuild changed column or table semantics")
+            pins = {}
+            prior_tokens = lex(schema["table", table][1], "sqlite")[0]
+            target_tokens = lex(current["table", table][1], "sqlite")[0]
+            expressions = {}
+            for tokens in (prior_tokens, target_tokens):
+                for i, tok in enumerate(tokens[:-1]):
+                    if kw(tok, "CHECK") and tokens[i + 1].kind == "symbol" and tokens[i + 1].value == "(":
+                        expr, _ = group(tokens, i + 1)
+                        expressions[signature(expr)] = expr
+            for (column, expr) in prior_checks:
+                pin = equality_pin(expressions[expr], "sqlite")
+                if (pin and column == pin[0] and starts(old[column], "TEXT")
+                        and [t.value for t in old[column][:4]] == ["TEXT", "NOT", "NULL", "DEFAULT"]
+                        and len(old[column]) == 5 and proof_literal(old[column][-1]) == pin[1]):
+                    pins[column] = pin
+            for column, expr in new_checks - prior_checks:
+                if column not in pins or not admits_pin(expressions[expr], pins[column], "sqlite"):
+                    raise SqlError("SQLite rebuild cannot prove a new CHECK accepts old values")
+            if any(column not in pins or equality_pin(expressions[expr], "sqlite") != pins[column]
+                   for column, expr in prior_checks - new_checks):
+                raise SqlError("SQLite rebuild supports removal only of a defaulted TEXT pin")
+            checked_pins[table] = pins
+            new_fks = sqlite_foreign_keys(db, table)
+            if old_fks - new_fks:
+                raise SqlError("SQLite rebuild removed a foreign key")
+            for fk in new_fks - old_fks:
+                if len(fk) != 1:
+                    raise SqlError("unsupported added composite foreign key")
+                _, parent, col, key_col, update, delete, match = fk[0]
+                if (col not in pins or not key_col or update != "NO ACTION" or delete not in {"RESTRICT", "NO ACTION"}
+                        or match != "NONE" or ("table", parent) not in schema
+                        or db.execute(f"SELECT 1 FROM main.{sqlite_ident(parent)} WHERE {sqlite_ident(key_col)}=?", (pins[col][1],)).fetchone() is None):
+                    raise SqlError("added SQLite foreign key is not backed by the old pin")
+            auto = [key for _, origin, _, key in old_keys if origin in {"u", "pk"}]
+            keys = tuple(sqlite_unique_keys(db, table))
+            for _, origin, _, prior in old_keys:
+                if origin != "u":
+                    continue
+                # Don't drop an unrelated key. An inline UNIQUE may stay
+                # identical or be widened by the same proved pin columns.
+                if not any(new_origin == "u" and set(prior) <= set(key)
+                           and all(col in pins for col, _, _ in set(key) - set(prior))
+                           for _, new_origin, _, key in keys):
+                    raise SqlError("SQLite rebuild removed an existing unique key")
+            for idx, origin, partial, key in keys:
+                if origin == "pk" and key in auto or origin == "c" and ("index", idx) in schema:
+                    continue
+                if origin == "u" and any(all(part in key for part in prior) for prior in auto):
+                    continue
+                if (origin == "c" and all(col is not None for col, _, _ in key)
+                        and any((table, col) in additions for col, _, _ in key)):
+                    continue
+                raise SqlError("SQLite rebuild adds unproved unique enforcement")
+            if any(origin == "pk" and (idx, origin, partial, key) not in keys and not any(
+                    new_origin == "pk" and new_key == key for _, new_origin, _, new_key in keys)
+                   for idx, origin, partial, key in old_keys):
+                raise SqlError("SQLite rebuild changed the primary key")
+        for (kind, name), (table, ddl) in current.items():
+            if (kind, name) in schema or kind == "table":
+                continue
+            if kind == "trigger" and not sqlite_pin_trigger(ddl, checked_pins.get(table, {})):
+                raise SqlError("new SQLite trigger may change old writes")
+            if kind == "index" and table not in plans:
+                if any(idx == name and not (all(col is not None for col, _, _ in key)
+                        and any((table, col) in additions for col, _, _ in key))
+                        for idx, _, _, key in sqlite_unique_keys(db, table)):
+                    raise SqlError("unproved unique index on existing SQLite columns")
+        # Reference the exact token from the existing scanner, not a line
+        # number that an unrelated statement could share.
+        offsets = {stmt[0].offset for stmt in statements if starts(stmt, "DROP", "TABLE")}
+        for stmt in statements:
+            if starts(stmt, "CREATE", "TRIGGER"):
+                name = proof_name(stmt[2], "sqlite")
+                if ("trigger", name) not in current:
+                    raise SqlError("SQLite rebuild must retain all declared triggers")
+                offsets.add(stmt[0].offset)
+        return {id(t) for stmt in scanned for t in stmt if t.offset in offsets}
+    finally:
+        db.close()
+
+
+def sqlite_pin_trigger(ddl: str, pins: dict) -> bool:
+    tokens, _ = lex(ddl, "sqlite")
+    if not (len(tokens) == 28 and starts(tokens, "CREATE", "TRIGGER")
+            and starts(tokens[3:], "BEFORE", "UPDATE", "OF") and starts(tokens[7:], "ON")
+            and starts(tokens[9:], "WHEN", "NEW") and tokens[11].value == "."
+            and starts(tokens[13:], "IS", "NOT", "OLD") and tokens[16].value == "."
+            and starts(tokens[18:], "BEGIN", "SELECT", "RAISE") and tokens[21].value == "("
+            and kw(tokens[22], "ABORT") and tokens[23].value == "," and tokens[24].kind == "literal"
+            and [t.value for t in tokens[25:]] == [")", ";", "END"]):
+        return False
+    return proof_name(tokens[6], "sqlite") in pins and all(
+        proof_name(tokens[i], "sqlite") == proof_name(tokens[6], "sqlite") for i in (12, 17))
+
+
+def drop_phase_findings(before: str, after: str, dialect: str, *,
+                        history: Callable[[], list[str]] | None = None) -> list[tuple[int, str]]:
     """Check new or changed destructive statements without re-gating historical SQL."""
     def statements(sql):
         tokens, markers = lex(sql, dialect, phased_drop=True)
@@ -2220,14 +2730,28 @@ def drop_phase_findings(before: str, after: str, dialect: str) -> list[tuple[int
 
     historical = Counter((signature(stmt, exact_words=True), marked) for stmt, marked in statements(before))
     findings = []
-    for stmt, marked in statements(after):
+    current = list(statements(after))
+    proof = set()
+    parsed = [stmt for stmt, _ in current]
+    try:
+        if not before and dialect == "postgres" and any(has(stmt, "DROP", "CONSTRAINT") for stmt in parsed):
+            proof = pg_check_expands(history() if history else [], parsed)
+        if not before and dialect == "sqlite" and history and any(starts(stmt, "DROP", "TABLE") for stmt in parsed):
+            proof = sqlite_rebuild_expands(after, history(), parsed)
+    except (SqlError, sqlite3.Error, UnicodeError):
+        # Proof is optional; incomplete evidence never suppresses a finding.
+        pass
+    for stmt, marked in current:
         key = signature(stmt, exact_words=True), marked
         if historical[key]:
             historical[key] -= 1
             continue
         if not marked:
-            findings.extend((line, reason) for line, reason in token_violations(stmt, dialect, all_table_drops=True)
-                            if reason in DROP_FINDINGS)
+            verified_trigger = dialect == "sqlite" and id(stmt[0]) in proof and starts(stmt, "CREATE", "TRIGGER")
+            findings.extend((line, reason) for line, reason in token_violations(
+                stmt, dialect, all_table_drops=True, verified_drops=proof) if reason in DROP_FINDINGS
+                and not (verified_trigger and reason == "opaque procedural body requires a contract reference"
+                         and line == stmt[0].line))
     return findings
 
 

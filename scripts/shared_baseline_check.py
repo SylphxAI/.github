@@ -98,9 +98,53 @@ def sqlite_migration_dirs(raw):
     return tuple(directories)
 
 
+def migration_history(root, base, head, path, file_dialect):
+    """Only identical, committed predecessors in the same numbered stream."""
+    directory, name = path.rsplit(b"/", 1)
+    target = re.fullmatch(rb"(\d+)[_.-].*", name)
+    if not target:
+        return []
+    target_version = int(target[1])
+
+    def chain(ref):
+        prefix = directory + b"/"
+        entries = {}
+        for entry in git(root, "--literal-pathspecs", "ls-tree", "-rz", ref, "--", os.fsdecode(prefix)).split(b"\0")[:-1]:
+            meta, filename = entry.split(b"\t", 1)
+            child = filename.removeprefix(prefix)
+            if b"/" in child or not child.lower().endswith(b".sql") or filename == path:
+                continue
+            suffix = child.lower()
+            if (suffix.endswith(b".mysql.sql") and file_dialect != "mysql"
+                    or suffix.endswith(b".postgresql.sql") and file_dialect != "postgres"):
+                continue
+            v = re.fullmatch(rb"(\d+)[_.-].*", child)
+            if not v:
+                raise ValueError("expand proof needs ordered migration history")
+            seq = int(v[1])
+            # Reject an inserted/backdated version against a later deployed
+            # schema; later files from this PR are not part of the proof.
+            if seq > target_version and ref == head:
+                continue
+            mode, _, oid = meta.decode("ascii").split()
+            if seq >= target_version or seq in entries or mode not in {"100644", "100755"}:
+                raise ValueError("ambiguous expand migration history")
+            entries[seq] = (filename, mode, oid)
+        return entries
+
+    try:
+        old = chain(base)
+        if old != chain(head):
+            return []
+        return [blob(root, mode, oid).decode("utf-8") for _, mode, oid in (old[v] for v in sorted(old))]
+    except (ValueError, OSError, subprocess.CalledProcessError):
+        return []
+
+
 def check(root, base, head, public, migrations, dialect, sqlite_dirs=()):
     head = revision(root, head)
     base = revision(root, base)
+    prior_tip = base
     base = git(root, "merge-base", base, head).decode().strip()
     rules = hygiene_rules() if public else {}
     findings = []
@@ -140,7 +184,8 @@ def check(root, base, head, public, migrations, dialect, sqlite_dirs=()):
                 findings.extend(f"{label}:{line}: {reason}; add a statement-scoped drop-phase "
                                 "reference to the prior release, or defer the drop"
                                 for line, reason in drop_phase_findings(
-                                    before.decode("utf-8"), after.decode("utf-8"), file_dialect))
+                                    before.decode("utf-8"), after.decode("utf-8"), file_dialect,
+                                    history=lambda: migration_history(root, prior_tip, head, path, file_dialect)))
         except (OSError, ValueError, subprocess.CalledProcessError):
             findings.append(f"{label}: could not inspect changed file; check its Git object and file format")
     return findings
