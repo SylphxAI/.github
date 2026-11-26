@@ -267,7 +267,10 @@ def ci_jobs_calling(ci: str, prefix: str) -> dict[str, set[str]]:
 
 
 def job_needs(text: str, job: str) -> list[str]:
-    body = jobs(text).get(job, [])
+    return _job_needs(jobs(text).get(job, []))
+
+
+def _job_needs(body: list[str]) -> list[str]:
     for i, line in enumerate(body):
         match = re.match(r"^\s*needs\s*:\s*(.*)$", line)
         if not match:
@@ -279,6 +282,18 @@ def job_needs(text: str, job: str) -> list[str]:
                 for m in [re.match(r"^\s*-\s*(\S+)", entry)] if m]
     return []
 
+
+def job_needs_closure(text: str, job: str) -> set[str]:
+    definitions = jobs(text)
+    pending = _job_needs(definitions.get(job, []))
+    seen = {job}
+    while pending:
+        dependency = pending.pop()
+        if dependency in seen:
+            continue
+        seen.add(dependency)
+        pending.extend(_job_needs(definitions.get(dependency, [])))
+    return seen - {job}
 
 
 PR_ONLY_CANCEL = re.compile(r"""^\$\{\{\s*github\.event_name\s*==\s*'pull_request'\s*\}\}$""")
@@ -603,9 +618,9 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
         called = set(re.findall(r"uses\s*:\s*\./\.github/workflows/([\w.-]+)", verify))
         ci_called = set(re.findall(r"uses\s*:\s*\./\.github/workflows/([\w.-]+)", ci or ""))
         # A call from ci.yml only reaches the gate when the calling job is in
-        # `ci-ok`'s `needs:`. Without that, `ci-ok` still passes while the job
-        # runs and the queue is admitted without its verdict.
-        ci_ok_needs = set(job_needs(ci or "", "ci-ok"))
+        # the transitive dependency graph. Otherwise the queue check can pass
+        # while the job runs and admit the change without its verdict.
+        ci_ok_needs = job_needs_closure(ci or "", "ci-ok")
         awaited = ci_jobs_calling(ci or "", "/.github/workflows/")
         loose = []
         unguarded = []
@@ -680,7 +695,7 @@ def evaluate_rows(facts: dict, policy: dict, compare: Comparer) -> dict[str, dic
                 ok, why = compare.at_or_after(pin)
                 if ok is not True:
                     bad.append(why)
-            if "main-state" not in job_needs(ci, "ci-ok"):
+            if "main-state" not in job_needs_closure(ci, "ci-ok"):
                 bad.append("ci-ok does not need main-state")
         rows["R5"] = need(not bad, "main-state pinned at or after the floor", "; ".join(bad))
 
