@@ -20,6 +20,13 @@ and selected artifact bytes. A failed serving check restores the captured parent
 pointer only while this release still owns it, then verifies rollback readback.
 A newer successful publication always wins over a late failure from its predecessor.
 
+`publish_pointer` uses that same transaction for already admitted pointer-only
+changes. The caller supplies independently bound change and replacement hashes
+and public preflight, acceptance and rollback callbacks. A fast local guard
+can check related origin state under the pointer lock before swap and acceptance.
+This entry point never installs an asset directory and does not grant deployment
+authority. A confirmed operation is never rolled back by a later readback retry.
+
 Keep durable journal/previous-pointer files outside the served root. The journal
 owns an accepted incomplete attempt across process crashes, including a crash
 between pointer replacement and receipt commit. A short transaction coordinates
@@ -54,7 +61,7 @@ Validation:
 python3 -m unittest discover -s tests -p 'test_static_publication.py' -v
 ```
 
-Fifteen cases exercise exact installation, corrupt/refused inputs, stale parents,
+Tests exercise exact installation, corrupt/refused inputs, stale parents,
 candidate failure, installed failure and rollback, out-of-order completion,
 unchanged unrelated state, immutable-directory refusal, path/symlink refusal, and
 process crashes before/after pointer switching and during rollback, public read

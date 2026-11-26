@@ -206,5 +206,59 @@ class StaticPublication(unittest.TestCase):
         self.assertEqual((self.root / "Version.json").read_bytes(), self.previous)
 
 
+class PointerOnly(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name) / "served"
+        self.root.mkdir()
+        self.state = Path(temp.name) / "state"
+        self.pointer = self.root / "manifest.json"
+        self.pointer.write_bytes(b"before")
+        self.change = {"targetPointer": "manifest.json", "parentPointerSha256": p.digest(b"before"),
+                       "pointerSha256": p.digest(b"after"), "source": {"operation": "sample"}}
+        self.key = p.digest(p.canonical(self.change))
+
+    def publish(self, *, expected=None, pointer=b"after", serving=lambda _: None, local=lambda: None):
+        return p.publish_pointer(self.root, self.state, self.change, expected or self.key, pointer,
+                                 lambda _: None, serving, verify_local=local,
+                                 verify_rollback=lambda _, previous: self.assertEqual(previous, self.pointer.read_bytes()))
+
+    def test_pointer_only_success_creates_no_artifact_files_and_reconciles(self):
+        accepted = self.publish()
+        self.assertEqual(accepted["state"], "ACCEPTED")
+        self.assertEqual(self.publish(), accepted)
+        self.assertEqual(self.pointer.read_bytes(), b"after")
+        self.assertEqual(list(self.root.iterdir()), [self.pointer])
+        self.assertEqual((self.state / "previous" / self.key).read_bytes(), b"before")
+
+    def test_bound_bytes_and_under_lock_precondition_refuse(self):
+        for kwargs in ({"expected": "a" * 64}, {"pointer": b"wrong"}):
+            with self.assertRaisesRegex(p.Refused, "sealed identity"):
+                self.publish(**kwargs)
+        def failed():
+            raise ValueError("local precondition")
+        with self.assertRaisesRegex(ValueError, "local precondition"):
+            self.publish(local=failed)
+        self.assertEqual(self.pointer.read_bytes(), b"before")
+
+    def test_public_failure_rolls_back_only_unaccepted_change(self):
+        def failed(_):
+            raise ValueError("readback failed")
+        with self.assertRaisesRegex(ValueError, "readback failed"):
+            self.publish(serving=failed)
+        self.assertEqual(self.pointer.read_bytes(), b"before")
+        journal = self.state / "receipts" / (self.key + ".json")
+        self.assertEqual(json.loads(journal.read_bytes())["state"], "ROLLED_BACK")
+
+    def test_later_readback_failure_does_not_revert_accepted_change(self):
+        self.publish()
+        def failed(_):
+            raise ValueError("readback failed")
+        with self.assertRaisesRegex(ValueError, "readback failed"):
+            self.publish(serving=failed)
+        self.assertEqual(self.pointer.read_bytes(), b"after")
+
+
 if __name__ == "__main__":
     unittest.main()

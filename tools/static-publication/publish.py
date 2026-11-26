@@ -190,14 +190,40 @@ def publish(package, root, state_root, expected_package_sha, required_proofs, ve
     A failure after pointer activation restores only that exact pointer. A newer
     publication wins; this attempt cannot roll it back.
     """
-    package, root, state_root = map(lambda path: Path(path).resolve(), (package, root, state_root))
+    package, root = Path(package).resolve(), Path(root).resolve()
+    release, pointer_bytes = validate_package(package, expected_package_sha, required_proofs)
+    return _publish_pointer(root, state_root, release, pointer_bytes, expected_package_sha,
+                            verify_candidate, verify_serving, checkpoint, verify_rollback,
+                            prepare=lambda: install_directory(package, root, release))
+
+
+def publish_pointer(root, state_root, change, expected_change_sha, pointer_bytes, verify_candidate,
+                    verify_serving, *, verify_rollback, verify_local, checkpoint=lambda _: None):
+    """Apply a pointer-only change admitted by the authenticated deployment adapter.
+
+    ``change`` identifies the target, parent, replacement and source. The adapter
+    must admit its policy before calling. No artifact directory is read or written.
+    ``verify_local`` runs inside the pointer lock immediately before replacement
+    and acceptance; use it only for fast local preconditions, not network reads.
+    """
+    if (set(change) != {"targetPointer", "parentPointerSha256", "pointerSha256", "source"}
+            or not re.fullmatch(r"[a-f0-9]{64}", change["parentPointerSha256"])
+            or digest(canonical(change)) != expected_change_sha
+            or digest(pointer_bytes) != change["pointerSha256"]):
+        raise Refused("Pointer-only change differs from its sealed identity")
+    return _publish_pointer(root, state_root, change, pointer_bytes, expected_change_sha,
+                            verify_candidate, verify_serving, checkpoint, verify_rollback,
+                            verify_local=verify_local)
+
+
+def _publish_pointer(root, state_root, release, pointer_bytes, key, verify_candidate, verify_serving,
+                     checkpoint, verify_rollback, prepare=lambda: None, verify_local=lambda: None):
+    root, state_root = Path(root).resolve(), Path(state_root).resolve()
     if verify_rollback is None:
         raise Refused("Rollback readback callback is required before publication")
     if state_root.is_relative_to(root) or root.is_relative_to(state_root):
         raise Refused("Durable publication state must be outside the served root")
-    release, pointer_bytes = validate_package(package, expected_package_sha, required_proofs)
     target = within(root, release["targetPointer"])
-    key = expected_package_sha
     journal_path = state_root / "receipts" / (key + ".json")
     backup_path = state_root / "previous" / key
 
@@ -240,20 +266,31 @@ def publish(package, root, state_root, expected_package_sha, required_proofs, ve
             metadata = target.stat()
             journal = {"schemaVersion": 1, "packageSha256": key, "source": release["source"],
                        "pointerSha256": digest(pointer_bytes), "targetPointer": release["targetPointer"],
-                       "releaseDirectory": release["releaseDirectory"],
+                       "releaseDirectory": release.get("releaseDirectory"),
                        "pointerMode": metadata.st_mode & 0o777,
                        "pointerOwner": [metadata.st_uid, metadata.st_gid]}
             save(journal, "PREPARED")
-        install_directory(package, root, release)
+        prepare()
 
     if journal["state"] == "ROLLBACK_SWITCHED":
         confirm_rollback(journal)
         raise Refused("Prior attempt failed; rollback reconciled")
 
+    # Never roll back a completed publication because a later retry cannot read
+    # its public route. Recheck the public and origin identities without writing.
+    if journal["state"] == "ACCEPTED":
+        verify_serving(release)
+        with transaction(state_root, release["targetPointer"]):
+            verify_local()
+            if target.read_bytes() != pointer_bytes:
+                raise Refused("Accepted pointer changed during readback")
+        return journal
+
     try:
         verify_candidate(release)
         with transaction(state_root, release["targetPointer"]):
             current = target.read_bytes()
+            verify_local()
             if digest(current) == release["parentPointerSha256"]:
                 save(journal, "SWITCHING")
                 durable_write(target, pointer_bytes, journal["pointerMode"], journal["pointerOwner"])
@@ -264,6 +301,7 @@ def publish(package, root, state_root, expected_package_sha, required_proofs, ve
                 raise Refused("Pointer changed while candidate was verified")
         verify_serving(release)
         with transaction(state_root, release["targetPointer"]):
+            verify_local()
             if target.read_bytes() != pointer_bytes:
                 save(journal, "SUPERSEDED")
                 raise Refused("Pointer changed before serving acceptance")
@@ -273,6 +311,8 @@ def publish(package, root, state_root, expected_package_sha, required_proofs, ve
         rolled_back = False
         with transaction(state_root, release["targetPointer"]):
             current = target.read_bytes()
+            if json.loads(journal_path.read_bytes())["state"] == "ACCEPTED":
+                raise
             if current == pointer_bytes:
                 previous = backup_path.read_bytes()
                 if digest(previous) != release["parentPointerSha256"]:
