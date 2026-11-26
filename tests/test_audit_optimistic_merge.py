@@ -504,6 +504,19 @@ class RowFailureTest(unittest.TestCase):
                                   "      # verify-workflow: other.yml\n      verify-workflow: verify.yml\n")
         self.assertEqual(audit.caller_with(text, "verify-workflow"), "verify.yml")
 
+    def test_r3b_and_r5_follow_the_queue_gate_dependencies_transitively(self) -> None:
+        facts = conformant()
+        facts["all_workflows"]["extra.yml"] = "on: merge_group\njobs:\n  extra:\n    runs-on: x\n"
+        direct = "needs: [main-state, plan, lint, test, migrations, stack, suite]"
+        ci = facts["files"]["ci.yml"].replace(direct, "needs: source-verdict")
+        ci += ("\n  source-verdict:\n    runs-on: sylphx-linux-control\n    "
+               + direct.replace("suite]", "suite, extra]")
+               + "\n  extra:\n    uses: ./.github/workflows/extra.yml\n")
+        facts["files"]["ci.yml"] = ci
+        self.assertEqual(failing(run_rows(facts)), set())
+        facts["files"]["ci.yml"] = ci.replace("needs: source-verdict", "needs: plan")
+        self.assertEqual(failing(run_rows(facts)), {"R3b", "R5"})
+
     def test_r5_main_state_job_pin_and_need(self) -> None:
         facts = conformant()
         facts["files"]["ci.yml"] = facts["files"]["ci.yml"].replace(

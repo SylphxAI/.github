@@ -56,9 +56,9 @@ proofs - is a suite lane.
    `ci.yml`, so it does not wait for another workflow's check run on the same
    commit. A check that gated the merge on its own - `keel-pin-check`,
    `web-smoke` - must become a job of `ci.yml` that calls its file and is
-   listed in `ci-ok`'s `needs:`. A `uses:` call needs the called workflow to
+   in the transitive dependency graph of `ci-ok`. The called workflow must
    declare `on: workflow_call` (the two starters now do), and the calling job
-   must be in `ci-ok`'s `needs:`: a call alone is not enough, because `ci-ok`
+   must be awaited by `ci-ok`: a call alone is not enough, because `ci-ok`
    still passes while that job runs. Left standalone or merely called, the
    queue can admit the change before it reports: GitHub treats a required check
    missing on the head as satisfied, and a run that finishes after `ci-ok` is
@@ -622,7 +622,7 @@ exemption and writes the whole report with `--json`.
 | R1 | `sylphx.toml` has `[ci] merge = "optimistic"` and an explicit `on_red` |
 | R2 | `ci.yml` runs on `merge_group` and has the `ci-ok` job |
 | R3 | `verify.yml` runs on push to the default branch, has a `verified` job and does not cancel a trunk run |
-| R3b | every other workflow that runs on push to the default branch is called from `verify.yml`, or carries the comment `# optimistic-merge: advisory`; otherwise its red never reaches the handler. Every other workflow that runs on `merge_group` is called from `ci.yml` by a job that is in `ci-ok`'s `needs:`, or carries `# optimistic-merge: gate-external`; otherwise it is a gate step `ci-ok` never waits for |
+| R3b | every other workflow that runs on push to the default branch is called from `verify.yml`, or carries the comment `# optimistic-merge: advisory`; otherwise its red never reaches the handler. Every other workflow that runs on `merge_group` is called from `ci.yml` by a job that is in the transitive dependency graph of `ci-ok`, or carries `# optimistic-merge: gate-external`; otherwise it is a gate step `ci-ok` never waits for |
 | R4 | `red-main.yml` calls the shared handler pinned to a full SHA at or after the policy floor, its `if:` follows the default branch, and its verify workflow can be dispatched as the handler dispatches it: it has a `workflow_dispatch` trigger, and every caller in the repository that names it in `verify-workflow` sends the `lane-input` the workflow declares (default `lanes`, the handler's own default) or an explicit `lane-input: ""`, else the candidate dispatch is refused with HTTP 422 |
 | R5 | `ci.yml` has `main-state` on `main-red-gate`, pinned at or after the floor, and `ci-ok` needs it |
 | R6 | the default branch has a merge queue, `ci-ok` is required (where R2 applies) and `verified` is not |
