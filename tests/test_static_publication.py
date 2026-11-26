@@ -206,10 +206,6 @@ class StaticPublication(unittest.TestCase):
         self.assertEqual((self.root / "Version.json").read_bytes(), self.previous)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PointerOnly(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -262,3 +258,7 @@ class PointerOnly(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "readback failed"):
             self.publish(serving=failed)
         self.assertEqual(self.pointer.read_bytes(), b"after")
+
+
+if __name__ == "__main__":
+    unittest.main()
