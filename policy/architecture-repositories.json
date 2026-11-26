@@ -1,9 +1,8 @@
 {
   "product_source": {
-    "blob": "3c65526da80eb69550763143d6ca91009d4990d9",
-    "path": "company/architecture-map/edges.tsv",
-    "read_at_utc": "2026-11-01T21:39:57.478735+00:00",
-    "repository": "SylphxAI/owner"
+    "refresh_source": "org:architecture/architecture-map",
+    "snapshot_blob": "3c65526da80eb69550763143d6ca91009d4990d9",
+    "snapshot_read_at_utc": "2026-11-01T21:39:57.478735+00:00"
   },
   "products": [
     {
@@ -393,11 +392,12 @@
       "page_sizes": [
         100,
         100,
-        48
+        47
       ],
       "query": "orgs/SylphxAI/repos?per_page=100&type=all",
       "read_at_utc": "2026-11-01T21:36:04.386040+00:00",
-      "repository_count": 248
+      "repository_count": 247,
+      "scope_note": "Counts describe the retained snapshot after removing the retired governance repository."
     },
     {
       "organization": "Cubeage",
@@ -917,7 +917,6 @@
     {"archived": true, "full_name": "SylphxAI/hands", "id": 1333367687},
     {"archived": true, "full_name": "SylphxAI/kernox", "id": 1335333395},
     {"archived": false, "full_name": "SylphxAI/kalkas", "id": 1335409037},
-    {"archived": false, "full_name": "SylphxAI/owner", "id": 1335440057},
     {"archived": true, "full_name": "SylphxAI/api-kit", "id": 1348973865},
     {"archived": false, "full_name": "SylphxAI/infra", "id": 1353519035},
     {"archived": true, "full_name": "Cubeage/hk-mahjong-tycoon-godot", "id": 1372902822},

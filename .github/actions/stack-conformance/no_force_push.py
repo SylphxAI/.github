@@ -16,7 +16,7 @@ import textwrap
 from urllib.parse import quote
 
 BASELINE_MARKER = "# force-push-ratchet-v1"
-CONTRACT = "https://github.com/SylphxAI/owner/blob/main/AGENTS.md"
+CONTRACT = "org:governance/agents-full"
 SHELL = {".sh", ".bash", ".zsh", ".ksh", ".ps1", ".cmd", ".bat"}
 SOURCE = {".py", ".js", ".ts", ".mjs", ".cjs", ".rb", ".pl"}
 SKIP = {"node_modules", "vendor", "third_party", "thirdparty", "external", ".git"}

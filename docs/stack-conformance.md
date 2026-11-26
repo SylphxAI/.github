@@ -443,9 +443,8 @@ checkout.
 
 `stack_conformance.py all DIR...` scans each checkout at `HEAD` and prints one
 line per repository (count and departures) and the share with no departure at
-all: the stack part of "Products fully on our own stack" in SylphxAI/owner
-`company/standards-map.md`. It runs on demand over fresh clones; there is no
-schedule. Fetch the Git objects in bulk without materializing a working tree:
+all. It runs on demand over fresh clones; there is no schedule. Fetch the Git
+objects in bulk without materializing a working tree:
 
 ```sh
 git clone --depth 1 --no-checkout <url> <dir>
@@ -479,12 +478,8 @@ seen; every caller gains the rule on its next pin move.
 
 ## Architecture classes C1–C7
 
-The existing action also checks structural regressions against the seven-class
-[architecture contract](https://github.com/SylphxAI/owner/blob/main/company/architecture-audit.md).
-The governing references are SylphxAI/skills
-[`architecture.md`](https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/architecture.md)
-and [`stack.md`](https://github.com/SylphxAI/skills/blob/main/skills/self-challenge/references/stack.md),
-plus the company's `AGENTS.md`.
+The action checks the seven structural regression classes below. For group
+architecture policy, see `org:governance/agents-full` in Org OS Knowledge.
 
 | Class | Supported seed | Clean control |
 | --- | --- | --- |
@@ -826,15 +821,17 @@ resolved by numeric repository ID in `policy/architecture-repositories.json`;
 the checker contains no hand-maintained product list. Engine, service and tool
 repositories do not become downstream products merely because of their org. The dated paginated census
 covers SylphxAI, Cubeage, EpiowAI and OzyrixLtd
-(653 repository IDs, 122 unarchived at the 2026-11-01 read). TseFamily is a
+(2026-11-01 snapshot, with the retired governance repository omitted). TseFamily is a
 personal organization and is excluded from company censuses, baselines and rollouts. Numeric IDs retain identity across canonical
 names. Archived rows remain visible as history and do not seed import rules.
 The policy declares which layers are shared, including Cubeage's platform,
 kit and tycoon engine; Cubeage layers use their own title population.
 
 Refresh from a complete metadata snapshot with
-`scripts/build_architecture_catalog.py --snapshot SNAPSHOT.json --products PRODUCTS.json`; its input
-records each organization's query, page sizes, read time and repository count.
+`scripts/build_architecture_catalog.py --snapshot SNAPSHOT.json --products PRODUCTS.json`.
+Use `org:architecture/architecture-map` in Org OS Knowledge as the product
+source for a refresh. The snapshot input records each organization's query,
+page sizes, read time and repository count.
 It rejects missing organizations, count mismatches and duplicate identities.
 The generated file ships with the action's immutable pin. It is a bounded
 identity vocabulary, not an assertion that every repository name is a product

@@ -68,9 +68,9 @@ jobs:
           node-version: "26.13.1"
       - name: Enforce managed runner defaults
         run: |
-          # Larger and GPU hosted runners are banned everywhere (owner#750).
+          # Larger and GPU hosted runners are banned everywhere.
           if grep -REn '(ubuntu|windows|macos)-[a-z0-9.-]*(cores|xlarge|large|gpu)' .github templates --include='*.yml' --include='*.yaml' | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#'; then
-            echo '::error::larger or GPU GitHub-hosted runners are banned (owner#750)'
+            echo '::error::larger or GPU GitHub-hosted runners are banned'
             exit 1
           fi
       - name: Check mechanism boundaries

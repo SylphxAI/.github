@@ -48,9 +48,11 @@ Delivered customer repositories (`sylphx_delivery=delivered`) and repositories
 in the policy's `hands-off` or `frozen-legacy` classes are excluded, as are
 archived and paused/stopped products. These skips are reported and do not count
 as coverage. [`policy/merge-lane-scope.json`](../policy/merge-lane-scope.json)
-records the portfolio source, immutable revision and reason for each lifecycle
-exclusion, including LearningQuest outside company scope. A rollout reads all
-exemption reasons, delivery properties and the portfolio before opening a PR. The property read retries at most three times. If still unreadable, it warns
+records the pinned lifecycle exclusions and their reasons. Before a rollout,
+read current lifecycle decisions in Org OS Knowledge
+(`org:governance/group-state-registers` and `org:rulings/decisions`), the
+exemption reasons, and delivery properties. The property read retries at most
+three times. If still unreadable, it warns
 and inspects source as non-delivered: clean source passes and a violation
 still fails. Hands-off exclusion happens before API reads. Source reads also
 retry at most three times, except explicit rate limits are not retried.
