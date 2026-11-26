@@ -8,9 +8,12 @@ does not create authority. An undeclared job fails at the exchange.
 
 For a manifest-only check, pin `image-lane.yml` to a full commit SHA and pass
 both `pull-probe-image` (bare host/repository) and `pull-probe-digest` (full
-lowercase SHA-256 digest). Use only `contents: read` and `id-token: write` on
-the calling job; do not pass or inherit secrets. `image` and `tag` remain
-required for the existing workflow schema, but the probe does not use them.
+lowercase SHA-256 digest). The caller must allow the reusable workflow's
+static permission ceiling (`contents: read`, `actions: read`, `packages: read`,
+and `id-token: write`): GitHub checks permissions even on skipped jobs. The
+probe job itself uses only `contents: read` and `id-token: write`. Do not pass
+or inherit secrets. `image` and `tag` are still required by the workflow schema,
+but the probe does not use them.
 Supplying either probe input skips both publisher jobs, even if the probe input
 is invalid. On success the workflow returns `pull_probe_run_id`,
 `pull_probe_source_sha` (the caller's triggering commit), and `pull_probe_digest`.
