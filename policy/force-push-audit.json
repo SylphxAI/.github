@@ -34,7 +34,7 @@
       "command_sha256": "ba948d9698f2e4151172ced1b3290ed470f3996360e2379dac1de227615bd3a6",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push .github/workflows/backend-mirror.yml ba948d9698f2e4151172ced1b3290ed470f3996360e2379dac1de227615bd3a6 1",
       "sanitized_command": "git -c http.extraheader= push --force \"<authenticated remote>\" \"HEAD:refs/heads/${MIRROR_BRANCH}\""
     },
@@ -48,7 +48,7 @@
       "command_sha256": "45ccc0419f4f5b6df024d76d9e95419d756eea9794ed81f0ecf7d697890b6924",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push .github/workflows/backend-source-dispatcher.yml 45ccc0419f4f5b6df024d76d9e95419d756eea9794ed81f0ecf7d697890b6924 1",
       "sanitized_command": "git push --force origin automation/mirror-trigger"
     },
@@ -62,7 +62,7 @@
       "command_sha256": "253f4035a646772ab17f0170417ad6e66335e4847d68544b4bcbb2561e750e69",
       "occurrence": 1,
       "reason": "forced GitHub branch-ref update",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push .github/workflows/red-main.yml 253f4035a646772ab17f0170417ad6e66335e4847d68544b4bcbb2561e750e69 1",
       "sanitized_command": "gh api --method PATCH \"repos/$REPO/git/refs/heads/$candidate_branch\" --field \"sha=$sha\" --field force=true"
     },
@@ -76,7 +76,7 @@
       "command_sha256": "99e5086661c9c86cf9b9ca99bc0c9b2f728bdb327911c27389d310f25a5237ce",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push .github/workflows/red-main.yml 99e5086661c9c86cf9b9ca99bc0c9b2f728bdb327911c27389d310f25a5237ce 1",
       "sanitized_command": "push_branch \"$branch\" --force-with-lease => git_c push --force-with-lease origin \"HEAD:refs/heads/$branch\""
     },
@@ -90,7 +90,7 @@
       "command_sha256": "8384d8ff62bf7bca9afe6ded51af81b75c759d011fb6da2aee85a7c67e2cfc37",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push clients/.github/workflows/promote.yml 8384d8ff62bf7bca9afe6ded51af81b75c759d011fb6da2aee85a7c67e2cfc37 1",
       "sanitized_command": "git push -q -f origin \"HEAD:refs/heads/$branch\""
     },
@@ -104,7 +104,7 @@
       "command_sha256": "468980a78b24a08eb795f9cba109ed33526cbb10b79c0dee8d0c90affba041ea",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push clients/localize-action/localize.sh 468980a78b24a08eb795f9cba109ed33526cbb10b79c0dee8d0c90affba041ea 1",
       "sanitized_command": "git push --force-with-lease origin \"$PR_BRANCH\""
     },
@@ -118,7 +118,7 @@
       "command_sha256": "b602679d1e85c9fc9d7b621e2c02b59b70ed955293b25145ab8ccd1eaf422f87",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push services/data/edge/scripts/promote-data-edge-pin.sh b602679d1e85c9fc9d7b621e2c02b59b70ed955293b25145ab8ccd1eaf422f87 1",
       "sanitized_command": "git push --force-with-lease=\"refs/heads/${PIN_BRANCH}:${EXPECTED}\" origin \"HEAD:refs/heads/${PIN_BRANCH}\""
     },
@@ -132,7 +132,7 @@
       "command_sha256": "fbaa9f3b2551487a50b893f43c6ee68d272e0cc94968aceece78319cde898fff",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push services/sandboxes/scripts/promote-cell-pin.sh fbaa9f3b2551487a50b893f43c6ee68d272e0cc94968aceece78319cde898fff 1",
       "sanitized_command": "git push --force \"<authenticated remote>\" \"HEAD:refs/heads/${BRANCH}\""
     },
@@ -146,7 +146,7 @@
       "command_sha256": "cebda1bb99ea74e9075ce9f9a561b2eed39086f8f3f790b2406b21fd70aa6d01",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push .github/workflows/update-pins.yaml cebda1bb99ea74e9075ce9f9a561b2eed39086f8f3f790b2406b21fd70aa6d01 1",
       "sanitized_command": "git push --force origin \"$branch\""
     },
@@ -160,7 +160,7 @@
       "command_sha256": "4651168a15597fdb23542be84eae82b6de320ed33cbecd38b829b52356a728f0",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push action.yml 4651168a15597fdb23542be84eae82b6de320ed33cbecd38b829b52356a728f0 1",
       "sanitized_command": "git push --force origin \"$BRANCH\""
     },
@@ -174,7 +174,7 @@
       "command_sha256": "8384d8ff62bf7bca9afe6ded51af81b75c759d011fb6da2aee85a7c67e2cfc37",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push .github/workflows/promote.yml 8384d8ff62bf7bca9afe6ded51af81b75c759d011fb6da2aee85a7c67e2cfc37 1",
       "sanitized_command": "git push -q -f origin \"HEAD:refs/heads/$branch\""
     },
@@ -188,7 +188,7 @@
       "command_sha256": "468980a78b24a08eb795f9cba109ed33526cbb10b79c0dee8d0c90affba041ea",
       "occurrence": 1,
       "reason": "force option",
-      "contract": "https://github.com/SylphxAI/owner/blob/main/AGENTS.md",
+      "contract": "org:governance/agents-full",
       "baseline_key": "force-push localize-action/localize.sh 468980a78b24a08eb795f9cba109ed33526cbb10b79c0dee8d0c90affba041ea 1",
       "sanitized_command": "git push --force-with-lease origin \"$PR_BRANCH\""
     }

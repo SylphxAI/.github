@@ -3,8 +3,9 @@
 Organization-level GitHub configuration: community health files, the profile,
 templates, brand references, reusable workflows, and shared actions used by
 more than one repository. [PROJECT.md](PROJECT.md) states the boundary.
-Reusable standards are in `SylphxAI/skills` `skills/self-challenge/references/`.
-The seven-class contract is `SylphxAI/owner` `company/architecture-audit.md`.
+See [the seven architecture classes](docs/stack-conformance.md#architecture-classes-c1c7)
+for the checks implemented here. Group architecture policy lives in Org OS
+Knowledge: `org:governance/agents-full`.
 
 - A change to a shared action or workflow reaches every caller that pins it, so
   callers use a full commit SHA followed by `# main`. Existing Renovate grouped

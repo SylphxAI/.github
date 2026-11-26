@@ -22,9 +22,8 @@ repair the same trunk dependency. Renovate's GitHub vulnerability alerts require
 GitHub Dependabot alerts and the bot's access to them; do not assume that an
 ordinary package-update schedule enables advisory updates.
 
-Company law defers security audits and hardening for unlaunched products to the
-launch gate (`SylphxAI/owner`, `standards/security.md`, and the accepted risk for
-unlaunched products). Do not add a daily security job during development.
+For unlaunched products, defer scheduled dependency audits to launch. Do not
+add a daily audit job during development.
 
 ## Launched-product ownership
 

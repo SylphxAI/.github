@@ -1,6 +1,6 @@
 name: Red main
 
-# The red-main handler for optimistic merge (owner#809). A caller runs it when
+# The red-main handler for optimistic merge. A caller runs it when
 # its verify workflow failed on the trunk after the change had already landed.
 #
 # What it does, in order:
@@ -643,7 +643,7 @@ jobs:
     if: inputs.mode == 'repair'
     name: Red main handler
     # Our own runners only; a hosted label is refused in pull requests that
-    # add one (owner#750).
+    # add one.
     runs-on: sylphx-linux-standard
     # Empty string = no environment (an empty `environment:` name is ignored by
     # Actions), so callers that omit the input behave as before.

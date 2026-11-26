@@ -4,8 +4,8 @@
 Shared runners move wall-clock numbers with load, so a budget checked before
 merge fails changes that touched nothing it measures. Timing gates run after
 merge, as the median of several rounds against a stored baseline; before merge
-a workflow may measure and print numbers, but not fail on them
-(SylphxAI/owner standards/dx.md, continuous integration).
+a workflow may measure and print numbers, but not fail on them. See
+docs/ci-template.md.
 
 A workflow is pre-merge when it triggers on pull_request,
 pull_request_target or merge_group, or is reusable (workflow_call), since a

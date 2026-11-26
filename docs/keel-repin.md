@@ -191,11 +191,11 @@ turns off its own `settle` job in its `keel-repin.yml`, rather than the action c
 exceptions. Two kinds of title do that today:
 
 - **A title with real players.** The Fun titles (瘋系列), HK Mahjong Tycoon and Big2 Tycoon HK have real
-  users, and a change that reaches one takes one independent review and a guest-continuity check before
-  it ships ([SylphxAI/owner](https://github.com/SylphxAI/owner) `AGENTS.md`, "Real users"). `Cubeage/
-  fun-big2-keel`, `fun-mahjong-keel`, `block-sort-keel`, `godsmith-keel` and `planet-post-keel` therefore
+  users. Verify guest continuity before shipping a change that reaches them; see the user-data limits
+  in Org OS Knowledge (`org:governance/agents-full`).
+  `Cubeage/fun-big2-keel`, `fun-mahjong-keel`, `block-sort-keel`, `godsmith-keel` and `planet-post-keel`
   carry `if: ${{ vars.KEEL_REPIN_AUTOMERGE == 'true' }}` on `settle`, with the guest-continuity line in
-  their comment; the bot still polls, opens the pull request and starts CI, and a person merges it. The
+  their comment; the bot still polls, opens the pull request and starts CI. The
   `KEEL_REPIN_AUTOMERGE` repository variable is unset in each of them, so `settle` is skipped.
 - **A delivered customer repository.** No work goes into one unless the customer asks, so a repository
   whose organization custom property `sylphx_delivery` is `delivered` must not carry `keel-repin.yml` at

@@ -1,6 +1,6 @@
 name: Red main
 
-# The caller for the red-main handler (owner#809). When the verify workflow
+# The caller for the red-main handler. When the verify workflow
 # fails on `main`, the change has already landed: the reusable handler in
 # SylphxAI/.github decides whether the failure is a flake - it files an issue
 # per failing unit and opens one pull request that marks each flaky unit in

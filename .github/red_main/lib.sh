@@ -1,4 +1,4 @@
-# Red main handler helpers (owner#809).
+# Red main handler helpers.
 WORK_DIR="${RUNNER_TEMP}/red-main"
 STATE_DIR="$WORK_DIR/state"
 export WORK_DIR STATE_DIR GIT_TERMINAL_PROMPT=0
