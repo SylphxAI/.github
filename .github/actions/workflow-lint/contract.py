@@ -121,6 +121,7 @@ def gate_coverage(workflows):
     documents = {file: yaml.compose(text, Loader=yaml.BaseLoader) for file, text in workflows.items()}
     decoded = {file: yaml.load(text, Loader=WorkflowLoader) or {} for file, text in workflows.items()}
     findings, active, gates, advisory = [], {}, {}, {}
+    explicit_queue_gates = []
     for file, document in documents.items():
         jobs = fields(fields(document).get("jobs"))
         # A column-zero header comment cannot be confused with text in a run body.
@@ -143,8 +144,17 @@ def gate_coverage(workflows):
                               if aggregate_action(scalar(step.get("uses"))) and runnable(value, context)]
                 pollers = [step for step in aggregates
                            if aggregate_action(scalar(step.get("uses"))) == "ci-ok-polling"]
-                if (name == "ci-ok" or scalar(job.get("name")) == "ci-ok" or aggregates):
-                    gates.setdefault(event, []).append((file, name, pollers))
+                explicit = name == "ci-ok" or scalar(job.get("name")) == "ci-ok"
+                if explicit or aggregates:
+                    gate = (file, name, pollers)
+                    gates.setdefault(event, []).append(gate)
+                    if event == "merge_group" and explicit:
+                        explicit_queue_gates.append(gate)
+    # A secondary verdict is not a queue gate merely because it uses the same
+    # action. The queue can tear down the group once ci-ok succeeds, so jobs
+    # that finish after it cannot establish their own coverage.
+    if explicit_queue_gates:
+        gates["merge_group"] = explicit_queue_gates
     for (file, event), running in active.items():
         jobs = fields(fields(documents[file]).get("jobs"))
         covered = set()

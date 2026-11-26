@@ -62,6 +62,9 @@ With full lint selected, the contract scans `.github/workflows/*.yml` and `*.yam
 - Every independently triggered `pull_request` or `merge_group` job must be
   in that event's `ci-ok` transitive `needs` closure. The shared `ci-ok` action
   is also recognized under a different job ID, including local action paths.
+  On `merge_group`, when a job has the explicit `ci-ok` ID or name, only
+  explicit `ci-ok` jobs anchor coverage. Another aggregate cannot cover
+  itself: the queue may remove membership as soon as the required check passes.
   Legacy `ci-ok-polling` gates cover their nonignored observed checks across
   workflows; ignored or unresolved check names are not assumed covered.
 - An intentionally nonblocking workflow declares a header comment with a reason:
