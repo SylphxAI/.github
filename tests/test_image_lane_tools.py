@@ -13,6 +13,9 @@ import hashlib
 import importlib.util
 import json
 import io
+import os
+import subprocess
+import sys
 import contextlib
 import re
 import tempfile
@@ -24,6 +27,9 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from merge_lane import expression
+
 LANE_IMAGE = "registry.sylphx.com/library/sylphx-hands"
 
 
@@ -138,8 +144,8 @@ class ImageLaneSourceContractTests(unittest.TestCase):
     def test_source_fetch_depth_does_not_change_lane_checkouts(self) -> None:
         checkouts = [
             (job_name, step)
-            for job_name, job in self.doc["jobs"].items()
-            for step in job["steps"]
+            for job_name in ("preflight", "publish")
+            for step in self.doc["jobs"][job_name]["steps"]
             if step.get("uses", "").startswith("actions/checkout@")
         ]
         self.assertEqual(len(checkouts), 3)
@@ -159,6 +165,139 @@ class ImageLaneSourceContractTests(unittest.TestCase):
                 })
         self.assertEqual(self.workflow.count("${{ inputs['source-fetch-depth'] }}"), 1)
 
+
+
+class PullProbeWorkflowTests(unittest.TestCase):
+    IMAGE = "registry.example.com/team/image"
+    DIGEST = "sha256:" + "a0" * 32
+    SOURCE = "f" * 40
+
+    def setUp(self):
+        self.workflow = yaml.safe_load((ROOT / ".github/workflows/image-lane.yml").read_text())
+        self.call = self.workflow[True]["workflow_call"]
+        self.jobs = self.workflow["jobs"]
+        self.validate, self.checkout, self.verify = self.jobs["pull-probe"]["steps"]
+
+    def assert_route(self, image, digest, expected):
+        values = {"inputs.pull-probe-image": {image}, "inputs.pull-probe-digest": {digest}}
+        enabled = set()
+        for name, job in self.jobs.items():
+            if "if" in job:
+                errors = []
+                result, = expression(job["if"], values, condition=True, errors=errors)
+                self.assertEqual(errors, [])
+                if result:
+                    enabled.add(name)
+            else:
+                enabled.add(name)
+        self.assertEqual(enabled, expected)
+
+    def test_omitted_inputs_default_to_publish_with_preflight(self):
+        defaults = []
+        for name in ("pull-probe-image", "pull-probe-digest"):
+            item = self.call["inputs"][name]
+            self.assertEqual((item["type"], item["required"], item["default"]), ("string", False, ""))
+            defaults.append(item["default"])
+        self.assert_route(*defaults, {"preflight", "publish"})
+        self.assertEqual(self.jobs["publish"]["needs"], "preflight")
+
+    def run_step(self, step, root, image=IMAGE, digest=DIGEST, tool_sha=SOURCE, **extra):
+        # Run the actual YAML shell program, without caller credentials or a network.
+        env = {"PATH": os.environ["PATH"], "IMAGE": image, "DIGEST": digest,
+               "TOOL_REPOSITORY": "example/shared", "TOOL_SHA": tool_sha,
+               "GITHUB_RUN_ID": "42", "GITHUB_SHA": self.SOURCE,
+               "GITHUB_OUTPUT": str(root / "output"), "RUNNER_TEMP": str(root), **extra}
+        return subprocess.run(["bash", "-euo", "pipefail", "-c", step["run"]], cwd=root,
+                              env=env, text=True, capture_output=True, timeout=10)
+
+    def test_probe_has_only_read_permissions_and_pins_its_own_checkout(self):
+        self.assert_route(self.IMAGE, self.DIGEST, {"pull-probe"})
+        job = self.jobs["pull-probe"]
+        self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
+        self.assertNotIn("needs", job)
+        self.assertNotIn("secrets", str(job))
+        self.assertNotIn("environment", job)
+        self.assertRegex(self.checkout["uses"], r"^actions/checkout@[0-9a-f]{40}$")
+        self.assertEqual(self.checkout["with"], {
+            "repository": "${{ job.workflow_repository }}", "ref": "${{ job.workflow_sha }}",
+            "path": ".image-lane", "persist-credentials": False,
+        })
+        self.assertEqual({key: self.call["outputs"]["pull_probe_" + key]["value"] for key in job["outputs"]},
+                         {key: "${{ jobs.pull-probe.outputs." + key + " }}"
+                          for key in ("run_id", "source_sha", "digest")})
+
+    def test_missing_or_malformed_inputs_never_enable_publish_or_mint(self):
+        for image, digest in (("", self.DIGEST), (self.IMAGE, ""), ("0", ""), (" ", ""),
+                              (self.IMAGE, "sha256:" + "F" * 64), (self.IMAGE, "sha256:" + "a" * 63),
+                              (self.IMAGE, self.DIGEST + "\n"), (self.IMAGE, "latest")):
+            with self.subTest(image=image, digest=digest), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.assert_route(image, digest, {"pull-probe"})
+                result = self.run_step(self.validate, root, image, digest)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("requires both", result.stdout)
+                self.assertFalse((root / "output").exists())
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_step(self.validate, Path(directory), tool_sha="main")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("immutable", result.stdout)
+
+    def install_helper_fixtures(self, root):
+        tools = root / ".image-lane/scripts"
+        tools.mkdir(parents=True)
+        (tools / "mint-registry-auth.py").write_text('''import os, pathlib, sys
+DEFAULT_REGISTRY_HOST = "registry.example.com"
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    assert args[:-1] == ["--identity", "github-oidc", "--actions", "pull", "--image",
+                         "registry.example.com/team/image", "--run-id", "42", "--output-dir"]
+    auth = pathlib.Path(args[-1])
+    auth.mkdir()
+    (auth / "skopeo-auth.json").write_text("mock-credential")
+    print("mock-credential", file=sys.stderr)
+    print("mock-credential")
+    sys.exit(int(os.environ.get("MINT_EXIT", "0")))
+''')
+        (tools / "read-registry-manifest.py").write_text('''import os, pathlib, sys
+args = sys.argv[1:]
+assert args[:5] == ["--image", "registry.example.com/team/image", "--reference",
+                    "sha256:" + "a0" * 32, "--auth-file"]
+assert pathlib.Path(args[5]).read_text() == "mock-credential"
+assert args[6] == "--output"
+pathlib.Path(args[7]).write_text("{}")
+print(os.environ.get("ACTUAL_DIGEST", args[3]))
+''')
+
+    def test_verified_digest_is_only_success_receipt_and_credentials_are_removed(self):
+        for extra in ({}, {"MINT_EXIT": "1"}, {"ACTUAL_DIGEST": "sha256:" + "b" * 64}):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.install_helper_fixtures(root)
+                result = self.run_step(self.validate, root)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                result = self.run_step(self.verify, root, **extra)
+                output = root / "output"
+                self.assertNotIn("mock-credential", result.stdout + result.stderr)
+                self.assertEqual(list(root.glob("image-pull-probe.*")), [])
+                if extra:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    receipt = f"run_id=42\nsource_sha={self.SOURCE}\ndigest={self.DIGEST}\n"
+                    self.assertEqual(output.read_text(), receipt)
+                    self.assertEqual(result.stdout, receipt)
+
+    def test_malformed_or_foreign_image_is_refused_before_mint(self):
+        for image in ("other.example.com/team/image", self.IMAGE + ":tag", self.IMAGE + "/../image"):
+            with self.subTest(image=image), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.install_helper_fixtures(root)
+                self.assert_route(image, self.DIGEST, {"pull-probe"})
+                result = self.run_step(self.verify, root, image)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("bare repository", result.stderr)
+                self.assertFalse((root / "output").exists())
 
 
 class SplitImageReferenceTests(unittest.TestCase):
@@ -387,7 +526,10 @@ class RegistryMintRetryTests(unittest.TestCase):
                      "access":[{"type":"repository", "name":self.REPOSITORY, "actions":["pull"]}]})
         with mock.patch.object(mint, "_request_registry_token", return_value={"token":token}) as exchange:
             self.assertEqual(mint._mint_registry_token("oidc", "gha:42", self.REPOSITORY, mint.DEFAULT_REGISTRY_HOST, 5, "pull"), token)
-        query = mint.urllib.parse.parse_qs(mint.urllib.parse.urlsplit(exchange.call_args.args[0].full_url).query)
+        request = exchange.call_args.args[0]
+        self.assertTrue(request.has_header("Authorization"))
+        self.assertNotIn("Authorization", request.headers)  # urllib copies only these headers on redirect.
+        query = mint.urllib.parse.parse_qs(mint.urllib.parse.urlsplit(request.full_url).query)
         self.assertEqual(query["scope"], [f"repository:{self.REPOSITORY}:pull"])
 
     def test_pull_cli_keeps_credentials_private(self) -> None:
@@ -579,7 +721,7 @@ class ImageLaneNoArtifactTests(unittest.TestCase):
     def test_one_job_builds_and_publishes(self) -> None:
         jobs = self.workflow.split("\njobs:\n", 1)[1]
         names = [line.strip().rstrip(":") for line in jobs.split("\n") if line.startswith("  ") and not line.startswith("   ") and line.strip().endswith(":")]
-        self.assertEqual(names, ["preflight", "publish"])
+        self.assertEqual(names, ["pull-probe", "preflight", "publish"])
 
     def test_the_receipt_is_a_job_output(self) -> None:
         self.assertIn("value: ${{ jobs.publish.outputs.verify_receipt }}", self.workflow)
@@ -695,9 +837,10 @@ class RegistryManifestReadbackTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_image_and_evidence_readback_use_the_same_authoritative_path(self):
-        workflow = (ROOT / ".github/workflows/image-lane.yml").read_text()
-        self.assertEqual(workflow.count("python3 .image-lane/scripts/read-registry-manifest.py"), 2)
-        self.assertNotIn("hashlib.sha256(open(sys.argv[1]", workflow)
+        workflow = yaml.safe_load((ROOT / ".github/workflows/image-lane.yml").read_text())
+        publish = workflow["jobs"]["publish"]["steps"]
+        self.assertEqual(str(publish).count("python3 .image-lane/scripts/read-registry-manifest.py"), 2)
+        self.assertNotIn("hashlib.sha256(open(sys.argv[1]", str(publish))
 
 
 if __name__ == "__main__":

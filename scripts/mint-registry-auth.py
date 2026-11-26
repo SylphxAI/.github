@@ -331,6 +331,9 @@ def _mint_registry_token(svid: str, account: str, repository: str, host: str, ti
         headers={"Accept": "application/json", "Authorization": f"Bearer {svid}"},
         method="GET",
     )
+    if actions == "pull":
+        # Never forward the pull-only credential to a redirect target.
+        request.add_unredirected_header("Authorization", request.headers.pop("Authorization"))
     body = _request_registry_token(request, mint_url, timeout_seconds)
     if not isinstance(body, dict):
         raise RuntimeError("registry token issuer returned a non-object payload")
