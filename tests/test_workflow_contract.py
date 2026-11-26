@@ -272,6 +272,36 @@ class GateCoverageTest(unittest.TestCase):
             text = workflow().replace("  ci-ok:", "  verdict:").replace("      - run: echo ok", "      - uses: " + action)
             self.assertEqual(self.scan(text), [])
 
+    def test_merge_group_aggregate_must_finish_before_the_queue_gate(self):
+        # The queue can remove membership immediately after ci-ok succeeds.
+        # An aggregate that reads the group cannot serve as its own coverage.
+        for action in ("ci-ok", "needs-pass"):
+            with self.subTest(action=action):
+                checked = """  source-verdict:
+    name: source-ci/pass
+    needs: ci-ok
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - uses: ./.github/actions/{action}
+        with:
+          needs: ${{ toJSON(needs) }}
+          required: ci-ok
+"""
+                text = workflow(extra=checked).replace("on: pull_request", "on: merge_group")
+                for bad_order in (text, text.replace("needs: ci-ok", "needs: build")):
+                    found = self.scan(bad_order)
+                    self.assertEqual(len(found), 1)
+                    self.assertIn("job source-verdict: merge_group job is outside ci-ok", found[0].problem)
+                    self.assertEqual(contract.exit_code(found, "report-only"), 1)
+
+                ordered = (text.replace("needs: [build]", "needs: source-verdict")
+                           .replace("needs: ci-ok", "needs: build")
+                           .replace("required: ci-ok", "required: build")
+                           .replace("      - run: echo ok", "      - run: test '${{ needs.source-verdict.result }}' = success"))
+                self.assertEqual(self.scan(ordered), [])
+
     def test_disabled_shared_action_alias_is_not_a_gate(self):
         text = workflow().replace("  ci-ok:", "  verdict:").replace("      - run: echo ok",
             "      - if: github.event_name == 'merge_group'\n        uses: ./.github/actions/ci-ok")
