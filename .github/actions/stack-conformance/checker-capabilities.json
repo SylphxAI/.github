@@ -113,6 +113,49 @@
     "ffc4f19f76fc5ab1ed34f97707321cd698be8019": "2c4da75821fe6685d540bb8800db9156b765fa8c2acc2a4c5b63547bd9e5e3df"
   },
   "profiles": {
+      "f2556eb3661de5b712c083792489ae8499f85c6af0e49f3993cd715c02f612b1": {
+        "sources": {
+          ".github/actions/stack-conformance/action.yml": "5798bd8ca0419dc49b17ce93e701f1d3cc39ab75204b19b1c4c796ff5ffbe155",
+          ".github/actions/stack-conformance/stack_conformance.py": "3dd7c1598db0eb006521d8a357dc50cd8fa06b5199795f8b09ac1513156f2626",
+          ".github/actions/stack-conformance/architecture.py": "e252a6ca9a2aae45ba4b3d4328adc9427700953d8df5c5b1fb684721a3528d12",
+          ".github/actions/stack-conformance/model_pins.py": "8eaca1dce9af3aec3dc81f44035f0496c97c4cbc027e01c367a95ec287ac4493",
+          ".github/actions/stack-conformance/tenant_reads.py": "2276499ffa7d3d628abc72d67143231932bbaf6dd5100e237b83131294511b48",
+          ".github/actions/stack-conformance/no_force_push.py": "cb06f639f56b2b6423704ca4ecfdb33223a45f3b500957dd7bf7f096c747eca5",
+          ".github/actions/stack-conformance/cache-economy-profiles.json": "b8f542094ec0d3bfaf9a564ba92891fc68266c85fc6b6d9064b898854d762de6",
+          ".github/actions/stack-conformance/deal_randomness.py": "b1e84ecdd7953550c7dd7311d7b413000de4daf62e2efff104ad3a70325b7f14",
+          ".github/actions/stack-conformance/project_portability.py": "d2305a1a108a5d460a4e03eb9fbed8731815e8cc06383e06fc37c17b75d3ac9e",
+          ".github/actions/stack-conformance/rust_reachability.py": "10fa10fdd4d424677ae682300f8ce28319e72c9e16f9ca2b1d4539b300e3e6e7",
+          ".github/actions/auth-surface-guard/check.py": "8f4c8eeeca04aad7e8c3d1ea1b4c4614e6f8e9f154123c811580747cbb06adf8",
+          "policy/deal-randomness-scope.json": "8936933d322b886ac22162f2140d681a9555f225db0f39f9e84dbf60d9243650",
+          "scripts/source_provenance.py": "3cc5ee7128b5d7e66ae36325cb84997ad7786e36366e47163e6346cb2a7f47e7",
+          "policy/source-relocations.json": "5d0e123b6064a9071059e7b9c09dcd49f1adbfb825fcffd71f7077b91db112cb",
+          ".github/actions/stack-conformance/staged_retirement.py": "25d9e850bcd9dfcc6d76100397286270f6c842d8ce57ec4d7291c62323010522"
+        },
+        "rules": [
+          "architecture/C1/cache-economy",
+          "architecture/C1/deal-randomness",
+          "architecture/C1/privileged-branch",
+          "architecture/C1/project-portability",
+          "architecture/C2/provider-bypass",
+          "architecture/C2/tenant-read-functions",
+          "architecture/C3/bundled-method",
+          "architecture/C3/downstream-config",
+          "architecture/C3/downstream-import",
+          "architecture/C4/competing-default",
+          "architecture/C4/undeclared-setting",
+          "architecture/C5/cron-progress",
+          "architecture/C5/idle-floor",
+          "architecture/C5/polling-loop",
+          "architecture/C5/polling-timer",
+          "architecture/C6/retired-route",
+          "architecture/C6/unexplained-suppression",
+          "architecture/C7/failure-only-verdict",
+          "architecture/C7/merge-only-completion",
+          "force-push",
+          "model-pin",
+          "model-selector"
+        ]
+      },
     "fb9f9c94589ab63ac2a6d5be4988bb8176936b6fbe1f30b91b4ee513cdcbd4d1": {
       "sources": {
         ".github/actions/stack-conformance/action.yml": "5798bd8ca0419dc49b17ce93e701f1d3cc39ab75204b19b1c4c796ff5ffbe155",
