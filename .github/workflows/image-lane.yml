@@ -49,6 +49,16 @@ name: Image lane
 on:
   workflow_call:
     inputs:
+      pull-probe-image:
+        description: "Bare registry host/repository to probe. Either probe input disables publishing."
+        required: false
+        type: string
+        default: ""
+      pull-probe-digest:
+        description: "Exact lowercase SHA-256 manifest digest to verify with a pull-only OIDC grant."
+        required: false
+        type: string
+        default: ""
       image:
         description: "Registry host + repository, e.g. registry.sylphx.com/library/sylphx-hands"
         required: true
@@ -164,6 +174,15 @@ on:
         type: number
         default: 1
     outputs:
+      pull_probe_run_id:
+        description: "GitHub run ID of a successful read-only pull probe."
+        value: ${{ jobs.pull-probe.outputs.run_id }}
+      pull_probe_source_sha:
+        description: "Triggering commit of the caller of a successful pull probe."
+        value: ${{ jobs.pull-probe.outputs.source_sha }}
+      pull_probe_digest:
+        description: "Exact verified manifest digest of a successful pull probe."
+        value: ${{ jobs.pull-probe.outputs.digest }}
       image_tag:
         description: "Content tag published for the image."
         value: ${{ jobs.publish.outputs.image_tag }}
@@ -188,7 +207,83 @@ on:
         required: false
 
 jobs:
+  pull-probe:
+    if: ${{ inputs.pull-probe-image != '' || inputs.pull-probe-digest != '' }}
+    runs-on: ${{ startsWith(inputs.runner-class, 'sylphx-linux-') && inputs.runner-class || 'sylphx-linux-standard' }}
+    timeout-minutes: 6
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      run_id: ${{ steps.probe.outputs.run_id }}
+      source_sha: ${{ steps.probe.outputs.source_sha }}
+      digest: ${{ steps.probe.outputs.digest }}
+    steps:
+      - name: Validate probe inputs and tooling pin
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.pull-probe-image }}
+          DIGEST: ${{ inputs.pull-probe-digest }}
+          TOOL_REPOSITORY: ${{ job.workflow_repository }}
+          TOOL_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$IMAGE" || ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo '::error::Pull probe requires both an image and a lowercase SHA-256 digest.'
+            exit 1
+          fi
+          if [[ -z "$TOOL_REPOSITORY" || ! "$TOOL_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Cannot resolve the immutable pull-probe tooling revision.'
+            exit 1
+          fi
+      - name: Check out pinned pull-probe tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .image-lane
+          persist-credentials: false
+      - name: Verify manifest with a pull-only grant
+        id: probe
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.pull-probe-image }}
+          DIGEST: ${{ inputs.pull-probe-digest }}
+        run: |
+          set -euo pipefail
+          # Send the OIDC credential only to the helper's configured registry.
+          python3 - "$IMAGE" <<'PYTHON'
+          import re
+          import runpy
+          import sys
+
+          registry = runpy.run_path('.image-lane/scripts/mint-registry-auth.py')
+          host, _, repository = sys.argv[1].partition('/')
+          component = r'[a-z0-9]+(?:(?:[.]|__?|-+)[a-z0-9]+)*'
+          if host != registry['DEFAULT_REGISTRY_HOST'] or not re.fullmatch(rf'{component}(?:/{component})*', repository):
+              sys.exit('Pull probe requires a bare repository on the configured registry.')
+          PYTHON
+
+          umask 077
+          scratch="$(mktemp -d "$RUNNER_TEMP/image-pull-probe.XXXXXX")"
+          trap 'rm -rf -- "$scratch"' EXIT
+          if ! python3 .image-lane/scripts/mint-registry-auth.py \
+            --identity github-oidc --actions pull --image "$IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --output-dir "$scratch/auth" >/dev/null 2>&1; then
+            echo '::error::Pull-only OIDC registry credential was not issued.'
+            exit 1
+          fi
+          actual="$(python3 .image-lane/scripts/read-registry-manifest.py \
+            --image "$IMAGE" --reference "$DIGEST" --auth-file "$scratch/auth/skopeo-auth.json" \
+            --output "$scratch/manifest.json")"
+          if [[ "$actual" != "$DIGEST" ]]; then
+            echo '::error::Registry manifest digest did not match the requested digest.'
+            exit 1
+          fi
+          printf 'run_id=%s\nsource_sha=%s\ndigest=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$actual" | tee -a "$GITHUB_OUTPUT"
+
   preflight:
+    if: ${{ inputs.pull-probe-image == '' && inputs.pull-probe-digest == '' }}
     name: preflight
     runs-on: ${{ startsWith(inputs.runner-class, 'sylphx-linux-') && inputs.runner-class || 'sylphx-linux-standard' }}
     timeout-minutes: 6
@@ -242,6 +337,7 @@ jobs:
   # very bytes that get pushed, and the registry scopes the token to this one
   # image repository.
   publish:
+    if: ${{ inputs.pull-probe-image == '' && inputs.pull-probe-digest == '' }}
     name: publish
     needs: preflight
     runs-on: ${{ startsWith(inputs.runner-class, 'sylphx-linux-') && inputs.runner-class || 'sylphx-linux-standard' }}

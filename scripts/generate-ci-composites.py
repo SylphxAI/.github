@@ -71,7 +71,8 @@ def broker_env(lifecycle=False):
 
 def image():
     source = load('image-lane')
-    ins = inputs(source, ('lane-ref', 'builder-app-id', 'builder-repositories', 'runner-class', 'publisher-label', 'artifact-retention-days'))
+    ins = inputs(source, ('lane-ref', 'builder-app-id', 'builder-repositories', 'runner-class', 'publisher-label',
+                          'artifact-retention-days', 'pull-probe-image', 'pull-probe-digest'))
     ins.update({
         'phase': inp('all runs preflight before publish; split jobs use preflight then publish with needs. Each signed top-level job needs its own exact publisher grant.', 'all'),
         'broker-ci-name': inp('Exact Access CI declaration for this top-level source-read job.', ''),

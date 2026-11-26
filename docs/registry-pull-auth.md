@@ -6,8 +6,17 @@ Its numeric repository identity, workflow, event/ref and reusable workflow pin
 must first be declared in Foundation's `github-oidc-readers.json`. The helper
 does not create authority. An undeclared job fails at the exchange.
 
-Check out this shared repository at a full commit SHA containing the helper,
-then run:
+For a manifest-only check, pin `image-lane.yml` to a full commit SHA and pass
+both `pull-probe-image` (bare host/repository) and `pull-probe-digest` (full
+lowercase SHA-256 digest). Use only `contents: read` and `id-token: write` on
+the calling job; do not pass or inherit secrets. `image` and `tag` remain
+required for the existing workflow schema, but the probe does not use them.
+Supplying either probe input skips both publisher jobs, even if the probe input
+is invalid. On success the workflow returns `pull_probe_run_id`,
+`pull_probe_source_sha` (the caller's triggering commit), and `pull_probe_digest`.
+
+For other pull consumers, check out this shared repository at a full commit SHA
+containing the helper, then run:
 
 ```sh
 python3 "$SHARED_CHECKOUT/scripts/mint-registry-auth.py" \
