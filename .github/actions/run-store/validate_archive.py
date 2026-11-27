@@ -6,7 +6,8 @@ A run-store `get` unpacks a bundle another job of the run produced (or, with
 the destination (`..` or an absolute path), a symlink or hardlink may point
 outside it and be written through by a later member, and a special file (fifo,
 device, socket) has no place in a file hand-over. Only regular files and
-directories are allowed, and every name is relative with no `..` component.
+directories are allowed. Each name must be relative with no `..` component
+and must identify a unique destination.
 Exits 0 when every member is safe, else prints the first offending member on
 stderr and exits 1, so the caller unpacks nothing.
 """
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 import sys
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 def unsafe_reason(member: tarfile.TarInfo) -> str | None:
@@ -42,14 +43,20 @@ def main() -> int:
         if destination is not None and any(p.is_symlink() for p in [destination, *destination.parents]):
             print("unsafe destination: existing symlink", file=sys.stderr)
             return 1
+        seen: set[str] = set()
         with tarfile.open(sys.argv[1], "r:gz") as archive:
             for member in archive:
                 reason = unsafe_reason(member)
                 if reason is not None:
                     print(f"unsafe archive member: {reason}", file=sys.stderr)
                     return 1
+                normalized = str(PurePosixPath(member.name))
+                if normalized in seen:
+                    print(f"unsafe archive member: duplicate destination {normalized!r} ({member.name!r})", file=sys.stderr)
+                    return 1
+                seen.add(normalized)
                 if destination is not None:
-                    target = destination / member.name
+                    target = destination / normalized
                     # A pre-existing link is as unsafe as one in the archive.
                     for ancestor in [target, *target.parents]:
                         if ancestor.is_symlink():

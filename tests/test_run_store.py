@@ -56,6 +56,51 @@ def special(name: str, kind: bytes, linkname: str = "") -> tuple[tarfile.TarInfo
     return member, None
 
 
+class ValidateArchiveTest(unittest.TestCase):
+    def validate(self, blob: bytes) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as work:
+            archive = pathlib.Path(work) / "bundle.tgz"
+            archive.write_bytes(blob)
+            return subprocess.run(
+                [sys.executable, str(SCRIPT.with_name("validate_archive.py")), str(archive), str(archive.parent / "out")],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+    def test_accepts_directory_archive_from_put(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            nested = pathlib.Path(work) / "a" / "b"
+            nested.mkdir(parents=True)
+            (nested / "file.txt").write_text("fixture")
+            raw = subprocess.check_output(["tar", "-C", work, "-cf", "-", "."])
+        result = self.validate(gzip.compress(raw))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
+    def test_rejects_duplicate_file_destinations(self) -> None:
+        for first, second in [("foo", "foo"), ("foo", "./foo"), ("a/b", "a//./b")]:
+            with self.subTest(first=first, second=second):
+                result = self.validate(bundle([regular(first, b"one"), regular(second, b"two")]))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(f"duplicate destination {first!r}", result.stderr)
+
+    def test_rejects_duplicate_directory_destinations(self) -> None:
+        for first, second, normalized in [("./x/", "x", "x"), ("./", ".", ".")]:
+            with self.subTest(first=first, second=second):
+                result = self.validate(bundle([special(first, tarfile.DIRTYPE), special(second, tarfile.DIRTYPE)]))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(f"duplicate destination {normalized!r}", result.stderr)
+
+    def test_rejects_file_directory_collisions_in_both_orders(self) -> None:
+        members = [special("x/", tarfile.DIRTYPE), regular("./x", b"fixture")]
+        for ordered in (members, members[::-1]):
+            with self.subTest(first=ordered[0][0].name):
+                result = self.validate(bundle(ordered))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("duplicate destination 'x'", result.stderr)
+
+
 class Fake:
     """The OIDC issuer (GET /oidc), the token exchange (POST /v1/tokens/github)
     and the Turbo door (/v8/artifacts/<key>) over an in-memory store."""
