@@ -6,6 +6,11 @@
     {"name": "sylphx-ai[bot]", "email": "212550965+sylphx-ai[bot]@users.noreply.github.com", "roles": ["author", "committer"]},
     {"name": "sylphx-builder[bot]", "email": "261101846+sylphx-builder[bot]@users.noreply.github.com", "roles": ["author", "committer"]}
   ],
+  "red_main": {
+    "login": "sylphx-builder[bot]",
+    "user_id": 261101846,
+    "commit_email": "2847814+sylphx-builder[bot]@users.noreply.github.com"
+  },
   "github_generated": {
     "committer": {"name": "GitHub", "email": "noreply@github.com", "login": "web-flow"},
     "authors": [
