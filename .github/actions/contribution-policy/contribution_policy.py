@@ -16,6 +16,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[3]
 POLICY = ROOT / 'policy/contribution-policy.json'
@@ -28,10 +29,11 @@ class PolicyError(Exception):
     pass
 
 
-def evaluate(pull_request, commits, policy, *, verified_github_commits=()):
+def evaluate(pull_request, commits, policy, *, verified_github_commits=(), verified_reverts=()):
     """Return value-free findings for REST-shaped metadata; never mutate input."""
     identities = {role: {(item['name'], item['email']) for item in policy['identities'] if role in item['roles']}
                   for role in ('author', 'committer')}
+    revert_identity = (policy['red_main']['login'], policy['red_main']['commit_email'])
     github = policy['github_generated']
     github_authors = {(item['name'], item['email']) for item in github['authors']}
     names = '|'.join(re.escape(name) for name in policy['attribution_names'])
@@ -90,7 +92,7 @@ def evaluate(pull_request, commits, policy, *, verified_github_commits=()):
         for role in ('author', 'committer'):
             identity = commit.get(role) or {}
             pair = (identity.get('name'), identity.get('email'))
-            approved = pair in identities[role]
+            approved = pair in identities[role] or (sha in verified_reverts and pair == revert_identity)
             if github_committer:
                 approved = verified and (role == 'committer' or pair in github_authors)
             if not approved:
@@ -259,15 +261,18 @@ def immutable_git_source():
     return source
 
 
+def git_remote(repository):
+    return os.environ.get('GITHUB_SERVER_URL', 'https://github.com').rstrip('/') + '/' + repository + '.git'
+
+
 def range_commits(base, head, repository, token):
     if not SHA.fullmatch(base) or not SHA.fullmatch(head):
         raise PolicyError('event has no immutable commit range')
     source = immutable_git_source()
-    server = os.environ.get('GITHUB_SERVER_URL', 'https://github.com').rstrip('/')
     with tempfile.TemporaryDirectory(prefix='contribution-policy-') as directory:
         repo = Path(directory)
         try:
-            source.fetch(repo, server + '/' + repository + '.git', base, head, token, filter_spec='tree:0')
+            source.fetch(repo, git_remote(repository), base, head, token, filter_spec='tree:0')
             data = source.git(repo, 'log', '-z', '--no-show-signature',
                               '--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B', base + '..' + head)
             commits = parse_commits(data)
@@ -353,6 +358,104 @@ def verified_github_commits(api, commits, policy):
                 raise PolicyError('GitHub provenance does not match immutable commit metadata')
             verified.add(item['sha'])
     return verified
+
+
+def verified_red_main_reverts(api, pr, commits, policy):
+    """Bind the red-main alias to the App's original push and actual inverse trees."""
+    if not pr or not 1 <= len(commits) <= 250:  # red-main's maximum window
+        return ()
+    bot = policy['red_main']
+
+    def is_builder(user):
+        return (user.get('login'), user.get('id'), user.get('type')) == (bot['login'], bot['user_id'], 'Bot')
+
+    if not is_builder(pr.get('user') or {}):
+        return ()
+    head, base = pr['head'], pr['base']
+    head_repo, base_repo = head.get('repo') or {}, base.get('repo') or {}
+    branch = head.get('ref') or ''
+    shape = re.fullmatch(r'auto-revert/([0-9a-f]{9})-[1-9][0-9]*-[1-9][0-9]*', branch)
+    if not shape or any(
+            repo.get('full_name', '').lower() != api.repository.lower() for repo in (head_repo, base_repo)) or \
+            type(base_repo.get('id')) is not int or base_repo['id'] <= 0 or head_repo.get('id') != base_repo['id'] or \
+            not base.get('ref') or base['ref'] != base_repo.get('default_branch') or head['sha'] != commits[0]['sha']:
+        return ()
+
+    reverts = []
+    for item in reversed(commits):  # git log returns newest first
+        commit = item['commit']
+        message = commit['message']
+        original = re.search(r'\n\nThis reverts commit ([0-9a-f]{40})\.\n?\Z', message)
+        if not original or not message.startswith('Revert "') or any(
+                ((commit.get(role) or {}).get('name'), (commit.get(role) or {}).get('email')) !=
+                (bot['login'], bot['commit_email']) for role in ('author', 'committer')):
+            return ()
+        reverts.append((item['sha'], original[1]))
+    if len({original for _, original in reverts}) != len(reverts):
+        return ()
+
+    # Labels, a branch name, PR prose and Git identity strings aren't push provenance.
+    ref = 'refs/heads/' + branch
+    activity = api.get('activity?' + urlencode({'ref': ref, 'activity_type': 'branch_creation', 'per_page': 1}))
+    if not isinstance(activity, list) or len(activity) != 1:
+        return ()
+    event = activity[0]
+    if (event.get('ref'), event.get('activity_type'), event.get('before'), event.get('after')) != (
+            ref, 'branch_creation', '0' * 40, head['sha']) or not is_builder(event.get('actor') or {}):
+        return ()
+    if not exact_revert_trees(api, base['sha'], head['sha'], shape[1], reverts):
+        return ()
+    return {sha for sha, _ in reverts}
+
+
+def exact_revert_trees(api, base, head, red_prefix, reverts):
+    """Replay Git's three-way inverse in a bare repo; never check out PR code."""
+    source = immutable_git_source()
+    deadline = time.monotonic() + 60
+    with tempfile.TemporaryDirectory(prefix='contribution-replay-') as directory:
+        try:
+            env = source.fetch(Path(directory), git_remote(api.repository), base, head, api.token, deadline=deadline)
+            env.update(GIT_NO_REPLACE_OBJECTS='1', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                       GIT_AUTHOR_NAME='Revert verifier', GIT_COMMITTER_NAME='Revert verifier',
+                       GIT_AUTHOR_EMAIL='verifier@example.invalid', GIT_COMMITTER_EMAIL='verifier@example.invalid')
+
+            def git(*args):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise source.ScanError('revert replay deadline expired')
+                return source.command(['git', '-C', directory, *args], env=env, timeout=remaining).decode().strip()
+
+            def tree(commit):
+                return git('rev-parse', '--verify', commit + '^{tree}')
+
+            parents = git('show', '-s', '--format=%P', reverts[0][0]).split()
+            if len(parents) != 1:
+                return False
+            anchor = parents[0]
+            red_head = git('rev-parse', '--verify', red_prefix + '^{commit}')
+            git('merge-base', '--is-ancestor', red_head, anchor)
+            git('merge-base', '--is-ancestor', anchor, base)
+            previous = anchor
+            for sha, original in reverts:
+                if git('show', '-s', '--format=%P', sha) != previous:
+                    return False
+                original_parents = git('show', '-s', '--format=%P', original).split()
+                if len(original_parents) != 1:
+                    return False  # The producer doesn't revert merges or root commits.
+                git('merge-base', '--is-ancestor', original, red_head)
+                # Two tree-only synthetic commits give merge-ort the exact base of
+                # git revert: original tree -> its parent's tree, applied to previous.
+                prior_tree, actual = tree(previous), tree(sha)
+                if prior_tree == actual:
+                    return False
+                ours = git('commit-tree', prior_tree, '-p', original, '-m', 'ours')
+                theirs = git('commit-tree', tree(original_parents[0]), '-p', original, '-m', 'theirs')
+                if git('merge-tree', '--write-tree', '--no-messages', ours, theirs) != actual:
+                    return False
+                previous = sha
+            return previous == head
+        except (source.ScanError, ValueError):
+            return False
 
 
 def dispatch_target(api, event, sha):
@@ -448,15 +551,16 @@ def group_queue_members(api, branch, group_shas):
 
 def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
     def verdict(pr, commits):
-        return evaluate(pr, commits, policy,
-                        verified_github_commits=verified_github_commits(api, commits, policy))
+        return evaluate(pr if check_pull_text else None, commits, policy,
+                        verified_github_commits=verified_github_commits(api, commits, policy),
+                        verified_reverts=verified_red_main_reverts(api, pr, commits, policy))
 
     def snapshot(number, head):
         if check_pull_text:
             pr, commits = pull_snapshot(api, number, head)
         else:
             pr, commits = pull_snapshot(api, number, head, check_text=False)
-        return pr if check_pull_text else None, commits
+        return pr, commits
 
     if event_name in {'pull_request', 'pull_request_target'}:
         pr = event.get('pull_request', {})
@@ -465,7 +569,7 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
         commits, snapshots, _ = merge_group_snapshot(api, event['merge_group'], check_pull_text=check_pull_text)
         findings = []
         for pr, original in snapshots:
-            findings.extend(verdict(pr if check_pull_text else None, original))
+            findings.extend(verdict(pr, original))
         findings.extend(verdict(None, commits))
         return findings
     if event_name == 'workflow_dispatch':
@@ -474,7 +578,7 @@ def check_event(api, event_name, event, sha, policy, *, check_pull_text=True):
             target, base, head = dispatch_target(api, event, sha)
             pr, commits = pull_snapshot(api, target['number'], head, check_text=check_pull_text,
                                         expected_base=(base, inputs['code-base-ref']))
-            return verdict(pr if check_pull_text else None, commits)
+            return verdict(pr, commits)
         # A dispatch on a PR head must not replace a failed PR verdict with green.
         pulls = [pr for pr in api.pages('pulls?state=open') if pr['head']['sha'] == sha]
         findings = []

@@ -37,6 +37,18 @@ numeric noreply email. Their queue squash passes under the same verified
 GitHub signature rule as Kyle's account email; an unsigned or look-alike bot
 commit still fails.
 
+The red-main handler writes the builder App ID (not the bot account ID) in its
+unsigned Git author and committer email. That separate alias is admitted only
+on same-repository `auto-revert/` pull requests targeting the default branch,
+opened by the exact builder bot account. GitHub's repository activity must show
+that account created the ref at the exact checked head. Each introduced commit
+must be a single-parent inverse of a commit already on the named red trunk
+revision. The checker independently replays each inverse and compares the
+resulting tree; a copied title, trailer, label, or Git identity is not proof.
+This uses the existing `contents: read` and `pull-requests: read` access and
+works independently of mutable PR text checks. The builder's existing normal
+commit and signed queue-squash identities are unchanged.
+
 The check rejects attribution trailers, tool coauthors, and the configured
 coordination identifiers in commit messages and PR titles and bodies. Ordinary
 discussion of a product, model, generator, or command is allowed. Findings name
