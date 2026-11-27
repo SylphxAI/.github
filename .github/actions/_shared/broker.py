@@ -88,7 +88,9 @@ def validate(api_url, policy, repository, permissions, read_only):
         raise ExchangeError('read-only exchange requires explicit nonempty read permissions')
 
 
-def access(api_url, ci_name):
+def access(api_url, ci_name, org=''):
+    """Empty org redeems a static [[ci]] declaration; an org ID selects only its github_federation policy."""
+    org = org.strip()
     url = os.environ.get('ACTIONS_ID_TOKEN_REQUEST_URL', '')
     token = os.environ.get('ACTIONS_ID_TOKEN_REQUEST_TOKEN', '')
     if not url or not token:
@@ -97,22 +99,25 @@ def access(api_url, ci_name):
     if not isinstance(oidc, str) or not oidc:
         raise ExchangeError('GitHub OIDC request returned no token; id-token: write is required')
     mask(oidc)
-    issued = request(api_url.rstrip('/') + '/v1/access/github/token', body={'name': ci_name, 'token': oidc})
+    body = {'org': org, 'name': ci_name, 'token': oidc} if org else {'name': ci_name, 'token': oidc}
+    issued = request(api_url.rstrip('/') + '/v1/access/github/token', body=body)
     key = issued.get('api_key')
     if not isinstance(key, str) or not key or any(ord(c) < 33 or ord(c) > 126 for c in key):
         raise ExchangeError('no Access key: check exact [[ci]] declaration and signed workflow authority')
     mask(key)
-    org, principal = issued_subject(issued)
+    issued_org, principal = issued_subject(issued)
+    if org and issued_org != 'orgs/' + org:
+        raise ExchangeError('issued Access key belongs to another org than access-org; no Broker exchange was sent')
     identity = wait_for_identity(read_identity, key, issued.get('active_after_ms'), api_url)
-    if identity.get('org') != org or org + '/principals/' + identity.get('principal', '') != principal:
+    if identity.get('org') != issued_org or issued_org + '/principals/' + identity.get('principal', '') != principal:
         raise ExchangeError('issued Access key identity differs from the ready identity; no Broker exchange was sent')
     return key
 
 
-def exchange(api_url, policy, repository, permissions, read_only=False, ci_name='', app_slug='', key=None, expected_issuer='', expected_connection=''):
+def exchange(api_url, policy, repository, permissions, read_only=False, ci_name='', app_slug='', key=None, expected_issuer='', expected_connection='', access_org=''):
     validate(api_url, policy, repository, permissions, read_only)
     if not key:
-        key = access(api_url, ci_name or policy.rsplit('/', 1)[1])
+        key = access(api_url, ci_name or policy.rsplit('/', 1)[1], access_org)
     method = 'exchangeReadToken' if read_only else 'exchangeToken'
     body = {'repositories': [repository]}
     if permissions:

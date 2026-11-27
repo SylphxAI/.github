@@ -16,7 +16,8 @@ def main():
         result = exchange(env['API_URL'], env['BROKER_POLICY'], env['REPO'],
                           json.loads(env.get('PERMISSIONS', '{}')), env.get('READ_ONLY') == 'true',
                           env.get('BROKER_CI_NAME', ''), env.get('APP_SLUG', ''),
-                          expected_issuer=env.get('EXPECTED_ISSUER', ''), expected_connection=env.get('EXPECTED_CONNECTION', ''))
+                          expected_issuer=env.get('EXPECTED_ISSUER', ''), expected_connection=env.get('EXPECTED_CONNECTION', ''),
+                          access_org=env.get('BROKER_ACCESS_ORG', ''))
         # Legacy token output remains. This action does not persist provider credentials.
         with open(env['GITHUB_OUTPUT'], 'a') as out:
             for key in ('token', 'app-slug', 'issuer', 'connection', 'expire_time', 'token_exchange'):

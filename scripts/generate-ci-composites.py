@@ -63,7 +63,7 @@ def condition(step, mode):
 
 def broker_env(lifecycle=False):
     return dict(BROKER_POLICY='${{ inputs.broker-trust-policy }}', BROKER_CI_NAME='${{ inputs.broker-ci-name }}',
-                REPO='${{ github.repository }}', API_URL='${{ inputs.api-url }}', SOFT_FAIL='false', READ_ONLY='false',
+                BROKER_ACCESS_ORG='${{ inputs.access-org }}', REPO='${{ github.repository }}', API_URL='${{ inputs.api-url }}', SOFT_FAIL='false', READ_ONLY='false',
                 PERMISSIONS='{"issues":"write","metadata":"read"}' if lifecycle else '{"contents":"write","issues":"write","pull_requests":"write","workflows":"write","metadata":"read"}',
                 APP_SLUG='${{ inputs.broker-app-slug }}', EXPECTED_ISSUER='${{ inputs.expected-issuer }}',
                 EXPECTED_CONNECTION='${{ inputs.expected-connection }}')
@@ -118,6 +118,7 @@ def red_main():
     ins.update({
         'broker-trust-policy': inp('Exact TrustPolicy granting this caller repository; no App-key or workflow-token fallback.', required=True),
         'broker-ci-name': inp('Exact Access CI declaration for the signed top-level workflow.', required=True),
+        'access-org': inp('Optional canonical org ID owning a tenant-managed github_federation policy named broker-ci-name. Empty redeems the static [[ci]] declaration; set, Access never falls back to it.', ''),
         'broker-app-slug': inp('Expected App slug, checked against the Broker issuer.', required=True),
         'api-url': inp('Ordinary platform API endpoint.', 'https://api.sylphx.com'),
         'expected-issuer': inp('Optional exact Broker issuer pin.', ''),
