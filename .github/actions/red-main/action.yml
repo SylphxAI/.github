@@ -71,6 +71,11 @@ inputs:
   broker-ci-name:
     description: Exact Access CI declaration for the signed top-level workflow.
     required: true
+  access-org:
+    description: Optional canonical org ID owning a tenant-managed github_federation policy named broker-ci-name. Empty redeems
+      the static [[ci]] declaration; set, Access never falls back to it.
+    required: false
+    default: ''
   broker-app-slug:
     description: Expected App slug, checked against the Broker issuer.
     required: true
@@ -110,6 +115,7 @@ runs:
     env:
       BROKER_POLICY: ${{ inputs.broker-trust-policy }}
       BROKER_CI_NAME: ${{ inputs.broker-ci-name }}
+      BROKER_ACCESS_ORG: ${{ inputs.access-org }}
       REPO: ${{ github.repository }}
       API_URL: ${{ inputs.api-url }}
       SOFT_FAIL: 'false'
@@ -554,6 +560,7 @@ runs:
       MAX_REVERT_COMMITS: '250'
       BROKER_POLICY: ${{ inputs.broker-trust-policy }}
       BROKER_CI_NAME: ${{ inputs.broker-ci-name }}
+      BROKER_ACCESS_ORG: ${{ inputs.access-org }}
       API_URL: ${{ inputs.api-url }}
       SOFT_FAIL: 'false'
       READ_ONLY: 'false'
@@ -1393,6 +1400,7 @@ runs:
       MAX_REVERT_COMMITS: '250'
       BROKER_POLICY: ${{ inputs.broker-trust-policy }}
       BROKER_CI_NAME: ${{ inputs.broker-ci-name }}
+      BROKER_ACCESS_ORG: ${{ inputs.access-org }}
       API_URL: ${{ inputs.api-url }}
       SOFT_FAIL: 'false'
       READ_ONLY: 'false'

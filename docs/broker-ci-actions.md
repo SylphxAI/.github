@@ -29,6 +29,15 @@ and `soft-fail`. Optional `permissions` is a JSON permission map. Setting
 There is no write-exchange fallback. Every call requests exactly one full
 `owner/name` repository.
 
+Optional `access-org` takes the canonical org ID that owns a tenant-managed
+`github_federation` policy named by `ci-name`. When it is set, Access issuance
+sends `{org, name, token}` and selects only that database policy. The issued key
+must belong to the same org, or no Broker exchange is sent. When it is empty or
+whitespace, issuance sends the unchanged `{name, token}` body for the static
+`[[ci]]` declaration. A refused federated issuance never retries the static
+namespace. `red-main` forwards the same `access-org` input to each of its Broker
+exchanges.
+
 The action reads the runner's OIDC URL/token directly, requests audience
 `sylphx-access`, issues one Access key, waits for its native propagation
 interval, then checks Whoami against the key's issued stable subject. Only the
@@ -120,8 +129,8 @@ removed before a caller verifier and again on every terminal path.
 
 `red-main` supports `mode: repair` and `mode: lifecycle`, retaining the
 candidate, protection, verify-workflow and lifecycle-event inputs. It requires
-`broker-trust-policy`, `broker-ci-name`, `broker-app-slug`; optional endpoint and
-resource pins are forwarded. It only acts on its own caller repository.
+`broker-trust-policy`, `broker-ci-name`, `broker-app-slug`; optional
+`access-org`, endpoint and resource pins are forwarded. It only acts on its own caller repository.
 
 The caller owns the self-hosted job, environment and repository concurrency;
 use a 120-minute repair bound and grant `contents: read`, `actions: write`,

@@ -16,6 +16,8 @@ REPO = 'Example/source'
 ISSUER = 'github-apps/1234'
 CONNECTION = 'orgs/example/connections/github-tenant'
 PERMISSIONS = {'contents': 'read', 'metadata': 'read'}
+RED_MAIN = ROOT / '.github/actions/red-main/action.yml'
+ACCESS_ORG = 'org_fs01example'
 
 
 def action(path=ACTION):
@@ -73,6 +75,20 @@ def grant(**over):
                    token_exchange=POLICY + '/token_exchanges/tkx_example'), **over}
 
 
+def federated_replies(org=ACCESS_ORG):
+    return replies(**{
+        '/v1/access/github/token': {'api_key': 'syl_ci_key', 'active_after_ms': 0,
+            'key': {'name': 'orgs/' + org + '/projects/prj_test/envs/env_test/api_keys/test',
+                    'status': {'principal': 'orgs/' + org + '/principals/prn_test'}}},
+        '/v1/whoami': {'org': 'orgs/' + org, 'principal': 'prn_test'},
+    })
+
+
+def issuance_bodies(wire):
+    return [json.loads(json.loads(item['config'].split('data = ')[1])) for item in wire
+            if '/v1/access/github/token' in item['args'][item['args'].index('--url') + 1]]
+
+
 CLOCK_STUB = r'''
 import atexit, importlib, importlib.util, json, os, subprocess, sys, types
 sys.path.insert(0, os.environ['BROKER_SHARED'])
@@ -112,7 +128,7 @@ if sys.argv[0].endswith('/exchange.py'):
 '''
 
 
-def run_script(data, extra, *, action_path=ACTION, sleeps=None, elapsed=None, request_costs=None):
+def run_script(data, extra, *, action_path=ACTION, sleeps=None, elapsed=None, request_costs=None, run=None):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         (root / 'curl').write_text('#!/usr/bin/env python3\n' + CURL_STUB)
@@ -128,7 +144,7 @@ def run_script(data, extra, *, action_path=ACTION, sleeps=None, elapsed=None, re
                                SLEEPS=str(root / 'sleeps'),
                                BROKER_SHARED=str(action_path.parent.parent / '_shared'),
                                ELAPSED=str(root / 'elapsed'), REQUEST_COSTS=json.dumps(request_costs or {}))
-        result = subprocess.run(['bash', '-c', action(action_path)['runs']['steps'][0]['run']],
+        result = subprocess.run(['bash', '-c', run or action(action_path)['runs']['steps'][0]['run']],
                                 capture_output=True, text=True, env=environment, timeout=30)
         if sleeps is not None and (root / 'sleeps').exists():
             sleeps.extend(json.loads(line) for line in (root / 'sleeps').read_text().splitlines())
@@ -410,6 +426,50 @@ class ExchangeTests(unittest.TestCase):
             self.assertIn('token=ghs_install\n', output)
             self.assertEqual(len(wire), 5)
             self.assertNotIn('private-propagation-detail', log + output)
+
+
+    def test_omitted_or_blank_access_org_sends_exact_static_declaration_body(self):
+        for extra in ({}, {'BROKER_ACCESS_ORG': ''}, {'BROKER_ACCESS_ORG': '   '}, {'BROKER_ACCESS_ORG': ' \t\n'}):
+            with self.subTest(extra=extra):
+                code, log, output, wire = run_script(replies(), env(**extra))
+                self.assertEqual(code, 0, log)
+                self.assertEqual(issuance_bodies(wire), [{'name': 'source', 'token': 'oidc-jwt'}])
+                self.assertIn('token=ghs_install\n', output)
+
+    def test_access_org_selects_only_the_tenant_federation_policy(self):
+        for value in (ACCESS_ORG, '  ' + ACCESS_ORG + '\n'):
+            with self.subTest(value=value):
+                code, log, output, wire = run_script(federated_replies(), env(BROKER_ACCESS_ORG=value, BROKER_CI_NAME='tenant-deploy'))
+                self.assertEqual(code, 0, log)
+                self.assertEqual(issuance_bodies(wire), [{'org': ACCESS_ORG, 'name': 'tenant-deploy', 'token': 'oidc-jwt'}])
+                self.assertIn('token=ghs_install\n', output)
+
+    def test_access_org_refusal_or_foreign_key_never_falls_back(self):
+        refused = {'/v1/access/github/token': {'_http': 403, 'code': 'PERMISSION_DENIED'}}
+        for data, reason in ((replies(**refused), 'request was not retried'),
+                             (federated_replies('org_fs01other'), 'another org than access-org')):
+            with self.subTest(reason=reason):
+                code, log, output, wire = run_script(data, env(BROKER_ACCESS_ORG=ACCESS_ORG))
+                self.assertEqual(code, 1, log)
+                self.assertIn(reason, log)
+                self.assertEqual(issuance_bodies(wire), [{'org': ACCESS_ORG, 'name': 'source', 'token': 'oidc-jwt'}])
+                self.assertEqual(len(wire), 2)  # No legacy retry, readiness read or Broker exchange.
+                self.assertNotIn('token=ghs_install', output)
+
+    def test_red_main_and_write_token_declare_and_forward_access_org(self):
+        for path in (ACTION, RED_MAIN):
+            doc = action(path)
+            self.assertEqual(doc['inputs']['access-org'], {**doc['inputs']['access-org'], 'required': False, 'default': ''})
+            steps = [step for step in doc['runs']['steps'] if 'BROKER_POLICY' in step.get('env', {})]
+            self.assertEqual(len(steps), 1 if path == ACTION else 3, path)
+            for step in steps:
+                with self.subTest(action=path.parent.name, step=step.get('id')):
+                    self.assertEqual(step['env']['BROKER_ACCESS_ORG'], '${{ inputs.access-org }}')
+                    self.assertIn('exchange.py', step['run'])
+                    code, log, output, wire = run_script(federated_replies(), env(BROKER_ACCESS_ORG=ACCESS_ORG),
+                                                         action_path=path, run=step['run'])
+                    self.assertEqual(code, 0, log)
+                    self.assertEqual(issuance_bodies(wire), [{'org': ACCESS_ORG, 'name': 'source', 'token': 'oidc-jwt'}])
 
 
 if __name__ == '__main__':
